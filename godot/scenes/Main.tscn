@@ -1,0 +1,44 @@
+[gd_scene load_steps=3 format=3 uid="uid://c8n6j7m8x4y2"]
+
+[ext_resource type="Script" path="res://scripts/terrain.gd" id="1_terrain"]
+[ext_resource type="Script" path="res://scripts/water.gd" id="2_water"]
+[ext_resource type="Script" path="res://scripts/road_tool.gd" id="3_road"]
+[ext_resource type="Script" path="res://scripts/zoning_tool.gd" id="4_zoning"]
+[ext_resource type="Script" path="res://scripts/buildings.gd" id="5_buildings"]
+[ext_resource type="Script" path="res://scripts/agents.gd" id="6_agents"]
+[ext_resource type="Script" path="res://scripts/lane_tool.gd" id="7_lanes"]
+
+[node name="Main" type="Node3D"]
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="."]
+transform = Transform3D(-0.866025, -0.433013, 0.25, 0, 0.5, 0.866025, -0.5, 0.75, -0.433013, 0, 0, 0)
+shadow_enabled = true
+
+[node name="SimulationNode" type="SimulationNode" parent="."]
+
+[node name="Terrain" type="MeshInstance3D" parent="."]
+script = ExtResource("1_terrain")
+
+[node name="Water" type="MeshInstance3D" parent="."]
+script = ExtResource("2_water")
+
+[node name="RoadTool" type="Node3D" parent="."]
+script = ExtResource("3_road")
+
+[node name="ZoningTool" type="Node3D" parent="."]
+script = ExtResource("4_zoning")
+
+[node name="Buildings" type="Node3D" parent="."]
+script = ExtResource("5_buildings")
+
+[node name="Agents" type="Node3D" parent="."]
+script = ExtResource("6_agents")
+
+[node name="LaneTool" type="Node3D" parent="."]
+script = ExtResource("7_lanes")
+
+[node name="CameraNode" type="CameraNode" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 20, 30)
+current = true

@@ -1,0 +1,52 @@
+use crate::simulation::network::graph::Edge;
+use godot::prelude::Vector3;
+
+pub struct CostCalculator;
+
+impl CostCalculator {
+    /// Calculates the baseline intrinsic cost of traversing an edge.
+    /// This combines the Time Cost (Distance / Speed Limit) with an exponential 
+    /// Penalty for steep incline slopes.
+    pub fn calculate_base_cost(edge: &Edge) -> f32 {
+        let mut total_distance = 0.0;
+        let mut max_slope = 0.0_f32;
+
+        let points = &edge.geometry;
+        if points.len() < 2 {
+            return 0.0;
+        }
+
+        for i in 0..points.len() - 1 {
+            let p1 = points[i];
+            let p2 = points[i+1];
+            
+            let dist = p1.distance_to(p2);
+            total_distance += dist;
+            
+            if dist > 0.01 {
+                let d_y = (p2.y - p1.y).abs();
+                let d_xz = (Vector3::new(p1.x, 0.0, p1.z)).distance_to(Vector3::new(p2.x, 0.0, p2.z));
+                if d_xz > 0.001 {
+                    let slope = d_y / d_xz;
+                    if slope > max_slope {
+                        max_slope = slope;
+                    }
+                }
+            }
+        }
+
+        // Base time cost
+        let speed = edge.speed_limit.max(10.0);
+        let time_cost = total_distance / speed;
+
+        // Exponential penalty for slopes above 10% (0.1)
+        // A 41% grade will heavily penalize this route for heavy vehicles
+        let slope_penalty = if max_slope > 0.1 {
+            1.0 + (max_slope * 5.0).powi(2)
+        } else {
+            1.0
+        };
+
+        time_cost * slope_penalty
+    }
+}

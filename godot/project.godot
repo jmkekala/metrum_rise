@@ -1,0 +1,18 @@
+config_version=5
+
+[application]
+
+config/name="Metrum Rise"
+config/features=PackedStringArray("4.x", "Forward Plus")
+run/main_scene="res://scenes/Main.tscn"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/stretch/mode="canvas_items"
+
+[rendering]
+
+renderer/rendering_method="forward_plus"
+textures/vram_compression/import_etc2_astc=true
