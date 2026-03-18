@@ -143,3 +143,32 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     new_edge.base_cost = crate::simulation::pathing::cost::CostCalculator::calculate_base_cost(&new_edge);
     network.graph.add_edge(new_edge);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::TransitNetwork;
+    use crate::simulation::network::types::TransitType;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn test_topology_t_junction() {
+        let mut net = TransitNetwork::new();
+        // straight road
+        net.add_road(vec![
+            Vector3::new(-10.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        ].into(), 1, 1);
+        
+        // side road connecting to the middle
+        net.add_road(vec![
+            Vector3::new(0.0, 0.0, 10.0),
+            Vector3::new(0.0, 0.0, 0.0),
+        ].into(), 1, 1);
+        
+        println!("Graph has {} edges", net.graph.edges.len());
+        for (i, edge) in net.graph.edges.iter().enumerate() {
+            println!("Edge {}: start node {}, end node {}, geometry len {}", i, edge.start_node, edge.end_node, edge.geometry.len());
+        }
+    }
+}

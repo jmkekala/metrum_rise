@@ -22,6 +22,7 @@ impl TransitRenderer for RoadRenderer {
 
             let h_offset = 0.001 + (edge_id % 100) as f32 * 0.0001;
             let half_width = edge.width * 0.5;
+            
             let mut cumulative_dist = 0.0;
 
             for i in 0..resampled_count - 1 {
@@ -77,31 +78,27 @@ impl TransitRenderer for RoadRenderer {
         }
         
         // 2. Render Solid Asphalt Intersection Hub Polygons perfectly filling the orthogonal gaps
-        let mut j_offset = 0.005;
+        let mut j_offset = 0.02;
         for (_node_id, poly) in &graph.junction_polygons {
             j_offset += 0.0001;
-            let mut center = Vector3::ZERO;
-            for p in poly { center += *p; }
-            let plen = poly.len() as f32;
-            center.x /= plen;
-            center.y /= plen;
-            center.z /= plen;
-            center.y += j_offset;
             
-            // Generate CCW Triangle Fan facing UP
-            for i in 0..poly.len() {
-                let mut c1 = poly[i];
-                let mut c2 = poly[(i+1) % poly.len()];
-                c1.y += j_offset;
-                c2.y += j_offset;
-                
-                vertices.push(center); vertices.push(c1); vertices.push(c2);
-                let up = Vector3::UP;
-                normals.push(up); normals.push(up); normals.push(up);
-                
-                uvs.push(Vector2::new(0.5, 0.5)); uvs.push(Vector2::new(0.5, 0.5)); uvs.push(Vector2::new(0.5, 0.5));
-                let void_color = Color::from_rgba(0.0, 0.0, 0.0, 0.0); // Shader drops lines natively
-                colors.push(void_color); colors.push(void_color); colors.push(void_color);
+            let void_color = Color::from_rgba(0.0, 0.0, 0.0, 0.0); // Shader drops lines natively
+            
+            for c in poly.chunks(3) {
+                if c.len() == 3 {
+                    let mut p0 = c[0]; let mut p1 = c[1]; let mut p2 = c[2];
+                    p0.y += j_offset; p1.y += j_offset; p2.y += j_offset;
+                    
+                    vertices.push(p0); vertices.push(p1); vertices.push(p2);
+                    let up = Vector3::UP;
+                    normals.push(up); normals.push(up); normals.push(up);
+                    
+                    uvs.push(Vector2::new(p0.x, p0.z)); 
+                    uvs.push(Vector2::new(p1.x, p1.z)); 
+                    uvs.push(Vector2::new(p2.x, p2.z));
+                    
+                    colors.push(void_color); colors.push(void_color); colors.push(void_color);
+                }
             }
         }
 

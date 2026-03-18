@@ -183,6 +183,17 @@ impl TransitGraph {
     }
 
     pub fn rebuild_intersection_clips(&mut self) {
+        let mut edge_lengths = HashMap::new();
+        for (i, edge) in self.edges.iter().enumerate() {
+            let mut total = 0.0;
+            if edge.geometry.len() >= 2 {
+                for j in 0..edge.geometry.len() - 1 {
+                    total += (edge.geometry[j + 1] - edge.geometry[j]).length();
+                }
+            }
+            edge_lengths.insert(i, total);
+        }
+
         let mut node_clips: HashMap<(usize, usize), f32> = HashMap::new();
         self.junction_polygons.clear();
 
@@ -195,20 +206,22 @@ impl TransitGraph {
                 if edge.geometry.len() < 2 { continue; }
                 if edge.start_node == node_id {
                     let d3 = edge.geometry[1] - edge.geometry[0];
+                    let seg_len = d3.length();
                     let dir = Vector2::new(d3.x, d3.z).normalized();
                     let angle = f32::atan2(dir.y, dir.x);
-                    connected_edges.push((i, dir, edge.width * 0.5, angle));
+                    connected_edges.push((i, dir, edge.width * 0.5, angle, seg_len));
                 } else if edge.end_node == node_id {
                     let lc = edge.geometry.len();
                     let d3 = edge.geometry[lc-2] - edge.geometry[lc-1];
+                    let seg_len = d3.length();
                     let dir = Vector2::new(d3.x, d3.z).normalized();
                     let angle = f32::atan2(dir.y, dir.x);
-                    connected_edges.push((i, dir, edge.width * 0.5, angle));
+                    connected_edges.push((i, dir, edge.width * 0.5, angle, seg_len));
                 }
             }
 
             if connected_edges.len() < 2 {
-                for &(edge_id, _, _, _) in &connected_edges {
+                for &(edge_id, _, _, _, _) in &connected_edges {
                     node_clips.insert((node_id as usize, edge_id), 0.0);
                 }
                 continue;
@@ -216,9 +229,8 @@ impl TransitGraph {
             
             connected_edges.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap());
 
-            let mut pool = Vec::new();
             let mut clips: HashMap<usize, f32> = HashMap::new();
-            for &(edge_id, _, _, _) in &connected_edges {
+            for &(edge_id, _, _, _, _) in &connected_edges {
                 clips.insert(edge_id, 0.0);
             }
 
@@ -242,10 +254,10 @@ impl TransitGraph {
                     let t1 = (diff.x * l2_dir.y - diff.y * l2_dir.x) / denom;
                     let inter = l1_p + l1_dir * t1;
                     
-                    if inter.distance_to(n_center) < 40.0 {
-                        pool.push(inter);
+                    if inter.distance_to(n_center) < 150.0 {
                         let p1_proj = (inter - n_center).dot(l1_dir);
                         let p2_proj = (inter - n_center).dot(l2_dir);
+                        
                         if p1_proj > 0.0 {
                             let c1 = clips.get(&e1.0).unwrap().max(p1_proj);
                             clips.insert(e1.0, c1);
@@ -258,56 +270,58 @@ impl TransitGraph {
                 }
             }
 
-            for &(edge_id, dir, hw, _) in &connected_edges {
-                let c = *clips.get(&edge_id).unwrap();
-                let cut_center = n_center + dir * c;
-                let right_norm = Vector2::new(-dir.y, dir.x);
-                let left_norm = Vector2::new(dir.y, -dir.x);
-                pool.push(cut_center + left_norm * hw);
-                pool.push(cut_center + right_norm * hw);
-                node_clips.insert((node_id as usize, edge_id), c.max(0.0));
+            let mut poly_3d = Vec::new();
+            let ct = Vector3::new(n_center.x, node.pos.y, n_center.y);
+            
+            let mut add_triangle = |mut a: Vector3, mut b: Vector3, mut c: Vector3| {
+                let normal = (b - a).cross(c - a);
+                if normal.length() < 0.0001 { return; } // Avoid degenerate zero-area geometry
+                if normal.y > 0.0 {
+                    std::mem::swap(&mut b, &mut c); // Force CW Upward facing
+                }
+                poly_3d.push(a); poly_3d.push(b); poly_3d.push(c);
+            };
+
+            for i in 0..connected_edges.len() {
+                let nxt = (i + 1) % connected_edges.len();
+                let e1 = &connected_edges[i];
+                let e2 = &connected_edges[nxt];
+
+                // e1 is current road
+                let c1 = *clips.get(&e1.0).unwrap();
+                let cut1 = n_center + e1.1 * c1;
+                let right1 = Vector2::new(-e1.1.y, e1.1.x);
+                let left1 = Vector2::new(e1.1.y, -e1.1.x);
+                let p_right1 = cut1 + right1 * e1.2;
+                let p_left1 = cut1 + left1 * e1.2;
+
+                let pr1 = Vector3::new(p_right1.x, node.pos.y, p_right1.y);
+                let pl1 = Vector3::new(p_left1.x, node.pos.y, p_left1.y);
+
+                // e2 is next road
+                let c2 = *clips.get(&e2.0).unwrap();
+                let cut2 = n_center + e2.1 * c2;
+                let left2 = Vector2::new(e2.1.y, -e2.1.x);
+                let p_left2 = cut2 + left2 * e2.2;
+                let pl2 = Vector3::new(p_left2.x, node.pos.y, p_left2.y);
+                
+                // Triangle 1: Fill the "Road End"
+                add_triangle(ct, pr1, pl1);
+
+                // Triangle 2: Corner Gap
+                add_triangle(ct, pl2, pr1);
+                
+                node_clips.insert((node_id as usize, e1.0), c1.max(0.0));
             }
 
-            if pool.len() >= 3 {
-                pool.sort_by(|a, b| {
-                    if a.x == b.x {
-                        a.y.partial_cmp(&b.y).unwrap()
-                    } else {
-                        a.x.partial_cmp(&b.x).unwrap()
+            if poly_3d.len() >= 3 {
+                match verify_intersection_geometry(ct, &poly_3d) {
+                    Ok(_) => {
+                        self.junction_polygons.insert(node_id, poly_3d);
                     }
-                });
-                
-                let cross = |o: Vector2, a: Vector2, b: Vector2| -> f32 {
-                    (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x)
-                };
-
-                let mut lower = Vec::new();
-                for &p in &pool {
-                    while lower.len() >= 2 && cross(lower[lower.len()-2], *lower.last().unwrap(), p) <= 0.0 {
-                        lower.pop();
+                    Err(e) => {
+                        println!("Intersection Validation Error at Node {}: {}", node_id, e);
                     }
-                    lower.push(p);
-                }
-
-                let mut upper = Vec::new();
-                for &p in pool.iter().rev() {
-                    while upper.len() >= 2 && cross(upper[upper.len()-2], *upper.last().unwrap(), p) <= 0.0 {
-                        upper.pop();
-                    }
-                    upper.push(p);
-                }
-
-                lower.pop();
-                upper.pop();
-                lower.extend(upper);
-                
-                let mut poly_3d = Vec::new();
-                for p in lower {
-                    poly_3d.push(Vector3::new(p.x, node.pos.y, p.y));
-                }
-                
-                if poly_3d.len() >= 3 {
-                    self.junction_polygons.insert(node_id, poly_3d);
                 }
             }
         }
@@ -324,6 +338,10 @@ impl TransitGraph {
                 }
                 
                 let valid_len = (total_length - edge.end_clip) - edge.start_clip;
+                if valid_len <= 0.1 {
+                    edge.physical_geometry.clear();
+                    continue;
+                }
                 let num_segments = f32::max(1.0, f32::ceil(valid_len / 10.0)) as usize;
                 let mut resampled = Vec::new();
                 
@@ -353,4 +371,44 @@ impl TransitGraph {
         }
         println!("Rebuild intersection clips: Total Junction Polygons: {}", self.junction_polygons.len());
     }
+}
+
+/// Validates that the intersection mesh is mathematically sound.
+/// Returns Ok(()) if the mesh is valid, or an error describing the failure.
+pub fn verify_intersection_geometry(_center: Vector3, triangles: &[Vector3]) -> Result<(), String> {
+    // 1. Check for Triangle Completeness
+    if triangles.len() % 3 != 0 {
+        return Err("Malformed mesh: Vertex count is not a multiple of 3.".into());
+    }
+
+    for i in (0..triangles.len()).step_by(3) {
+        let p0 = triangles[i];   // Center
+        let p1 = triangles[i+1]; // Right Corner
+        let p2 = triangles[i+2]; // Left Corner
+
+        // 2. Calculate the Normal using the Cross Product
+        let edge1 = p1 - p0;
+        let edge2 = p2 - p0;
+        let normal = edge1.cross(edge2);
+
+        // 3. Winding Order Check (The "Black Hole" Fix)
+        // If Y is positive, the triangle is upside down in Godot's coordinate system.
+        if normal.y >= 0.0 {
+            return Err(format!(
+                "Inverted Winding: Triangle {} is facing downward. Winding order is incorrect.",
+                i / 3
+            ));
+        }
+
+        // 4. Degenerate Triangle Check (The "Zero-Area" Fix)
+        // If the normal's length is near zero, the points are in a straight line.
+        if normal.length() < 0.0001 {
+            return Err(format!(
+                "Degenerate Geometry: Triangle {} has zero area (collinear points).",
+                i / 3
+            ));
+        }
+    }
+
+    Ok(())
 }
