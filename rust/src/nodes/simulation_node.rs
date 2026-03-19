@@ -443,7 +443,7 @@ impl SimulationNode {
                 buffer.push(0.0);
                 buffer.push(sy);
                 buffer.push(0.0);
-                buffer.push(world_y + (10.0 * sy) / 2.0); // Elevated identically spanning bounding
+                buffer.push(world_y + (5.0 * sy) / 2.0); // Elevated to match the new 5m procedural house standard!
 
                 // Row 2: [Basis.X.z, Basis.Y.z, Basis.Z.z, Origin.z]
                 buffer.push(b_xz * sx);

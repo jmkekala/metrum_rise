@@ -3,7 +3,7 @@ extends Node3D
 @onready var simulation_node = $"../SimulationNode"
 
 var multimesh_instance: MultiMeshInstance3D
-var physical_mesh: SphereMesh
+var physical_mesh: Mesh
 
 var debug_mesh_instance: MeshInstance3D
 var debug_mesh: ImmediateMesh
@@ -23,13 +23,13 @@ func _ready():
 	mm.use_custom_data = false
 	mm.instance_count = 0
 	
-	physical_mesh = SphereMesh.new()
-	physical_mesh.radius = 1.0
-	physical_mesh.height = 2.0 # 2-meter tall citizen representation!
+	physical_mesh = CapsuleMesh.new()
+	physical_mesh.radius = 0.4
+	physical_mesh.height = 1.8 # Average adult human height
 	
 	var mat = StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.4, 0.4) # Bright reddish-pink spheres
-	mat.roughness = 0.5
+	mat.albedo_color = Color(0.9, 0.7, 0.6) # Skin/Cloth neutral base
+	mat.roughness = 0.9
 	physical_mesh.material = mat
 	mm.mesh = physical_mesh
 	
