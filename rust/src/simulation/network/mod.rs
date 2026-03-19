@@ -11,18 +11,18 @@ use types::*;
 use graph::*;
 use render::TransitRenderer;
 use render::road::RoadRenderer;
-use crate::simulation::pathing::flow::RoutingTable;
+use crate::simulation::pathing::hpa::HpaGraph;
 
 pub struct TransitNetwork {
     pub graph: TransitGraph,
-    pub routing_table: RoutingTable,
+    pub hpa_graph: HpaGraph,
 }
 
 impl TransitNetwork {
     pub fn new() -> Self {
         Self {
             graph: TransitGraph::new(),
-            routing_table: RoutingTable::new(),
+            hpa_graph: HpaGraph::new(),
         }
     }
 
@@ -104,7 +104,7 @@ impl TransitNetwork {
         self.cleanup_duplicate_edges();
         
         // Rebuild massive DoD pathing table for agents
-        self.routing_table = RoutingTable::build(&self.graph);
+        self.hpa_graph = HpaGraph::build(&self.graph);
     }
 
     pub fn generate_mesh_data(&self, terrain: &crate::simulation::terrain::TerrainSystem) -> (PackedVector3Array, PackedVector3Array, PackedVector2Array, PackedColorArray) {

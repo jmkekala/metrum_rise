@@ -3,7 +3,7 @@ use crate::simulation::grid::data_grid::DataGrid;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::TransitGraph;
-use crate::simulation::pathing::flow::RoutingTable;
+use crate::simulation::pathing::hpa::HpaGraph;
 use rand::Rng;
 
 pub struct AgentSystem {
@@ -44,6 +44,8 @@ pub struct AgentSystem {
     pub bezier_p3_x: Vec<f32>,
     pub bezier_p3_y: Vec<f32>,
     pub bezier_t: Vec<f32>,
+    pub current_path: Vec<Vec<u32>>,
+    pub current_path_index: Vec<usize>,
 }
 
 impl AgentSystem {
@@ -75,6 +77,8 @@ impl AgentSystem {
             bezier_p3_x: Vec::new(),
             bezier_p3_y: Vec::new(),
             bezier_t: Vec::new(),
+            current_path: Vec::new(),
+            current_path_index: Vec::new(),
         }
     }
 
@@ -105,6 +109,8 @@ impl AgentSystem {
         self.bezier_p3_x.push(0.0);
         self.bezier_p3_y.push(0.0);
         self.bezier_t.push(0.0);
+        self.current_path.push(Vec::new());
+        self.current_path_index.push(0);
         self.count += 1;
     }
 
@@ -137,6 +143,8 @@ impl AgentSystem {
         self.bezier_p3_x.swap(index, last_idx);
         self.bezier_p3_y.swap(index, last_idx);
         self.bezier_t.swap(index, last_idx);
+        self.current_path.swap(index, last_idx);
+        self.current_path_index.swap(index, last_idx);
 
         self.home_building.pop();
         self.work_building.pop();
@@ -163,6 +171,8 @@ impl AgentSystem {
         self.bezier_p3_x.pop();
         self.bezier_p3_y.pop();
         self.bezier_t.pop();
+        self.current_path.pop();
+        self.current_path_index.pop();
 
         self.count -= 1;
     }
@@ -195,7 +205,7 @@ impl AgentSystem {
         }
     }
     
-    pub fn tick(&mut self, allocator: &BuildingAllocator, routing_table: &RoutingTable, graph: &TransitGraph, delta: f32) {
+    pub fn tick(&mut self, allocator: &BuildingAllocator, hpa_graph: &HpaGraph, graph: &TransitGraph, delta: f32) {
         let mut rng = rand::thread_rng();
         
         let w = allocator.occupancy_grid.width as f32;
@@ -210,6 +220,9 @@ impl AgentSystem {
 
         // Massive Data-Oriented Swarm Iteration
         for i in 0..self.count {
+            self.current_node[i] = graph.get_valid_node(self.current_node[i]);
+            self.target_node[i] = graph.get_valid_node(self.target_node[i]);
+            
             match self.transit[i] {
                 0 => { // INSIDE BUILDING
                     if self.activity[i] == 0 { // At Home
@@ -235,6 +248,8 @@ impl AgentSystem {
                                 self.activity[i] = 1; // Heading to Work
                                 self.transit[i] = 1; // To Road
                                 self.is_visible[i] = true;
+                                self.current_path[i].clear();
+                                self.current_path_index[i] = 0;
                                 let p = get_bldg_pos(self.current_building[i]);
                                 self.pos_x[i] = p.x;
                                 self.pos_y[i] = p.y;
@@ -253,6 +268,8 @@ impl AgentSystem {
                                 self.activity[i] = 2; // Heading to Shop
                                 self.transit[i] = 1; // To Road
                                 self.is_visible[i] = true;
+                                self.current_path[i].clear();
+                                self.current_path_index[i] = 0;
                                 let p = get_bldg_pos(self.current_building[i]);
                                 self.pos_x[i] = p.x;
                                 self.pos_y[i] = p.y;
@@ -275,6 +292,8 @@ impl AgentSystem {
                                     self.activity[i] = 2; // Heading to Shop
                                     self.transit[i] = 1; // To Road
                                     self.is_visible[i] = true;
+                                    self.current_path[i].clear();
+                                    self.current_path_index[i] = 0;
                                     let p = get_bldg_pos(self.current_building[i]);
                                     self.pos_x[i] = p.x;
                                     self.pos_y[i] = p.y;
@@ -294,6 +313,8 @@ impl AgentSystem {
                             }
                             self.transit[i] = 1; // To Road
                             self.is_visible[i] = true;
+                            self.current_path[i].clear();
+                            self.current_path_index[i] = 0;
                             let p = get_bldg_pos(self.current_building[i]);
                             self.pos_x[i] = p.x;
                             self.pos_y[i] = p.y;
@@ -314,6 +335,8 @@ impl AgentSystem {
                                     self.activity[i] = 2; // Heading to another Shop
                                     self.transit[i] = 1; // To Road
                                     self.is_visible[i] = true;
+                                    self.current_path[i].clear();
+                                    self.current_path_index[i] = 0;
                                     let p = get_bldg_pos(self.current_building[i]);
                                     self.pos_x[i] = p.x;
                                     self.pos_y[i] = p.y;
@@ -333,6 +356,8 @@ impl AgentSystem {
                             }
                             self.transit[i] = 1; // To Road
                             self.is_visible[i] = true;
+                            self.current_path[i].clear();
+                            self.current_path_index[i] = 0;
                             let p = get_bldg_pos(self.current_building[i]);
                             self.pos_x[i] = p.x;
                             self.pos_y[i] = p.y;
@@ -368,7 +393,16 @@ impl AgentSystem {
                 2 | 4 => { // ON ROAD OR IMMIGRATING
                     if self.current_node[i] != self.target_node[i] {
                         if self.current_edge[i] == usize::MAX {
-                            if let Some(next) = routing_table.get_next_node(self.current_node[i], self.target_node[i]) {
+                            if self.current_path[i].is_empty() {
+                                if let Some(path) = hpa_graph.find_path(self.current_node[i], self.target_node[i], graph) {
+                                    self.current_path[i] = path;
+                                    self.current_path_index[i] = 0;
+                                }
+                            }
+
+                            if self.current_path_index[i] < self.current_path[i].len() {
+                                let next = self.current_path[i][self.current_path_index[i]];
+                                self.current_path_index[i] += 1;
                                 let mut found = false;
                                 for (idx, edge) in graph.edges.iter().enumerate() {
                                     if edge.start_node == self.current_node[i] && edge.end_node == next {
@@ -390,18 +424,14 @@ impl AgentSystem {
                                     }
                                 }
                                 if !found {
-                                    // Route broken, teleport home and sleep
-                                    self.transit[i] = 0;
-                                    self.activity[i] = 0;
-                                    self.is_visible[i] = false;
-                                    self.current_building[i] = self.home_building[i];
+                                    // Trigger Recalculate if edge mysteriously despawns
+                                    self.current_edge[i] = usize::MAX;
+                                    self.current_path[i].clear();
                                 }
                             } else {
-                                // Route broken, teleport home and sleep
-                                self.transit[i] = 0;
-                                self.activity[i] = 0;
-                                self.is_visible[i] = false;
-                                self.current_building[i] = self.home_building[i];
+                                // Redundant edge loop recalculate
+                                self.current_edge[i] = usize::MAX;
+                                self.current_path[i].clear();
                             }
                         }
                         
@@ -470,7 +500,9 @@ impl AgentSystem {
                                         remaining_dist = 0.0;
                                     } else {
                                         // Entering a TM:PE Intersection! Calculate Dynamic Vector Spline!
-                                        if let Some(future_node) = routing_table.get_next_node(next_node, self.target_node[i]) {
+                                        if self.current_path_index[i] < self.current_path[i].len() {
+                                            let future_node = self.current_path[i][self.current_path_index[i]];
+                                            self.current_path_index[i] += 1; // <--- CRITICAL FIX INTRODUCED HERE
                                             
                                             // Find incoming edge link
                                             let mut next_edge_idx = usize::MAX;
@@ -550,10 +582,18 @@ impl AgentSystem {
                                                 self.edge_progression[i] = if next_fwd { 0 } else { next_edge.physical_geometry.len() as isize - 1 };
                                                 
                                             } else {
-                                                self.transit[i] = 0; self.is_visible[i] = false; self.current_building[i] = self.home_building[i];
+                                                // TELEPORT C Averted! Topology has mutated mid-transit. Force path regenerate from this junction!
+                                                self.current_node[i] = next_node;
+                                                self.current_edge[i] = usize::MAX;
+                                                self.current_path[i].clear();
+                                                break;
                                             }
                                         } else {
-                                            self.transit[i] = 0; self.is_visible[i] = false; self.current_building[i] = self.home_building[i];
+                                            // TELEPORT D Averted! Premature junction encountered.
+                                            self.current_node[i] = next_node;
+                                            self.current_edge[i] = usize::MAX;
+                                            self.current_path[i].clear();
+                                            break;
                                         }
                                         remaining_dist = 0.0;
                                     }

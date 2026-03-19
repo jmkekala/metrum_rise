@@ -37,14 +37,33 @@ pub struct TransitGraph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
     pub junction_polygons: std::collections::HashMap<u32, Vec<Vector3>>,
+    pub node_aliases: std::collections::HashMap<u32, u32>,
 }
 
 impl TransitGraph {
+    pub const CHUNK_SIZE: f32 = 512.0;
+
+    pub fn get_chunk_coords(pos: Vector3) -> (i32, i32) {
+        ((pos.x / Self::CHUNK_SIZE).floor() as i32, (pos.z / Self::CHUNK_SIZE).floor() as i32)
+    }
+
+    pub fn get_node_chunk(&self, node_id: u32) -> (i32, i32) {
+        Self::get_chunk_coords(self.nodes[node_id as usize].pos)
+    }
+
+    pub fn get_valid_node(&self, mut id: u32) -> u32 {
+        while let Some(&alias) = self.node_aliases.get(&id) {
+            id = alias;
+        }
+        id
+    }
+
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
             junction_polygons: std::collections::HashMap::new(),
+            node_aliases: std::collections::HashMap::new(),
         }
     }
 
@@ -72,7 +91,12 @@ impl TransitGraph {
     /// Merges two nodes into one, updating all edges that use them
     pub fn unite_nodes(&mut self, id1: u32, id2: u32) {
         if id1 == id2 { return; }
-        let (keep, remove) = (id1.min(id2), id1.max(id2));
+        // Ensure we always map to the ultimate valid parent and don't loop
+        let keep = self.get_valid_node(id1.min(id2));
+        let remove = self.get_valid_node(id1.max(id2));
+        if keep == remove { return; }
+        
+        self.node_aliases.insert(remove, keep);
         
         // Update all edges using the 'remove' node to use 'keep' node instead
         for edge in &mut self.edges {

@@ -109,7 +109,7 @@ impl SimulationNode {
 
             // Fire cascading sync pipelines to ensure GPU components mirror reverted states
             if sync_transit {
-                self.transit_network.routing_table = crate::simulation::pathing::flow::RoutingTable::build(&self.transit_network.graph);
+                self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
             }
             return true;
         }
@@ -251,22 +251,13 @@ impl SimulationNode {
                 
                 let current_pos = get_h(Vector3::new(self.agents.pos_x[i], 0.0, self.agents.pos_y[i]));
                 
-                if let Some(next) = self.transit_network.routing_table.get_next_node(curr, target) {
-                    let next_pos = get_h(self.transit_network.graph.nodes[next as usize].pos);
-                    lines.push(current_pos);
-                    lines.push(next_pos);
-                    
-                    curr = next;
-                    let mut safety = 0;
-                    while curr != target && safety < 1000 {
-                        safety += 1;
-                        if let Some(n) = self.transit_network.routing_table.get_next_node(curr, target) {
-                            let np = get_h(self.transit_network.graph.nodes[n as usize].pos);
-                            let cp = get_h(self.transit_network.graph.nodes[curr as usize].pos);
-                            lines.push(cp);
-                            lines.push(np);
-                            curr = n;
-                        } else { break; }
+                if let Some(path) = self.transit_network.hpa_graph.find_path(curr, target, &self.transit_network.graph) {
+                    let mut prev_pos = current_pos;
+                    for &n in &path {
+                        let np = get_h(self.transit_network.graph.nodes[n as usize].pos);
+                        lines.push(prev_pos);
+                        lines.push(np);
+                        prev_pos = np;
                     }
                 }
             }
@@ -662,7 +653,7 @@ impl INode3D for SimulationNode {
         // High-frequency agent physics!
         if self.time.speed_multiplier > 0.0 {
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
-            self.agents.tick(&self.allocator, &self.transit_network.routing_table, &self.transit_network.graph, dt);
+            self.agents.tick(&self.allocator, &self.transit_network.hpa_graph, &self.transit_network.graph, dt);
         }
     }
 }
