@@ -31,6 +31,7 @@ pub struct Building {
     pub road_edge: usize,
     pub abandoned_timer: u32,
     pub polygon_id: u32,
+    pub polygon_version: u32,
 }
 
 pub struct BuildingAllocator {
@@ -52,7 +53,12 @@ impl BuildingAllocator {
     }
 
     pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, _zoning: &ZoningSystem, _desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, _graph: &TransitGraph) {
-        if !self.dirty { return; }
+        if self.dirty {
+            self.buildings.retain(|b| {
+                _zoning.polygons.iter().any(|p| p.id == b.polygon_id && p.version == b.polygon_version)
+            });
+            self.dirty = false;
+        }
         
         let mut handled_polys = std::collections::HashSet::new();
         for b in &self.buildings {
@@ -61,13 +67,13 @@ impl BuildingAllocator {
 
         for poly in &_zoning.polygons {
             if handled_polys.contains(&poly.id) { continue; }
-            if poly.vertices.len() < 2 { continue; } // Require at least a frontage edge explicitly
+            let n = poly.frontage_pts;
+            if n < 2 { continue; }
             
-            let v0 = poly.vertices[0];
-            let v1 = poly.vertices[1];
-            
-            let front_vec = v1 - v0;
-            let front_len = front_vec.length();
+            let mut front_len = 0.0;
+            for i in 0..n-1 {
+                front_len += (poly.vertices[i+1] - poly.vertices[i]).length();
+            }
             if front_len < 4.0 { continue; } // Failsafe against infinitesimally drawn shapes completely!
             
             // Subdivide the drawn user frontage geometrically!
@@ -76,9 +82,26 @@ impl BuildingAllocator {
             let slice_width = front_len / (num_plots as f32);
             
             for i in 0..num_plots {
-                let t_center = (i as f32 + 0.5) / (num_plots as f32);
-                let front_center = v0 + front_vec * t_center;
-                let in_dir = -poly.facing_dir;
+                let target_dist = (i as f32 + 0.5) * slice_width;
+                let mut accumulated = 0.0;
+                let mut front_center = poly.vertices[0];
+                let mut in_dir = godot::prelude::Vector2::new(0.0, 0.0);
+                
+                for j in 0..n-1 {
+                    let v0 = poly.vertices[j];
+                    let v1 = poly.vertices[j+1];
+                    let seg_len = (v1 - v0).length();
+                    if accumulated + seg_len >= target_dist || j == n-2 {
+                        let t = if seg_len > 0.0 { ((target_dist - accumulated) / seg_len).clamp(0.0, 1.0) } else { 0.0 };
+                        front_center = v0 + (v1 - v0) * t;
+                        let tangent = if seg_len > 0.0 { (v1 - v0).normalized() } else { godot::prelude::Vector2::new(1.0, 0.0) };
+                        let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x);
+                        in_dir = if poly.depth_amt > 0.0 { normal } else { -normal };
+                        break;
+                    }
+                    accumulated += seg_len;
+                }
+                
                 let r1 = godot::prelude::Vector2::new(in_dir.y, -in_dir.x);
                 let bw = (slice_width * 0.95) as u8;
                 let hw = bw as f32 / 2.0 - 0.1;
@@ -143,11 +166,12 @@ impl BuildingAllocator {
                     width: bw,
                     depth: bd,
                     zone_type: poly.zone_type,
-                    facing_dir: poly.facing_dir,
+                    facing_dir: -in_dir,
                     road_node,
                     road_edge: poly.edge_idx,
                     abandoned_timer: 0,
                     polygon_id: poly.id,
+                    polygon_version: poly.version,
                 };
                 
                 let slot_id = self.buildings.len();

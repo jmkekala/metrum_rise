@@ -211,24 +211,47 @@ impl AgentSystem {
         let w = crate::config::MAP_WIDTH as f32;
         let h = crate::config::MAP_HEIGHT as f32;
         
+        // Safety Scrub: Building indices are volatile during dynamic editing!
+        for i in 0..self.count {
+            if self.home_building[i] != usize::MAX && self.home_building[i] >= allocator.buildings.len() {
+                self.home_building[i] = usize::MAX;
+            }
+            if self.work_building[i] != usize::MAX && self.work_building[i] >= allocator.buildings.len() {
+                self.work_building[i] = usize::MAX;
+            }
+            if self.current_building[i] != usize::MAX && self.current_building[i] >= allocator.buildings.len() {
+                self.current_building[i] = usize::MAX;
+                self.transit[i] = 3; // Dump onto street if interior disappears
+            }
+            if self.target_building[i] != usize::MAX && self.target_building[i] >= allocator.buildings.len() {
+                self.target_building[i] = usize::MAX;
+                if self.home_building[i] != usize::MAX {
+                    self.target_building[i] = self.home_building[i];
+                } else {
+                    self.transit[i] = 3;
+                }
+            }
+        }
+        
         let get_bldg_pos = |b_id: usize| -> godot::prelude::Vector2 {
+            if b_id >= allocator.buildings.len() {
+                return godot::prelude::Vector2::new(0.0, 0.0);
+            }
             let b = &allocator.buildings[b_id];
-            // Recover absolute 2D Frontage Sidewalk point explicitly reversing the plot internal offsets!
+            // Recover absolute 2D Frontage Sidewalk point explicitly passing continuous World Coordinates!
             let front_x = b.center_x + b.facing_dir.x * (b.depth as f32 / 2.0);
             let front_y = b.center_y + b.facing_dir.y * (b.depth as f32 / 2.0);
-            let bx = front_x - (w - 1.0) * 0.5;
-            let bz = front_y - (h - 1.0) * 0.5;
-            godot::prelude::Vector2::new(bx, bz)
+            godot::prelude::Vector2::new(front_x, front_y)
         };
 
         macro_rules! eject_onto_street {
             ($self:expr, $i:expr, $p:expr) => {
-                let curr = $self.current_building[$i];
-                if curr != usize::MAX {
-                    let b = &allocator.buildings[curr];
-                    $self.transit[$i] = 6;
-                    $self.current_edge[$i] = b.road_edge;
-                    let edge = &graph.edges[b.road_edge];
+            let curr = $self.current_building[$i];
+            if curr != usize::MAX && curr < allocator.buildings.len() {
+                let b = &allocator.buildings[curr];
+                $self.transit[$i] = 6;
+                $self.current_edge[$i] = b.road_edge;
+                let edge = &graph.edges[b.road_edge];
                     let mut best_dist = std::f32::MAX;
                     let mut best_idx = 0;
                     for (idx, pt) in edge.physical_geometry.iter().enumerate() {
@@ -269,7 +292,7 @@ impl AgentSystem {
                                 }
                             }
 
-                            if self.work_building[i] != usize::MAX {
+                            if self.work_building[i] != usize::MAX && self.work_building[i] < allocator.buildings.len() {
                                 self.target_building[i] = self.work_building[i];
                                 self.target_node[i] = allocator.buildings[self.work_building[i]].road_node;
                                 self.activity[i] = 1; // Heading to Work
@@ -290,16 +313,18 @@ impl AgentSystem {
                             if !shops.is_empty() {
                                 self.money[i] -= 20.0; // Spend money purely to go shopping!
                                 let shop_id = shops[rng.gen_range(0..shops.len())];
-                                self.target_building[i] = shop_id;
-                                self.target_node[i] = allocator.buildings[shop_id].road_node;
-                                self.activity[i] = 2; // Heading to Shop
-                                self.is_visible[i] = true;
-                                self.current_path[i].clear();
-                                self.current_path_index[i] = 0;
-                                let p = get_bldg_pos(self.current_building[i]);
-                                self.pos_x[i] = p.x;
-                                self.pos_y[i] = p.y;
-                                eject_onto_street!(self, i, p);
+                                if shop_id < allocator.buildings.len() {
+                                    self.target_building[i] = shop_id;
+                                    self.target_node[i] = allocator.buildings[shop_id].road_node;
+                                    self.activity[i] = 2; // Heading to Shop
+                                    self.is_visible[i] = true;
+                                    self.current_path[i].clear();
+                                    self.current_path_index[i] = 0;
+                                    let p = get_bldg_pos(self.current_building[i]);
+                                    self.pos_x[i] = p.x;
+                                    self.pos_y[i] = p.y;
+                                    eject_onto_street!(self, i, p);
+                                }
                             }
                         }
                     } else if self.activity[i] == 1 { // At Work
@@ -315,7 +340,9 @@ impl AgentSystem {
                                     self.money[i] -= 20.0; // Spend money
                                     let shop_id = shops[rng.gen_range(0..shops.len())];
                                     self.target_building[i] = shop_id;
-                                    self.target_node[i] = allocator.buildings[shop_id].road_node;
+                                    if shop_id < allocator.buildings.len() {
+                                        self.target_node[i] = allocator.buildings[shop_id].road_node;
+                                    }
                                     self.activity[i] = 2; // Heading to Shop
                                     self.is_visible[i] = true;
                                     self.current_path[i].clear();
@@ -331,7 +358,9 @@ impl AgentSystem {
                             // Default: Head Home
                             if self.home_building[i] != usize::MAX {
                                 self.target_building[i] = self.home_building[i];
-                                self.target_node[i] = allocator.buildings[self.home_building[i]].road_node;
+                                if self.home_building[i] != usize::MAX && self.home_building[i] < allocator.buildings.len() {
+                                    self.target_node[i] = allocator.buildings[self.home_building[i]].road_node;
+                                }
                                 self.activity[i] = 0; // Heading To Home
                             } else {
                                 // HOMELESS! Head to the streets and become Stranded!
@@ -358,7 +387,9 @@ impl AgentSystem {
                                     self.money[i] -= 20.0; // Spend money
                                     let shop_id = shops[rng.gen_range(0..shops.len())];
                                     self.target_building[i] = shop_id;
-                                    self.target_node[i] = allocator.buildings[shop_id].road_node;
+                                    if shop_id < allocator.buildings.len() {
+                                        self.target_node[i] = allocator.buildings[shop_id].road_node;
+                                    }
                                     self.activity[i] = 2; // Heading to another Shop
                                     self.is_visible[i] = true;
                                     self.current_path[i].clear();
@@ -372,7 +403,7 @@ impl AgentSystem {
                             }
                             
                             // Default: Head Home
-                            if self.home_building[i] != usize::MAX {
+                            if self.home_building[i] != usize::MAX && self.home_building[i] < allocator.buildings.len() {
                                 self.target_building[i] = self.home_building[i];
                                 self.target_node[i] = allocator.buildings[self.home_building[i]].road_node;
                                 self.activity[i] = 0; // Heading To Home
@@ -392,7 +423,7 @@ impl AgentSystem {
                     }
                 }
                 1 => { // WALKING TO ROAD
-                    let tgt_node_id = if self.current_building[i] != usize::MAX {
+                    let tgt_node_id = if self.current_building[i] != usize::MAX && self.current_building[i] < allocator.buildings.len() {
                         allocator.buildings[self.current_building[i]].road_node
                     } else {
                         self.current_node[i] // Used by stranded agents navigating street geometry directly!
@@ -418,6 +449,10 @@ impl AgentSystem {
                     }
                 }
                 6 => { // WALKING ALONG LOCAL EDGE TO ROAD NODE
+                    if self.current_building[i] >= allocator.buildings.len() {
+                        self.transit[i] = 1; // Fallback to linear walking if building gone
+                        continue;
+                    }
                     let b = &allocator.buildings[self.current_building[i]];
                     let edge_idx = b.road_edge;
                     
@@ -734,7 +769,9 @@ impl AgentSystem {
                             let new_home = homes[rng.gen_range(0..homes.len())];
                             self.home_building[i] = new_home;
                             self.target_building[i] = new_home;
-                            self.target_node[i] = allocator.buildings[new_home].road_node;
+                            if new_home < allocator.buildings.len() {
+                                self.target_node[i] = allocator.buildings[new_home].road_node;
+                            }
                             self.activity[i] = 0; // Going to new home
                             
                             // Discover nearest physical road node from their stranded position to begin routing

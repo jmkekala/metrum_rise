@@ -158,7 +158,7 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn add_zoning_polygon(&mut self, edge_idx: i32, zone_type_int: u8, vertices: PackedVector2Array, facing_x: f32, facing_y: f32) {
+    pub fn add_zoning_polygon(&mut self, edge_idx: i32, zone_type_int: u8, vertices: PackedVector2Array, depth_amt: f32, frontage_pts: i32) {
         let zone_type = match zone_type_int {
             1 => crate::simulation::grid::zoning::ZoneType::Residential,
             2 => crate::simulation::grid::zoning::ZoneType::Commercial,
@@ -172,7 +172,7 @@ impl SimulationNode {
             verts.push(godot::prelude::Vector2::new(v.x, v.y));
         }
         
-        self.zoning.add_polygon(edge_idx as usize, zone_type, verts, godot::prelude::Vector2::new(facing_x, facing_y));
+        self.zoning.add_polygon(edge_idx as usize, zone_type, verts, depth_amt, frontage_pts as usize);
         self.allocator.dirty = true;
     }
 
@@ -405,11 +405,16 @@ impl SimulationNode {
         for b in &self.allocator.buildings {
             if b.zone_type == target_zone {
                 // Determine 3D world position
-                let world_x = b.center_x - hw;
-                let world_z = b.center_y - hh;
+                let world_x = b.center_x;
+                let world_z = b.center_y;
+                
+                let grid_x = b.center_x + hw;
+                let grid_y = b.center_y + hh;
+                let safe_gx = grid_x.round().clamp(0.0, w - 1.0) as usize;
+                let safe_gy = grid_y.round().clamp(0.0, h - 1.0) as usize;
                 
                 // Godot's height algorithm uses integer cell vertices, grab precisely below
-                let world_y = self.heightmap.get_height(b.center_x.round() as usize, b.center_y.round() as usize) * 20.0;
+                let world_y = self.heightmap.get_height(safe_gx, safe_gy) * 20.0;
 
                 // Native structural Basis extraction matching mathematical explicit Vectors identically avoiding Euler rotation inversions
                 let fd = b.facing_dir.normalized();
@@ -452,45 +457,216 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn get_zoning_polygon_ids(&self) -> PackedInt32Array {
-        let mut arr = PackedInt32Array::new();
-        for poly in &self.zoning.polygons {
-            arr.push(poly.id as i32);
+    pub fn get_closest_point_on_edge(&self, edge_idx: i32, point_x: f32, point_y: f32) -> godot::prelude::Vector2 {
+        if edge_idx < 0 || edge_idx as usize >= self.transit_network.graph.edges.len() {
+            return godot::prelude::Vector2::new(point_x, point_y);
         }
-        arr
+        let edge = &self.transit_network.graph.edges[edge_idx as usize];
+        let hw = edge.width / 2.0;
+
+        if edge. physical_geometry.is_empty() {
+            let n1 = self.transit_network.graph.nodes[edge.start_node as usize].pos;
+            let n2 = self.transit_network.graph.nodes[edge.end_node as usize].pos;
+            let a = godot::prelude::Vector2::new(n1.x, n1.z);
+            let b = godot::prelude::Vector2::new(n2.x, n2.z);
+            let p = godot::prelude::Vector2::new(point_x, point_y);
+            let ab = b - a;
+            let dot = ab.dot(ab);
+            let t = if dot > 0.0 { ((p - a).dot(ab) / dot).clamp(0.0, 1.0) } else { 0.0 };
+            
+            let proj = a + ab * t;
+            let tangent = if dot > 0.0 { ab.normalized() } else { godot::prelude::Vector2::new(1.0, 0.0) };
+            let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x);
+            let p1 = proj + normal * hw;
+            let p2 = proj - normal * hw;
+            return if (p - p1).length_squared() < (p - p2).length_squared() { p1 } else { p2 };
+        } else {
+            let mut best_dist = std::f32::MAX;
+            let mut best_pt = godot::prelude::Vector2::new(point_x, point_y);
+            let p = godot::prelude::Vector2::new(point_x, point_y);
+            for i in 0..(edge.physical_geometry.len() - 1) {
+                let a = edge.physical_geometry[i];
+                let b = edge.physical_geometry[i+1];
+                let a_vec = godot::prelude::Vector2::new(a.x, a.z);
+                let b_vec = godot::prelude::Vector2::new(b.x, b.z);
+                let ab = b_vec - a_vec;
+                let dot = ab.dot(ab);
+                let t = if dot > 0.0 { ((p - a_vec).dot(ab) / dot).clamp(0.0, 1.0) } else { 0.0 };
+                
+                let proj = a_vec + ab * t;
+                let tangent = if dot > 0.0 { ab.normalized() } else { godot::prelude::Vector2::new(1.0, 0.0) };
+                let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x);
+                let p1 = proj + normal * hw;
+                let p2 = proj - normal * hw;
+                let e_proj = if (p - p1).length_squared() < (p - p2).length_squared() { p1 } else { p2 };
+
+                let dist = (e_proj - p).length_squared();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_pt = e_proj;
+                }
+            }
+            return best_pt;
+        }
     }
 
     #[func]
-    pub fn get_zoning_polygon_vertices(&self, poly_id: i32) -> PackedVector2Array {
+    pub fn get_edge_geometry(&self, edge_idx: i32) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
-        if let Some(poly) = self.zoning.polygons.iter().find(|p| p.id == poly_id as u32) {
-            for v in &poly.vertices {
-                arr.push(*v);
+        if edge_idx < 0 || edge_idx as usize >= self.transit_network.graph.edges.len() { return arr; }
+        
+        let edge = &self.transit_network.graph.edges[edge_idx as usize];
+        if edge.physical_geometry.is_empty() {
+            let n1 = self.transit_network.graph.nodes[edge.start_node as usize].pos;
+            let n2 = self.transit_network.graph.nodes[edge.end_node as usize].pos;
+            arr.push(godot::prelude::Vector2::new(n1.x, n1.z));
+            arr.push(godot::prelude::Vector2::new(n2.x, n2.z));
+        } else {
+            for v in &edge.physical_geometry {
+                arr.push(godot::prelude::Vector2::new(v.x, v.z));
             }
         }
         arr
     }
 
     #[func]
-    pub fn update_zoning_polygon_vertex(&mut self, poly_id: i32, vertex_idx: i32, new_x: f32, new_y: f32) {
-        if let Some(poly) = self.zoning.polygons.iter_mut().find(|p| p.id == poly_id as u32) {
-            if vertex_idx >= 0 && (vertex_idx as usize) < poly.vertices.len() {
-                poly.vertices[vertex_idx as usize] = godot::prelude::Vector2::new(new_x, new_y);
+    pub fn get_edge_width(&self, edge_idx: i32) -> f32 {
+        if edge_idx < 0 || edge_idx as usize >= self.transit_network.graph.edges.len() { return 6.0; }
+        self.transit_network.graph.edges[edge_idx as usize].width
+    }
+
+    #[func]
+    pub fn get_curved_frontage(&self, edge_idx: i32, start_p: godot::prelude::Vector2, end_p: godot::prelude::Vector2) -> PackedVector2Array {
+        let mut arr = PackedVector2Array::new();
+        if edge_idx < 0 || edge_idx as usize >= self.transit_network.graph.edges.len() { 
+            arr.push(start_p); arr.push(end_p); return arr; 
+        }
+        let edge = &self.transit_network.graph.edges[edge_idx as usize];
+        let hw = edge.width / 2.0;
+
+        let get_proj = |p: godot::prelude::Vector2| -> (usize, f32, godot::prelude::Vector2, godot::prelude::Vector2) {
+            let mut best_dist = std::f32::MAX;
+            let mut best_i = 0;
+            let mut best_t = 0.0;
+            let mut best_side = godot::prelude::Vector2::new(0.0, 0.0);
+            let mut best_normal = godot::prelude::Vector2::new(0.0, 0.0);
+            
+            let pts: Vec<godot::prelude::Vector2> = if edge.physical_geometry.is_empty() {
+                vec![
+                    godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.start_node as usize].pos.x, self.transit_network.graph.nodes[edge.start_node as usize].pos.z),
+                    godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.end_node as usize].pos.x, self.transit_network.graph.nodes[edge.end_node as usize].pos.z)
+                ]
+            } else {
+                edge.physical_geometry.iter().map(|v| godot::prelude::Vector2::new(v.x, v.z)).collect()
+            };
+
+            for i in 0..(pts.len() - 1) {
+                let a = pts[i]; let b = pts[i+1];
+                let ab = b - a;
+                let dot = ab.dot(ab);
+                let t = if dot > 0.0 { ((p - a).dot(ab) / dot).clamp(0.0, 1.0) } else { 0.0 };
+                let proj = a + ab * t;
+                let tangent = if dot > 0.0 { ab.normalized() } else { godot::prelude::Vector2::new(1.0, 0.0) };
+                let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x);
+                let p1 = proj + normal * hw;
+                let p2 = proj - normal * hw;
+                
+                let (e_proj, side_normal) = if (p - p1).length_squared() < (p - p2).length_squared() { (p1, normal) } else { (p2, -normal) };
+                let dist = (e_proj - p).length_squared();
+                if dist < best_dist {
+                    best_dist = dist; best_i = i; best_t = t; best_side = e_proj; best_normal = side_normal;
+                }
+            }
+            (best_i, best_t, best_side, best_normal)
+        };
+
+        let (mut i1, t1, e1, n1) = get_proj(start_p);
+        let (mut i2, t2, e2, _) = get_proj(end_p);
+        
+        let mut reverse = false;
+        if i1 > i2 || (i1 == i2 && t1 > t2) {
+            std::mem::swap(&mut i1, &mut i2);
+            reverse = true;
+        }
+
+        let pts: Vec<godot::prelude::Vector2> = if edge.physical_geometry.is_empty() {
+            vec![
+                godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.start_node as usize].pos.x, self.transit_network.graph.nodes[edge.start_node as usize].pos.z),
+                godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.end_node as usize].pos.x, self.transit_network.graph.nodes[edge.end_node as usize].pos.z)
+            ]
+        } else {
+            edge.physical_geometry.iter().map(|v| godot::prelude::Vector2::new(v.x, v.z)).collect()
+        };
+
+        arr.push(if reverse { e2 } else { e1 });
+        
+        for idx in (i1 + 1)..=i2 {
+            let a = pts[idx-1]; let b = pts[idx];
+            let ab = b - a;
+            let tangent = if ab.dot(ab) > 0.0 { ab.normalized() } else { godot::prelude::Vector2::new(1.0, 0.0) };
+            let mut normal = godot::prelude::Vector2::new(-tangent.y, tangent.x);
+            if normal.dot(n1) < 0.0 { normal = -normal; } // Keep side consistent!
+            arr.push(pts[idx] + normal * hw);
+        }
+        
+        arr.push(if reverse { e1 } else { e2 });
+
+        if reverse {
+            let mut rev_arr = PackedVector2Array::new();
+            let slice = arr.as_slice();
+            for i in (0..slice.len()).rev() { 
+                rev_arr.push(godot::prelude::Vector2::new(slice[i].x, slice[i].y)); 
+            }
+            return rev_arr;
+        }
+        
+        arr
+    }
+
+    #[func]
+    pub fn get_zoning_frontage_points(&self) -> PackedVector2Array {
+        let mut arr = PackedVector2Array::new();
+        for poly in &self.zoning.polygons {
+            if poly.vertices.len() >= 2 && poly.frontage_pts > 0 {
+                arr.push(poly.vertices[0]);
+                arr.push(poly.vertices[poly.frontage_pts - 1]);
             }
         }
+        arr
+    }
+
+    #[func]
+    pub fn get_zoning_polygon_ids(&self) -> godot::prelude::PackedInt32Array {
+        let mut arr = godot::prelude::PackedInt32Array::new();
+        for poly in &self.zoning.polygons {
+            if poly.vertices.len() >= 2 && poly.frontage_pts > 0 {
+                arr.push(poly.id as i32);
+            }
+        }
+        arr
+    }
+
+    #[func]
+    pub fn get_polygon_properties(&self, poly_id: i32) -> godot::prelude::Vector2 {
+        self.zoning.polygons.iter().find(|p| p.id == poly_id as u32)
+            .map(|p| godot::prelude::Vector2::new(p.edge_idx as f32, p.depth_amt))
+            .unwrap_or(godot::prelude::Vector2::new(-1.0, 0.0))
+    }
+
+    #[func]
+    pub fn update_zoning_polygon(&mut self, poly_id: i32, vertices: PackedVector2Array, frontage_pts: i32) {
+        let mut verts = Vec::new();
+        for v in vertices.as_slice() {
+            verts.push(godot::prelude::Vector2::new(v.x, v.y));
+        }
+        self.zoning.update_polygon(poly_id as u32, verts, frontage_pts as usize);
         self.allocator.dirty = true;
     }
 
     #[func]
-    pub fn get_zoning_frontages(&self) -> PackedVector2Array {
-        let mut arr = PackedVector2Array::new();
-        for poly in &self.zoning.polygons {
-            if poly.vertices.len() >= 2 {
-                arr.push(poly.vertices[0]);
-                arr.push(poly.vertices[1]);
-            }
-        }
-        arr
+    pub fn delete_zoning_polygon(&mut self, poly_id: i32) {
+        self.zoning.remove_polygon(poly_id as u32);
+        self.allocator.dirty = true;
     }
 
     #[func]

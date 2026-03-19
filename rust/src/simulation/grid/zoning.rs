@@ -13,10 +13,12 @@ pub enum ZoneType {
 #[derive(Clone, Debug)]
 pub struct ZoningPolygon {
     pub id: u32,
+    pub version: u32,
     pub edge_idx: usize,
     pub zone_type: ZoneType,
     pub vertices: Vec<Vector2>,
-    pub facing_dir: Vector2,
+    pub depth_amt: f32,
+    pub frontage_pts: usize,
 }
 
 pub struct ZoningSystem {
@@ -37,15 +39,29 @@ impl ZoningSystem {
         self.next_id = 1;
     }
 
-    pub fn add_polygon(&mut self, edge_idx: usize, zone_type: ZoneType, vertices: Vec<Vector2>, facing_dir: Vector2) {
+    pub fn add_polygon(&mut self, edge_idx: usize, zone_type: ZoneType, vertices: Vec<Vector2>, depth_amt: f32, frontage_pts: usize) {
         self.polygons.push(ZoningPolygon {
             id: self.next_id,
+            version: 0,
             edge_idx,
             zone_type,
             vertices,
-            facing_dir,
+            depth_amt,
+            frontage_pts,
         });
         self.next_id += 1;
+    }
+
+    pub fn update_polygon(&mut self, id: u32, vertices: Vec<Vector2>, frontage_pts: usize) {
+        if let Some(poly) = self.polygons.iter_mut().find(|p| p.id == id) {
+            poly.version += 1;
+            poly.vertices = vertices;
+            poly.frontage_pts = frontage_pts;
+        }
+    }
+
+    pub fn remove_polygon(&mut self, id: u32) {
+        self.polygons.retain(|p| p.id != id);
     }
 
     pub fn get_render_data(&self) -> PackedFloat32Array {

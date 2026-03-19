@@ -132,15 +132,13 @@ func update_terrain_visuals():
 					var st = SurfaceTool.new()
 					st.begin(Mesh.PRIMITIVE_TRIANGLES)
 					
-					var offset = Vector2((size.x - 1.0) * 0.5, (size.y - 1.0) * 0.5)
 					var indices = Geometry2D.triangulate_polygon(verts)
 					if indices.size() > 0:
 						for idx in indices:
 							var v = verts[idx]
-							var g = v - offset
 							# Floating absolutely identically just slightly over the grass mapping natively!
 							var y = simulation_node.get_height_at(v) + 0.17 
-							st.add_vertex(Vector3(g.x, y, g.y))
+							st.add_vertex(Vector3(v.x, y, v.y))
 							
 						st.generate_normals()
 						var mesh_inst = MeshInstance3D.new()
