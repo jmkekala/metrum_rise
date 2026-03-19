@@ -4,6 +4,7 @@ use std::cmp::Ordering;
 pub struct State {
     pub cost: f32,
     pub node: u32,
+    pub incoming_edge: usize,
 }
 
 impl Eq for State {}

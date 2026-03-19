@@ -251,7 +251,7 @@ impl SimulationNode {
                 
                 let current_pos = get_h(Vector3::new(self.agents.pos_x[i], 0.0, self.agents.pos_y[i]));
                 
-                if let Some(path) = self.transit_network.hpa_graph.find_path(curr, target, &self.transit_network.graph) {
+                if let Some(path) = self.transit_network.hpa_graph.find_path(curr, target, usize::MAX, &self.transit_network.graph) {
                     let mut prev_pos = current_pos;
                     for &n in &path {
                         let np = get_h(self.transit_network.graph.nodes[n as usize].pos);
@@ -431,6 +431,7 @@ impl SimulationNode {
                 node.lane_connections.get_mut(&key).unwrap().push(target);
             }
         }
+        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
     }
 
     #[func]
@@ -438,6 +439,7 @@ impl SimulationNode {
         if let Some(node) = self.transit_network.graph.nodes.get_mut(node_id as usize) {
             node.lane_connections.clear();
         }
+        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
     }
 
     #[func]
@@ -515,6 +517,19 @@ impl SimulationNode {
             }
         }
         arr
+    }
+
+    #[func]
+    pub fn clear_lane_source(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
+        if node_id as usize >= self.transit_network.graph.nodes.len() { return; }
+        
+        {
+            let node = &mut self.transit_network.graph.nodes[node_id as usize];
+            let key = (from_edge as usize, from_lane as i8);
+            node.lane_connections.remove(&key);
+        }
+        
+        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
     }
 
     #[func]

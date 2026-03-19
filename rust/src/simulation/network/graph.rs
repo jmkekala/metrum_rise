@@ -9,7 +9,7 @@ pub struct Node {
     #[allow(dead_code)]
     pub node_type: NodeType,
     
-    // TM:PE Lane Constraints: (From Edge, From Lane) -> List of (To Edge, To Lane)
+    // Traffic Lane Manager Constraints: (From Edge, From Lane) -> List of (To Edge, To Lane)
     pub lane_connections: HashMap<(usize, i8), Vec<(usize, i8)>>,
 }
 

@@ -61,9 +61,13 @@ func _input(event):
 				dragging = false
 				drag_line_mesh.mesh = null
 				var target_lane = _get_hovered_lane_sphere()
-				if target_lane != null and not target_lane.is_incoming:
-					simulation_node.set_lane_connection(selected_node, drag_from_edge, drag_from_lane, target_lane.edge_id, target_lane.lane_id)
-					print("Connected Edge ", drag_from_edge, " Lane ", drag_from_lane, " to Edge ", target_lane.edge_id, " Lane ", target_lane.lane_id)
+				if target_lane != null:
+					if target_lane.edge_id == drag_from_edge and target_lane.lane_id == drag_from_lane:
+						simulation_node.clear_lane_source(selected_node, drag_from_edge, drag_from_lane)
+						print("Cleared connections for Edge ", drag_from_edge, " Lane ", drag_from_lane)
+					elif not target_lane.is_incoming:
+						simulation_node.set_lane_connection(selected_node, drag_from_edge, drag_from_lane, target_lane.edge_id, target_lane.lane_id)
+						print("Connected Edge ", drag_from_edge, " Lane ", drag_from_lane, " to Edge ", target_lane.edge_id, " Lane ", target_lane.lane_id)
 					_build_node_visuals(selected_node)
 					
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
@@ -121,22 +125,24 @@ func _build_node_visuals(node_id: int):
 		
 	var connections = simulation_node.get_lane_connections_array(node_id)
 	for conn in connections:
-		var f_e = conn["from_edge"]
-		var f_l = conn["from_lane"]
-		var t_e = conn["to_edge"]
-		var t_l = conn["to_lane"]
+		var f_e = int(conn["from_edge"])
+		var f_l = int(conn["from_lane"])
+		var t_e = int(conn["to_edge"])
+		var t_l = int(conn["to_lane"])
 		
 		var p1 = null
 		var p2 = null
 		for s in lane_spheres:
-			if s.edge_id == f_e and s.lane_id == f_l and s.is_incoming: p1 = s.pos
-			if s.edge_id == t_e and s.lane_id == t_l and not s.is_incoming: p2 = s.pos
+			if int(s.edge_id) == f_e and int(s.lane_id) == f_l and s.is_incoming: p1 = s.pos
+			if int(s.edge_id) == t_e and int(s.lane_id) == t_l and not s.is_incoming: p2 = s.pos
 			
 		if p1 != null and p2 != null:
 			var line_inst = MeshInstance3D.new()
 			add_child(line_inst)
 			_draw_arch(line_inst, p1, p2, Color(1.0, 1.0, 0.0))
 			connection_lines.push_back(line_inst)
+		else:
+			print("Could not find matching spheres! p1: ", str(p1), ", p2: ", str(p2))
 
 func _get_hovered_lane_sphere():
 	var mouse_pos = get_viewport().get_mouse_position()

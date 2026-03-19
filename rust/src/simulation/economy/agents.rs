@@ -34,7 +34,7 @@ pub struct AgentSystem {
     pub edge_progression: Vec<isize>,
     pub current_lane: Vec<i8>,
     
-    // TM:PE Bezier Intersection Pathing
+    // Traffic Lane Manager Bezier Intersection Pathing
     pub bezier_p0_x: Vec<f32>,
     pub bezier_p0_y: Vec<f32>,
     pub bezier_p1_x: Vec<f32>,
@@ -394,7 +394,7 @@ impl AgentSystem {
                     if self.current_node[i] != self.target_node[i] {
                         if self.current_edge[i] == usize::MAX {
                             if self.current_path[i].is_empty() {
-                                if let Some(path) = hpa_graph.find_path(self.current_node[i], self.target_node[i], graph) {
+                                if let Some(path) = hpa_graph.find_path(self.current_node[i], self.target_node[i], usize::MAX, graph) {
                                     self.current_path[i] = path;
                                     self.current_path_index[i] = 0;
                                 }
@@ -499,7 +499,7 @@ impl AgentSystem {
                                         self.transit[i] = 3; // Disembark!
                                         remaining_dist = 0.0;
                                     } else {
-                                        // Entering a TM:PE Intersection! Calculate Dynamic Vector Spline!
+                                        // Entering a Managed Intersection! Calculate Dynamic Vector Spline!
                                         if self.current_path_index[i] < self.current_path[i].len() {
                                             let future_node = self.current_path[i][self.current_path_index[i]];
                                             self.current_path_index[i] += 1; // <--- CRITICAL FIX INTRODUCED HERE
@@ -528,8 +528,17 @@ impl AgentSystem {
                                                     if valids.len() > 0 {
                                                         target_lane = valids[rng.gen_range(0..valids.len())];
                                                     } else {
-                                                        if next_fwd && next_edge.fwd_lanes > 0 { target_lane = rng.gen_range(0..next_edge.fwd_lanes) as i8; }
-                                                        if !next_fwd && next_edge.bkw_lanes > 0 { target_lane = -(rng.gen_range(0..next_edge.bkw_lanes) as i32) as i8 - 1; }
+                                                        println!("TELEPORT E: Agent encountered completely forbidden Traffic Lane Manager turn mid-commute! Recalculating path!");
+                                                        if let Some(path) = hpa_graph.find_path(next_node, self.target_node[i], self.current_edge[i], graph) {
+                                                            self.current_node[i] = next_node;
+                                                            self.current_path[i] = path;
+                                                            self.current_path_index[i] = 0;
+                                                            self.current_edge[i] = usize::MAX;
+                                                            self.transit[i] = 2; // Route found! Continue driving smoothly!
+                                                        } else {
+                                                            self.transit[i] = 10; // Stranded
+                                                        }
+                                                        continue;
                                                     }
                                                 } else {
                                                     if next_fwd && next_edge.fwd_lanes > 0 { target_lane = rng.gen_range(0..next_edge.fwd_lanes) as i8; }
@@ -549,27 +558,39 @@ impl AgentSystem {
                                                     }
                                                 };
                                                 
-                                                let h_len = 8.0; // Bezier Control Vector Magnitude
-                                                self.bezier_p1_x[i] = self.pos_x[i] + exit_tangent.x * h_len;
-                                                self.bezier_p1_y[i] = self.pos_y[i] + exit_tangent.y * h_len;
-                                                
                                                 let e_geom = if next_fwd { next_edge.physical_geometry[0] } else { next_edge.physical_geometry[next_edge.physical_geometry.len() - 1] };
-                                                let entry_tangent = if next_fwd {
-                                                    godot::prelude::Vector2::new(next_edge.physical_geometry[1].x - next_edge.physical_geometry[0].x, next_edge.physical_geometry[1].z - next_edge.physical_geometry[0].z).normalized()
-                                                } else {
+                                                
+                                                let raw_tangent = {
                                                     let l = next_edge.physical_geometry.len();
-                                                    godot::prelude::Vector2::new(next_edge.physical_geometry[l-2].x - next_edge.physical_geometry[l-1].x, next_edge.physical_geometry[l-2].z - next_edge.physical_geometry[l-1].z).normalized()
+                                                    if next_fwd {
+                                                        godot::prelude::Vector2::new(next_edge.physical_geometry[1].x - next_edge.physical_geometry[0].x, next_edge.physical_geometry[1].z - next_edge.physical_geometry[0].z).normalized()
+                                                    } else {
+                                                        godot::prelude::Vector2::new(next_edge.physical_geometry[l-1].x - next_edge.physical_geometry[l-2].x, next_edge.physical_geometry[l-1].z - next_edge.physical_geometry[l-2].z).normalized()
+                                                    }
                                                 };
                                                 
-                                                let entry_normal = godot::prelude::Vector2::new(-entry_tangent.y, entry_tangent.x);
-                                                let e_off = (target_lane as f32 + 0.5) * 3.0; // Works universally for fwd >=0, bkw <0
+                                                let entry_normal = godot::prelude::Vector2::new(-raw_tangent.y, raw_tangent.x);
+                                                let e_off = if target_lane >= 0 {
+                                                    (target_lane as f32 + 0.5) * 3.0 // Forward (Right)
+                                                } else {
+                                                    (target_lane as f32 + 0.5) * 3.0 // Backward (Left)
+                                                };
                                                 
                                                 let p3_x = e_geom.x + entry_normal.x * e_off;
                                                 let p3_y = e_geom.z + entry_normal.y * e_off;
                                                 self.bezier_p3_x[i] = p3_x;
                                                 self.bezier_p3_y[i] = p3_y;
-                                                self.bezier_p2_x[i] = p3_x - entry_tangent.x * h_len;
-                                                self.bezier_p2_y[i] = p3_y - entry_tangent.y * h_len;
+                                                
+                                                let p0_vec = godot::prelude::Vector2::new(self.bezier_p0_x[i], self.bezier_p0_y[i]);
+                                                let p3_vec = godot::prelude::Vector2::new(p3_x, p3_y);
+                                                let h_len = (p0_vec.distance_to(p3_vec) * 0.4).clamp(1.0, 10.0);
+                                                
+                                                self.bezier_p1_x[i] = self.pos_x[i] + exit_tangent.x * h_len;
+                                                self.bezier_p1_y[i] = self.pos_y[i] + exit_tangent.y * h_len;
+                                                
+                                                let move_dir = if next_fwd { raw_tangent } else { -raw_tangent };
+                                                self.bezier_p2_x[i] = p3_x - move_dir.x * h_len;
+                                                self.bezier_p2_y[i] = p3_y - move_dir.y * h_len;
                                                 
                                                 // 3. Initiate Spline Driving
                                                 self.bezier_t[i] = 0.0;
