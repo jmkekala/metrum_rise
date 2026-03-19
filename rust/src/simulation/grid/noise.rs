@@ -24,14 +24,16 @@ impl NoiseSystem {
 
         // 1. Emission (Only built structures emit noise, not empty paint)
         for b in &allocator.buildings {
-            if b.zone_type == ZoneType::Commercial || b.zone_type == ZoneType::Mixed {
-                if let Some(val) = new_grid.get_mut(b.x, b.y) {
-                    *val += 50.0; 
+            let cx = b.center_x.round() as usize;
+            let cy = b.center_y.round() as usize;
+            if b.zone_type == ZoneType::Commercial {
+                if let Some(val) = new_grid.get_mut(cx, cy) {
+                    *val = (*val + 30.0).min(100.0);
                 }
-            } else if b.zone_type == ZoneType::Industrial {
-                // Industrial buildings are very loud
-                if let Some(val) = new_grid.get_mut(b.x, b.y) {
-                    *val += 100.0; 
+            }
+            if b.zone_type == ZoneType::Industrial {
+                if let Some(val) = new_grid.get_mut(cx, cy) {
+                    *val = (*val + 80.0).min(100.0);
                 }
             }
         }

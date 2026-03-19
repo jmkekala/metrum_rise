@@ -20,7 +20,7 @@ func setup_multimesh(zone_id: int, color: Color):
 	mm.instance_count = 0
 	
 	var mesh = BoxMesh.new()
-	mesh.size = Vector3(8.0, 10.0, 8.0) # Placeholder building constraints
+	mesh.size = Vector3(1.0, 10.0, 1.0) # 1x1m base natively scales perfectly against the structural rust scale bounds!
 	
 	var mat = StandardMaterial3D.new()
 	mat.albedo_color = color

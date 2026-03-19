@@ -7,8 +7,17 @@ var height_image: Image
 var zoning_texture: ImageTexture
 var zoning_image: Image
 
+var parcel_texture: ImageTexture
+var parcel_image: Image
+
 var overlay_mode: int = 0 # 0=Zoning, 1=Pollution, 2=Noise, 3=Desirability
+var show_global_zoning: bool = false
 var sim_speed: float = 0.0
+
+var cached_polygon_data_size: int = -1
+var cached_overlay_state: bool = false
+var cached_overlay_mode: int = -1
+var polygon_meshes: Array[MeshInstance3D] = []
 
 func _ready():
 	var size = simulation_node.get_heightmap_size()
@@ -30,10 +39,14 @@ func _ready():
 	zoning_image = Image.create(w, h, false, Image.FORMAT_RGBA8)
 	zoning_texture = ImageTexture.create_from_image(zoning_image)
 	
+	parcel_image = Image.create(w, h, false, Image.FORMAT_RGBAF)
+	parcel_texture = ImageTexture.create_from_image(parcel_image)
+	
 	var material = ShaderMaterial.new()
 	material.shader = load("res://assets/materials/terrain.gdshader")
 	material.set_shader_parameter("heightmap", texture)
 	material.set_shader_parameter("zoning_texture", zoning_texture)
+	material.set_shader_parameter("parcel_texture", parcel_texture)
 	material.set_shader_parameter("height_scale", 20.0)
 	material.set_shader_parameter("mesh_size", size)
 	self.material_override = material
@@ -41,17 +54,25 @@ func _ready():
 func _process(delta):
 	update_terrain_visuals()
 	handle_input(delta)
+	
+	var material = self.material_override as ShaderMaterial
+	if material != null:
+		material.set_shader_parameter("show_global_zoning", show_global_zoning)
 
 func _unhandled_input(event):
 	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_Z and event.ctrl_pressed:
-			if simulation_node.undo_action():
-				print("Undo Executed Succesfully!")
-				# Force all godot visual pipelines to reload from the freshly reverted memory cache
-				update_terrain_visuals()
-				var road_tool = get_node("../RoadTool")
-				if road_tool:
-					road_tool.update_main_mesh()
+		if event.keycode == KEY_Z:
+			if event.ctrl_pressed:
+				if simulation_node.undo_action():
+					print("Undo Executed Succesfully!")
+					# Force all godot visual pipelines to reload from the freshly reverted memory cache
+					update_terrain_visuals()
+					var road_tool = get_node("../RoadTool")
+					if road_tool:
+						road_tool.update_main_mesh()
+			else:
+				show_global_zoning = not show_global_zoning
+				print("Global zoning visibility: ", show_global_zoning)
 
 func update_terrain_visuals():
 	var data = simulation_node.get_heightmap_data()
@@ -64,9 +85,13 @@ func update_terrain_visuals():
 	texture.update(height_image)
 	
 	# Update Zoning / Overlay Mode
+	var material = self.material_override as ShaderMaterial
+	if material != null:
+		material.set_shader_parameter("overlay_mode", overlay_mode)
+		
 	var zone_bytes: PackedByteArray
 	if overlay_mode == 0:
-		zone_bytes = simulation_node.get_zoning_image_data()
+		pass # Painted zones transitioned to purely native geometric objects
 	elif overlay_mode == 1:
 		zone_bytes = simulation_node.get_pollution_image_data()
 	elif overlay_mode == 2:
@@ -74,18 +99,67 @@ func update_terrain_visuals():
 	elif overlay_mode == 3:
 		zone_bytes = simulation_node.get_desirability_image_data()
 		
-	zoning_image.set_data(int(size.x), int(size.y), false, Image.FORMAT_RGBA8, zone_bytes)
-	zoning_texture.update(zoning_image)
+	if zone_bytes.size() > 0:
+		zoning_image.set_data(int(size.x), int(size.y), false, Image.FORMAT_RGBA8, zone_bytes)
+		zoning_texture.update(zoning_image)
+
+	# Dynamic Vector Polygon Extrusion System!
+	var poly_data = simulation_node.get_zoning_polygons_data()
 	
-	if Engine.get_frames_drawn() % 120 == 0:
-		# Sample a random byte to verify Rust is actually sending non-zero arrays when painted
-		var has_pixels = false
-		for i in range(0, min(10000, zone_bytes.size()), 400):
-			if zone_bytes[i+3] > 0: # Check Alpha
-				has_pixels = true
-				break
-		if has_pixels:
-			print("Overlay Array (Mode ", overlay_mode, ") contains non-zero alpha data.")
+	if poly_data.size() != cached_polygon_data_size or show_global_zoning != cached_overlay_state or overlay_mode != cached_overlay_mode:
+		cached_polygon_data_size = poly_data.size()
+		cached_overlay_state = show_global_zoning
+		cached_overlay_mode = overlay_mode
+		
+		# Clear existing geometry
+		for m in polygon_meshes:
+			m.queue_free()
+		polygon_meshes.clear()
+		
+		if show_global_zoning and overlay_mode == 0:
+			var i = 0
+			while i < poly_data.size():
+				var num_verts = int(poly_data[i])
+				var zone_type = int(poly_data[i+1])
+				i += 2
+				
+				var verts: Array[Vector2] = []
+				for v_idx in range(num_verts):
+					verts.append(Vector2(poly_data[i], poly_data[i+1]))
+					i += 2
+					
+				if verts.size() >= 3:
+					var st = SurfaceTool.new()
+					st.begin(Mesh.PRIMITIVE_TRIANGLES)
+					
+					var offset = Vector2((size.x - 1.0) * 0.5, (size.y - 1.0) * 0.5)
+					var indices = Geometry2D.triangulate_polygon(verts)
+					if indices.size() > 0:
+						for idx in indices:
+							var v = verts[idx]
+							var g = v - offset
+							# Floating absolutely identically just slightly over the grass mapping natively!
+							var y = simulation_node.get_height_at(v) + 0.17 
+							st.add_vertex(Vector3(g.x, y, g.y))
+							
+						st.generate_normals()
+						var mesh_inst = MeshInstance3D.new()
+						mesh_inst.mesh = st.commit()
+						
+						var color = Color(0,0,0)
+						if zone_type == 1: color = Color(0.13, 0.77, 0.36, 0.4) # Green
+						elif zone_type == 2: color = Color(0.23, 0.51, 0.96, 0.4) # Blue
+						elif zone_type == 3: color = Color(0.9, 0.7, 0.03, 0.4) # Yellow
+						elif zone_type == 4: color = Color(0.65, 0.33, 0.96, 0.4) # Purple
+						
+						var mat = StandardMaterial3D.new()
+						mat.albedo_color = color
+						mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+						mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+						mesh_inst.material_override = mat
+						
+						add_child(mesh_inst)
+						polygon_meshes.append(mesh_inst)
 
 func handle_input(delta):
 	if Input.is_key_pressed(KEY_7): overlay_mode = 0

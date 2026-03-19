@@ -22,7 +22,9 @@ impl PollutionSystem {
         // 1. Emission (Only Buildings emit smog, empty Zones do not!)
         for b in &allocator.buildings {
             if b.zone_type == ZoneType::Industrial {
-                if let Some(val) = new_grid.get_mut(b.x, b.y) {
+                let cx = b.center_x.round() as usize;
+                let cy = b.center_y.round() as usize;
+                if let Some(val) = new_grid.get_mut(cx, cy) {
                     *val += 100.0; // Vastly increased to compensate for per-building vs per-zone
                 }
             }

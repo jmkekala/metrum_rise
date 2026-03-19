@@ -158,21 +158,100 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn paint_zone(&mut self, pos: Vector2, radius: f32, zone_type_int: u8) {
+    pub fn add_zoning_polygon(&mut self, edge_idx: i32, zone_type_int: u8, vertices: PackedVector2Array, facing_x: f32, facing_y: f32) {
         let zone_type = match zone_type_int {
-            1 => ZoneType::Residential,
-            2 => ZoneType::Commercial,
-            3 => ZoneType::Industrial,
-            4 => ZoneType::Mixed,
-            _ => ZoneType::None,
+            1 => crate::simulation::grid::zoning::ZoneType::Residential,
+            2 => crate::simulation::grid::zoning::ZoneType::Commercial,
+            3 => crate::simulation::grid::zoning::ZoneType::Industrial,
+            4 => crate::simulation::grid::zoning::ZoneType::Mixed,
+            _ => crate::simulation::grid::zoning::ZoneType::None,
         };
         
-        self.zoning.paint_zone(pos.x, pos.y, radius, zone_type);
+        let mut verts = Vec::new();
+        for v in vertices.as_slice() {
+            verts.push(godot::prelude::Vector2::new(v.x, v.y));
+        }
+        
+        self.zoning.add_polygon(edge_idx as usize, zone_type, verts, godot::prelude::Vector2::new(facing_x, facing_y));
+        self.allocator.dirty = true;
     }
 
     #[func]
-    pub fn get_zoning_image_data(&self) -> PackedByteArray {
-        self.zoning.generate_image_data()
+    pub fn get_zoning_polygons_data(&self) -> PackedFloat32Array {
+        self.zoning.get_render_data()
+    }
+
+    #[func]
+    pub fn get_hovered_edge(&self, world_x: f32, world_z: f32) -> i32 {
+        let pos = godot::prelude::Vector3::new(world_x, 0.0, world_z);
+        let mut best_dist = f32::MAX;
+        let mut best_edge = -1;
+        
+        for (i, edge) in self.transit_network.graph.edges.iter().enumerate() {
+            let pts = &edge.physical_geometry;
+            if pts.len() < 2 { continue; }
+            for j in 0..pts.len() - 1 {
+                let p1 = pts[j];
+                let p2 = pts[j+1];
+                let p1_2d = godot::prelude::Vector2::new(p1.x, p1.z);
+                let p2_2d = godot::prelude::Vector2::new(p2.x, p2.z);
+                let mouse_2d = godot::prelude::Vector2::new(pos.x, pos.z);
+                
+                let l2 = (p2_2d - p1_2d).length_squared();
+                let dist_sq;
+                if l2 == 0.0 {
+                    dist_sq = (mouse_2d - p1_2d).length_squared();
+                } else {
+                    let t = ((mouse_2d.x - p1_2d.x) * (p2_2d.x - p1_2d.x) + (mouse_2d.y - p1_2d.y) * (p2_2d.y - p1_2d.y)) / l2;
+                    let t = t.clamp(0.0, 1.0);
+                    let proj = godot::prelude::Vector2::new(p1_2d.x + t * (p2_2d.x - p1_2d.x), p1_2d.y + t * (p2_2d.y - p1_2d.y));
+                    dist_sq = (mouse_2d - proj).length_squared();
+                }
+                
+                if dist_sq < best_dist {
+                    best_dist = dist_sq;
+                    best_edge = i as i32;
+                }
+            }
+        }
+        
+        // Return if mouse is near the road, or within the 64 meters bounding limit
+        if best_dist <= (64.0 * 64.0) { 
+            best_edge
+        } else {
+            -1
+        }
+    }
+
+    #[func]
+    pub fn get_max_polygon_depth(&self, origin_x: f32, origin_z: f32, dir_x: f32, dir_z: f32, max_search: f32) -> f32 {
+        let o = godot::prelude::Vector2::new(origin_x, origin_z);
+        let d = godot::prelude::Vector2::new(dir_x, dir_z).normalized();
+        
+        let mut min_t = max_search;
+        
+        for edge in &self.transit_network.graph.edges {
+            let pts = &edge.physical_geometry;
+            if pts.len() < 2 { continue; }
+            for i in 0..pts.len() - 1 {
+                let p1 = godot::prelude::Vector2::new(pts[i].x, pts[i].z);
+                let p2 = godot::prelude::Vector2::new(pts[i+1].x, pts[i+1].z);
+                
+                let v = p2 - p1;
+                let det = d.x * v.y - d.y * v.x;
+                if det.abs() > 0.001 {
+                    let diff = p1 - o;
+                    let t = (diff.x * v.y - diff.y * v.x) / det;
+                    let u = (diff.x * d.y - diff.y * d.x) / det;
+                    
+                    if u >= 0.0 && u <= 1.0 && t > 0.1 && t < min_t {
+                        min_t = t;
+                    }
+                }
+            }
+        }
+        
+        min_t
     }
 
     #[func]
@@ -326,39 +405,92 @@ impl SimulationNode {
         for b in &self.allocator.buildings {
             if b.zone_type == target_zone {
                 // Determine 3D world position
-                let world_x = b.x as f32 - hw;
-                let world_z = b.y as f32 - hh;
+                let world_x = b.center_x - hw;
+                let world_z = b.center_y - hh;
                 
-                // Get terrain height at this exact point (assuming 20.0 terrain scale modifier)
-                let world_y = self.heightmap.get_height(b.x, b.y) * 20.0;
+                // Godot's height algorithm uses integer cell vertices, grab precisely below
+                let world_y = self.heightmap.get_height(b.center_x.round() as usize, b.center_y.round() as usize) * 20.0;
 
-                // For rotation, we can construct 3 basis vectors (Euler Y rotation)
-                let rad = (b.rotation_seed as f32).to_radians();
-                let cos_r = rad.cos();
-                let sin_r = rad.sin();
+                // Native structural Basis extraction matching mathematical explicit Vectors identically avoiding Euler rotation inversions
+                let fd = b.facing_dir.normalized();
+                let b_zx = -fd.x;
+                let b_zz = -fd.y;
+                let b_xx = -fd.y;
+                let b_xz = fd.x;
 
-                // Godot MultiMesh Float Buffer Format (12 floats per transform, transposed)
-                // Basis X axis: (cos, 0, -sin)
-                buffer.push(cos_r);
+                // Deterministic property heights scaled pseudo-randomly for visual cityscape diversity explicitly!
+                let hash = ((b.center_x * 1000.0) as u32).wrapping_mul(12345).wrapping_add((b.center_y * 1000.0) as u32).wrapping_mul(67890);
+                let height_scalar = 0.5 + (hash % 100) as f32 / 40.0; // Dynamic scale 0.5x to 3.0x visually
+
+                // Scale matrix structurally inset by 5% to securely enforce physical gaps spanning diagonal grids securely preventing visual clipping!
+                let sx = b.width as f32 * 0.95;
+                let sy = height_scalar;
+                let sz = b.depth as f32 * 0.95;
+
+                // Godot MultiMesh Float Buffer Format (12 floats per transform, ROW MAJOR memory!)
+                // Row 0: [Basis.X.x, Basis.Y.x, Basis.Z.x, Origin.x]
+                buffer.push(b_xx * sx);
                 buffer.push(0.0);
-                buffer.push(-sin_r);
+                buffer.push(b_zx * sz);
                 buffer.push(world_x);
 
-                // Basis Y axis: (0, 1, 0)
+                // Row 1: [Basis.X.y, Basis.Y.y, Basis.Z.y, Origin.y]
                 buffer.push(0.0);
-                buffer.push(1.0);
+                buffer.push(sy);
                 buffer.push(0.0);
-                buffer.push(world_y);
+                buffer.push(world_y + (10.0 * sy) / 2.0); // Elevated identically spanning bounding
 
-                // Basis Z axis: (sin, 0, cos)
-                buffer.push(sin_r);
+                // Row 2: [Basis.X.z, Basis.Y.z, Basis.Z.z, Origin.z]
+                buffer.push(b_xz * sx);
                 buffer.push(0.0);
-                buffer.push(cos_r);
+                buffer.push(b_zz * sz);
                 buffer.push(world_z);
             }
         }
 
         PackedFloat32Array::from_iter(buffer)
+    }
+
+    #[func]
+    pub fn get_zoning_polygon_ids(&self) -> PackedInt32Array {
+        let mut arr = PackedInt32Array::new();
+        for poly in &self.zoning.polygons {
+            arr.push(poly.id as i32);
+        }
+        arr
+    }
+
+    #[func]
+    pub fn get_zoning_polygon_vertices(&self, poly_id: i32) -> PackedVector2Array {
+        let mut arr = PackedVector2Array::new();
+        if let Some(poly) = self.zoning.polygons.iter().find(|p| p.id == poly_id as u32) {
+            for v in &poly.vertices {
+                arr.push(*v);
+            }
+        }
+        arr
+    }
+
+    #[func]
+    pub fn update_zoning_polygon_vertex(&mut self, poly_id: i32, vertex_idx: i32, new_x: f32, new_y: f32) {
+        if let Some(poly) = self.zoning.polygons.iter_mut().find(|p| p.id == poly_id as u32) {
+            if vertex_idx >= 0 && (vertex_idx as usize) < poly.vertices.len() {
+                poly.vertices[vertex_idx as usize] = godot::prelude::Vector2::new(new_x, new_y);
+            }
+        }
+        self.allocator.dirty = true;
+    }
+
+    #[func]
+    pub fn get_zoning_frontages(&self) -> PackedVector2Array {
+        let mut arr = PackedVector2Array::new();
+        for poly in &self.zoning.polygons {
+            if poly.vertices.len() >= 2 {
+                arr.push(poly.vertices[0]);
+                arr.push(poly.vertices[1]);
+            }
+        }
+        arr
     }
 
     #[func]
@@ -380,7 +512,6 @@ impl SimulationNode {
         }
 
         self.transit_network.add_road(fixed_points, fwd_lanes as u8, bkw_lanes as u8);
-        self.zoning.update_validity_mask(&self.transit_network.graph, 40.0);
 
         let nodes = self.transit_network.graph.nodes.len();
         let edges = self.transit_network.graph.edges.len();
@@ -632,7 +763,7 @@ impl INode3D for SimulationNode {
             heightmap: TerrainSystem::new(w, h),
             watermap: WaterSystem::new(w, h),
             transit_network: TransitNetwork::new(),
-            zoning: ZoningSystem::new(w, h),
+            zoning: ZoningSystem::new(),
             pollution: PollutionSystem::new(w, h),
             noise: NoiseSystem::new(w, h),
             desirability: DesirabilitySystem::new(w, h),

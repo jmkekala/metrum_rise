@@ -20,13 +20,8 @@ impl DesirabilitySystem {
 
         for y in 0..h {
             for x in 0..w {
-                let mut land_value = 0.0_f32;
-                
-                if let Some(valid) = zoning.validity_mask.get(x, y) {
-                    if *valid {
-                        land_value += 50.0; // Base value for being near a road
-                    }
-                }
+                let mut land_value = 50.0_f32; // Default base value for all tiles natively since physical integer proximity matrices are removed
+
 
                 let pol = *pollution.grid.get(x, y).unwrap_or(&0.0);
                 let nse = *noise.grid.get(x, y).unwrap_or(&0.0);

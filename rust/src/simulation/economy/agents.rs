@@ -208,15 +208,42 @@ impl AgentSystem {
     pub fn tick(&mut self, allocator: &BuildingAllocator, hpa_graph: &HpaGraph, graph: &TransitGraph, delta: f32) {
         let mut rng = rand::thread_rng();
         
-        let w = allocator.occupancy_grid.width as f32;
-        let h = allocator.occupancy_grid.height as f32;
+        let w = crate::config::MAP_WIDTH as f32;
+        let h = crate::config::MAP_HEIGHT as f32;
         
         let get_bldg_pos = |b_id: usize| -> godot::prelude::Vector2 {
             let b = &allocator.buildings[b_id];
-            let bx = b.x as f32 - (w - 1.0) * 0.5;
-            let bz = b.y as f32 - (h - 1.0) * 0.5;
+            // Recover absolute 2D Frontage Sidewalk point explicitly reversing the plot internal offsets!
+            let front_x = b.center_x + b.facing_dir.x * (b.depth as f32 / 2.0);
+            let front_y = b.center_y + b.facing_dir.y * (b.depth as f32 / 2.0);
+            let bx = front_x - (w - 1.0) * 0.5;
+            let bz = front_y - (h - 1.0) * 0.5;
             godot::prelude::Vector2::new(bx, bz)
         };
+
+        macro_rules! eject_onto_street {
+            ($self:expr, $i:expr, $p:expr) => {
+                let curr = $self.current_building[$i];
+                if curr != usize::MAX {
+                    let b = &allocator.buildings[curr];
+                    $self.transit[$i] = 6;
+                    $self.current_edge[$i] = b.road_edge;
+                    let edge = &graph.edges[b.road_edge];
+                    let mut best_dist = std::f32::MAX;
+                    let mut best_idx = 0;
+                    for (idx, pt) in edge.physical_geometry.iter().enumerate() {
+                        let dist = (pt.x - $p.x).powi(2) + (pt.z - $p.y).powi(2);
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_idx = idx as isize;
+                        }
+                    }
+                    $self.edge_progression[$i] = best_idx;
+                } else {
+                    $self.transit[$i] = 1; // Stranded agents still use standard linear wandering!
+                }
+            }
+        }
 
         // Massive Data-Oriented Swarm Iteration
         for i in 0..self.count {
@@ -246,13 +273,13 @@ impl AgentSystem {
                                 self.target_building[i] = self.work_building[i];
                                 self.target_node[i] = allocator.buildings[self.work_building[i]].road_node;
                                 self.activity[i] = 1; // Heading to Work
-                                self.transit[i] = 1; // To Road
                                 self.is_visible[i] = true;
                                 self.current_path[i].clear();
                                 self.current_path_index[i] = 0;
                                 let p = get_bldg_pos(self.current_building[i]);
                                 self.pos_x[i] = p.x;
                                 self.pos_y[i] = p.y;
+                                eject_onto_street!(self, i, p);
                             }
                         } else if self.money[i] >= 20.0 && rng.gen_bool((0.08 * delta) as f64) {
                             // Find a random Shop! (Go shopping more often than working!)
@@ -266,13 +293,13 @@ impl AgentSystem {
                                 self.target_building[i] = shop_id;
                                 self.target_node[i] = allocator.buildings[shop_id].road_node;
                                 self.activity[i] = 2; // Heading to Shop
-                                self.transit[i] = 1; // To Road
                                 self.is_visible[i] = true;
                                 self.current_path[i].clear();
                                 self.current_path_index[i] = 0;
                                 let p = get_bldg_pos(self.current_building[i]);
                                 self.pos_x[i] = p.x;
                                 self.pos_y[i] = p.y;
+                                eject_onto_street!(self, i, p);
                             }
                         }
                     } else if self.activity[i] == 1 { // At Work
@@ -290,13 +317,13 @@ impl AgentSystem {
                                     self.target_building[i] = shop_id;
                                     self.target_node[i] = allocator.buildings[shop_id].road_node;
                                     self.activity[i] = 2; // Heading to Shop
-                                    self.transit[i] = 1; // To Road
                                     self.is_visible[i] = true;
                                     self.current_path[i].clear();
                                     self.current_path_index[i] = 0;
                                     let p = get_bldg_pos(self.current_building[i]);
                                     self.pos_x[i] = p.x;
                                     self.pos_y[i] = p.y;
+                                    eject_onto_street!(self, i, p);
                                     continue; // Skip the default go-home behavior below!
                                 }
                             }
@@ -311,13 +338,13 @@ impl AgentSystem {
                                 self.target_building[i] = usize::MAX;
                                 self.activity[i] = 0; 
                             }
-                            self.transit[i] = 1; // To Road
                             self.is_visible[i] = true;
                             self.current_path[i].clear();
                             self.current_path_index[i] = 0;
                             let p = get_bldg_pos(self.current_building[i]);
                             self.pos_x[i] = p.x;
                             self.pos_y[i] = p.y;
+                            eject_onto_street!(self, i, p);
                         }
                     } else if self.activity[i] == 2 { // At Shop
                         if rng.gen_bool((0.15 * delta) as f64) { // Done shopping (faster than working)
@@ -333,13 +360,13 @@ impl AgentSystem {
                                     self.target_building[i] = shop_id;
                                     self.target_node[i] = allocator.buildings[shop_id].road_node;
                                     self.activity[i] = 2; // Heading to another Shop
-                                    self.transit[i] = 1; // To Road
                                     self.is_visible[i] = true;
                                     self.current_path[i].clear();
                                     self.current_path_index[i] = 0;
                                     let p = get_bldg_pos(self.current_building[i]);
                                     self.pos_x[i] = p.x;
                                     self.pos_y[i] = p.y;
+                                    eject_onto_street!(self, i, p);
                                     continue; // Skip going home!
                                 }
                             }
@@ -354,13 +381,13 @@ impl AgentSystem {
                                 self.target_building[i] = usize::MAX;
                                 self.activity[i] = 0; 
                             }
-                            self.transit[i] = 1; // To Road
                             self.is_visible[i] = true;
                             self.current_path[i].clear();
                             self.current_path_index[i] = 0;
                             let p = get_bldg_pos(self.current_building[i]);
                             self.pos_x[i] = p.x;
                             self.pos_y[i] = p.y;
+                            eject_onto_street!(self, i, p);
                         }
                     }
                 }
@@ -388,6 +415,61 @@ impl AgentSystem {
                         let step = dir.normalized() * step_dist;
                         self.pos_x[i] += step.x;
                         self.pos_y[i] += step.y;
+                    }
+                }
+                6 => { // WALKING ALONG LOCAL EDGE TO ROAD NODE
+                    let b = &allocator.buildings[self.current_building[i]];
+                    let edge_idx = b.road_edge;
+                    
+                    if edge_idx < graph.edges.len() {
+                        let edge = &graph.edges[edge_idx];
+                        let target_node = b.road_node;
+                        
+                        let target_idx = if edge.start_node == target_node {
+                            self.edge_progression[i] - 1
+                        } else {
+                            self.edge_progression[i] + 1
+                        };
+                        
+                        if target_idx >= 0 && target_idx < edge.physical_geometry.len() as isize {
+                            let target_pos = edge.physical_geometry[target_idx as usize];
+                            
+                            let mut t_idx_1 = target_idx as usize;
+                            let mut t_idx_2 = target_idx as usize + 1;
+                            if t_idx_2 >= edge.physical_geometry.len() {
+                                t_idx_1 = target_idx as usize - 1;
+                                t_idx_2 = target_idx as usize;
+                            }
+                            let p1 = edge.physical_geometry[t_idx_1];
+                            let p2 = edge.physical_geometry[t_idx_2];
+                            let tangent = godot::prelude::Vector2::new(p2.x - p1.x, p2.z - p1.z).normalized();
+                            let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x); // Right Hand Normal
+                            
+                            let mut target_vec = godot::prelude::Vector2::new(target_pos.x, target_pos.z);
+                            let lane_offset = if edge.start_node == target_node { -3.0 } else { 3.0 }; // Sidewalk Walkway natively modeled!
+                            target_vec += normal * lane_offset;
+                            
+                            let current_vec = godot::prelude::Vector2::new(self.pos_x[i], self.pos_y[i]);
+                            let dir = target_vec - current_vec;
+                            let dist = dir.length();
+                            let remaining_dist = 6.0 * delta; // Faster walking!
+                            
+                            if dist < remaining_dist {
+                                self.pos_x[i] = target_vec.x;
+                                self.pos_y[i] = target_vec.y;
+                                self.edge_progression[i] = target_idx;
+                            } else {
+                                let step = dir.normalized() * remaining_dist;
+                                self.pos_x[i] += step.x;
+                                self.pos_y[i] += step.y;
+                            }
+                        } else {
+                            self.current_node[i] = target_node;
+                            self.transit[i] = 2; // Step onto the main pathfinding network gracefully!
+                        }
+                    } else {
+                        self.current_node[i] = b.road_node;
+                        self.transit[i] = 2;
                     }
                 }
                 2 | 4 => { // ON ROAD OR IMMIGRATING
@@ -551,21 +633,35 @@ impl AgentSystem {
                                                 
                                                 let exit_tangent = {
                                                     let l = curr_edge.physical_geometry.len();
-                                                    if curr_edge.end_node == next_node {
-                                                        godot::prelude::Vector2::new(curr_edge.physical_geometry[l-1].x - curr_edge.physical_geometry[l-2].x, curr_edge.physical_geometry[l-1].z - curr_edge.physical_geometry[l-2].z).normalized()
+                                                    if l >= 2 {
+                                                        if curr_edge.end_node == next_node {
+                                                            godot::prelude::Vector2::new(curr_edge.physical_geometry[l-1].x - curr_edge.physical_geometry[l-2].x, curr_edge.physical_geometry[l-1].z - curr_edge.physical_geometry[l-2].z).normalized()
+                                                        } else {
+                                                            godot::prelude::Vector2::new(curr_edge.physical_geometry[0].x - curr_edge.physical_geometry[1].x, curr_edge.physical_geometry[0].z - curr_edge.physical_geometry[1].z).normalized()
+                                                        }
                                                     } else {
-                                                        godot::prelude::Vector2::new(curr_edge.physical_geometry[0].x - curr_edge.physical_geometry[1].x, curr_edge.physical_geometry[0].z - curr_edge.physical_geometry[1].z).normalized()
+                                                        godot::prelude::Vector2::new(1.0, 0.0)
                                                     }
                                                 };
                                                 
-                                                let e_geom = if next_fwd { next_edge.physical_geometry[0] } else { next_edge.physical_geometry[next_edge.physical_geometry.len() - 1] };
+                                                let e_geom = if next_edge.physical_geometry.is_empty() {
+                                                    graph.nodes[next_node as usize].pos
+                                                } else if next_fwd { 
+                                                    next_edge.physical_geometry[0] 
+                                                } else { 
+                                                    next_edge.physical_geometry[next_edge.physical_geometry.len() - 1] 
+                                                };
                                                 
                                                 let raw_tangent = {
                                                     let l = next_edge.physical_geometry.len();
-                                                    if next_fwd {
-                                                        godot::prelude::Vector2::new(next_edge.physical_geometry[1].x - next_edge.physical_geometry[0].x, next_edge.physical_geometry[1].z - next_edge.physical_geometry[0].z).normalized()
+                                                    if l >= 2 {
+                                                        if next_fwd {
+                                                            godot::prelude::Vector2::new(next_edge.physical_geometry[1].x - next_edge.physical_geometry[0].x, next_edge.physical_geometry[1].z - next_edge.physical_geometry[0].z).normalized()
+                                                        } else {
+                                                            godot::prelude::Vector2::new(next_edge.physical_geometry[l-1].x - next_edge.physical_geometry[l-2].x, next_edge.physical_geometry[l-1].z - next_edge.physical_geometry[l-2].z).normalized()
+                                                        }
                                                     } else {
-                                                        godot::prelude::Vector2::new(next_edge.physical_geometry[l-1].x - next_edge.physical_geometry[l-2].x, next_edge.physical_geometry[l-1].z - next_edge.physical_geometry[l-2].z).normalized()
+                                                        godot::prelude::Vector2::new(1.0, 0.0)
                                                     }
                                                 };
                                                 
