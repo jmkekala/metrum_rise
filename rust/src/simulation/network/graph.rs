@@ -366,7 +366,7 @@ impl TransitGraph {
                     edge.physical_geometry.clear();
                     continue;
                 }
-                let num_segments = f32::max(1.0, f32::ceil(valid_len / 10.0)) as usize;
+                let num_segments = f32::max(1.0, f32::ceil(valid_len / 2.0)) as usize;
                 let mut resampled = Vec::new();
                 
                 for i in 0..=num_segments {

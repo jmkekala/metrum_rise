@@ -34,26 +34,54 @@ impl TransitRenderer for RoadRenderer {
             
             let mut cumulative_dist = 0.0;
 
+            // PRE-CALCULATE SIDES (Mitered Joins)
+            let mut sides = Vec::with_capacity(resampled_count);
+            for i in 0..resampled_count {
+                let p = edge.physical_geometry[i];
+                let tangent = if i == 0 {
+                    (edge.physical_geometry[1] - p).normalized()
+                } else if i == resampled_count - 1 {
+                    (p - edge.physical_geometry[i-1]).normalized()
+                } else {
+                    let t_in = (p - edge.physical_geometry[i-1]).normalized();
+                    let t_out = (edge.physical_geometry[i+1] - p).normalized();
+                    (t_in + t_out).normalized()
+                };
+                
+                let nr = self.get_banked_normal(terrain, p, tangent, half_size);
+                let side_dir = nr.cross(tangent).normalized();
+                
+                let mut miter_scale = 1.0;
+                if i > 0 && i < resampled_count - 1 {
+                    let t_in = (p - edge.physical_geometry[i-1]).normalized();
+                    let cos_half = tangent.dot(t_in);
+                    if cos_half > 0.1 {
+                        miter_scale = (1.0 / cos_half).min(2.0); // Cap extreme miters
+                    }
+                }
+                sides.push(side_dir * half_width * miter_scale);
+            }
+
             for i in 0..resampled_count - 1 {
                 let mut p0 = edge.physical_geometry[i];
                 let mut p1 = edge.physical_geometry[i + 1];
                 let segment_vec = p1 - p0;
                 let dist = segment_vec.length();
                 if dist < 0.1 { continue; }
-                let tangent = segment_vec / dist;
+                let segment_tangent = segment_vec / dist;
                 
                 p0.y += h_offset; 
                 p1.y += h_offset;
                 
-                let nr0 = self.get_banked_normal(terrain, p0, tangent, half_size);
-                let nr1 = self.get_banked_normal(terrain, p1, tangent, half_size);
+                let nr0 = self.get_banked_normal(terrain, p0, segment_tangent, half_size);
+                let nr1 = self.get_banked_normal(terrain, p1, segment_tangent, half_size);
                 
-                let s0 = nr0.cross(tangent).normalized() * half_width;
-                let s1 = nr1.cross(tangent).normalized() * half_width;
+                let s0 = sides[i];
+                let s1 = sides[i+1];
                 
                 let next_dist = cumulative_dist + dist;
                 
-                // Purely orthogonal points (Flat Cut)
+                // Mitered points
                 let v0_l = p0 - s0;
                 let v0_r = p0 + s0;
                 let v1_l = p1 - s1;
@@ -141,7 +169,7 @@ impl TransitRenderer for RoadRenderer {
         for (_node_id, poly) in &graph.junction_polygons {
             j_offset += 0.0001;
             
-            let void_color = Color::from_rgba(0.0, 0.0, 0.0, 0.0); // Shader drops lines natively
+            let _void_color = Color::from_rgba(0.0, 0.0, 0.0, 0.0); // Shader drops lines natively
             
             for c in poly.chunks(3) {
                 if c.len() == 3 {
