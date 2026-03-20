@@ -115,6 +115,42 @@ impl TransitGraph {
         // The DSU in get_island_count will naturally see them as united now
     }
 
+    pub fn move_node(&mut self, node_id: u32, new_pos: Vector3) {
+        let old_pos = self.nodes[node_id as usize].pos;
+        let delta = new_pos - old_pos;
+        self.nodes[node_id as usize].pos = new_pos;
+
+        for edge in &mut self.edges {
+            if edge.start_node == node_id || edge.end_node == node_id {
+                let count = edge.geometry.len();
+                if count < 2 { continue; }
+                
+                let is_start = edge.start_node == node_id;
+                let is_end = edge.end_node == node_id;
+                
+                if is_start && is_end {
+                    for i in 0..count {
+                        edge.geometry[i] += delta;
+                    }
+                } else if is_start {
+                    for i in 0..count {
+                        let w = 1.0 - (i as f32 / (count - 1) as f32);
+                        let w_smooth = w * w * (3.0 - 2.0 * w); // Smoothstep curve
+                        edge.geometry[i] += delta * w_smooth;
+                    }
+                } else if is_end {
+                    for i in 0..count {
+                        let w = i as f32 / (count - 1) as f32;
+                        let w_smooth = w * w * (3.0 - 2.0 * w); // Smoothstep curve
+                        edge.geometry[i] += delta * w_smooth;
+                    }
+                }
+            }
+        }
+        
+        self.rebuild_intersection_clips();
+    }
+
     /// Returns the number of disconnected components (islands) in the network
     pub fn get_island_count(&self) -> usize {
         if self.nodes.is_empty() { return 0; }

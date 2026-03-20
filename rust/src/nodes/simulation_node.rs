@@ -733,6 +733,13 @@ impl SimulationNode {
         }
         best_id
     }
+    #[func]
+    pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) {
+        if node_id >= 0 && (node_id as usize) < self.transit_network.graph.nodes.len() {
+            self.transit_network.graph.move_node(node_id as u32, pos);
+            self.push_undo_state(false, false, true);
+        }
+    }
 
     #[func]
     pub fn get_network_nodes(&self) -> PackedVector3Array {
