@@ -788,70 +788,83 @@ impl SimulationNode {
         let valid_node_id = self.transit_network.graph.get_valid_node(node_id);
         if valid_node_id as usize >= self.transit_network.graph.nodes.len() { return arr; }
         
-        let _node = &self.transit_network.graph.nodes[valid_node_id as usize];
-        
+        let junction_pos = self.transit_network.graph.nodes[valid_node_id as usize].pos;
+
         for (e_id, edge) in self.transit_network.graph.edges.iter().enumerate() {
-            if edge.start_node != valid_node_id && edge.end_node != valid_node_id { continue; }
-            
-            let is_start = edge.start_node == valid_node_id;
-            let is_end = edge.end_node == valid_node_id;
-            
-            if !is_start && !is_end { continue; }
-            if edge.physical_geometry.len() < 2 { continue; }
-            
-            let junction_pos = self.transit_network.graph.nodes[valid_node_id as usize].pos;
-            // PREFER LOGICAL GEOMETRY to ensure spheres are visible even if the physical mesh was cleared/clipped
+            // Check both ends independently
+            let check_start = edge.start_node == valid_node_id;
+            let check_end = edge.end_node == valid_node_id;
+
+            if !check_start && !check_end { continue; }
+
+            // PREFER LOGICAL GEOMETRY for robust visuals
             let geo = if edge.geometry.len() >= 2 { &edge.geometry } else { &edge.physical_geometry };
             if geo.len() < 2 { continue; }
             let lc = geo.len();
-            
-            // 1. Establish robust "Into-the-Leg" direction
-            // Prefer logical geometry to avoid tiny stub segments at the center
-            let mut diff = if is_start {
-                geo[1] - geo[0]
-            } else {
-                geo[lc-2] - geo[lc-1]
-            };
-            
-            if diff.length_squared() < 0.0001 {
-                diff = if is_start { geo[lc-1] - geo[0] } else { geo[0] - geo[lc-1] };
-            }
-            let dir_to_leg = diff.normalized();
-            
-            // 2. Base position offset (5.0m)
-            let mut current_pos = junction_pos + dir_to_leg * 5.0;
-            current_pos.y += 0.6;
-            
-            let normal = Vector3::new(-dir_to_leg.z, 0.0, dir_to_leg.x);
-            
-            let fwd_lanes = edge.fwd_lanes;
-            let bkw_lanes = edge.bkw_lanes;
-            
-            for lane in 0..fwd_lanes {
-                let offset = (lane as f32 + 0.5) * 3.0;
-                let mut lane_pos = current_pos + normal * offset;
-                lane_pos.y += 0.6; // Slightly higher for better visibility
+
+            // Process each end that matches this junction.
+            // If both match (self-loop), we process it twice for both stub ends!
+            let possible_ends = if check_start && check_end { vec![true, false] } 
+                                else if check_start { vec![true] } 
+                                else { vec![false] };
+
+            for is_start_side in possible_ends {
+                // 1. Establish robust "Into-the-Leg" direction
+                // ANCHOR: Always use the ACTUAL junction_pos as the origin to prevent skew from tiny offsets
+                let mut diff = Vector3::ZERO;
+                if is_start_side {
+                    for j in 1..lc {
+                        let d = geo[j] - junction_pos;
+                        if d.length_squared() > 0.01 { diff = d; break; }
+                    }
+                } else {
+                    for j in (0..lc-1).rev() {
+                        let d = geo[j] - junction_pos;
+                        if d.length_squared() > 0.01 { diff = d; break; }
+                    }
+                }
                 
-                let mut dict = VarDictionary::new();
-                dict.set("edge_id", e_id as i32);
-                dict.set("lane_id", lane as i32);
-                dict.set("is_incoming", is_end);
-                dict.set("pos", lane_pos);
-                arr.push(&dict.to_variant());
-            }
-            
-            for lane in 0..bkw_lanes {
-                let lane_idx = -(lane as i32) - 1;
-                let offset = (lane_idx as f32 + 0.5) * 3.0;
-                let mut lane_pos = current_pos + normal * offset;
-                lane_pos.y += 0.6;
+                if diff.length_squared() < 1e-6 { continue; }
+                let dir_to_leg = diff.normalized();
                 
-                let mut dict = VarDictionary::new();
-                dict.set("edge_id", e_id as i32);
-                dict.set("lane_id", lane_idx);
-                dict.set("is_incoming", is_start);
-                dict.set("pos", lane_pos);
-                arr.push(&dict.to_variant());
+                // 2. Base position offset (5.0m)
+                let mut current_pos = junction_pos + dir_to_leg * 5.0;
+                current_pos.y += 0.6;
+                
+                let normal = Vector3::new(-dir_to_leg.z, 0.0, dir_to_leg.x);
+                if normal.length_squared() < 1e-6 { continue; } // Safety for vertical segments
+                
+                let fwd_lanes = edge.fwd_lanes;
+                let bkw_lanes = edge.bkw_lanes;
+                
+                // Forward Lanes (direction start -> end)
+                for lane in 0..fwd_lanes {
+                    let offset = (lane as f32 + 0.5) * 3.0;
+                    let mut lane_pos = current_pos + normal * offset;
+                    lane_pos.y += 0.6; 
+                    
+                    let mut dict = VarDictionary::new();
+                    dict.set("edge_id", e_id as i32);
+                    dict.set("lane_id", lane as i32);
+                    dict.set("is_incoming", !is_start_side); // Incoming if at end of road
+                    dict.set("pos", lane_pos);
+                    arr.push(&dict.to_variant());
+                }
+                
+                // Backward Lanes (direction end -> start)
+                for lane in 0..bkw_lanes {
+                    let lane_idx = -(lane as i32) - 1;
+                    let offset = (lane_idx as f32 + 0.5) * 3.0;
+                    let mut lane_pos = current_pos + normal * offset;
+                    lane_pos.y += 0.6;
+                    
+                    let mut dict = VarDictionary::new();
+                    dict.set("edge_id", e_id as i32);
+                    dict.set("lane_id", lane_idx);
+                    dict.set("is_incoming", is_start_side); // Incoming if at start of road
+                    dict.set("pos", lane_pos);
+                    arr.push(&dict.to_variant());
+                }
             }
         }
         arr

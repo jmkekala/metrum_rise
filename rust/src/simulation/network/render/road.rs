@@ -29,10 +29,14 @@ impl TransitRenderer for RoadRenderer {
             *connection_counts.entry(edge.end_node).or_insert(0) += 1;
             
             if edge.physical_geometry.len() >= 2 {
-                let d3_s = edge.physical_geometry[1] - edge.physical_geometry[0];
+                let start_pos = graph.nodes[edge.start_node as usize].pos;
+                let end_pos = graph.nodes[edge.end_node as usize].pos;
+
+                let d3_s = edge.physical_geometry[1] - start_pos; // ANCHOR: Use start node pos
                 node_dirs.entry(edge.start_node).or_default().push((edge_id, Vector2::new(d3_s.x, d3_s.z).normalized()));
+
                 let lc = edge.physical_geometry.len();
-                let d3_e = edge.physical_geometry[lc-2] - edge.physical_geometry[lc-1];
+                let d3_e = edge.physical_geometry[lc-2] - end_pos; // ANCHOR: Use end node pos
                 node_dirs.entry(edge.end_node).or_default().push((edge_id, Vector2::new(d3_e.x, d3_e.z).normalized()));
             }
         }

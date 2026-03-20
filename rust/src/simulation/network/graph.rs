@@ -262,21 +262,38 @@ impl TransitGraph {
             edge_lengths.insert(i, total);
         }
 
-        let mut node_clips: HashMap<(usize, usize), f32> = HashMap::new();
+        let mut node_clips: HashMap<(u32, usize), f32> = HashMap::new(); // (original_node_id, edge_id) -> clip_value
         self.junction_polygons.clear();
 
-        for (node_id_usize, node) in self.nodes.iter().enumerate() {
-            let node_id = node_id_usize as u32;
-            let mut connected_edges = Vec::new();
+        // 1. Group ALL road edges by their CANONICAL node ID
+        let mut canonical_junctions: HashMap<u32, Vec<(usize, bool)>> = HashMap::new(); // node_id -> Vec<(edge_id, is_start)>
+        for (i, edge) in self.edges.iter().enumerate() {
+            if edge.primary_type != TransitType::Road { continue; }
+            if edge.geometry.len() < 2 { continue; }
+            
+            let s_valid = self.get_valid_node(edge.start_node);
+            let e_valid = self.get_valid_node(edge.end_node);
+            
+            canonical_junctions.entry(s_valid).or_default().push((i, true));
+            // Only add the end if it's a different canonical node, OR if it's the same canonical node (a loop)
+            // This ensures loops are treated as two distinct "legs" at the same junction.
+            if s_valid != e_valid || edge.start_node != edge.end_node { // The second condition is a bit redundant if s_valid == e_valid implies start_node == end_node, but safer.
+                canonical_junctions.entry(e_valid).or_default().push((i, false));
+            }
+        }
 
-            for (i, edge) in self.edges.iter().enumerate() {
-                if edge.primary_type != TransitType::Road { continue; }
-                if edge.geometry.len() < 2 { continue; }
-                if edge.start_node == node_id {
+        // 2. Process each canonical junction
+        for (&node_id, edges_at_node) in canonical_junctions.iter() {
+            let node_pos = self.nodes[node_id as usize].pos;
+            let mut connected_legs = Vec::new(); // (edge_id, dir, half_width, angle, seg_len, is_start_leg)
+
+            for &(i, is_start) in edges_at_node {
+                let edge = &self.edges[i];
+                if is_start {
                     let mut dir = Vector2::new(1.0, 0.0);
                     let mut seg_len = 0.0;
                     for j in 0..edge.geometry.len() - 1 {
-                        let d3 = edge.geometry[j+1] - edge.geometry[j];
+                        let d3 = edge.geometry[j+1] - node_pos; // ANCHOR: Always use center!
                         let d2 = Vector2::new(d3.x, d3.z);
                         if d2.length() > 0.1 {
                             dir = d2.normalized();
@@ -285,13 +302,13 @@ impl TransitGraph {
                         }
                     }
                     let angle = f32::atan2(dir.y, dir.x);
-                    connected_edges.push((i, dir, edge.width * 0.5, angle, seg_len));
-                } else if edge.end_node == node_id {
+                    connected_legs.push((i, dir, edge.width * 0.5, angle, seg_len, true));
+                } else {
                     let mut dir = Vector2::new(-1.0, 0.0);
                     let mut seg_len = 0.0;
                     let lc = edge.geometry.len();
-                    for j in (1..lc).rev() {
-                        let d3 = edge.geometry[j-1] - edge.geometry[j];
+                    for j in (0..lc - 1).rev() {
+                        let d3 = edge.geometry[j] - node_pos; // ANCHOR: Always use center!
                         let d2 = Vector2::new(d3.x, d3.z);
                         if d2.length() > 0.1 {
                             dir = d2.normalized();
@@ -300,87 +317,87 @@ impl TransitGraph {
                         }
                     }
                     let angle = f32::atan2(dir.y, dir.x);
-                    connected_edges.push((i, dir, edge.width * 0.5, angle, seg_len));
+                    connected_legs.push((i, dir, edge.width * 0.5, angle, seg_len, false));
                 }
             }
 
-            if connected_edges.len() < 2 {
-                for &(edge_id, _, _, _, _) in &connected_edges {
-                    node_clips.insert((node_id as usize, edge_id), 0.0);
+            if connected_legs.is_empty() { continue; }
+
+            if connected_legs.len() < 2 {
+                // For dead ends, ensure clip is 0.0
+                for &(edge_id, _, _, _, _, is_start_leg) in &connected_legs {
+                    if is_start_leg {
+                        node_clips.insert((self.edges[edge_id].start_node, edge_id), 0.0);
+                    } else {
+                        node_clips.insert((self.edges[edge_id].end_node, edge_id), 0.0);
+                    }
                 }
                 continue;
             }
             
-            connected_edges.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap());
+            // Radial sort by angle
+            connected_legs.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap());
 
-            let n_center = Vector2::new(node.pos.x, node.pos.z);
-            let mut clips: HashMap<usize, f32> = HashMap::new();
-            for i in 0..connected_edges.len() {
-                let e_core = &connected_edges[i];
-                let mut max_c = if connected_edges.len() >= 3 { 1.5 } else { 0.0 };
+            let n_center = Vector2::new(node_pos.x, node_pos.z);
+            let mut local_clips: HashMap<(usize, bool), f32> = HashMap::new(); // (edge_id, is_start_leg) -> clip_value
+            
+            for i in 0..connected_legs.len() {
+                let e_core = &connected_legs[i];
+                let mut max_c = if connected_legs.len() >= 3 { 1.5 } else { 0.0 };
 
-                for j in 0..connected_edges.len() {
+                for j in 0..connected_legs.len() {
                     if i == j { continue; }
-                    let e_other = &connected_edges[j];
+                    let e_other = &connected_legs[j];
                     
-                    // Angle between vectors
                     let sweep = (e_core.1.x * e_other.1.y - e_core.1.y * e_other.1.x).atan2(e_core.1.x * e_other.1.x + e_core.1.y * e_other.1.y);
                     let abs_sin = sweep.sin().abs();
                     
                     if abs_sin > 0.01 {
-                        let mut req = (e_other.2) / abs_sin; // Distance needed to clear HALF width of the other road
-                        if req > 8.0 {
-                            // EXTREME ACUTE ANGLE: 
-                            // The required clearance is enormous, which destroys the road. 
-                            // Instead of a massive clip, we allow the roads to smoothly overlap 
-                            // and draw directly to the node center by aggressively dropping the clip to 0.0.
-                            req = 0.0;
-                        }
+                        let mut req = (e_other.2) / abs_sin;
+                        if req > 8.0 { req = 0.0; }
                         if req > max_c { max_c = req; }
                     }
                 }
-                clips.insert(e_core.0, max_c);
+                local_clips.insert((e_core.0, e_core.5), max_c);
             }
-            // CRITICAL FIX: Sort edges radially (Counter-Clockwise) based on their outward direction!
-            // If they are not radially sorted, connecting edge `i` to `i+1` creates criss-crossing 'bowtie' planes
-            // because they might be geometrically opposite to each other based on draw order!
-            connected_edges.sort_unstable_by(|a, b| {
-                let angle_a = a.1.y.atan2(a.1.x); // Godot X-Z plane mapped to Vector2(x,y)
-                let angle_b = b.1.y.atan2(b.1.x);
-                angle_a.partial_cmp(&angle_b).unwrap_or(std::cmp::Ordering::Equal)
-            });
 
-            // Symmetrize Parallel Pairs (T-Junctions and Curves)
-            if connected_edges.len() >= 3 {
-                for i in 0..connected_edges.len() {
-                    for j in i+1..connected_edges.len() {
-                        let dot = connected_edges[i].1.dot(connected_edges[j].1);
-                        if dot < -0.80 { // Relaxed to handle curves (thru-roads)
-                            let id1 = connected_edges[i].0;
-                            let id2 = connected_edges[j].0;
-                            let c1 = *clips.get(&id1).unwrap();
-                            let c2 = *clips.get(&id2).unwrap();
+            // Symmetrize Parallel Pairs
+            if connected_legs.len() >= 3 {
+                for i in 0..connected_legs.len() {
+                    for j in i+1..connected_legs.len() {
+                        let dot = connected_legs[i].1.dot(connected_legs[j].1);
+                        if dot < -0.80 {
+                            let c1 = *local_clips.get(&(connected_legs[i].0, connected_legs[i].5)).unwrap();
+                            let c2 = *local_clips.get(&(connected_legs[j].0, connected_legs[j].5)).unwrap();
                             let c_max = c1.max(c2);
-                            clips.insert(id1, c_max);
-                            clips.insert(id2, c_max);
+                            local_clips.insert((connected_legs[i].0, connected_legs[i].5), c_max);
+                            local_clips.insert((connected_legs[j].0, connected_legs[j].5), c_max);
                         }
                     }
                 }
             }
             
-            // Final Safety Clamp and Store
-            for (edge_id, clip) in clips.iter_mut() {
-                let length = *edge_lengths.get(edge_id).unwrap();
+            // Final Safety Clamp and Store in node_clips
+            for (&(edge_id, is_start_leg), clip) in local_clips.iter_mut() {
+                let length = *edge_lengths.get(&edge_id).unwrap();
                 *clip = clip.min(20.0).min(length * 0.45);
-                node_clips.insert((node_id as usize, *edge_id), *clip);
+                
+                // Store the clip value using the original node ID (start_node or end_node)
+                // and the edge_id, as this is how edge.start_clip/end_clip are set later.
+                if is_start_leg {
+                    node_clips.insert((self.edges[edge_id].start_node, edge_id), *clip);
+                } else {
+                    node_clips.insert((self.edges[edge_id].end_node, edge_id), *clip);
+                }
             }
 
+            // Build Mesh for this CANONICAL junction
             let mut j_mesh = JunctionMesh {
                 vertices: Vec::new(),
                 uvs: Vec::new(),
                 colors: Vec::new(),
             };
-            let ct = Vector3::new(n_center.x, node.pos.y, n_center.y);
+            let ct = Vector3::new(n_center.x, node_pos.y, n_center.y);
             
             let mut add_triangle = |a: Vector3, mut b: Vector3, mut c: Vector3, color: Color| {
                 let cross = (b - a).cross(c - a);
@@ -402,54 +419,43 @@ impl TransitGraph {
                 j_mesh.colors.push(color); j_mesh.colors.push(color); j_mesh.colors.push(color);
             };
             
-            let is_turn = connected_edges.len() == 2;
+            let is_turn = connected_legs.len() == 2;
 
-            for i in 0..connected_edges.len() {
-                let nxt = (i + 1) % connected_edges.len();
-                let e1 = &connected_edges[i];
-                let e2 = &connected_edges[nxt];
+            for i in 0..connected_legs.len() {
+                let nxt = (i + 1) % connected_legs.len();
+                let e1 = &connected_legs[i];
+                let e2 = &connected_legs[nxt];
 
-                // e1 is current road
-                let c1 = *clips.get(&e1.0).unwrap();
+                // e1 is current road leg
+                let c1 = *local_clips.get(&(e1.0, e1.5)).unwrap();
                 let cut1 = n_center + e1.1 * c1;
                 let right1 = Vector2::new(-e1.1.y, e1.1.x);
                 let left1 = Vector2::new(e1.1.y, -e1.1.x);
-                let _p_right1 = cut1 + right1 * e1.2;
-                let _p_left1 = cut1 + left1 * e1.2;
 
-                // e2 is next road
-                let c2 = *clips.get(&e2.0).unwrap();
+                // e2 is next road leg
+                let c2 = *local_clips.get(&(e2.0, e2.5)).unwrap();
                 let cut2 = n_center + e2.1 * c2;
                 let left2 = Vector2::new(e2.1.y, -e2.1.x);
-                let p_left2 = cut2 + left2 * e2.2;
                 
                 let edge1 = &self.edges[e1.0];
                 let edge2 = &self.edges[e2.0];
+                
                 let fwd = (edge1.fwd_lanes + edge2.fwd_lanes) as f32 * 0.5 / 10.0;
                 let bkw = (edge1.bkw_lanes + edge2.bkw_lanes) as f32 * 0.5 / 10.0;
                 
-                let _kerb_w = 0.0; // Disabled: Kerbs are managed externally or entirely suppressed for T-junctions
-                let _kerb_h = 0.05;
-                let asph_w1 = e1.2;
-                let asph_w2 = e2.2;
-                
-                // Sink intersection back down to the exact anti Z-fight jitter height generated by road segments (1mm)
-                let node_y = node.pos.y + 0.001;
+                let node_y = node_pos.y + 0.001;
 
-                let p_right1_asph = cut1 + right1 * asph_w1;
-                let p_left1_asph = cut1 + left1 * asph_w1;
-                let _p_left2_asph = cut2 + left2 * asph_w2;
+                let p_right1_asph = cut1 + right1 * e1.2;
+                let p_left1_asph = cut1 + left1 * e1.2;
+                let p_left2_asph = cut2 + left2 * e2.2;
 
                 let pr1_a = Vector3::new(p_right1_asph.x, node_y, p_right1_asph.y);
                 let pl1_a = Vector3::new(p_left1_asph.x, node_y, p_left1_asph.y);
-                let _pl2_a = Vector3::new(p_left2.x, node_y, p_left2.y);
+                let pl2_a = Vector3::new(p_left2_asph.x, node_y, p_left2_asph.y);
                 let ct_a = Vector3::new(ct.x, node_y, ct.z);
 
                 let total_lanes = (edge1.fwd_lanes + edge1.bkw_lanes) as f32;
-                let bkw_l = edge1.bkw_lanes as f32;
                 
-                // Gap-specific miter point for UV origin
-                // For the 'inner' side of the turn, use the inner miter point.
                 let e1_r_norm = Vector2::new(-e1.1.y, e1.1.x);
                 let e2_l_norm = Vector2::new(e2.1.y, -e2.1.x);
                 let l1_p = n_center + e1_r_norm * e1.2;
@@ -461,27 +467,10 @@ impl TransitGraph {
                     Vector3::new(inter.x, node_y, inter.y)
                 } else { ct_a };
 
-                let get_v_uv = |v: Vector3| {
-                    if !is_turn { return Vector2::new(0.5, 0.5); } // Neutral UV for 3+ junctions to kill ghost decals
-                    let d = (v - pi).length();
-                    // Map distance from local miter point. 
-                    // If this is the outer gap, pi is the inner corner, so dist 0 = inner edge.
-                    let uvx = (1.0 - d / edge1.width).clamp(0.0, 1.0) * total_lanes;
-                    Vector2::new(uvx, 0.0)
-                };
-
-                let _uv_ct = if is_turn { Vector2::new(bkw_l, 0.0) } else { get_v_uv(ct_a) };
-                let _uv_r1 = get_v_uv(pr1_a);
-                let _uv_l1 = get_v_uv(pl1_a);
-
                 let fade_color = if is_turn { Color::from_rgba(fwd, bkw, 0.0, 1.0) } else { Color::from_rgba(0.0, 0.0, 0.0, 0.0) };
 
                 // 1. Asphalt Core (Sector to Road End)
                 add_triangle(ct_a, pr1_a, pl1_a, fade_color);
-
-                let left2 = Vector2::new(e2.1.y, -e2.1.x);
-                let p_left2 = cut2 + left2 * asph_w2;
-                let pl2_a = Vector3::new(p_left2.x, node_y, p_left2.y);
 
                 let l1_dir = Vector2::new(-e1.1.x, -e1.1.y);
                 let l2_dir = Vector2::new(-e2.1.x, -e2.1.y);
@@ -492,24 +481,19 @@ impl TransitGraph {
                 let diff = pl2_a_2d - pr1_a_2d;
 
                 let use_bezier = if denom.abs() > 0.001 {
-                    // Prevent sharp hairpin or near-straight >148deg outer sections from attempting mathematically unstable 30m Bezier curves!
                     if e1.1.dot(e2.1) < -0.85 {
                         false
                     } else {
                         let t1 = (diff.x * l2_dir.y - diff.y * l2_dir.x) / denom;
                         let t2 = (diff.x * l1_dir.y - diff.y * l1_dir.x) / denom;
-                        // Prevent near-parallel lines from shooting intersection point to infinity
-                        // or creating inverted shards.
                         let max_dist = f32::min(diff.length() * 1.5, 6.0);
                          if t1 > 0.0 && t2 > 0.0 && t1 < max_dist && t2 < max_dist {
-                             // Spatial Inversion Guard: Ensures the control point hasn't mathematically crossed 
-                             // through the node center onto the opposite side of the road (happens on >180 deg outer curves).
                              let pi_test = pr1_a_2d + l1_dir * t1;
                              let gap_mid = (pr1_a_2d + pl2_a_2d) * 0.5;
                              let center_2d = Vector2::new(ct_a.x, ct_a.z);
                              let center_to_mid = gap_mid - center_2d;
                              let center_to_pi = pi_test - center_2d;
-                             center_to_mid.dot(center_to_pi) > 0.01 // Must reside in the same hemisphere
+                             center_to_mid.dot(center_to_pi) > 0.01 
                         } else { false }
                     }
                 } else { false };
@@ -538,12 +522,6 @@ impl TransitGraph {
                     }
                     prev_a_low = curr_a_low;
                 }
-                
-                let current_c1 = *node_clips.get(&(node_id as usize, e1.0)).unwrap_or(&0.0);
-                node_clips.insert((node_id as usize, e1.0), current_c1.max(c1.max(0.0)));
-                
-                let current_c2 = *node_clips.get(&(node_id as usize, e2.0)).unwrap_or(&0.0);
-                node_clips.insert((node_id as usize, e2.0), current_c2.max(c2.max(0.0)));
             }
 
             if j_mesh.vertices.len() >= 3 {
@@ -559,8 +537,8 @@ impl TransitGraph {
         }
 
         for (edge_id, edge) in self.edges.iter_mut().enumerate() {
-            edge.start_clip = *node_clips.get(&(edge.start_node as usize, edge_id)).unwrap_or(&0.0_f32);
-            edge.end_clip = *node_clips.get(&(edge.end_node as usize, edge_id)).unwrap_or(&0.0_f32);
+            edge.start_clip = *node_clips.get(&(edge.start_node, edge_id)).unwrap_or(&0.0_f32);
+            edge.end_clip = *node_clips.get(&(edge.end_node, edge_id)).unwrap_or(&0.0_f32);
             
             let count = edge.geometry.len();
             if count >= 2 {
