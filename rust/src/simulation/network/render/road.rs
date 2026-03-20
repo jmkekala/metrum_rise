@@ -53,18 +53,24 @@ impl TransitRenderer for RoadRenderer {
             for i in 0..resampled_count {
                 let p = edge.physical_geometry[i];
                 let tangent = if i == 0 {
-                    let d = edge.physical_geometry[1] - p;
-                    if d.length() > 0.001 { d.normalized() } else { Vector3::new(1.0, 0.0, 0.0) }
+                    let mut dir = Vector3::new(1.0, 0.0, 0.0);
+                    for j in 0..edge.geometry.len() - 1 {
+                        let d = edge.geometry[j+1] - edge.geometry[j];
+                        if d.length() > 0.01 { dir = d.normalized(); break; }
+                    }
+                    dir
                 } else if i == resampled_count - 1 {
-                    let d = p - edge.physical_geometry[i-1];
-                    if d.length() > 0.001 { d.normalized() } else { Vector3::new(1.0, 0.0, 0.0) }
+                    let mut dir = Vector3::new(1.0, 0.0, 0.0);
+                    let lc = edge.geometry.len();
+                    for j in (1..lc).rev() {
+                        let d = edge.geometry[j] - edge.geometry[j-1];
+                        if d.length() > 0.01 { dir = d.normalized(); break; }
+                    }
+                    dir
                 } else {
-                    let t_in_d = p - edge.physical_geometry[i-1];
-                    let t_out_d = edge.physical_geometry[i+1] - p;
-                    let t_in = if t_in_d.length() > 0.001 { t_in_d.normalized() } else { Vector3::new(1.0, 0.0, 0.0) };
-                    let t_out = if t_out_d.length() > 0.001 { t_out_d.normalized() } else { Vector3::new(1.0, 0.0, 0.0) };
-                    let sum = t_in + t_out;
-                    if sum.length() > 0.001 { sum.normalized() } else { t_in }
+                    let d1 = p - edge.physical_geometry[i - 1];
+                    let d2 = edge.physical_geometry[i + 1] - p;
+                    (d1 + d2).normalized()
                 };
                 
                 let nr = self.get_banked_normal(terrain, p, tangent, half_size);
