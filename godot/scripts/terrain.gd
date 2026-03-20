@@ -53,26 +53,10 @@ func _ready():
 
 func _process(delta):
 	update_terrain_visuals()
-	handle_input(delta)
 	
 	var material = self.material_override as ShaderMaterial
 	if material != null:
 		material.set_shader_parameter("show_global_zoning", show_global_zoning)
-
-func _unhandled_input(event):
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_Z:
-			if event.ctrl_pressed:
-				if simulation_node.undo_action():
-					print("Undo Executed Succesfully!")
-					# Force all godot visual pipelines to reload from the freshly reverted memory cache
-					update_terrain_visuals()
-					var road_tool = get_node("../RoadTool")
-					if road_tool:
-						road_tool.update_main_mesh()
-			else:
-				show_global_zoning = not show_global_zoning
-				print("Global zoning visibility: ", show_global_zoning)
 
 func update_terrain_visuals():
 	var data = simulation_node.get_heightmap_data()
@@ -159,46 +143,23 @@ func update_terrain_visuals():
 						add_child(mesh_inst)
 						polygon_meshes.append(mesh_inst)
 
-func handle_input(delta):
-	if Input.is_key_pressed(KEY_7): overlay_mode = 0
-	if Input.is_key_pressed(KEY_8): overlay_mode = 1
-	if Input.is_key_pressed(KEY_9): overlay_mode = 2
-	if Input.is_key_pressed(KEY_0): overlay_mode = 3
-	
-	if Input.is_action_just_pressed("ui_select"): # Spacebar
-		if sim_speed > 0.0:
-			sim_speed = 0.0
-			print("Simulation Paused.")
-		else:
-			sim_speed = 1.0
-			print("Simulation Playing (1x).")
-		simulation_node.set_simulation_speed(sim_speed)
-
-	if Input.is_action_just_pressed("ui_accept"): # Press Enter to export
-		export_heightmap("user://map_export.png")
-	
-	if Input.is_key_pressed(KEY_L): # Press L to import
-		import_heightmap("user://map_export.png")
-
-	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) and Input.is_key_pressed(KEY_Y):
+func sculpt_at_mouse(delta):
+	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 		var mouse_pos = get_viewport().get_mouse_position()
 		var camera = get_viewport().get_camera_3d()
 		
 		var ray_origin = camera.project_ray_origin(mouse_pos)
 		var ray_dir = camera.project_ray_normal(mouse_pos)
 		
-		# HIGH-PRECISION RUST RAYCAST
 		var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
-		
 		if intersection != null:
-			# Convert world pos to heightmap local pos (0 to 256)
 			var size = simulation_node.get_heightmap_size()
 			var local_pos = Vector2(
 				intersection.x + (size.x - 1.0) * 0.5,
 				intersection.z + (size.y - 1.0) * 0.5
 			)
 			
-			var strength = 2.0 * delta # Much slower
+			var strength = 2.0 * delta
 			if Input.is_key_pressed(KEY_CTRL):
 				strength = -2.0 * delta
 				

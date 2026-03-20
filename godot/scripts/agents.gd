@@ -96,12 +96,7 @@ func _ready():
 	wealth_label.text = "Avg Wealth: $ 0.0"
 	vbox.add_child(wealth_label)
 
-func _input(event):
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_P:
-			show_paths = !show_paths
-			if not show_paths:
-				debug_mesh.clear_surfaces()
+
 
 func _process(delta):
 	# Refresh visual swarms very often for smooth movement

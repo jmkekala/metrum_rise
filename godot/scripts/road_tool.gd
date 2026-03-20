@@ -25,25 +25,21 @@ func _update_lanes_label():
 	if active and current_path != null:
 		_draw_blueprint()
 
+func adjust_lanes(fwd_delta: int, bkw_delta: int):
+	if fwd_delta != 0: fwd_lanes = clamp(fwd_lanes + fwd_delta, 0, 4)
+	if bkw_delta != 0: bkw_lanes = clamp(bkw_lanes + bkw_delta, 0, 4)
+	if fwd_lanes == 0 and bkw_lanes == 0: fwd_lanes = 1
+	_update_lanes_label()
+
 func _input(event):
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_BRACKETRIGHT or event.keycode == KEY_UP: fwd_lanes = min(fwd_lanes + 1, 4); _update_lanes_label()
-		if event.keycode == KEY_BRACKETLEFT or event.keycode == KEY_DOWN: fwd_lanes = max(fwd_lanes - 1, 0); _update_lanes_label()
-		if event.keycode == KEY_PERIOD: bkw_lanes = min(bkw_lanes + 1, 4); _update_lanes_label()
-		if event.keycode == KEY_COMMA: bkw_lanes = max(bkw_lanes - 1, 0); _update_lanes_label()
-		if fwd_lanes == 0 and bkw_lanes == 0: fwd_lanes = 1; _update_lanes_label()
-		
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+	if active and event is InputEventMouseMotion:
+		_update_preview()
+	
+	if active and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if Input.is_key_pressed(KEY_ALT):
 			if event.pressed:
 				_handle_click()
-	
-	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT:
-		if active and event.pressed:
-			cancel_road()
-	
-	if active and event is InputEventMouseMotion:
-		_update_preview()
+
 
 func _handle_click():
 	var pos = get_world_mouse_pos()
@@ -69,6 +65,7 @@ func _handle_click():
 			_commit_segment(pos)
 
 func _update_preview():
+	if current_path == null: return
 	var mouse_pos = get_world_mouse_pos()
 	
 	current_path.curve.clear_points()

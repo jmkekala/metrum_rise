@@ -22,18 +22,8 @@ func _ready():
 	add_child(drag_line_mesh)
 
 func _process(delta):
-	if Input.is_key_pressed(KEY_T):
-		if not active:
-			print("Traffic Lane Manager Activated (T)")
-			active = true
-	if Input.is_key_pressed(KEY_ESCAPE) or Input.is_key_pressed(KEY_Z) or Input.is_key_pressed(KEY_ALT):
-		if active:
-			print("Traffic Lane Manager Deactivated")
-			active = false
-			clear_visuals()
-			selected_node = -1
-	
 	if not active: return
+
 	
 	if dragging:
 		_update_drag_line()

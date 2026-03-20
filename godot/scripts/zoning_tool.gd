@@ -5,7 +5,9 @@ extends Node3D
 
 var current_zone_type: int = 1 # 1: Res, 2: Com, 3: Ind, 4: Mix
 var state: int = 0 # 0: Idle, 1: Drawing Frontage, 2: Pulling Depth
+var active: bool = false
 var attached_edge_idx: int = -1
+
 
 var frontage_start: Vector2
 var frontage_end: Vector2
@@ -55,10 +57,8 @@ func _ready():
 	add_child(handles_mesh)
 
 func _process(delta):
-	if Input.is_key_pressed(KEY_1): current_zone_type = 1
-	if Input.is_key_pressed(KEY_2): current_zone_type = 2
-	if Input.is_key_pressed(KEY_3): current_zone_type = 3
-	if Input.is_key_pressed(KEY_4): current_zone_type = 4
+	# Key handling moved to InputManager.gd
+	
 	
 	if terrain_node and not terrain_node.show_global_zoning:
 		if state != 0:
@@ -157,6 +157,8 @@ func _process(delta):
 					simulation_node.update_zoning_polygon(editing_poly_id, packed, fronts.size())
 
 func _unhandled_input(event):
+	if not active: return
+	
 	if terrain_node and not terrain_node.show_global_zoning:
 		return
 		
