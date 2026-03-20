@@ -2,7 +2,14 @@ extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
 
-var active: bool = false
+var active: bool = false:
+	set(value):
+		active = value
+		if not active:
+			clear_visuals()
+			selected_node = -1
+			hovered_node = -1
+
 var hovered_node: int = -1
 var selected_node: int = -1
 
