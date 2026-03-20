@@ -283,11 +283,13 @@ impl TransitGraph {
                         let p2_proj = (inter - n_center).dot(l2_dir);
                         
                         if p1_proj > 0.0 {
-                            let c1 = clips.get(&e1.0).unwrap().max(p1_proj);
+                            let bevel = e1.2 * 0.75; // e1.2 is half_width
+                            let c1 = clips.get(&e1.0).unwrap().max(p1_proj - bevel);
                             clips.insert(e1.0, c1);
                         }
                         if p2_proj > 0.0 {
-                            let c2 = clips.get(&e2.0).unwrap().max(p2_proj);
+                            let bevel = e2.2 * 0.75;
+                            let c2 = clips.get(&e2.0).unwrap().max(p2_proj - bevel);
                             clips.insert(e2.0, c2);
                         }
                     }
@@ -332,8 +334,27 @@ impl TransitGraph {
                 // Triangle 1: Fill the "Road End"
                 add_triangle(ct, pr1, pl1);
 
-                // Triangle 2: Corner Gap
-                add_triangle(ct, pl2, pr1);
+                // Triangle(s) 2: Smooth Corner Gap (Arc centered at Node)
+                let steps = 16;
+                let mut prev = pr1;
+                for j in 1..=steps {
+                    let t = j as f32 / steps as f32;
+                    let v_inter = pr1.lerp(pl2, t);
+                    
+                    let d1 = (pr1 - ct).length();
+                    let d2 = (pl2 - ct).length();
+                    let target_d = d1 + (d2 - d1) * t;
+                    
+                    let dir = if (v_inter - ct).length() > 0.001 {
+                        (v_inter - ct).normalized()
+                    } else {
+                        Vector3::new(1.0, 0.0, 0.0) // Fallback for center overlap
+                    };
+                    
+                    let curr = ct + dir * target_d;
+                    add_triangle(ct, prev, curr);
+                    prev = curr;
+                }
                 
                 node_clips.insert((node_id as usize, e1.0), c1.max(0.0));
             }
