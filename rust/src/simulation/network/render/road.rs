@@ -13,6 +13,15 @@ impl TransitRenderer for RoadRenderer {
         let mut uvs = PackedVector2Array::new();
         let mut colors = PackedColorArray::new();
         let half_size = Vector2::new(terrain.width as f32 * 0.5, terrain.height as f32 * 0.5);
+        let void_color = Color::from_rgba(0.0, 0.0, 0.0, 0.0); // Shader drops lines natively
+
+        // 0. Pre-calculate Road connection counts to detect dead ends
+        let mut connection_counts = HashMap::new();
+        for edge in &graph.edges {
+            if edge.primary_type != TransitType::Road { continue; }
+            *connection_counts.entry(edge.start_node).or_insert(0) += 1;
+            *connection_counts.entry(edge.end_node).or_insert(0) += 1;
+        }
 
         // 1. Generate Road Segments (Orthogonal Ribbons using PRE-CLIPPED physical geometry!)
         for (edge_id, edge) in graph.edges.iter().enumerate() {
@@ -74,6 +83,56 @@ impl TransitRenderer for RoadRenderer {
                 uvs.push(Vector2::new(0.0, next_dist));               // v1_r
 
                 cumulative_dist = next_dist;
+            }
+
+            // 1.1 Round Caps for Dead Ends
+            let cap_steps = 12;
+            let normal = Vector3::UP;
+
+            if edge.start_clip == 0.0 && *connection_counts.get(&edge.start_node).unwrap_or(&0) == 1 {
+                let p0 = edge.physical_geometry[0];
+                let p1 = edge.physical_geometry[1];
+                let tangent = (p1 - p0).normalized();
+                let base_angle = f32::atan2(-tangent.z, -tangent.x); // Pointing BACK from start
+                
+                let start_lane_color = Color::from_rgba(edge.fwd_lanes as f32 / 10.0, edge.bkw_lanes as f32 / 10.0, 0.0, 0.0);
+
+                for i in 0..cap_steps {
+                    let a1 = base_angle - std::f32::consts::FRAC_PI_2 + (i as f32 / cap_steps as f32) * std::f32::consts::PI;
+                    let a2 = base_angle - std::f32::consts::FRAC_PI_2 + ((i + 1) as f32 / cap_steps as f32) * std::f32::consts::PI;
+                    
+                    let v1 = p0 + Vector3::new(a1.cos(), 0.0, a1.sin()) * half_width;
+                    let v2 = p0 + Vector3::new(a2.cos(), 0.0, a2.sin()) * half_width;
+                    
+                    // Center, V1, V2 CW
+                    vertices.push(p0); vertices.push(v1); vertices.push(v2);
+                    normals.push(normal); normals.push(normal); normals.push(normal);
+                    colors.push(start_lane_color); colors.push(start_lane_color); colors.push(start_lane_color);
+                    uvs.push(Vector2::new(p0.x, p0.z)); uvs.push(Vector2::new(v1.x, v1.z)); uvs.push(Vector2::new(v2.x, v2.z));
+                }
+            }
+
+            if edge.end_clip == 0.0 && *connection_counts.get(&edge.end_node).unwrap_or(&0) == 1 {
+                let p_last = *edge.physical_geometry.last().unwrap();
+                let p_prev = edge.physical_geometry[resampled_count - 2];
+                let tangent = (p_last - p_prev).normalized();
+                let base_angle = f32::atan2(tangent.z, tangent.x); // Pointing FORWARD from end
+                
+                let end_lane_color = Color::from_rgba(edge.fwd_lanes as f32 / 10.0, edge.bkw_lanes as f32 / 10.0, 0.0, 0.0);
+
+                for i in 0..cap_steps {
+                    let a1 = base_angle - std::f32::consts::FRAC_PI_2 + (i as f32 / cap_steps as f32) * std::f32::consts::PI;
+                    let a2 = base_angle - std::f32::consts::FRAC_PI_2 + ((i + 1) as f32 / cap_steps as f32) * std::f32::consts::PI;
+                    
+                    let v1 = p_last + Vector3::new(a1.cos(), 0.0, a1.sin()) * half_width;
+                    let v2 = p_last + Vector3::new(a2.cos(), 0.0, a2.sin()) * half_width;
+                    
+                    // Center, V1, V2 CW
+                    vertices.push(p_last); vertices.push(v1); vertices.push(v2);
+                    normals.push(normal); normals.push(normal); normals.push(normal);
+                    colors.push(end_lane_color); colors.push(end_lane_color); colors.push(end_lane_color);
+                    uvs.push(Vector2::new(p_last.x, p_last.z)); uvs.push(Vector2::new(v1.x, v1.z)); uvs.push(Vector2::new(v2.x, v2.z));
+                }
             }
         }
         
