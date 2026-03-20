@@ -41,160 +41,54 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
-        // 1. Generate Road Segments
+        // 1. Generate Schematic Lane Ribbons
         for (edge_id, edge) in graph.edges.iter().enumerate() {
             if edge.primary_type != TransitType::Road { continue; }
             let resampled_count = edge.physical_geometry.len();
             if resampled_count < 2 { continue; }
 
-            let h_offset = 0.001 + (edge_id % 100) as f32 * 0.0001;
-            let half_width = edge.width * 0.5;
-            let _lane_w = 3.5;
-            
-            let mut cumulative_dist = 0.0;
+            let h_offset = 0.05 + (edge_id % 100) as f32 * 0.001;
+            let lane_w = 1.0;
+            let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
 
-            let mut sides = Vec::with_capacity(resampled_count);
-            for i in 0..resampled_count {
-                let p = edge.physical_geometry[i];
-                let tangent = if i == 0 {
-                    let mut dir = Vector3::new(1.0, 0.0, 0.0);
-                    for j in 0..edge.geometry.len() - 1 {
-                        let d = edge.geometry[j+1] - edge.geometry[j];
-                        if d.length() > 0.01 { dir = d.normalized(); break; }
+            // Generate each lane as a separate set of ribbons
+            let lane_count = total_lanes as usize;
+            for l_idx in 0..lane_count {
+                let is_fwd = l_idx < edge.fwd_lanes as usize;
+                let lane_color = if is_fwd { Color::from_rgb(0.1, 0.8, 0.2) } else { Color::from_rgb(0.8, 0.1, 0.2) };
+                
+                // RHT Logic: Fwd lanes (lower indices) stay on the Right (+lateral_offset)
+                let lateral_offset = (total_lanes * 0.5 - l_idx as f32 - 0.5) * lane_w;
+
+                for i in 0..resampled_count - 1 {
+                    let mut p0 = edge.physical_geometry[i];
+                    let mut p1 = edge.physical_geometry[i + 1];
+                    let diff = p1 - p0;
+                    let dist = diff.length();
+                    if dist < 0.01 { continue; }
+                    let tangent = diff / dist;
+                    let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x); // Simple flat side
+
+                    p0.y += h_offset;
+                    p1.y += h_offset;
+
+                    let v0_l = p0 + side_dir * (lateral_offset - lane_w * 0.4);
+                    let v0_r = p0 + side_dir * (lateral_offset + lane_w * 0.4);
+                    let v1_l = p1 + side_dir * (lateral_offset - lane_w * 0.4);
+                    let v1_r = p1 + side_dir * (lateral_offset + lane_w * 0.4);
+
+                    vertices.push(v0_l); vertices.push(v0_r); vertices.push(v1_l);
+                    vertices.push(v1_l); vertices.push(v0_r); vertices.push(v1_r);
+                    for _ in 0..6 {
+                        normals.push(Vector3::UP);
+                        colors.push(lane_color);
+                        uvs.push(Vector2::ZERO);
                     }
-                    dir
-                } else if i == resampled_count - 1 {
-                    let mut dir = Vector3::new(1.0, 0.0, 0.0);
-                    let lc = edge.geometry.len();
-                    for j in (1..lc).rev() {
-                        let d = edge.geometry[j] - edge.geometry[j-1];
-                        if d.length() > 0.01 { dir = d.normalized(); break; }
-                    }
-                    dir
-                } else {
-                    let d1 = p - edge.physical_geometry[i - 1];
-                    let d2 = edge.physical_geometry[i + 1] - p;
-                    (d1 + d2).normalized()
-                };
-                
-                let nr = self.get_banked_normal(terrain, p, tangent, half_size);
-                let cross = nr.cross(tangent);
-                let side_dir = if cross.length() > 0.001 { cross.normalized() } else { Vector3::new(0.0, 0.0, 1.0) };
-                
-                let mut miter_scale = 1.0;
-                if i > 0 && i < resampled_count - 1 {
-                    let t_in = (p - edge.physical_geometry[i-1]).normalized();
-                    let cos_half = tangent.dot(t_in);
-                    if cos_half > 0.1 {
-                        miter_scale = (1.0 / cos_half).min(2.0);
-                    }
-                }
-                sides.push(side_dir * half_width * miter_scale);
-            }
-            let mut _total_length = 0.0;
-            for i in 0..resampled_count - 1 {
-                let p0 = edge.physical_geometry[i];
-                let p1 = edge.physical_geometry[i+1];
-                let d2 = Vector2::new(p1.x - p0.x, p1.z - p0.z).length();
-                _total_length += d2;
-            }
-
-            for i in 0..resampled_count - 1 {
-                let mut p0 = edge.physical_geometry[i];
-                let mut p1 = edge.physical_geometry[i + 1];
-                let segment_vec = p1 - p0;
-                let dist = segment_vec.length();
-                if dist < 0.1 { continue; }
-                let segment_tangent = segment_vec / dist;
-                
-                p0.y += h_offset; 
-                p1.y += h_offset;
-                
-                let nr0 = self.get_banked_normal(terrain, p0, segment_tangent, half_size);
-                let _nr1 = self.get_banked_normal(terrain, p1, segment_tangent, half_size);
-                let s0 = sides[i];
-                let s1 = sides[i+1];
-                let next_dist = cumulative_dist + dist;
-
-                let asph_w1 = s0.length();
-                let asph_w2 = s1.length();
-
-                // 1. Asphalt Layer
-                let s0n = s0.normalized();
-                let s1n = s1.normalized();
-                let v0_l = p0 + s0n * asph_w1;
-                let v0_r = p0 - s0n * asph_w1;
-                let v1_l = p1 + s1n * asph_w2;
-                let v1_r = p1 - s1n * asph_w2;
-
-                let mid = (p0 + p1) * 0.5;
-                if v0_l.x.is_nan() || v0_l.z.is_nan() || v1_r.x.is_nan() {
-                    println!("CRITICAL: NaN generated in road.rs physical_geometry! Segment [{} -> {}]", i, i+1);
-                }
-                if (v0_l - mid).length() > 50.0 || (v0_r - mid).length() > 50.0 || (v1_l - mid).length() > 50.0 || (v1_r - mid).length() > 50.0 {
-                    println!("CRITICAL: Massive Geometric Spike (>50m) generated in road.rs! Mid: {:?}. Distances: v0_l={}, v0_r={}, v1_l={}, v1_r={}", mid, (v0_l - mid).length(), (v0_r - mid).length(), (v1_l - mid).length(), (v1_r - mid).length());
-                }
-
-                let fwd = edge.fwd_lanes as f32 / 10.0;
-                let bkw = edge.bkw_lanes as f32 / 10.0;
-                let asph_color = Color::from_rgba(fwd, bkw, 0.0, 1.0);
-
-                vertices.push(v0_l); vertices.push(v0_r); vertices.push(v1_l);
-                vertices.push(v1_l); vertices.push(v0_r); vertices.push(v1_r);
-                for _ in 0..6 { normals.push(nr0); colors.push(asph_color); }
-                uvs.push(Vector2::new(asph_w1, cumulative_dist * 0.2)); uvs.push(Vector2::new(-asph_w1, cumulative_dist * 0.2));
-                uvs.push(Vector2::new(asph_w1, next_dist * 0.2)); uvs.push(Vector2::new(asph_w1, next_dist * 0.2));
-                uvs.push(Vector2::new(-asph_w1, cumulative_dist * 0.2)); uvs.push(Vector2::new(-asph_w1, next_dist * 0.2));
-                // Markings removed to use procedural shader lines instead
-                cumulative_dist = next_dist;
-            }
-
-            // Caps
-            let fwd = edge.fwd_lanes as f32 / 10.0;
-            let bkw = edge.bkw_lanes as f32 / 10.0;
-            let asph_color_cap = Color::from_rgba(fwd, bkw, 0.0, 1.0);
-
-            let cap_steps = 12;
-            let asph_w = half_width;
-            if edge.start_clip == 0.0 && *connection_counts.get(&edge.start_node).unwrap_or(&0) == 1 {
-                let mut p0 = edge.physical_geometry[0];
-                p0.y += h_offset; // Synchronize Y elevation exactly flush with adjoining segment baseline!
-                
-                let tangent = (edge.physical_geometry[1] - p0).normalized();
-                let base_angle = f32::atan2(-tangent.z, -tangent.x); 
-                for i in 0..cap_steps {
-                    let a1 = base_angle - std::f32::consts::FRAC_PI_2 + (i as f32 / cap_steps as f32) * std::f32::consts::PI;
-                    let a2 = base_angle - std::f32::consts::FRAC_PI_2 + ((i + 1) as f32 / cap_steps as f32) * std::f32::consts::PI;
-                    let d1 = Vector3::new(a1.cos(), 0.0, a1.sin()); let d2 = Vector3::new(a2.cos(), 0.0, a2.sin());
-                    // Sweep d2 before d1 permanently locks winding to Face UP in Godot engine space!
-                    vertices.push(p0); vertices.push(p0 + d2 * asph_w); vertices.push(p0 + d1 * asph_w);
-                    for _ in 0..3 { normals.push(Vector3::UP); colors.push(asph_color_cap); uvs.push(Vector2::ZERO); }
-                }
-            }
-            if edge.end_clip == 0.0 && *connection_counts.get(&edge.end_node).unwrap_or(&0) == 1 {
-                let mut p_last = *edge.physical_geometry.last().unwrap();
-                p_last.y += h_offset;
-                
-                let tangent = (p_last - edge.physical_geometry[resampled_count - 2]).normalized();
-                let base_angle = f32::atan2(tangent.z, tangent.x); 
-                for i in 0..cap_steps {
-                    let a1 = base_angle - std::f32::consts::FRAC_PI_2 + (i as f32 / cap_steps as f32) * std::f32::consts::PI;
-                    let a2 = base_angle - std::f32::consts::FRAC_PI_2 + ((i + 1) as f32 / cap_steps as f32) * std::f32::consts::PI;
-                    let d1 = Vector3::new(a1.cos(), 0.0, a1.sin()); let d2 = Vector3::new(a2.cos(), 0.0, a2.sin());
-                    vertices.push(p_last); vertices.push(p_last + d2 * asph_w); vertices.push(p_last + d1 * asph_w);
-                    for _ in 0..3 { normals.push(Vector3::UP); colors.push(asph_color_cap); uvs.push(Vector2::ZERO); }
                 }
             }
         }
 
-        for (_node_id, j_mesh) in &graph.junction_polygons {
-            for i in 0..j_mesh.vertices.len() {
-                vertices.push(j_mesh.vertices[i]);
-                normals.push(Vector3::UP);
-                uvs.push(j_mesh.uvs[i]);
-                colors.push(j_mesh.colors[i]);
-            }
-        }
+        // Junction meshes removed for architectural pivot
 
         NetworkMeshData {
             vertices, normals, uvs, colors,
