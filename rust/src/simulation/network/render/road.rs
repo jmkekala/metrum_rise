@@ -153,26 +153,31 @@ impl TransitRenderer for RoadRenderer {
             let cap_steps = 12;
             let asph_w = half_width;
             if edge.start_clip == 0.0 && *connection_counts.get(&edge.start_node).unwrap_or(&0) == 1 {
-                let p0 = edge.physical_geometry[0];
+                let mut p0 = edge.physical_geometry[0];
+                p0.y += h_offset; // Synchronize Y elevation exactly flush with adjoining segment baseline!
+                
                 let tangent = (edge.physical_geometry[1] - p0).normalized();
                 let base_angle = f32::atan2(-tangent.z, -tangent.x); 
                 for i in 0..cap_steps {
                     let a1 = base_angle - std::f32::consts::FRAC_PI_2 + (i as f32 / cap_steps as f32) * std::f32::consts::PI;
                     let a2 = base_angle - std::f32::consts::FRAC_PI_2 + ((i + 1) as f32 / cap_steps as f32) * std::f32::consts::PI;
                     let d1 = Vector3::new(a1.cos(), 0.0, a1.sin()); let d2 = Vector3::new(a2.cos(), 0.0, a2.sin());
-                    vertices.push(p0); vertices.push(p0 + d1 * asph_w); vertices.push(p0 + d2 * asph_w);
+                    // Sweep d2 before d1 permanently locks winding to Face UP in Godot engine space!
+                    vertices.push(p0); vertices.push(p0 + d2 * asph_w); vertices.push(p0 + d1 * asph_w);
                     for _ in 0..3 { normals.push(Vector3::UP); colors.push(asph_color_cap); uvs.push(Vector2::ZERO); }
                 }
             }
             if edge.end_clip == 0.0 && *connection_counts.get(&edge.end_node).unwrap_or(&0) == 1 {
-                let p_last = *edge.physical_geometry.last().unwrap();
+                let mut p_last = *edge.physical_geometry.last().unwrap();
+                p_last.y += h_offset;
+                
                 let tangent = (p_last - edge.physical_geometry[resampled_count - 2]).normalized();
                 let base_angle = f32::atan2(tangent.z, tangent.x); 
                 for i in 0..cap_steps {
                     let a1 = base_angle - std::f32::consts::FRAC_PI_2 + (i as f32 / cap_steps as f32) * std::f32::consts::PI;
                     let a2 = base_angle - std::f32::consts::FRAC_PI_2 + ((i + 1) as f32 / cap_steps as f32) * std::f32::consts::PI;
                     let d1 = Vector3::new(a1.cos(), 0.0, a1.sin()); let d2 = Vector3::new(a2.cos(), 0.0, a2.sin());
-                    vertices.push(p_last); vertices.push(p_last + d1 * asph_w); vertices.push(p_last + d2 * asph_w);
+                    vertices.push(p_last); vertices.push(p_last + d2 * asph_w); vertices.push(p_last + d1 * asph_w);
                     for _ in 0..3 { normals.push(Vector3::UP); colors.push(asph_color_cap); uvs.push(Vector2::ZERO); }
                 }
             }
