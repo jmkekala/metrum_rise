@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::config;
-use godot::prelude::Vector2;
+use godot::prelude::*;
 use super::TransitNetwork;
 use super::graph::Edge;
 use super::types::NodeType;
@@ -25,7 +25,7 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize) {
             
             for j in 0..edge2_geo.len() - 1 {
                 // Ignore adjacent segments AND segments very close in sequence (jitter protection)
-                if edge_id == other_id && (i as i32 - j as i32).abs() < 30 { continue; }
+                if edge_id == other_id && (i as i32 - j as i32).abs() < 5 { continue; }
 
                 let d2 = edge2_geo[j+1] - edge2_geo[j];
                 let l2 = d2.length();
@@ -63,16 +63,14 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize) {
                 let p2 = edge2_geo[j+1];
                 let closest = interaction::get_closest_point_on_segment(p, p1, p2);
                 
-                // Use 2D distance for snap checks to be robust against terrain height differences
                 let p2d = Vector2::new(p.x, p.z);
                 let closest2d = Vector2::new(closest.x, closest.z);
+                let dist = p2d.distance_to(closest2d);
 
-                if p2d.distance_to(closest2d) < config::INTERSECTION_TOLERANCE { 
+                if dist < config::INTERSECTION_TOLERANCE { 
                     let factor_u = j as f32 + (closest2d - Vector2::new(p1.x, p1.z)).length() / Vector2::new(p2.x - p1.x, p2.z - p1.z).length().max(0.001);
                     
-                    // Unified Node Capture
                     let junction_id = network.graph.find_or_add_node(closest, config::INTERSECTION_TOLERANCE, NodeType::Junction);
-
                     all_splits.entry(edge_id).or_default().push((factor_t, junction_id));
                     all_splits.entry(other_id).or_default().push((factor_u, junction_id));
                 }
@@ -83,25 +81,26 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize) {
     // 2. Process splits for each edge
     for (eid, mut splits) in all_splits {
         splits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-        splits.dedup_by(|a, b| a.1 == b.1 || (a.0 - b.0).abs() < 5.0);
+        // Only dedup if it's the EXACT same junction ID to avoid skipping nearby splits
+        splits.dedup_by(|a, b| a.1 == b.1);
 
         for (factor, junction_id) in splits {
             let seg_idx = factor.floor() as usize;
             let sub_t = factor.fract();
             
             let geo_len = network.graph.edges[eid].geometry.len();
-            if factor < 0.01 {
+            if factor < 0.1 {
                 let start_node = network.graph.edges[eid].start_node;
                 network.graph.unite_nodes(junction_id, start_node);
                 continue;
             }
-            if factor > (geo_len - 1) as f32 - 0.01 {
+            if factor > (geo_len - 1) as f32 - 0.1 {
                 let end_node = network.graph.edges[eid].end_node;
                 network.graph.unite_nodes(junction_id, end_node);
                 continue;
             }
-
-            split_edge(network, eid, seg_idx, sub_t, junction_id);
+            let valid_junction_id = network.graph.get_valid_node(junction_id);
+            split_edge(network, eid, seg_idx, sub_t, valid_junction_id);
         }
     }
 }
@@ -115,7 +114,9 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     part2_geo.extend_from_slice(&old_edge.geometry[segment_idx+1..]);
     
     let mut part1_geo = old_edge.geometry[..=segment_idx].to_vec();
-    part1_geo.push(split_pos);
+    if part1_geo.last().unwrap().distance_to(split_pos) > 0.001 {
+        part1_geo.push(split_pos);
+    }
     
     let primary_type = old_edge.primary_type;
     let allowed_types = old_edge.allowed_types;
@@ -126,7 +127,8 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     let current_congestion = old_edge.current_congestion;
 
     network.graph.edges[edge_id].end_node = junction_node_id;
-    network.graph.edges[edge_id].geometry = part1_geo;
+    network.graph.edges[edge_id].geometry = part1_geo.clone();
+    network.graph.edges[edge_id].physical_geometry = part1_geo;
     network.graph.edges[edge_id].base_cost = crate::simulation::pathing::cost::CostCalculator::calculate_base_cost(&network.graph.edges[edge_id]);
 
     let mut new_edge = Edge {
@@ -143,9 +145,10 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: part2_geo.clone(),
-        physical_geometry: part2_geo,
+        physical_geometry: part2_geo.clone(),
     };
     new_edge.base_cost = crate::simulation::pathing::cost::CostCalculator::calculate_base_cost(&new_edge);
+    
     network.graph.add_edge(new_edge);
 }
 

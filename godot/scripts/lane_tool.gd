@@ -100,8 +100,8 @@ func _build_node_visuals(node_id: int):
 		var mesh_inst = MeshInstance3D.new()
 		add_child(mesh_inst)
 		var sphere = SphereMesh.new()
-		sphere.radius = 0.5
-		sphere.height = 1.0
+		sphere.radius = 0.4
+		sphere.height = 0.8
 		mesh_inst.mesh = sphere
 		mesh_inst.global_position = pos
 		
@@ -119,6 +119,13 @@ func _build_node_visuals(node_id: int):
 			"pos": pos,
 			"mesh_inst": mesh_inst
 		})
+		
+		# Relationship Line: Center to Sphere
+		var node_pos = simulation_node.get_node_pos(node_id)
+		var rel_inst = MeshInstance3D.new()
+		add_child(rel_inst)
+		_draw_line(rel_inst, node_pos, pos, Color(0.5, 0.5, 1.0, 0.4)) # Faded blue
+		connection_lines.push_back(rel_inst)
 		
 	var connections = simulation_node.get_lane_connections_array(node_id)
 	for conn in connections:
@@ -152,7 +159,7 @@ func _get_hovered_lane_sphere():
 	if pos_variant == null: return null
 	var pos: Vector3 = pos_variant
 	
-	var best_dist = 4.0
+	var best_dist = 10.0
 	var best_lane = null
 	for s in lane_spheres:
 		var d = pos.distance_to(s.pos)
@@ -223,3 +230,18 @@ func clear_visuals():
 		l.queue_free()
 	connection_lines.clear()
 	if drag_line_mesh: drag_line_mesh.mesh = null
+
+func _draw_line(mesh_inst: MeshInstance3D, p1: Vector3, p2: Vector3, color: Color):
+	var im = ImmediateMesh.new()
+	mesh_inst.mesh = im
+	
+	var mat = StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mesh_inst.material_override = mat
+	
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	im.surface_add_vertex(p1)
+	im.surface_add_vertex(p2)
+	im.surface_end()

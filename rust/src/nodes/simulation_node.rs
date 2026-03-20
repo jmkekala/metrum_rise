@@ -772,37 +772,65 @@ impl SimulationNode {
     }
 
     #[func]
+    pub fn get_node_pos(&self, node_id: u32) -> Vector3 {
+        let valid_id = self.transit_network.graph.get_valid_node(node_id);
+        if (valid_id as usize) < self.transit_network.graph.nodes.len() {
+            self.transit_network.graph.nodes[valid_id as usize].pos
+        } else {
+            Vector3::ZERO
+        }
+    }
+
+    #[func]
     pub fn get_node_lanes(&self, node_id: u32) -> VarArray {
         let mut arr = VarArray::new();
-        if node_id as usize >= self.transit_network.graph.nodes.len() { return arr; }
         
-        let _node_pos = self.transit_network.graph.nodes[node_id as usize].pos;
+        let valid_node_id = self.transit_network.graph.get_valid_node(node_id);
+        if valid_node_id as usize >= self.transit_network.graph.nodes.len() { return arr; }
+        
+        let _node = &self.transit_network.graph.nodes[valid_node_id as usize];
         
         for (e_id, edge) in self.transit_network.graph.edges.iter().enumerate() {
-            let is_start = edge.start_node == node_id;
-            let is_end = edge.end_node == node_id;
+            if edge.start_node != valid_node_id && edge.end_node != valid_node_id { continue; }
+            
+            let is_start = edge.start_node == valid_node_id;
+            let is_end = edge.end_node == valid_node_id;
             
             if !is_start && !is_end { continue; }
             if edge.physical_geometry.len() < 2 { continue; }
             
-            let tangent = if is_start {
-                (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
-            } else {
-                let last = edge.physical_geometry.len() - 1;
-                (edge.physical_geometry[last] - edge.physical_geometry[last - 1]).normalized()
-            };
-
-            // Use the physical exterior edge to set the node position instead of the center!
-            let current_pos = if is_start { edge.physical_geometry[0] } else { *edge.physical_geometry.last().unwrap() };
+            let junction_pos = self.transit_network.graph.nodes[valid_node_id as usize].pos;
+            // PREFER LOGICAL GEOMETRY to ensure spheres are visible even if the physical mesh was cleared/clipped
+            let geo = if edge.geometry.len() >= 2 { &edge.geometry } else { &edge.physical_geometry };
+            if geo.len() < 2 { continue; }
+            let lc = geo.len();
             
-            let normal = Vector3::new(-tangent.z, 0.0, tangent.x);
+            // 1. Establish robust "Into-the-Leg" direction
+            // Prefer logical geometry to avoid tiny stub segments at the center
+            let mut diff = if is_start {
+                geo[1] - geo[0]
+            } else {
+                geo[lc-2] - geo[lc-1]
+            };
+            
+            if diff.length_squared() < 0.0001 {
+                diff = if is_start { geo[lc-1] - geo[0] } else { geo[0] - geo[lc-1] };
+            }
+            let dir_to_leg = diff.normalized();
+            
+            // 2. Base position offset (5.0m)
+            let mut current_pos = junction_pos + dir_to_leg * 5.0;
+            current_pos.y += 0.6;
+            
+            let normal = Vector3::new(-dir_to_leg.z, 0.0, dir_to_leg.x);
+            
             let fwd_lanes = edge.fwd_lanes;
             let bkw_lanes = edge.bkw_lanes;
             
             for lane in 0..fwd_lanes {
                 let offset = (lane as f32 + 0.5) * 3.0;
                 let mut lane_pos = current_pos + normal * offset;
-                lane_pos.y += 0.5; // Lift up slightly for visual clicking
+                lane_pos.y += 0.6; // Slightly higher for better visibility
                 
                 let mut dict = VarDictionary::new();
                 dict.set("edge_id", e_id as i32);
@@ -816,7 +844,7 @@ impl SimulationNode {
                 let lane_idx = -(lane as i32) - 1;
                 let offset = (lane_idx as f32 + 0.5) * 3.0;
                 let mut lane_pos = current_pos + normal * offset;
-                lane_pos.y += 0.5;
+                lane_pos.y += 0.6;
                 
                 let mut dict = VarDictionary::new();
                 dict.set("edge_id", e_id as i32);
@@ -943,7 +971,7 @@ impl SimulationNode {
             self.transit_network.sync_to_terrain(&self.heightmap);
             self.flatten_terrain_for_roads();
         } else {
-            godot_error!("Invalid heightmap data size for import!");
+            
         }
     }
 }

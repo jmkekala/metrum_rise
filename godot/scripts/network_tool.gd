@@ -164,31 +164,12 @@ func update_main_mesh():
 	# Surface 0: Asphalt Base
 	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	
-	# Surface 1: Marking Decals
-	var m_verts = data.get("marking_vertices", PackedVector3Array())
-	if m_verts.size() >= 3:
-		var m_arrays = []
-		m_arrays.resize(Mesh.ARRAY_MAX)
-		m_arrays[Mesh.ARRAY_VERTEX] = m_verts
-		m_arrays[Mesh.ARRAY_NORMAL] = data.get("marking_normals", PackedVector3Array())
-		m_arrays[Mesh.ARRAY_TEX_UV] = data.get("marking_uvs", PackedVector2Array())
-		m_arrays[Mesh.ARRAY_COLOR] = data.get("marking_colors", PackedColorArray())
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, m_arrays)
+	# Surface 0: Asphalt Base
+	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 
 	mesh_instance.mesh = arr_mesh
 	
-	# Assign Materials
-	var atlas = load("res://assets/textures/marking_atlas.jpg")
-	
+	# Assign Material
 	var asph_mat = ShaderMaterial.new()
 	asph_mat.shader = load("res://assets/materials/road.gdshader")
-	if atlas:
-		asph_mat.set_shader_parameter("marking_atlas", atlas)
 	mesh_instance.set_surface_override_material(0, asph_mat)
-	
-	if arr_mesh.get_surface_count() > 1:
-		var mark_mat = ShaderMaterial.new()
-		mark_mat.shader = load("res://assets/materials/road_markings.gdshader")
-		if atlas:
-			mark_mat.set_shader_parameter("marking_atlas", atlas)
-		mesh_instance.set_surface_override_material(1, mark_mat)

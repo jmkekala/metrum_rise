@@ -87,12 +87,12 @@ impl TransitRenderer for RoadRenderer {
                 }
                 sides.push(side_dir * half_width * miter_scale);
             }
-            let mut total_length = 0.0;
+            let mut _total_length = 0.0;
             for i in 0..resampled_count - 1 {
                 let p0 = edge.physical_geometry[i];
                 let p1 = edge.physical_geometry[i+1];
                 let d2 = Vector2::new(p1.x - p0.x, p1.z - p0.z).length();
-                total_length += d2;
+                _total_length += d2;
             }
 
             for i in 0..resampled_count - 1 {

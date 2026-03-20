@@ -83,7 +83,8 @@ impl TransitGraph {
     pub fn find_or_add_node(&mut self, pos: Vector3, radius: f32, node_type: NodeType) -> u32 {
         for (i, node) in self.nodes.iter().enumerate() {
             if node.pos.distance_to(pos) < radius {
-                return i as u32;
+                let valid_id = self.get_valid_node(i as u32);
+                return valid_id;
             }
         }
         self.add_node(pos, node_type)
@@ -498,16 +499,17 @@ impl TransitGraph {
                         let t1 = (diff.x * l2_dir.y - diff.y * l2_dir.x) / denom;
                         let t2 = (diff.x * l1_dir.y - diff.y * l1_dir.x) / denom;
                         // Prevent near-parallel lines from shooting intersection point to infinity
-                        let max_dist = diff.length() * 1.5;
-                        if t1 > 0.0 && t2 > 0.0 && t1 < max_dist && t2 < max_dist {
-                            // Spatial Inversion Guard: Ensures the control point hasn't mathematically crossed 
-                            // through the node center onto the opposite side of the road (happens on >180 deg outer curves).
-                            let pi_test = pr1_a_2d + l1_dir * t1;
-                            let gap_mid = (pr1_a_2d + pl2_a_2d) * 0.5;
-                            let center_2d = Vector2::new(ct_a.x, ct_a.z);
-                            let center_to_mid = gap_mid - center_2d;
-                            let center_to_pi = pi_test - center_2d;
-                            center_to_mid.dot(center_to_pi) > 0.01 // Must reside in the same hemisphere
+                        // or creating inverted shards.
+                        let max_dist = f32::min(diff.length() * 1.5, 6.0);
+                         if t1 > 0.0 && t2 > 0.0 && t1 < max_dist && t2 < max_dist {
+                             // Spatial Inversion Guard: Ensures the control point hasn't mathematically crossed 
+                             // through the node center onto the opposite side of the road (happens on >180 deg outer curves).
+                             let pi_test = pr1_a_2d + l1_dir * t1;
+                             let gap_mid = (pr1_a_2d + pl2_a_2d) * 0.5;
+                             let center_2d = Vector2::new(ct_a.x, ct_a.z);
+                             let center_to_mid = gap_mid - center_2d;
+                             let center_to_pi = pi_test - center_2d;
+                             center_to_mid.dot(center_to_pi) > 0.01 // Must reside in the same hemisphere
                         } else { false }
                     }
                 } else { false };

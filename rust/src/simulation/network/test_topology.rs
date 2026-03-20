@@ -6,25 +6,26 @@ mod tests {
     use godot::prelude::Vector3;
 
     #[test]
-    fn test_topology_t_junction() {
+    fn test_topology_split_near_end() {
         let mut net = TransitNetwork::new();
-        // straight road
-        net.add_road(vec![
-            Vector3::new(-10.0, 0.0, 0.0),
-            Vector3::new(10.0, 0.0, 0.0),
-        ].into(), 1, 1);
-        
-        // side road connecting to the middle
-        net.add_road(vec![
-            Vector3::new(0.0, 0.0, 10.0),
-            Vector3::new(0.0, 0.0, 0.0),
-        ].into(), 1, 1);
-        
-        println!("Graph has {} edges", net.graph.edges.len());
-        for (i, edge) in net.graph.edges.iter().enumerate() {
-            println!("Edge {}: start node {}, end node {}, geometry len {}", i, edge.start_node, edge.end_node, edge.geometry.len());
+        // long road with many segments
+        let mut pts = Vec::new();
+        for i in 0..10 {
+            pts.push(Vector3::new(i as f32, 0.0, 0.0));
         }
+        net.add_road(pts.into(), 1, 1);
         
+        // side road connecting near the end (segment 8 of 9)
+        net.add_road(vec![
+            Vector3::new(8.0, 0.0, 10.0),
+            Vector3::new(8.0, 0.0, 0.0),
+        ].into(), 1, 1);
+        
+        println!("Near-End Graph has {} edges", net.graph.edges.len());
+        for (i, edge) in net.graph.edges.iter().enumerate() {
+            println!("Edge {}: start node {}, end node {}, geometry: {:?}", i, edge.start_node, edge.end_node, edge.geometry);
+            assert!(edge.geometry.len() >= 2, "Edge {} must have at least 2 points", i);
+        }
     }
 
     #[test]
