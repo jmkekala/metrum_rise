@@ -3,29 +3,39 @@ use super::graph::TransitGraph;
 
 pub fn get_closest_point(graph: &TransitGraph, world_pos: Vector3, max_dist: f32) -> Option<Vector3> {
     let mut closest_pos = None;
-    let mut min_dist_sq = max_dist * max_dist;
+    let mut min_score = f32::MAX;
 
-    // Check nodes first
+    // 1. Check nodes first (Higher priority/Sticky)
+    let node_snap_dist = max_dist * 2.5; 
     for node in &graph.nodes {
-        let d_sq = node.pos.distance_squared_to(world_pos);
-        if d_sq < min_dist_sq {
-            min_dist_sq = d_sq;
-            closest_pos = Some(node.pos);
+        let d = node.pos.distance_to(world_pos);
+        if d < node_snap_dist {
+            let score = d * 0.4; // Nodes are 2.5x more "attractive" than segments
+            if score < min_score {
+                min_score = score;
+                closest_pos = Some(node.pos);
+            }
         }
     }
 
-    // Check edge segments
+    // 2. Check edges (Considering width)
     for edge in &graph.edges {
+        let half_width = edge.width * 0.5;
+        let edge_snap_dist = f32::max(max_dist, half_width + 1.0);
+        
         for i in 0..edge.geometry.len() - 1 {
             let p0 = edge.geometry[i];
             let p1 = edge.geometry[i+1];
             
             let pos = get_closest_point_on_segment(world_pos, p0, p1);
-            let d_sq = pos.distance_squared_to(world_pos);
+            let d = pos.distance_to(world_pos);
             
-            if d_sq < min_dist_sq {
-                min_dist_sq = d_sq;
-                closest_pos = Some(pos);
+            if d < edge_snap_dist {
+                let score = d; 
+                if score < min_score {
+                    min_score = score;
+                    closest_pos = Some(pos);
+                }
             }
         }
     }
