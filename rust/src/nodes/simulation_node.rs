@@ -313,7 +313,7 @@ impl SimulationNode {
         let mut lines = Vec::new(); // Vec of points, 2 points per line segment
         for i in 0..self.agents.count {
             if self.agents.transit[i] != 0 {
-                let mut curr = self.agents.current_node[i];
+                let curr = self.agents.current_node[i];
                 let target = self.agents.target_node[i];
                 
                 // Get terrain height for raw visual height matching
@@ -697,12 +697,17 @@ impl SimulationNode {
 
     #[func]
     pub fn get_road_mesh_data(&self) -> VarDictionary {
-        let (verts, norms, uvs, colors) = self.transit_network.generate_mesh_data(&self.heightmap);
+        let mesh_data = self.transit_network.generate_mesh_data(&self.heightmap);
         let mut dict = VarDictionary::new();
-        dict.set("vertices", verts);
-        dict.set("normals", norms);
-        dict.set("uvs", uvs);
-        dict.set("colors", colors);
+        dict.set("vertices", mesh_data.vertices);
+        dict.set("normals", mesh_data.normals);
+        dict.set("uvs", mesh_data.uvs);
+        dict.set("colors", mesh_data.colors);
+        
+        dict.set("marking_vertices", mesh_data.marking_vertices);
+        dict.set("marking_normals", mesh_data.marking_normals);
+        dict.set("marking_uvs", mesh_data.marking_uvs);
+        dict.set("marking_colors", mesh_data.marking_colors);
         dict
     }
 
@@ -730,6 +735,16 @@ impl SimulationNode {
     }
 
     #[func]
+    pub fn get_network_nodes(&self) -> PackedVector3Array {
+        let mut arr = PackedVector3Array::new();
+        // Return positions for all valid junction nodes
+        for node in &self.transit_network.graph.nodes {
+            arr.push(node.pos);
+        }
+        arr
+    }
+
+    #[func]
     pub fn set_lane_connection(&mut self, node_id: u32, from_edge: i32, from_lane: i32, to_edge: i32, to_lane: i32) {
         if let Some(node) = self.transit_network.graph.nodes.get_mut(node_id as usize) {
             let key = (from_edge as usize, from_lane as i8);
@@ -754,7 +769,7 @@ impl SimulationNode {
         let mut arr = VarArray::new();
         if node_id as usize >= self.transit_network.graph.nodes.len() { return arr; }
         
-        let node_pos = self.transit_network.graph.nodes[node_id as usize].pos;
+        let _node_pos = self.transit_network.graph.nodes[node_id as usize].pos;
         
         for (e_id, edge) in self.transit_network.graph.edges.iter().enumerate() {
             let is_start = edge.start_node == node_id;

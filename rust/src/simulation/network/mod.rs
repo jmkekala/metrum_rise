@@ -2,6 +2,7 @@ use godot::prelude::*;
 pub mod types;
 pub mod graph;
 pub mod render;
+pub use render::NetworkMeshData;
 pub mod terrain;
 pub mod interaction;
 pub mod topology;
@@ -108,7 +109,7 @@ impl TransitNetwork {
         self.hpa_graph = HpaGraph::build(&self.graph);
     }
 
-    pub fn generate_mesh_data(&self, terrain: &crate::simulation::terrain::TerrainSystem) -> (PackedVector3Array, PackedVector3Array, PackedVector2Array, PackedColorArray) {
+    pub fn generate_mesh_data(&self, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData {
         let renderer = RoadRenderer; 
         renderer.generate_mesh_data(&self.graph, terrain)
     }

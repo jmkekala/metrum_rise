@@ -1,7 +1,6 @@
 use crate::simulation::network::graph::TransitGraph;
 use crate::simulation::grid::zoning::{ZoningSystem, ZoneType};
-use godot::prelude::{Vector3, Vector2};
-use std::collections::HashMap;
+use godot::prelude::Vector2;
 
 fn point_in_polygon(pt: godot::prelude::Vector2, poly: &[godot::prelude::Vector2]) -> bool {
     let mut inside = false;

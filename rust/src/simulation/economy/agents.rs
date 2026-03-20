@@ -1,4 +1,3 @@
-use crate::simulation::grid::data_grid::DataGrid;
 
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -82,7 +81,7 @@ impl AgentSystem {
         }
     }
 
-    pub fn spawn_agent(&mut self, home: usize, home_node: u32, target_x: f32, target_y: f32, highway_node: u32, init_x: f32, init_y: f32) {
+    pub fn spawn_agent(&mut self, home: usize, home_node: u32, _target_x: f32, _target_y: f32, highway_node: u32, init_x: f32, init_y: f32) {
         self.home_building.push(home);
         self.work_building.push(usize::MAX);
         self.pos_x.push(init_x);
@@ -208,8 +207,8 @@ impl AgentSystem {
     pub fn tick(&mut self, allocator: &BuildingAllocator, hpa_graph: &HpaGraph, graph: &TransitGraph, delta: f32) {
         let mut rng = rand::thread_rng();
         
-        let w = crate::config::MAP_WIDTH as f32;
-        let h = crate::config::MAP_HEIGHT as f32;
+        let _w = crate::config::MAP_WIDTH as f32;
+        let _h = crate::config::MAP_HEIGHT as f32;
         
         // Safety Scrub: Building indices are volatile during dynamic editing!
         for i in 0..self.count {

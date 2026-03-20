@@ -7,6 +7,8 @@ pub fn get_closest_point(graph: &TransitGraph, world_pos: Vector3, max_dist: f32
 
     // 1. Check nodes first (Higher priority/Sticky)
     let node_snap_dist = max_dist * 2.5; 
+    let mut closest_node_dist = f32::MAX;
+    
     for node in &graph.nodes {
         let d = node.pos.distance_to(world_pos);
         if d < node_snap_dist {
@@ -15,7 +17,19 @@ pub fn get_closest_point(graph: &TransitGraph, world_pos: Vector3, max_dist: f32
                 min_score = score;
                 closest_pos = Some(node.pos);
             }
+            if d < closest_node_dist {
+                closest_node_dist = d;
+            }
         }
+    }
+
+    // ABSOLUTE NODE PRIORITY:
+    // If the cursor is close to an existing intersection node (within the standard snap tolerance),
+    // absolutely lock to it and return early. This prevents the segment distance calculator from 
+    // mathematically overriding the node with a tiny fractional margin point (e.g. 0.1m away on an attached edge),
+    // which results in overlapping collision fragments and chaotic geometric splitting.
+    if closest_node_dist <= max_dist {
+        return closest_pos;
     }
 
     // 2. Check edges (Considering width)

@@ -12,6 +12,8 @@ var red_color = Color(1.0, 0.1, 0.1, 0.6)
 var mesh_instance: MeshInstance3D # The final road mesh
 var blueprint_mesh: MeshInstance3D # The preview line/spline
 var blueprint_mat: StandardMaterial3D
+var node_multimesh: MultiMeshInstance3D # Holographic snapping points
+var cursor_mesh: MeshInstance3D # Active hovered snap cursor
 
 func _ready():
 	_setup_visuals()
@@ -20,10 +22,6 @@ func _setup_visuals():
 	# Final mesh container
 	mesh_instance = MeshInstance3D.new()
 	add_child(mesh_instance)
-	
-	var mat = ShaderMaterial.new()
-	mat.shader = load("res://assets/materials/road.gdshader")
-	mesh_instance.material_override = mat
 	
 	# Blueprint mesh container
 	blueprint_mesh = MeshInstance3D.new()
@@ -37,10 +35,70 @@ func _setup_visuals():
 	blueprint_mat.cull_mode = StandardMaterial3D.CULL_DISABLED
 	blueprint_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
 	blueprint_mesh.material_override = blueprint_mat
+	
+	# Node Snapping Highlights
+	node_multimesh = MultiMeshInstance3D.new()
+	var mm = MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = SphereMesh.new()
+	mm.mesh.radius = 1.0
+	mm.mesh.height = 0.2 # flat disc
+	
+	var mm_mat = StandardMaterial3D.new()
+	mm_mat.albedo_color = Color(0.3, 0.8, 1.0, 0.5) # Light blue indicator
+	mm_mat.emission_enabled = true
+	mm_mat.emission = Color(0.1, 0.5, 0.8)
+	mm_mat.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
+	mm_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	mm_mat.cull_mode = StandardMaterial3D.CULL_DISABLED
+	mm.mesh.surface_set_material(0, mm_mat)
+	
+	node_multimesh.multimesh = mm
+	node_multimesh.position.y += 0.05 # Elevated slightly to prevent Asphalt Z-fighting
+	add_child(node_multimesh)
+	
+	# Active hover cursor
+	cursor_mesh = MeshInstance3D.new()
+	cursor_mesh.mesh = SphereMesh.new()
+	cursor_mesh.mesh.radius = 1.5
+	cursor_mesh.mesh.height = 0.3
+	var cm_mat = StandardMaterial3D.new()
+	cm_mat.albedo_color = Color(0.0, 1.0, 0.5, 0.7) # Green targeting cursor
+	cm_mat.emission_enabled = true
+	cm_mat.emission = Color(0.0, 0.8, 0.2)
+	cm_mat.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
+	cm_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	cm_mat.cull_mode = StandardMaterial3D.CULL_DISABLED
+	cursor_mesh.material_override = cm_mat
+	add_child(cursor_mesh)
 
 func _process(_delta):
 	if active:
+		var pos = get_world_mouse_pos()
+		if cursor_mesh:
+			cursor_mesh.global_position = pos
+			cursor_mesh.global_position.y += 0.35 # Float above road geometries
+			cursor_mesh.visible = is_valid
+			
 		_update_blueprint_visuals()
+		_update_node_visuals()
+	else:
+		if cursor_mesh:
+			cursor_mesh.visible = false
+		if node_multimesh and node_multimesh.multimesh:
+			node_multimesh.multimesh.instance_count = 0
+
+func _update_node_visuals():
+	if not simulation_node: return
+	var nodes = simulation_node.get_network_nodes()
+	if nodes == null: return
+	var mm = node_multimesh.multimesh
+	mm.instance_count = nodes.size()
+	for i in range(nodes.size()):
+		var t = Transform3D()
+		t.origin = nodes[i]
+		t.origin.y += 0.3 # Elevate above the 0.15m asphalt and 0.05m kerb
+		mm.set_instance_transform(i, t)
 
 func _update_blueprint_visuals():
 	if is_valid:
@@ -71,13 +129,14 @@ func get_world_mouse_pos() -> Vector3:
 	var pos: Vector3 = pos_variant
 	
 	# 1. Snap to existing network (High priority)
-	var snapped_pos = simulation_node.get_closest_network_point(pos, 2.5)
+	# Enlarged from 2.5m to 5.0m to visibly catch strokes hovering over the 3.5m asphalt mesh radius!
+	var snapped_pos = simulation_node.get_closest_network_point(pos, 5.0)
 	if snapped_pos != null:
 		is_valid = true
 		return snapped_pos
 	
 	# 2. Dead Zone Check (Too close but not snapped)
-	var too_close_pos = simulation_node.get_closest_network_point(pos, 5.0)
+	var too_close_pos = simulation_node.get_closest_network_point(pos, 8.0)
 	if too_close_pos != null:
 		is_valid = false
 		return pos
@@ -102,5 +161,34 @@ func update_main_mesh():
 	arrays[Mesh.ARRAY_TEX_UV] = data["uvs"]
 	arrays[Mesh.ARRAY_COLOR] = data["colors"]
 	
+	# Surface 0: Asphalt Base
 	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	
+	# Surface 1: Marking Decals
+	var m_verts = data.get("marking_vertices", PackedVector3Array())
+	if m_verts.size() >= 3:
+		var m_arrays = []
+		m_arrays.resize(Mesh.ARRAY_MAX)
+		m_arrays[Mesh.ARRAY_VERTEX] = m_verts
+		m_arrays[Mesh.ARRAY_NORMAL] = data.get("marking_normals", PackedVector3Array())
+		m_arrays[Mesh.ARRAY_TEX_UV] = data.get("marking_uvs", PackedVector2Array())
+		m_arrays[Mesh.ARRAY_COLOR] = data.get("marking_colors", PackedColorArray())
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, m_arrays)
+
 	mesh_instance.mesh = arr_mesh
+	
+	# Assign Materials
+	var atlas = load("res://assets/textures/marking_atlas.jpg")
+	
+	var asph_mat = ShaderMaterial.new()
+	asph_mat.shader = load("res://assets/materials/road.gdshader")
+	if atlas:
+		asph_mat.set_shader_parameter("marking_atlas", atlas)
+	mesh_instance.set_surface_override_material(0, asph_mat)
+	
+	if arr_mesh.get_surface_count() > 1:
+		var mark_mat = ShaderMaterial.new()
+		mark_mat.shader = load("res://assets/materials/road_markings.gdshader")
+		if atlas:
+			mark_mat.set_shader_parameter("marking_atlas", atlas)
+		mesh_instance.set_surface_override_material(1, mark_mat)

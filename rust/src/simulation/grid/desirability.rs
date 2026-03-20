@@ -14,7 +14,7 @@ impl DesirabilitySystem {
         }
     }
 
-    pub fn tick(&mut self, zoning: &ZoningSystem, pollution: &PollutionSystem, noise: &NoiseSystem) {
+    pub fn tick(&mut self, _zoning: &ZoningSystem, pollution: &PollutionSystem, noise: &NoiseSystem) {
         let w = self.grid.width;
         let h = self.grid.height;
 

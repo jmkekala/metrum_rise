@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::config;
-use godot::prelude::{Vector3, Vector2};
+use godot::prelude::Vector2;
 use super::TransitNetwork;
 use super::graph::Edge;
 use super::types::NodeType;

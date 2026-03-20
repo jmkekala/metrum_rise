@@ -51,7 +51,7 @@ mod tests {
         println!("Junction Polygons count: {}", g.junction_polygons.len());
         if let Some(poly) = g.junction_polygons.get(&n_center) {
             println!("Junction Polygon points:");
-            for p in poly {
+            for p in &poly.vertices {
                 println!("  {:?}", p);
             }
         }
