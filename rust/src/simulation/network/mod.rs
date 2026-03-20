@@ -81,32 +81,99 @@ impl TransitNetwork {
             }
         }
 
+        // 3. SUBDIVISION LOGIC (Every 100m)
+        let mut current_start_id = start_id;
+        let mut active_segment = vec![simplified_points[0]];
+        let mut accumulated_dist = 0.0;
+        
+        for i in 0..count - 1 {
+            let p0 = simplified_points[i];
+            let p1 = simplified_points[i+1];
+            let d = p0.distance_to(p1);
+            
+            if accumulated_dist + d > 100.0 {
+                // Determine how many splits we need in this segment
+                let remaining_in_segment = 100.0 - accumulated_dist;
+                let mut t = remaining_in_segment / d;
+                
+                while t <= 1.0 {
+                    let split_pos = p0.lerp(p1, t);
+                    active_segment.push(split_pos);
+                    
+                    // Create intermediate node
+                    let mid_id = self.graph.find_or_add_node(split_pos, 0.1, NodeType::Junction);
+                    
+                    // Add this edge
+                    self.create_edge_internal(current_start_id, mid_id, active_segment.clone(), fwd_lanes, bkw_lanes);
+                    
+                    // Reset for next segment
+                    current_start_id = mid_id;
+                    active_segment = vec![split_pos];
+                    accumulated_dist = 0.0;
+                    
+                    // Move to next 100m increment
+                    let next_dist_target = 100.0;
+                    let remaining_after_split = (1.0 - t) * d;
+                    if remaining_after_split > next_dist_target {
+                        t += next_dist_target / d;
+                    } else {
+                        accumulated_dist = remaining_after_split;
+                        break;
+                    }
+                }
+                
+                if accumulated_dist > 0.0 {
+                   active_segment.push(p1);
+                }
+
+            } else {
+                active_segment.push(p1);
+                accumulated_dist += d;
+            }
+        }
+
+        // Final segment to end_id
+        if current_start_id != end_id && active_segment.len() >= 2 {
+            // Replace last point with snapped end_id pos
+            let last_idx = active_segment.len() - 1;
+            active_segment[last_idx] = self.graph.nodes[end_id as usize].pos;
+            self.create_edge_internal(current_start_id, end_id, active_segment, fwd_lanes, bkw_lanes);
+        }
+
+        // Rebuild massive DoD pathing table for agents
+        self.hpa_graph = HpaGraph::build(&self.graph);
+    }
+
+    /// Helper to consistently add a road edge and handle its side effects
+    fn create_edge_internal(&mut self, start: u32, end: u32, points: Vec<Vector3>, fwd: u8, bkw: u8) {
+        if start == end { return; }
+        
+        // Final sanity check on points
+        if points.len() < 2 { return; }
+
         let edge_id = self.graph.add_edge(graph::Edge {
-            start_node: start_id,
-            end_node: end_id,
+            start_node: start,
+            end_node: end,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            width: ((fwd_lanes + bkw_lanes) as f32 * 3.0).max(2.0),
-            fwd_lanes,
-            bkw_lanes,
+            width: ((fwd + bkw) as f32 * 3.0).max(2.0),
+            fwd_lanes: fwd,
+            bkw_lanes: bkw,
             speed_limit: 50.0,
             base_cost: 0.0,
             current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
-            geometry: simplified_points.clone(),
-            physical_geometry: simplified_points,
+            geometry: points.clone(),
+            physical_geometry: points,
         });
 
         let cost = crate::simulation::pathing::cost::CostCalculator::calculate_base_cost(&self.graph.edges[edge_id]);
         self.graph.edges[edge_id].base_cost = cost;
 
         topology::process_intersections(self, edge_id);
-        self.cleanup_duplicate_edges();
+        self.cleanup_duplicate_edges(); // Clean edge_id if it's dup
         self.graph.rebuild_intersection_clips();
-        
-        // Rebuild massive DoD pathing table for agents
-        self.hpa_graph = HpaGraph::build(&self.graph);
     }
 
     pub fn generate_mesh_data(&self, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData {
