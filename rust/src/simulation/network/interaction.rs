@@ -28,13 +28,24 @@ pub fn get_closest_point(graph: &TransitGraph, world_pos: Vector3, max_dist: f32
             let p1 = edge.geometry[i+1];
             
             let pos = get_closest_point_on_segment(world_pos, p0, p1);
-            let d = pos.distance_to(world_pos);
+            let d_perp = pos.distance_to(world_pos);
             
-            if d < edge_snap_dist {
-                let score = d; 
-                if score < min_score {
-                    min_score = score;
-                    closest_pos = Some(pos);
+            if d_perp < edge_snap_dist {
+                // QUANTIZATION: Snap to discrete points along the segment (e.g. every 2.0m) to prevent jitter
+                let seg_vec = p1 - p0;
+                let seg_len = seg_vec.length();
+                if seg_len > 0.001 {
+                    let dist_along = p0.distance_to(pos);
+                    let snap_step = 2.0; 
+                    let snapped_dist = (dist_along / snap_step).round() * snap_step;
+                    let t = (snapped_dist / seg_len).clamp(0.01, 0.99); // Stay away from nodes to let node-snapping take over
+                    let snapped_pos = p0 + seg_vec * t;
+                    
+                    let score = d_perp; 
+                    if score < min_score {
+                        min_score = score;
+                        closest_pos = Some(snapped_pos);
+                    }
                 }
             }
         }

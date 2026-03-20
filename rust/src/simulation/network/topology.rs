@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use crate::config;
+use godot::prelude::{Vector3, Vector2};
 use super::TransitNetwork;
 use super::graph::Edge;
 use super::types::NodeType;
@@ -62,8 +63,12 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize) {
                 let p2 = edge2_geo[j+1];
                 let closest = interaction::get_closest_point_on_segment(p, p1, p2);
                 
-                if p.distance_to(closest) < config::INTERSECTION_TOLERANCE { 
-                    let factor_u = j as f32 + (closest - p1).length() / (p2 - p1).length().max(0.001);
+                // Use 2D distance for snap checks to be robust against terrain height differences
+                let p2d = Vector2::new(p.x, p.z);
+                let closest2d = Vector2::new(closest.x, closest.z);
+
+                if p2d.distance_to(closest2d) < config::INTERSECTION_TOLERANCE { 
+                    let factor_u = j as f32 + (closest2d - Vector2::new(p1.x, p1.z)).length() / Vector2::new(p2.x - p1.x, p2.z - p1.z).length().max(0.001);
                     
                     // Unified Node Capture
                     let junction_id = network.graph.find_or_add_node(closest, config::INTERSECTION_TOLERANCE, NodeType::Junction);

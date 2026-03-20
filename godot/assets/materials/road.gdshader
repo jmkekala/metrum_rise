@@ -34,24 +34,36 @@ void fragment() {
 	
 	float local_x = uv.x;
 	
-	// 1. Solid Outer Edge Lines (0.05 lane thickness)
-	if (local_x < 0.08 || local_x > total_lanes - 0.08) {
-		color = mix(color, line_color, 0.85 * intersection_fade); // White edge marker
-	} 
-	// 2. Yellow Double Center Line (Splitting Forward vs Backward)
-	else if (bkw_lanes > 0.0 && fwd_lanes > 0.0 && abs(local_x - bkw_lanes) < 0.15) {
-		// Draw two thin yellow lines
-		float yellow_dist = abs(local_x - bkw_lanes);
-		if (yellow_dist > 0.03 && yellow_dist < 0.12) {
-			color = mix(color, vec3(1.0, 0.75, 0.05), 0.9 * intersection_fade); // Distinct Yellow
+	// 0. Kerb & Crosswalk Rendering (Detected via Color.b)
+	if (COLOR.b > 0.5) {
+		color = vec3(0.5, 0.5, 0.5); // Light Gray Concrete Kerb
+		roughness = 0.9;
+	} else if (COLOR.b > 0.1 && COLOR.b < 0.4) {
+		// Pedestrian Crossing (Crosswalk)
+		float stripe = step(0.5, fract(uv.y * 4.0)); 
+		if (uv.x > 0.1 && uv.x < total_lanes - 0.1) {
+			color = mix(color, line_color, stripe * 0.9);
 		}
-	}
-	// 3. Dashed White Lane Dividers (Between identical directions)
-	else {
-		float lane_fract = fract(local_x);
-		if (lane_fract < 0.04 || lane_fract > 0.96) {
-			if (is_dash) {
-				color = mix(color, line_color, 0.85 * intersection_fade); // Dashed white line
+		intersection_fade = 0.0; // Suppress lane markings here
+	} else {
+		// 1. Solid Outer Edge Lines - REMOVED for 3D Kerbs
+		// The 3D kerbs now define the road boundary.
+
+		// 2. Yellow Double Center Line (Splitting Forward vs Backward)
+		if (bkw_lanes > 0.0 && fwd_lanes > 0.0 && abs(local_x - bkw_lanes) < 0.15) {
+			// Draw two thin yellow lines
+			float yellow_dist = abs(local_x - bkw_lanes);
+			if (yellow_dist > 0.03 && yellow_dist < 0.12) {
+				color = mix(color, vec3(1.0, 0.75, 0.05), 0.9 * intersection_fade); // Distinct Yellow
+			}
+		}
+		// 3. Dashed White Lane Dividers (Between identical directions)
+		else {
+			float lane_fract = fract(local_x);
+			if (lane_fract < 0.04 || lane_fract > 0.96) {
+				if (is_dash) {
+					color = mix(color, line_color, 0.85 * intersection_fade); // Dashed white line
+				}
 			}
 		}
 	}

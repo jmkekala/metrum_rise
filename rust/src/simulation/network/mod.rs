@@ -102,6 +102,7 @@ impl TransitNetwork {
 
         topology::process_intersections(self, edge_id);
         self.cleanup_duplicate_edges();
+        self.graph.rebuild_intersection_clips();
         
         // Rebuild massive DoD pathing table for agents
         self.hpa_graph = HpaGraph::build(&self.graph);

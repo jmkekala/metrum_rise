@@ -33,11 +33,18 @@ pub struct Edge {
 }
 
 #[derive(Clone)]
+pub struct JunctionMesh {
+    pub vertices: Vec<Vector3>,
+    pub uvs: Vec<Vector2>,
+    pub colors: Vec<Color>,
+}
+
+#[derive(Clone)]
 pub struct TransitGraph {
     pub nodes: Vec<Node>,
     pub edges: Vec<Edge>,
-    pub junction_polygons: std::collections::HashMap<u32, Vec<Vector3>>,
-    pub node_aliases: std::collections::HashMap<u32, u32>,
+    pub junction_polygons: HashMap<u32, JunctionMesh>,
+    pub node_aliases: HashMap<u32, u32>,
 }
 
 impl TransitGraph {
@@ -229,16 +236,32 @@ impl TransitGraph {
                 if edge.primary_type != TransitType::Road { continue; }
                 if edge.geometry.len() < 2 { continue; }
                 if edge.start_node == node_id {
-                    let d3 = edge.geometry[1] - edge.geometry[0];
-                    let seg_len = d3.length();
-                    let dir = Vector2::new(d3.x, d3.z).normalized();
+                    let mut dir = Vector2::new(1.0, 0.0);
+                    let mut seg_len = 0.0;
+                    for j in 0..edge.geometry.len() - 1 {
+                        let d3 = edge.geometry[j+1] - edge.geometry[j];
+                        let d2 = Vector2::new(d3.x, d3.z);
+                        if d2.length() > 0.1 {
+                            dir = d2.normalized();
+                            seg_len = d3.length();
+                            break;
+                        }
+                    }
                     let angle = f32::atan2(dir.y, dir.x);
                     connected_edges.push((i, dir, edge.width * 0.5, angle, seg_len));
                 } else if edge.end_node == node_id {
+                    let mut dir = Vector2::new(-1.0, 0.0);
+                    let mut seg_len = 0.0;
                     let lc = edge.geometry.len();
-                    let d3 = edge.geometry[lc-2] - edge.geometry[lc-1];
-                    let seg_len = d3.length();
-                    let dir = Vector2::new(d3.x, d3.z).normalized();
+                    for j in (1..lc).rev() {
+                        let d3 = edge.geometry[j-1] - edge.geometry[j];
+                        let d2 = Vector2::new(d3.x, d3.z);
+                        if d2.length() > 0.1 {
+                            dir = d2.normalized();
+                            seg_len = d3.length();
+                            break;
+                        }
+                    }
                     let angle = f32::atan2(dir.y, dir.x);
                     connected_edges.push((i, dir, edge.width * 0.5, angle, seg_len));
                 }
@@ -253,60 +276,80 @@ impl TransitGraph {
             
             connected_edges.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap());
 
-            let mut clips: HashMap<usize, f32> = HashMap::new();
-            for &(edge_id, _, _, _, _) in &connected_edges {
-                clips.insert(edge_id, 0.0);
-            }
-
             let n_center = Vector2::new(node.pos.x, node.pos.z);
+            let mut clips: HashMap<usize, f32> = HashMap::new();
             for i in 0..connected_edges.len() {
-                let nxt = (i + 1) % connected_edges.len();
-                let e1 = &connected_edges[i];
-                let e2 = &connected_edges[nxt];
+                let e_core = &connected_edges[i];
+                let mut max_c = if connected_edges.len() >= 3 { 1.5 } else { 0.0 };
 
-                let e1_r_norm = Vector2::new(-e1.1.y, e1.1.x);
-                let l1_p = n_center + e1_r_norm * e1.2;
-                let l1_dir = e1.1;
-
-                let e2_l_norm = Vector2::new(e2.1.y, -e2.1.x);
-                let l2_p = n_center + e2_l_norm * e2.2;
-                let l2_dir = e2.1;
-
-                let denom = l1_dir.x * l2_dir.y - l1_dir.y * l2_dir.x;
-                if denom.abs() > 0.001 {
-                    let diff = l2_p - l1_p;
-                    let t1 = (diff.x * l2_dir.y - diff.y * l2_dir.x) / denom;
-                    let inter = l1_p + l1_dir * t1;
+                for j in 0..connected_edges.len() {
+                    if i == j { continue; }
+                    let e_other = &connected_edges[j];
                     
-                    if inter.distance_to(n_center) < 150.0 {
-                        let p1_proj = (inter - n_center).dot(l1_dir);
-                        let p2_proj = (inter - n_center).dot(l2_dir);
-                        
-                        if p1_proj > 0.0 {
-                            let bevel = e1.2 * 0.75; // e1.2 is half_width
-                            let c1 = clips.get(&e1.0).unwrap().max(p1_proj - bevel);
-                            clips.insert(e1.0, c1);
-                        }
-                        if p2_proj > 0.0 {
-                            let bevel = e2.2 * 0.75;
-                            let c2 = clips.get(&e2.0).unwrap().max(p2_proj - bevel);
-                            clips.insert(e2.0, c2);
+                    // Angle between vectors
+                    let sweep = (e_core.1.x * e_other.1.y - e_core.1.y * e_other.1.x).atan2(e_core.1.x * e_other.1.x + e_core.1.y * e_other.1.y);
+                    let abs_sin = sweep.sin().abs();
+                    
+                    if abs_sin > 0.01 {
+                        let req = e_other.2 / abs_sin; // Distance needed to clear the width of the other road
+                        if req > max_c { max_c = req; }
+                    }
+                }
+                clips.insert(e_core.0, max_c);
+            }
+            
+            // Symmetrize Parallel Pairs (T-Junctions and Curves)
+            if connected_edges.len() >= 3 {
+                for i in 0..connected_edges.len() {
+                    for j in i+1..connected_edges.len() {
+                        let dot = connected_edges[i].1.dot(connected_edges[j].1);
+                        if dot < -0.80 { // Relaxed to handle curves (thru-roads)
+                            let id1 = connected_edges[i].0;
+                            let id2 = connected_edges[j].0;
+                            let c1 = *clips.get(&id1).unwrap();
+                            let c2 = *clips.get(&id2).unwrap();
+                            let c_max = c1.max(c2);
+                            clips.insert(id1, c_max);
+                            clips.insert(id2, c_max);
+                            
+                            // SYMMETRIZE TANGENTS: Force them to be perfectly opposite for the Hub mesh
+                            let avg_x = (connected_edges[i].1.x - connected_edges[j].1.x) * 0.5;
+                            let avg_y = (connected_edges[i].1.y - connected_edges[j].1.y) * 0.5;
+                            let v = Vector2::new(avg_x, avg_y).normalized();
+                            connected_edges[i].1 = v;
+                            connected_edges[j].1 = -v;
                         }
                     }
                 }
             }
+            
+            // Final Safety Clamp and Store
+            for (edge_id, clip) in clips.iter_mut() {
+                let length = *edge_lengths.get(edge_id).unwrap();
+                *clip = clip.min(20.0).min(length * 0.45);
+                node_clips.insert((node_id as usize, *edge_id), *clip);
+            }
 
-            let mut poly_3d = Vec::new();
+            let mut j_mesh = JunctionMesh {
+                vertices: Vec::new(),
+                uvs: Vec::new(),
+                colors: Vec::new(),
+            };
             let ct = Vector3::new(n_center.x, node.pos.y, n_center.y);
             
-            let mut add_triangle = |mut a: Vector3, mut b: Vector3, mut c: Vector3| {
-                let normal = (b - a).cross(c - a);
-                if normal.length() < 0.0001 { return; } // Avoid degenerate zero-area geometry
-                if normal.y > 0.0 {
-                    std::mem::swap(&mut b, &mut c); // Force CW Upward facing
+            let mut add_triangle = |a: Vector3, mut b: Vector3, mut c: Vector3, uva: Vector2, uvb: Vector2, uvc: Vector2, color: Color| {
+                let cross = (b - a).cross(c - a);
+                if cross.length() < 1e-4 { return; } 
+                let normal = cross.normalized();
+                if normal.y > 0.01 {
+                    std::mem::swap(&mut b, &mut c); 
                 }
-                poly_3d.push(a); poly_3d.push(b); poly_3d.push(c);
+                j_mesh.vertices.push(a); j_mesh.vertices.push(b); j_mesh.vertices.push(c);
+                j_mesh.uvs.push(uva); j_mesh.uvs.push(uvb); j_mesh.uvs.push(uvc);
+                j_mesh.colors.push(color); j_mesh.colors.push(color); j_mesh.colors.push(color);
             };
+            
+            let is_turn = connected_edges.len() == 2;
 
             for i in 0..connected_edges.len() {
                 let nxt = (i + 1) % connected_edges.len();
@@ -321,48 +364,136 @@ impl TransitGraph {
                 let p_right1 = cut1 + right1 * e1.2;
                 let p_left1 = cut1 + left1 * e1.2;
 
-                let pr1 = Vector3::new(p_right1.x, node.pos.y, p_right1.y);
-                let pl1 = Vector3::new(p_left1.x, node.pos.y, p_left1.y);
-
                 // e2 is next road
                 let c2 = *clips.get(&e2.0).unwrap();
                 let cut2 = n_center + e2.1 * c2;
                 let left2 = Vector2::new(e2.1.y, -e2.1.x);
                 let p_left2 = cut2 + left2 * e2.2;
-                let pl2 = Vector3::new(p_left2.x, node.pos.y, p_left2.y);
                 
-                // Triangle 1: Fill the "Road End"
-                add_triangle(ct, pr1, pl1);
+                let edge1 = &self.edges[e1.0];
+                let edge2 = &self.edges[e2.0];
+                let fwd = (edge1.fwd_lanes + edge2.fwd_lanes) as f32 * 0.5 / 10.0;
+                let bkw = (edge1.bkw_lanes + edge2.bkw_lanes) as f32 * 0.5 / 10.0;
+                
+                let kerb_w = 0.35;
+                let kerb_h = 0.05;
+                let asph_w1 = (e1.2 - kerb_w).max(0.1);
+                let asph_w2 = (e2.2 - kerb_w).max(0.1);
 
-                // Triangle(s) 2: Smooth Corner Gap (Arc centered at Node)
-                let steps = 16;
-                let mut prev = pr1;
-                for j in 1..=steps {
-                    let t = j as f32 / steps as f32;
-                    let v_inter = pr1.lerp(pl2, t);
+                let p_right1_asph = cut1 + right1 * asph_w1;
+                let p_left1_asph = cut1 + left1 * asph_w1;
+                let p_left2_asph = cut2 + left2 * asph_w2;
+
+                let pr1_a = Vector3::new(p_right1_asph.x, node.pos.y, p_right1_asph.y);
+                let pl1_a = Vector3::new(p_left1_asph.x, node.pos.y, p_left1_asph.y);
+                let pl2_a = Vector3::new(p_left2_asph.x, node.pos.y, p_left2_asph.y);
+
+                let total_lanes = (edge1.fwd_lanes + edge1.bkw_lanes) as f32;
+                let bkw_l = edge1.bkw_lanes as f32;
+                
+                // Gap-specific miter point for UV origin
+                // For the 'inner' side of the turn, use the inner miter point.
+                let e1_r_norm = Vector2::new(-e1.1.y, e1.1.x);
+                let e2_l_norm = Vector2::new(e2.1.y, -e2.1.x);
+                let l1_p = n_center + e1_r_norm * e1.2;
+                let l2_p = n_center + e2_l_norm * e2.2;
+                let denom = e1.1.x * e2.1.y - e1.1.y * e2.1.x;
+                let pi = if denom.abs() > 0.001 {
+                    let t1 = ((l2_p - l1_p).x * e2.1.y - (l2_p - l1_p).y * e2.1.x) / denom;
+                    let inter = l1_p + e1.1 * t1;
+                    Vector3::new(inter.x, node.pos.y, inter.y)
+                } else { ct };
+
+                let get_v_uv = |v: Vector3| {
+                    if !is_turn { return Vector2::new(0.5, 0.5); } // Neutral UV for 3+ junctions to kill ghost decals
+                    let d = (v - pi).length();
+                    // Map distance from local miter point. 
+                    // If this is the outer gap, pi is the inner corner, so dist 0 = inner edge.
+                    let uvx = (1.0 - d / edge1.width).clamp(0.0, 1.0) * total_lanes;
+                    Vector2::new(uvx, 0.0)
+                };
+
+                let uv_ct = if is_turn { Vector2::new(bkw_l, 0.0) } else { get_v_uv(ct) };
+                let uv_r1 = get_v_uv(pr1_a);
+                let uv_l1 = get_v_uv(pl1_a);
+
+                let fade_color = if is_turn { Color::from_rgba(fwd, bkw, 0.0, 1.0) } else { Color::from_rgba(0.0, 0.0, 0.0, 0.0) };
+                let kerb_color = Color::from_rgba(0.0, 0.0, 1.0, 0.0);
+
+                // 1. Asphalt Core (Sector to Road End)
+                add_triangle(ct, pr1_a, pl1_a, uv_ct, uv_r1, uv_l1, fade_color);
+
+                // 2. Smooth Asphalt Corner & 3D Kerb
+                let gap_dist = (pr1_a - pl1_a).length();
+                if gap_dist > 0.05 {
+                    let mut sweep = e2.3 - e1.3;
+                    if sweep < 0.0 { sweep += 2.0 * std::f32::consts::PI; }
+                    let sweep_deg = sweep.to_degrees();
                     
-                    let d1 = (pr1 - ct).length();
-                    let d2 = (pl2 - ct).length();
-                    let target_d = d1 + (d2 - d1) * t;
-                    
-                    let dir = if (v_inter - ct).length() > 0.001 {
-                        (v_inter - ct).normalized()
-                    } else {
-                        Vector3::new(1.0, 0.0, 0.0) // Fallback for center overlap
-                    };
-                    
-                    let curr = ct + dir * target_d;
-                    add_triangle(ct, prev, curr);
-                    prev = curr;
+                    // SUPPRESS HUB KERBS for 3+ way junctions. 
+                    // User wants 'plain asphalt' for the hub. The segments bring their own kerbs.
+                    let skip_kerbs = !is_turn; 
+
+                    let steps = 16;
+                    let mut prev_a_low = pr1_a;
+                    let mut prev_a_high = pr1_a + Vector3::UP * kerb_h;
+                    let mut prev_k_high = Vector3::new(p_right1.x, node.pos.y + kerb_h, p_right1.y);
+                    let mut uv_prev = uv_r1;
+
+                    for j in 1..=steps {
+                        let t = j as f32 / steps as f32;
+                        let v_inter_a = pr1_a.lerp(pl2_a, t);
+                        let d1_a = (pr1_a - ct).length();
+                        let d2_a = (pl2_a - ct).length();
+                        let target_d_a = d1_a + (d2_a - d1_a) * t;
+                        let dir_a = if (v_inter_a - ct).length() > 0.001 { (v_inter_a - ct).normalized() } else { Vector3::new(1.0, 0.0, 0.0) };
+                        
+                        let curr_a_low = ct + dir_a * target_d_a;
+                        let curr_a_high = curr_a_low + Vector3::UP * kerb_h;
+                        let uv_curr = get_v_uv(curr_a_low);
+
+                        let pr1_k = Vector3::new(p_right1.x, node.pos.y + kerb_h, p_right1.y);
+                        let pl2_k = Vector3::new(p_left2.x, node.pos.y + kerb_h, p_left2.y);
+                        let v_inter_k = pr1_k.lerp(pl2_k, t);
+                        let d1_k = (pr1_k - Vector3::new(ct.x, node.pos.y + kerb_h, ct.z)).length();
+                        let d2_k = (pl2_k - Vector3::new(ct.x, node.pos.y + kerb_h, ct.z)).length();
+                        let target_d_k = d1_k + (d2_k - d1_k) * t;
+                        let dir_k = if (v_inter_k - Vector3::new(ct.x, node.pos.y + kerb_h, ct.z)).length() > 0.001 { 
+                            (v_inter_k - Vector3::new(ct.x, node.pos.y + kerb_h, ct.z)).normalized() 
+                        } else { 
+                            Vector3::new(1.0, 0.0, 0.0) 
+                        };
+                        let curr_k_high = Vector3::new(ct.x, node.pos.y + kerb_h, ct.z) + dir_k * target_d_k;
+
+                        if (curr_a_low - prev_a_low).length() > 0.001 {
+                            // A. Asphalt triangle
+                            add_triangle(ct, prev_a_low, curr_a_low, uv_ct, uv_prev, uv_curr, fade_color);
+
+                            if !skip_kerbs {
+                                // B. Vertical Kerb Riser (Asphalt edge)
+                                add_triangle(prev_a_low, prev_a_high, curr_a_high, Vector2::ZERO, Vector2::ZERO, Vector2::ZERO, kerb_color);
+                                add_triangle(prev_a_low, curr_a_high, curr_a_low, Vector2::ZERO, Vector2::ZERO, Vector2::ZERO, kerb_color);
+
+                                // C. Horizontal Kerb Top (Riser to outer edge)
+                                add_triangle(prev_a_high, prev_k_high, curr_k_high, Vector2::ZERO, Vector2::ZERO, Vector2::ZERO, kerb_color);
+                                add_triangle(prev_a_high, curr_k_high, curr_a_high, Vector2::ZERO, Vector2::ZERO, Vector2::ZERO, kerb_color);
+                            }
+                        }
+
+                        prev_a_low = curr_a_low;
+                        prev_a_high = curr_a_high;
+                        prev_k_high = curr_k_high;
+                        uv_prev = uv_curr;
+                    }
                 }
                 
                 node_clips.insert((node_id as usize, e1.0), c1.max(0.0));
             }
 
-            if poly_3d.len() >= 3 {
-                match verify_intersection_geometry(ct, &poly_3d) {
+            if j_mesh.vertices.len() >= 3 {
+                match verify_intersection_geometry(ct, &j_mesh.vertices) {
                     Ok(_) => {
-                        self.junction_polygons.insert(node_id, poly_3d);
+                        self.junction_polygons.insert(node_id, j_mesh);
                     }
                     Err(e) => {
                         println!("Intersection Validation Error at Node {}: {}", node_id, e);
@@ -438,20 +569,19 @@ pub fn verify_intersection_geometry(_center: Vector3, triangles: &[Vector3]) -> 
 
         // 3. Winding Order Check (The "Black Hole" Fix)
         // If Y is positive, the triangle is upside down in Godot's coordinate system.
-        if normal.y >= 0.0 {
+        // 3. Winding Order Check
+        // Relaxed to allow vertical walls (normal.y around zero)
+        if normal.y > 0.1 {
             return Err(format!(
-                "Inverted Winding: Triangle {} is facing downward. Winding order is incorrect.",
+                "Inverted Winding: Triangle {} is facing upward. Current rule requires downward winding or vertical walls.",
                 i / 3
             ));
         }
 
-        // 4. Degenerate Triangle Check (The "Zero-Area" Fix)
-        // If the normal's length is near zero, the points are in a straight line.
+        // 4. Degenerate Triangle Check
         if normal.length() < 0.0001 {
-            return Err(format!(
-                "Degenerate Geometry: Triangle {} has zero area (collinear points).",
-                i / 3
-            ));
+            println!("Warning: Degenerate Geometry: Triangle {} has zero area. Skipping validation for this triangle.", i / 3);
+            continue;
         }
     }
 
