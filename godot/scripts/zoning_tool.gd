@@ -154,7 +154,11 @@ func _process(delta):
 						var local_n = Vector2(-local_tan.y, local_tan.x)
 						packed.push_back(fronts[i] + local_n * depth_amt)
 					
-					simulation_node.update_zoning_polygon(editing_poly_id, packed, fronts.size())
+					var clipped = get_clipped_polygon(packed, fronts, editing_poly_id, edge_idx)
+					var final_packed = clipped["poly"]
+					var final_fronts_count = clipped["fronts_count"]
+					if final_packed.size() >= 3:
+						simulation_node.update_zoning_polygon(editing_poly_id, final_packed, final_fronts_count)
 
 func _unhandled_input(event):
 	if not active: return
@@ -254,8 +258,8 @@ func update_preview_4_points():
 	else:
 		depth_amt = max(0.5, depth_amt)
 		
-	var pts: Array[Vector2] = []
-	for p in fronts: pts.append(p)
+	var pts = PackedVector2Array()
+	for p in fronts: pts.push_back(p)
 	for i in range(fronts.size() - 1, -1, -1):
 		var local_tan = Vector2()
 		if i > 0 and i < fronts.size() - 1:
@@ -265,15 +269,21 @@ func update_preview_4_points():
 		else:
 			local_tan = (fronts[-1] - fronts[-2]).normalized()
 		var local_n = Vector2(-local_tan.y, local_tan.x)
-		pts.append(fronts[i] + local_n * depth_amt)
+		pts.push_back(fronts[i] + local_n * depth_amt)
+	
+	var clipped = get_clipped_polygon(pts, fronts, -1, attached_edge_idx)
+	var final_pts = clipped["poly"]
+	if final_pts.size() < 3:
+		preview_mesh.mesh = null
+		return
 	
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
 	
-	var indices = Geometry2D.triangulate_polygon(pts)
+	var indices = Geometry2D.triangulate_polygon(final_pts)
 	if indices.size() > 0:
 		for idx in indices:
-			var v = pts[idx]
+			var v = final_pts[idx]
 			var y = simulation_node.get_height_at(v) + 0.5
 			st.add_vertex(Vector3(v.x, y, v.y))
 		st.generate_normals()
@@ -309,7 +319,12 @@ func commit_polygon():
 		var local_n = Vector2(-local_tan.y, local_tan.x)
 		packed.push_back(fronts[i] + local_n * depth_amt)
 	
-	simulation_node.add_zoning_polygon(attached_edge_idx, current_zone_type, packed, depth_amt, fronts.size())
+	var clipped = get_clipped_polygon(packed, fronts, -1, attached_edge_idx)
+	var final_packed = clipped["poly"]
+	var final_fronts_count = clipped["fronts_count"]
+	
+	if final_packed.size() >= 3:
+		simulation_node.add_zoning_polygon(attached_edge_idx, current_zone_type, final_packed, depth_amt, final_fronts_count)
 
 func draw_all_frontages():
 	var all_data = simulation_node.get_zoning_frontage_data()
@@ -355,3 +370,91 @@ func draw_all_frontages():
 		hst.add_vertex(Vector3(p.x+r, y, p.y-r))
 		hst.add_vertex(Vector3(p.x, y, p.y+r))
 	handles_mesh.mesh = hst.commit()
+
+func get_clipped_polygon(base_poly: PackedVector2Array, original_fronts: PackedVector2Array, edit_poly_id: int, attach_edge: int) -> Dictionary:
+	var floats = simulation_node.get_obstacle_polygons_float_array(edit_poly_id, attach_edge)
+	var obstacles = []
+	if floats.size() > 0:
+		var num_polys = int(floats[0])
+		var i = 1
+		for p in range(num_polys):
+			var num_verts = int(floats[i])
+			i += 1
+			var poly = PackedVector2Array()
+			for v in range(num_verts):
+				poly.push_back(Vector2(floats[i], floats[i+1]))
+				i += 2
+			obstacles.append(poly)
+			
+	var current_polys = [base_poly]
+	for obs in obstacles:
+		var next_polys = []
+		for p in current_polys:
+			var res = Geometry2D.clip_polygons(p, obs)
+			for r in res:
+				next_polys.append(r)
+		current_polys = next_polys
+		
+	if current_polys.size() == 0:
+		return { "poly": PackedVector2Array(), "fronts_count": 0 }
+		
+	var best_poly = current_polys[0]
+	var best_area = 0.0
+	for p in current_polys:
+		var area = abs(get_poly_area(p))
+		if area > best_area:
+			best_area = area
+			best_poly = p
+			
+	var on_frontage = []
+	for i in range(best_poly.size()):
+		var p = best_poly[i]
+		var is_on = false
+		for j in range(original_fronts.size() - 1):
+			var a = original_fronts[j]
+			var b = original_fronts[j+1]
+			var l2 = a.distance_squared_to(b)
+			var dist = 0.0
+			if l2 == 0.0:
+				dist = p.distance_to(a)
+			else:
+				var t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2
+				t = clamp(t, 0.0, 1.0)
+				var proj = Vector2(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y))
+				dist = p.distance_to(proj)
+			if dist < 0.5:
+				is_on = true
+				break
+		on_frontage.append(is_on)
+		
+	var n = best_poly.size()
+	var best_start = 0
+	var best_len = 0
+	for i in range(n):
+		if on_frontage[i]:
+			var current_len = 0
+			for j in range(n):
+				var idx = (i + j) % n
+				if on_frontage[idx]:
+					current_len += 1
+				else:
+					break
+			if current_len > best_len:
+				best_len = current_len
+				best_start = i
+				
+	var aligned = PackedVector2Array()
+	if best_len >= 2:
+		for i in range(n):
+			aligned.push_back(best_poly[(best_start + i) % n])
+		return { "poly": aligned, "fronts_count": best_len }
+	else:
+		return { "poly": best_poly, "fronts_count": original_fronts.size() }
+
+func get_poly_area(poly: PackedVector2Array) -> float:
+	var area = 0.0
+	var n = poly.size()
+	for i in range(n):
+		var j = (i + 1) % n
+		area += poly[i].x * poly[j].y - poly[j].x * poly[i].y
+	return area / 2.0

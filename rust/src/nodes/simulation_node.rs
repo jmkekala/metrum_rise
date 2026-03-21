@@ -182,6 +182,81 @@ impl SimulationNode {
     }
 
     #[func]
+    pub fn get_obstacle_polygons_float_array(&self, ignore_poly_id: i32, ignore_edge_idx: i32) -> PackedFloat32Array {
+        let mut data = Vec::new();
+        let mut count = 0.0;
+        data.push(0.0); // Placeholder for count
+
+        for (i, edge) in self.transit_network.graph.edges.iter().enumerate() {
+            if i as i32 == ignore_edge_idx { continue; }
+            let hw = edge.width / 2.0;
+
+            let mut poly = Vec::new();
+            if edge.physical_geometry.is_empty() {
+                let n1 = godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.start_node as usize].pos.x, self.transit_network.graph.nodes[edge.start_node as usize].pos.z);
+                let n2 = godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.end_node as usize].pos.x, self.transit_network.graph.nodes[edge.end_node as usize].pos.z);
+                let dir = (n2 - n1).normalized();
+                if dir.length_squared() > 0.0 {
+                    let norm = godot::prelude::Vector2::new(-dir.y, dir.x);
+                    poly.push(n1 + norm * hw);
+                    poly.push(n2 + norm * hw);
+                    poly.push(n2 - norm * hw);
+                    poly.push(n1 - norm * hw);
+                }
+            } else {
+                let mut left = Vec::new();
+                let mut right = Vec::new();
+                let len = edge.physical_geometry.len();
+                for j in 0..len {
+                    let curr = godot::prelude::Vector2::new(edge.physical_geometry[j].x, edge.physical_geometry[j].z);
+                    let tangent = if len < 2 {
+                        godot::prelude::Vector2::new(1.0, 0.0)
+                    } else if j == 0 {
+                        (godot::prelude::Vector2::new(edge.physical_geometry[1].x, edge.physical_geometry[1].z) - curr).normalized()
+                    } else if j == len - 1 {
+                        (curr - godot::prelude::Vector2::new(edge.physical_geometry[j-1].x, edge.physical_geometry[j-1].z)).normalized()
+                    } else {
+                        let prev = godot::prelude::Vector2::new(edge.physical_geometry[j-1].x, edge.physical_geometry[j-1].z);
+                        let next = godot::prelude::Vector2::new(edge.physical_geometry[j+1].x, edge.physical_geometry[j+1].z);
+                        let d1 = (curr - prev).normalized();
+                        let d2 = (next - curr).normalized();
+                        let t = d1 + d2;
+                        if t.length_squared() > 0.0 { t.normalized() } else { d2 }
+                    };
+                    let norm = godot::prelude::Vector2::new(-tangent.y, tangent.x);
+                    left.push(curr + norm * hw);
+                    right.push(curr - norm * hw);
+                }
+                for v in left { poly.push(v); }
+                for v in right.into_iter().rev() { poly.push(v); }
+            }
+
+            if !poly.is_empty() {
+                data.push(poly.len() as f32);
+                for v in poly {
+                    data.push(v.x);
+                    data.push(v.y);
+                }
+                count += 1.0;
+            }
+        }
+
+        for zone in &self.zoning.polygons {
+            if zone.id as i32 == ignore_poly_id { continue; }
+            if zone.vertices.is_empty() { continue; }
+            data.push(zone.vertices.len() as f32);
+            for v in &zone.vertices {
+                data.push(v.x);
+                data.push(v.y);
+            }
+            count += 1.0;
+        }
+
+        data[0] = count;
+        PackedFloat32Array::from_iter(data)
+    }
+
+    #[func]
     pub fn get_hovered_edge(&self, world_x: f32, world_z: f32) -> i32 {
         let pos = godot::prelude::Vector3::new(world_x, 0.0, world_z);
         let mut best_dist = f32::MAX;
