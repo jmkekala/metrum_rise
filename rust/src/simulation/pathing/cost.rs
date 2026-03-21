@@ -5,15 +5,14 @@ pub struct CostCalculator;
 
 impl CostCalculator {
     /// Calculates the baseline intrinsic cost of traversing an edge.
-    /// This combines the Time Cost (Distance / Speed Limit) with an exponential 
-    /// Penalty for steep incline slopes.
-    pub fn calculate_base_cost(edge: &Edge) -> f32 {
+    /// Returns (base_cost, physical_length)
+    pub fn calculate_costs(edge: &Edge) -> (f32, f32) {
         let mut total_distance = 0.0;
         let mut max_slope = 0.0_f32;
 
         let points = &edge.geometry;
         if points.len() < 2 {
-            return 0.0;
+            return (0.0, 0.0);
         }
 
         for i in 0..points.len() - 1 {
@@ -47,6 +46,6 @@ impl CostCalculator {
             1.0
         };
 
-        time_cost * slope_penalty
+        (time_cost * slope_penalty, total_distance)
     }
 }

@@ -129,7 +129,9 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     network.graph.edges[edge_id].end_node = junction_node_id;
     network.graph.edges[edge_id].geometry = part1_geo.clone();
     network.graph.edges[edge_id].physical_geometry = part1_geo;
-    network.graph.edges[edge_id].base_cost = crate::simulation::pathing::cost::CostCalculator::calculate_base_cost(&network.graph.edges[edge_id]);
+    let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&network.graph.edges[edge_id]);
+    network.graph.edges[edge_id].base_cost = cost;
+    network.graph.edges[edge_id].physical_length = length;
 
     let mut new_edge = Edge {
         start_node: junction_node_id,
@@ -141,13 +143,17 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
         bkw_lanes,
         speed_limit,
         base_cost: 0.0,
+        physical_length: 0.0,
         current_congestion,
         start_clip: 0.0,
         end_clip: 0.0,
         geometry: part2_geo.clone(),
         physical_geometry: part2_geo.clone(),
+        parking_occupied: 0,
     };
-    new_edge.base_cost = crate::simulation::pathing::cost::CostCalculator::calculate_base_cost(&new_edge);
+    let (cost_new, length_new) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);
+    new_edge.base_cost = cost_new;
+    new_edge.physical_length = length_new;
     
     network.graph.add_edge(new_edge);
 }

@@ -174,19 +174,31 @@ func _unhandled_input(event):
 		if event.pressed:
 			if state == 0:
 				# Check for handles first
-				var handle_pts = simulation_node.get_zoning_frontage_points()
+				var all_data = simulation_node.get_zoning_frontage_data()
+				var counts = simulation_node.get_zoning_frontage_counts()
 				var ids = simulation_node.get_zoning_polygon_ids()
+				
+				var offset = 0
 				for i in range(ids.size()):
-					if world_pos.distance_to(handle_pts[i*2]) < 2.0:
+					var count = counts[i]
+					if count < 2: 
+						offset += count
+						continue
+					
+					var p_start = all_data[offset]
+					var p_end = all_data[offset + count - 1]
+					
+					if world_pos.distance_to(p_start) < 2.0:
 						editing_poly_id = ids[i]
 						editing_handle_idx = 0
 						state = 3
 						return
-					if world_pos.distance_to(handle_pts[i*2+1]) < 2.0:
+					if world_pos.distance_to(p_end) < 2.0:
 						editing_poly_id = ids[i]
 						editing_handle_idx = 1
 						state = 3
 						return
+					offset += count
 						
 				if attached_edge_idx != -1:
 					frontage_start = current_mouse_pos
@@ -300,8 +312,10 @@ func commit_polygon():
 	simulation_node.add_zoning_polygon(attached_edge_idx, current_zone_type, packed, depth_amt, fronts.size())
 
 func draw_all_frontages():
-	var fronts = simulation_node.get_zoning_frontage_points()
-	if fronts.size() < 2:
+	var all_data = simulation_node.get_zoning_frontage_data()
+	var counts = simulation_node.get_zoning_frontage_counts()
+	
+	if counts.size() == 0:
 		global_frontages_mesh.mesh = null
 		handles_mesh.mesh = null
 		return
@@ -309,21 +323,32 @@ func draw_all_frontages():
 	var st = SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_LINES)
 	
-	for idx in range(0, fronts.size(), 2):
-		var v0 = fronts[idx]
-		var v1 = fronts[idx+1]
-		var y0 = simulation_node.get_height_at(v0) + 0.8
-		var y1 = simulation_node.get_height_at(v1) + 0.8
-		st.add_vertex(Vector3(v0.x, y0, v0.y))
-		st.add_vertex(Vector3(v1.x, y1, v1.y))
+	var all_handle_pts = []
+	var offset = 0
+	
+	for count in counts:
+		if count < 2:
+			offset += count
+			continue
+			
+		all_handle_pts.push_back(all_data[offset])
+		all_handle_pts.push_back(all_data[offset + count - 1])
+		
+		for i in range(count - 1):
+			var v0 = all_data[offset + i]
+			var v1 = all_data[offset + i + 1]
+			var y0 = simulation_node.get_height_at(v0) + 0.8
+			var y1 = simulation_node.get_height_at(v1) + 0.8
+			st.add_vertex(Vector3(v0.x, y0, v0.y))
+			st.add_vertex(Vector3(v1.x, y1, v1.y))
+		offset += count
 		
 	global_frontages_mesh.mesh = st.commit()
 	
 	# Draw Handles
-	var handle_pts = fronts # Reuse the points from get_zoning_frontage_points
 	var hst = SurfaceTool.new()
 	hst.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for p in handle_pts:
+	for p in all_handle_pts:
 		var y = simulation_node.get_height_at(p) + 1.0
 		var r = 0.4
 		hst.add_vertex(Vector3(p.x-r, y, p.y-r))

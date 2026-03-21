@@ -276,7 +276,7 @@ impl SimulationNode {
 
         // 3. Economy & Building Allocation
         self.demand.tick();
-        self.allocator.tick(&mut self.demand, &self.zoning, &self.desirability, &self.noise, &mut self.agents, &self.transit_network.graph);
+        self.allocator.tick(&mut self.demand, &self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network);
     }
     #[func]
     pub fn get_agent_transforms(&self) -> PackedFloat32Array {
@@ -298,11 +298,45 @@ impl SimulationNode {
             let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
             let world_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 1.0;
 
-            let scale = 1.0; 
+            let mut scale_x = 1.0;
+            let mut scale_y = 1.0;
+            let mut scale_z = 1.0;
+            let mut basis_x = Vector3::RIGHT;
+            let mut basis_y = Vector3::UP;
+            let mut basis_z = Vector3::BACK;
 
-            buffer.push(scale); buffer.push(0.0); buffer.push(0.0); buffer.push(world_x);
-            buffer.push(0.0); buffer.push(scale); buffer.push(0.0); buffer.push(world_y);
-            buffer.push(0.0); buffer.push(0.0); buffer.push(scale); buffer.push(world_z);
+            if self.agents.is_driving[i] {
+                scale_x = 2.0; // Width
+                scale_y = 1.5; // Height
+                scale_z = 3.5; // Length
+                
+                // ORIENT CAR TO ROAD TANGENT
+                let edge_idx = self.agents.current_edge[i];
+                if edge_idx != usize::MAX && edge_idx < self.transit_network.graph.edges.len() {
+                    let edge = &self.transit_network.graph.edges[edge_idx];
+                    let prog = self.agents.edge_progression[i] as usize;
+                    if edge.physical_geometry.len() >= 2 {
+                        let p1_idx = prog.min(edge.physical_geometry.len() - 2);
+                        let p1 = edge.physical_geometry[p1_idx];
+                        let p2 = edge.physical_geometry[p1_idx + 1];
+                        let mut tangent = (p2 - p1).normalized();
+                        
+                        // Flip if driving backwards
+                        if self.agents.current_lane[i] < 0 {
+                            tangent = -tangent;
+                        }
+                        
+                        basis_z = -tangent; // Basis.Z is "forward" but in Godot cameras/assets often -Z is forward. 
+                        // However, for this primitive scaling, let's use +Z as the long axis.
+                        basis_x = Vector3::UP.cross(basis_z).normalized();
+                        basis_y = basis_z.cross(basis_x).normalized();
+                    }
+                }
+            }
+
+            buffer.push(basis_x.x * scale_x); buffer.push(basis_y.x * scale_y); buffer.push(basis_z.x * scale_z); buffer.push(world_x);
+            buffer.push(basis_x.y * scale_x); buffer.push(basis_y.y * scale_y); buffer.push(basis_z.y * scale_z); buffer.push(world_y);
+            buffer.push(basis_x.z * scale_x); buffer.push(basis_y.z * scale_y); buffer.push(basis_z.z * scale_z); buffer.push(world_z);
         }
 
         PackedFloat32Array::from_iter(buffer)
@@ -330,7 +364,7 @@ impl SimulationNode {
                 
                 let current_pos = get_h(Vector3::new(self.agents.pos_x[i], 0.0, self.agents.pos_y[i]));
                 
-                if let Some(path) = self.transit_network.hpa_graph.find_path(curr, target, usize::MAX, &self.transit_network.graph) {
+                if let Some((_cost, _dist, path)) = self.transit_network.hpa_graph.find_path(curr, target, usize::MAX, &self.transit_network.graph, false) {
                     let mut prev_pos = current_pos;
                     for &n in &path {
                         let np = get_h(self.transit_network.graph.nodes[n as usize].pos);
@@ -624,12 +658,24 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn get_zoning_frontage_points(&self) -> PackedVector2Array {
+    pub fn get_zoning_frontage_data(&self) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
         for poly in &self.zoning.polygons {
             if poly.vertices.len() >= 2 && poly.frontage_pts > 0 {
-                arr.push(poly.vertices[0]);
-                arr.push(poly.vertices[poly.frontage_pts - 1]);
+                for i in 0..poly.frontage_pts {
+                    arr.push(poly.vertices[i]);
+                }
+            }
+        }
+        arr
+    }
+
+    #[func]
+    pub fn get_zoning_frontage_counts(&self) -> godot::prelude::PackedInt32Array {
+        let mut arr = godot::prelude::PackedInt32Array::new();
+        for poly in &self.zoning.polygons {
+            if poly.vertices.len() >= 2 && poly.frontage_pts > 0 {
+                arr.push(poly.frontage_pts as i32);
             }
         }
         arr
@@ -692,7 +738,12 @@ impl SimulationNode {
         let nodes = self.transit_network.graph.nodes.len();
         let edges = self.transit_network.graph.edges.len();
         let islands = self.transit_network.graph.get_island_count();
-        godot_print!("Road added. Total: {} Nodes, {} Edges. Separate Networks: {}", nodes, edges, islands);
+        let is_walkway = fwd_lanes == 0 && bkw_lanes == 0;
+        if is_walkway {
+            godot_print!("Walkway added (0x0) with 1 bidirectional path. Total: {nodes} Nodes, {edges} Edges. Networks: {islands}");
+        } else {
+            godot_print!("Road added ({fwd_lanes} Fwd / {bkw_lanes} Bkw lanes) with 2 bidirectional sidewalks. Total: {nodes} Nodes, {edges} Edges. Networks: {islands}");
+        }
     }
 
     #[func]
@@ -1054,7 +1105,7 @@ impl INode3D for SimulationNode {
         // High-frequency agent physics!
         if self.time.speed_multiplier > 0.0 {
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
-            self.agents.tick(&self.allocator, &self.transit_network.hpa_graph, &self.transit_network.graph, dt);
+            self.agents.tick(&self.allocator, &self.transit_network.hpa_graph, &mut self.transit_network.graph, dt);
         }
     }
 }

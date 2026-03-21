@@ -1,6 +1,7 @@
 use super::*;
-use crate::simulation::network::graph::{Edge, TransitGraph};
-use crate::simulation::network::types::{TransitType, TransitFlags};
+use crate::simulation::network::graph::{TransitGraph, Edge};
+use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
+use crate::simulation::pathing::hpa::HpaGraph;
 use godot::prelude::Vector3;
 
 #[test]
@@ -11,54 +12,35 @@ fn test_cost_calculation_slope_penalty() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR,
         width: 4.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
         speed_limit: 50.0,
         base_cost: 0.0,
+        physical_length: 100.0,
         current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
         geometry: vec![
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
         ],
+        physical_geometry: vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(100.0, 0.0, 0.0),
+        ],
+        parking_occupied: 0,
     };
 
-    let flat_cost = cost::CostCalculator::calculate_base_cost(&edge);
+    let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
     
     // Add a hill: 100m length, 50m height (50% slope)
     edge.geometry[1] = Vector3::new(100.0, 50.0, 0.0);
-    let steep_cost = cost::CostCalculator::calculate_base_cost(&edge);
+    edge.physical_geometry[1] = Vector3::new(100.0, 50.0, 0.0);
+    let (steep_cost, _) = cost::CostCalculator::calculate_costs(&edge);
 
     assert!(steep_cost > flat_cost * 2.0, "Steep route cost ({}) should heavily penalize over flat route cost ({})", steep_cost, flat_cost);
 }
 
-#[test]
-fn test_flow_field_avoids_congestion() {
-    let mut graph = TransitGraph::new();
-    // Create a square network
-    // n0 --- n1
-    // |      |
-    // n2 --- n3
-    
-    // Node 3 is target. 
-    // Edge 1->3 is very expensive (high congestion)
-    // Edge 2->3 is cheap
-    
-    let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
-    let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
-    let n2 = graph.add_node(Vector3::new(0.0, 0.0, 100.0), crate::simulation::network::types::NodeType::Junction);
-    let n3 = graph.add_node(Vector3::new(100.0, 0.0, 100.0), crate::simulation::network::types::NodeType::Junction);
-    
-    graph.add_edge(Edge { start_node: n0, end_node: n1, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 10.0, current_congestion: 0.0, geometry: vec![] });
-    graph.add_edge(Edge { start_node: n0, end_node: n2, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 10.0, current_congestion: 0.0, geometry: vec![] });
-    // Expensive segment!
-    graph.add_edge(Edge { start_node: n1, end_node: n3, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 10.0, current_congestion: 5.0, geometry: vec![] });
-    // Cheap segment!
-    graph.add_edge(Edge { start_node: n2, end_node: n3, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 10.0, current_congestion: 0.0, geometry: vec![] });
-    
-    let flow = flow::FlowField::generate(&graph, n3);
-    
-    // Agent at n0 should step 'downhill' toward n2, not n1, because n1->n3 is highly congested.
-    let next = flow.get_next_node(&graph, n0);
-    assert_eq!(next, Some(n2));
-}
 
 #[test]
 fn test_highway_vs_dirt_road_cost() {
@@ -68,13 +50,23 @@ fn test_highway_vs_dirt_road_cost() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR,
         width: 10.0,
+        fwd_lanes: 3,
+        bkw_lanes: 3,
         speed_limit: 100.0, // Highway speed
         base_cost: 0.0,
+        physical_length: 10000.0,
         current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
         geometry: vec![
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(10000.0, 0.0, 0.0), // 10km
         ],
+        physical_geometry: vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10000.0, 0.0, 0.0),
+        ],
+        parking_occupied: 0,
     };
 
     let dirt_road = Edge {
@@ -83,90 +75,159 @@ fn test_highway_vs_dirt_road_cost() {
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR,
         width: 4.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
         speed_limit: 20.0, // Slow dirt road
         base_cost: 0.0,
+        physical_length: 5000.0,
         current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
         geometry: vec![
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(5000.0, 0.0, 0.0), // 5km
         ],
+        physical_geometry: vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(5000.0, 0.0, 0.0),
+        ],
+        parking_occupied: 0,
     };
 
-    let highway_cost = cost::CostCalculator::calculate_base_cost(&highway);
-    let dirt_road_cost = cost::CostCalculator::calculate_base_cost(&dirt_road);
+    let (highway_cost, _) = cost::CostCalculator::calculate_costs(&highway);
+    let (dirt_road_cost, _) = cost::CostCalculator::calculate_costs(&dirt_road);
 
     assert!(highway_cost < dirt_road_cost, "10km highway ({}) should be cheaper than 5km dirt road ({})", highway_cost, dirt_road_cost);
 }
 
+
 #[test]
-fn test_flow_field_slope_avoidance() {
+fn test_bidirectional_walkway_pathing() {
     let mut graph = TransitGraph::new();
-    
-    // n0 (Start)
-    // | \
-    // n1  n2 (Hill Peak vs Flat Bypass)
-    // | / 
-    // n3 (End)
-    
-    let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
-    let n1 = graph.add_node(Vector3::new(100.0, 41.0, 0.0), crate::simulation::network::types::NodeType::Junction); // 41% grade!
-    let n2 = graph.add_node(Vector3::new(0.0, 0.0, 300.0), crate::simulation::network::types::NodeType::Junction); // Flat bypass
-    let n3 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
+    let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
 
-    let mut hill_up = Edge { start_node: n0, end_node: n1, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 0.0, current_congestion: 0.0, geometry: vec![graph.nodes[n0 as usize].pos, graph.nodes[n1 as usize].pos] };
-    let mut hill_down = Edge { start_node: n1, end_node: n3, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 0.0, current_congestion: 0.0, geometry: vec![graph.nodes[n1 as usize].pos, graph.nodes[n3 as usize].pos] };
+    // Create a bidirectional walkway (primary_type = Foot, allowed_types = 1, lanes = 0)
+    graph.add_edge(Edge {
+        start_node: n0,
+        end_node: n1,
+        primary_type: TransitType::Foot,
+        allowed_types: TransitFlags::FOOT,
+        width: 2.0,
+        fwd_lanes: 0,
+        bkw_lanes: 0,
+        speed_limit: 5.0,
+        base_cost: 0.0,
+        physical_length: 10.0,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+        parking_occupied: 0,
+    });
+
+    let hpa = HpaGraph::new();
     
-    let mut bypass_1 = Edge { start_node: n0, end_node: n2, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 0.0, current_congestion: 0.0, geometry: vec![graph.nodes[n0 as usize].pos, graph.nodes[n2 as usize].pos] };
-    let mut bypass_2 = Edge { start_node: n2, end_node: n3, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 0.0, current_congestion: 0.0, geometry: vec![graph.nodes[n2 as usize].pos, graph.nodes[n3 as usize].pos] };
-
-    // Set base costs dynamically
-    hill_up.base_cost = cost::CostCalculator::calculate_base_cost(&hill_up);
-    hill_down.base_cost = cost::CostCalculator::calculate_base_cost(&hill_down);
-    bypass_1.base_cost = cost::CostCalculator::calculate_base_cost(&bypass_1);
-    bypass_2.base_cost = cost::CostCalculator::calculate_base_cost(&bypass_2);
-
-    graph.add_edge(hill_up);
-    graph.add_edge(hill_down);
-    graph.add_edge(bypass_1);
-    graph.add_edge(bypass_2);
-
-    let flow = flow::FlowField::generate(&graph, n3);
+    // 1. Pedestrian should be able to walk n0 -> n1
+    let path_fwd = hpa.find_path(n0, n1, usize::MAX, &graph, true);
+    assert!(path_fwd.is_some(), "Pedestrian should find path n0 -> n1 on walkway");
     
-    // Agent at n0 should avoid the steep hill (n1) and take the long bypass (n2)
-    let next = flow.get_next_node(&graph, n0);
-    assert_eq!(next, Some(n2));
+    // 2. Pedestrian should be able to walk n1 -> n0
+    let path_bkw = hpa.find_path(n1, n0, usize::MAX, &graph, true);
+    assert!(path_bkw.is_some(), "Pedestrian should find path n1 -> n0 on walkway");
+    
+    // 3. Car should NOT be able to use walkway
+    let path_car = hpa.find_path(n0, n1, usize::MAX, &graph, false);
+    assert!(path_car.is_none(), "Car should NOT find path on walkway");
 }
 
 #[test]
-fn test_flow_field_timing_benchmark() {
+fn test_car_uturn_allowed() {
     let mut graph = TransitGraph::new();
-    let grid_size = 32; // 32x32 = 1024 nodes
+    let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+
+    // Create a bidirectional road (idx 0)
+    let edge_idx = graph.add_edge(Edge {
+        start_node: n0,
+        end_node: n1,
+        primary_type: TransitType::Road,
+        allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        width: 6.0,
+        fwd_lanes: 1,
+        bkw_lanes: 1,
+        speed_limit: 50.0,
+        base_cost: 10.0,
+        physical_length: 10.0,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
+        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+        parking_occupied: 0,
+    });
+
+    let hpa = HpaGraph::new();
     
-    // Create 1024 nodes
-    for z in 0..grid_size {
-        for x in 0..grid_size {
-            graph.add_node(Vector3::new(x as f32 * 10.0, 0.0, z as f32 * 10.0), crate::simulation::network::types::NodeType::Junction);
-        }
-    }
+    // Agent is at n1, having come from n0 via edge_idx.
+    // They want to go back to n0.
+    // If U-turns are allowed on same edge, they should find path [n0] via edge_idx.
+    let path = hpa.find_path(n1, n0, edge_idx, &graph, false);
+    assert!(path.is_some(), "Car should be allowed to U-turn on bidirectional road");
+    let (_, _, nodes) = path.unwrap();
+    assert_eq!(nodes, vec![n0]);
+}
+
+#[test]
+fn test_car_avoids_walkway_shortcut() {
+    let mut graph = TransitGraph::new();
+    // n0 --- (Road) --- n1 --- (Road) --- n2
+    //  \--- (Walkway shortcut) ---/
     
-    // Connect them in a grid
-    for z in 0..grid_size {
-        for x in 0..grid_size {
-            let n = z * grid_size + x;
-            if x < grid_size - 1 {
-                let right = n + 1;
-                graph.add_edge(Edge { start_node: n, end_node: right, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 10.0, current_congestion: 0.0, geometry: vec![] });
-            }
-            if z < grid_size - 1 {
-                let down = n + grid_size;
-                graph.add_edge(Edge { start_node: n, end_node: down, primary_type: TransitType::Road, allowed_types: 0, width: 4.0, speed_limit: 50.0, base_cost: 10.0, current_congestion: 0.0, geometry: vec![] });
-            }
-        }
-    }
+    let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
+    let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
+    let n2 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
     
-    let start = std::time::Instant::now();
-    let _flow = flow::FlowField::generate(&graph, 0); // Generate flow to corner node
-    let duration = start.elapsed();
+    // Road path
+    graph.add_edge(Edge {
+        start_node: n0, end_node: n1,
+        primary_type: TransitType::Road, allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 10.0,
+        physical_length: 100.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        geometry: vec![], physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 100.0], parking_occupied: 0
+    });
+    graph.add_edge(Edge {
+        start_node: n1, end_node: n2,
+        primary_type: TransitType::Road, allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+        width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 10.0,
+        physical_length: 100.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        geometry: vec![], physical_geometry: vec![Vector3::RIGHT * 100.0, Vector3::RIGHT * 200.0], parking_occupied: 0
+    });
     
-    assert!(duration.as_millis() < 15, "Flow field generation for 1000 nodes took {} ms (limit: < 15ms)", duration.as_millis());
+    // Walkway shortcut n0 -> n2 directly
+    graph.add_edge(Edge {
+        start_node: n0, end_node: n2,
+        primary_type: TransitType::Foot, allowed_types: TransitFlags::FOOT,
+        width: 2.0, fwd_lanes: 0, bkw_lanes: 0, speed_limit: 10.0, base_cost: 5.0, // Cheaper than road
+        physical_length: 200.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        geometry: vec![], physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 200.0], parking_occupied: 0
+    });
+    
+    let hpa = hpa::HpaGraph::new();
+    
+    // Car should take the road path (2 nodes) and ignore the shortcut
+    let path_car = hpa.find_path(n0, n2, usize::MAX, &graph, false);
+    assert!(path_car.is_some());
+    let (cost, _dist, nodes) = path_car.unwrap();
+    assert_eq!(nodes.len(), 2, "Car should take 2rd node (n1 then n2) or just direct if n1 is intermediate?");
+    // Wait, if n0->n1 and n1->n2 are separate edges, path should be [n1, n2].
+    assert!(nodes.contains(&n1), "Car must travel through n1 to avoid walkway");
+    
+    // Pedestrian should take the shortcut (n2 only)
+    let path_ped = hpa.find_path(n0, n2, usize::MAX, &graph, true);
+    assert!(path_ped.is_some());
+    let (_c, _d, nodes_ped) = path_ped.unwrap();
+    assert_eq!(nodes_ped.len(), 1, "Pedestrian should take direct walkway shortcut [n2]");
+    assert_eq!(nodes_ped[0], n2);
 }

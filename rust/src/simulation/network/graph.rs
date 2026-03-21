@@ -25,11 +25,25 @@ pub struct Edge {
     pub bkw_lanes: u8,
     pub speed_limit: f32,
     pub base_cost: f32,
+    pub physical_length: f32,
     pub current_congestion: f32,
     pub start_clip: f32, 
     pub end_clip: f32,
     pub geometry: Vec<Vector3>, 
     pub physical_geometry: Vec<Vector3>, 
+    pub parking_occupied: u32,
+}
+
+impl Edge {
+    pub fn get_parking_capacity(&self) -> u32 {
+        if self.physical_geometry.len() < 2 { return 0; }
+        let mut length = 0.0;
+        for i in 0..self.physical_geometry.len()-1 {
+            length += self.physical_geometry[i].distance_to(self.physical_geometry[i+1]);
+        }
+        // 6 meters per car, two sides (left and right), regardless of lanes
+        ((length / 6.0) as u32) * 2
+    }
 }
 
 #[derive(Clone)]
@@ -94,6 +108,235 @@ impl TransitGraph {
         let id = self.edges.len();
         self.edges.push(edge);
         id
+    }
+
+    pub fn split_edge(&mut self, edge_id: usize, split_pos: Vector3) -> (u32, usize) {
+        let old_edge = self.edges[edge_id].clone();
+        let end_node = old_edge.end_node;
+        
+        // 1. Find the segment closest to split_pos in logical geometry
+        let mut min_dist = f32::MAX;
+        let mut split_idx = 0;
+        let mut best_closest = split_pos;
+        
+        for i in 0..old_edge.geometry.len() - 1 {
+            let p0 = old_edge.geometry[i];
+            let p1 = old_edge.geometry[i+1];
+            let segment = p1 - p0;
+            let l2 = segment.length_squared();
+            if l2 < 1e-6 { continue; }
+            
+            let t = ((split_pos - p0).dot(segment) / l2).clamp(0.0, 1.0);
+            let closest = p0 + segment * t;
+            let d = closest.distance_to(split_pos);
+            if d < min_dist {
+                min_dist = d;
+                split_idx = i;
+                best_closest = closest;
+            }
+        }
+
+        // 1.5 Prevent degenerate splits (too close to endpoints)
+        let start_pos = self.nodes[old_edge.start_node as usize].pos;
+        if best_closest.distance_to(start_pos) < 2.0 {
+            return (old_edge.start_node, edge_id);
+        }
+        let end_pos = self.nodes[old_edge.end_node as usize].pos;
+        if best_closest.distance_to(end_pos) < 2.0 {
+            return (old_edge.end_node, edge_id);
+        }
+
+        // 2. Create the new frontage node
+        let new_node_id = self.add_node(best_closest, NodeType::Frontage);
+        
+        // 3. Split logical geometry
+        let mut first_geom = Vec::new();
+        for i in 0..=split_idx {
+            first_geom.push(old_edge.geometry[i]);
+        }
+        if (first_geom.last().unwrap().distance_to(best_closest)) > 0.01 {
+            first_geom.push(best_closest);
+        }
+        
+        let mut second_geom = Vec::new();
+        second_geom.push(best_closest);
+        for i in split_idx+1..old_edge.geometry.len() {
+            if i == split_idx + 1 && old_edge.geometry[i].distance_to(best_closest) < 0.01 {
+                continue;
+            }
+            second_geom.push(old_edge.geometry[i]);
+        }
+        
+        // 4. Split physical geometry (Crucial for agents!)
+        let mut first_phys = Vec::new();
+        let mut second_phys = Vec::new();
+        
+        if old_edge.physical_geometry.is_empty() {
+             // Fallback if no physical geometry exists
+             first_phys = first_geom.clone();
+             second_phys = second_geom.clone();
+        } else {
+            // Find where best_closest projects onto physical geometry
+            let mut min_phys_dist = f32::MAX;
+            let mut phys_split_idx = 0;
+            let mut phys_closest = best_closest;
+            
+            for i in 0..old_edge.physical_geometry.len() - 1 {
+                let p0 = old_edge.physical_geometry[i];
+                let p1 = old_edge.physical_geometry[i+1];
+                let segment = p1 - p0;
+                let l2 = segment.length_squared();
+                if l2 < 1e-6 { continue; }
+                let t = ((best_closest - p0).dot(segment) / l2).clamp(0.0, 1.0);
+                let closest = p0 + segment * t;
+                let d = closest.distance_to(best_closest);
+                if d < min_phys_dist {
+                    min_phys_dist = d;
+                    phys_split_idx = i;
+                    phys_closest = closest;
+                }
+            }
+            
+            for i in 0..=phys_split_idx {
+                first_phys.push(old_edge.physical_geometry[i]);
+            }
+            if first_phys.last().unwrap().distance_to(phys_closest) > 0.01 {
+                first_phys.push(phys_closest);
+            }
+            
+            second_phys.push(phys_closest);
+            for i in phys_split_idx+1..old_edge.physical_geometry.len() {
+                if i == phys_split_idx + 1 && old_edge.physical_geometry[i].distance_to(phys_closest) < 0.01 {
+                    continue;
+                }
+                second_phys.push(old_edge.physical_geometry[i]);
+            }
+        }
+        
+        // 5. Update existing edge as first half
+        self.edges[edge_id].end_node = new_node_id;
+        self.edges[edge_id].geometry = first_geom;
+        self.edges[edge_id].physical_geometry = first_phys;
+        self.edges[edge_id].physical_length = self.calculate_length(&self.edges[edge_id].physical_geometry);
+        
+        // 6. Create new edge as second half
+        let new_edge_id = self.add_edge(Edge {
+            start_node: new_node_id,
+            end_node,
+            geometry: second_geom,
+            physical_geometry: second_phys,
+            physical_length: 0.0, // calculate below
+            ..old_edge
+        });
+        self.edges[new_edge_id].physical_length = self.calculate_length(&self.edges[new_edge_id].physical_geometry);
+        
+        // 7. Handle Lane Connections (The "Detour" Fix)
+        // A. At new_node_id (the Frontage gateway): allow straight-through turns
+        let mut frontage_conns = HashMap::new();
+        // Forward: Edge edge_id -> Edge new_edge_id
+        let mut fwd_tgts = Vec::new();
+        for lane in 0..old_edge.fwd_lanes {
+            fwd_tgts.push((new_edge_id, lane as i8));
+        }
+        if !fwd_tgts.is_empty() { frontage_conns.insert((edge_id, 0), fwd_tgts); }
+        
+        // Backward: Edge new_edge_id -> Edge edge_id
+        let mut bkw_tgts = Vec::new();
+        for lane in 0..old_edge.bkw_lanes {
+            bkw_tgts.push((edge_id, -(lane as i8) - 1));
+        }
+        if !bkw_tgts.is_empty() { frontage_conns.insert((new_edge_id, -1), bkw_tgts); }
+        self.nodes[new_node_id as usize].lane_connections = frontage_conns;
+        
+        // B. At end_node: Remap connections from edge_id to new_edge_id
+        let node_ref = &mut self.nodes[end_node as usize];
+        let mut new_node_conns = HashMap::new();
+        for (src, tgts) in node_ref.lane_connections.drain() {
+            let mut new_src = src;
+            if src.0 == edge_id { new_src.0 = new_edge_id; }
+            
+            let mut new_tgts = Vec::new();
+            for mut t in tgts {
+                if t.0 == edge_id { t.0 = new_edge_id; }
+                new_tgts.push(t);
+            }
+            new_node_conns.insert(new_src, new_tgts);
+        }
+        node_ref.lane_connections = new_node_conns;
+        
+        // C. At start_node: Remap connections to edge_id are still valid, 
+        // as edge_id now logically ends at the frontage node. 
+        // Wait! If there were connections FROM Node 0 TO Node 1 via Edge 0.
+        // Now those connections should lead to Node F. This is already true by updating the edge's end_node.
+
+        (new_node_id, new_edge_id)
+    }
+
+    fn calculate_length(&self, pts: &[Vector3]) -> f32 {
+        let mut l = 0.0;
+        for i in 0..pts.len().saturating_sub(1) {
+            l += pts[i].distance_to(pts[i+1]);
+        }
+        l
+    }
+
+    pub fn remove_node_and_merge_edges(&mut self, node_id: u32) {
+        if node_id as usize >= self.nodes.len() { return; }
+        
+        // Find edges connected to this node
+        let mut e1_idx = None;
+        let mut e2_idx = None;
+        
+        for (i, edge) in self.edges.iter().enumerate() {
+            if edge.start_node == node_id || edge.end_node == node_id {
+                if e1_idx.is_none() {
+                    e1_idx = Some(i);
+                } else if e2_idx.is_none() {
+                    e2_idx = Some(i);
+                } else {
+                    // More than 2 edges? This node is likely a real intersection now.
+                    // DO NOT MERGE.
+                    return;
+                }
+            }
+        }
+        
+        if let (Some(i1), Some(i2)) = (e1_idx, e2_idx) {
+            // Check if they are compatible for merging
+            let (_target_end_node, mid_node, target_start_node) = {
+                let e1 = &self.edges[i1];
+                let e2 = &self.edges[i2];
+                if e1.primary_type != e2.primary_type || e1.width != e2.width { return; }
+                
+                // Determine the flow: A -> node_id -> B
+                let a = if e1.start_node == node_id { e1.end_node } else { e1.start_node };
+                let b = if e2.start_node == node_id { e2.end_node } else { e2.start_node };
+                
+                (a, node_id, b)
+            };
+
+            // Combine geometry
+            let mut new_geom = Vec::new();
+            let (first_edge_idx, second_edge_idx) = {
+                if self.edges[i1].end_node == mid_node { (i1, i2) } else { (i2, i1) }
+            };
+
+            for p in &self.edges[first_edge_idx].geometry {
+                new_geom.push(*p);
+            }
+            // Skip the first point of the second edge as it's the same as the last point of the first
+            for i in 1..self.edges[second_edge_idx].geometry.len() {
+                new_geom.push(self.edges[second_edge_idx].geometry[i]);
+            }
+
+            // Update the first edge to span the whole distance
+            self.edges[first_edge_idx].end_node = target_start_node;
+            self.edges[first_edge_idx].geometry = new_geom;
+
+            // Remove the second edge
+            let to_remove = second_edge_idx;
+            self.edges.remove(to_remove);
+        }
     }
 
     /// Merges two nodes into one, updating all edges that use them
@@ -262,7 +505,7 @@ impl TransitGraph {
 
         const HUB_RADIUS: f32 = 3.0;
 
-        for (edge_id, edge) in self.edges.iter_mut().enumerate() {
+        for (_edge_id, edge) in self.edges.iter_mut().enumerate() {
             if edge.primary_type != TransitType::Road { continue; }
 
             // Apply a simple fixed HUB_RADIUS if the node is an intersection or curve (conn > 1)

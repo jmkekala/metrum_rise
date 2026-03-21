@@ -28,7 +28,7 @@ func _update_lanes_label():
 func adjust_lanes(fwd_delta: int, bkw_delta: int):
 	if fwd_delta != 0: fwd_lanes = clamp(fwd_lanes + fwd_delta, 0, 4)
 	if bkw_delta != 0: bkw_lanes = clamp(bkw_lanes + bkw_delta, 0, 4)
-	if fwd_lanes == 0 and bkw_lanes == 0: fwd_lanes = 1
+	# Allow 0,0 for walkways
 	_update_lanes_label()
 
 func _input(event):

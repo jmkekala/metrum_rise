@@ -151,25 +151,37 @@ impl TransitNetwork {
         // Final sanity check on points
         if points.len() < 2 { return; }
 
+        let is_walkway = fwd == 0 && bkw == 0;
+        let mut allowed_types = TransitFlags::NONE;
+        if fwd > 0 || bkw > 0 {
+            allowed_types |= TransitFlags::CAR;
+        }
+        if is_walkway || fwd > 0 || bkw > 0 { // If it's a walkway, or a road, pedestrians can use it
+            allowed_types |= TransitFlags::FOOT;
+        }
+
         let edge_id = self.graph.add_edge(graph::Edge {
             start_node: start,
             end_node: end,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            primary_type: if is_walkway { TransitType::Foot } else { TransitType::Road },
+            allowed_types,
             width: ((fwd + bkw) as f32 * 3.0).max(2.0),
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             speed_limit: 50.0,
             base_cost: 0.0,
+            physical_length: 0.0,
             current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: points.clone(),
             physical_geometry: points,
+            parking_occupied: 0,
         });
 
-        let cost = crate::simulation::pathing::cost::CostCalculator::calculate_base_cost(&self.graph.edges[edge_id]);
+        let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&self.graph.edges[edge_id]);
         self.graph.edges[edge_id].base_cost = cost;
+        self.graph.edges[edge_id].physical_length = length;
 
         topology::process_intersections(self, edge_id);
         self.cleanup_duplicate_edges(); // Clean edge_id if it's dup
@@ -187,6 +199,21 @@ impl TransitNetwork {
 
     pub fn sync_to_terrain(&mut self, terrain: &crate::simulation::terrain::TerrainSystem) {
         self.graph.sync_to_terrain(terrain);
+    }
+
+    pub fn split_for_frontage(&mut self, edge_idx: usize, pos: Vector3) -> u32 {
+        let (node_id, _new_edge_id) = self.graph.split_edge(edge_idx, pos);
+        // We don't rebuild HPA here for every house to save perf. 
+        // Caller should call rebuild_pathing() once at the end.
+        node_id
+    }
+
+    pub fn remove_frontage(&mut self, node_id: u32) {
+        self.graph.remove_node_and_merge_edges(node_id);
+    }
+
+    pub fn rebuild_pathing(&mut self) {
+        self.hpa_graph = HpaGraph::build(&self.graph);
     }
 
     fn cleanup_duplicate_edges(&mut self) {

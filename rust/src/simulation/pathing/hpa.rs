@@ -1,4 +1,5 @@
 use crate::simulation::network::graph::TransitGraph;
+use crate::simulation::network::types::TransitType;
 use super::astar::State;
 use std::collections::{HashMap, BinaryHeap, HashSet};
 
@@ -32,21 +33,26 @@ impl HpaGraph {
         let mut adj: Vec<Vec<(u32, usize, f32)>> = vec![Vec::new(); n];
         for (idx, edge) in graph.edges.iter().enumerate() {
             let cost = edge.base_cost * (1.0 + edge.current_congestion);
-            adj[edge.start_node as usize].push((edge.end_node, idx, cost));
-            adj[edge.end_node as usize].push((edge.start_node, idx, cost)); // Bidirectional
+            let can_fwd = edge.fwd_lanes > 0 || edge.primary_type == TransitType::Foot;
+            let can_bkw = edge.bkw_lanes > 0 || edge.primary_type == TransitType::Foot;
+
+            if can_fwd {
+                adj[edge.start_node as usize].push((edge.end_node, idx, cost));
+            }
+            if can_bkw {
+                adj[edge.end_node as usize].push((edge.start_node, idx, cost));
+            }
             
             let chunk_a = graph.get_node_chunk(edge.start_node);
             let chunk_b = graph.get_node_chunk(edge.end_node);
             
             if chunk_a != chunk_b {
-                // Both nodes become abstract entries for their respective chunks
                 hpa.is_abstract.insert(edge.start_node);
                 hpa.is_abstract.insert(edge.end_node);
                 
                 hpa.chunk_entries.entry(chunk_a).or_default().push(edge.start_node);
                 hpa.chunk_entries.entry(chunk_b).or_default().push(edge.end_node);
                 
-                // The inter-chunk edge itself
                 hpa.abstract_edges.entry(edge.start_node).or_default().push(AbstractEdge {
                     target: edge.end_node, cost, inner_path: vec![edge.end_node]
                 });
@@ -61,29 +67,27 @@ impl HpaGraph {
             entries.dedup();
         }
 
-        // Intra-chunk paths
         for (&chunk, entries) in &hpa.chunk_entries {
             for &start_node in entries {
-                let mut costs: HashMap<(u32, usize), f32> = HashMap::new();
+                let mut costs: HashMap<(u32, usize), (f32, f32)> = HashMap::new();
                 let mut prev: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
                 let mut heap = BinaryHeap::new();
                 
-                costs.insert((start_node, usize::MAX), 0.0);
-                heap.push(State { cost: 0.0, node: start_node, incoming_edge: usize::MAX });
+                costs.insert((start_node, usize::MAX), (0.0, 0.0));
+                heap.push(State { priority: 0.0, cost: 0.0, dist: 0.0, node: start_node, incoming_edge: usize::MAX });
                 
-                while let Some(State { cost, node, incoming_edge }) = heap.pop() {
-                    if cost > *costs.get(&(node, incoming_edge)).unwrap_or(&f32::MAX) { continue; }
+                while let Some(State { priority: _, cost, dist, node, incoming_edge }) = heap.pop() {
+                    if cost > costs.get(&(node, incoming_edge)).unwrap_or(&(f32::MAX, f32::MAX)).0 { continue; }
                     
                     for &(neighbor, out_edge, edge_cost) in &adj[node as usize] {
                         if graph.get_node_chunk(neighbor) != chunk { continue; }
                         
-                        // Traffic Lane Manager EVAL
-                        if incoming_edge != usize::MAX {
+                        if incoming_edge != usize::MAX && incoming_edge != out_edge {
                             let mut has_any = false;
                             let mut valid = false;
                             let n_ref = &graph.nodes[node as usize];
                             for (src, tgts) in &n_ref.lane_connections {
-                                if src.0 == incoming_edge {
+                                if src.0 == incoming_edge { 
                                     has_any = true;
                                     for t in tgts {
                                         if t.0 == out_edge { valid = true; break; }
@@ -94,10 +98,11 @@ impl HpaGraph {
                         }
                         
                         let next_cost = cost + edge_cost;
-                        if next_cost < *costs.get(&(neighbor, out_edge)).unwrap_or(&f32::MAX) {
-                            costs.insert((neighbor, out_edge), next_cost);
+                        let next_dist = dist + graph.edges[out_edge].physical_length;
+                        if next_cost < costs.get(&(neighbor, out_edge)).unwrap_or(&(f32::MAX, f32::MAX)).0 {
+                            costs.insert((neighbor, out_edge), (next_cost, next_dist));
                             prev.insert((neighbor, out_edge), (node, incoming_edge));
-                            heap.push(State { cost: next_cost, node: neighbor, incoming_edge: out_edge });
+                            heap.push(State { priority: next_cost, cost: next_cost, dist: next_dist, node: neighbor, incoming_edge: out_edge });
                         }
                     }
                 }
@@ -106,7 +111,7 @@ impl HpaGraph {
                     if start_node != end_node {
                         let mut best_inc = usize::MAX;
                         let mut min_c = f32::MAX;
-                        for (&(n, inc), &c) in &costs {
+                        for (&(n, inc), &(c, _d)) in &costs {
                             if n == end_node && c < min_c {
                                 min_c = c;
                                 best_inc = inc;
@@ -135,29 +140,58 @@ impl HpaGraph {
         hpa
     }
 
-    pub fn find_local_path(start: u32, end: u32, chunk: (i32, i32), graph: &TransitGraph, adj: &Vec<Vec<(u32, usize, f32)>>) -> Option<(f32, Vec<u32>)> {
-        if start == end { return Some((0.0, vec![])); }
-        
-        let mut costs: HashMap<(u32, usize), f32> = HashMap::new();
+    pub fn find_path(&self, start_raw: u32, end_raw: u32, start_edge: usize, graph: &TransitGraph, pedestrian: bool) -> Option<(f32, f32, Vec<u32>)> {
+        let start = graph.get_valid_node(start_raw);
+        let end = graph.get_valid_node(end_raw);
+
+        if start == end { return Some((0.0, 0.0, vec![start])); }
+        let n = graph.nodes.len();
+        if start as usize >= n || end as usize >= n { return None; }
+
+        let mut adj: Vec<Vec<(u32, usize, f32)>> = vec![Vec::new(); n];
+        for (idx, edge) in graph.edges.iter().enumerate() {
+            let mut cost = edge.base_cost * (1.0 + edge.current_congestion);
+            if pedestrian && edge.primary_type == crate::simulation::network::types::TransitType::Road {
+                cost *= 10.0;
+            }
+            
+            let mut can_fwd = if pedestrian { 
+                (edge.allowed_types & 1) != 0 
+            } else { 
+                (edge.allowed_types & 2) != 0 && edge.fwd_lanes > 0
+            };
+            
+            let mut can_bkw = if pedestrian { 
+                (edge.allowed_types & 1) != 0 
+            } else { 
+                (edge.allowed_types & 2) != 0 && edge.bkw_lanes > 0
+            };
+
+            // STRICT RESTRICTION: Cars never allowed on walkways (Foot primary type)
+            if !pedestrian && edge.primary_type == crate::simulation::network::types::TransitType::Foot {
+                can_fwd = false;
+                can_bkw = false;
+            }
+
+            if can_fwd { adj[edge.start_node as usize].push((edge.end_node, idx, cost)); }
+            if can_bkw { adj[edge.end_node as usize].push((edge.start_node, idx, cost)); }
+
+        }
+
+        let mut h = BinaryHeap::new();
+        let mut costs: HashMap<(u32, usize), (f32, f32)> = HashMap::new();
         let mut prev: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
-        let mut heap = BinaryHeap::new();
-        let mut visited: HashSet<(u32, usize)> = HashSet::new();
-        
-        costs.insert((start, usize::MAX), 0.0);
-        heap.push(State { cost: 0.0, node: start, incoming_edge: usize::MAX });
-        
         let mut final_inc = usize::MAX;
         
-        while let Some(State { cost: _, node, incoming_edge }) = heap.pop() {
+        costs.insert((start, start_edge), (0.0, 0.0));
+        h.push(State { priority: 0.0, cost: 0.0, dist: 0.0, node: start, incoming_edge: start_edge });
+        
+        while let Some(State { priority: _, cost, dist, node, incoming_edge }) = h.pop() {
             if node == end { final_inc = incoming_edge; break; }
-            if !visited.insert((node, incoming_edge)) { continue; }
-            let cost = *costs.get(&(node, incoming_edge)).unwrap();
+            if cost > costs.get(&(node, incoming_edge)).unwrap_or(&(f32::MAX, f32::MAX)).0 { continue; }
             
             for &(neighbor, out_edge, edge_cost) in &adj[node as usize] {
-                if graph.get_node_chunk(neighbor) != chunk { continue; }
-                
-                // Traffic Lane Manager EVAL
-                if incoming_edge != usize::MAX {
+                if !pedestrian && incoming_edge != usize::MAX && incoming_edge != out_edge {
                     let mut has_any = false;
                     let mut valid = false;
                     let n_ref = &graph.nodes[node as usize];
@@ -173,100 +207,36 @@ impl HpaGraph {
                 }
                 
                 let next_cost = cost + edge_cost;
-                if next_cost < *costs.get(&(neighbor, out_edge)).unwrap_or(&f32::MAX) {
-                    costs.insert((neighbor, out_edge), next_cost);
+                let next_dist = dist + graph.edges[out_edge].physical_length;
+                if next_cost < costs.get(&(neighbor, out_edge)).unwrap_or(&(f32::MAX, f32::MAX)).0 {
+                    costs.insert((neighbor, out_edge), (next_cost, next_dist));
                     prev.insert((neighbor, out_edge), (node, incoming_edge));
-                    
-                    let p1 = graph.nodes[neighbor as usize].pos;
-                    let p2 = graph.nodes[end as usize].pos;
-                    let heuristic = p1.distance_to(p2) / 100.0;
-                    
-                    heap.push(State { cost: next_cost + heuristic, node: neighbor, incoming_edge: out_edge });
-                }
-            }
-        }
-        
-        if let Some(&fc) = costs.get(&(end, final_inc)) {
-            let mut path = Vec::new();
-            let mut curr = (end, final_inc);
-            while curr.0 != start {
-                path.push(curr.0);
-                curr = *prev.get(&curr).unwrap();
-            }
-            path.reverse();
-            Some((fc, path))
-        } else {
-            None
-        }
-    }
-
-    pub fn find_path(&self, start_raw: u32, end_raw: u32, start_edge: usize, graph: &TransitGraph) -> Option<Vec<u32>> {
-        let start = graph.get_valid_node(start_raw);
-        let end = graph.get_valid_node(end_raw);
-
-        if start == end { return Some(vec![start]); }
-        let n = graph.nodes.len();
-        if start as usize >= n || end as usize >= n { return None; }
-
-        let mut adj: Vec<Vec<(u32, usize, f32)>> = vec![Vec::new(); n];
-        for (idx, edge) in graph.edges.iter().enumerate() {
-            let cost = edge.base_cost * (1.0 + edge.current_congestion);
-            adj[edge.start_node as usize].push((edge.end_node, idx, cost));
-            adj[edge.end_node as usize].push((edge.start_node, idx, cost));
-        }
-
-        let mut h = BinaryHeap::new();
-        let mut v: HashSet<(u32, usize)> = HashSet::new();
-        let mut c: HashMap<(u32, usize), f32> = HashMap::new();
-        let mut p_map: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
-        let mut final_inc = usize::MAX;
-        
-        c.insert((start, start_edge), 0.0);
-        h.push(State { cost: 0.0, node: start, incoming_edge: start_edge });
-        
-        while let Some(State { cost: _, node, incoming_edge }) = h.pop() {
-            if node == end { final_inc = incoming_edge; break; }
-            if !v.insert((node, incoming_edge)) { continue; }
-            let cc = *c.get(&(node, incoming_edge)).unwrap_or(&0.0);
-            
-            for &(neighbor, out_edge, ec) in &adj[node as usize] {
-                // Traffic Lane Manager EVAL
-                if incoming_edge != usize::MAX {
-                    let mut has_any = false;
-                    let mut valid = false;
-                    let n_ref = &graph.nodes[node as usize];
-                    for (src, tgts) in &n_ref.lane_connections {
-                        if src.0 == incoming_edge {
-                            has_any = true;
-                            for t in tgts {
-                                if t.0 == out_edge { valid = true; break; }
-                            }
-                        }
-                    }
-                    if has_any && !valid { continue; }
-                }
-                
-                let nc = cc + ec;
-                if nc < *c.get(&(neighbor, out_edge)).unwrap_or(&f32::MAX) {
-                    c.insert((neighbor, out_edge), nc);
-                    p_map.insert((neighbor, out_edge), (node, incoming_edge));
                     let h_val = graph.nodes[neighbor as usize].pos.distance_to(graph.nodes[end as usize].pos) / 100.0;
-                    h.push(State { cost: nc + h_val, node: neighbor, incoming_edge: out_edge });
+                    h.push(State { priority: next_cost + h_val, cost: next_cost, dist: next_dist, node: neighbor, incoming_edge: out_edge });
                 }
             }
         }
         
-        if c.contains_key(&(end, final_inc)) {
-            let mut full_path = Vec::new();
-            let mut curr = (end, final_inc);
-            while curr.0 != start {
-                full_path.push(curr.0);
-                curr = *p_map.get(&curr).unwrap();
+        if let Some(&(fc, fd)) = costs.get(&(end, final_inc)) {
+            let mut path = Vec::new();
+            let mut path_edges = Vec::new();
+            let mut curr_state = (end, final_inc);
+            while curr_state.0 != start {
+                path_edges.push(graph.edges[curr_state.1].primary_type);
+                path.push(curr_state.0);
+                curr_state = *prev.get(&curr_state).unwrap();
             }
-            full_path.reverse();
-            Some(full_path)
+            path.push(start);
+            path.reverse();
+            path_edges.reverse();
+            
+            godot::prelude::godot_print!("Path: {:?} Types: {:?} (Ped: {})", path, path_edges, pedestrian);
+            return Some((fc, fd, path));
         } else {
-            None
+            if start != end {
+                godot::prelude::godot_print!("Pathfinding FAILED from {} to {} (Ped: {})", start, end, pedestrian);
+            }
+            return None;
         }
     }
 }

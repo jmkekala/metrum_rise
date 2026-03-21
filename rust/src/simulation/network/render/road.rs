@@ -18,13 +18,13 @@ impl TransitRenderer for RoadRenderer {
         let marking_uvs = PackedVector2Array::new();
         let marking_colors = PackedColorArray::new();
 
-        let half_size = Vector2::new(terrain.width as f32 * 0.5, terrain.height as f32 * 0.5);
+        let _half_size = Vector2::new(terrain.width as f32 * 0.5, terrain.height as f32 * 0.5);
 
         // 0. Connection mapping
         let mut connection_counts = HashMap::new();
         let mut node_dirs: HashMap<u32, Vec<(usize, Vector2)>> = HashMap::new();
         for (edge_id, edge) in graph.edges.iter().enumerate() {
-            if edge.primary_type != TransitType::Road { continue; }
+            if edge.primary_type != TransitType::Road && edge.primary_type != TransitType::Foot { continue; }
             *connection_counts.entry(edge.start_node).or_insert(0) += 1;
             *connection_counts.entry(edge.end_node).or_insert(0) += 1;
             
@@ -43,21 +43,54 @@ impl TransitRenderer for RoadRenderer {
 
         // 1. Generate Schematic Lane Ribbons
         for (edge_id, edge) in graph.edges.iter().enumerate() {
-            if edge.primary_type != TransitType::Road { continue; }
             let resampled_count = edge.physical_geometry.len();
             if resampled_count < 2 { continue; }
 
             let h_offset = 0.05 + (edge_id % 100) as f32 * 0.001;
+
+            if edge.primary_type == TransitType::Foot {
+                // Walkway Rendering: Single center ribbon
+                let lane_color = Color::from_rgb(0.4, 0.4, 0.45); // Darker grey for paths
+                let lane_w = 1.0;
+                
+                for i in 0..resampled_count - 1 {
+                    let mut p0 = edge.physical_geometry[i];
+                    let mut p1 = edge.physical_geometry[i + 1];
+                    let diff = p1 - p0;
+                    let dist = diff.length();
+                    if dist < 0.01 { continue; }
+                    let tangent = diff / dist;
+                    let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
+
+                    p0.y += h_offset;
+                    p1.y += h_offset;
+
+                    let v0_l = p0 - side_dir * (lane_w * 0.5);
+                    let v0_r = p0 + side_dir * (lane_w * 0.5);
+                    let v1_l = p1 - side_dir * (lane_w * 0.5);
+                    let v1_r = p1 + side_dir * (lane_w * 0.5);
+
+                    vertices.push(v0_l); vertices.push(v0_r); vertices.push(v1_l);
+                    vertices.push(v1_l); vertices.push(v0_r); vertices.push(v1_r);
+                    for _ in 0..6 {
+                        normals.push(Vector3::UP);
+                        colors.push(lane_color);
+                        uvs.push(Vector2::ZERO);
+                    }
+                }
+                continue; // Skip the road-specific sidewalk/lane logic below
+            }
+
+            if edge.primary_type != TransitType::Road { continue; }
+
             let lane_w = 1.0;
             let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
 
-            // Generate each lane as a separate set of ribbons
-            let lane_count = total_lanes as usize;
+            // Lane Ribbons (Green/Red)
+            let lane_count = (edge.fwd_lanes + edge.bkw_lanes) as usize;
             for l_idx in 0..lane_count {
                 let is_fwd = l_idx < edge.fwd_lanes as usize;
                 let lane_color = if is_fwd { Color::from_rgb(0.1, 0.8, 0.2) } else { Color::from_rgb(0.8, 0.1, 0.2) };
-                
-                // RHT Logic: Fwd lanes (lower indices) stay on the Right (+lateral_offset)
                 let lateral_offset = (total_lanes * 0.5 - l_idx as f32 - 0.5) * lane_w;
 
                 for i in 0..resampled_count - 1 {
@@ -67,7 +100,7 @@ impl TransitRenderer for RoadRenderer {
                     let dist = diff.length();
                     if dist < 0.01 { continue; }
                     let tangent = diff / dist;
-                    let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x); // Simple flat side
+                    let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
 
                     p0.y += h_offset;
                     p1.y += h_offset;
@@ -82,6 +115,39 @@ impl TransitRenderer for RoadRenderer {
                     for _ in 0..6 {
                         normals.push(Vector3::UP);
                         colors.push(lane_color);
+                        uvs.push(Vector2::ZERO);
+                    }
+                }
+            }
+
+            // Sidewalk Ribbons (Grey)
+            let sw_color = Color::from_rgb(0.6, 0.6, 0.6);
+            let sw_w = 0.5;
+            let sw_offsets = [edge.width * 0.5 - 0.25, -(edge.width * 0.5 - 0.25)];
+            
+            for &lateral_offset in &sw_offsets {
+                for i in 0..resampled_count - 1 {
+                    let mut p0 = edge.physical_geometry[i];
+                    let mut p1 = edge.physical_geometry[i + 1];
+                    let diff = p1 - p0;
+                    let dist = diff.length();
+                    if dist < 0.01 { continue; }
+                    let tangent = diff / dist;
+                    let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
+
+                    p0.y += h_offset + 0.001; // Slightly above lanes
+                    p1.y += h_offset + 0.001;
+
+                    let v0_l = p0 + side_dir * (lateral_offset - sw_w * 0.5);
+                    let v0_r = p0 + side_dir * (lateral_offset + sw_w * 0.5);
+                    let v1_l = p1 + side_dir * (lateral_offset - sw_w * 0.5);
+                    let v1_r = p1 + side_dir * (lateral_offset + sw_w * 0.5);
+
+                    vertices.push(v0_l); vertices.push(v0_r); vertices.push(v1_l);
+                    vertices.push(v1_l); vertices.push(v0_r); vertices.push(v1_r);
+                    for _ in 0..6 {
+                        normals.push(Vector3::UP);
+                        colors.push(sw_color);
                         uvs.push(Vector2::ZERO);
                     }
                 }
