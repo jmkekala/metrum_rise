@@ -736,9 +736,12 @@ impl SimulationNode {
     pub fn get_zoning_frontage_data(&self) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
         for poly in &self.zoning.polygons {
-            if poly.vertices.len() >= 2 && poly.frontage_pts > 0 {
-                for i in 0..poly.frontage_pts {
-                    arr.push(poly.vertices[i]);
+            for frontage in &poly.frontages {
+                if poly.vertices.len() >= 2 && frontage.count > 0 {
+                    for i in 0..frontage.count {
+                        let idx = (frontage.start_idx + i) % poly.vertices.len();
+                        arr.push(poly.vertices[idx]);
+                    }
                 }
             }
         }
@@ -749,8 +752,10 @@ impl SimulationNode {
     pub fn get_zoning_frontage_counts(&self) -> godot::prelude::PackedInt32Array {
         let mut arr = godot::prelude::PackedInt32Array::new();
         for poly in &self.zoning.polygons {
-            if poly.vertices.len() >= 2 && poly.frontage_pts > 0 {
-                arr.push(poly.frontage_pts as i32);
+            for frontage in &poly.frontages {
+                if poly.vertices.len() >= 2 && frontage.count > 0 {
+                    arr.push(frontage.count as i32);
+                }
             }
         }
         arr
@@ -760,8 +765,10 @@ impl SimulationNode {
     pub fn get_zoning_polygon_ids(&self) -> godot::prelude::PackedInt32Array {
         let mut arr = godot::prelude::PackedInt32Array::new();
         for poly in &self.zoning.polygons {
-            if poly.vertices.len() >= 2 && poly.frontage_pts > 0 {
-                arr.push(poly.id as i32);
+            for frontage in &poly.frontages {
+                if poly.vertices.len() >= 2 && frontage.count > 0 {
+                    arr.push(poly.id as i32);
+                }
             }
         }
         arr
@@ -770,8 +777,105 @@ impl SimulationNode {
     #[func]
     pub fn get_polygon_properties(&self, poly_id: i32) -> godot::prelude::Vector2 {
         self.zoning.polygons.iter().find(|p| p.id == poly_id as u32)
-            .map(|p| godot::prelude::Vector2::new(p.edge_idx as f32, p.depth_amt))
+            .map(|p| {
+                if let Some(f) = p.frontages.first() {
+                    godot::prelude::Vector2::new(f.edge_idx as f32, p.depth_amt)
+                } else {
+                    godot::prelude::Vector2::new(-1.0, 0.0)
+                }
+            })
             .unwrap_or(godot::prelude::Vector2::new(-1.0, 0.0))
+    }
+
+    #[func]
+    pub fn get_polygon_at(&self, pos_x: f32, pos_z: f32) -> i32 {
+        let p = godot::prelude::Vector2::new(pos_x, pos_z);
+        for poly in &self.zoning.polygons {
+            let mut inside = false;
+            let mut j = poly.vertices.len() - 1;
+            for i in 0..poly.vertices.len() {
+                let a = poly.vertices[i];
+                let b = poly.vertices[j];
+                if (a.y > p.y) != (b.y > p.y) {
+                    let intersect_x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+                    if p.x < intersect_x {
+                        inside = !inside;
+                    }
+                }
+                j = i;
+            }
+            if inside {
+                return poly.id as i32;
+            }
+        }
+        -1
+    }
+
+    #[func]
+    pub fn add_frontage_to_polygon(&mut self, poly_id: i32, edge_idx: i32) {
+        if edge_idx < 0 { return; }
+        let hw = if let Some(e) = self.transit_network.graph.edges.get(edge_idx as usize) { e.width / 2.0 } else { return; };
+        
+        let mut edge_geom = Vec::new();
+        if let Some(e) = self.transit_network.graph.edges.get(edge_idx as usize) {
+            if e.physical_geometry.is_empty() {
+                edge_geom.push(godot::prelude::Vector2::new(self.transit_network.graph.nodes[e.start_node as usize].pos.x, self.transit_network.graph.nodes[e.start_node as usize].pos.z));
+                edge_geom.push(godot::prelude::Vector2::new(self.transit_network.graph.nodes[e.end_node as usize].pos.x, self.transit_network.graph.nodes[e.end_node as usize].pos.z));
+            } else {
+                for v in &e.physical_geometry {
+                    edge_geom.push(godot::prelude::Vector2::new(v.x, v.z));
+                }
+            }
+        }
+
+        if let Some(poly) = self.zoning.polygons.iter_mut().find(|p| p.id == poly_id as u32) {
+            if poly.frontages.iter().any(|f| f.edge_idx == edge_idx as usize) { return; }
+            
+            let n = poly.vertices.len();
+            let mut on_edge = vec![false; n];
+            for i in 0..n {
+                let p = poly.vertices[i];
+                let mut dist = std::f32::MAX;
+                for k in 0..edge_geom.len()-1 {
+                    let a = edge_geom[k];
+                    let b = edge_geom[k+1];
+                    let l2 = (b - a).length_squared();
+                    let d = if l2 == 0.0 {
+                        (p - a).length()
+                    } else {
+                        let t = ((p - a).dot(b - a) / l2).clamp(0.0, 1.0);
+                        (p - (a + (b - a) * t)).length()
+                    };
+                    if d < dist { dist = d; }
+                }
+                on_edge[i] = dist < (hw + 1.5); // Add 1.5m tolerance
+            }
+            
+            let mut best_start = 0;
+            let mut best_len = 0;
+            for i in 0..n {
+                if on_edge[i] {
+                    let mut current_len = 0;
+                    for j in 0..n {
+                        if on_edge[(i + j) % n] { current_len += 1; } else { break; }
+                    }
+                    if current_len > best_len {
+                        best_len = current_len;
+                        best_start = i;
+                    }
+                }
+            }
+            
+            if best_len >= 2 {
+                poly.frontages.push(crate::simulation::grid::zoning::ZoneFrontage {
+                    edge_idx: edge_idx as usize,
+                    start_idx: best_start,
+                    count: best_len,
+                });
+                poly.version += 1;
+            }
+        }
+        self.allocator.dirty = true;
     }
 
     #[func]

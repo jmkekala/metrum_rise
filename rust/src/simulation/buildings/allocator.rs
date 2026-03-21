@@ -80,106 +80,120 @@ impl BuildingAllocator {
 
         for poly in &_zoning.polygons {
             if handled_polys.contains(&poly.id) { continue; }
-            let n = poly.frontage_pts;
-            if n < 2 { continue; }
-            
-            let mut front_len = 0.0;
-            for i in 0..n-1 {
-                front_len += (poly.vertices[i+1] - poly.vertices[i]).length();
-            }
-            if front_len < 4.0 { continue; }
-            
-            let density_width = 12.0; 
-            let num_plots = (front_len / density_width).max(1.0) as u32;
-            let slice_width = front_len / (num_plots as f32);
-            
-            for i in 0..num_plots {
-                let target_dist = (i as f32 + 0.5) * slice_width;
-                let mut accumulated = 0.0;
-                let mut front_center = poly.vertices[0];
-                let mut in_dir = godot::prelude::Vector2::new(0.0, 0.0);
+            for frontage in &poly.frontages {
+                let n = frontage.count;
+                if n < 2 { continue; }
+                let s_idx = frontage.start_idx;
                 
-                for j in 0..n-1 {
-                    let v0 = poly.vertices[j];
-                    let v1 = poly.vertices[j+1];
-                    let seg_len = (v1 - v0).length();
-                    if accumulated + seg_len >= target_dist || j == n-2 {
-                        let t = if seg_len > 0.0 { ((target_dist - accumulated) / seg_len).clamp(0.0, 1.0) } else { 0.0 };
-                        front_center = v0 + (v1 - v0) * t;
-                        let tangent = if seg_len > 0.0 { (v1 - v0).normalized() } else { godot::prelude::Vector2::new(1.0, 0.0) };
-                        let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x);
-                        in_dir = if poly.depth_amt > 0.0 { normal } else { -normal };
-                        break;
-                    }
-                    accumulated += seg_len;
+                let mut front_len = 0.0;
+                for i in 0..n-1 {
+                    let idx1 = (s_idx + i) % poly.vertices.len();
+                    let idx2 = (s_idx + i + 1) % poly.vertices.len();
+                    front_len += (poly.vertices[idx2] - poly.vertices[idx1]).length();
                 }
+                if front_len < 4.0 { continue; }
                 
-                let r1 = godot::prelude::Vector2::new(in_dir.y, -in_dir.x);
-                let bw = (slice_width * 0.95) as u8;
-                let hw = bw as f32 / 2.0 - 0.1;
+                let density_width = 12.0; 
+                let num_plots = (front_len / density_width).max(1.0) as u32;
+                let slice_width = front_len / (num_plots as f32);
                 
-                let mut safe_bd = 0;
-                for try_bd in (4..=15).rev() {
-                    let d = try_bd as f32;
-                    let c = front_center + in_dir * (d / 2.0);
-                    let hd = d / 2.0 - 0.1;
-                    let back_left = c + in_dir * hd - r1 * hw;
-                    let back_right = c + in_dir * hd + r1 * hw;
-                    let front_left = c - in_dir * hd - r1 * hw;
-                    let front_right = c - in_dir * hd + r1 * hw;
-                    if point_in_polygon(back_left, &poly.vertices) && point_in_polygon(back_right, &poly.vertices) &&
-                       point_in_polygon(front_left, &poly.vertices) && point_in_polygon(front_right, &poly.vertices) {
-                        safe_bd = try_bd;
-                        break;
+                for i in 0..num_plots {
+                    let target_dist = (i as f32 + 0.5) * slice_width;
+                    let mut accumulated = 0.0;
+                    let mut front_center = poly.vertices[s_idx % poly.vertices.len()];
+                    let mut in_dir = godot::prelude::Vector2::new(0.0, 0.0);
+                    
+                    for j in 0..n-1 {
+                        let idx1 = (s_idx + j) % poly.vertices.len();
+                        let idx2 = (s_idx + j + 1) % poly.vertices.len();
+                        let v0 = poly.vertices[idx1];
+                        let v1 = poly.vertices[idx2];
+                        let seg_len = (v1 - v0).length();
+                        if accumulated + seg_len >= target_dist || j == n-2 {
+                            let t = if seg_len > 0.0 { ((target_dist - accumulated) / seg_len).clamp(0.0, 1.0) } else { 0.0 };
+                            front_center = v0 + (v1 - v0) * t;
+                            let tangent = if seg_len > 0.0 { (v1 - v0).normalized() } else { godot::prelude::Vector2::new(1.0, 0.0) };
+                            let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x);
+                            
+                            // Check inward normal direction using inclusion test
+                            in_dir = normal;
+                            if !point_in_polygon(front_center + in_dir * 4.0, &poly.vertices) {
+                                in_dir = -normal;
+                            }
+                            break;
+                        }
+                        accumulated += seg_len;
                     }
-                }
-                
-                let bd = safe_bd;
-                if bd < 4 { continue; }
-                
-                let center_2d = front_center + in_dir * ((bd as f32) / 2.0);
-                
-                // Overlap Check
-                let mut overlap = false;
-                let f1 = in_dir; 
-                let r1_vec = godot::prelude::Vector2::new(f1.y, -f1.x); 
-                for other in &self.buildings {
-                    let f2 = -other.facing_dir;
-                    let r2 = godot::prelude::Vector2::new(f2.y, -f2.x);
-                    let diff = center_2d - godot::prelude::Vector2::new(other.center_x, other.center_y);
-                    let axes = [f1, r1_vec, f2, r2];
-                    let mut sep_found = false;
-                    for &axis in &axes {
-                        let proj1 = (bd as f32 / 2.0 * f1.dot(axis).abs()) + (bw as f32 / 2.0 * r1_vec.dot(axis).abs());
-                        let proj2 = (other.depth as f32 / 2.0 * f2.dot(axis).abs()) + (other.width as f32 / 2.0 * r2.dot(axis).abs());
-                        if diff.dot(axis).abs() >= proj1 + proj2 + 0.1 {
-                            sep_found = true;
+                    
+                    if in_dir.length_squared() < 0.1 { continue; } // safe fallback
+                    
+                    let r1 = godot::prelude::Vector2::new(in_dir.y, -in_dir.x);
+                    let bw = (slice_width * 0.95) as u8;
+                    let hw = bw as f32 / 2.0 - 0.1;
+                    
+                    let mut safe_bd = 0;
+                    for try_bd in (4..=15).rev() {
+                        let d = try_bd as f32;
+                        let c = front_center + in_dir * (d / 2.0);
+                        let hd = d / 2.0 - 0.1;
+                        let back_left = c + in_dir * hd - r1 * hw;
+                        let back_right = c + in_dir * hd + r1 * hw;
+                        let front_left = c - in_dir * hd - r1 * hw;
+                        let front_right = c - in_dir * hd + r1 * hw;
+                        if point_in_polygon(back_left, &poly.vertices) && point_in_polygon(back_right, &poly.vertices) &&
+                           point_in_polygon(front_left, &poly.vertices) && point_in_polygon(front_right, &poly.vertices) {
+                            safe_bd = try_bd;
                             break;
                         }
                     }
-                    if !sep_found { overlap = true; break; }
+                    
+                    let bd = safe_bd;
+                    if bd < 4 { continue; }
+                    
+                    let center_2d = front_center + in_dir * ((bd as f32) / 2.0);
+                    
+                    // Overlap Check
+                    let mut overlap = false;
+                    let f1 = in_dir; 
+                    let r1_vec = godot::prelude::Vector2::new(f1.y, -f1.x); 
+                    for other in &self.buildings {
+                        let f2 = -other.facing_dir;
+                        let r2 = godot::prelude::Vector2::new(f2.y, -f2.x);
+                        let diff = center_2d - godot::prelude::Vector2::new(other.center_x, other.center_y);
+                        let axes = [f1, r1_vec, f2, r2];
+                        let mut sep_found = false;
+                        for &axis in &axes {
+                            let proj1 = (bd as f32 / 2.0 * f1.dot(axis).abs()) + (bw as f32 / 2.0 * r1_vec.dot(axis).abs());
+                            let proj2 = (other.depth as f32 / 2.0 * f2.dot(axis).abs()) + (other.width as f32 / 2.0 * r2.dot(axis).abs());
+                            if diff.dot(axis).abs() >= proj1 + proj2 + 0.1 {
+                                sep_found = true;
+                                break;
+                            }
+                        }
+                        if !sep_found { overlap = true; break; }
+                    }
+                    if overlap { continue; }
+
+                    // 4. Create building and its frontage node
+                    let front_center_3d = godot::prelude::Vector3::new(front_center.x, 0.0, front_center.y);
+                    let frontage_node = _network.split_for_frontage(frontage.edge_idx, front_center_3d);
+                    graph_changed = true;
+
+                    let b_data = Building {
+                        center_x: center_2d.x,
+                        center_y: center_2d.y,
+                        width: bw,
+                        depth: bd,
+                        zone_type: poly.zone_type,
+                        facing_dir: -in_dir,
+                        frontage_node,
+                        side_offset: 1.0, // Used by visuals, arbitrarily left/right is fine for now
+                        abandoned_timer: 0,
+                        polygon_id: poly.id,
+                        polygon_version: poly.version,
+                    };
+                    self.buildings.push(b_data);
                 }
-                if overlap { continue; }
-
-                // 4. Create building and its frontage node
-                let front_center_3d = godot::prelude::Vector3::new(front_center.x, 0.0, front_center.y);
-                let frontage_node = _network.split_for_frontage(poly.edge_idx, front_center_3d);
-                graph_changed = true;
-
-                let b_data = Building {
-                    center_x: center_2d.x,
-                    center_y: center_2d.y,
-                    width: bw,
-                    depth: bd,
-                    zone_type: poly.zone_type,
-                    facing_dir: -in_dir,
-                    frontage_node,
-                    side_offset: if poly.depth_amt > 0.0 { -1.0 } else { 1.0 },
-                    abandoned_timer: 0,
-                    polygon_id: poly.id,
-                    polygon_version: poly.version,
-                };
-                self.buildings.push(b_data);
             }
         }
         

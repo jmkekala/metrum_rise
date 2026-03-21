@@ -205,8 +205,12 @@ func _unhandled_input(event):
 					offset += count
 						
 				if attached_edge_idx != -1:
-					frontage_start = current_mouse_pos
-					state = 1
+					var clicked_poly = simulation_node.get_polygon_at(world_pos.x, world_pos.y)
+					if clicked_poly != -1:
+						simulation_node.add_frontage_to_polygon(clicked_poly, attached_edge_idx)
+					else:
+						frontage_start = current_mouse_pos
+						state = 1
 			elif state == 1:
 				if current_mouse_pos.distance_to(frontage_start) > 0.5:
 					frontage_end = current_mouse_pos

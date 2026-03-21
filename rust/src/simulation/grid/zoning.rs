@@ -11,14 +11,20 @@ pub enum ZoneType {
 }
 
 #[derive(Clone, Debug)]
+pub struct ZoneFrontage {
+    pub edge_idx: usize,
+    pub start_idx: usize,
+    pub count: usize,
+}
+
+#[derive(Clone, Debug)]
 pub struct ZoningPolygon {
     pub id: u32,
     pub version: u32,
-    pub edge_idx: usize,
     pub zone_type: ZoneType,
     pub vertices: Vec<Vector2>,
     pub depth_amt: f32,
-    pub frontage_pts: usize,
+    pub frontages: Vec<ZoneFrontage>,
 }
 
 pub struct ZoningSystem {
@@ -43,11 +49,14 @@ impl ZoningSystem {
         self.polygons.push(ZoningPolygon {
             id: self.next_id,
             version: 0,
-            edge_idx,
             zone_type,
             vertices,
             depth_amt,
-            frontage_pts,
+            frontages: vec![ZoneFrontage {
+                edge_idx,
+                start_idx: 0,
+                count: frontage_pts,
+            }],
         });
         self.next_id += 1;
     }
@@ -56,7 +65,10 @@ impl ZoningSystem {
         if let Some(poly) = self.polygons.iter_mut().find(|p| p.id == id) {
             poly.version += 1;
             poly.vertices = vertices;
-            poly.frontage_pts = frontage_pts;
+            if !poly.frontages.is_empty() {
+                poly.frontages[0].start_idx = 0;
+                poly.frontages[0].count = frontage_pts;
+            }
         }
     }
 
