@@ -250,12 +250,14 @@ impl AgentSystem {
 
 
         if pedestrian_dist > 500.0 && self.has_car[i] {
-            // Far target and has car, drive
-            return (target_node, true);
-        } else {
-            // Close target or no car, walk
-            return (target_node, false);
+            // Far target and has car, but ONLY drive if a driving path actually exists!
+            if hpa.find_path(current_node, target_node, usize::MAX, graph, false).is_some() {
+                return (target_node, true);
+            }
         }
+        
+        // Close target, no car, OR car path disconnected -> Walk
+        return (target_node, false);
     }
 
     pub fn find_parking_spot(&self, node_id: u32, graph: &TransitGraph) -> Option<(usize, u32)> {
@@ -502,7 +504,24 @@ impl AgentSystem {
                                     self.current_path[i] = path;
                                     self.current_path_index[i] = 1;
                                 } else {
-                                    remaining_dist = 0.0; break; // Stuck
+                                    // Agent is utterly stuck (graph disconnected / no path possible)
+                                    // Abandon Journey to avoid infinite loop
+                                    if self.transit[i] == TRANSIT_IMMIGRATING {
+                                        // Wander to random node if immigrants can't reach home
+                                        if graph.nodes.len() > 1 {
+                                            self.target_node[i] = (self.target_node[i] as usize + 1).rem_euclid(graph.nodes.len()) as u32;
+                                        }
+                                    } else {
+                                        // Give up, teleport home or become idle
+                                        if self.home_building[i] != usize::MAX && self.home_building[i] < allocator.buildings.len() {
+                                            self.target_building[i] = self.home_building[i];
+                                            self.target_node[i] = allocator.buildings[self.home_building[i]].frontage_node;
+                                            self.transit[i] = TRANSIT_ARRIVING; // Jump into arriving phase
+                                        } else {
+                                            self.transit[i] = TRANSIT_IDLE;
+                                        }
+                                    }
+                                    remaining_dist = 0.0; break;
                                 }
                             }
 

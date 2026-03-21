@@ -95,11 +95,22 @@ impl TransitGraph {
     }
 
     pub fn find_or_add_node(&mut self, pos: Vector3, radius: f32, node_type: NodeType) -> u32 {
+        let mut found_id = None;
         for (i, node) in self.nodes.iter().enumerate() {
             if node.pos.distance_to(pos) < radius {
-                let valid_id = self.get_valid_node(i as u32);
-                return valid_id;
+                found_id = Some(self.get_valid_node(i as u32));
+                break;
             }
+        }
+        
+        if let Some(id) = found_id {
+            // Upgrading a Frontage node to a Junction clears its strict driveway lane rules,
+            // allowing cars to legally turn onto the newly built intersecting road!
+            if node_type == NodeType::Junction && self.nodes[id as usize].node_type == NodeType::Frontage {
+                self.nodes[id as usize].node_type = NodeType::Junction;
+                self.nodes[id as usize].lane_connections.clear();
+            }
+            return id;
         }
         self.add_node(pos, node_type)
     }
@@ -348,6 +359,12 @@ impl TransitGraph {
         if keep == remove { return; }
         
         self.node_aliases.insert(remove, keep);
+        
+        // Merging two network pieces transforms any restrictive node type into a Junction
+        if self.nodes[keep as usize].node_type == NodeType::Frontage {
+            self.nodes[keep as usize].node_type = NodeType::Junction;
+            self.nodes[keep as usize].lane_connections.clear();
+        }
         
         // Update all edges using the 'remove' node to use 'keep' node instead
         for edge in &mut self.edges {

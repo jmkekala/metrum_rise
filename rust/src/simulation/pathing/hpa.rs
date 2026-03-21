@@ -230,12 +230,10 @@ impl HpaGraph {
             path.reverse();
             path_edges.reverse();
             
-            godot::prelude::godot_print!("Path: {:?} Types: {:?} (Ped: {})", path, path_edges, pedestrian);
             return Some((fc, fd, path));
         } else {
-            if start != end {
-                godot::prelude::godot_print!("Pathfinding FAILED from {} to {} (Ped: {})", start, end, pedestrian);
-            }
+            // Pathfinding failed (Graph mathematically disconnected for this transit type)
+            // No need to spam the console here, agents.rs now handles this gracefully.
             return None;
         }
     }
