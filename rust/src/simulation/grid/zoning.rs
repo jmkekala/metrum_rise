@@ -23,10 +23,12 @@ pub struct ZoningPolygon {
     pub version: u32,
     pub zone_type: ZoneType,
     pub vertices: Vec<Vector2>,
+    pub base_vertices: Vec<Vector2>, // Store the underlying generic primitive bounds!
     pub depth_amt: f32,
     pub frontages: Vec<ZoneFrontage>,
 }
 
+#[derive(Clone)]
 pub struct ZoningSystem {
     pub polygons: Vec<ZoningPolygon>,
     pub next_id: u32,
@@ -45,12 +47,13 @@ impl ZoningSystem {
         self.next_id = 1;
     }
 
-    pub fn add_polygon(&mut self, edge_idx: usize, zone_type: ZoneType, vertices: Vec<Vector2>, depth_amt: f32, frontage_pts: usize) {
+    pub fn add_polygon(&mut self, edge_idx: usize, zone_type: ZoneType, vertices: Vec<Vector2>, depth_amt: f32, frontage_pts: usize, base_vertices: Vec<Vector2>) {
         self.polygons.push(ZoningPolygon {
             id: self.next_id,
             version: 0,
             zone_type,
             vertices,
+            base_vertices,
             depth_amt,
             frontages: vec![ZoneFrontage {
                 edge_idx,
@@ -69,6 +72,12 @@ impl ZoningSystem {
                 poly.frontages[0].start_idx = 0;
                 poly.frontages[0].count = frontage_pts;
             }
+        }
+    }
+    
+    pub fn update_polygon_base_vertices(&mut self, id: u32, base_vertices: Vec<Vector2>) {
+        if let Some(poly) = self.polygons.iter_mut().find(|p| p.id == id) {
+            poly.base_vertices = base_vertices;
         }
     }
 

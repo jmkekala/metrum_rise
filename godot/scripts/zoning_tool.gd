@@ -15,11 +15,12 @@ var current_mouse_pos: Vector2
 
 var editing_poly_id: int = -1
 var editing_handle_idx: int = -1 # 0: start, 1: end
+var editing_poly_verts: PackedVector2Array
 
 var preview_mesh: MeshInstance3D
 var frontage_mesh: MeshInstance3D
 var global_frontages_mesh: MeshInstance3D
-var handles_mesh: MeshInstance3D
+var handles_mesh: MultiMeshInstance3D
 
 func _ready():
 	preview_mesh = MeshInstance3D.new()
@@ -48,13 +49,31 @@ func _ready():
 	global_frontages_mesh.material_override = gline_mat
 	add_child(global_frontages_mesh)
 	
-	handles_mesh = MeshInstance3D.new()
+	handles_mesh = MultiMeshInstance3D.new()
+	var hmm = MultiMesh.new()
+	hmm.transform_format = MultiMesh.TRANSFORM_3D
+	var sm = SphereMesh.new()
+	sm.radius = 0.5
+	sm.height = 1.0
+	sm.radial_segments = 8
+	sm.rings = 4
+	hmm.mesh = sm
+	
 	var h_mat = StandardMaterial3D.new()
-	h_mat.albedo_color = Color(1, 0.5, 0, 1) # Orange
+	h_mat.albedo_color = Color(0.8, 0.95, 1.0) # White Blue
 	h_mat.emission_enabled = true
-	h_mat.emission = Color(1, 0.5, 0, 1)
-	handles_mesh.material_override = h_mat
+	h_mat.emission = Color(0.2, 0.5, 1.0)
+	h_mat.emission_energy_multiplier = 2.0
+	sm.surface_set_material(0, h_mat)
+	
+	handles_mesh.multimesh = hmm
 	add_child(handles_mesh)
+	
+	# ENSURE ALL VISUAL MESHES OPERATE IN GLOBAL WORLD SPACE REGARDLESS OF PARENT OFFSET
+	preview_mesh.top_level = true
+	frontage_mesh.top_level = true
+	global_frontages_mesh.top_level = true
+	handles_mesh.top_level = true
 
 func _process(delta):
 	# Key handling moved to InputManager.gd
@@ -90,6 +109,14 @@ func _process(delta):
 			
 			var st = SurfaceTool.new()
 			st.begin(Mesh.PRIMITIVE_TRIANGLES)
+			
+			# Check if edge is available for new zoning
+			var is_available = simulation_node.get_zoning_for_edge(edge_idx) == -1
+			if is_available:
+				st.set_color(Color(1, 1, 0, 0.7)) # Yellow/Green
+			else:
+				st.set_color(Color(1, 0, 0, 0.7)) # Red (Blocked)
+				
 			var y0 = simulation_node.get_height_at(current_mouse_pos) + 0.5
 			var r = 0.5
 			st.add_vertex(Vector3(current_mouse_pos.x-r, y0, current_mouse_pos.y-r))
@@ -110,55 +137,33 @@ func _process(delta):
 		current_mouse_pos = world_pos
 		update_preview_4_points()
 		
-	elif state == 3 and world_pos != null:
-		var props = simulation_node.get_polygon_properties(editing_poly_id)
-		var edge_idx = int(props.x)
-		var depth_amt = props.y
-		
-		var snapped = simulation_node.get_closest_point_on_edge(edge_idx, world_pos.x, world_pos.y)
+	elif state == 4 and world_pos != null:
+		var edge_idx = attached_edge_idx
+			
+		var snapped = world_pos
+		# ONLY snap vertices 0 and 1 (Frontage handles) to the road edge!
+		# Vertices 2 and 3 are back-corners and should move freely in world space.
+		if edge_idx != -1 and editing_handle_idx < 2:
+			snapped = simulation_node.get_closest_point_on_edge(edge_idx, world_pos.x, world_pos.y)
+			
 		current_mouse_pos = snapped
 		
-		# Update the polygon real-time
-		var handle_pts = simulation_node.get_zoning_frontage_points()
-		var ids = simulation_node.get_zoning_polygon_ids()
-		var p_idx = -1
-		for i in range(ids.size()):
-			if ids[i] == editing_poly_id:
-				p_idx = i
-				break
-		
-		if p_idx != -1:
-			var p0 = handle_pts[p_idx * 2]
-			var p1 = handle_pts[p_idx * 2 + 1]
+		# real-time editing
+		var modified = PackedVector2Array()
+		for v in editing_poly_verts: modified.push_back(v)
+		if editing_handle_idx >= 0 and editing_handle_idx < modified.size():
+			modified[editing_handle_idx] = current_mouse_pos
 			
-			if editing_handle_idx == 0: p0 = current_mouse_pos
-			else: p1 = current_mouse_pos
+			# Correctly extract frontage from the base primitive (handles 0 and 1 define the edge)
+			var target_fronts = PackedVector2Array()
+			target_fronts.push_back(modified[0]) 
+			target_fronts.push_back(modified[1])
 			
-			if p0.distance_to(p1) < 2.0:
-				simulation_node.delete_zoning_polygon(editing_poly_id)
-				state = 0
-				editing_poly_id = -1
-			else:
-				var fronts = simulation_node.get_curved_frontage(edge_idx, p0, p1)
-				if fronts.size() >= 2:
-					var packed = PackedVector2Array()
-					for p in fronts: packed.push_back(p)
-					for i in range(fronts.size() - 1, -1, -1):
-						var local_tan = Vector2()
-						if i > 0 and i < fronts.size() - 1:
-							local_tan = (fronts[i+1] - fronts[i-1]).normalized()
-						elif i == 0:
-							local_tan = (fronts[1] - fronts[0]).normalized()
-						else:
-							local_tan = (fronts[-1] - fronts[-2]).normalized()
-						var local_n = Vector2(-local_tan.y, local_tan.x)
-						packed.push_back(fronts[i] + local_n * depth_amt)
-					
-					var clipped = get_clipped_polygon(packed, fronts, editing_poly_id, edge_idx)
-					var final_packed = clipped["poly"]
-					var final_fronts_count = clipped["fronts_count"]
-					if final_packed.size() >= 3:
-						simulation_node.update_zoning_polygon(editing_poly_id, final_packed, final_fronts_count)
+			var clipped = get_clipped_polygon(modified, target_fronts, editing_poly_id, edge_idx)
+			var final_packed = clipped["poly"]
+			var final_fronts_count = clipped["fronts_count"]
+			if final_packed.size() >= 3:
+				simulation_node.update_zoning_polygon(editing_poly_id, final_packed, final_fronts_count, modified)
 
 func _unhandled_input(event):
 	if not active: return
@@ -178,37 +183,42 @@ func _unhandled_input(event):
 		if event.pressed:
 			if state == 0:
 				# Check for handles first
-				var all_data = simulation_node.get_zoning_frontage_data()
-				var counts = simulation_node.get_zoning_frontage_counts()
-				var ids = simulation_node.get_zoning_polygon_ids()
-				
+				var handles_data = simulation_node.get_zoning_polygons_handles()
 				var offset = 0
-				for i in range(ids.size()):
-					var count = counts[i]
-					if count < 2: 
-						offset += count
-						continue
-					
-					var p_start = all_data[offset]
-					var p_end = all_data[offset + count - 1]
-					
-					if world_pos.distance_to(p_start) < 2.0:
-						editing_poly_id = ids[i]
-						editing_handle_idx = 0
-						state = 3
-						return
-					if world_pos.distance_to(p_end) < 2.0:
-						editing_poly_id = ids[i]
-						editing_handle_idx = 1
-						state = 3
-						return
-					offset += count
+				var found_handle = false
+				while offset < handles_data.size():
+					var p_id = int(handles_data[offset])
+					var v_count = int(handles_data[offset+1])
+					offset += 2
+					for k in range(v_count):
+						var vx = handles_data[offset + k*2]
+						var vy = handles_data[offset + k*2 + 1]
+						if world_pos.distance_to(Vector2(vx, vy)) < 3.0:
+							editing_poly_id = p_id
+							editing_handle_idx = k
+							editing_poly_verts = simulation_node.get_polygon_base_vertices(p_id)
+							
+							# Sync attached edge for road snapping from the selected polygon
+							var props = simulation_node.get_polygon_properties(p_id)
+							attached_edge_idx = int(props.x)
+							
+							state = 4
+							found_handle = true
+							break
+					if found_handle: break
+					offset += v_count * 2
+				
+				if found_handle: return
 						
 				if attached_edge_idx != -1:
 					var clicked_poly = simulation_node.get_polygon_at(world_pos.x, world_pos.y)
 					if clicked_poly != -1:
 						simulation_node.add_frontage_to_polygon(clicked_poly, attached_edge_idx)
 					else:
+						# Prevent STARTING a new zone if this edge is already fronting another zone
+						if simulation_node.get_zoning_for_edge(attached_edge_idx) != -1:
+							return
+							
 						frontage_start = current_mouse_pos
 						state = 1
 			elif state == 1:
@@ -221,9 +231,10 @@ func _unhandled_input(event):
 				preview_mesh.mesh = null
 				frontage_mesh.mesh = null
 		else: # Released
-			if state == 3:
+			if state == 3 or state == 4:
 				state = 0
 				editing_poly_id = -1
+				editing_poly_verts = PackedVector2Array()
 			
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		if state != 0:
@@ -310,6 +321,10 @@ func commit_polygon():
 	else:
 		depth_amt = max(0.5, depth_amt)
 		
+	var front_pos_end = fronts[-1]
+	var back_pos_end = front_pos_end + normal * depth_amt
+	var back_pos_start = fronts[0] + normal * depth_amt
+
 	var packed = PackedVector2Array()
 	for p in fronts: packed.push_back(p)
 	for i in range(fronts.size() - 1, -1, -1):
@@ -327,8 +342,14 @@ func commit_polygon():
 	var final_packed = clipped["poly"]
 	var final_fronts_count = clipped["fronts_count"]
 	
-	if final_packed.size() >= 3:
-		simulation_node.add_zoning_polygon(attached_edge_idx, current_zone_type, final_packed, depth_amt, final_fronts_count)
+	if final_packed.size() >= 3 and final_fronts_count > 0:
+		# Create a clean 4-corner base primitive for editing handles
+		var base_corners = PackedVector2Array()
+		base_corners.push_back(fronts[0])
+		base_corners.push_back(front_pos_end)
+		base_corners.push_back(back_pos_end)
+		base_corners.push_back(back_pos_start)
+		simulation_node.add_zoning_polygon(attached_edge_idx, current_zone_type, final_packed, depth_amt, final_fronts_count, base_corners)
 
 func draw_all_frontages():
 	var all_data = simulation_node.get_zoning_frontage_data()
@@ -336,7 +357,7 @@ func draw_all_frontages():
 	
 	if counts.size() == 0:
 		global_frontages_mesh.mesh = null
-		handles_mesh.mesh = null
+		handles_mesh.multimesh.instance_count = 0
 		return
 		
 	var st = SurfaceTool.new()
@@ -364,16 +385,45 @@ func draw_all_frontages():
 		
 	global_frontages_mesh.mesh = st.commit()
 	
-	# Draw Handles
-	var hst = SurfaceTool.new()
-	hst.begin(Mesh.PRIMITIVE_TRIANGLES)
-	for p in all_handle_pts:
-		var y = simulation_node.get_height_at(p) + 1.0
-		var r = 0.4
-		hst.add_vertex(Vector3(p.x-r, y, p.y-r))
-		hst.add_vertex(Vector3(p.x+r, y, p.y-r))
-		hst.add_vertex(Vector3(p.x, y, p.y+r))
-	handles_mesh.mesh = hst.commit()
+	# Draw Handles (Entire polygon bounds!)
+	var handle_data = simulation_node.get_zoning_polygons_handles()
+	var total_handles = 0
+	var h_count_ptr = 1
+	while h_count_ptr < handle_data.size():
+		total_handles += int(handle_data[h_count_ptr])
+		h_count_ptr += 2 + int(handle_data[h_count_ptr]) * 2
+		
+	handles_mesh.multimesh.instance_count = total_handles
+	
+	var h_offset = 0
+	var instance_idx = 0
+	while h_offset < handle_data.size():
+		var p_id = int(handle_data[h_offset])
+		var v_count = int(handle_data[h_offset+1])
+		h_offset += 2
+		for k in range(v_count):
+			var p = Vector2(handle_data[h_offset + k*2], handle_data[h_offset + k*2 + 1])
+			
+			# Add subtle inward offset so handles don't overlap road exactly
+			var center = Vector2(0,0)
+			for j in range(v_count): center += Vector2(handle_data[h_offset + j*2], handle_data[h_offset + j*2 + 1])
+			center /= v_count
+			var to_center = (center - p).normalized()
+			p += to_center * 0.5
+			
+			var y = simulation_node.get_height_at(p) + 1.2
+			
+			var t = Transform3D()
+			# Make them slightly bigger when hovered/dragging? (Maybe later)
+			var scale_factor = 1.0
+			if p_id == editing_poly_id and k == editing_handle_idx: scale_factor = 1.5
+			
+			t = t.scaled(Vector3(scale_factor, scale_factor, scale_factor))
+			t.origin = Vector3(p.x, y, p.y)
+			handles_mesh.multimesh.set_instance_transform(instance_idx, t)
+			instance_idx += 1
+			
+		h_offset += v_count * 2
 
 func get_clipped_polygon(base_poly: PackedVector2Array, original_fronts: PackedVector2Array, edit_poly_id: int, attach_edge: int) -> Dictionary:
 	var floats = simulation_node.get_obstacle_polygons_float_array(edit_poly_id, attach_edge)

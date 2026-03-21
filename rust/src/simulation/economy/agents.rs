@@ -560,6 +560,11 @@ impl AgentSystem {
                         }
 
                         // 3. Move along edge
+                        if self.current_edge[i] >= graph.edges.len() {
+                            self.current_edge[i] = usize::MAX;
+                            self.current_path[i].clear();
+                            remaining_dist = 0.0; break;
+                        }
                         let edge = &graph.edges[self.current_edge[i]];
                         
                         // DEFENSIVE: Edge splits can shrink physical_geometry while agents are on it.

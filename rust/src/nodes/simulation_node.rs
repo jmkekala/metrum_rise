@@ -18,6 +18,7 @@ pub struct SimulationSnapshot {
     pub terrain: Option<Vec<f32>>,
     pub water: Option<Vec<f32>>,
     pub transit: Option<crate::simulation::network::graph::TransitGraph>,
+    pub zoning: Option<crate::simulation::grid::zoning::ZoningSystem>,
 }
 
 #[derive(GodotClass)]
@@ -79,7 +80,7 @@ impl SimulationNode {
         Self::grid_to_image_data(&self.desirability.grid, 50, 255, 50, 100.0) // Bright Green
     }
 
-    fn push_undo_state(&mut self, inc_terrain: bool, inc_water: bool, inc_transit: bool) {
+    fn push_undo_state(&mut self, inc_terrain: bool, inc_water: bool, inc_transit: bool, inc_zoning: bool) {
         if self.undo_stack.len() >= 30 {
             self.undo_stack.remove(0); // Constant 30-size rolling window
         }
@@ -87,6 +88,7 @@ impl SimulationNode {
             terrain: if inc_terrain { Some(self.heightmap.data.clone()) } else { None },
             water: if inc_water { Some(self.watermap.depth.clone()) } else { None },
             transit: if inc_transit { Some(self.transit_network.graph.clone()) } else { None },
+            zoning: if inc_zoning { Some(self.zoning.clone()) } else { None },
         });
     }
 
@@ -106,8 +108,10 @@ impl SimulationNode {
                 self.transit_network.graph = tr_graph;
                 sync_transit = true;
             }
+            if let Some(z_sys) = state.zoning {
+                self.zoning = z_sys;
+            }
 
-            // Fire cascading sync pipelines to ensure GPU components mirror reverted states
             if sync_transit {
                 self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
             }
@@ -118,7 +122,7 @@ impl SimulationNode {
 
     #[func]
     pub fn sculpt_terrain(&mut self, pos: Vector2, radius: f32, strength: f32) {
-        self.push_undo_state(true, false, true); // Sculpt triggers transit geometry re-flow
+        self.push_undo_state(true, false, true, false); // Sculpt triggers transit geometry re-flow
         self.heightmap.sculpt(pos.x, pos.y, radius, strength);
         
         // STICKY ROADS: Sync network and re-flatten
@@ -128,7 +132,7 @@ impl SimulationNode {
 
     #[func]
     pub fn add_water(&mut self, pos: Vector2, amount: f32) {
-        self.push_undo_state(false, true, false);
+        self.push_undo_state(false, true, false, false);
         self.watermap.add_water(pos.x as usize, pos.y as usize, amount);
     }
 
@@ -158,7 +162,8 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn add_zoning_polygon(&mut self, edge_idx: i32, zone_type_int: u8, vertices: PackedVector2Array, depth_amt: f32, frontage_pts: i32) {
+    pub fn add_zoning_polygon(&mut self, edge_idx: i32, zone_type_int: u8, vertices: PackedVector2Array, depth_amt: f32, frontage_pts: i32, base_verts: PackedVector2Array) {
+        self.push_undo_state(false, false, false, true);
         let zone_type = match zone_type_int {
             1 => crate::simulation::grid::zoning::ZoneType::Residential,
             2 => crate::simulation::grid::zoning::ZoneType::Commercial,
@@ -172,7 +177,12 @@ impl SimulationNode {
             verts.push(godot::prelude::Vector2::new(v.x, v.y));
         }
         
-        self.zoning.add_polygon(edge_idx as usize, zone_type, verts, depth_amt, frontage_pts as usize);
+        let mut b_verts = Vec::new();
+        for v in base_verts.as_slice() {
+            b_verts.push(godot::prelude::Vector2::new(v.x, v.y));
+        }
+        
+        self.zoning.add_polygon(edge_idx as usize, zone_type, verts, depth_amt, frontage_pts as usize, b_verts);
         self.allocator.dirty = true;
     }
 
@@ -252,6 +262,18 @@ impl SimulationNode {
             count += 1.0;
         }
 
+        // 3. Include Road Nodes as obstacles to prevent zoning through intersections
+        for node in &self.transit_network.graph.nodes {
+            let r = 5.0; // Intersections are protected 5m radius
+            data.push(8.0); // Simple octagon
+            for j in 0..8 {
+                let ang = (j as f32) * std::f32::consts::TAU / 8.0;
+                data.push(node.pos.x + ang.cos() * r);
+                data.push(node.pos.z + ang.sin() * r);
+            }
+            count += 1.0;
+        }
+
         data[0] = count;
         PackedFloat32Array::from_iter(data)
     }
@@ -290,8 +312,8 @@ impl SimulationNode {
             }
         }
         
-        // Return if mouse is near the road, or within the 64 meters bounding limit
-        if best_dist <= (64.0 * 64.0) { 
+        // Return if mouse is near the road, or within the 12 meters bounding limit
+        if best_dist <= (12.0 * 12.0) { 
             best_edge
         } else {
             -1
@@ -387,6 +409,7 @@ impl SimulationNode {
                 
                 // ORIENT CAR TO ROAD TANGENT
                 let edge_idx = self.agents.current_edge[i];
+                // Defensive check for stale edge IDs
                 if edge_idx != usize::MAX && edge_idx < self.transit_network.graph.edges.len() {
                     let edge = &self.transit_network.graph.edges[edge_idx];
                     let prog = self.agents.edge_progression[i] as usize;
@@ -648,7 +671,7 @@ impl SimulationNode {
     pub fn get_curved_frontage(&self, edge_idx: i32, start_p: godot::prelude::Vector2, end_p: godot::prelude::Vector2) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
         if edge_idx < 0 || edge_idx as usize >= self.transit_network.graph.edges.len() { 
-            arr.push(start_p); arr.push(end_p); return arr; 
+            return arr; // Explicitly Fail! No straight-line phantom frontages.
         }
         let edge = &self.transit_network.graph.edges[edge_idx as usize];
         let hw = edge.width / 2.0;
@@ -788,6 +811,31 @@ impl SimulationNode {
     }
 
     #[func]
+    pub fn get_zoning_polygons_handles(&self) -> PackedFloat32Array {
+        let mut data = Vec::new();
+        for p in &self.zoning.polygons {
+            data.push(p.id as f32);
+            data.push(p.base_vertices.len() as f32);
+            for v in &p.base_vertices {
+                data.push(v.x);
+                data.push(v.y);
+            }
+        }
+        PackedFloat32Array::from_iter(data)
+    }
+
+    #[func]
+    pub fn get_polygon_base_vertices(&self, poly_id: i32) -> PackedVector2Array {
+        let mut arr = PackedVector2Array::new();
+        if let Some(poly) = self.zoning.polygons.iter().find(|p| p.id == poly_id as u32) {
+            for v in &poly.base_vertices {
+                arr.push(*v);
+            }
+        }
+        arr
+    }
+
+    #[func]
     pub fn get_polygon_at(&self, pos_x: f32, pos_z: f32) -> i32 {
         let p = godot::prelude::Vector2::new(pos_x, pos_z);
         for poly in &self.zoning.polygons {
@@ -814,6 +862,7 @@ impl SimulationNode {
     #[func]
     pub fn add_frontage_to_polygon(&mut self, poly_id: i32, edge_idx: i32) {
         if edge_idx < 0 { return; }
+        self.push_undo_state(false, false, false, true);
         let hw = if let Some(e) = self.transit_network.graph.edges.get(edge_idx as usize) { e.width / 2.0 } else { return; };
         
         let mut edge_geom = Vec::new();
@@ -878,25 +927,48 @@ impl SimulationNode {
         self.allocator.dirty = true;
     }
 
+
+
     #[func]
-    pub fn update_zoning_polygon(&mut self, poly_id: i32, vertices: PackedVector2Array, frontage_pts: i32) {
+    pub fn update_zoning_polygon(&mut self, poly_id: i32, vertices: PackedVector2Array, frontage_pts: i32, base_verts: PackedVector2Array) {
+        self.push_undo_state(false, false, false, true);
         let mut verts = Vec::new();
         for v in vertices.as_slice() {
             verts.push(godot::prelude::Vector2::new(v.x, v.y));
         }
         self.zoning.update_polygon(poly_id as u32, verts, frontage_pts as usize);
+        
+        let mut b_verts = Vec::new();
+        for v in base_verts.as_slice() {
+            b_verts.push(godot::prelude::Vector2::new(v.x, v.y));
+        }
+        self.zoning.update_polygon_base_vertices(poly_id as u32, b_verts);
         self.allocator.dirty = true;
     }
 
     #[func]
     pub fn delete_zoning_polygon(&mut self, poly_id: i32) {
+        self.push_undo_state(false, false, false, true);
         self.zoning.remove_polygon(poly_id as u32);
         self.allocator.dirty = true;
     }
 
     #[func]
+    pub fn get_zoning_for_edge(&self, edge_idx: i32) -> i32 {
+        if edge_idx < 0 { return -1; }
+        for poly in &self.zoning.polygons {
+            for frontage in &poly.frontages {
+                if frontage.edge_idx == edge_idx as usize {
+                    return poly.id as i32;
+                }
+            }
+        }
+        -1
+    }
+
+    #[func]
     pub fn add_road(&mut self, points: PackedVector3Array, fwd_lanes: i32, bkw_lanes: i32) {
-        self.push_undo_state(false, false, true);
+        self.push_undo_state(false, false, true, false);
         let mut fixed_points = points.to_vec();
         
         // ROAD CONFORMANCE: Snap every point in the spline to the current terrain height
@@ -967,7 +1039,7 @@ impl SimulationNode {
     pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) {
         if node_id >= 0 && (node_id as usize) < self.transit_network.graph.nodes.len() {
             self.transit_network.graph.move_node(node_id as u32, pos);
-            self.push_undo_state(false, false, true);
+            self.push_undo_state(false, false, true, false);
         }
     }
 
@@ -983,6 +1055,7 @@ impl SimulationNode {
 
     #[func]
     pub fn set_lane_connection(&mut self, node_id: u32, from_edge: i32, from_lane: i32, to_edge: i32, to_lane: i32) {
+        self.push_undo_state(false, false, true, false);
         if let Some(node) = self.transit_network.graph.nodes.get_mut(node_id as usize) {
             let key = (from_edge as usize, from_lane as i8);
             let target = (to_edge as usize, to_lane as i8);
@@ -995,6 +1068,7 @@ impl SimulationNode {
 
     #[func]
     pub fn clear_lane_connections(&mut self, node_id: u32) {
+        self.push_undo_state(false, false, true, false);
         if let Some(node) = self.transit_network.graph.nodes.get_mut(node_id as usize) {
             node.lane_connections.clear();
         }

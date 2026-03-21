@@ -140,6 +140,7 @@ func update_terrain_visuals():
 						mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 						mesh_inst.material_override = mat
 						
+						mesh_inst.top_level = true
 						add_child(mesh_inst)
 						polygon_meshes.append(mesh_inst)
 
