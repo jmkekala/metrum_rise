@@ -39,6 +39,46 @@ impl ZoningSystem {
         self.edge_grids.clear();
     }
 
+    pub fn split_edge_grid(&mut self, old_idx: usize, new_idx: usize, split_x: usize) {
+        if let Some(old_grid) = self.edge_grids.get(&old_idx).cloned() {
+            let cells_long = old_grid.cells_long;
+            let part2_cells = cells_long.saturating_sub(split_x);
+            
+            let mut new_grid = EdgeZoning {
+                left_side: vec![ZoneType::None; part2_cells * 4],
+                right_side: vec![ZoneType::None; part2_cells * 4],
+                left_occupied: vec![false; part2_cells * 4],
+                right_occupied: vec![false; part2_cells * 4],
+                cells_long: part2_cells,
+            };
+
+            // Copy data to new grid
+            for x in 0..part2_cells {
+                for y in 0..4 {
+                    let old_x = split_x + x;
+                    if old_x < cells_long {
+                        let old_i = old_x * 4 + y;
+                        let new_i = x * 4 + y;
+                        new_grid.left_side[new_i] = old_grid.left_side[old_i];
+                        new_grid.right_side[new_i] = old_grid.right_side[old_i];
+                        new_grid.left_occupied[new_i] = old_grid.left_occupied[old_i];
+                        new_grid.right_occupied[new_i] = old_grid.right_occupied[old_i];
+                    }
+                }
+            }
+            self.edge_grids.insert(new_idx, new_grid);
+
+            // Truncate old grid
+            if let Some(g) = self.edge_grids.get_mut(&old_idx) {
+                g.left_side.truncate(split_x * 4);
+                g.right_side.truncate(split_x * 4);
+                g.left_occupied.truncate(split_x * 4);
+                g.right_occupied.truncate(split_x * 4);
+                g.cells_long = split_x;
+            }
+        }
+    }
+
     pub fn update_edge_grid_size(&mut self, edge_idx: usize, length: f32) {
         let cells_long = (length / self.grid_cell_size).floor() as usize;
         let entry = self.edge_grids.entry(edge_idx).or_insert_with(|| EdgeZoning {
@@ -184,24 +224,19 @@ impl ZoningSystem {
         check_pts_with_dist.push((center, center_intended));
 
         for (pt, intended_d) in check_pts_with_dist {
-            let mut closest_d_sq = f32::MAX;
+            let mut closest_competitor_d_sq = f32::MAX;
+            let mut asphalt_collision = false;
 
-            // PERFORMANCE OPTIMIZATION: 
-            // In a huge city, scanning every road segment is O(N).
-            // For now, we search all segments of our own edge and its immediate neighbors (Nodes).
-            // A truly global search should eventually use a Spatial Hash.
             let mut edges_to_check = std::collections::HashSet::new();
-            edges_to_check.insert(edge_idx);
             
-            // Spatial AABB Filter: Check all roads whose bounding box is near our point.
-            // Even with 10,000 roads, checking AABBs is extrêmement rapide.
+            // Spatial AABB Filter
             let pt_min = Vector2::new(pt.x - 20.0, pt.y - 20.0);
             let pt_max = Vector2::new(pt.x + 20.0, pt.y + 20.0);
 
             for (i, e) in graph.edges.iter().enumerate() {
                 if i == edge_idx { continue; }
+                if e.deleted { continue; }
                 
-                // Fast AABB check (using physical geometry)
                 let mut e_min = Vector2::new(f32::MAX, f32::MAX);
                 let mut e_max = Vector2::new(f32::MIN, f32::MIN);
                 for p in &e.physical_geometry {
@@ -209,17 +244,14 @@ impl ZoningSystem {
                     e_max.x = e_max.x.max(p.x); e_max.y = e_max.y.max(p.z);
                 }
                 
-                // Expand by a small buffer
                 if pt_min.x < e_max.x && pt_max.x > e_min.x &&
                    pt_min.y < e_max.y && pt_max.y > e_min.y {
                     edges_to_check.insert(i);
                 }
             }
             
-            // 1. Scan relevant road centerlines
             for &i in &edges_to_check {
                 let other_edge = &graph.edges[i];
-                let is_self = i == edge_idx;
                 let pts = &other_edge.physical_geometry;
                 if pts.len() < 2 { continue; }
                 
@@ -233,39 +265,63 @@ impl ZoningSystem {
                     let seg_vec = p2_2d - p1_2d;
                     let t_val = (((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2).clamp(0.0, 1.0);
                     let proj = p1_2d + seg_vec * t_val;
-                    let mut d_sq = (pt - proj).length_squared();
+                    let d_sq = (pt - proj).length_squared();
                     
-                    // A. Asphalt Collision: Always blocks regardless of zoning flags
-                    if !is_self && d_sq < (other_edge.width * 0.5 + 0.1).powi(2) {
-                        return true; 
+                    // A. Asphalt Collision: Absolute block
+                    if d_sq < (other_edge.width * 0.5 + 0.1).powi(2) {
+                        asphalt_collision = true;
+                        break;
                     }
 
-                    // B. Zoning Claim: Only blocks if the road has zoning enabled on that side
-                    let mut is_claiming = is_self;
-                    if !is_self {
-                        let tangent = seg_vec.normalized();
-                        let rel_pt = pt - proj;
-                        let is_left = (tangent.x * rel_pt.y - tangent.y * rel_pt.x) < 0.0;
-                        is_claiming = if is_left { other_edge.zoning_left } else { other_edge.zoning_right };
-                    }
+                    // B. Zoning Claim: Competitor for space
+                    let tangent = seg_vec.normalized();
+                    let rel_pt = pt - proj;
+                    let is_left = (tangent.x * rel_pt.y - tangent.y * rel_pt.x) < 0.0;
+                    let other_is_claiming = if is_left { other_edge.zoning_left } else { other_edge.zoning_right };
 
-                    if is_claiming {
-                        // Boost priority for self so straight roads are stable
-                        if is_self { d_sq *= 0.99; }
-                        if d_sq < closest_d_sq {
-                            closest_d_sq = d_sq;
+                    if other_is_claiming {
+                        if d_sq < closest_competitor_d_sq {
+                            closest_competitor_d_sq = d_sq;
                         }
                     }
                 }
+                if asphalt_collision { break; }
             }
 
-            // 2. Universal Distance Guard:
-            if closest_d_sq < (intended_d - 0.5).powi(2) {
-                return true;
+            if asphalt_collision { return true; }
+
+            // 2. Voronoi Comparison: Is this point closer to its own centerline than any competitor?
+            let self_d_sq = self.get_distance_to_edge_sq(edge_idx, pt, graph);
+            
+            // Priority bias for first few rows (within 12m)
+            let mut bias = 1.0;
+            if self_d_sq < (12.0f32).powi(2) {
+                bias = 2.0; // Effectively make owner 2x stronger
+            }
+            
+            if self_d_sq > (closest_competitor_d_sq * bias) + 0.1 { 
+                return true; 
             }
         }
 
         false
+    }
+
+    fn get_distance_to_edge_sq(&self, edge_idx: usize, pt: Vector2, graph: &crate::simulation::network::graph::TransitGraph) -> f32 {
+        let edge = &graph.edges[edge_idx];
+        let mut min_d_sq = f32::MAX;
+        for j in 0..edge.physical_geometry.len() - 1 {
+            let p1 = edge.physical_geometry[j]; let p2 = edge.physical_geometry[j+1];
+            let p1_2d = Vector2::new(p1.x, p1.z);
+            let p2_2d = Vector2::new(p2.x, p2.z);
+            let l2 = (p2_2d - p1_2d).length_squared();
+            if l2 == 0.0 { continue; }
+            let seg_vec = p2_2d - p1_2d;
+            let t = (((pt.x-p1_2d.x)*seg_vec.x + (pt.y-p1_2d.y)*seg_vec.y)/l2).clamp(0.0, 1.0);
+            let d_sq = (pt - (p1_2d + seg_vec * t)).length_squared();
+            if d_sq < min_d_sq { min_d_sq = d_sq; }
+        }
+        min_d_sq
     }
 
     fn get_edge_pos_and_tangent_static(&self, edge_idx: usize, t: f32, graph: &crate::simulation::network::graph::TransitGraph) -> (Vector2, Vector2) {
@@ -292,7 +348,7 @@ impl ZoningSystem {
     pub fn get_render_data(&self, graph: &crate::simulation::network::graph::TransitGraph) -> PackedFloat32Array {
         let mut data = Vec::new();
         for (&edge_idx, grid) in &self.edge_grids {
-            if edge_idx >= graph.edges.len() { continue; }
+            if edge_idx >= graph.edges.len() || graph.edges[edge_idx].deleted { continue; }
             for side in [1, -1] {
                 let cells = if side > 0 { &grid.left_side } else { &grid.right_side };
                 for x in 0..grid.cells_long {

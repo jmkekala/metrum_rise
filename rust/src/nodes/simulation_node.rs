@@ -224,6 +224,7 @@ impl SimulationNode {
         let graph = &self.transit_network.graph;
         
         for (edge_idx, edge) in graph.edges.iter().enumerate() {
+            if edge.deleted || edge.physical_length < 0.1 || edge.physical_geometry.len() < 2 { continue; }
             let cells_long = (edge.physical_length / self.zoning.grid_cell_size).floor() as usize;
             let width = edge.width;
             
@@ -265,6 +266,9 @@ impl SimulationNode {
     fn get_edge_pos_and_tangent(&self, edge_idx: usize, t: f32) -> (godot::prelude::Vector2, godot::prelude::Vector2) {
         let edge = &self.transit_network.graph.edges[edge_idx];
         let geom = &edge.physical_geometry;
+        if geom.len() < 2 {
+            return (godot::prelude::Vector2::new(0.0, 0.0), godot::prelude::Vector2::new(1.0, 0.0));
+        }
         let total_l = edge.physical_length;
         let target_l = t * total_l;
         
@@ -291,7 +295,7 @@ impl SimulationNode {
         data.push(0.0); // Placeholder for count
 
         for (i, edge) in self.transit_network.graph.edges.iter().enumerate() {
-            if i as i32 == ignore_edge_idx { continue; }
+            if edge.deleted || i as i32 == ignore_edge_idx { continue; }
             let hw = edge.width / 2.0;
 
             let mut poly = Vec::new();
@@ -858,16 +862,11 @@ impl SimulationNode {
             p.y = terrain_h;
         }
 
-        self.transit_network.add_road(fixed_points, fwd_lanes as u8, bkw_lanes as u8, zoning_left, zoning_right);
+        self.transit_network.add_road(fixed_points, fwd_lanes as u8, bkw_lanes as u8, zoning_left, zoning_right, &mut self.zoning, &mut self.allocator);
 
         let nodes = self.transit_network.graph.nodes.len();
         let edges = self.transit_network.graph.edges.len();
         godot_print!("Road added. Total: {} Nodes, {} Edges.", nodes, edges);
-        
-        // Sync zoning grids to new edge count/lengths
-        for (i, edge) in self.transit_network.graph.edges.iter().enumerate() {
-            self.zoning.update_edge_grid_size(i, edge.physical_length);
-        }
     }
 
     #[func]

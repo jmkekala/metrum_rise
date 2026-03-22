@@ -34,6 +34,7 @@ pub struct Edge {
     pub parking_occupied: u32,
     pub zoning_left: bool,
     pub zoning_right: bool,
+    pub deleted: bool,
 }
 
 impl Edge {
@@ -117,7 +118,8 @@ impl TransitGraph {
         self.add_node(pos, node_type)
     }
 
-    pub fn add_edge(&mut self, edge: Edge) -> usize {
+    pub fn add_edge(&mut self, mut edge: Edge) -> usize {
+        edge.deleted = false;
         let id = self.edges.len();
         self.edges.push(edge);
         id
@@ -515,24 +517,42 @@ impl TransitGraph {
     pub fn rebuild_intersection_clips(&mut self) {
         let mut connection_counts = HashMap::new();
         for edge in &self.edges {
-            if edge.primary_type != TransitType::Road { continue; }
+            if edge.deleted || edge.primary_type != TransitType::Road { continue; }
             *connection_counts.entry(edge.start_node).or_insert(0) += 1;
             *connection_counts.entry(edge.end_node).or_insert(0) += 1;
         }
 
+        // Calculate maximum road width connected to each node for dynamic junction clipping
+        let mut node_max_width = HashMap::new();
+        for edge in &self.edges {
+            if edge.deleted || edge.primary_type != TransitType::Road { continue; }
+            let w = edge.width;
+            let s_max = node_max_width.entry(edge.start_node).or_insert(0.0);
+            if w > *s_max { *s_max = w; }
+            let e_max = node_max_width.entry(edge.end_node).or_insert(0.0);
+            if w > *e_max { *e_max = w; }
+        }
+
         self.junction_polygons.clear(); // Removing procedural intersection meshes
 
-        const HUB_RADIUS: f32 = 3.0;
-
         for (_edge_id, edge) in self.edges.iter_mut().enumerate() {
-            if edge.primary_type != TransitType::Road { continue; }
+            if edge.deleted || edge.primary_type != TransitType::Road { continue; }
 
-            // Apply a simple fixed HUB_RADIUS if the node is an intersection or curve (conn > 1)
+            // Dynamic clipping: Ensure the junction covers at least the width of the road
             let s_conn = *connection_counts.get(&edge.start_node).unwrap_or(&0);
             let e_conn = *connection_counts.get(&edge.end_node).unwrap_or(&0);
+            
+            let s_max_w = *node_max_width.get(&edge.start_node).unwrap_or(&0.0);
+            let e_max_w = *node_max_width.get(&edge.end_node).unwrap_or(&0.0);
 
-            edge.start_clip = if s_conn > 1 { HUB_RADIUS } else { 0.0 };
-            edge.end_clip = if e_conn > 1 { HUB_RADIUS } else { 0.0 };
+            let s_clip = s_max_w * 0.7; // 70% of max width provides enough clear space for junctions
+            let e_clip = e_max_w * 0.7;
+
+            let s_node = &self.nodes[edge.start_node as usize];
+            let e_node = &self.nodes[edge.end_node as usize];
+
+            edge.start_clip = if s_conn > 1 && s_node.node_type == NodeType::Junction { s_clip } else { 0.0 };
+            edge.end_clip = if e_conn > 1 && e_node.node_type == NodeType::Junction { e_clip } else { 0.0 };
 
             let count = edge.geometry.len();
             if count >= 2 {

@@ -27,7 +27,7 @@ impl TransitNetwork {
         }
     }
 
-    pub fn add_road(&mut self, points: Vec<Vector3>, fwd_lanes: u8, bkw_lanes: u8, zoning_left: bool, zoning_right: bool) {
+    pub fn add_road(&mut self, points: Vec<Vector3>, fwd_lanes: u8, bkw_lanes: u8, zoning_left: bool, zoning_right: bool, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
         // 1. Simplify points
         let mut simplified_points = Vec::with_capacity(points.len());
         if !points.is_empty() {
@@ -104,7 +104,7 @@ impl TransitNetwork {
                     let mid_id = self.graph.find_or_add_node(split_pos, 0.1, NodeType::Junction);
                     
                     // Add this edge
-                    self.create_edge_internal(current_start_id, mid_id, active_segment.clone(), fwd_lanes, bkw_lanes, zoning_left, zoning_right);
+                    self.create_edge_internal(current_start_id, mid_id, active_segment.clone(), fwd_lanes, bkw_lanes, zoning_left, zoning_right, zoning, allocator);
                     
                     // Reset for next segment
                     current_start_id = mid_id;
@@ -137,7 +137,7 @@ impl TransitNetwork {
             // Replace last point with snapped end_id pos
             let last_idx = active_segment.len() - 1;
             active_segment[last_idx] = self.graph.nodes[end_id as usize].pos;
-            self.create_edge_internal(current_start_id, end_id, active_segment, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
+            self.create_edge_internal(current_start_id, end_id, active_segment, fwd_lanes, bkw_lanes, zoning_left, zoning_right, zoning, allocator);
         }
 
         // Rebuild massive DoD pathing table for agents
@@ -145,7 +145,7 @@ impl TransitNetwork {
     }
 
     /// Helper to consistently add a road edge and handle its side effects
-    fn create_edge_internal(&mut self, start: u32, end: u32, points: Vec<Vector3>, fwd: u8, bkw: u8, zoning_left: bool, zoning_right: bool) {
+    fn create_edge_internal(&mut self, start: u32, end: u32, points: Vec<Vector3>, fwd: u8, bkw: u8, zoning_left: bool, zoning_right: bool, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
         if start == end { return; }
         
         // Final sanity check on points
@@ -179,13 +179,16 @@ impl TransitNetwork {
             parking_occupied: 0,
             zoning_left,
             zoning_right,
+            deleted: false,
         });
 
         let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&self.graph.edges[edge_id]);
         self.graph.edges[edge_id].base_cost = cost;
         self.graph.edges[edge_id].physical_length = length;
+        
+        zoning.update_edge_grid_size(edge_id, length);
 
-        topology::process_intersections(self, edge_id);
+        topology::process_intersections(self, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(); // Clean edge_id if it's dup
         self.graph.rebuild_intersection_clips();
     }
@@ -203,10 +206,25 @@ impl TransitNetwork {
         self.graph.sync_to_terrain(terrain);
     }
 
-    pub fn split_for_frontage(&mut self, edge_idx: usize, pos: Vector3) -> u32 {
-        let (node_id, _new_edge_id) = self.graph.split_edge(edge_idx, pos);
-        // We don't rebuild HPA here for every house to save perf. 
-        // Caller should call rebuild_pathing() once at the end.
+    pub fn split_for_frontage(&mut self, edge_idx: usize, pos: Vector3, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) -> u32 {
+        let (node_id, new_edge_id) = self.graph.split_edge(edge_idx, pos);
+
+        // --- MIGRATION LOGIC ---
+        let cell_size = zoning.grid_cell_size;
+        let length_first = self.graph.edges[edge_idx].physical_length;
+        let split_x = (length_first / cell_size).floor() as usize;
+
+        // 1. Migrate Zoning
+        zoning.split_edge_grid(edge_idx, new_edge_id, split_x);
+
+        // 2. Migrate Buildings
+        for b in &mut allocator.buildings {
+            if b.edge_idx == edge_idx && b.cell_x >= split_x {
+                b.edge_idx = new_edge_id;
+                b.cell_x -= split_x;
+            }
+        }
+
         node_id
     }
 
@@ -236,8 +254,8 @@ impl TransitNetwork {
             }
         }
 
-        for &index in to_remove.iter().rev() {
-            self.graph.edges.remove(index);
+        for &index in &to_remove {
+            self.graph.edges[index].deleted = true;
         }
     }
 }

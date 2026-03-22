@@ -25,6 +25,7 @@ impl TransitRenderer for RoadRenderer {
         let mut connection_counts = HashMap::new();
         let mut node_dirs: HashMap<u32, Vec<(usize, Vector2)>> = HashMap::new();
         for (edge_id, edge) in graph.edges.iter().enumerate() {
+            if edge.deleted { continue; }
             if edge.primary_type != TransitType::Road && edge.primary_type != TransitType::Foot { continue; }
             *connection_counts.entry(edge.start_node).or_insert(0) += 1;
             *connection_counts.entry(edge.end_node).or_insert(0) += 1;
@@ -34,11 +35,17 @@ impl TransitRenderer for RoadRenderer {
                 let end_pos = graph.nodes[edge.end_node as usize].pos;
 
                 let d3_s = edge.physical_geometry[1] - start_pos;
-                node_dirs.entry(edge.start_node).or_default().push((edge_id, Vector2::new(d3_s.x, d3_s.z).normalized()));
+                let d2_s = Vector2::new(d3_s.x, d3_s.z);
+                if d2_s.length_squared() > 1e-6 {
+                    node_dirs.entry(edge.start_node).or_default().push((edge_id, d2_s.normalized()));
+                }
 
                 let lc = edge.physical_geometry.len();
                 let d3_e = edge.physical_geometry[lc-2] - end_pos;
-                node_dirs.entry(edge.end_node).or_default().push((edge_id, Vector2::new(d3_e.x, d3_e.z).normalized()));
+                let d2_e = Vector2::new(d3_e.x, d3_e.z);
+                if d2_e.length_squared() > 1e-6 {
+                    node_dirs.entry(edge.end_node).or_default().push((edge_id, d2_e.normalized()));
+                }
             }
         }
 
@@ -54,16 +61,14 @@ impl TransitRenderer for RoadRenderer {
                 
                 // Miter direction is the average of the two side directions
                 // Note: we need to handle the case where they are nearly opposite (sharp turn)
-                let mut miter = (s1 - s2).normalized(); // One points "in", one points "out" relative to the angle?
-                // Wait, if d1 and d2 both point AWAY from node, then s1 and s2 follow CCW.
-                // For a straight road, d1 = -d2. s1 = -s2. s1 - s2 = 2*s1. Normalized = s1. Correct.
-                miter = (s1 - s2).normalized();
-                
-                // Scale miter length: len = 1.0 / cos(half_angle)
-                // dot(s1, miter) is cos(half_angle)
-                let cos_half = s1.dot(miter).abs();
-                if cos_half > 0.1 {
-                    node_miters.insert(*node_id, miter / cos_half);
+                let d_diff = s1 - s2;
+                if d_diff.length_squared() > 1e-6 {
+                    let miter = d_diff.normalized();
+                    // Scale miter length: len = 1.0 / cos(half_angle)
+                    let cos_half = s1.dot(miter).abs();
+                    if cos_half > 0.1 {
+                        node_miters.insert(*node_id, miter / cos_half);
+                    }
                 }
             }
         }
@@ -89,31 +94,21 @@ impl TransitRenderer for RoadRenderer {
                         if let Some(miter) = node_miters.get(&edge.start_node) {
                             point_side_dirs.push(Vector3::new(miter.x, 0.0, miter.y));
                         } else {
-                            let tangent = (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized();
+                            let d = edge.physical_geometry[1] - edge.physical_geometry[0];
+                            let tangent = if d.length_squared() > 1e-6 { d.normalized() } else { Vector3::FORWARD };
                             point_side_dirs.push(Vector3::new(-tangent.z, 0.0, tangent.x));
                         }
                     } else if i == resampled_count - 1 {
                         if let Some(miter) = node_miters.get(&edge.end_node) {
-                            // Note: We need to flip the miter if it's the end node?
-                            // Actually, d1 and d2 both point AWAY.
-                            // If d_end is the incoming direction, then d_away = -d_end.
-                            // In my node_miters, both d1 and d2 are AWAY.
-                            // So if this road is d1, we use miter as is.
-                            // But wait! Which side is which?
-                            // For start node, d points AWAY (into edge). Side is perp(d).
-                            // For end node, d also points AWAY (out of edge). 
-                            // So we need to flip the side direction for the end node?
-                            // Let's check: edge goes from P0 to P1. Tangent T = P1 - P0.
-                            // At start (P0): d = T. side = perp(T).
-                            // At end (P1): d = -T. side = perp(-T) = -perp(T).
-                            // Yes, the end node miter needs to be flipped to match the edge's winding!
                             point_side_dirs.push(Vector3::new(-miter.x, 0.0, -miter.y));
                         } else {
-                            let tangent = (edge.physical_geometry[i] - edge.physical_geometry[i-1]).normalized();
+                            let d = edge.physical_geometry[i] - edge.physical_geometry[i-1];
+                            let tangent = if d.length_squared() > 1e-6 { d.normalized() } else { Vector3::FORWARD };
                             point_side_dirs.push(Vector3::new(-tangent.z, 0.0, tangent.x));
                         }
                     } else {
-                        let tangent = (edge.physical_geometry[i+1] - edge.physical_geometry[i-1]).normalized();
+                        let d = edge.physical_geometry[i+1] - edge.physical_geometry[i-1];
+                        let tangent = if d.length_squared() > 1e-6 { d.normalized() } else { Vector3::FORWARD };
                         point_side_dirs.push(Vector3::new(-tangent.z, 0.0, tangent.x));
                     }
                 }
@@ -155,13 +150,14 @@ impl TransitRenderer for RoadRenderer {
             // Pre-calculate side directions for miter joins
             let mut point_side_dirs = Vec::with_capacity(resampled_count);
             for i in 0..resampled_count {
-                let tangent = if i == 0 {
-                    (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
+                let d = if i == 0 {
+                    edge.physical_geometry[1] - edge.physical_geometry[0]
                 } else if i == resampled_count - 1 {
-                    (edge.physical_geometry[i] - edge.physical_geometry[i-1]).normalized()
+                    edge.physical_geometry[i] - edge.physical_geometry[i-1]
                 } else {
-                    (edge.physical_geometry[i+1] - edge.physical_geometry[i-1]).normalized()
+                    edge.physical_geometry[i+1] - edge.physical_geometry[i-1]
                 };
+                let tangent = if d.length_squared() > 1e-6 { d.normalized() } else { Vector3::FORWARD };
                 let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
                 point_side_dirs.push(side_dir);
             }
@@ -279,6 +275,7 @@ impl TransitRenderer for RoadRenderer {
             let mut boundary_pts = Vec::new();
 
             for &(e_idx, edge) in edges_at_node {
+                if edge.deleted { continue; } // Added
                 if edge.physical_geometry.len() < 2 { continue; }
                 
                 let is_start = edge.start_node == n_idx as u32;

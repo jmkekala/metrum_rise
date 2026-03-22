@@ -6,7 +6,7 @@ use super::graph::Edge;
 use super::types::NodeType;
 use super::interaction;
 
-pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize) {
+pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
     let mut all_splits: HashMap<usize, Vec<(f32, u32)>> = HashMap::new();
     
     // 1. Find all intersections (crossing AND touching/snapping)
@@ -100,15 +100,25 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize) {
                 continue;
             }
             let valid_junction_id = network.graph.get_valid_node(junction_id);
-            split_edge(network, eid, seg_idx, sub_t, valid_junction_id);
+            split_edge(network, eid, seg_idx, sub_t, valid_junction_id, zoning, allocator);
         }
     }
 }
 
-pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usize, _t: f32, junction_node_id: u32) {
+pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usize, _t: f32, junction_node_id: u32, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
     let old_edge = &network.graph.edges[edge_id];
-    let end_node = old_edge.end_node;
+    let geometry = &old_edge.geometry;
+    let length = old_edge.physical_length;
     let split_pos = network.graph.nodes[junction_node_id as usize].pos;
+
+    // Physical distance guard: Don't split if too close to either end (e.g. < 0.2m)
+    let start_pos = geometry[0];
+    let end_pos = *geometry.last().unwrap();
+    if split_pos.distance_to(start_pos) < 0.2 || split_pos.distance_to(end_pos) < 0.2 {
+        return;
+    }
+
+    let end_node = old_edge.end_node;
 
     let mut part2_geo = vec![split_pos];
     part2_geo.extend_from_slice(&old_edge.geometry[segment_idx+1..]);
@@ -154,12 +164,28 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
         parking_occupied: 0,
         zoning_left,
         zoning_right,
+        deleted: false,
     };
     let (cost_new, length_new) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);
     new_edge.base_cost = cost_new;
     new_edge.physical_length = length_new;
     
-    network.graph.add_edge(new_edge);
+    let new_edge_id = network.graph.add_edge(new_edge);
+
+    // --- MIGRATION LOGIC ---
+    let cell_size = zoning.grid_cell_size;
+    let split_x = (length / cell_size).floor() as usize;
+
+    // 1. Migrate Zoning
+    zoning.split_edge_grid(edge_id, new_edge_id, split_x);
+
+    // 2. Migrate Buildings
+    for b in &mut allocator.buildings {
+        if b.edge_idx == edge_id && b.cell_x >= split_x {
+            b.edge_idx = new_edge_id;
+            b.cell_x -= split_x;
+        }
+    }
 }
 
 #[cfg(test)]

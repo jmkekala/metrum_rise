@@ -412,9 +412,9 @@ impl AgentSystem {
                             let next_node = self.current_path[i][0];
                             let mut found_e = usize::MAX;
                             for (idx, e) in graph.edges.iter().enumerate() {
-                                if (e.start_node == node_idx && e.end_node == next_node) ||
+                                 if (e.start_node == node_idx && e.end_node == next_node) ||
                                    (e.end_node == node_idx && e.start_node == next_node) {
-                                    found_e = idx; break;
+                                    if !e.deleted { found_e = idx; break; }
                                 }
                             }
                             
@@ -429,13 +429,17 @@ impl AgentSystem {
                                 let normal = Vector2::new(-tangent.z, tangent.x);
                                 
                                 if self.is_driving[i] {
-                                    let offset = if is_fwd { 1.5 } else { -1.5 };
+                                     let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
+                                     let lane_w = edge.width / total_lanes;
+                                     let lane_idx = if is_fwd { self.current_lane[i] as f32 } else { (edge.fwd_lanes as i8 + (-self.current_lane[i] - 1)) as f32 };
+                                    let offset = (total_lanes * 0.5 - lane_idx - 0.5) * lane_w;
                                     base_vec += normal * offset;
                                 } else {
                                     let b_id = self.current_building[i];
                                     if b_id != usize::MAX && b_id < allocator.buildings.len() {
                                         let b = &allocator.buildings[b_id];
-                                        let offset_amt = edge.width / 2.0 + 0.5;
+                                        let sw_w = crate::config::SIDEWALK_WIDTH;
+                                        let offset_amt = edge.width * 0.5 + sw_w * 0.5;
                                         
                                         let b_side = b.side_offset;
                                         self.bezier_t[i] = b_side; // Store side preference
@@ -531,7 +535,8 @@ impl AgentSystem {
 
                                 let mut best_e = usize::MAX;
                                 let mut is_fwd = true;
-                                for (idx, e) in graph.edges.iter().enumerate() {
+                                 for (idx, e) in graph.edges.iter().enumerate() {
+                                    if e.deleted { continue; }
                                     let f = e.start_node == self.current_node[i] && e.end_node == next_node;
                                     let b = e.end_node == self.current_node[i] && e.start_node == next_node;
                                     if f || b {
@@ -560,7 +565,7 @@ impl AgentSystem {
                         }
 
                         // 3. Move along edge
-                        if self.current_edge[i] >= graph.edges.len() {
+                        if self.current_edge[i] >= graph.edges.len() || graph.edges[self.current_edge[i]].deleted {
                             self.current_edge[i] = usize::MAX;
                             self.current_path[i].clear();
                             remaining_dist = 0.0; break;
@@ -598,11 +603,16 @@ impl AgentSystem {
                             let normal = Vector2::new(-tangent.y, tangent.x);
                                                         let mut offset_target = Vector2::new(p_target.x, p_target.z);
                              if self.is_driving[i] {
-                                 offset_target += normal * ((self.current_lane[i] as f32 + 0.5) * 1.0);
+                                  let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
+                                  let lane_w = edge.width / total_lanes;
+                                  let lane_idx = if is_fwd { self.current_lane[i] as f32 } else { (edge.fwd_lanes as i8 + (-self.current_lane[i] - 1)) as f32 };
+                                 let lane_offset = (total_lanes * 0.5 - lane_idx - 0.5) * lane_w;
+                                 offset_target += normal * lane_offset;
                              } else {
                                  // Pedestrian: Use side preference (Sidewalk Loyalty)
                                  let side = if self.bezier_t[i].abs() > 0.1 { self.bezier_t[i] } else { 1.0 };
-                                 let sw_off = (edge.width * 0.5 + 0.5) * side;
+                                 let sw_w = crate::config::SIDEWALK_WIDTH;
+                                 let sw_off = (edge.width * 0.5 + sw_w * 0.5) * side;
                                  offset_target += normal * sw_off;
                              }
 

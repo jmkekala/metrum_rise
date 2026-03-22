@@ -45,7 +45,7 @@ impl BuildingAllocator {
             let b = &self.buildings[i];
             let remove = if let Some(_) = zoning.edge_grids.get(&b.edge_idx) {
                 let current_type = zoning.get_cell(b.edge_idx, b.side, b.cell_x, b.cell_y);
-                current_type != b.zone_type
+                current_type != b.zone_type || network.graph.edges[b.edge_idx].deleted
             } else {
                 true // Edge gone
             };
@@ -66,7 +66,7 @@ impl BuildingAllocator {
         
         for edge_idx in edges_to_check {
             let (edge_len, edge_width) = if let Some(edge) = network.graph.edges.get(edge_idx) {
-                if edge.physical_geometry.len() < 2 { (0.0, 0.0) }
+                if edge.deleted || edge.physical_geometry.len() < 2 { (0.0, 0.0) }
                 else { (edge.physical_length, edge.width) }
             } else {
                 (0.0, 0.0)
@@ -77,7 +77,7 @@ impl BuildingAllocator {
             for side in [1, -1] {
                 let cells_long = if let Some(g) = zoning.edge_grids.get(&edge_idx) { g.cells_long } else { 0 };
                 
-                for x in (0..cells_long.saturating_sub(3)).step_by(2) {
+                for x in (0..cells_long.saturating_sub(1)) {
                     let z_type = zoning.get_cell(edge_idx, side, x, 0);
                     if z_type == ZoneType::None { continue; }
                     
@@ -93,9 +93,12 @@ impl BuildingAllocator {
                     if demand < 10.0 { continue; }
 
                     let mut can_build = true;
-                    for dx in 0..4 {
-                        for dy in 0..4 {
-                            if zoning.get_cell(edge_idx, side, x + dx, dy) != z_type || zoning.is_occupied(edge_idx, side, x + dx, dy) {
+                    // Check 2x2 footprint for zone type and occupancy
+                    for dx in 0..2 {
+                        for dy in 0..2 {
+                            if zoning.get_cell(edge_idx, side, x + dx, dy) != z_type || 
+                               zoning.is_occupied(edge_idx, side, x + dx, dy) ||
+                               zoning.is_cell_obstructed(edge_idx, side, x + dx, dy, &network.graph) {
                                 can_build = false;
                                 break;
                             }
@@ -104,23 +107,26 @@ impl BuildingAllocator {
                     }
 
                     if can_build {
-                        let t = (x as f32 + 2.0) * zoning.grid_cell_size / edge_len;
+                        let t = (x as f32 + 1.0) * zoning.grid_cell_size / edge_len;
                         let world_pos_on_edge = self.get_pos_on_edge(&network.graph, edge_idx, t);
                         let tangent = self.get_tangent_on_edge(&network.graph, edge_idx, t);
                         let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x) * (side as f32);
                         
-                        let depth_offset = 2.0 * zoning.grid_cell_size; 
+                        let b_width = 2.0 * zoning.grid_cell_size;
+                        let b_depth = 2.0 * zoning.grid_cell_size;
+                        let buffer = 2.0; // 2m safety buffer from sidewalk
+                        let depth_offset = crate::config::SIDEWALK_WIDTH + b_depth * 0.5 + buffer; 
                         let center_2d = world_pos_on_edge + normal * (edge_width * 0.5 + depth_offset);
                         
                         let frontage_pos_3d = godot::prelude::Vector3::new(world_pos_on_edge.x, 0.0, world_pos_on_edge.y);
-                        let frontage_node = network.split_for_frontage(edge_idx, frontage_pos_3d);
+                        let frontage_node = network.split_for_frontage(edge_idx, frontage_pos_3d, zoning, self);
                         graph_changed = true;
 
                         let b = Building {
                             center_x: center_2d.x,
                             center_y: center_2d.y,
-                            width: (4.0 * zoning.grid_cell_size) as u8,
-                            depth: (4.0 * zoning.grid_cell_size) as u8,
+                            width: b_width as u8,
+                            depth: b_depth as u8,
                             zone_type: z_type,
                             facing_dir: -normal,
                             frontage_node,
@@ -131,23 +137,9 @@ impl BuildingAllocator {
                             cell_x: x,
                             cell_y: 0,
                         };
-                        // 2. Check overlap with other buildings/roads
-                        let mut blocked = false;
-                        for b_x in x..x+4 {
-                            for b_y in 0..4 { // Assuming y is always 0 for now, based on `cell_y: 0`
-                                if zoning.is_occupied(edge_idx, side, b_x, b_y) {
-                                    blocked = true; break;
-                                }
-                                if zoning.is_cell_obstructed(edge_idx, side, b_x, b_y, &network.graph) {
-                                    blocked = true; break;
-                                }
-                            }
-                            if blocked { break; }
-                        }
-                        
-                        // Mark all 16 cells as occupied
-                        for dx in 0..4 {
-                            for dy in 0..4 {
+                        // Mark all 4 cells as occupied
+                        for dx in 0..2 {
+                            for dy in 0..2 {
                                 zoning.set_occupied(edge_idx, side, x + dx, dy, true);
                             }
                         }
