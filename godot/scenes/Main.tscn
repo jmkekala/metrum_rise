@@ -9,6 +9,7 @@
 [ext_resource type="Script" path="res://scripts/lane_tool.gd" id="7_lanes"]
 [ext_resource type="Script" path="res://scripts/move_tool.gd" id="8_move"]
 [ext_resource type="Script" path="res://scripts/input_manager.gd" id="9_input"]
+[ext_resource type="Script" path="res://scripts/main_ui.gd" id="10_ui"]
 
 [node name="Main" type="Node3D"]
 
@@ -50,3 +51,6 @@ script = ExtResource("9_input")
 [node name="CameraNode" type="CameraNode" parent="."]
 transform = Transform3D(1, 0, 0, 0, 0.866025, 0.5, 0, -0.5, 0.866025, 0, 20, 30)
 current = true
+
+[node name="MainUI" type="CanvasLayer" parent="."]
+script = ExtResource("10_ui")

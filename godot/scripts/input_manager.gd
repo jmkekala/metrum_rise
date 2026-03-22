@@ -11,35 +11,22 @@ extends Node
 @onready var lane_tool = $"../LaneTool"
 @onready var agents_node = $"../Agents"
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, LANE, AGENT, SCULPT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, LANE, AGENT, SCULPT, WATER }
 var current_tool: Tool = Tool.NONE
 
 func _process(delta):
-	# Continuous Sculpting
-	if Input.is_key_pressed(KEY_Y):
-		if current_tool != Tool.SCULPT:
-			_toggle_tool(Tool.SCULPT)
-		if terrain_node:
-			terrain_node.sculpt_at_mouse(delta)
-	elif current_tool == Tool.SCULPT:
-		_cancel_active_tool()
-
-	# Road Tool Quick-Activation (Legacy ALT Behavior)
-	if Input.is_key_pressed(KEY_ALT):
-		if current_tool == Tool.NONE:
-			_toggle_tool(Tool.ROAD)
-	elif current_tool == Tool.ROAD: # If ALT released but road tool potentially active
-		# Only cancel if the road tool isn't currently mid-stroke
-		if road_tool and road_tool.current_state == 0: # State.IDLE
-			if not Input.is_key_pressed(KEY_ALT):
-				_cancel_active_tool()
+	# Removed old continuous sculpting polling
+	pass
 
 func _unhandled_input(event):
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_M: _toggle_tool(Tool.MOVE)
 			KEY_T: _toggle_tool(Tool.LANE)
+			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
+			KEY_Y: _toggle_tool(Tool.SCULPT)
+			KEY_W: _toggle_tool(Tool.WATER)
 			KEY_Z: 
 				if event.ctrl_pressed:
 					_handle_undo()
@@ -170,9 +157,11 @@ func _handle_mouse(event):
 		_handle_right_click()
 
 func _handle_right_click():
-	if current_tool == Tool.ROAD and road_tool.current_state != 0:
+	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:
 		road_tool.cancel_road()
 	elif current_tool == Tool.MOVE and move_tool.current_state != 0:
 		move_tool.cancel_move()
+	elif current_tool == Tool.SCULPT:
+		pass # Right click is used for lowering ground during sculpting
 	else:
 		_cancel_active_tool()

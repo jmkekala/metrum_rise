@@ -12,16 +12,9 @@ var fwd_lanes: int = 1
 var bkw_lanes: int = 1
 var lanes_label: Label
 
-func _ready():
-	super._ready()
-	lanes_label = Label.new()
-	lanes_label.position = Vector2(20, 100)
-	lanes_label.add_theme_color_override("font_color", Color(1, 1, 0))
-	add_child(lanes_label)
-	_update_lanes_label()
+var draw_mode: int = 0 # 0: straight, 1: spline
 
 func _update_lanes_label():
-	lanes_label.text = "Forward Lanes ( Up / Down ): %d\nBackward Lanes ( < / > ): %d\nRight Click to Cancel Stroke" % [fwd_lanes, bkw_lanes]
 	if active and current_path != null:
 		_draw_blueprint()
 
@@ -31,14 +24,13 @@ func adjust_lanes(fwd_delta: int, bkw_delta: int):
 	# Allow 0,0 for walkways
 	_update_lanes_label()
 
-func _input(event):
+func _unhandled_input(event):
 	if active and event is InputEventMouseMotion:
 		_update_preview()
 	
 	if active and event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if Input.is_key_pressed(KEY_ALT):
-			if event.pressed:
-				_handle_click()
+		if event.pressed:
+			_handle_click()
 
 
 func _handle_click():
@@ -49,7 +41,11 @@ func _handle_click():
 		State.IDLE:
 			start_pos = pos
 			active = true
-			current_state = State.SETTING_CONTROL
+			if draw_mode == 0:
+				current_state = State.SETTING_END
+				control_pos = start_pos
+			else:
+				current_state = State.SETTING_CONTROL
 			
 			current_path = Path3D.new()
 			current_path.curve = Curve3D.new()
@@ -79,22 +75,24 @@ func _update_preview():
 				current_path.curve.add_point(mouse_pos)
 			
 		State.SETTING_END:
-			# Bezier Spline: A -> Control -> Mouse
 			if start_pos.distance_to(mouse_pos) < 0.1:
 				current_path.curve.add_point(start_pos)
 			else:
-				var t_start = (control_pos - start_pos)
-				var t_end = (mouse_pos - control_pos) # Direction of the second half
-				
-				# Curvature Guard: Check angle between 'in' and 'out' tangents
-				# A turn > 90 degrees is probably too sharp for a standard road.
-				if t_start.length() > 0.1 and t_end.length() > 0.1:
-					var angle = t_start.angle_to(t_end)
-					if angle > PI * 0.5: # 90 degrees
-						is_valid = false
-				
-				current_path.curve.add_point(start_pos, Vector3.ZERO, t_start)
-				current_path.curve.add_point(mouse_pos, -t_end, Vector3.ZERO)
+				if draw_mode == 0:
+					current_path.curve.add_point(start_pos)
+					current_path.curve.add_point(mouse_pos)
+				else:
+					var t_start = (control_pos - start_pos)
+					var t_end = (mouse_pos - control_pos) # Direction of the second half
+					
+					# Curvature Guard: Check angle between 'in' and 'out' tangents
+					if t_start.length() > 0.1 and t_end.length() > 0.1:
+						var angle = t_start.angle_to(t_end)
+						if angle > PI * 0.5: # 90 degrees
+							is_valid = false
+					
+					current_path.curve.add_point(start_pos, Vector3.ZERO, t_start)
+					current_path.curve.add_point(mouse_pos, -t_end, Vector3.ZERO)
 
 	_draw_blueprint()
 
@@ -198,19 +196,23 @@ func _commit_segment(end_pos):
 		update_main_mesh()
 		terrain_node.update_terrain_visuals()
 	
-	# Daisy-chain: The new start is the previous end
-	# For G1 continuity, the NEW control point should be a projection 
-	# of the PREVIOUS end-tangent.
-	var final_tangent = (end_pos - control_pos).normalized()
 	var dist = start_pos.distance_to(end_pos)
 	
-	start_pos = end_pos
-	control_pos = end_pos + final_tangent * min(dist * 0.5, 10.0) # Clamped to prevent overly long splines!
-	
-	current_state = State.SETTING_END # Suggest a smooth continuation by default
+	if draw_mode == 0:
+		start_pos = end_pos
+		control_pos = end_pos
+		current_state = State.SETTING_END
+	else:
+		start_pos = end_pos
+		# For G1 continuity, the NEW control point should be a projection 
+		# of the PREVIOUS end-tangent.
+		var final_tangent = (end_pos - control_pos).normalized()
+		if final_tangent.length() < 0.001:
+			final_tangent = (end_pos - start_pos).normalized()
+		control_pos = end_pos + final_tangent * min(dist * 0.5, 10.0)
+		current_state = State.SETTING_END
 
 func cancel_road():
-	active = false
 	current_state = State.IDLE
 	if current_path:
 		blueprint_mesh.mesh = null

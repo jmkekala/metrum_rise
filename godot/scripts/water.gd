@@ -57,22 +57,24 @@ func update_water_visuals():
 	velocity_texture.update(velocity_image)
 
 func handle_water_input(delta):
-	if Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT) and not Input.is_key_pressed(KEY_ALT): # Right click for water (if not drawing road)
-		var mouse_pos = get_viewport().get_mouse_position()
-		var camera = get_viewport().get_camera_3d()
-		
-		var ray_origin = camera.project_ray_origin(mouse_pos)
-		var ray_dir = camera.project_ray_normal(mouse_pos)
-		
-		var plane = Plane(Vector3.UP, 0)
-		var intersection = plane.intersects_ray(ray_origin, ray_dir)
-		
-		if intersection != null:
-			var size = simulation_node.get_heightmap_size()
-			var local_pos = Vector2(
-				intersection.x + size.x / 2.0,
-				intersection.z + size.y / 2.0
-			)
+	var input_manager = get_node("../InputManager")
+	if input_manager and input_manager.current_tool == input_manager.Tool.WATER:
+		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+			var mouse_pos = get_viewport().get_mouse_position()
+			var camera = get_viewport().get_camera_3d()
 			
-			# Add a source with increasing strength
-			simulation_node.add_water_source(local_pos, 0.5 * delta)
+			var ray_origin = camera.project_ray_origin(mouse_pos)
+			var ray_dir = camera.project_ray_normal(mouse_pos)
+			
+			var plane = Plane(Vector3.UP, 0)
+			var intersection = plane.intersects_ray(ray_origin, ray_dir)
+			
+			if intersection != null:
+				var size = simulation_node.get_heightmap_size()
+				var local_pos = Vector2(
+					intersection.x + size.x / 2.0,
+					intersection.z + size.y / 2.0
+				)
+				
+				# Add a source with increasing strength
+				simulation_node.add_water_source(local_pos, 0.5 * delta)

@@ -54,6 +54,11 @@ func _ready():
 func _process(delta):
 	update_terrain_visuals()
 	
+	var input_manager = get_node("../InputManager")
+	if input_manager and input_manager.current_tool == input_manager.Tool.SCULPT:
+		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
+			sculpt_at_mouse(delta)
+	
 	var material = self.material_override as ShaderMaterial
 	if material != null:
 		material.set_shader_parameter("show_global_zoning", show_global_zoning)
@@ -145,30 +150,29 @@ func update_terrain_visuals():
 						polygon_meshes.append(mesh_inst)
 
 func sculpt_at_mouse(delta):
-	if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
-		var mouse_pos = get_viewport().get_mouse_position()
-		var camera = get_viewport().get_camera_3d()
+	var mouse_pos = get_viewport().get_mouse_position()
+	var camera = get_viewport().get_camera_3d()
+	
+	var ray_origin = camera.project_ray_origin(mouse_pos)
+	var ray_dir = camera.project_ray_normal(mouse_pos)
+	
+	var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
+	if intersection != null:
+		var size = simulation_node.get_heightmap_size()
+		var local_pos = Vector2(
+			intersection.x + (size.x - 1.0) * 0.5,
+			intersection.z + (size.y - 1.0) * 0.5
+		)
 		
-		var ray_origin = camera.project_ray_origin(mouse_pos)
-		var ray_dir = camera.project_ray_normal(mouse_pos)
+		var strength = 2.0 * delta
+		if Input.is_key_pressed(KEY_CTRL) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
+			strength = -2.0 * delta
+			
+		simulation_node.sculpt_terrain(local_pos, 15.0, strength)
 		
-		var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
-		if intersection != null:
-			var size = simulation_node.get_heightmap_size()
-			var local_pos = Vector2(
-				intersection.x + (size.x - 1.0) * 0.5,
-				intersection.z + (size.y - 1.0) * 0.5
-			)
-			
-			var strength = 2.0 * delta
-			if Input.is_key_pressed(KEY_CTRL):
-				strength = -2.0 * delta
-				
-			simulation_node.sculpt_terrain(local_pos, 15.0, strength)
-			
-			var road_tool = get_node("../RoadTool")
-			if road_tool:
-				road_tool.update_main_mesh()
+		var road_tool = get_node("../RoadTool")
+		if road_tool:
+			road_tool.update_main_mesh()
 
 func export_heightmap(path: String):
 	print("Exporting heightmap to: ", ProjectSettings.globalize_path(path))
