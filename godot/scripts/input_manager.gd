@@ -9,6 +9,7 @@ extends Node
 @onready var zoning_tool = $"../ZoningTool"
 @onready var move_tool = $"../MoveTool"
 @onready var lane_tool = $"../LaneTool"
+@onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
 
 enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, LANE, AGENT, SCULPT, WATER }
@@ -26,12 +27,12 @@ func _unhandled_input(event):
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
-			KEY_W: _toggle_tool(Tool.WATER)
+			KEY_K: _toggle_tool(Tool.WATER) # Moved from W to avoid WASD overlap
 			KEY_Z: 
 				if event.ctrl_pressed:
 					_handle_undo()
 				else:
-					_toggle_zoning_overlay()
+					if main_ui: main_ui._on_zoning_main_pressed()
 			KEY_P: _toggle_agent_paths()
 			KEY_SPACE: _toggle_pause()
 			KEY_ENTER: _handle_export()
@@ -49,7 +50,7 @@ func _unhandled_input(event):
 				_handle_overlay_mode(event.keycode)
 
 			# Zoning Selection
-			KEY_1, KEY_2, KEY_3, KEY_4:
+			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
 				_handle_zoning_selection(event.keycode)
 
 			KEY_ESCAPE:
@@ -110,7 +111,9 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.bkw_lanes = 0
 					road_tool._update_lanes_label()
 		Tool.AGENT: if agents_node: pass # Agents diag always available
-		Tool.ZONING: if zoning_tool: zoning_tool.active = enabled
+		Tool.ZONING: 
+			if zoning_tool: zoning_tool.active = enabled
+			if terrain_node: terrain_node.show_global_zoning = enabled
 
 func _toggle_zoning_overlay():
 	if terrain_node:
@@ -149,7 +152,9 @@ func _handle_overlay_mode(keycode):
 	if terrain_node: terrain_node.overlay_mode = mode
 
 func _handle_zoning_selection(keycode):
-	var type = keycode - KEY_0 # 1-4
+	var type = keycode - KEY_0 # 1-5
+	if current_tool != Tool.ZONING:
+		_toggle_tool(Tool.ZONING)
 	if zoning_tool: zoning_tool.current_zone_type = type
 
 func _handle_mouse(event):

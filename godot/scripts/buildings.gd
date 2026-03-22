@@ -16,7 +16,7 @@ func setup_multimesh(zone_id: int, wall_color: Color, roof_color: Color):
 	var mmi = MultiMeshInstance3D.new()
 	var mm = MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.use_colors = false # We use vertex colors from the mesh, not per-instance colors
+	mm.use_colors = false
 	mm.use_custom_data = false
 	mm.instance_count = 0
 	

@@ -14,10 +14,8 @@ var overlay_mode: int = 0 # 0=Zoning, 1=Pollution, 2=Noise, 3=Desirability
 var show_global_zoning: bool = false
 var sim_speed: float = 0.0
 
-var cached_polygon_data_size: int = -1
 var cached_overlay_state: bool = false
 var cached_overlay_mode: int = -1
-var polygon_meshes: Array[MeshInstance3D] = []
 
 func _ready():
 	var size = simulation_node.get_heightmap_size()
@@ -92,62 +90,7 @@ func update_terrain_visuals():
 		zoning_image.set_data(int(size.x), int(size.y), false, Image.FORMAT_RGBA8, zone_bytes)
 		zoning_texture.update(zoning_image)
 
-	# Dynamic Vector Polygon Extrusion System!
-	var poly_data = simulation_node.get_zoning_polygons_data()
-	
-	if poly_data.size() != cached_polygon_data_size or show_global_zoning != cached_overlay_state or overlay_mode != cached_overlay_mode:
-		cached_polygon_data_size = poly_data.size()
-		cached_overlay_state = show_global_zoning
-		cached_overlay_mode = overlay_mode
-		
-		# Clear existing geometry
-		for m in polygon_meshes:
-			m.queue_free()
-		polygon_meshes.clear()
-		
-		if show_global_zoning and overlay_mode == 0:
-			var i = 0
-			while i < poly_data.size():
-				var num_verts = int(poly_data[i])
-				var zone_type = int(poly_data[i+1])
-				i += 2
-				
-				var verts: Array[Vector2] = []
-				for v_idx in range(num_verts):
-					verts.append(Vector2(poly_data[i], poly_data[i+1]))
-					i += 2
-					
-				if verts.size() >= 3:
-					var st = SurfaceTool.new()
-					st.begin(Mesh.PRIMITIVE_TRIANGLES)
-					
-					var indices = Geometry2D.triangulate_polygon(verts)
-					if indices.size() > 0:
-						for idx in indices:
-							var v = verts[idx]
-							# Floating absolutely identically just slightly over the grass mapping natively!
-							var y = simulation_node.get_height_at(v) + 0.17 
-							st.add_vertex(Vector3(v.x, y, v.y))
-							
-						st.generate_normals()
-						var mesh_inst = MeshInstance3D.new()
-						mesh_inst.mesh = st.commit()
-						
-						var color = Color(0,0,0)
-						if zone_type == 1: color = Color(0.13, 0.77, 0.36, 0.4) # Green
-						elif zone_type == 2: color = Color(0.23, 0.51, 0.96, 0.4) # Blue
-						elif zone_type == 3: color = Color(0.9, 0.7, 0.03, 0.4) # Yellow
-						elif zone_type == 4: color = Color(0.65, 0.33, 0.96, 0.4) # Purple
-						
-						var mat = StandardMaterial3D.new()
-						mat.albedo_color = color
-						mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-						mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-						mesh_inst.material_override = mat
-						
-						mesh_inst.top_level = true
-						add_child(mesh_inst)
-						polygon_meshes.append(mesh_inst)
+	# Grid-based zoning is now managed by ZoningTool.gd and SimulationNode direct rendering.
 
 func sculpt_at_mouse(delta):
 	var mouse_pos = get_viewport().get_mouse_position()

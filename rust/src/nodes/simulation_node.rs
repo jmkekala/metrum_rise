@@ -162,37 +162,106 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn add_zoning_polygon(&mut self, edge_idx: i32, zone_type_int: u8, vertices: PackedVector2Array, depth_amt: f32, frontage_pts: i32, base_verts: PackedVector2Array) {
+    pub fn set_zoning_cell(&mut self, edge_idx: i32, side: i8, x: i32, y: i32, zone_type_int: u8) {
         self.push_undo_state(false, false, false, true);
         let zone_type = match zone_type_int {
             1 => crate::simulation::grid::zoning::ZoneType::Residential,
             2 => crate::simulation::grid::zoning::ZoneType::Commercial,
             3 => crate::simulation::grid::zoning::ZoneType::Industrial,
-            4 => crate::simulation::grid::zoning::ZoneType::Mixed,
+            4 => crate::simulation::grid::zoning::ZoneType::Office,
+            5 => crate::simulation::grid::zoning::ZoneType::Mixed,
             _ => crate::simulation::grid::zoning::ZoneType::None,
         };
-        
-        let mut verts = Vec::new();
-        for v in vertices.as_slice() {
-            verts.push(godot::prelude::Vector2::new(v.x, v.y));
-        }
-        
-        let mut b_verts = Vec::new();
-        for v in base_verts.as_slice() {
-            b_verts.push(godot::prelude::Vector2::new(v.x, v.y));
-        }
-        
-        self.zoning.add_polygon(edge_idx as usize, zone_type, verts, depth_amt, frontage_pts as usize, b_verts);
+        self.zoning.set_cell(edge_idx as usize, side, x as usize, y as usize, zone_type);
         self.allocator.dirty = true;
     }
 
     #[func]
-    pub fn get_zoning_polygons_data(&self) -> PackedFloat32Array {
-        self.zoning.get_render_data()
+    pub fn get_zoning_grid_data(&self) -> PackedFloat32Array {
+        self.zoning.get_render_data(&self.transit_network.graph)
     }
 
     #[func]
-    pub fn get_obstacle_polygons_float_array(&self, ignore_poly_id: i32, ignore_edge_idx: i32) -> PackedFloat32Array {
+    pub fn get_edge_zoning_info(&self, edge_idx: i32) -> Dictionary {
+        let mut dict = Dictionary::new();
+        if let Some(grid) = self.zoning.edge_grids.get(&(edge_idx as usize)) {
+            dict.set("cells_long", grid.cells_long as i32);
+            dict.set("cell_size", self.zoning.grid_cell_size);
+            dict.set("left_side", PackedByteArray::from_iter(grid.left_side.iter().map(|&z| z as u8)));
+            dict.set("right_side", PackedByteArray::from_iter(grid.right_side.iter().map(|&z| z as u8)));
+        }
+        dict
+    }
+
+    #[func]
+    pub fn is_zoning_cell_obstructed(&self, edge_idx: i32, side: i8, x: i32, y: i32) -> bool {
+        self.zoning.is_cell_obstructed(edge_idx as usize, side, x as usize, y as usize, &self.transit_network.graph)
+    }
+
+    #[func]
+    pub fn get_zoning_cell_center(&self, edge_idx: i32, side: i8, x: i32, y: i32) -> godot::prelude::Vector2 {
+        let v2 = self.zoning.get_cell_center(edge_idx as usize, side, x as usize, y as usize, &self.transit_network.graph);
+        godot::prelude::Vector2::new(v2.x, v2.y)
+    }
+
+    #[func]
+    pub fn get_all_zoning_preview_data(&self) -> PackedFloat32Array {
+        let mut data = Vec::new();
+        let graph = &self.transit_network.graph;
+        
+        for (edge_idx, edge) in graph.edges.iter().enumerate() {
+            let cells_long = (edge.physical_length / self.zoning.grid_cell_size).floor() as usize;
+            let width = edge.width;
+            
+            for side in [1, -1] {
+                for x in 0..cells_long {
+                    // Pre-calculate tangent for the whole column to save time
+                    let t_param = (x as f32 + 0.5) * self.zoning.grid_cell_size / edge.physical_length;
+                    let (pos_on_edge, tangent) = self.get_edge_pos_and_tangent(edge_idx, t_param);
+                    let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x) * (side as f32);
+
+                    for y in 0..4 {
+                        if self.zoning.is_cell_obstructed(edge_idx, side, x, y, graph) {
+                            continue;
+                        }
+                        
+                        let depth = (y as f32 + 0.5) * self.zoning.grid_cell_size;
+                        let center = pos_on_edge + normal * (width * 0.5 + depth);
+                        
+                        // Pass [pos.x, pos.z, tangent.x, tangent.y]
+                        data.push(center.x);
+                        data.push(center.y);
+                        data.push(tangent.x);
+                        data.push(tangent.y);
+                    }
+                }
+            }
+        }
+        PackedFloat32Array::from_iter(data)
+    }
+
+    fn get_edge_pos_and_tangent(&self, edge_idx: usize, t: f32) -> (godot::prelude::Vector2, godot::prelude::Vector2) {
+        let edge = &self.transit_network.graph.edges[edge_idx];
+        let geom = &edge.physical_geometry;
+        let total_l = edge.physical_length;
+        let target_l = t * total_l;
+        
+        let mut curr_l = 0.0;
+        for i in 0..geom.len() - 1 {
+            let p1 = godot::prelude::Vector2::new(geom[i].x, geom[i].z);
+            let p2 = godot::prelude::Vector2::new(geom[i+1].x, geom[i+1].z);
+            let d = (p2 - p1).length();
+            if curr_l + d >= target_l || i == geom.len() - 2 {
+                let local_t = ((target_l - curr_l) / d).clamp(0.0, 1.0);
+                return (p1 + (p2 - p1) * local_t, (p2 - p1).normalized());
+            }
+            curr_l += d;
+        }
+        (godot::prelude::Vector2::new(0.0, 0.0), godot::prelude::Vector2::new(1.0, 0.0))
+    }
+
+    #[func]
+    pub fn get_obstacle_polygons_float_array(&self, _ignore_poly_id: i32, ignore_edge_idx: i32) -> PackedFloat32Array {
         let mut data = Vec::new();
         let mut count = 0.0;
         data.push(0.0); // Placeholder for count
@@ -251,16 +320,7 @@ impl SimulationNode {
             }
         }
 
-        for zone in &self.zoning.polygons {
-            if zone.id as i32 == ignore_poly_id { continue; }
-            if zone.vertices.is_empty() { continue; }
-            data.push(zone.vertices.len() as f32);
-            for v in &zone.vertices {
-                data.push(v.x);
-                data.push(v.y);
-            }
-            count += 1.0;
-        }
+        // Grid-based obstacles? For now, let's just keep the nodes as obstacles.
 
         // 3. Include Road Nodes as obstacles to prevent zoning through intersections
         for node in &self.transit_network.graph.nodes {
@@ -312,8 +372,8 @@ impl SimulationNode {
             }
         }
         
-        // Return if mouse is near the road, or within the 12 meters bounding limit
-        if best_dist <= (12.0 * 12.0) { 
+        // Return if mouse is near the road, or within the 50 meters bounding limit (matching grid depth)
+        if best_dist <= (50.0 * 50.0) { 
             best_edge
         } else {
             -1
@@ -373,7 +433,7 @@ impl SimulationNode {
 
         // 3. Economy & Building Allocation
         self.demand.tick();
-        self.allocator.tick(&mut self.demand, &self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network);
+        self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network);
     }
     #[func]
     pub fn get_agent_transforms(&self) -> PackedFloat32Array {
@@ -520,7 +580,8 @@ impl SimulationNode {
             1 => ZoneType::Residential,
             2 => ZoneType::Commercial,
             3 => ZoneType::Industrial,
-            4 => ZoneType::Mixed,
+            4 => ZoneType::Office,
+            5 => ZoneType::Mixed,
             _ => ZoneType::None,
         };
 
@@ -756,217 +817,6 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn get_zoning_frontage_data(&self) -> PackedVector2Array {
-        let mut arr = PackedVector2Array::new();
-        for poly in &self.zoning.polygons {
-            for frontage in &poly.frontages {
-                if poly.vertices.len() >= 2 && frontage.count > 0 {
-                    for i in 0..frontage.count {
-                        let idx = (frontage.start_idx + i) % poly.vertices.len();
-                        arr.push(poly.vertices[idx]);
-                    }
-                }
-            }
-        }
-        arr
-    }
-
-    #[func]
-    pub fn get_zoning_frontage_counts(&self) -> godot::prelude::PackedInt32Array {
-        let mut arr = godot::prelude::PackedInt32Array::new();
-        for poly in &self.zoning.polygons {
-            for frontage in &poly.frontages {
-                if poly.vertices.len() >= 2 && frontage.count > 0 {
-                    arr.push(frontage.count as i32);
-                }
-            }
-        }
-        arr
-    }
-
-    #[func]
-    pub fn get_zoning_polygon_ids(&self) -> godot::prelude::PackedInt32Array {
-        let mut arr = godot::prelude::PackedInt32Array::new();
-        for poly in &self.zoning.polygons {
-            for frontage in &poly.frontages {
-                if poly.vertices.len() >= 2 && frontage.count > 0 {
-                    arr.push(poly.id as i32);
-                }
-            }
-        }
-        arr
-    }
-
-    #[func]
-    pub fn get_polygon_properties(&self, poly_id: i32) -> godot::prelude::Vector2 {
-        self.zoning.polygons.iter().find(|p| p.id == poly_id as u32)
-            .map(|p| {
-                if let Some(f) = p.frontages.first() {
-                    godot::prelude::Vector2::new(f.edge_idx as f32, p.depth_amt)
-                } else {
-                    godot::prelude::Vector2::new(-1.0, 0.0)
-                }
-            })
-            .unwrap_or(godot::prelude::Vector2::new(-1.0, 0.0))
-    }
-
-    #[func]
-    pub fn get_zoning_polygons_handles(&self) -> PackedFloat32Array {
-        let mut data = Vec::new();
-        for p in &self.zoning.polygons {
-            data.push(p.id as f32);
-            data.push(p.base_vertices.len() as f32);
-            for v in &p.base_vertices {
-                data.push(v.x);
-                data.push(v.y);
-            }
-        }
-        PackedFloat32Array::from_iter(data)
-    }
-
-    #[func]
-    pub fn get_polygon_base_vertices(&self, poly_id: i32) -> PackedVector2Array {
-        let mut arr = PackedVector2Array::new();
-        if let Some(poly) = self.zoning.polygons.iter().find(|p| p.id == poly_id as u32) {
-            for v in &poly.base_vertices {
-                arr.push(*v);
-            }
-        }
-        arr
-    }
-
-    #[func]
-    pub fn get_polygon_at(&self, pos_x: f32, pos_z: f32) -> i32 {
-        let p = godot::prelude::Vector2::new(pos_x, pos_z);
-        for poly in &self.zoning.polygons {
-            let mut inside = false;
-            let mut j = poly.vertices.len() - 1;
-            for i in 0..poly.vertices.len() {
-                let a = poly.vertices[i];
-                let b = poly.vertices[j];
-                if (a.y > p.y) != (b.y > p.y) {
-                    let intersect_x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
-                    if p.x < intersect_x {
-                        inside = !inside;
-                    }
-                }
-                j = i;
-            }
-            if inside {
-                return poly.id as i32;
-            }
-        }
-        -1
-    }
-
-    #[func]
-    pub fn add_frontage_to_polygon(&mut self, poly_id: i32, edge_idx: i32) {
-        if edge_idx < 0 { return; }
-        self.push_undo_state(false, false, false, true);
-        let hw = if let Some(e) = self.transit_network.graph.edges.get(edge_idx as usize) { e.width / 2.0 } else { return; };
-        
-        let mut edge_geom = Vec::new();
-        if let Some(e) = self.transit_network.graph.edges.get(edge_idx as usize) {
-            if e.physical_geometry.is_empty() {
-                edge_geom.push(godot::prelude::Vector2::new(self.transit_network.graph.nodes[e.start_node as usize].pos.x, self.transit_network.graph.nodes[e.start_node as usize].pos.z));
-                edge_geom.push(godot::prelude::Vector2::new(self.transit_network.graph.nodes[e.end_node as usize].pos.x, self.transit_network.graph.nodes[e.end_node as usize].pos.z));
-            } else {
-                for v in &e.physical_geometry {
-                    edge_geom.push(godot::prelude::Vector2::new(v.x, v.z));
-                }
-            }
-        }
-
-        if let Some(poly) = self.zoning.polygons.iter_mut().find(|p| p.id == poly_id as u32) {
-            if poly.frontages.iter().any(|f| f.edge_idx == edge_idx as usize) { return; }
-            
-            let n = poly.vertices.len();
-            let mut on_edge = vec![false; n];
-            for i in 0..n {
-                let p = poly.vertices[i];
-                let mut dist = std::f32::MAX;
-                for k in 0..edge_geom.len()-1 {
-                    let a = edge_geom[k];
-                    let b = edge_geom[k+1];
-                    let l2 = (b - a).length_squared();
-                    let d = if l2 == 0.0 {
-                        (p - a).length()
-                    } else {
-                        let t = ((p - a).dot(b - a) / l2).clamp(0.0, 1.0);
-                        (p - (a + (b - a) * t)).length()
-                    };
-                    if d < dist { dist = d; }
-                }
-                on_edge[i] = dist < (hw + 1.5); // Add 1.5m tolerance
-            }
-            
-            let mut best_start = 0;
-            let mut best_len = 0;
-            for i in 0..n {
-                if on_edge[i] {
-                    let mut current_len = 0;
-                    for j in 0..n {
-                        if on_edge[(i + j) % n] { current_len += 1; } else { break; }
-                    }
-                    if current_len > best_len {
-                        best_len = current_len;
-                        best_start = i;
-                    }
-                }
-            }
-            
-            if best_len >= 2 {
-                poly.frontages.push(crate::simulation::grid::zoning::ZoneFrontage {
-                    edge_idx: edge_idx as usize,
-                    start_idx: best_start,
-                    count: best_len,
-                });
-                poly.version += 1;
-            }
-        }
-        self.allocator.dirty = true;
-    }
-
-
-
-    #[func]
-    pub fn update_zoning_polygon(&mut self, poly_id: i32, vertices: PackedVector2Array, frontage_pts: i32, base_verts: PackedVector2Array) {
-        self.push_undo_state(false, false, false, true);
-        let mut verts = Vec::new();
-        for v in vertices.as_slice() {
-            verts.push(godot::prelude::Vector2::new(v.x, v.y));
-        }
-        self.zoning.update_polygon(poly_id as u32, verts, frontage_pts as usize);
-        
-        let mut b_verts = Vec::new();
-        for v in base_verts.as_slice() {
-            b_verts.push(godot::prelude::Vector2::new(v.x, v.y));
-        }
-        self.zoning.update_polygon_base_vertices(poly_id as u32, b_verts);
-        self.allocator.dirty = true;
-    }
-
-    #[func]
-    pub fn delete_zoning_polygon(&mut self, poly_id: i32) {
-        self.push_undo_state(false, false, false, true);
-        self.zoning.remove_polygon(poly_id as u32);
-        self.allocator.dirty = true;
-    }
-
-    #[func]
-    pub fn get_zoning_for_edge(&self, edge_idx: i32) -> i32 {
-        if edge_idx < 0 { return -1; }
-        for poly in &self.zoning.polygons {
-            for frontage in &poly.frontages {
-                if frontage.edge_idx == edge_idx as usize {
-                    return poly.id as i32;
-                }
-            }
-        }
-        -1
-    }
-
-    #[func]
     pub fn add_road(&mut self, points: PackedVector3Array, fwd_lanes: i32, bkw_lanes: i32) {
         self.push_undo_state(false, false, true, false);
         let mut fixed_points = points.to_vec();
@@ -988,12 +838,11 @@ impl SimulationNode {
 
         let nodes = self.transit_network.graph.nodes.len();
         let edges = self.transit_network.graph.edges.len();
-        let islands = self.transit_network.graph.get_island_count();
-        let is_walkway = fwd_lanes == 0 && bkw_lanes == 0;
-        if is_walkway {
-            godot_print!("Walkway added (0x0) with 1 bidirectional path. Total: {nodes} Nodes, {edges} Edges. Networks: {islands}");
-        } else {
-            godot_print!("Road added ({fwd_lanes} Fwd / {bkw_lanes} Bkw lanes) with 2 bidirectional sidewalks. Total: {nodes} Nodes, {edges} Edges. Networks: {islands}");
+        godot_print!("Road added. Total: {} Nodes, {} Edges.", nodes, edges);
+        
+        // Sync zoning grids to new edge count/lengths
+        for (i, edge) in self.transit_network.graph.edges.iter().enumerate() {
+            self.zoning.update_edge_grid_size(i, edge.physical_length);
         }
     }
 
