@@ -21,24 +21,21 @@ void fragment() {
 	vec4 albedo = texture(albedo_tex, asphalt_uv);
 	vec3 normal = texture(normal_tex, asphalt_uv).rgb;
 	float roughness = texture(roughness_tex, asphalt_uv).r;
-	
 	// 2. Road-Specific Detail (Stripes)
-	// UV.y is 0 to 1 across the width. Center line is around 0.5.
 	float stripe = 0.0;
-	if (UV.y > 0.48 && UV.y < 0.52) {
-		float dash = step(0.5, fract(UV.x * 0.2));
-		stripe = dash;
+	
+	// Only draw stripes on road ribbons (Alpha = 0.0)
+	if (COLOR.a < 0.1) {
+		if (UV.y > 0.96 && COLOR.g > 0.5) {
+			float dash = step(0.5, fract(UV.x * 0.2));
+			stripe = dash;
+		}
 	}
 	
-	vec3 final_albedo = mix(albedo.rgb, vec3(1.0, 0.9, 0.0), stripe * 0.8) * COLOR.rgb;
+	vec3 stripe_color = mix(vec3(1.0, 1.0, 1.0), vec3(1.0, 0.9, 0.0), COLOR.b);
+	vec3 final_albedo = mix(albedo.rgb, stripe_color, stripe * 0.8);
 	
 	ALBEDO = final_albedo;
-	if (!FRONT_FACING) {
-		ALBEDO = mix(final_albedo, vec3(1.0, 0.0, 0.0), 0.5); // Tint red if backface
-	}
-	
-	// Force normal to be UP in world space (transformed to view space)
-	NORMAL = (VIEW_MATRIX * vec4(0.0, 1.0, 0.0, 0.0)).xyz;
 	
 	NORMAL_MAP = normal;
 	ROUGHNESS = roughness;
