@@ -12,6 +12,7 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize, zonin
     // 1. Find all intersections (crossing AND touching/snapping)
     let edge_count = network.graph.edges.len();
     for other_id in 0..edge_count {
+        if network.graph.edges[other_id].deleted { continue; }
         let (edge1_geo, edge2_geo) = {
             (network.graph.edges[edge_id].geometry.clone(), network.graph.edges[other_id].geometry.clone())
         };
@@ -108,7 +109,7 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize, zonin
 pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usize, _t: f32, junction_node_id: u32, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
     let old_edge = &network.graph.edges[edge_id];
     let geometry = &old_edge.geometry;
-    let length = old_edge.physical_length;
+    let _length = old_edge.physical_length;
     let split_pos = network.graph.nodes[junction_node_id as usize].pos;
 
     // Physical distance guard: Don't split if too close to either end (e.g. < 0.2m)

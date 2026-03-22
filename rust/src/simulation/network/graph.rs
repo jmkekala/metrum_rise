@@ -118,8 +118,19 @@ impl TransitGraph {
         id
     }
 
-    pub fn split_edge(&mut self, edge_id: usize, split_pos: Vector3) -> (u32, usize) {
-        let old_edge = self.edges[edge_id].clone();
+    pub fn split_edge(&mut self, edge_idx: usize, split_pos: Vector3) -> (u32, usize) {
+        let edge = &self.edges[edge_idx];
+        let start_pos = self.nodes[edge.start_node as usize].pos;
+        let end_pos = self.nodes[edge.end_node as usize].pos;
+        
+        if split_pos.distance_to(start_pos) < 0.1 {
+             return (edge.start_node, edge_idx);
+        }
+        if split_pos.distance_to(end_pos) < 0.1 {
+             return (edge.end_node, edge_idx);
+        }
+
+        let old_edge = self.edges[edge_idx].clone();
         let end_node = old_edge.end_node;
         
         // 1. Find the segment closest to split_pos in logical geometry
@@ -147,11 +158,11 @@ impl TransitGraph {
         // 1.5 Prevent degenerate splits (too close to endpoints)
         let start_pos = self.nodes[old_edge.start_node as usize].pos;
         if best_closest.distance_to(start_pos) < 2.0 {
-            return (old_edge.start_node, edge_id);
+            return (old_edge.start_node, edge_idx);
         }
         let end_pos = self.nodes[old_edge.end_node as usize].pos;
         if best_closest.distance_to(end_pos) < 2.0 {
-            return (old_edge.end_node, edge_id);
+            return (old_edge.end_node, edge_idx);
         }
 
         // 2. Create the new frontage node
@@ -222,10 +233,10 @@ impl TransitGraph {
         }
         
         // 5. Update existing edge as first half
-        self.edges[edge_id].end_node = new_node_id;
-        self.edges[edge_id].geometry = first_geom;
-        self.edges[edge_id].physical_geometry = first_phys;
-        self.edges[edge_id].physical_length = self.calculate_length(&self.edges[edge_id].physical_geometry);
+        self.edges[edge_idx].end_node = new_node_id;
+        self.edges[edge_idx].geometry = first_geom;
+        self.edges[edge_idx].physical_geometry = first_phys;
+        self.edges[edge_idx].physical_length = self.calculate_length(&self.edges[edge_idx].physical_geometry);
         
         // 6. Create new edge as second half
         let new_edge_id = self.add_edge(Edge {
@@ -241,31 +252,31 @@ impl TransitGraph {
         // 7. Handle Lane Connections (The "Detour" Fix)
         // A. At new_node_id (the Frontage gateway): allow straight-through turns
         let mut frontage_conns = HashMap::new();
-        // Forward: Edge edge_id -> Edge new_edge_id
+        // Forward: Edge edge_idx -> Edge new_edge_id
         let mut fwd_tgts = Vec::new();
         for lane in 0..old_edge.fwd_lanes {
             fwd_tgts.push((new_edge_id, lane as i8));
         }
-        if !fwd_tgts.is_empty() { frontage_conns.insert((edge_id, 0), fwd_tgts); }
+        if !fwd_tgts.is_empty() { frontage_conns.insert((edge_idx, 0), fwd_tgts); }
         
-        // Backward: Edge new_edge_id -> Edge edge_id
+        // Backward: Edge new_edge_id -> Edge edge_idx
         let mut bkw_tgts = Vec::new();
         for lane in 0..old_edge.bkw_lanes {
-            bkw_tgts.push((edge_id, -(lane as i8) - 1));
+            bkw_tgts.push((edge_idx, -(lane as i8) - 1));
         }
         if !bkw_tgts.is_empty() { frontage_conns.insert((new_edge_id, -1), bkw_tgts); }
         self.nodes[new_node_id as usize].lane_connections = frontage_conns;
         
-        // B. At end_node: Remap connections from edge_id to new_edge_id
+        // B. At end_node: Remap connections from edge_idx to new_edge_id
         let node_ref = &mut self.nodes[end_node as usize];
         let mut new_node_conns = HashMap::new();
         for (src, tgts) in node_ref.lane_connections.drain() {
             let mut new_src = src;
-            if src.0 == edge_id { new_src.0 = new_edge_id; }
+            if src.0 == edge_idx { new_src.0 = new_edge_id; }
             
             let mut new_tgts = Vec::new();
             for mut t in tgts {
-                if t.0 == edge_id { t.0 = new_edge_id; }
+                if t.0 == edge_idx { t.0 = new_edge_id; }
                 new_tgts.push(t);
             }
             new_node_conns.insert(new_src, new_tgts);
@@ -288,14 +299,15 @@ impl TransitGraph {
         l
     }
 
-    pub fn remove_node_and_merge_edges(&mut self, node_id: u32) {
-        if node_id as usize >= self.nodes.len() { return; }
+    pub fn remove_node_and_merge_edges(&mut self, node_id: u32) -> Option<(usize, usize)> {
+        if node_id as usize >= self.nodes.len() { return None; }
         
         // Find edges connected to this node
         let mut e1_idx = None;
         let mut e2_idx = None;
         
         for (i, edge) in self.edges.iter().enumerate() {
+            if edge.deleted { continue; } // Important: Skip already deleted edges
             if edge.start_node == node_id || edge.end_node == node_id {
                 if e1_idx.is_none() {
                     e1_idx = Some(i);
@@ -304,7 +316,7 @@ impl TransitGraph {
                 } else {
                     // More than 2 edges? This node is likely a real intersection now.
                     // DO NOT MERGE.
-                    return;
+                    return None;
                 }
             }
         }
@@ -314,7 +326,7 @@ impl TransitGraph {
             let (_target_end_node, mid_node, target_start_node) = {
                 let e1 = &self.edges[i1];
                 let e2 = &self.edges[i2];
-                if e1.primary_type != e2.primary_type || e1.width != e2.width { return; }
+                if e1.primary_type != e2.primary_type || e1.width != e2.width { return None; }
                 
                 // Determine the flow: A -> node_id -> B
                 let a = if e1.start_node == node_id { e1.end_node } else { e1.start_node };
@@ -340,11 +352,21 @@ impl TransitGraph {
             // Update the first edge to span the whole distance
             self.edges[first_edge_idx].end_node = target_start_node;
             self.edges[first_edge_idx].geometry = new_geom;
+            // Also combine physical geometry to keep lengths and rendering stable until next rebuild
+            let mut new_phys = self.edges[first_edge_idx].physical_geometry.clone();
+            if !self.edges[second_edge_idx].physical_geometry.is_empty() {
+                new_phys.extend_from_slice(&self.edges[second_edge_idx].physical_geometry[1..]);
+            }
+            self.edges[first_edge_idx].physical_geometry = new_phys;
+            self.edges[first_edge_idx].physical_length = self.calculate_length(&self.edges[first_edge_idx].physical_geometry);
 
-            // Remove the second edge
+            // Mark the second edge as deleted instead of removing it to keep indices stable
             let to_remove = second_edge_idx;
-            self.edges.remove(to_remove);
+            self.edges[to_remove].deleted = true;
+
+            return Some((first_edge_idx, second_edge_idx));
         }
+        None
     }
 
     /// Merges two nodes into one, updating all edges that use them
@@ -392,6 +414,7 @@ impl TransitGraph {
         self.nodes[node_id as usize].pos = new_pos;
 
         for edge in &mut self.edges {
+            if edge.deleted { continue; }
             if edge.start_node == node_id || edge.end_node == node_id {
                 let count = edge.geometry.len();
                 if count < 2 { continue; }
@@ -445,12 +468,14 @@ impl TransitGraph {
         
         // Unite nodes connected by edges
         for edge in &self.edges {
+            if edge.deleted { continue; }
             unite(edge.start_node as usize, edge.end_node as usize, &mut parent);
         }
         
         // Count unique roots (only for nodes that are part of an edge to avoid counting "floating" preview nodes)
         let mut active_nodes = std::collections::HashSet::new();
         for edge in &self.edges {
+            if edge.deleted { continue; }
             active_nodes.insert(edge.start_node as usize);
             active_nodes.insert(edge.end_node as usize);
         }
@@ -476,6 +501,7 @@ impl TransitGraph {
         
         // 2. Re-interpolate Edge Geometry (Smooth Grades)
         for edge in &mut self.edges {
+            if edge.deleted { continue; }
             let count = edge.geometry.len();
             if count < 2 { continue; }
             

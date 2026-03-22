@@ -34,6 +34,7 @@ pub fn get_closest_point(graph: &TransitGraph, world_pos: Vector3, max_dist: f32
 
     // 2. Check edges (Considering width)
     for edge in &graph.edges {
+        if edge.deleted { continue; }
         let half_width = edge.width * 0.5;
         let edge_snap_dist = f32::max(max_dist, half_width + 1.0);
         

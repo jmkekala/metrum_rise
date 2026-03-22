@@ -206,8 +206,12 @@ impl TransitNetwork {
         self.graph.sync_to_terrain(terrain);
     }
 
-    pub fn split_for_frontage(&mut self, edge_idx: usize, pos: Vector3, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) -> u32 {
+    pub fn split_for_frontage(&mut self, edge_idx: usize, pos: Vector3, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) -> (u32, usize, usize) {
         let (node_id, new_edge_id) = self.graph.split_edge(edge_idx, pos);
+
+        if new_edge_id == edge_idx {
+            return (node_id, edge_idx, 0); // No split actually occurred
+        }
 
         // --- MIGRATION LOGIC ---
         let cell_size = zoning.grid_cell_size;
@@ -225,11 +229,34 @@ impl TransitNetwork {
             }
         }
 
-        node_id
+        (node_id, new_edge_id, split_x)
     }
 
-    pub fn remove_frontage(&mut self, node_id: u32) {
-        self.graph.remove_node_and_merge_edges(node_id);
+    pub fn remove_frontage(&mut self, node_id: u32, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
+        let first_cells_long = if let Some(first_idx) = self.graph.edges.iter().position(|e| !e.deleted && (e.start_node == node_id || e.end_node == node_id)) {
+            // Peek at existing zoning cells long for the first connected edge to determine migration offset
+            zoning.edge_grids.get(&first_idx).map(|g| g.cells_long).unwrap_or(0)
+        } else { 
+            0 
+        };
+
+        if let Some((keep, delete)) = self.graph.remove_node_and_merge_edges(node_id) {
+            // Offset for second edge's buildings is based on which one was kept first
+            // Wait: remove_node_and_merge_edges already ensures 'keep' is the first edge (A -> node_id).
+            // So 'delete' buildings need to be offset by original 'keep' length.
+            let offset = first_cells_long;
+            
+            // 1. Migrate Zoning
+            zoning.merge_edge_grids(keep, delete);
+
+            // 2. Migrate Buildings
+            for b in &mut allocator.buildings {
+                if b.edge_idx == delete {
+                    b.edge_idx = keep;
+                    b.cell_x += offset;
+                }
+            }
+        }
     }
 
     pub fn rebuild_pathing(&mut self) {

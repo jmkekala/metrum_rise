@@ -42,7 +42,9 @@ impl ZoningSystem {
     pub fn split_edge_grid(&mut self, old_idx: usize, new_idx: usize, split_x: usize) {
         if let Some(old_grid) = self.edge_grids.get(&old_idx).cloned() {
             let cells_long = old_grid.cells_long;
-            let part2_cells = cells_long.saturating_sub(split_x);
+            // Clamp split_x to ensure we don't try to truncate more than we have
+            let actual_split_x = split_x.min(cells_long);
+            let part2_cells = cells_long.saturating_sub(actual_split_x);
             
             let mut new_grid = EdgeZoning {
                 left_side: vec![ZoneType::None; part2_cells * 4],
@@ -55,8 +57,8 @@ impl ZoningSystem {
             // Copy data to new grid
             for x in 0..part2_cells {
                 for y in 0..4 {
-                    let old_x = split_x + x;
-                    if old_x < cells_long {
+                    let old_x = actual_split_x + x;
+                    if old_x * 4 + y < old_grid.left_side.len() {
                         let old_i = old_x * 4 + y;
                         let new_i = x * 4 + y;
                         new_grid.left_side[new_i] = old_grid.left_side[old_i];
@@ -70,12 +72,24 @@ impl ZoningSystem {
 
             // Truncate old grid
             if let Some(g) = self.edge_grids.get_mut(&old_idx) {
-                g.left_side.truncate(split_x * 4);
-                g.right_side.truncate(split_x * 4);
-                g.left_occupied.truncate(split_x * 4);
-                g.right_occupied.truncate(split_x * 4);
-                g.cells_long = split_x;
+                g.left_side.truncate(actual_split_x * 4);
+                g.right_side.truncate(actual_split_x * 4);
+                g.left_occupied.truncate(actual_split_x * 4);
+                g.right_occupied.truncate(actual_split_x * 4);
+                g.cells_long = actual_split_x;
             }
+        }
+    }
+
+    pub fn merge_edge_grids(&mut self, first_idx: usize, second_idx: usize) {
+        let second_grid = if let Some(g) = self.edge_grids.remove(&second_idx) { g } else { return; };
+        
+        if let Some(first_grid) = self.edge_grids.get_mut(&first_idx) {
+            first_grid.left_side.extend_from_slice(&second_grid.left_side);
+            first_grid.right_side.extend_from_slice(&second_grid.right_side);
+            first_grid.left_occupied.extend_from_slice(&second_grid.left_occupied);
+            first_grid.right_occupied.extend_from_slice(&second_grid.right_occupied);
+            first_grid.cells_long += second_grid.cells_long;
         }
     }
 
@@ -100,26 +114,20 @@ impl ZoningSystem {
 
     pub fn set_cell(&mut self, edge_idx: usize, side: i8, x: usize, y: usize, zone_type: ZoneType) {
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
-            if x < grid.cells_long && y < 4 {
+            let cells = if side > 0 { &mut grid.left_side } else { &mut grid.right_side };
+            if x < grid.cells_long && x * 4 + y < cells.len() {
                 let idx = x * 4 + y;
-                if side > 0 {
-                    grid.left_side[idx] = zone_type;
-                } else {
-                    grid.right_side[idx] = zone_type;
-                }
+                cells[idx] = zone_type;
             }
         }
     }
 
     pub fn get_cell(&self, edge_idx: usize, side: i8, x: usize, y: usize) -> ZoneType {
         if let Some(grid) = self.edge_grids.get(&edge_idx) {
-            if x < grid.cells_long && y < 4 {
+            let cells = if side > 0 { &grid.left_side } else { &grid.right_side };
+            if x < grid.cells_long && x * 4 + y < cells.len() {
                 let idx = x * 4 + y;
-                if side > 0 {
-                    return grid.left_side[idx];
-                } else {
-                    return grid.right_side[idx];
-                }
+                return cells[idx];
             }
         }
         ZoneType::None
@@ -127,13 +135,10 @@ impl ZoningSystem {
 
     pub fn is_occupied(&self, edge_idx: usize, side: i8, x: usize, y: usize) -> bool {
         if let Some(grid) = self.edge_grids.get(&edge_idx) {
-            if x < grid.cells_long && y < 4 {
+            let cells = if side > 0 { &grid.left_occupied } else { &grid.right_occupied };
+            if x < grid.cells_long && x * 4 + y < cells.len() {
                 let idx = x * 4 + y;
-                if side > 0 {
-                    return grid.left_occupied[idx];
-                } else {
-                    return grid.right_occupied[idx];
-                }
+                return cells[idx];
             }
         }
         true // Assume occupied if out of bounds or grid missing
@@ -141,13 +146,10 @@ impl ZoningSystem {
 
     pub fn set_occupied(&mut self, edge_idx: usize, side: i8, x: usize, y: usize, occupied: bool) {
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
-            if x < grid.cells_long && y < 4 {
+            let cells = if side > 0 { &mut grid.left_occupied } else { &mut grid.right_occupied };
+            if x < grid.cells_long && x * 4 + y < cells.len() {
                 let idx = x * 4 + y;
-                if side > 0 {
-                    grid.left_occupied[idx] = occupied;
-                } else {
-                    grid.right_occupied[idx] = occupied;
-                }
+                cells[idx] = occupied;
             }
         }
     }
@@ -223,7 +225,7 @@ impl ZoningSystem {
         let center_intended = hw + ((y as f32 + 0.5) * size);
         check_pts_with_dist.push((center, center_intended));
 
-        for (pt, intended_d) in check_pts_with_dist {
+        for (pt, _intended_d) in check_pts_with_dist {
             let mut closest_competitor_d_sq = f32::MAX;
             let mut asphalt_collision = false;
 
@@ -236,6 +238,21 @@ impl ZoningSystem {
             for (i, e) in graph.edges.iter().enumerate() {
                 if i == edge_idx { continue; }
                 if e.deleted { continue; }
+
+                // Sister Edge Detection: If connected via a simple 2-way joint, they are part of the same road
+                // and shouldn't obstruct each other's zoning cells at the split point.
+                let is_sister = (e.start_node == edge.start_node || e.start_node == edge.end_node || 
+                                 e.end_node == edge.start_node || e.end_node == edge.end_node) &&
+                                 e.width == edge.width && e.primary_type == edge.primary_type;
+                
+                if is_sister {
+                    // Check node connection count - if it's > 2, it's a real intersection, not just a split
+                    let shared_node = if e.start_node == edge.start_node || e.start_node == edge.end_node { e.start_node } else { e.end_node };
+                    let conn_count = graph.edges.iter().filter(|o| !o.deleted && (o.start_node == shared_node || o.end_node == shared_node)).count();
+                    if conn_count <= 2 {
+                        continue; 
+                    }
+                }
                 
                 let mut e_min = Vector2::new(f32::MAX, f32::MAX);
                 let mut e_max = Vector2::new(f32::MIN, f32::MIN);
@@ -351,9 +368,13 @@ impl ZoningSystem {
             if edge_idx >= graph.edges.len() || graph.edges[edge_idx].deleted { continue; }
             for side in [1, -1] {
                 let cells = if side > 0 { &grid.left_side } else { &grid.right_side };
-                for x in 0..grid.cells_long {
+                // Safety: Ensure we don't try to access beyond the actual vector length
+                let actual_cells_long = (cells.iter().len() / 4).min(grid.cells_long);
+                for x in 0..actual_cells_long {
                     for y in 0..4 {
-                        let z_type = cells[x * 4 + y];
+                        let idx = x * 4 + y;
+                        if idx >= cells.len() { continue; } // Extra safety
+                        let z_type = cells[idx];
                         if z_type == ZoneType::None { continue; }
                         if self.is_cell_obstructed(edge_idx, side, x, y, graph) { continue; }
                         

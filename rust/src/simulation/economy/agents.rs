@@ -313,11 +313,6 @@ impl AgentSystem {
             }
         }
         
-        let get_bldg_center = |b_id: usize| -> Vector2 {
-            if b_id >= allocator.buildings.len() { return Vector2::new(0.0, 0.0); }
-            let b = &allocator.buildings[b_id];
-            Vector2::new(b.center_x, b.center_y)
-        };
 
 
         macro_rules! initiate_journey {
@@ -394,7 +389,7 @@ impl AgentSystem {
                     if node_idx == u32::MAX { self.transit[i] = 2; continue; }
                     
                     // To avoid the "centerline detour", we target the actual lane/sidewalk offset point
-                    let mut target_vec = {
+                    let target_vec = {
                         let node_pos = graph.nodes[node_idx as usize].pos;
                         let mut base_vec = Vector2::new(node_pos.x, node_pos.z);
                         
@@ -496,7 +491,6 @@ impl AgentSystem {
                                 // Arrived at building frontage!
                                 // Keep is_driving true for now so we "drive" into the driveway in Transit 3
                                 self.transit[i] = TRANSIT_ARRIVING;
-                                remaining_dist = 0.0;
                                 break;
                             }
                         }
@@ -525,7 +519,7 @@ impl AgentSystem {
                                             self.transit[i] = TRANSIT_IDLE;
                                         }
                                     }
-                                    remaining_dist = 0.0; break;
+                            remaining_dist = 0.0; break;
                                 }
                             }
 
@@ -557,7 +551,7 @@ impl AgentSystem {
                                     }
                                 } else {
                                     self.current_path[i].clear();
-                                    remaining_dist = 0.0; break;
+                            remaining_dist = 0.0; break;
                                 }
                             } else {
                                 remaining_dist = 0.0; break;

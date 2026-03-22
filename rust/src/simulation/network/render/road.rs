@@ -79,7 +79,6 @@ impl TransitRenderer for RoadRenderer {
             if resampled_count < 2 { continue; }
 
             let h_offset = config::ROAD_H_OFFSET + (edge_id % 100) as f32 * 0.001;
-            let sw_w = config::SIDEWALK_WIDTH;
             let z_bias = config::Z_FIGHT_BIAS;
 
             if edge.primary_type == TransitType::Foot {
@@ -145,7 +144,6 @@ impl TransitRenderer for RoadRenderer {
 
             let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
             let lane_w = edge.width / total_lanes;
-            let lane_count_f = total_lanes;
 
             // Pre-calculate side directions for miter joins
             let mut point_side_dirs = Vec::with_capacity(resampled_count);
@@ -163,7 +161,6 @@ impl TransitRenderer for RoadRenderer {
             }
 
             // Lane Ribbons
-            let lane_count = (edge.fwd_lanes + edge.bkw_lanes) as usize;
             // Road Ribbons (Lanes)
             let lane_count = (edge.fwd_lanes + edge.bkw_lanes) as usize;
             let start_clip = edge.start_clip;

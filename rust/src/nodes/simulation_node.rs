@@ -182,8 +182,8 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn get_edge_zoning_info(&self, edge_idx: i32) -> Dictionary {
-        let mut dict = Dictionary::new();
+    pub fn get_edge_zoning_info(&self, edge_idx: i32) -> VarDictionary {
+        let mut dict = VarDictionary::new();
         if let Some(grid) = self.zoning.edge_grids.get(&(edge_idx as usize)) {
             dict.set("cells_long", grid.cells_long as i32);
             dict.set("cell_size", self.zoning.grid_cell_size);

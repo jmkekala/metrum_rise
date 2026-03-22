@@ -51,9 +51,23 @@ impl BuildingAllocator {
             };
 
             if remove {
-                network.remove_frontage(b.frontage_node);
-                // Clear occupancy
-                zoning.set_occupied(b.edge_idx, b.side, b.cell_x, b.cell_y, false);
+                let frontage_node = b.frontage_node;
+                let b_edge_idx = b.edge_idx;
+                let b_side = b.side;
+                let b_cell_x = b.cell_x;
+                let b_cell_y = b.cell_y;
+                let b_width = b.width;
+                let b_depth = b.depth;
+
+                network.remove_frontage(frontage_node, zoning, self);
+                // Clear occupancy for the entire footprint
+                let w_cells = (b_width as f32 / zoning.grid_cell_size).round() as usize;
+                let d_cells = (b_depth as f32 / zoning.grid_cell_size).round() as usize;
+                for dx in 0..w_cells {
+                    for dy in 0..d_cells {
+                        zoning.set_occupied(b_edge_idx, b_side, b_cell_x + dx, b_cell_y + dy, false);
+                    }
+                }
                 self.buildings.swap_remove(i);
                 graph_changed = true;
             } else {
@@ -77,7 +91,7 @@ impl BuildingAllocator {
             for side in [1, -1] {
                 let cells_long = if let Some(g) = zoning.edge_grids.get(&edge_idx) { g.cells_long } else { 0 };
                 
-                for x in (0..cells_long.saturating_sub(1)) {
+                for x in 0..cells_long.saturating_sub(2) {
                     let z_type = zoning.get_cell(edge_idx, side, x, 0);
                     if z_type == ZoneType::None { continue; }
                     
@@ -93,9 +107,9 @@ impl BuildingAllocator {
                     if demand < 10.0 { continue; }
 
                     let mut can_build = true;
-                    // Check 2x2 footprint for zone type and occupancy
-                    for dx in 0..2 {
-                        for dy in 0..2 {
+                    // Check 3x3 footprint for zone type and occupancy
+                    for dx in 0..3 {
+                        for dy in 0..3 {
                             if zoning.get_cell(edge_idx, side, x + dx, dy) != z_type || 
                                zoning.is_occupied(edge_idx, side, x + dx, dy) ||
                                zoning.is_cell_obstructed(edge_idx, side, x + dx, dy, &network.graph) {
@@ -107,24 +121,35 @@ impl BuildingAllocator {
                     }
 
                     if can_build {
-                        let t = (x as f32 + 1.0) * zoning.grid_cell_size / edge_len;
+                        let t = (x as f32) * zoning.grid_cell_size / edge_len;
                         let world_pos_on_edge = self.get_pos_on_edge(&network.graph, edge_idx, t);
                         let tangent = self.get_tangent_on_edge(&network.graph, edge_idx, t);
                         let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x) * (side as f32);
                         
-                        let b_width = 2.0 * zoning.grid_cell_size;
-                        let b_depth = 2.0 * zoning.grid_cell_size;
-                        let buffer = 2.0; // 2m safety buffer from sidewalk
-                        let depth_offset = crate::config::SIDEWALK_WIDTH + b_depth * 0.5 + buffer; 
+                        let b_width = 3.0 * zoning.grid_cell_size;
+                        let b_depth = 3.0 * zoning.grid_cell_size;
+                        // Center of the 3-cell deep footprint (1.5 cells out from road edge)
+                        let depth_offset = crate::config::SIDEWALK_WIDTH + (1.5 * zoning.grid_cell_size); 
                         let center_2d = world_pos_on_edge + normal * (edge_width * 0.5 + depth_offset);
                         
                         let frontage_pos_3d = godot::prelude::Vector3::new(world_pos_on_edge.x, 0.0, world_pos_on_edge.y);
-                        let frontage_node = network.split_for_frontage(edge_idx, frontage_pos_3d, zoning, self);
+                        let (frontage_node, new_edge_id, split_x) = network.split_for_frontage(edge_idx, frontage_pos_3d, zoning, self);
                         graph_changed = true;
 
+                        let mut b_edge_idx = edge_idx;
+                        let mut b_cell_x = x;
+                        if x >= split_x {
+                            b_edge_idx = new_edge_id;
+                            b_cell_x = x - split_x;
+                        }
+
+                        // Center along road (1.5 cells in)
+                        let center_adjustment = tangent * (1.5 * zoning.grid_cell_size);
+                        let final_center_2d = center_2d + center_adjustment;
+
                         let b = Building {
-                            center_x: center_2d.x,
-                            center_y: center_2d.y,
+                            center_x: final_center_2d.x,
+                            center_y: final_center_2d.y,
                             width: b_width as u8,
                             depth: b_depth as u8,
                             zone_type: z_type,
@@ -132,15 +157,15 @@ impl BuildingAllocator {
                             frontage_node,
                             side_offset: side as f32,
                             abandoned_timer: 0,
-                            edge_idx,
+                            edge_idx: b_edge_idx,
                             side,
-                            cell_x: x,
+                            cell_x: b_cell_x,
                             cell_y: 0,
                         };
-                        // Mark all 4 cells as occupied
-                        for dx in 0..2 {
-                            for dy in 0..2 {
-                                zoning.set_occupied(edge_idx, side, x + dx, dy, true);
+                        // Mark all 9 cells as occupied
+                        for dx in 0..3 {
+                            for dy in 0..3 {
+                                zoning.set_occupied(b_edge_idx, side, b_cell_x + dx, dy, true);
                             }
                         }
                         self.buildings.push(b);
