@@ -164,8 +164,7 @@ impl ZoningSystem {
 
         // We check 5 points: 4 corners + center
         // All points must "belong" to our edge and not be on any other road.
-        let mut check_points = Vec::new();
-        check_points.push(center);
+        let mut check_pts_with_dist = Vec::new();
         
         for dx in [-0.5, 0.5] {
             for dy in [-0.5, 0.5] {
@@ -175,81 +174,81 @@ impl ZoningSystem {
                 let t = (local_x / edge.physical_length).clamp(0.0, 1.0);
                 let (pos_on_edge, tangent) = self.get_edge_pos_and_tangent_static(edge_idx, t, graph);
                 let normal = Vector2::new(-tangent.y, tangent.x) * (side as f32);
-                check_points.push(pos_on_edge + normal * (hw + local_y));
+                let intended_d = hw + local_y;
+                check_pts_with_dist.push((pos_on_edge + normal * intended_d, intended_d));
             }
         }
+        
+        // Also check the center
+        let center_intended = hw + ((y as f32 + 0.5) * size);
+        check_pts_with_dist.push((center, center_intended));
 
-        for pt in check_points {
-            // 1. Check "Closest Edge Ownership" for this point
-            let mut min_dist_sq = f32::MAX;
-            let mut closest_edge = -1;
+        for (pt, intended_d) in check_pts_with_dist {
+            let mut closest_d_sq = f32::MAX;
 
-            for (i, other_edge) in graph.edges.iter().enumerate() {
-                if i == edge_idx { continue; } // Self check handled differently
+            // PERFORMANCE OPTIMIZATION: 
+            // In a huge city, scanning every road segment is O(N).
+            // For now, we search all segments of our own edge and its immediate neighbors (Nodes).
+            // A truly global search should eventually use a Spatial Hash.
+            let mut edges_to_check = std::collections::HashSet::new();
+            edges_to_check.insert(edge_idx);
+            
+            // Spatial AABB Filter: Check all roads whose bounding box is near our point.
+            // Even with 10,000 roads, checking AABBs is extrêmement rapide.
+            let pt_min = Vector2::new(pt.x - 20.0, pt.y - 20.0);
+            let pt_max = Vector2::new(pt.x + 20.0, pt.y + 20.0);
 
-                // SKIP checks for "smoothly connected" edges (collinear segments)
-                // This allows the grids to touch and surfaces to overlap perfectly at the nodes.
-                if other_edge.start_node == edge.start_node || other_edge.start_node == edge.end_node ||
-                   other_edge.end_node == edge.start_node || other_edge.end_node == edge.end_node {
-                    
-                    let v1 = (graph.nodes[edge.end_node as usize].pos - graph.nodes[edge.start_node as usize].pos).normalized();
-                    let v2 = (graph.nodes[other_edge.end_node as usize].pos - graph.nodes[other_edge.start_node as usize].pos).normalized();
-                    if v1.dot(v2).abs() > 0.98 {
-                        continue; // Same "logical" road path
-                    }
+            for (i, e) in graph.edges.iter().enumerate() {
+                if i == edge_idx { continue; }
+                
+                // Fast AABB check (using physical geometry)
+                let mut e_min = Vector2::new(f32::MAX, f32::MAX);
+                let mut e_max = Vector2::new(f32::MIN, f32::MIN);
+                for p in &e.physical_geometry {
+                    e_min.x = e_min.x.min(p.x); e_min.y = e_min.y.min(p.z);
+                    e_max.x = e_max.x.max(p.x); e_max.y = e_max.y.max(p.z);
                 }
-
+                
+                // Expand by a small buffer
+                if pt_min.x < e_max.x && pt_max.x > e_min.x &&
+                   pt_min.y < e_max.y && pt_max.y > e_min.y {
+                    edges_to_check.insert(i);
+                }
+            }
+            
+            // 1. Scan relevant road centerlines
+            for &i in &edges_to_check {
+                let other_edge = &graph.edges[i];
+                let is_self = i == edge_idx;
                 let pts = &other_edge.physical_geometry;
                 if pts.len() < 2 { continue; }
+                
                 for j in 0..pts.len() - 1 {
                     let p1 = pts[j]; let p2 = pts[j+1];
                     let p1_2d = Vector2::new(p1.x, p1.z);
                     let p2_2d = Vector2::new(p2.x, p2.z);
-                    
                     let l2 = (p2_2d - p1_2d).length_squared();
-                    let mut dist_sq = if l2 == 0.0 {
-                        (pt - p1_2d).length_squared()
-                    } else {
-                        let mut t_val = ((pt.x - p1_2d.x) * (p2_2d.x - p1_2d.x) + (pt.y - p1_2d.y) * (p2_2d.y - p1_2d.y)) / l2;
-                        t_val = t_val.clamp(0.0, 1.0);
-                        let proj = p1_2d + (p2_2d - p1_2d) * t_val;
-                        (pt - proj).length_squared()
-                    };
+                    if l2 == 0.0 { continue; }
 
-                    // Block if the point is on another road's surface (ONLY for non-collinear roads)
-                    if dist_sq < (other_edge.width * 0.5 + 0.1).powi(2) {
-                        return true;
-                    }
-
-                    if dist_sq < min_dist_sq {
-                        min_dist_sq = dist_sq;
-                        closest_edge = i as i32;
-                    }
-                }
-            }
-            
-            // Re-check our own edge for min_dist with priority
-            let pts = &edge.physical_geometry;
-            for j in 0..pts.len() - 1 {
-                let p1 = pts[j]; let p2 = pts[j+1];
-                let p1_2d = Vector2::new(p1.x, p1.z);
-                let p2_2d = Vector2::new(p2.x, p2.z);
-                let l2 = (p2_2d - p1_2d).length_squared();
-                let mut dist_sq = if l2 == 0.0 { (pt - p1_2d).length_squared() } else {
-                    let mut t_val = ((pt.x - p1_2d.x) * (p2_2d.x - p1_2d.x) + (pt.y - p1_2d.y) * (p2_2d.y - p1_2d.y)) / l2;
-                    t_val = t_val.clamp(0.0, 1.0);
+                    let t_val = (((pt.x - p1_2d.x) * (p2_2d.x - p1_2d.x) + (pt.y - p1_2d.y) * (p2_2d.y - p1_2d.y)) / l2).clamp(0.0, 1.0);
                     let proj = p1_2d + (p2_2d - p1_2d) * t_val;
-                    (pt - proj).length_squared()
-                };
-                dist_sq *= 0.99; // Priority boost relative to others
-                if dist_sq < min_dist_sq {
-                    min_dist_sq = dist_sq;
-                    closest_edge = edge_idx as i32;
+                    let mut d_sq = (pt - proj).length_squared();
+                    
+                    // Boost priority for self-ownership so we don't reject our own straight roads due to epsilon noise
+                    if is_self { d_sq *= 0.99; }
+
+                    if d_sq < closest_d_sq {
+                        closest_d_sq = d_sq;
+                    }
                 }
             }
 
-            if closest_edge != -1 && (closest_edge as usize) != edge_idx {
-                return true; // Another road owns this corner of the cell
+            // 2. Universal Distance Guard:
+            // If ANY part of the road network centerline is CLOSER to the point than its own intended anchor point,
+            // then it has overlapped a different territory (either another road or an inner-lap curve).
+            // Margin of 0.5m allowed for curvature gaps.
+            if closest_d_sq < (intended_d - 0.5).powi(2) {
+                return true;
             }
         }
 

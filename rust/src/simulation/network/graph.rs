@@ -32,6 +32,8 @@ pub struct Edge {
     pub geometry: Vec<Vector3>, 
     pub physical_geometry: Vec<Vector3>, 
     pub parking_occupied: u32,
+    pub zoning_left: bool,
+    pub zoning_right: bool,
 }
 
 impl Edge {

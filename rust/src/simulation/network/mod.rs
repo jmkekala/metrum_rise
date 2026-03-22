@@ -27,7 +27,7 @@ impl TransitNetwork {
         }
     }
 
-    pub fn add_road(&mut self, points: Vec<Vector3>, fwd_lanes: u8, bkw_lanes: u8) {
+    pub fn add_road(&mut self, points: Vec<Vector3>, fwd_lanes: u8, bkw_lanes: u8, zoning_left: bool, zoning_right: bool) {
         // 1. Simplify points
         let mut simplified_points = Vec::with_capacity(points.len());
         if !points.is_empty() {
@@ -104,7 +104,7 @@ impl TransitNetwork {
                     let mid_id = self.graph.find_or_add_node(split_pos, 0.1, NodeType::Junction);
                     
                     // Add this edge
-                    self.create_edge_internal(current_start_id, mid_id, active_segment.clone(), fwd_lanes, bkw_lanes);
+                    self.create_edge_internal(current_start_id, mid_id, active_segment.clone(), fwd_lanes, bkw_lanes, zoning_left, zoning_right);
                     
                     // Reset for next segment
                     current_start_id = mid_id;
@@ -137,7 +137,7 @@ impl TransitNetwork {
             // Replace last point with snapped end_id pos
             let last_idx = active_segment.len() - 1;
             active_segment[last_idx] = self.graph.nodes[end_id as usize].pos;
-            self.create_edge_internal(current_start_id, end_id, active_segment, fwd_lanes, bkw_lanes);
+            self.create_edge_internal(current_start_id, end_id, active_segment, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
         }
 
         // Rebuild massive DoD pathing table for agents
@@ -145,7 +145,7 @@ impl TransitNetwork {
     }
 
     /// Helper to consistently add a road edge and handle its side effects
-    fn create_edge_internal(&mut self, start: u32, end: u32, points: Vec<Vector3>, fwd: u8, bkw: u8) {
+    fn create_edge_internal(&mut self, start: u32, end: u32, points: Vec<Vector3>, fwd: u8, bkw: u8, zoning_left: bool, zoning_right: bool) {
         if start == end { return; }
         
         // Final sanity check on points
@@ -177,6 +177,8 @@ impl TransitNetwork {
             geometry: points.clone(),
             physical_geometry: points,
             parking_occupied: 0,
+            zoning_left,
+            zoning_right,
         });
 
         let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&self.graph.edges[edge_id]);

@@ -194,8 +194,22 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn is_zoning_cell_obstructed(&self, edge_idx: i32, side: i8, x: i32, y: i32) -> bool {
-        self.zoning.is_cell_obstructed(edge_idx as usize, side, x as usize, y as usize, &self.transit_network.graph)
+    pub fn is_zoning_cell_obstructed(&self, edge_idx: i32, side: i32, x: i32, y: i32) -> bool {
+        let graph = &self.transit_network.graph;
+        if let Some(edge) = graph.edges.get(edge_idx as usize) {
+            if (side == 1 && !edge.zoning_right) || (side == -1 && !edge.zoning_left) {
+                return true;
+            }
+        }
+        self.zoning.is_cell_obstructed(edge_idx as usize, side as i8, x as usize, y as usize, graph)
+    }
+
+    #[func]
+    pub fn set_zoning_enabled(&mut self, edge_idx: i32, side: i32, enabled: bool) {
+        if let Some(edge) = self.transit_network.graph.edges.get_mut(edge_idx as usize) {
+            if side <= -1 { edge.zoning_left = enabled; }
+            else if side >= 1 { edge.zoning_right = enabled; }
+        }
     }
 
     #[func]
@@ -214,6 +228,10 @@ impl SimulationNode {
             let width = edge.width;
             
             for side in [1, -1] {
+                // SKIP if zoning is disabled for this side on this road
+                if (side == 1 && !edge.zoning_right) || (side == -1 && !edge.zoning_left) {
+                    continue;
+                }
                 for x in 0..cells_long {
                     // Pre-calculate tangent for the whole column to save time
                     let t_param = (x as f32 + 0.5) * self.zoning.grid_cell_size / edge.physical_length;
@@ -228,11 +246,15 @@ impl SimulationNode {
                         let depth = (y as f32 + 0.5) * self.zoning.grid_cell_size;
                         let center = pos_on_edge + normal * (width * 0.5 + depth);
                         
-                        // Pass [pos.x, pos.z, tangent.x, tangent.y]
+                        // Pass [pos.x, pos.z, tangent.x, tangent.y, edge_idx, side, cell_x, cell_y]
                         data.push(center.x);
                         data.push(center.y);
                         data.push(tangent.x);
                         data.push(tangent.y);
+                        data.push(edge_idx as f32);
+                        data.push(side as f32);
+                        data.push(x as f32);
+                        data.push(y as f32);
                     }
                 }
             }
@@ -250,10 +272,12 @@ impl SimulationNode {
         for i in 0..geom.len() - 1 {
             let p1 = godot::prelude::Vector2::new(geom[i].x, geom[i].z);
             let p2 = godot::prelude::Vector2::new(geom[i+1].x, geom[i+1].z);
-            let d = (p2 - p1).length();
+            let dist = p2 - p1;
+            let d = dist.length();
             if curr_l + d >= target_l || i == geom.len() - 2 {
-                let local_t = ((target_l - curr_l) / d).clamp(0.0, 1.0);
-                return (p1 + (p2 - p1) * local_t, (p2 - p1).normalized());
+                let local_t = if d > 1e-6 { ((target_l - curr_l) / d).clamp(0.0, 1.0) } else { 0.0 };
+                let tangent = if d > 1e-6 { dist.normalized() } else { godot::prelude::Vector2::new(1.0, 0.0) };
+                return (p1 + dist * local_t, tangent);
             }
             curr_l += d;
         }
@@ -817,7 +841,7 @@ impl SimulationNode {
     }
 
     #[func]
-    pub fn add_road(&mut self, points: PackedVector3Array, fwd_lanes: i32, bkw_lanes: i32) {
+    pub fn add_road(&mut self, points: PackedVector3Array, fwd_lanes: i32, bkw_lanes: i32, zoning_left: bool, zoning_right: bool) {
         self.push_undo_state(false, false, true, false);
         let mut fixed_points = points.to_vec();
         
@@ -834,7 +858,7 @@ impl SimulationNode {
             p.y = terrain_h;
         }
 
-        self.transit_network.add_road(fixed_points, fwd_lanes as u8, bkw_lanes as u8);
+        self.transit_network.add_road(fixed_points, fwd_lanes as u8, bkw_lanes as u8, zoning_left, zoning_right);
 
         let nodes = self.transit_network.graph.nodes.len();
         let edges = self.transit_network.graph.edges.len();
@@ -1185,7 +1209,7 @@ impl INode3D for SimulationNode {
         let mut pts = PackedVector3Array::new();
         pts.push(Vector3::new(0.0, 0.0, -127.0));
         pts.push(Vector3::new(0.0, 0.0, -60.0));
-        sim.add_road(pts, 2, 2);
+        sim.add_road(pts, 2, 2, true, true);
 
         sim
     }

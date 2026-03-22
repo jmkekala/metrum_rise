@@ -219,16 +219,19 @@ impl BuildingAllocator {
         
         let target_dist = t * edge.physical_length;
         let mut curr_dist = 0.0;
-        
         for i in 0..geo.len() - 1 {
             let p1 = Vector2::new(geo[i].x, geo[i].z);
             let p2 = Vector2::new(geo[i+1].x, geo[i+1].z);
-            let d = (p2 - p1).length();
+            let dist = p2 - p1;
+            let d = dist.length();
             if curr_dist + d >= target_dist {
-                return (p2 - p1).normalized();
+                return if d > 1e-6 { dist.normalized() } else { Vector2::new(1.0, 0.0) };
             }
             curr_dist += d;
         }
-        (Vector2::new(geo.last().unwrap().x, geo.last().unwrap().z) - Vector2::new(geo[geo.len()-2].x, geo[geo.len()-2].z)).normalized()
+        let p_end = Vector2::new(geo.last().unwrap().x, geo.last().unwrap().z);
+        let p_prev = Vector2::new(geo[geo.len()-2].x, geo[geo.len()-2].z);
+        let dist = p_end - p_prev;
+        if dist.length() > 1e-6 { dist.normalized() } else { Vector2::new(1.0, 0.0) }
     }
 }

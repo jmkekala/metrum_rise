@@ -125,6 +125,8 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     let bkw_lanes = old_edge.bkw_lanes;
     let speed_limit = old_edge.speed_limit;
     let current_congestion = old_edge.current_congestion;
+    let zoning_left = old_edge.zoning_left;
+    let zoning_right = old_edge.zoning_right;
 
     network.graph.edges[edge_id].end_node = junction_node_id;
     network.graph.edges[edge_id].geometry = part1_geo.clone();
@@ -150,6 +152,8 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
         geometry: part2_geo.clone(),
         physical_geometry: part2_geo.clone(),
         parking_occupied: 0,
+        zoning_left,
+        zoning_right,
     };
     let (cost_new, length_new) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);
     new_edge.base_cost = cost_new;

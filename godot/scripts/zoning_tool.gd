@@ -8,8 +8,12 @@ var state: int = 0 # 0: Idle, 1: Painting
 var active: bool = false
 var hovered_edge_idx: int = -1
 
+enum Mode { SINGLE, PAINT, DELETE, FILL }
+var current_mode = Mode.SINGLE
+
 var grid_mesh: MultiMeshInstance3D
 var paint_mesh: MultiMeshInstance3D
+var brush_mesh: MultiMeshInstance3D
 
 func _ready():
 	grid_mesh = MultiMeshInstance3D.new()
@@ -44,6 +48,21 @@ func _ready():
 	add_child(paint_mesh)
 	paint_mesh.top_level = true
 
+	brush_mesh = MultiMeshInstance3D.new()
+	var mm3 = MultiMesh.new()
+	mm3.transform_format = MultiMesh.TRANSFORM_3D
+	mm3.use_colors = true
+	mm3.mesh = box
+	brush_mesh.multimesh = mm3
+	
+	var brush_mat = StandardMaterial3D.new()
+	brush_mat.albedo_color = Color(1, 1, 1, 0.5)
+	brush_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	brush_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	brush_mesh.material_override = brush_mat
+	add_child(brush_mesh)
+	brush_mesh.top_level = true
+
 func _process(delta):
 	if not active:
 		grid_mesh.visible = false
@@ -67,27 +86,58 @@ func _update_visuals():
 		hovered_edge_idx = -1
 	
 	var data = simulation_node.get_all_zoning_preview_data()
-	var count = data.size() / 4
+	var count = data.size() / 8
 	
+	# PRE-CALC MOUSE CELL FOR BRUSH HIGHLIGHT
+	var m_edge = -1; var m_side = 0; var m_cx = -1; var m_cy = -1;
+	if intersection != null and hovered_edge_idx != -1:
+		var world_pos = Vector2(intersection.x, intersection.z)
+		var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
+		var edge_width = simulation_node.get_edge_width(hovered_edge_idx)
+		var l = _get_edge_length(edge_geom)
+		var proj = _get_projection_data(edge_geom, world_pos)
+		m_edge = hovered_edge_idx
+		m_side = proj["side"]
+		m_cx = floor(proj["t"] * l / 8.0)
+		m_cy = floor((proj["dist_from_road"] - edge_width * 0.5) / 8.0)
+
 	grid_mesh.multimesh.instance_count = count
 	for i in range(count):
-		var x = data[i*4+0]
-		var z = data[i*4+1]
-		var tx = data[i*4+2]
-		var ty = data[i*4+3]
+		var x = data[i*8+0]
+		var z = data[i*8+1]
+		var tx = data[i*8+2]
+		var ty = data[i*8+3]
+		var e_idx = int(data[i*8+4])
+		var side = int(data[i*8+5])
+		var cx = int(data[i*8+6])
+		var cy = int(data[i*8+7])
 		
 		var t = Transform3D()
 		t.origin = Vector3(x, 0.1, z)
-		
-		# Build rotation from tangent
 		var basis = Basis()
-		basis.x = Vector3(tx, 0, ty) # Tangent
+		basis.x = Vector3(tx, 0, ty)
 		basis.y = Vector3(0, 1, 0)
-		basis.z = Vector3(-ty, 0, tx) # Normal
+		basis.z = Vector3(-ty, 0, tx)
 		t.basis = basis
-		
 		grid_mesh.multimesh.set_instance_transform(i, t)
-		grid_mesh.multimesh.set_instance_color(i, Color(0.1, 0.8, 0.1, 0.3)) # Holographic green
+		
+		var color = Color(0.1, 0.8, 0.1, 0.3)
+		
+		# BRUSH HIGHLIGHT
+		if e_idx == m_edge and side == m_side:
+			var in_brush = false
+			match current_mode:
+				0: # SINGLE
+					if cx == m_cx and cy == m_cy: in_brush = true
+				1: # PAINT
+					if abs(cx - m_cx) < 2 and abs(cy - m_cy) < 2: in_brush = true
+				2, 3: # DELETE or FILL
+					in_brush = true # Highlight whole side
+			
+			if in_brush:
+				color = Color(1, 1, 1, 0.7) # White highlight
+		
+		grid_mesh.multimesh.set_instance_color(i, color)
 	
 	grid_mesh.visible = true
 	_draw_all_painted()
@@ -156,14 +206,32 @@ func _handle_painting():
 		var cell_y = floor((dist_from_edge - edge_width * 0.5) / 8.0)
 		
 		if cell_y >= 0 and cell_y < 4:
-			simulation_node.set_zoning_cell(hovered_edge_idx, side, cell_x, cell_y, current_zone_type)
+			match current_mode:
+				Mode.SINGLE:
+					simulation_node.set_zoning_cell(hovered_edge_idx, side, cell_x, cell_y, current_zone_type)
+				Mode.PAINT:
+					# 4x4 brush
+					for dx in range(-2, 2):
+						for dy in range(-2, 2):
+							var bx = cell_x + dx
+							var by = cell_y + dy
+							if by >= 0 and by < 4:
+								simulation_node.set_zoning_cell(hovered_edge_idx, side, bx, by, current_zone_type)
+				Mode.DELETE:
+					# This mode is handled in _handle_click or by setting enabled=false
+					simulation_node.set_zoning_enabled(hovered_edge_idx, side, false)
+					state = 0 # Single click tool
 
 func _unhandled_input(event):
 	if not active: return
 	
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
-			state = 1
+			if (current_mode == Mode.FILL or current_mode == Mode.DELETE) and hovered_edge_idx != -1:
+				if current_mode == Mode.FILL: _handle_fill()
+				else: _handle_side_delete()
+			else:
+				state = 1
 		else:
 			state = 0
 			
@@ -175,6 +243,38 @@ func _unhandled_input(event):
 		await get_tree().create_timer(0.1).timeout
 		state = 0
 		current_zone_type = old_type
+
+func _handle_fill():
+	if hovered_edge_idx == -1: return
+	var mouse_pos = get_viewport().get_mouse_position()
+	var camera = get_viewport().get_camera_3d()
+	var ray_origin = camera.project_ray_origin(mouse_pos)
+	var ray_dir = camera.project_ray_normal(mouse_pos)
+	var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
+	if intersection == null: return
+	var world_pos = Vector2(intersection.x, intersection.z)
+	var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
+	var proj = _get_projection_data(edge_geom, world_pos)
+	var side = proj["side"]
+	
+	# Fill all 4 rows along the whole edge
+	var l = _get_edge_length(edge_geom)
+	var cells_long = floor(l / 8.0)
+	for x in range(cells_long):
+		for y in range(4):
+			simulation_node.set_zoning_cell(hovered_edge_idx, side, x, y, current_zone_type)
+
+func _handle_side_delete():
+	var mouse_pos = get_viewport().get_mouse_position()
+	var camera = get_viewport().get_camera_3d()
+	var ray_origin = camera.project_ray_origin(mouse_pos)
+	var ray_dir = camera.project_ray_normal(mouse_pos)
+	var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
+	if intersection == null: return
+	var world_pos = Vector2(intersection.x, intersection.z)
+	var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
+	var proj = _get_projection_data(edge_geom, world_pos)
+	simulation_node.set_zoning_enabled(hovered_edge_idx, proj["side"], false)
 
 func _get_zone_color(z_type):
 	match z_type:
