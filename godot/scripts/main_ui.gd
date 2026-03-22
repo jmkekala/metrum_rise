@@ -173,6 +173,22 @@ func _build_ui():
 	road_4l_btn = Button.new()
 	road_4l_btn.text = "4-Lane Road"
 	road_sub_menu.add_child(road_4l_btn)
+
+	var ow1_btn = Button.new()
+	ow1_btn.text = "One-Way 1L"
+	road_sub_menu.add_child(ow1_btn)
+	ow1_btn.pressed.connect(func(): _select_road_type(1, 0))
+
+	var ow2_btn = Button.new()
+	ow2_btn.text = "One-Way 2L"
+	road_sub_menu.add_child(ow2_btn)
+	ow2_btn.pressed.connect(func(): _select_road_type(2, 0))
+
+	var roundabout_btn = Button.new()
+	roundabout_btn.text = "Roundabout"
+	roundabout_btn.custom_minimum_size = Vector2(100, 0)
+	road_sub_menu.add_child(roundabout_btn)
+	roundabout_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.ROUNDABOUT))
 	
 	road_combined_hbox.add_child(sub_panel)
 	

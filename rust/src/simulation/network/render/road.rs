@@ -274,14 +274,13 @@ impl TransitRenderer for RoadRenderer {
                     vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
                     vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
 
-                    let uv_y0_l = (lateral_offset - sw_w * 0.5 + edge.width * 0.5) / edge.width;
-                    let uv_y0_r = (lateral_offset + sw_w * 0.5 + edge.width * 0.5) / edge.width;
-                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
-                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_r));
-                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
-                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
-                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
-                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_l));
+                    let (uv_y_inner, uv_y_outer) = if lateral_offset > 0.0 { (0.0, 1.0) } else { (1.0, 0.0) };
+                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_inner));
+                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_outer));
+                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_outer));
+                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_inner));
+                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_outer));
+                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_inner));
 
                     for _ in 0..6 {
                         normals.push(Vector3::UP);
@@ -303,26 +302,129 @@ impl TransitRenderer for RoadRenderer {
 
         for (n_idx, node) in graph.nodes.iter().enumerate() {
             let edges_at_node = &node_to_edges[n_idx];
+            if edges_at_node.is_empty() { continue; }
+
+            if node.cul_de_sac {
+                use std::f32::consts::TAU;
+                let r_inner = if node.cul_de_sac_radius > 0.01 { node.cul_de_sac_radius } else { 8.0 };
+                let r_outer = r_inner + config::SIDEWALK_WIDTH;
+                let b_center = node.pos + Vector3::new(0.0, config::ROAD_H_OFFSET, 0.0);
+                
+                // ASPHALT CORE (Full Circle)
+                let num_segments = 32;
+                for i in 0..num_segments {
+                    let t1 = i as f32 / num_segments as f32;
+                    let t2 = (i + 1) as f32 / num_segments as f32;
+                    let d1 = Vector3::new((t1 * TAU).cos(), 0.0, (t1 * TAU).sin());
+                    let d2 = Vector3::new((t2 * TAU).cos(), 0.0, (t2 * TAU).sin());
+
+                    let p1_i = b_center + d1 * r_inner;
+                    let p2_i = b_center + d2 * r_inner;
+
+                    vertices.push(b_center); vertices.push(p1_i); vertices.push(p2_i);
+                    for _ in 0..3 {
+                        normals.push(Vector3::UP);
+                        colors.push(Color::from_rgba(1.0, 1.0, 1.0, 0.5));
+                        uvs.push(Vector2::new(b_center.x * 0.1, b_center.z * 0.1));
+                    }
+                }
+
+                // SIDEWALK RING (Gapped at mouths)
+                // 1. Find all mouth angular ranges
+                let mut mouth_ranges = Vec::new();
+                for &(e_idx, edge) in edges_at_node {
+                    if edge.deleted || edge.physical_geometry.len() < 2 { continue; }
+                    let is_start = edge.start_node == n_idx as u32;
+                    let clip = if is_start { edge.start_clip } else { edge.end_clip };
+                    
+                    let tangent = if is_start {
+                        (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
+                    } else {
+                        let lc = edge.physical_geometry.len();
+                        (edge.physical_geometry[lc-2] - edge.physical_geometry[lc-1]).normalized()
+                    };
+                    
+                    let p_mouth = node.pos + tangent * clip;
+                    let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
+                    let rw = edge.width * 0.5;
+                    
+                    let pt_l = p_mouth + side_dir * rw;
+                    let pt_r = p_mouth - side_dir * rw;
+                    
+                    let mut ang_l = f32::atan2(pt_l.z - node.pos.z, pt_l.x - node.pos.x);
+                    let mut ang_r = f32::atan2(pt_r.z - node.pos.z, pt_r.x - node.pos.x);
+                    
+                    // Normalize to [0, TAU] and handle wraparound
+                    if ang_l < 0.0 { ang_l += TAU; }
+                    if ang_r < 0.0 { ang_r += TAU; }
+                    
+                    // Note: ang_l is "Left" looking from node center, so for a 1-road bulb, we sweep around the back.
+                    // But here we want the range to mark the HIDDEN part.
+                    // Road mouth is between ang_l and ang_r (short way)
+                    let mut start = ang_r;
+                    let mut end = ang_l;
+                    if end < start { end += TAU; }
+                    mouth_ranges.push((start, end));
+                }
+
+                // 2. Render gaps
+                for i in 0..num_segments {
+                    let t1_raw = (i as f32 / num_segments as f32) * TAU;
+                    let t2_raw = ((i + 1) as f32 / num_segments as f32) * TAU;
+                    let mid = (t1_raw + t2_raw) * 0.5;
+
+                    // Check if mid is inside ANY mouth range
+                    let mut is_in_mouth = false;
+                    for &(m_start, m_end) in &mouth_ranges {
+                        if (mid >= m_start && mid <= m_end) || (mid + TAU >= m_start && mid + TAU <= m_end) {
+                            is_in_mouth = true;
+                            break;
+                        }
+                    }
+                    if is_in_mouth { continue; }
+
+                    let d1 = Vector3::new(t1_raw.cos(), 0.0, t1_raw.sin());
+                    let d2 = Vector3::new(t2_raw.cos(), 0.0, t2_raw.sin());
+                    let p1_i = b_center + d1 * r_inner;
+                    let p2_i = b_center + d2 * r_inner;
+                    let p1_o = b_center + d1 * r_outer;
+                    let p2_o = b_center + d2 * r_outer;
+
+                    vertices.push(p1_i); vertices.push(p2_o); vertices.push(p2_i);
+                    vertices.push(p1_i); vertices.push(p1_o); vertices.push(p2_o);
+                    for _ in 0..6 {
+                        normals.push(Vector3::UP);
+                        colors.push(Color::from_rgba(1.0, 1.0, 1.0, 1.0));
+                        uvs.push(Vector2::ZERO);
+                    }
+                }
+
+                continue;
+            }
+
             if edges_at_node.len() < 2 { continue; }
 
-            // Collect boundary vertices from all connected roads, tagged by edge ID
-            let mut boundary_pts = Vec::new();
+            struct JPoint {
+                e_idx: usize,
+                inner: Vector3,
+                outer: Vector3,
+                angle: f32,
+            }
+            let mut j_pts = Vec::new();
 
             for &(e_idx, edge) in edges_at_node {
-                if edge.deleted { continue; } // Added
+                if edge.deleted { continue; }
                 if edge.physical_geometry.len() < 2 { continue; }
                 
                 let is_start = edge.start_node == n_idx as u32;
                 let clip = if is_start { edge.start_clip } else { edge.end_clip };
                 
-                // Get clipped position and direction
                 let mut dist_acc = 0.0;
                 let total_l = edge.physical_length;
                 let target_l = if is_start { clip } else { total_l - clip };
                 
                 let mut p = node.pos; 
                 let mut tangent = Vector3::FORWARD;
-
                 let geom = &edge.physical_geometry;
                 for i in 0..geom.len() - 1 {
                     let p1 = geom[i];
@@ -338,76 +440,61 @@ impl TransitRenderer for RoadRenderer {
                 }
 
                 p.y += config::ROAD_H_OFFSET;
-                
                 let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
-                let hw = edge.width * 0.5 + config::SIDEWALK_WIDTH;
+                let rw = edge.width * 0.5;
+                let sw = rw + config::SIDEWALK_WIDTH;
                 
-                boundary_pts.push((e_idx, p + side_dir * hw));
-                boundary_pts.push((e_idx, p - side_dir * hw));
+                for side in [1.0, -1.0] {
+                    let pt_inner = p + side_dir * (rw * side);
+                    let pt_outer = p + side_dir * (sw * side);
+                    let da = pt_inner - node.pos;
+                    let angle = f32::atan2(da.z, da.x);
+                    j_pts.push(JPoint { e_idx, inner: pt_inner, outer: pt_outer, angle });
+                }
             }
 
-            if boundary_pts.len() < 3 { continue; }
+            if j_pts.len() < 3 { continue; }
+            j_pts.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap());
 
-            // Sort points angularly
             let mut center = node.pos;
             center.y += config::ROAD_H_OFFSET;
-            boundary_pts.sort_by(|a, b| {
-                let da = a.1 - center;
-                let db = b.1 - center;
-                let angle_a = f32::atan2(da.z, da.x);
-                let angle_b = f32::atan2(db.z, db.x);
-                angle_a.partial_cmp(&angle_b).unwrap()
-            });
 
-            // Create triangle fan with road-aware arc interpolation
-            for i in 0..boundary_pts.len() {
-                let (e1, v1) = boundary_pts[i];
-                let (e2, v2) = boundary_pts[(i + 1) % boundary_pts.len()];
+            for i in 0..j_pts.len() {
+                let p1 = &j_pts[i];
+                let p2 = &j_pts[(i + 1) % j_pts.len()];
 
-                let da = v1 - center;
-                let db = v2 - center;
-                let angle_a = f32::atan2(da.z, da.x);
-                let mut angle_b = f32::atan2(db.z, db.x);
-
-                // Handle wrapping
-                if angle_b < angle_a {
-                    angle_b += 2.0 * std::f32::consts::PI;
+                // 1. Asphalt Inner Triangle (Center Fan)
+                vertices.push(center);
+                vertices.push(p1.inner);
+                vertices.push(p2.inner);
+                for _ in 0..3 {
+                    normals.push(Vector3::UP);
+                    colors.push(Color::from_rgba(1.0, 1.0, 1.0, 0.5)); // Asphalt
+                    uvs.push(Vector2::new(center.x, center.z));
                 }
 
-                let delta = angle_b - angle_a;
+                // 2. Outer Quad (Between inner and outer points)
+                let is_mouth = p1.e_idx == p2.e_idx;
+                let alpha = if is_mouth { 0.5 } else { 1.0 };
                 
-                // Only interpolate if the points belong to DIFFERENT roads.
-                // Reverted from arc interpolation to straight fan to avoid "bulges".
-                let subdivisions = 1;
-                
-                let r1 = da.length();
-                let r2 = db.length();
+                // Use consistent UV mapping: UV.y 0.0 is road edge, 1.0 is outer edge.
+                // UV.x uses world coordinates scaled for 0.5m tiles.
+                let uv1_i = Vector2::new(p1.inner.x * 2.0, 0.0);
+                let uv1_o = Vector2::new(p1.outer.x * 2.0, 1.0);
+                let uv2_i = Vector2::new(p2.inner.x * 2.0, 0.0);
+                let uv2_o = Vector2::new(p2.outer.x * 2.0, 1.0);
 
-                for s in 0..subdivisions {
-                    let t0 = s as f32 / subdivisions as f32;
-                    let t1 = (s + 1) as f32 / subdivisions as f32;
+                // Quad Winding: p1_i -> p2_o -> p2_inner and p1_i -> p1_o -> p2_o
+                // Triangle 1
+                vertices.push(p1.inner); vertices.push(p2.outer); vertices.push(p2.inner);
+                uvs.push(uv1_i); uvs.push(uv2_o); uvs.push(uv2_i);
+                // Triangle 2
+                vertices.push(p1.inner); vertices.push(p1.outer); vertices.push(p2.outer);
+                uvs.push(uv1_i); uvs.push(uv1_o); uvs.push(uv2_o);
 
-                    let ang0 = angle_a + delta * t0;
-                    let ang1 = angle_a + delta * t1;
-                    let rad0 = r1 + (r2 - r1) * t0;
-                    let rad1 = r1 + (r2 - r1) * t1;
-
-                    let p0 = center + Vector3::new(ang0.cos() * rad0, 0.0, ang0.sin() * rad0);
-                    let p1 = center + Vector3::new(ang1.cos() * rad1, 0.0, ang1.sin() * rad1);
-
-                    vertices.push(center);
-                    vertices.push(p0);
-                    vertices.push(p1);
-
-                    for _ in 0..3 {
-                        normals.push(Vector3::UP);
-                        colors.push(Color::from_rgba(1.0, 1.0, 1.0, 1.0));
-                    }
-
-                    // Planar top-down UVs for junctions
-                    uvs.push(Vector2::new(center.x, center.z));
-                    uvs.push(Vector2::new(p0.x, p0.z));
-                    uvs.push(Vector2::new(p1.x, p1.z));
+                for _ in 0..6 {
+                    normals.push(Vector3::UP);
+                    colors.push(Color::from_rgba(1.0, 1.0, 1.0, alpha));
                 }
             }
         }

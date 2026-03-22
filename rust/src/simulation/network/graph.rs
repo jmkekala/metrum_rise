@@ -11,6 +11,9 @@ pub struct Node {
     
     // Traffic Lane Manager Constraints: (From Edge, From Lane) -> List of (To Edge, To Lane)
     pub lane_connections: HashMap<(usize, i8), Vec<(usize, i8)>>,
+
+    pub cul_de_sac: bool,
+    pub cul_de_sac_radius: f32,
 }
 
 #[allow(dead_code)]
@@ -93,27 +96,20 @@ impl TransitGraph {
 
     pub fn add_node(&mut self, pos: Vector3, node_type: NodeType) -> u32 {
         let id = self.nodes.len() as u32;
-        self.nodes.push(Node { pos, node_type, lane_connections: HashMap::new() });
+        self.nodes.push(Node { pos, node_type, lane_connections: HashMap::new(), cul_de_sac: false, cul_de_sac_radius: 0.0 });
         id
     }
 
-    pub fn find_or_add_node(&mut self, pos: Vector3, radius: f32, node_type: NodeType) -> u32 {
-        let mut found_id = None;
-        for (i, node) in self.nodes.iter().enumerate() {
-            if node.pos.distance_to(pos) < radius {
-                found_id = Some(self.get_valid_node(i as u32));
-                break;
+    pub fn find_or_add_node(&mut self, pos: Vector3, threshold: f32, node_type: NodeType) -> u32 {
+        for i in 0..self.nodes.len() {
+            if self.nodes[i].pos.distance_to(pos) < threshold {
+                let id = self.get_valid_node(i as u32);
+                if node_type == NodeType::Junction && self.nodes[id as usize].node_type == NodeType::Frontage {
+                    self.nodes[id as usize].node_type = NodeType::Junction;
+                    self.nodes[id as usize].lane_connections.clear();
+                }
+                return id;
             }
-        }
-        
-        if let Some(id) = found_id {
-            // Upgrading a Frontage node to a Junction clears its strict driveway lane rules,
-            // allowing cars to legally turn onto the newly built intersecting road!
-            if node_type == NodeType::Junction && self.nodes[id as usize].node_type == NodeType::Frontage {
-                self.nodes[id as usize].node_type = NodeType::Junction;
-                self.nodes[id as usize].lane_connections.clear();
-            }
-            return id;
         }
         self.add_node(pos, node_type)
     }
@@ -362,6 +358,7 @@ impl TransitGraph {
         let remove = self.get_valid_node(id1.max(id2));
         if keep == remove { return; }
         
+        let new_pos = self.nodes[keep as usize].pos;
         self.node_aliases.insert(remove, keep);
         
         // Merging two network pieces transforms any restrictive node type into a Junction
@@ -372,8 +369,18 @@ impl TransitGraph {
         
         // Update all edges using the 'remove' node to use 'keep' node instead
         for edge in &mut self.edges {
-            if edge.start_node == remove { edge.start_node = keep; }
-            if edge.end_node == remove { edge.end_node = keep; }
+            if edge.deleted { continue; }
+            if edge.start_node == remove { 
+                edge.start_node = keep; 
+                if !edge.geometry.is_empty() { edge.geometry[0] = new_pos; }
+            }
+            if edge.end_node == remove { 
+                edge.end_node = keep; 
+                if !edge.geometry.is_empty() { 
+                    let last = edge.geometry.len() - 1;
+                    edge.geometry[last] = new_pos; 
+                }
+            }
         }
         
         // Note: We don't remove the node from the Vec to keep indices stable
@@ -522,15 +529,22 @@ impl TransitGraph {
             *connection_counts.entry(edge.end_node).or_insert(0) += 1;
         }
 
-        // Calculate maximum road width connected to each node for dynamic junction clipping
+        // Calculate maximum road width and width difference for junction detection
         let mut node_max_width = HashMap::new();
+        let mut node_min_width = HashMap::new();
         for edge in &self.edges {
             if edge.deleted || edge.primary_type != TransitType::Road { continue; }
             let w = edge.width;
+            
             let s_max = node_max_width.entry(edge.start_node).or_insert(0.0);
             if w > *s_max { *s_max = w; }
+            let s_min = node_min_width.entry(edge.start_node).or_insert(f32::MAX);
+            if w < *s_min { *s_min = w; }
+
             let e_max = node_max_width.entry(edge.end_node).or_insert(0.0);
             if w > *e_max { *e_max = w; }
+            let e_min = node_min_width.entry(edge.end_node).or_insert(f32::MAX);
+            if w < *e_min { *e_min = w; }
         }
 
         self.junction_polygons.clear(); // Removing procedural intersection meshes
@@ -543,16 +557,28 @@ impl TransitGraph {
             let e_conn = *connection_counts.get(&edge.end_node).unwrap_or(&0);
             
             let s_max_w = *node_max_width.get(&edge.start_node).unwrap_or(&0.0);
-            let e_max_w = *node_max_width.get(&edge.end_node).unwrap_or(&0.0);
+            let s_min_w = *node_min_width.get(&edge.start_node).unwrap_or(&0.0);
+            let s_different = (s_max_w - s_min_w).abs() > 0.1;
 
-            let s_clip = s_max_w * 0.7; // 70% of max width provides enough clear space for junctions
-            let e_clip = e_max_w * 0.7;
+            let e_max_w = *node_max_width.get(&edge.end_node).unwrap_or(&0.0);
+            let e_min_w = *node_min_width.get(&edge.end_node).unwrap_or(&0.0);
+            let e_different = (e_max_w - e_min_w).abs() > 0.1;
+
+            let s_clip = (s_max_w * 0.5 + crate::config::SIDEWALK_WIDTH) * 1.2;
+            let e_clip = (e_max_w * 0.5 + crate::config::SIDEWALK_WIDTH) * 1.2;
 
             let s_node = &self.nodes[edge.start_node as usize];
             let e_node = &self.nodes[edge.end_node as usize];
 
-            edge.start_clip = if s_conn > 1 && s_node.node_type == NodeType::Junction { s_clip } else { 0.0 };
-            edge.end_clip = if e_conn > 1 && e_node.node_type == NodeType::Junction { e_clip } else { 0.0 };
+            edge.start_clip = if s_node.cul_de_sac { 
+                                  if s_node.cul_de_sac_radius > 0.01 { s_node.cul_de_sac_radius } else { 8.0 }
+                              } else if (s_conn >= 3 || s_different) && s_node.node_type == NodeType::Junction { s_clip } 
+                              else { 0.0 };
+
+            edge.end_clip = if e_node.cul_de_sac { 
+                                 if e_node.cul_de_sac_radius > 0.01 { e_node.cul_de_sac_radius } else { 8.0 }
+                            } else if (e_conn >= 3 || e_different) && e_node.node_type == NodeType::Junction { e_clip } 
+                            else { 0.0 };
 
             let count = edge.geometry.len();
             if count >= 2 {

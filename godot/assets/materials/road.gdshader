@@ -33,17 +33,55 @@ void fragment() {
 	float roughness = mix(roughness_micro, roughness_macro, macro_influence * 0.5);
 	// 2. Road-Specific Detail (Stripes)
 	float stripe = 0.0;
+	float dist = length(VERTEX);
 	
 	// Only draw stripes on road ribbons (Alpha = 0.0)
 	if (COLOR.a < 0.1) {
-		if (UV.y > 0.96 && COLOR.g > 0.5) {
-			float dash = step(0.5, fract(UV.x * 0.2));
-			stripe = dash;
+		// Antialiased Stripe Mask (Vertical across the lane)
+		float fw_y = fwidth(UV.y);
+		float thickness = 0.025; // Even thinner lines
+		float stripe_v = smoothstep(1.0 - thickness - fw_y, 1.0 - thickness, UV.y);
+		
+		if (COLOR.g > 0.5) {
+			// Horizontal Pattern (Along the road)
+			float fw_x = fwidth(UV.x * 0.2);
+			float dash_val = fract(UV.x * 0.2);
+			
+			// Dash pattern with antialiasing
+			float dash_pattern = smoothstep(0.5 - fw_x, 0.5 + fw_x, dash_val);
+			
+			// Center lines (COLOR.b) are solid, others are dashed
+			float is_center = COLOR.b;
+			float base_pattern = mix(dash_pattern, 1.0, is_center);
+			
+			stripe = stripe_v * base_pattern;
 		}
 	}
 	
-	vec3 stripe_color = vec3(1.0, 1.0, 1.0);
-	vec3 final_albedo = mix(albedo, stripe_color, stripe * 0.8);
+	// 3. Sidewalk Detail (Tiles & Lightness)
+	if (COLOR.a > 0.9) {
+		// Concrete Tile Grout (Using World UVs for seamlessness across junctions)
+		vec2 world_uv = world_pos.xz;
+		vec2 grid = abs(fract(world_uv * 2.0) - 0.5); // 0.5m tiles
+		float grout = smoothstep(0.45, 0.5, grid.x) + smoothstep(0.45, 0.5, grid.y);
+		
+		// Lighten to concrete color and subtract grout lines
+		albedo = mix(albedo, vec3(0.85, 0.84, 0.82), 0.5);
+		albedo *= mix(1.0, 0.6, grout);
+		
+		// Subtle curb line at the road edge (UV.y = 0.0 for left, 1.0 for right - wait)
+		// No, I fixed road.rs so UV.y 0.0 IS always the road edge!
+		float fw_y = fwidth(UV.y);
+		float curb = smoothstep(0.05 + fw_y, 0.05, UV.y);
+		albedo = mix(albedo, vec3(0.0), curb * 0.3); // Darken the curb gap
+	}
+	
+	// Darker grey-white for better integration
+	vec3 stripe_color = vec3(0.7, 0.7, 0.7);
+	// Drastically reduce opacity and add distance-based fading
+	// Markings start at 30% strength and fade to 5% at 500m
+	float marking_strength = mix(0.3, 0.05, smoothstep(50.0, 500.0, dist));
+	vec3 final_albedo = mix(albedo, stripe_color, stripe * marking_strength);
 	
 	ALBEDO = final_albedo;
 	

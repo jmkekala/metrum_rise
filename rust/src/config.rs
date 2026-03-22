@@ -6,5 +6,5 @@ pub const INTERSECTION_TOLERANCE: f32 = 1.0;
 
 // Road Rendering Constants
 pub const ROAD_H_OFFSET: f32 = 0.01;
-pub const SIDEWALK_WIDTH: f32 = 0.5;
+pub const SIDEWALK_WIDTH: f32 = 2.0;
 pub const Z_FIGHT_BIAS: f32 = 0.001;

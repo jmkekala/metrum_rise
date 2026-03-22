@@ -907,6 +907,38 @@ impl SimulationNode {
         }
         best_id
     }
+
+    #[func]
+    pub fn set_node_cul_de_sac(&mut self, node_id: i32, enabled: bool, radius: f32) {
+        if node_id >= 0 && (node_id as usize) < self.transit_network.graph.nodes.len() {
+            self.push_undo_state(false, false, true, false);
+            let node = &mut self.transit_network.graph.nodes[node_id as usize];
+            node.cul_de_sac = enabled;
+            node.cul_de_sac_radius = radius;
+            self.transit_network.graph.rebuild_intersection_clips();
+        }
+    }
+
+    #[func]
+    pub fn has_cul_de_sac(&self, node_id: i32) -> bool {
+        if node_id >= 0 && (node_id as usize) < self.transit_network.graph.nodes.len() {
+            self.transit_network.graph.nodes[node_id as usize].cul_de_sac
+        } else {
+            false
+        }
+    }
+
+    #[func]
+    pub fn get_node_connection_count(&self, node_id: i32) -> i32 {
+        if node_id < 0 { return 0; }
+        let mut count = 0;
+        for edge in &self.transit_network.graph.edges {
+            if !edge.deleted && (edge.start_node == node_id as u32 || edge.end_node == node_id as u32) {
+                count += 1;
+            }
+        }
+        count
+    }
     #[func]
     pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) {
         if node_id >= 0 && (node_id as usize) < self.transit_network.graph.nodes.len() {
