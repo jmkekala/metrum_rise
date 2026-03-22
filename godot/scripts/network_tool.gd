@@ -148,28 +148,51 @@ func get_height_at(_world_pos: Vector3) -> float:
 	# Deprecated: use simulation_node.get_height_at instead
 	return 0.0
 
+static var _texture_cache = {}
+
+# Helper to load textures even if they haven't been imported yet by the editor
+func _load_texture(path: String) -> Texture2D:
+	if _texture_cache.has(path):
+		return _texture_cache[path]
+		
+	var tex: Texture2D = null
+	if ResourceLoader.exists(path):
+		tex = load(path)
+	else:
+		# Fallback for non-imported files
+		var abs_path = ProjectSettings.globalize_path(path)
+		var image = Image.load_from_file(abs_path)
+		if image:
+			image.generate_mipmaps()
+			tex = ImageTexture.create_from_image(image)
+	
+	_texture_cache[path] = tex
+	return tex
+
+static var _road_mat: ShaderMaterial = null
+
 func update_main_mesh():
 	var data = simulation_node.get_road_mesh_data()
-	var verts = data["vertices"]
-	if verts.size() == 0: return
+	if not data: return
 	
 	var arr_mesh = ArrayMesh.new()
 	var arrays = []
 	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = data["normals"]
-	arrays[Mesh.ARRAY_TEX_UV] = data["uvs"]
-	arrays[Mesh.ARRAY_COLOR] = data["colors"]
+	arrays[Mesh.ARRAY_VERTEX] = data.vertices
+	arrays[Mesh.ARRAY_NORMAL] = data.normals
+	arrays[Mesh.ARRAY_COLOR] = data.colors
+	arrays[Mesh.ARRAY_TEX_UV] = data.uvs
 	
-	# Surface 0: Asphalt Base
+	# Surface 0: Asphalt & Junctions
 	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 	
-	# Surface 0: Asphalt Base
-	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-
+	if _road_mat == null:
+		_road_mat = ShaderMaterial.new()
+		_road_mat.shader = load("res://assets/materials/road.gdshader")
+		_road_mat.set_shader_parameter("albedo_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_diff_4k.jpg"))
+		_road_mat.set_shader_parameter("normal_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_nor_gl_4k.png"))
+		_road_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"))
+		_road_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_disp_4k.png"))
+	
 	mesh_instance.mesh = arr_mesh
-	
-	# Assign Material
-	var asph_mat = ShaderMaterial.new()
-	asph_mat.shader = load("res://assets/materials/road.gdshader")
-	mesh_instance.set_surface_override_material(0, asph_mat)
+	mesh_instance.set_surface_override_material(0, _road_mat)
