@@ -9,24 +9,24 @@ extends Node
 @onready var zoning_tool = $"../ZoningTool"
 @onready var move_tool = $"../MoveTool"
 @onready var lane_tool = $"../LaneTool"
-var roundabout_tool: Node3D
+var cul_de_sac_tool: Node3D
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, LANE, AGENT, SCULPT, WATER, ROUNDABOUT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, LANE, AGENT, SCULPT, WATER, CUL_DE_SAC }
 var current_tool: Tool = Tool.NONE
 
 func _ready():
-	if not has_node("../RoundaboutTool"):
+	if not has_node("../CulDeSacTool"):
 		var rt = Node3D.new()
-		rt.name = "RoundaboutTool"
-		rt.set_script(load("res://scripts/roundabout_tool.gd"))
+		rt.name = "CulDeSacTool"
+		rt.set_script(load("res://scripts/cul_de_sac_tool.gd"))
 		get_parent().call_deferred("add_child", rt)
-		roundabout_tool = rt
+		cul_de_sac_tool = rt
 	
-	# Hide overlay mesh if exists in roundabout tool
-	if roundabout_tool and roundabout_tool.has_node("PreviewMesh"):
-		roundabout_tool.get_node("PreviewMesh").visible = false
+	# Hide overlay mesh if exists in cul-de-sac tool
+	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
+		cul_de_sac_tool.get_node("PreviewMesh").visible = false
 	# Removed old continuous sculpting polling
 	pass
 
@@ -39,7 +39,7 @@ func _unhandled_input(event):
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
 			KEY_K: _toggle_tool(Tool.WATER) # Moved from W to avoid WASD overlap
-			KEY_B: _toggle_tool(Tool.ROUNDABOUT) # Roundabout (B = Bulb)
+			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
 			KEY_Z: 
 				if event.ctrl_pressed:
 					_handle_undo()
@@ -122,9 +122,9 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 					road_tool.fwd_lanes = 0
 					road_tool.bkw_lanes = 0
 					road_tool._update_lanes_label()
-		Tool.ROUNDABOUT:
-			if roundabout_tool:
-				roundabout_tool.active = enabled
+		Tool.CUL_DE_SAC:
+			if cul_de_sac_tool:
+				cul_de_sac_tool.active = enabled
 		Tool.AGENT: if agents_node: pass # Agents diag always available
 		Tool.ZONING: 
 			if zoning_tool: zoning_tool.active = enabled
@@ -183,7 +183,6 @@ func _handle_right_click():
 		move_tool.cancel_move()
 	elif current_tool == Tool.SCULPT:
 		pass # Right click is used for lowering ground during sculpting
-	elif current_tool == Tool.ROUNDABOUT and roundabout_tool.current_state != 0:
-		roundabout_tool.cancel()
+
 	else:
 		_cancel_active_tool()

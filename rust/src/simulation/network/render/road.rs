@@ -295,112 +295,15 @@ impl TransitRenderer for RoadRenderer {
         // Optimize by pre-building an adjacency list
         let mut node_to_edges = vec![Vec::new(); graph.nodes.len()];
         for (e_idx, edge) in graph.edges.iter().enumerate() {
-            if edge.primary_type != TransitType::Road { continue; }
-            node_to_edges[edge.start_node as usize].push((e_idx, edge));
-            node_to_edges[edge.end_node as usize].push((e_idx, edge));
+            if edge.deleted || (edge.primary_type != TransitType::Road && edge.primary_type != TransitType::Foot) { continue; }
+            node_to_edges[graph.get_valid_node(edge.start_node) as usize].push((e_idx, edge));
+            node_to_edges[graph.get_valid_node(edge.end_node) as usize].push((e_idx, edge));
         }
 
         for (n_idx, node) in graph.nodes.iter().enumerate() {
+            if graph.get_valid_node(n_idx as u32) != n_idx as u32 { continue; }
             let edges_at_node = &node_to_edges[n_idx];
             if edges_at_node.is_empty() { continue; }
-
-            if node.cul_de_sac {
-                use std::f32::consts::TAU;
-                let r_inner = if node.cul_de_sac_radius > 0.01 { node.cul_de_sac_radius } else { 8.0 };
-                let r_outer = r_inner + config::SIDEWALK_WIDTH;
-                let b_center = node.pos + Vector3::new(0.0, config::ROAD_H_OFFSET, 0.0);
-                
-                // ASPHALT CORE (Full Circle)
-                let num_segments = 32;
-                for i in 0..num_segments {
-                    let t1 = i as f32 / num_segments as f32;
-                    let t2 = (i + 1) as f32 / num_segments as f32;
-                    let d1 = Vector3::new((t1 * TAU).cos(), 0.0, (t1 * TAU).sin());
-                    let d2 = Vector3::new((t2 * TAU).cos(), 0.0, (t2 * TAU).sin());
-
-                    let p1_i = b_center + d1 * r_inner;
-                    let p2_i = b_center + d2 * r_inner;
-
-                    vertices.push(b_center); vertices.push(p1_i); vertices.push(p2_i);
-                    for _ in 0..3 {
-                        normals.push(Vector3::UP);
-                        colors.push(Color::from_rgba(1.0, 1.0, 1.0, 0.5));
-                        uvs.push(Vector2::new(b_center.x * 0.1, b_center.z * 0.1));
-                    }
-                }
-
-                // SIDEWALK RING (Gapped at mouths)
-                // 1. Find all mouth angular ranges
-                let mut mouth_ranges = Vec::new();
-                for &(e_idx, edge) in edges_at_node {
-                    if edge.deleted || edge.physical_geometry.len() < 2 { continue; }
-                    let is_start = edge.start_node == n_idx as u32;
-                    let clip = if is_start { edge.start_clip } else { edge.end_clip };
-                    
-                    let tangent = if is_start {
-                        (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
-                    } else {
-                        let lc = edge.physical_geometry.len();
-                        (edge.physical_geometry[lc-2] - edge.physical_geometry[lc-1]).normalized()
-                    };
-                    
-                    let p_mouth = node.pos + tangent * clip;
-                    let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
-                    let rw = edge.width * 0.5;
-                    
-                    let pt_l = p_mouth + side_dir * rw;
-                    let pt_r = p_mouth - side_dir * rw;
-                    
-                    let mut ang_l = f32::atan2(pt_l.z - node.pos.z, pt_l.x - node.pos.x);
-                    let mut ang_r = f32::atan2(pt_r.z - node.pos.z, pt_r.x - node.pos.x);
-                    
-                    // Normalize to [0, TAU] and handle wraparound
-                    if ang_l < 0.0 { ang_l += TAU; }
-                    if ang_r < 0.0 { ang_r += TAU; }
-                    
-                    // Note: ang_l is "Left" looking from node center, so for a 1-road bulb, we sweep around the back.
-                    // But here we want the range to mark the HIDDEN part.
-                    // Road mouth is between ang_l and ang_r (short way)
-                    let mut start = ang_r;
-                    let mut end = ang_l;
-                    if end < start { end += TAU; }
-                    mouth_ranges.push((start, end));
-                }
-
-                // 2. Render gaps
-                for i in 0..num_segments {
-                    let t1_raw = (i as f32 / num_segments as f32) * TAU;
-                    let t2_raw = ((i + 1) as f32 / num_segments as f32) * TAU;
-                    let mid = (t1_raw + t2_raw) * 0.5;
-
-                    // Check if mid is inside ANY mouth range
-                    let mut is_in_mouth = false;
-                    for &(m_start, m_end) in &mouth_ranges {
-                        if (mid >= m_start && mid <= m_end) || (mid + TAU >= m_start && mid + TAU <= m_end) {
-                            is_in_mouth = true;
-                            break;
-                        }
-                    }
-                    if is_in_mouth { continue; }
-
-                    let d1 = Vector3::new(t1_raw.cos(), 0.0, t1_raw.sin());
-                    let d2 = Vector3::new(t2_raw.cos(), 0.0, t2_raw.sin());
-                    let p1_i = b_center + d1 * r_inner;
-                    let p2_i = b_center + d2 * r_inner;
-                    let p1_o = b_center + d1 * r_outer;
-                    let p2_o = b_center + d2 * r_outer;
-
-                    vertices.push(p1_i); vertices.push(p2_o); vertices.push(p2_i);
-                    vertices.push(p1_i); vertices.push(p1_o); vertices.push(p2_o);
-                    for _ in 0..6 {
-                        normals.push(Vector3::UP);
-                        colors.push(Color::from_rgba(1.0, 1.0, 1.0, 1.0));
-                        uvs.push(Vector2::ZERO);
-                    }
-                }
-
-                continue;
-            }
 
             if edges_at_node.len() < 2 { continue; }
 
@@ -477,18 +380,15 @@ impl TransitRenderer for RoadRenderer {
                 let is_mouth = p1.e_idx == p2.e_idx;
                 let alpha = if is_mouth { 0.5 } else { 1.0 };
                 
-                // Use consistent UV mapping: UV.y 0.0 is road edge, 1.0 is outer edge.
-                // UV.x uses world coordinates scaled for 0.5m tiles.
+                // Use consistent UV mapping
                 let uv1_i = Vector2::new(p1.inner.x * 2.0, 0.0);
                 let uv1_o = Vector2::new(p1.outer.x * 2.0, 1.0);
                 let uv2_i = Vector2::new(p2.inner.x * 2.0, 0.0);
                 let uv2_o = Vector2::new(p2.outer.x * 2.0, 1.0);
 
                 // Quad Winding: p1_i -> p2_o -> p2_inner and p1_i -> p1_o -> p2_o
-                // Triangle 1
                 vertices.push(p1.inner); vertices.push(p2.outer); vertices.push(p2.inner);
                 uvs.push(uv1_i); uvs.push(uv2_o); uvs.push(uv2_i);
-                // Triangle 2
                 vertices.push(p1.inner); vertices.push(p1.outer); vertices.push(p2.outer);
                 uvs.push(uv1_i); uvs.push(uv1_o); uvs.push(uv2_o);
 

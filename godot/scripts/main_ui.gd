@@ -184,11 +184,11 @@ func _build_ui():
 	road_sub_menu.add_child(ow2_btn)
 	ow2_btn.pressed.connect(func(): _select_road_type(2, 0))
 
-	var roundabout_btn = Button.new()
-	roundabout_btn.text = "Roundabout"
-	roundabout_btn.custom_minimum_size = Vector2(100, 0)
-	road_sub_menu.add_child(roundabout_btn)
-	roundabout_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.ROUNDABOUT))
+	var cul_de_sac_btn = Button.new()
+	cul_de_sac_btn.text = "Cul-De-Sac"
+	cul_de_sac_btn.custom_minimum_size = Vector2(100, 0)
+	road_sub_menu.add_child(cul_de_sac_btn)
+	cul_de_sac_btn.pressed.connect(func(): input_manager._toggle_tool(InputManager.Tool.CUL_DE_SAC))
 	
 	road_combined_hbox.add_child(sub_panel)
 	
