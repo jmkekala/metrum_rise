@@ -164,18 +164,44 @@ impl TransitRenderer for RoadRenderer {
 
             // Lane Ribbons
             let lane_count = (edge.fwd_lanes + edge.bkw_lanes) as usize;
+            // Road Ribbons (Lanes)
+            let lane_count = (edge.fwd_lanes + edge.bkw_lanes) as usize;
+            let start_clip = edge.start_clip;
+            let end_clip = edge.end_clip;
+            let total_len = edge.physical_length;
+
             for l_idx in 0..lane_count {
                 let lateral_offset = (total_lanes * 0.5 - l_idx as f32 - 0.5) * lane_w;
-                
                 let mut dist_acc = 0.0;
+
                 for i in 0..resampled_count - 1 {
-                    let mut p0 = edge.physical_geometry[i];
-                    let mut p1 = edge.physical_geometry[i + 1];
+                    let p0_raw = edge.physical_geometry[i];
+                    let p1_raw = edge.physical_geometry[i + 1];
+                    let segment_len = (p1_raw - p0_raw).length();
+                    
+                    let segment_start = dist_acc;
+                    let segment_end = dist_acc + segment_len;
+
+                    // Skip if entirely clipped
+                    if segment_end <= start_clip || segment_start >= total_len - end_clip {
+                        dist_acc += segment_len;
+                        continue;
+                    }
+
+                    // Clip the segment
+                    let mut t0 = 0.0f32;
+                    let mut t1 = 1.0f32;
+                    if segment_start < start_clip {
+                        t0 = (start_clip - segment_start) / segment_len;
+                    }
+                    if segment_end > total_len - end_clip {
+                        t1 = (total_len - end_clip - segment_start) / segment_len;
+                    }
+
+                    let mut p0 = p0_raw + (p1_raw - p0_raw) * t0;
+                    let mut p1 = p0_raw + (p1_raw - p0_raw) * t1;
                     let side0 = point_side_dirs[i];
                     let side1 = point_side_dirs[i+1];
-
-                    let dist = (p1 - p0).length();
-                    if dist < 0.01 { continue; }
 
                     p0.y += h_offset;
                     p1.y += h_offset;
@@ -185,21 +211,17 @@ impl TransitRenderer for RoadRenderer {
                     let v1_l = p1 + side1 * (lateral_offset - lane_w * 0.5);
                     let v1_r = p1 + side1 * (lateral_offset + lane_w * 0.5);
 
-                    let uv_y0_l = 0.0;
-                    let uv_y0_r = 1.0;
-                    
                     vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
                     vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
                     
-                    uvs.push(Vector2::new(dist_acc, uv_y0_l));
-                    uvs.push(Vector2::new(dist_acc + dist, uv_y0_l));
-                    uvs.push(Vector2::new(dist_acc + dist, uv_y0_r));
-                    
-                    uvs.push(Vector2::new(dist_acc, uv_y0_l));
-                    uvs.push(Vector2::new(dist_acc + dist, uv_y0_r));
-                    uvs.push(Vector2::new(dist_acc, uv_y0_r));
+                    let uv_y0_l = 0.0; let uv_y0_r = 1.0;
+                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
+                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_l));
+                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
+                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
+                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
+                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_r));
 
-                    // Color: R=WorldMask, G=IsLaneBoundary, B=IsCenterBoundary, A=JunctionMask
                     let is_lane_boundary = if l_idx > 0 { 1.0 } else { 0.0 };
                     let is_center_boundary = if l_idx == edge.fwd_lanes as usize && edge.fwd_lanes > 0 && edge.bkw_lanes > 0 { 1.0 } else { 0.0 };
 
@@ -207,53 +229,65 @@ impl TransitRenderer for RoadRenderer {
                         normals.push(Vector3::UP);
                         colors.push(Color::from_rgba(1.0, is_lane_boundary, is_center_boundary, 0.0));
                     }
-                    dist_acc += dist;
+                    dist_acc += segment_len;
                 }
             }
 
-            // Sidewalk Ribbons (Grey)
-            let sw_color = Color::from_rgb(1.0, 1.0, 1.0); // Use white for PBR asphalt look too? No, grey is fine.
-            let sw_w = 0.5;
+            // Sidewalk Ribbons
+            let sw_color = Color::from_rgb(1.0, 1.0, 1.0);
+            let sw_w = config::SIDEWALK_WIDTH;
             let sw_offsets = [edge.width * 0.5 + sw_w * 0.5, -(edge.width * 0.5 + sw_w * 0.5)];
-            
+
             for &lateral_offset in &sw_offsets {
                 let mut dist_acc = 0.0;
                 for i in 0..resampled_count - 1 {
-                    let mut p0 = edge.physical_geometry[i];
-                    let mut p1 = edge.physical_geometry[i + 1];
-                    let side0 = point_side_dirs[i];
-                    let side1 = point_side_dirs[i+1];
+                    let p0_raw = edge.physical_geometry[i];
+                    let p1_raw = edge.physical_geometry[i + 1];
+                    let segment_len = (p1_raw - p0_raw).length();
+                    let segment_start = dist_acc;
+                    let segment_end = dist_acc + segment_len;
 
-                    let dist = (p1 - p0).length();
-                    if dist < 0.01 { continue; }
+                    if segment_end <= start_clip || segment_start >= total_len - end_clip {
+                        dist_acc += segment_len;
+                        continue;
+                    }
 
+                    let mut t0 = 0.0f32;
+                    let mut t1 = 1.0f32;
+                    if segment_start < start_clip { t0 = (start_clip - segment_start) / segment_len; }
+                    if segment_end > total_len - end_clip { t1 = (total_len - end_clip - segment_start) / segment_len; }
+
+                    let mut p0 = p0_raw + (p1_raw - p0_raw) * t0;
+                    let mut p1 = p0_raw + (p1_raw - p0_raw) * t1;
+                    
                     p0.y += h_offset + 0.001;
                     p1.y += h_offset + 0.001;
+
+                    let side0 = point_side_dirs[i];
+                    let side1 = point_side_dirs[i+1];
 
                     let v0_l = p0 + side0 * (lateral_offset - sw_w * 0.5);
                     let v0_r = p0 + side0 * (lateral_offset + sw_w * 0.5);
                     let v1_l = p1 + side1 * (lateral_offset - sw_w * 0.5);
                     let v1_r = p1 + side1 * (lateral_offset + sw_w * 0.5);
 
-                    let uv_y0_l = (lateral_offset - sw_w * 0.5 + edge.width * 0.5) / edge.width;
-                    let uv_y0_r = (lateral_offset + sw_w * 0.5 + edge.width * 0.5) / edge.width;
-
                     vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
                     vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
 
-                    uvs.push(Vector2::new(dist_acc, uv_y0_l));
-                    uvs.push(Vector2::new(dist_acc, uv_y0_r));
-                    uvs.push(Vector2::new(dist_acc + dist, uv_y0_r));
-                    
-                    uvs.push(Vector2::new(dist_acc, uv_y0_l));
-                    uvs.push(Vector2::new(dist_acc + dist, uv_y0_r));
-                    uvs.push(Vector2::new(dist_acc + dist, uv_y0_l));
+                    let uv_y0_l = (lateral_offset - sw_w * 0.5 + edge.width * 0.5) / edge.width;
+                    let uv_y0_r = (lateral_offset + sw_w * 0.5 + edge.width * 0.5) / edge.width;
+                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
+                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_r));
+                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
+                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
+                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
+                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_l));
 
                     for _ in 0..6 {
                         normals.push(Vector3::UP);
                         colors.push(sw_color);
                     }
-                    dist_acc += dist;
+                    dist_acc += segment_len;
                 }
             }
         }
@@ -279,16 +313,35 @@ impl TransitRenderer for RoadRenderer {
                 if edge.physical_geometry.len() < 2 { continue; }
                 
                 let is_start = edge.start_node == n_idx as u32;
-                let (p_idx, next_idx) = if is_start { (0, 1) } else { (edge.physical_geometry.len() - 1, edge.physical_geometry.len() - 2) };
+                let clip = if is_start { edge.start_clip } else { edge.end_clip };
                 
-                let mut p = edge.physical_geometry[p_idx];
+                // Get clipped position and direction
+                let mut dist_acc = 0.0;
+                let total_l = edge.physical_length;
+                let target_l = if is_start { clip } else { total_l - clip };
+                
+                let mut p = node.pos; 
+                let mut tangent = Vector3::FORWARD;
+
+                let geom = &edge.physical_geometry;
+                for i in 0..geom.len() - 1 {
+                    let p1 = geom[i];
+                    let p2 = geom[i+1];
+                    let d = (p2 - p1).length();
+                    if dist_acc + d >= target_l || i == geom.len() - 2 {
+                        let t = if d > 1e-6 { (target_l - dist_acc) / d } else { 0.0 };
+                        p = p1 + (p2 - p1) * t;
+                        tangent = (p2 - p1).normalized();
+                        break;
+                    }
+                    dist_acc += d;
+                }
+
                 p.y += config::ROAD_H_OFFSET;
-                let p_next = edge.physical_geometry[next_idx];
-                let tangent = (p - p_next).normalized();
-                let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
-                let hw = edge.width * 0.5 + config::SIDEWALK_WIDTH; // Include sidewalk width
                 
-                // Push both corners with the same edge index
+                let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
+                let hw = edge.width * 0.5 + config::SIDEWALK_WIDTH;
+                
                 boundary_pts.push((e_idx, p + side_dir * hw));
                 boundary_pts.push((e_idx, p - side_dir * hw));
             }

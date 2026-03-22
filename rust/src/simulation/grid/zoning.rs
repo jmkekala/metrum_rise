@@ -230,8 +230,8 @@ impl ZoningSystem {
             let mut edges_to_check = std::collections::HashSet::new();
             
             // Spatial AABB Filter
-            let pt_min = Vector2::new(pt.x - 20.0, pt.y - 20.0);
-            let pt_max = Vector2::new(pt.x + 20.0, pt.y + 20.0);
+            let pt_min = Vector2::new(pt.x - 40.0, pt.y - 40.0);
+            let pt_max = Vector2::new(pt.x + 40.0, pt.y + 40.0);
 
             for (i, e) in graph.edges.iter().enumerate() {
                 if i == edge_idx { continue; }

@@ -563,45 +563,42 @@ impl TransitGraph {
                     total_length += (p1 - p0).length();
                 }
                 
-                let valid_len = (total_length - edge.end_clip) - edge.start_clip;
-                if valid_len <= 0.1 {
-                    edge.physical_geometry.clear();
-                    continue;
-                }
-                let num_segments = f32::max(1.0, f32::ceil(valid_len / 2.0)) as usize;
+                let num_segments = f32::max(1.0, f32::ceil(total_length / 2.0)) as usize;
                 let mut resampled = Vec::new();
                 
                 for i in 0..=num_segments {
-                    let dist = edge.start_clip + (i as f32 / num_segments as f32) * valid_len;
+                    let dist = (i as f32 / num_segments as f32) * total_length;
                     let mut curr = 0.0;
                     let mut found = false;
                     for j in 0..count - 1 {
                         let p0 = edge.geometry[j];
                         let p1 = edge.geometry[j + 1];
                         let d = (p1 - p0).length();
-                        if curr + d >= dist {
+                        if curr + d >= dist || (i == num_segments && j == count - 2) {
                             let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
-                            resampled.push(p0.lerp(p1, t));
+                            resampled.push(p0.lerp(p1, t.clamp(0.0, 1.0)));
                             found = true;
                             break;
                         }
                         curr += d;
                     }
-                    if !found { resampled.push(*edge.geometry.last().unwrap()); }
+                    if !found && !edge.geometry.is_empty() {
+                         resampled.push(edge.geometry[count - 1]);
+                    }
                 }
-                
-                // Keep node-end height alignment
-                let start_node_y = self.nodes[edge.start_node as usize].pos.y;
-                let end_node_y = self.nodes[edge.end_node as usize].pos.y;
                 if !resampled.is_empty() {
+                    let start_node_y = self.nodes[edge.start_node as usize].pos.y;
+                    let end_node_y = self.nodes[edge.end_node as usize].pos.y;
                     resampled[0].y = start_node_y;
                     let last_idx = resampled.len() - 1;
                     resampled[last_idx].y = end_node_y;
                 }
                 
                 edge.physical_geometry = resampled;
+                edge.physical_length = total_length;
             } else {
                 edge.physical_geometry = edge.geometry.clone();
+                edge.physical_length = 0.0; // calculate if needed, but usually this case is for tiny edges
             }
         }
     }
