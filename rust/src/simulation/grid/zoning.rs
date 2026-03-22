@@ -230,23 +230,36 @@ impl ZoningSystem {
                     let l2 = (p2_2d - p1_2d).length_squared();
                     if l2 == 0.0 { continue; }
 
-                    let t_val = (((pt.x - p1_2d.x) * (p2_2d.x - p1_2d.x) + (pt.y - p1_2d.y) * (p2_2d.y - p1_2d.y)) / l2).clamp(0.0, 1.0);
-                    let proj = p1_2d + (p2_2d - p1_2d) * t_val;
+                    let seg_vec = p2_2d - p1_2d;
+                    let t_val = (((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2).clamp(0.0, 1.0);
+                    let proj = p1_2d + seg_vec * t_val;
                     let mut d_sq = (pt - proj).length_squared();
                     
-                    // Boost priority for self-ownership so we don't reject our own straight roads due to epsilon noise
-                    if is_self { d_sq *= 0.99; }
+                    // A. Asphalt Collision: Always blocks regardless of zoning flags
+                    if !is_self && d_sq < (other_edge.width * 0.5 + 0.1).powi(2) {
+                        return true; 
+                    }
 
-                    if d_sq < closest_d_sq {
-                        closest_d_sq = d_sq;
+                    // B. Zoning Claim: Only blocks if the road has zoning enabled on that side
+                    let mut is_claiming = is_self;
+                    if !is_self {
+                        let tangent = seg_vec.normalized();
+                        let rel_pt = pt - proj;
+                        let is_left = (tangent.x * rel_pt.y - tangent.y * rel_pt.x) < 0.0;
+                        is_claiming = if is_left { other_edge.zoning_left } else { other_edge.zoning_right };
+                    }
+
+                    if is_claiming {
+                        // Boost priority for self so straight roads are stable
+                        if is_self { d_sq *= 0.99; }
+                        if d_sq < closest_d_sq {
+                            closest_d_sq = d_sq;
+                        }
                     }
                 }
             }
 
             // 2. Universal Distance Guard:
-            // If ANY part of the road network centerline is CLOSER to the point than its own intended anchor point,
-            // then it has overlapped a different territory (either another road or an inner-lap curve).
-            // Margin of 0.5m allowed for curvature gaps.
             if closest_d_sq < (intended_d - 0.5).powi(2) {
                 return true;
             }

@@ -8,7 +8,7 @@ var state: int = 0 # 0: Idle, 1: Painting
 var active: bool = false
 var hovered_edge_idx: int = -1
 
-enum Mode { SINGLE, PAINT, DELETE, FILL }
+enum Mode { SINGLE, PAINT, FILL, DELETE }
 var current_mode = Mode.SINGLE
 
 var grid_mesh: MultiMeshInstance3D
