@@ -62,17 +62,71 @@ pub struct TransitGraph {
     pub edges: Vec<Edge>,
     pub junction_polygons: HashMap<u32, JunctionMesh>,
     pub node_aliases: HashMap<u32, u32>,
+    pub spatial_edge_grid: HashMap<(i32, i32), Vec<usize>>,
 }
 
 impl TransitGraph {
     pub const CHUNK_SIZE: f32 = 512.0;
 
-    pub fn get_chunk_coords(pos: Vector3) -> (i32, i32) {
+    pub fn get_chunk_coords(pos: godot::prelude::Vector3) -> (i32, i32) {
         ((pos.x / Self::CHUNK_SIZE).floor() as i32, (pos.z / Self::CHUNK_SIZE).floor() as i32)
     }
 
     pub fn get_node_chunk(&self, node_id: u32) -> (i32, i32) {
         Self::get_chunk_coords(self.nodes[node_id as usize].pos)
+    }
+
+    pub fn add_to_spatial_index(&mut self, edge_idx: usize) {
+        let edge = &self.edges[edge_idx];
+        if edge.deleted { return; }
+        
+        // Find all chunks touched by this edge's AABB
+        let mut min_x = f32::MAX; let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX; let mut max_z = f32::MIN;
+        
+        for p in &edge.physical_geometry {
+            min_x = min_x.min(p.x); max_x = max_x.max(p.x);
+            min_z = min_z.min(p.z); max_z = max_z.max(p.z);
+        }
+        
+        let min_c = Self::get_chunk_coords(godot::prelude::Vector3::new(min_x, 0.0, min_z));
+        let max_c = Self::get_chunk_coords(godot::prelude::Vector3::new(max_x, 0.0, max_z));
+        
+        for cx in min_c.0..=max_c.0 {
+            for cz in min_c.1..=max_c.1 {
+                let chunk = self.spatial_edge_grid.entry((cx, cz)).or_default();
+                if !chunk.contains(&edge_idx) {
+                    chunk.push(edge_idx);
+                }
+            }
+        }
+    }
+
+    pub fn remove_from_spatial_index(&mut self, edge_idx: usize) {
+        // Since edges are rarely removed but often 'deleted' (marked), we can 
+        // just filter them out during lookup, but for splits/merges we clean up.
+        for chunk in self.spatial_edge_grid.values_mut() {
+            chunk.retain(|&idx| idx != edge_idx);
+        }
+    }
+
+    pub fn get_edges_near_point(&self, pos: godot::prelude::Vector3, radius: f32) -> Vec<usize> {
+        let mut result = Vec::new();
+        let min_c = Self::get_chunk_coords(godot::prelude::Vector3::new(pos.x - radius, 0.0, pos.z - radius));
+        let max_c = Self::get_chunk_coords(godot::prelude::Vector3::new(pos.x + radius, 0.0, pos.z + radius));
+        
+        for cx in min_c.0..=max_c.0 {
+            for cz in min_c.1..=max_c.1 {
+                if let Some(chunk) = self.spatial_edge_grid.get(&(cx, cz)) {
+                    for &idx in chunk {
+                        if !result.contains(&idx) {
+                            result.push(idx);
+                        }
+                    }
+                }
+            }
+        }
+        result
     }
 
     pub fn get_valid_node(&self, mut id: u32) -> u32 {
@@ -88,6 +142,7 @@ impl TransitGraph {
             edges: Vec::new(),
             junction_polygons: std::collections::HashMap::new(),
             node_aliases: std::collections::HashMap::new(),
+            spatial_edge_grid: HashMap::new(),
         }
     }
 
@@ -115,6 +170,7 @@ impl TransitGraph {
         edge.deleted = false;
         let id = self.edges.len();
         self.edges.push(edge);
+        self.add_to_spatial_index(id);
         id
     }
 
@@ -363,6 +419,11 @@ impl TransitGraph {
             // Mark the second edge as deleted instead of removing it to keep indices stable
             let to_remove = second_edge_idx;
             self.edges[to_remove].deleted = true;
+            self.remove_from_spatial_index(to_remove);
+            
+            // Re-index the first edge as its geometry changed
+            self.remove_from_spatial_index(first_edge_idx);
+            self.add_to_spatial_index(first_edge_idx);
 
             return Some((first_edge_idx, second_edge_idx));
         }
@@ -439,6 +500,14 @@ impl TransitGraph {
                         edge.geometry[i] += delta * w_smooth;
                     }
                 }
+            }
+        }
+        
+        // Update spatial index for all affected edges
+        for i in 0..self.edges.len() {
+            if !self.edges[i].deleted && (self.edges[i].start_node == node_id || self.edges[i].end_node == node_id) {
+                self.remove_from_spatial_index(i);
+                self.add_to_spatial_index(i);
             }
         }
         
@@ -648,13 +717,18 @@ impl TransitGraph {
                     let last_idx = resampled.len() - 1;
                     resampled[last_idx].y = end_node_y;
                 }
-                
                 edge.physical_geometry = resampled;
                 edge.physical_length = total_length;
             } else {
                 edge.physical_geometry = edge.geometry.clone();
-                edge.physical_length = 0.0; // calculate if needed, but usually this case is for tiny edges
+                edge.physical_length = 0.0;
             }
+        }
+
+        // Re-index all roads after a massive batch clip rebuild (e.g. after terrain sync)
+        self.spatial_edge_grid.clear();
+        for i in 0..self.edges.len() {
+            self.add_to_spatial_index(i);
         }
     }
 }

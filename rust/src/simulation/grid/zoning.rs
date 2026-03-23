@@ -234,41 +234,27 @@ impl ZoningSystem {
 
             let mut edges_to_check = std::collections::HashSet::new();
             
-            // Spatial AABB Filter
-            // Increase search radius to accommodate 10x10 cells, 10 deep = 100m + padding
-            let pt_min = Vector2::new(pt.x - 120.0, pt.y - 120.0);
-            let pt_max = Vector2::new(pt.x + 120.0, pt.y + 120.0);
+            // Spatial Filtered Search using centralized RoadSpatialGrid
+            let pt_3d = godot::prelude::Vector3::new(pt.x, 0.0, pt.y);
+            let nearby_edges = graph.get_edges_near_point(pt_3d, 120.0);
 
-            for (i, e) in graph.edges.iter().enumerate() {
+            for i in nearby_edges {
+                let e = &graph.edges[i];
                 if i == edge_idx { continue; }
                 if e.deleted { continue; }
 
-                // Sister Edge Detection: If connected via a simple 2-way joint, they are part of the same road
-                // and shouldn't obstruct each other's zoning cells at the split point.
+                // Sister Edge Detection
                 let is_sister = (e.start_node == edge.start_node || e.start_node == edge.end_node || 
                                  e.end_node == edge.start_node || e.end_node == edge.end_node) &&
                                  e.width == edge.width && e.primary_type == edge.primary_type;
                 
                 if is_sister {
-                    // Check node connection count - if it's > 2, it's a real intersection, not just a split
                     let shared_node = if e.start_node == edge.start_node || e.start_node == edge.end_node { e.start_node } else { e.end_node };
                     let conn_count = graph.edges.iter().filter(|o| !o.deleted && (o.start_node == shared_node || o.end_node == shared_node)).count();
-                    if conn_count <= 2 {
-                        continue; 
-                    }
+                    if conn_count <= 2 { continue; }
                 }
                 
-                let mut e_min = Vector2::new(f32::MAX, f32::MAX);
-                let mut e_max = Vector2::new(f32::MIN, f32::MIN);
-                for p in &e.physical_geometry {
-                    e_min.x = e_min.x.min(p.x); e_min.y = e_min.y.min(p.z);
-                    e_max.x = e_max.x.max(p.x); e_max.y = e_max.y.max(p.z);
-                }
-                
-                if pt_min.x < e_max.x && pt_max.x > e_min.x &&
-                   pt_min.y < e_max.y && pt_max.y > e_min.y {
-                    edges_to_check.insert(i);
-                }
+                edges_to_check.insert(i);
             }
             
             for &i in &edges_to_check {
