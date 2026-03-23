@@ -37,6 +37,8 @@ pub struct SimulationNode {
     allocator: BuildingAllocator,
     agents: AgentSystem,
     undo_stack: Vec<SimulationSnapshot>,
+    last_tick_duration: f64,
+    benchmark_mode: bool,
     base: Base<Node3D>,
 }
 
@@ -239,7 +241,7 @@ impl SimulationNode {
                     let (pos_on_edge, tangent) = self.get_edge_pos_and_tangent(edge_idx, t_param);
                     let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x) * (side as f32);
 
-                    for y in 0..4 {
+                    for y in 0..crate::simulation::grid::zoning::ZONING_DEPTH {
                         if self.zoning.is_cell_obstructed(edge_idx, side, x, y, graph) {
                             continue;
                         }
@@ -400,8 +402,8 @@ impl SimulationNode {
             }
         }
         
-        // Return if mouse is near the road, or within the 50 meters bounding limit (matching grid depth)
-        if best_dist <= (50.0 * 50.0) { 
+        // Return if mouse is near the road, or within the 110 meters bounding limit (matching grid depth + padding)
+        if best_dist <= (110.0 * 110.0) { 
             best_edge
         } else {
             -1
@@ -454,15 +456,29 @@ impl SimulationNode {
         
         // 1. Environmental Spread (Buildings emit smog and noise)
         self.pollution.tick(&self.allocator);
-        self.noise.tick(&self.allocator, &self.transit_network.graph);
+        let tick_start = std::time::Instant::now();
         
-        // 2. Desirability Update
+        // ECONOMY: Demand update
+        self.demand.tick();
+        
+        // ZONING: Growth & Immigration
+        self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network);
+        
+        // POLLUTION & NOISE: Dissipation & Influence logic
+        self.pollution.tick(&self.allocator);
+        self.noise.tick(&self.allocator, &self.transit_network.graph);
         self.desirability.tick(&self.zoning, &self.pollution, &self.noise);
 
-        // 3. Economy & Building Allocation
-        self.demand.tick();
-        self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network);
+        // Reset pathfind count for this tick's budget
+        self.agents.pathfind_count = 0;
+
+        self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
+        
+        if self.benchmark_mode {
+            self.log_benchmark_to_csv();
+        }
     }
+
     #[func]
     pub fn get_agent_transforms(&self) -> PackedFloat32Array {
         let mut buffer = Vec::with_capacity(self.agents.count * 12);
@@ -1201,12 +1217,101 @@ impl SimulationNode {
             
         }
     }
+
+    #[func]
+    pub fn get_lane_width(&self) -> f32 {
+        config::LANE_WIDTH
+    }
+
+    #[func]
+    pub fn setup_benchmark_city(&mut self, grid_size: i32, agent_count: i32) {
+        godot_print!("Setting up benchmark city: {}x{} grid, {} agents", grid_size, grid_size, agent_count);
+        self.transit_network.clear(&mut self.zoning, &mut self.allocator);
+        self.agents.clear();
+
+        let spacing = 100.0;
+        let start_offset = -(grid_size as f32 * spacing * 0.5);
+
+        // 1. Create Road Grid
+        for i in 0..=grid_size {
+            let offset = start_offset + (i as f32 * spacing);
+            // Horizontal
+            let mut h_pts = PackedVector3Array::new();
+            h_pts.push(Vector3::new(start_offset, 0.0, offset));
+            h_pts.push(Vector3::new(-start_offset, 0.0, offset));
+            self.add_road(h_pts, 2, 2, true, true);
+
+            // Vertical
+            let mut v_pts = PackedVector3Array::new();
+            v_pts.push(Vector3::new(offset, 0.0, start_offset));
+            v_pts.push(Vector3::new(offset, 0.0, -start_offset));
+            self.add_road(v_pts, 2, 2, true, true);
+        }
+
+        // 2. Initial Tick to build zoning/pathing
+        self.simulate_tick();
+
+        // 3. Fill with buildings (forced growth)
+        self.demand.residential = 1000.0;
+        self.demand.commercial = 1000.0;
+        self.demand.industrial = 1000.0;
+        for _ in 0..10 { // Burst growth
+            self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network);
+        }
+
+        // 4. Batch Spawn Agents
+        self.agents.spawn_random_agents(agent_count as usize, &self.transit_network.graph, &self.allocator);
+        godot_print!("Benchmark city ready. Agents: {}", self.agents.count);
+    }
+
+    #[func]
+    pub fn get_perf_stats(&self) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        let _ = dict.insert("agent_count", self.agents.count as i32);
+        let _ = dict.insert("last_tick_ms", self.last_tick_duration);
+        let _ = dict.insert("pathfind_calls", self.agents.pathfind_count as i32);
+        let _ = dict.insert("fps", godot::classes::Engine::singleton().get_frames_per_second());
+        dict
+    }
+
+    fn log_benchmark_to_csv(&self) {
+        use std::io::Write;
+        let path = "benchmark_results.csv";
+        let file_exists = std::path::Path::new(path).exists();
+        
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if !file_exists {
+                let _ = writeln!(file, "timestamp,version,agents,map_size,tick_ms,fps,pathfind_calls");
+            }
+            
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+            let version = env!("CARGO_PKG_VERSION");
+            let agents = self.agents.count;
+            let map_size = format!("{}x{}", config::MAP_WIDTH, config::MAP_HEIGHT);
+            let tick_ms = self.last_tick_duration;
+            let fps = godot::classes::Engine::singleton().get_frames_per_second();
+            let paths = self.agents.pathfind_count;
+            
+            let _ = writeln!(file, "{},{},{},{},{:.4},{:.1},{}", now, version, agents, map_size, tick_ms, fps, paths);
+        }
+    }
 }
 
 #[godot_api]
 impl INode3D for SimulationNode {
     fn init(base: Base<Node3D>) -> Self {
         godot_print!("Simulation Engine Initialized (Multi-Modal Network)");
+        
+        // Check for --huge-map command line argument
+        let args = godot::classes::Os::singleton().get_cmdline_user_args();
+        let mut is_huge = false;
+        for arg in args.as_slice() {
+            if arg.to_string() == "--huge-map" {
+                is_huge = true;
+                break;
+            }
+        }
+
         let w = config::MAP_WIDTH;
         let h = config::MAP_HEIGHT;
         let mut sim = Self { 
@@ -1224,15 +1329,36 @@ impl INode3D for SimulationNode {
             allocator: BuildingAllocator::new(w, h),
             agents: AgentSystem::new(),
             undo_stack: Vec::new(),
+            last_tick_duration: 0.0,
+            benchmark_mode: is_huge,
         };
 
-        // Inject starter highway to border (Z = -127) for the player to connect to
-        let mut pts = PackedVector3Array::new();
-        pts.push(Vector3::new(0.0, 0.0, -127.0));
-        pts.push(Vector3::new(0.0, 0.0, -60.0));
-        sim.add_road(pts, 2, 2, true, true);
+        if is_huge {
+            godot_print!("HUGE MAP BENCHMARK MODE ENABLED");
+            // We'll call setup_benchmark_city once we're in the scene tree / ready
+            // For now, let's just adjust the starter highway to the new border
+            let mut pts = PackedVector3Array::new();
+            let border = (config::MAP_HEIGHT as f32 * 0.5) - 1.0;
+            pts.push(Vector3::new(0.0, 0.0, -border));
+            pts.push(Vector3::new(0.0, 0.0, -border + 100.0));
+            sim.add_road(pts, 2, 2, true, true);
+        } else {
+            // Standard starter highway
+            let mut pts = PackedVector3Array::new();
+            let border = (config::MAP_HEIGHT as f32 * 0.5) - 1.0;
+            pts.push(Vector3::new(0.0, 0.0, -border));
+            pts.push(Vector3::new(0.0, 0.0, -border / 2.0));
+            sim.add_road(pts, 2, 2, true, true);
+        }
 
         sim
+    }
+
+    fn ready(&mut self) {
+        if self.benchmark_mode {
+            godot_print!("SimulationNode: Auto-triggering benchmark setup");
+            self.setup_benchmark_city(20, 100_000); // 20x20 grid, 100k agents by default
+        }
     }
 
     fn process(&mut self, delta: f64) {

@@ -402,9 +402,3 @@ impl TransitRenderer for RoadRenderer {
         }
     }
 }
-
-impl RoadRenderer {
-    fn get_banked_normal(&self, _terrain: &crate::simulation::terrain::TerrainSystem, _p: Vector3, _tangent: Vector3, _half_size: Vector2) -> Vector3 {
-        Vector3::UP
-    }
-}

@@ -23,6 +23,9 @@ mod tests {
             geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
 
         // A-C-B is a Road (2 lanes)
@@ -34,6 +37,9 @@ mod tests {
             geometry: vec![Vector3::ZERO, Vector3::new(5.0, 0.0, 10.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(5.0, 0.0, 10.0)],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
         g.add_edge(Edge {
             start_node: n2, end_node: n1,
@@ -43,6 +49,9 @@ mod tests {
             geometry: vec![Vector3::new(5.0, 0.0, 10.0), Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(5.0, 0.0, 10.0), Vector3::new(10.0, 0.0, 0.0)],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
 
         let hpa = HpaGraph::build(&g);
@@ -71,6 +80,9 @@ mod tests {
             geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
 
         // A-C-B is a Walkway (loop)
@@ -82,6 +94,9 @@ mod tests {
             geometry: vec![Vector3::ZERO, Vector3::new(5.0, 0.0, 1.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(5.0, 0.0, 1.0)],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
         g.add_edge(Edge {
             start_node: n2, end_node: n1,
@@ -91,6 +106,9 @@ mod tests {
             geometry: vec![Vector3::new(5.0, 0.0, 1.0), Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(5.0, 0.0, 1.0), Vector3::new(10.0, 0.0, 0.0)],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
 
         let hpa = HpaGraph::build(&g);
@@ -120,6 +138,9 @@ mod tests {
             geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             parking_occupied: 2, // FULL
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
 
         // E1: n0-n2, length 10m -> capacity 2.
@@ -131,6 +152,9 @@ mod tests {
             geometry: vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 10.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(0.0, 0.0, 10.0)],
             parking_occupied: 0, // FREE
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
 
         let agents = AgentSystem::new();
@@ -180,6 +204,9 @@ mod tests {
             geometry: vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
 
         let mut agents = AgentSystem::new();

@@ -26,6 +26,9 @@ mod tests {
             geometry: vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(-5.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
             physical_geometry: vec![],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
         // Edge 1: Center to Right (0 to +X) (Horizontal Main Road Part 2)
         g.add_edge(Edge {
@@ -39,6 +42,9 @@ mod tests {
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(5.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
         // Edge 2: Bot to Center (+Z to 0) (Vertical Road connecting)
         g.add_edge(Edge {
@@ -52,6 +58,9 @@ mod tests {
             geometry: vec![Vector3::new(0.0, 0.0, 10.0), Vector3::new(0.0, 0.0, 5.0), Vector3::new(0.0, 0.0, 0.0)],
             physical_geometry: vec![],
             parking_occupied: 0,
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
         });
 
         g.rebuild_intersection_clips();

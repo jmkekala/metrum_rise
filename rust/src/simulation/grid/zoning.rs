@@ -1,6 +1,9 @@
 use godot::prelude::*;
 use std::collections::HashMap;
 
+pub const ZONING_DEPTH: usize = 10;
+pub const GRID_CELL_SIZE: f32 = 10.0;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum ZoneType {
@@ -14,8 +17,8 @@ pub enum ZoneType {
 
 #[derive(Clone, Debug, Default)]
 pub struct EdgeZoning {
-    pub left_side: Vec<ZoneType>,  // 4 rows deep, N columns long
-    pub right_side: Vec<ZoneType>, // 4 rows deep, N columns long
+    pub left_side: Vec<ZoneType>,  // ZONING_DEPTH rows deep, N columns long
+    pub right_side: Vec<ZoneType>, // ZONING_DEPTH rows deep, N columns long
     pub left_occupied: Vec<bool>,
     pub right_occupied: Vec<bool>,
     pub cells_long: usize,
@@ -31,7 +34,7 @@ impl ZoningSystem {
     pub fn new() -> Self {
         Self {
             edge_grids: HashMap::new(),
-            grid_cell_size: 8.0,
+            grid_cell_size: GRID_CELL_SIZE,
         }
     }
 
@@ -47,20 +50,20 @@ impl ZoningSystem {
             let part2_cells = cells_long.saturating_sub(actual_split_x);
             
             let mut new_grid = EdgeZoning {
-                left_side: vec![ZoneType::None; part2_cells * 4],
-                right_side: vec![ZoneType::None; part2_cells * 4],
-                left_occupied: vec![false; part2_cells * 4],
-                right_occupied: vec![false; part2_cells * 4],
+                left_side: vec![ZoneType::None; part2_cells * ZONING_DEPTH],
+                right_side: vec![ZoneType::None; part2_cells * ZONING_DEPTH],
+                left_occupied: vec![false; part2_cells * ZONING_DEPTH],
+                right_occupied: vec![false; part2_cells * ZONING_DEPTH],
                 cells_long: part2_cells,
             };
 
             // Copy data to new grid
             for x in 0..part2_cells {
-                for y in 0..4 {
+                for y in 0..ZONING_DEPTH {
                     let old_x = actual_split_x + x;
-                    if old_x * 4 + y < old_grid.left_side.len() {
-                        let old_i = old_x * 4 + y;
-                        let new_i = x * 4 + y;
+                    if old_x * ZONING_DEPTH + y < old_grid.left_side.len() {
+                        let old_i = old_x * ZONING_DEPTH + y;
+                        let new_i = x * ZONING_DEPTH + y;
                         new_grid.left_side[new_i] = old_grid.left_side[old_i];
                         new_grid.right_side[new_i] = old_grid.right_side[old_i];
                         new_grid.left_occupied[new_i] = old_grid.left_occupied[old_i];
@@ -72,10 +75,10 @@ impl ZoningSystem {
 
             // Truncate old grid
             if let Some(g) = self.edge_grids.get_mut(&old_idx) {
-                g.left_side.truncate(actual_split_x * 4);
-                g.right_side.truncate(actual_split_x * 4);
-                g.left_occupied.truncate(actual_split_x * 4);
-                g.right_occupied.truncate(actual_split_x * 4);
+                g.left_side.truncate(actual_split_x * ZONING_DEPTH);
+                g.right_side.truncate(actual_split_x * ZONING_DEPTH);
+                g.left_occupied.truncate(actual_split_x * ZONING_DEPTH);
+                g.right_occupied.truncate(actual_split_x * ZONING_DEPTH);
                 g.cells_long = actual_split_x;
             }
         }
@@ -96,18 +99,18 @@ impl ZoningSystem {
     pub fn update_edge_grid_size(&mut self, edge_idx: usize, length: f32) {
         let cells_long = (length / self.grid_cell_size).floor() as usize;
         let entry = self.edge_grids.entry(edge_idx).or_insert_with(|| EdgeZoning {
-            left_side: vec![ZoneType::None; cells_long * 4],
-            right_side: vec![ZoneType::None; cells_long * 4],
-            left_occupied: vec![false; cells_long * 4],
-            right_occupied: vec![false; cells_long * 4],
+            left_side: vec![ZoneType::None; cells_long * ZONING_DEPTH],
+            right_side: vec![ZoneType::None; cells_long * ZONING_DEPTH],
+            left_occupied: vec![false; cells_long * ZONING_DEPTH],
+            right_occupied: vec![false; cells_long * ZONING_DEPTH],
             cells_long,
         });
 
         if entry.cells_long != cells_long {
-            entry.left_side.resize(cells_long * 4, ZoneType::None);
-            entry.right_side.resize(cells_long * 4, ZoneType::None);
-            entry.left_occupied.resize(cells_long * 4, false);
-            entry.right_occupied.resize(cells_long * 4, false);
+            entry.left_side.resize(cells_long * ZONING_DEPTH, ZoneType::None);
+            entry.right_side.resize(cells_long * ZONING_DEPTH, ZoneType::None);
+            entry.left_occupied.resize(cells_long * ZONING_DEPTH, false);
+            entry.right_occupied.resize(cells_long * ZONING_DEPTH, false);
             entry.cells_long = cells_long;
         }
     }
@@ -115,8 +118,8 @@ impl ZoningSystem {
     pub fn set_cell(&mut self, edge_idx: usize, side: i8, x: usize, y: usize, zone_type: ZoneType) {
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
             let cells = if side > 0 { &mut grid.left_side } else { &mut grid.right_side };
-            if x < grid.cells_long && x * 4 + y < cells.len() {
-                let idx = x * 4 + y;
+            if x < grid.cells_long && x * ZONING_DEPTH + y < cells.len() {
+                let idx = x * ZONING_DEPTH + y;
                 cells[idx] = zone_type;
             }
         }
@@ -125,8 +128,8 @@ impl ZoningSystem {
     pub fn get_cell(&self, edge_idx: usize, side: i8, x: usize, y: usize) -> ZoneType {
         if let Some(grid) = self.edge_grids.get(&edge_idx) {
             let cells = if side > 0 { &grid.left_side } else { &grid.right_side };
-            if x < grid.cells_long && x * 4 + y < cells.len() {
-                let idx = x * 4 + y;
+            if x < grid.cells_long && x * ZONING_DEPTH + y < cells.len() {
+                let idx = x * ZONING_DEPTH + y;
                 return cells[idx];
             }
         }
@@ -136,8 +139,8 @@ impl ZoningSystem {
     pub fn is_occupied(&self, edge_idx: usize, side: i8, x: usize, y: usize) -> bool {
         if let Some(grid) = self.edge_grids.get(&edge_idx) {
             let cells = if side > 0 { &grid.left_occupied } else { &grid.right_occupied };
-            if x < grid.cells_long && x * 4 + y < cells.len() {
-                let idx = x * 4 + y;
+            if x < grid.cells_long && x * ZONING_DEPTH + y < cells.len() {
+                let idx = x * ZONING_DEPTH + y;
                 return cells[idx];
             }
         }
@@ -147,8 +150,8 @@ impl ZoningSystem {
     pub fn set_occupied(&mut self, edge_idx: usize, side: i8, x: usize, y: usize, occupied: bool) {
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
             let cells = if side > 0 { &mut grid.left_occupied } else { &mut grid.right_occupied };
-            if x < grid.cells_long && x * 4 + y < cells.len() {
-                let idx = x * 4 + y;
+            if x < grid.cells_long && x * ZONING_DEPTH + y < cells.len() {
+                let idx = x * ZONING_DEPTH + y;
                 cells[idx] = occupied;
             }
         }
@@ -232,8 +235,9 @@ impl ZoningSystem {
             let mut edges_to_check = std::collections::HashSet::new();
             
             // Spatial AABB Filter
-            let pt_min = Vector2::new(pt.x - 40.0, pt.y - 40.0);
-            let pt_max = Vector2::new(pt.x + 40.0, pt.y + 40.0);
+            // Increase search radius to accommodate 10x10 cells, 10 deep = 100m + padding
+            let pt_min = Vector2::new(pt.x - 120.0, pt.y - 120.0);
+            let pt_max = Vector2::new(pt.x + 120.0, pt.y + 120.0);
 
             for (i, e) in graph.edges.iter().enumerate() {
                 if i == edge_idx { continue; }
@@ -310,9 +314,9 @@ impl ZoningSystem {
             // 2. Voronoi Comparison: Is this point closer to its own centerline than any competitor?
             let self_d_sq = self.get_distance_to_edge_sq(edge_idx, pt, graph);
             
-            // Priority bias for first few rows (within 12m)
+            // Priority bias for first few rows (within 15m - roughly first 1.5 cells)
             let mut bias = 1.0;
-            if self_d_sq < (12.0f32).powi(2) {
+            if self_d_sq < (15.0f32).powi(2) {
                 bias = 2.0; // Effectively make owner 2x stronger
             }
             
@@ -369,10 +373,10 @@ impl ZoningSystem {
             for side in [1, -1] {
                 let cells = if side > 0 { &grid.left_side } else { &grid.right_side };
                 // Safety: Ensure we don't try to access beyond the actual vector length
-                let actual_cells_long = (cells.iter().len() / 4).min(grid.cells_long);
+                let actual_cells_long = (cells.iter().len() / ZONING_DEPTH).min(grid.cells_long);
                 for x in 0..actual_cells_long {
-                    for y in 0..4 {
-                        let idx = x * 4 + y;
+                    for y in 0..ZONING_DEPTH {
+                        let idx = x * ZONING_DEPTH + y;
                         if idx >= cells.len() { continue; } // Extra safety
                         let z_type = cells[idx];
                         if z_type == ZoneType::None { continue; }

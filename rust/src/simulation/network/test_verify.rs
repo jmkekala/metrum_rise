@@ -7,7 +7,7 @@ mod tests {
     fn test_verify_normal() {
         let mut poly_3d = Vec::new();
         let ct = Vector3::new(0.0, 0.0, 0.0);
-        let mut add_triangle = |mut a: Vector3, mut b: Vector3, mut c: Vector3| {
+        let mut add_triangle = |a: Vector3, mut b: Vector3, mut c: Vector3| {
             let normal = (b - a).cross(c - a);
             if normal.length() < 0.0001 { return; } 
             if normal.y < 0.0 {

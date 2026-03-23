@@ -11,6 +11,9 @@ var hovered_edge_idx: int = -1
 enum Mode { SINGLE, PAINT, FILL, DELETE }
 var current_mode = Mode.SINGLE
 
+const ZONING_DEPTH: int = 10
+const CELL_SIZE: float = 10.0
+
 var grid_mesh: MultiMeshInstance3D
 var paint_mesh: MultiMeshInstance3D
 var brush_mesh: MultiMeshInstance3D
@@ -23,7 +26,7 @@ func _ready():
 	mm.use_custom_data = true
 	
 	var box = BoxMesh.new()
-	box.size = Vector3(7.5, 0.1, 7.5) # cell size 8.0, leave a gap
+	box.size = Vector3(CELL_SIZE - 0.5, 0.1, CELL_SIZE - 0.5) # cell size 10.0, leave a gap
 	mm.mesh = box
 	grid_mesh.multimesh = mm
 	
@@ -98,8 +101,8 @@ func _update_visuals():
 		var proj = _get_projection_data(edge_geom, world_pos)
 		m_edge = hovered_edge_idx
 		m_side = proj["side"]
-		m_cx = floor(proj["t"] * l / 8.0)
-		m_cy = floor((proj["dist_from_road"] - edge_width * 0.5) / 8.0)
+		m_cx = floor(proj["t"] * l / CELL_SIZE)
+		m_cy = floor((proj["dist_from_road"] - edge_width * 0.5) / CELL_SIZE)
 
 	grid_mesh.multimesh.instance_count = count
 	for i in range(count):
@@ -121,9 +124,7 @@ func _update_visuals():
 		t.basis = basis
 		grid_mesh.multimesh.set_instance_transform(i, t)
 		
-		var color = Color(0.1, 0.8, 0.1, 0.3)
-		
-		# BRUSH HIGHLIGHT
+		var base_alpha = 0.3
 		if e_idx == m_edge and side == m_side:
 			var in_brush = false
 			match current_mode:
@@ -135,7 +136,10 @@ func _update_visuals():
 					in_brush = true # Highlight whole side
 			
 			if in_brush:
-				color = Color(1, 1, 1, 0.7) # White highlight
+				base_alpha = 0.7
+		
+		var alpha = base_alpha * _get_depth_alpha(cy)
+		var color = Color(1, 1, 1, alpha) if (e_idx == m_edge and side == m_side) else Color(0.1, 0.8, 0.1, alpha)
 		
 		grid_mesh.multimesh.set_instance_color(i, color)
 	
@@ -159,7 +163,7 @@ func _draw_all_painted():
 		
 		var edge_geom = simulation_node.get_edge_geometry(edge_idx)
 		var edge_width = simulation_node.get_edge_width(edge_idx)
-		var cell_size = 8.0 
+		var cell_size = CELL_SIZE
 		
 		var t = (x as float + 0.5) * cell_size / _get_edge_length(edge_geom)
 		var pos_on_edge = _get_pos_on_edge(edge_geom, t)
@@ -202,10 +206,10 @@ func _handle_painting():
 		var t = proj["t"]
 		var dist_from_edge = proj["dist_from_road"]
 		
-		var cell_x = floor(t * l / 8.0)
-		var cell_y = floor((dist_from_edge - edge_width * 0.5) / 8.0)
+		var cell_x = floor(t * l / CELL_SIZE)
+		var cell_y = floor((dist_from_edge - edge_width * 0.5) / CELL_SIZE)
 		
-		if cell_y >= 0 and cell_y < 4:
+		if cell_y >= 0 and cell_y < ZONING_DEPTH:
 			match current_mode:
 				Mode.SINGLE:
 					simulation_node.set_zoning_cell(hovered_edge_idx, side, cell_x, cell_y, current_zone_type)
@@ -215,7 +219,7 @@ func _handle_painting():
 						for dy in range(-2, 2):
 							var bx = cell_x + dx
 							var by = cell_y + dy
-							if by >= 0 and by < 4:
+							if by >= 0 and by < ZONING_DEPTH:
 								simulation_node.set_zoning_cell(hovered_edge_idx, side, bx, by, current_zone_type)
 				Mode.DELETE:
 					# This mode is handled in _handle_click or by setting enabled=false
@@ -257,11 +261,11 @@ func _handle_fill():
 	var proj = _get_projection_data(edge_geom, world_pos)
 	var side = proj["side"]
 	
-	# Fill all 4 rows along the whole edge
+	# Fill all ZONING_DEPTH rows along the whole edge
 	var l = _get_edge_length(edge_geom)
-	var cells_long = floor(l / 8.0)
+	var cells_long = floor(l / CELL_SIZE)
 	for x in range(cells_long):
-		for y in range(4):
+		for y in range(ZONING_DEPTH):
 			simulation_node.set_zoning_cell(hovered_edge_idx, side, x, y, current_zone_type)
 
 func _handle_side_delete():
@@ -284,6 +288,13 @@ func _get_zone_color(z_type):
 		4: return Color(0.1, 0.8, 0.8, 0.6) # Office: Cyan
 		5: return Color(0.8, 0, 0.8, 0.6) # Mixed: Purple
 		_: return Color(1, 1, 1, 0.1)
+
+func _get_depth_alpha(y: int) -> float:
+	if y < 4:
+		return 1.0
+	# Fade from index 4 (1.0) to index 9 (approx 0.05)
+	var t = float(y - 4) / float(ZONING_DEPTH - 1 - 4)
+	return lerp(1.0, 0.1, t)
 
 func _get_edge_length(geom: PackedVector2Array) -> float:
 	var l = 0.0

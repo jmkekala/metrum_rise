@@ -1,9 +1,9 @@
 use godot::prelude::*;
 
 pub mod config;
-mod simulation;
-mod nodes;
-mod utils;
+pub mod simulation;
+pub mod nodes;
+pub mod utils;
 
 struct MetrumRiseExtension;
 

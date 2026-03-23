@@ -162,7 +162,7 @@ func _draw_blueprint():
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
 		
-		var road_width = max(2.0, (fwd_lanes + bkw_lanes) * 3.0)
+		var road_width = max(2.0, (fwd_lanes + bkw_lanes) * simulation_node.get_lane_width())
 		var half_w = road_width * 0.5
 		
 		var ribbon_verts = PackedVector3Array()

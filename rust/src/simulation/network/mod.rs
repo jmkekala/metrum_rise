@@ -27,6 +27,13 @@ impl TransitNetwork {
         }
     }
 
+    pub fn clear(&mut self, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
+        self.graph = TransitGraph::new();
+        self.hpa_graph = HpaGraph::new();
+        zoning.clear();
+        allocator.clear();
+    }
+
     pub fn add_road(&mut self, points: Vec<Vector3>, fwd_lanes: u8, bkw_lanes: u8, zoning_left: bool, zoning_right: bool, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
         // 1. Simplify points
         let mut simplified_points = Vec::with_capacity(points.len());
@@ -165,7 +172,7 @@ impl TransitNetwork {
             end_node: end,
             primary_type: if is_walkway { TransitType::Foot } else { TransitType::Road },
             allowed_types,
-            width: ((fwd + bkw) as f32 * 3.0).max(2.0),
+            width: ((fwd + bkw) as f32 * config::LANE_WIDTH).max(2.0),
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             speed_limit: 50.0,

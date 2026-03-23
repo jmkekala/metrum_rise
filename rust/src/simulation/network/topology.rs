@@ -193,23 +193,27 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
 mod tests {
     use super::*;
     use crate::simulation::network::TransitNetwork;
+    use crate::simulation::grid::zoning::ZoningSystem;
+    use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::network::types::TransitType;
     use godot::prelude::Vector3;
 
     #[test]
     fn test_topology_t_junction() {
         let mut net = TransitNetwork::new();
+        let mut zoning = ZoningSystem::new(100, 100);
+        let mut allocator = BuildingAllocator::new(100, 100);
         // straight road
         net.add_road(vec![
             Vector3::new(-10.0, 0.0, 0.0),
             Vector3::new(10.0, 0.0, 0.0),
-        ].into(), 1, 1);
+        ].into(), 1, 1, false, false, &mut zoning, &mut allocator);
         
         // side road connecting to the middle
         net.add_road(vec![
             Vector3::new(0.0, 0.0, 10.0),
             Vector3::new(0.0, 0.0, 0.0),
-        ].into(), 1, 1);
+        ].into(), 1, 1, false, false, &mut zoning, &mut allocator);
         
         println!("Graph has {} edges", net.graph.edges.len());
         for (i, edge) in net.graph.edges.iter().enumerate() {

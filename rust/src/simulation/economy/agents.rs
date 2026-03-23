@@ -60,6 +60,7 @@ pub struct AgentSystem {
     pub has_car: Vec<bool>,
     pub parked_edge: Vec<usize>,
     pub parked_progression: Vec<isize>,
+    pub pathfind_count: u32,
 }
 
 impl AgentSystem {
@@ -97,8 +98,9 @@ impl AgentSystem {
             has_car: Vec::new(),
             parked_edge: Vec::new(),
             parked_progression: Vec::new(),
+            pathfind_count: 0,
         }
-}
+    }
 
     pub fn spawn_agent(&mut self, home: usize, home_node: u32, _target_x: f32, _target_y: f32, highway_node: u32, init_x: f32, init_y: f32) -> usize {
         self.home_building.push(home);
@@ -137,11 +139,63 @@ impl AgentSystem {
         self.count += 1;
         
         if home == usize::MAX {
-            println!("Immigrant spawned at border node {} (pos: {}, {})", highway_node, init_x, init_y);
+            // println!("Immigrant spawned at border node {} (pos: {}, {})", highway_node, init_x, init_y);
         }
         self.count - 1
     }
 
+    pub fn spawn_random_agents(&mut self, count: usize, graph: &TransitGraph, allocator: &crate::simulation::buildings::allocator::BuildingAllocator) {
+        let mut rng = rand::thread_rng();
+        let node_count = graph.nodes.len();
+        let bldg_count = allocator.buildings.len();
+        if node_count == 0 || bldg_count == 0 { return; }
+
+        for _ in 0..count {
+            let home_idx = rng.gen_range(0..bldg_count);
+            let home_node = allocator.buildings[home_idx].frontage_node;
+            let start_node = rng.gen_range(0..node_count) as u32;
+            let start_pos = graph.nodes[start_node as usize].pos;
+
+            self.spawn_agent(home_idx, home_node, 0.0, 0.0, start_node, start_pos.x, start_pos.z);
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.home_building.clear();
+        self.work_building.clear();
+        self.pos_x.clear();
+        self.pos_y.clear();
+        self.is_visible.clear();
+        self.activity.clear();
+        self.transit.clear();
+        self.happiness.clear();
+        self.money.clear();
+        self.current_building.clear();
+        self.target_building.clear();
+        self.current_node.clear();
+        self.target_node.clear();
+        self.current_edge.clear();
+        self.edge_progression.clear();
+        self.current_lane.clear();
+        self.is_driving.clear();
+        self.bezier_p0_x.clear();
+        self.bezier_p0_y.clear();
+        self.bezier_p1_x.clear();
+        self.bezier_p1_y.clear();
+        self.bezier_p2_x.clear();
+        self.bezier_p2_y.clear();
+        self.bezier_p3_x.clear();
+        self.bezier_p3_y.clear();
+        self.bezier_t.clear();
+        self.current_path.clear();
+        self.current_path_index.clear();
+        self.has_car.clear();
+        self.parked_edge.clear();
+        self.parked_progression.clear();
+        self.count = 0;
+        self.pathfind_count = 0;
+    }
+    
     pub fn kill_agent(&mut self, index: usize) {
         if index >= self.count { return; }
         let last_idx = self.count - 1;
@@ -236,12 +290,13 @@ impl AgentSystem {
     }
     
     pub fn decide_transit_mode(
-        &self,
+        &mut self,
         i: usize,
         target_node: u32,
         graph: &crate::simulation::network::graph::TransitGraph,
         hpa: &crate::simulation::pathing::hpa::HpaGraph,
     ) -> (u32, bool) {
+        self.pathfind_count += 1;
         let current_node = self.current_node[i];
         let mut pedestrian_dist = 10000.0;
         if let Some((_cost, _dist, _path)) = hpa.find_path(current_node, target_node, usize::MAX, graph, true) {
@@ -251,6 +306,7 @@ impl AgentSystem {
 
         if pedestrian_dist > 500.0 && self.has_car[i] {
             // Far target and has car, but ONLY drive if a driving path actually exists!
+            self.pathfind_count += 1;
             if hpa.find_path(current_node, target_node, usize::MAX, graph, false).is_some() {
                 return (target_node, true);
             }
@@ -498,6 +554,7 @@ impl AgentSystem {
                         // 2. Pathfinding / Select Edge
                         if self.current_edge[i] == usize::MAX {
                             if self.current_path[i].is_empty() {
+                                self.pathfind_count += 1;
                                 if let Some((_, _, path)) = hpa_graph.find_path(self.current_node[i], self.target_node[i], usize::MAX, graph, !self.is_driving[i]) {
                                     self.current_path[i] = path;
                                     self.current_path_index[i] = 1;
@@ -518,8 +575,8 @@ impl AgentSystem {
                                         } else {
                                             self.transit[i] = TRANSIT_IDLE;
                                         }
+                                        break;
                                     }
-                            remaining_dist = 0.0; break;
                                 }
                             }
 
@@ -551,10 +608,10 @@ impl AgentSystem {
                                     }
                                 } else {
                                     self.current_path[i].clear();
-                            remaining_dist = 0.0; break;
+                                    break;
                                 }
                             } else {
-                                remaining_dist = 0.0; break;
+                                break;
                             }
                         }
 
@@ -562,7 +619,7 @@ impl AgentSystem {
                         if self.current_edge[i] >= graph.edges.len() || graph.edges[self.current_edge[i]].deleted {
                             self.current_edge[i] = usize::MAX;
                             self.current_path[i].clear();
-                            remaining_dist = 0.0; break;
+                            break;
                         }
                         let edge = &graph.edges[self.current_edge[i]];
                         
