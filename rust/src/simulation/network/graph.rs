@@ -63,6 +63,7 @@ pub struct TransitGraph {
     pub junction_polygons: HashMap<u32, JunctionMesh>,
     pub node_aliases: HashMap<u32, u32>,
     pub spatial_edge_grid: HashMap<(i32, i32), Vec<usize>>,
+    pub adjacency: HashMap<u32, Vec<usize>>,
 }
 
 impl TransitGraph {
@@ -136,6 +137,27 @@ impl TransitGraph {
         id
     }
 
+    pub fn get_edge_between_nodes(&self, from: u32, to: u32) -> Option<usize> {
+        if let Some(edges) = self.adjacency.get(&from) {
+            for &idx in edges {
+                let e = &self.edges[idx];
+                if !e.deleted && ((e.start_node == from && e.end_node == to) || (e.start_node == to && e.end_node == from)) {
+                    return Some(idx);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn rebuild_adjacency_list(&mut self) {
+        self.adjacency.clear();
+        for (i, e) in self.edges.iter().enumerate() {
+            if e.deleted { continue; }
+            self.adjacency.entry(e.start_node).or_default().push(i);
+            self.adjacency.entry(e.end_node).or_default().push(i);
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
@@ -143,6 +165,7 @@ impl TransitGraph {
             junction_polygons: std::collections::HashMap::new(),
             node_aliases: std::collections::HashMap::new(),
             spatial_edge_grid: HashMap::new(),
+            adjacency: HashMap::new(),
         }
     }
 
@@ -171,6 +194,12 @@ impl TransitGraph {
         let id = self.edges.len();
         self.edges.push(edge);
         self.add_to_spatial_index(id);
+        
+        // Update Adjacency
+        let e = &self.edges[id];
+        self.adjacency.entry(e.start_node).or_default().push(id);
+        self.adjacency.entry(e.end_node).or_default().push(id);
+        
         id
     }
 
@@ -730,6 +759,7 @@ impl TransitGraph {
         for i in 0..self.edges.len() {
             self.add_to_spatial_index(i);
         }
+        self.rebuild_adjacency_list();
     }
 }
 

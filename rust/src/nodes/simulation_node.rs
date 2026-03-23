@@ -1,5 +1,6 @@
 use godot::prelude::*;
-use godot::classes::{Node3D, INode3D};
+use godot::classes::{Node3D, INode3D, MultiMesh};
+
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::network::TransitNetwork;
@@ -12,7 +13,8 @@ use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::config;
+use crate::config::{self, ZONING_DEPTH, GRID_CELL_SIZE};
+use rayon::prelude::*;
 
 pub struct SimulationSnapshot {
     pub terrain: Option<Vec<f32>>,
@@ -237,6 +239,196 @@ impl SimulationNode {
     }
 
     #[func]
+    pub fn update_zoning_visuals(&self, mut grid_mm: Gd<MultiMesh>, mut paint_mm: Gd<MultiMesh>, hovered_edge: i32, mode: i32, mouse_pos_3d: Vector3) {
+        let graph = &self.transit_network.graph;
+        let cell_size = self.zoning.grid_cell_size;
+        let zoning_depth = config::ZONING_DEPTH;
+
+        // 1. PRE-CALCULATE MOUSE CELL DATA (for brush highlighting)
+        let mut m_edge = -1; let mut m_side = 0; let mut m_cx = -1; let mut m_cy = -1;
+        if hovered_edge != -1 {
+            if let Some(edge) = graph.edges.get(hovered_edge as usize) {
+                let world_pos = godot::prelude::Vector2::new(mouse_pos_3d.x, mouse_pos_3d.z);
+                let p = self.get_projection_data(edge, world_pos);
+                m_edge = hovered_edge;
+                m_side = p.side;
+                m_cx = (p.t * edge.physical_length / cell_size).floor() as i32;
+                m_cy = ((p.dist_from_road - edge.width * 0.5) / cell_size).floor() as i32;
+            }
+        }
+
+        // 2. GENERATE GRID PREVIEW (The ghost cells)
+        let mut grid_instances = Vec::new();
+        for (edge_idx, edge) in graph.edges.iter().enumerate() {
+            if edge.deleted || edge.physical_length < 0.1 { continue; }
+            let cells_long = (edge.physical_length / cell_size).floor() as usize;
+
+            for side in [1, -1] {
+                if (side == 1 && !edge.zoning_right) || (side == -1 && !edge.zoning_left) { continue; }
+
+                for x in 0..cells_long {
+                    let t_param = (x as f32 + 0.5) * cell_size / edge.physical_length;
+                    let (pos_on_edge, tangent) = self.get_edge_pos_and_tangent(edge_idx, t_param);
+                    
+                    // Standard Normalized Normal (Left-pointing for side=1 in Godot right-handed XZ)
+                    let normal = godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
+
+                    for y in 0..zoning_depth {
+                        if self.zoning.is_blocked(edge_idx, side, x, y) { continue; }
+                        
+                        let depth = (y as f32 + 0.5) * cell_size;
+                        let center_2d = pos_on_edge + normal * (edge.width * 0.5 + depth);
+                        
+                        // DIRECT BASIS CONSTRUCTION
+                        // Align Box X with tangent, Box Z with normal
+                        let b_xx = tangent.x; let b_xz = tangent.y; // X-axis on XZ plane
+                        let b_zx = -tangent.y; let b_zz = tangent.x; // Z-axis on XZplane (orthogonal)
+
+                        // PUSH TRANSFORM (12 floats, 4 per row) - Godot MultiMesh format
+                        // Row 0: [X.x, Y.x, Z.x, O.x]
+                        grid_instances.push(b_xx); grid_instances.push(0.0); grid_instances.push(b_zx); grid_instances.push(center_2d.x);
+                        // Row 1: [X.y, Y.y, Z.y, O.y]
+                        grid_instances.push(0.0); grid_instances.push(1.0); grid_instances.push(0.0); grid_instances.push(0.1);
+                        // Row 2: [X.z, Y.z, Z.z, O.z]
+                        grid_instances.push(b_xz); grid_instances.push(0.0); grid_instances.push(b_zz); grid_instances.push(center_2d.y);
+
+                        // COLOR DATA (4 floats)
+                        let is_hovered = edge_idx as i32 == m_edge && side == m_side;
+                        let mut in_brush = false;
+                        if is_hovered {
+                            match mode {
+                                0 => if x == m_cx as usize && y == m_cy as usize { in_brush = true; },
+                                1 => if (x as i32 - m_cx).abs() < 2 && (y as i32 - m_cy).abs() < 2 { in_brush = true; },
+                                2 | 3 => in_brush = true,
+                                _ => {}
+                            }
+                        }
+                        
+                        let alpha = (if in_brush { 0.7 } else { 0.3 }) * self.get_depth_alpha(y as i32);
+                        let r = if is_hovered { 1.0 } else { 0.1 };
+                        let g = if is_hovered { 1.0 } else { 0.8 };
+                        let b = if is_hovered { 1.0 } else { 0.1 };
+                        grid_instances.push(r); grid_instances.push(g); grid_instances.push(b); grid_instances.push(alpha);
+                    }
+                }
+            }
+        }
+
+        // 3. GENERATE PAINTED CELLS
+        let mut paint_instances = Vec::new();
+        for (&edge_idx, grid) in &self.zoning.edge_grids {
+            if let Some(edge) = graph.edges.get(edge_idx) {
+                if edge.deleted { continue; }
+                
+                for side_idx in 0..2 {
+                    let side: i8 = if side_idx == 0 { 1 } else { -1 }; // 1=Left, -1=Right
+                    let data = if side == 1 { &grid.left_side } else { &grid.right_side };
+                    if (side == 1 && !edge.zoning_left) || (side == -1 && !edge.zoning_right) { continue; }
+
+                    for (idx, &z_type) in data.iter().enumerate() {
+                        if z_type == ZoneType::None { continue; }
+                        let x = idx / ZONING_DEPTH; 
+                        let y = idx % ZONING_DEPTH;
+                        if self.zoning.is_blocked(edge_idx, side, x, y) { continue; }
+
+                        let t_param = (x as f32 + 0.5) * cell_size / edge.physical_length;
+                        let (pos_on_edge, tangent) = self.get_edge_pos_and_tangent(edge_idx, t_param);
+                        let normal = godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
+                        let depth = (y as f32 + 0.5) * cell_size;
+                        let center_2d = pos_on_edge + normal * (edge.width * 0.5 + depth);
+                        
+                        let w = self.heightmap.width as f32;
+                        let h = self.heightmap.height as f32;
+                        let gx = (center_2d.x + (w - 1.0) * 0.5).round().clamp(0.0, w - 1.0) as usize;
+                        let gz = (center_2d.y + (h - 1.0) * 0.5).round().clamp(0.0, h - 1.0) as usize;
+                        let world_y = self.heightmap.get_height(gx, gz) * 20.0 + 0.4;
+
+                        // PUSH TRANSFORM (12 floats, 4 per row)
+                        let b_xx = tangent.x; let b_xz = tangent.y; 
+                        let b_zx = -tangent.y; let b_zz = tangent.x;
+
+                        paint_instances.push(b_xx); paint_instances.push(0.0); paint_instances.push(b_zx); paint_instances.push(center_2d.x);
+                        paint_instances.push(0.0); paint_instances.push(1.0); paint_instances.push(0.0); paint_instances.push(world_y);
+                        paint_instances.push(b_xz); paint_instances.push(0.0); paint_instances.push(b_zz); paint_instances.push(center_2d.y);
+
+                        let color = self.get_zone_color_rust(z_type as u8);
+                        paint_instances.push(color.r); paint_instances.push(color.g); paint_instances.push(color.b); paint_instances.push(0.6);
+                    }
+                }
+            }
+        }
+
+        // Apply to Godot (The "Batch Burst")
+        let grid_count = (grid_instances.len() / 16) as i32;
+        let paint_count = (paint_instances.len() / 16) as i32;
+        
+        grid_mm.set_instance_count(grid_count);
+        if grid_count > 0 {
+            grid_mm.set_buffer(&PackedFloat32Array::from_iter(grid_instances));
+        }
+
+        paint_mm.set_instance_count(paint_count);
+        if paint_count > 0 {
+            paint_mm.set_buffer(&PackedFloat32Array::from_iter(paint_instances));
+        }
+    }
+
+    fn get_projection_data(&self, edge: &crate::simulation::network::graph::Edge, p: godot::prelude::Vector2) -> interaction::ProjectionData {
+        let mut best_dist_sq = 1e10;
+        let mut best_t = 0.0;
+        let mut best_side = 1;
+        let mut best_dist_from_road = 0.0;
+        
+        let geom = &edge.physical_geometry;
+        let total_l = edge.physical_length;
+        let mut curr_l = 0.0;
+        
+        for i in 0..geom.len() - 1 {
+            let a = godot::prelude::Vector2::new(geom[i].x, geom[i].z);
+            let b = godot::prelude::Vector2::new(geom[i+1].x, geom[i+1].z);
+            let seg = b - a;
+            let l2 = seg.length_squared();
+            if l2 < 0.001 { continue; }
+            
+            let mut t_val = ((p.x - a.x) * seg.x + (p.y - a.y) * seg.y) / l2;
+            t_val = t_val.clamp(0.0, 1.0);
+            let proj = a + seg * t_val;
+            
+            let dist_sq = p.distance_squared_to(proj);
+            if dist_sq < best_dist_sq {
+                best_dist_sq = dist_sq;
+                best_t = (curr_l + t_val * f32::sqrt(l2)) / total_l;
+                let tangent = seg.normalized();
+                let normal = godot::prelude::Vector2::new(tangent.y, -tangent.x);
+                let to_pt = p - proj;
+                best_side = if to_pt.dot(normal) > 0.0 { 1 } else { -1 };
+                best_dist_from_road = f32::sqrt(dist_sq);
+            }
+            curr_l += f32::sqrt(l2);
+        }
+        
+        interaction::ProjectionData { t: best_t, side: best_side, dist_from_road: best_dist_from_road }
+    }
+
+    fn get_zone_color_rust(&self, z_type: u8) -> godot::prelude::Color {
+        match z_type {
+            1 => Color::from_rgb(0.0, 1.0, 0.0),
+            2 => Color::from_rgb(0.0, 0.5, 1.0),
+            3 => Color::from_rgb(1.0, 1.0, 0.0),
+            4 => Color::from_rgb(0.1, 0.8, 0.8),
+            5 => Color::from_rgb(0.8, 0.0, 0.8),
+            _ => Color::from_rgb(1.0, 1.0, 1.0),
+        }
+    }
+
+    fn get_depth_alpha(&self, y: i32) -> f32 {
+        if y < 4 { return 1.0; }
+        let zoning_depth = ZONING_DEPTH as i32;
+        let t = (y - 4) as f32 / (zoning_depth - 1 - 4) as f32;
+        1.0 + t * (0.1 - 1.0)
+    }
+
+    #[func]
     pub fn get_all_zoning_preview_data(&self) -> PackedFloat32Array {
         let mut data = Vec::new();
         let graph = &self.transit_network.graph;
@@ -257,7 +449,7 @@ impl SimulationNode {
                     let (pos_on_edge, tangent) = self.get_edge_pos_and_tangent(edge_idx, t_param);
                     let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x) * (side as f32);
 
-                    for y in 0..crate::simulation::grid::zoning::ZONING_DEPTH {
+                    for y in 0..ZONING_DEPTH {
                         if self.zoning.is_cell_obstructed(edge_idx, side, x, y, graph) {
                             continue;
                         }
@@ -899,6 +1091,11 @@ impl SimulationNode {
         let nodes = self.transit_network.graph.nodes.len();
         let edges = self.transit_network.graph.edges.len();
         godot_print!("Road added. Total: {} Nodes, {} Edges.", nodes, edges);
+
+        // TRIGGER LOCAL RE-FLOW
+        if edges > 0 {
+            self.recalculate_zoning_local(edges - 1);
+        }
     }
 
     #[func]
@@ -1404,6 +1601,52 @@ impl INode3D for SimulationNode {
                 self.watermap.tick(&self.heightmap.data, sub_dt);
             }
             self.water_dirty = true;
+        }
+    }
+}
+
+// ------------------------------------------------------------------
+// INTERNAL HELPERS (Non-Godot-API)
+// ------------------------------------------------------------------
+impl SimulationNode {
+    fn recalculate_zoning_local(&mut self, edge_idx: usize) {
+        let graph = &self.transit_network.graph;
+        if edge_idx >= graph.edges.len() { return; }
+        
+        let edge = &graph.edges[edge_idx];
+        if edge.physical_geometry.len() < 2 { return; }
+        let center = (edge.physical_geometry[0] + edge.physical_geometry[edge.physical_geometry.len()-1]) * 0.5;
+        let radius = edge.physical_length * 0.5 + 150.0;
+
+        let affected_edges = graph.get_edges_near_point(center, radius);
+        for &idx in &affected_edges {
+            if idx >= graph.edges.len() { continue; }
+            let e = &graph.edges[idx];
+            if e.deleted { continue; }
+            
+            let cells_long = (e.physical_length / self.zoning.grid_cell_size).floor() as usize;
+            let depth = config::ZONING_DEPTH;
+            
+            // Collect all (side, x, y) triplets for this edge
+            let mut cell_coords = Vec::with_capacity(cells_long * 2 * depth);
+            for side in [1, -1] {
+                for x in 0..cells_long {
+                    for y in 0..depth {
+                        cell_coords.push((side, x, y));
+                    }
+                }
+            }
+
+            // PARALLEL SCAN: Use all CPU cores to check cell obstructions
+            let results: Vec<bool> = cell_coords.par_iter().map(|&(side, x, y)| {
+                self.zoning.is_cell_obstructed(idx, side, x, y, graph)
+            }).collect();
+
+            // COMMIT RESULTS (Sequential HashMap update)
+            for (i, &blocked) in results.iter().enumerate() {
+                let (side, x, y) = cell_coords[i];
+                self.zoning.set_blocked(idx, side, x, y, blocked);
+            }
         }
     }
 }

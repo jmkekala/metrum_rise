@@ -23,7 +23,7 @@ func _ready():
 	var mm = MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
-	mm.use_custom_data = true
+	mm.use_custom_data = false
 	
 	var box = BoxMesh.new()
 	box.size = Vector3(CELL_SIZE - 0.5, 0.1, CELL_SIZE - 0.5) # cell size 10.0, leave a gap
@@ -44,7 +44,7 @@ func _ready():
 	var mm2 = MultiMesh.new()
 	mm2.transform_format = MultiMesh.TRANSFORM_3D
 	mm2.use_colors = true
-	mm2.use_custom_data = true
+	mm2.use_custom_data = false
 	mm2.mesh = box
 	paint_mesh.multimesh = mm2
 	paint_mesh.material_override = mat # share material
@@ -82,106 +82,14 @@ func _update_visuals():
 	var ray_origin = camera.project_ray_origin(mouse_pos)
 	var ray_dir = camera.project_ray_normal(mouse_pos)
 	var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
+	var mouse_pos_3d = intersection if intersection != null else Vector3.ZERO
+	var h_edge = simulation_node.get_hovered_edge(mouse_pos_3d.x, mouse_pos_3d.z) if intersection != null else -1
+	hovered_edge_idx = h_edge
 	
-	if intersection != null:
-		hovered_edge_idx = simulation_node.get_hovered_edge(intersection.x, intersection.z)
-	else:
-		hovered_edge_idx = -1
-	
-	var data = simulation_node.get_all_zoning_preview_data()
-	var count = data.size() / 8
-	
-	# PRE-CALC MOUSE CELL FOR BRUSH HIGHLIGHT
-	var m_edge = -1; var m_side = 0; var m_cx = -1; var m_cy = -1;
-	if intersection != null and hovered_edge_idx != -1:
-		var world_pos = Vector2(intersection.x, intersection.z)
-		var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
-		var edge_width = simulation_node.get_edge_width(hovered_edge_idx)
-		var l = _get_edge_length(edge_geom)
-		var proj = _get_projection_data(edge_geom, world_pos)
-		m_edge = hovered_edge_idx
-		m_side = proj["side"]
-		m_cx = floor(proj["t"] * l / CELL_SIZE)
-		m_cy = floor((proj["dist_from_road"] - edge_width * 0.5) / CELL_SIZE)
-
-	grid_mesh.multimesh.instance_count = count
-	for i in range(count):
-		var x = data[i*8+0]
-		var z = data[i*8+1]
-		var tx = data[i*8+2]
-		var ty = data[i*8+3]
-		var e_idx = int(data[i*8+4])
-		var side = int(data[i*8+5])
-		var cx = int(data[i*8+6])
-		var cy = int(data[i*8+7])
-		
-		var t = Transform3D()
-		t.origin = Vector3(x, 0.1, z)
-		var basis = Basis()
-		basis.x = Vector3(tx, 0, ty)
-		basis.y = Vector3(0, 1, 0)
-		basis.z = Vector3(-ty, 0, tx)
-		t.basis = basis
-		grid_mesh.multimesh.set_instance_transform(i, t)
-		
-		var base_alpha = 0.3
-		if e_idx == m_edge and side == m_side:
-			var in_brush = false
-			match current_mode:
-				0: # SINGLE
-					if cx == m_cx and cy == m_cy: in_brush = true
-				1: # PAINT
-					if abs(cx - m_cx) < 2 and abs(cy - m_cy) < 2: in_brush = true
-				2, 3: # DELETE or FILL
-					in_brush = true # Highlight whole side
-			
-			if in_brush:
-				base_alpha = 0.7
-		
-		var alpha = base_alpha * _get_depth_alpha(cy)
-		var color = Color(1, 1, 1, alpha) if (e_idx == m_edge and side == m_side) else Color(0.1, 0.8, 0.1, alpha)
-		
-		grid_mesh.multimesh.set_instance_color(i, color)
+	simulation_node.update_zoning_visuals(grid_mesh.multimesh, paint_mesh.multimesh, h_edge, current_mode, mouse_pos_3d)
 	
 	grid_mesh.visible = true
-	_draw_all_painted()
-
-func _draw_all_painted():
-	var data = simulation_node.get_zoning_grid_data()
-	# data: [edge_idx, side, x, y, type]
-	var count = data.size() / 5
-	paint_mesh.multimesh.instance_count = count
-	
-	for i in range(count):
-		var edge_idx = int(data[i*5])
-		var side = int(data[i*5+1])
-		var x = int(data[i*5+2])
-		var y = int(data[i*5+3])
-		var z_type = int(data[i*5+4])
-		
-		if simulation_node.is_zoning_cell_obstructed(edge_idx, side, x, y): continue
-		
-		var edge_geom = simulation_node.get_edge_geometry(edge_idx)
-		var edge_width = simulation_node.get_edge_width(edge_idx)
-		var cell_size = CELL_SIZE
-		
-		var t = (x as float + 0.5) * cell_size / _get_edge_length(edge_geom)
-		var pos_on_edge = _get_pos_on_edge(edge_geom, t)
-		var tangent = _get_tangent_on_edge(edge_geom, t)
-		var normal = Vector2(-tangent.y, tangent.x) * side
-		
-		var depth_offset = (y as float + 0.5) * cell_size
-		var center_2d = pos_on_edge + normal * (edge_width * 0.5 + depth_offset)
-		var world_y = simulation_node.get_height_at(center_2d) + 0.4
-		
-		var tr = Transform3D()
-		var angle = atan2(-tangent.y, tangent.x)
-		tr = tr.rotated(Vector3.UP, angle)
-		tr.origin = Vector3(center_2d.x, world_y, center_2d.y)
-		paint_mesh.multimesh.set_instance_transform(i, tr)
-		
-		var color = _get_zone_color(z_type)
-		paint_mesh.multimesh.set_instance_color(i, color)
+	paint_mesh.visible = true
 
 func _handle_painting():
 	if state == 1 and hovered_edge_idx != -1:
@@ -214,9 +122,9 @@ func _handle_painting():
 				Mode.SINGLE:
 					simulation_node.set_zoning_cell(hovered_edge_idx, side, cell_x, cell_y, current_zone_type)
 				Mode.PAINT:
-					# 4x4 brush
-					for dx in range(-2, 2):
-						for dy in range(-2, 2):
+					# 3x3 brush
+					for dx in range(-1, 2):
+						for dy in range(-1, 2):
 							var bx = cell_x + dx
 							var by = cell_y + dy
 							if by >= 0 and by < ZONING_DEPTH:
@@ -350,7 +258,7 @@ func _get_projection_data(geom: PackedVector2Array, p: Vector2) -> Dictionary:
 			best_dist_sq = dist_sq
 			best_t = (curr_l + t_val * sqrt(l2)) / total_l
 			var tangent = seg.normalized()
-			var normal = Vector2(-tangent.y, tangent.x)
+			var normal = Vector2(tangent.y, -tangent.x)
 			var to_pt = p - proj
 			best_side = 1 if to_pt.dot(normal) > 0 else -1
 			best_dist_from_road = sqrt(dist_sq)

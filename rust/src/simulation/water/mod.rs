@@ -87,7 +87,7 @@ impl WaterSystem {
         // Capture a read-only view of flux
         let flux_ref = &self.flux;
         
-        self.depth.par_chunks_mut(w).enumerate().enumerate().for_each(|(y_idx, (y, row_depth))| {
+        self.depth.par_chunks_mut(w).enumerate().enumerate().for_each(|(_y_idx, (y, row_depth))| {
             if y == 0 || y >= h - 1 { return; }
 
             // Using the velocity buffer to also find active rows

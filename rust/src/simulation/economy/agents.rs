@@ -6,6 +6,7 @@ use crate::simulation::pathing::hpa::HpaGraph;
 use godot::prelude::*;
 use rand::Rng;
 
+
 // Transit States
 pub const TRANSIT_IDLE: u8 = 0;        // Inside building
 pub const TRANSIT_DEPARTING: u8 = 1;   // Building -> Road Offset
@@ -461,15 +462,7 @@ impl AgentSystem {
 
                         if !self.current_path[i].is_empty() {
                             let next_node = self.current_path[i][0];
-                            let mut found_e = usize::MAX;
-                            for (idx, e) in graph.edges.iter().enumerate() {
-                                 if (e.start_node == node_idx && e.end_node == next_node) ||
-                                   (e.end_node == node_idx && e.start_node == next_node) {
-                                    if !e.deleted { found_e = idx; break; }
-                                }
-                            }
-                            
-                            if found_e != usize::MAX {
+                            if let Some(found_e) = graph.get_edge_between_nodes(node_idx, next_node) {
                                 let edge = &graph.edges[found_e];
                                 let is_fwd = edge.start_node == node_idx;
                                 let tangent = if is_fwd {
@@ -584,20 +577,9 @@ impl AgentSystem {
                                 let next_node = self.current_path[i][self.current_path_index[i]];
                                 self.current_path_index[i] += 1;
 
-                                let mut best_e = usize::MAX;
-                                let mut is_fwd = true;
-                                 for (idx, e) in graph.edges.iter().enumerate() {
-                                    if e.deleted { continue; }
-                                    let f = e.start_node == self.current_node[i] && e.end_node == next_node;
-                                    let b = e.end_node == self.current_node[i] && e.start_node == next_node;
-                                    if f || b {
-                                        let allowed = if self.is_driving[i] { (e.allowed_types & 2) != 0 && (if f { e.fwd_lanes > 0 } else { e.bkw_lanes > 0 }) } else { (e.allowed_types & 1) != 0 };
-                                        if allowed { best_e = idx; is_fwd = f; break; }
-                                    }
-                                }
-
-                                if best_e != usize::MAX {
+                                if let Some(best_e) = graph.get_edge_between_nodes(self.current_node[i], next_node) {
                                     let edge = &graph.edges[best_e];
+                                    let is_fwd = edge.start_node == self.current_node[i];
                                     self.current_edge[i] = best_e;
                                     if is_fwd {
                                         self.edge_progression[i] = 0;

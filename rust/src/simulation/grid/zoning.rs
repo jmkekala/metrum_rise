@@ -1,8 +1,7 @@
 use godot::prelude::*;
 use std::collections::HashMap;
+use crate::config::{ZONING_DEPTH, GRID_CELL_SIZE};
 
-pub const ZONING_DEPTH: usize = 10;
-pub const GRID_CELL_SIZE: f32 = 10.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
@@ -21,6 +20,8 @@ pub struct EdgeZoning {
     pub right_side: Vec<ZoneType>, // ZONING_DEPTH rows deep, N columns long
     pub left_occupied: Vec<bool>,
     pub right_occupied: Vec<bool>,
+    pub left_blocked: Vec<bool>,
+    pub right_blocked: Vec<bool>,
     pub cells_long: usize,
 }
 
@@ -54,6 +55,8 @@ impl ZoningSystem {
                 right_side: vec![ZoneType::None; part2_cells * ZONING_DEPTH],
                 left_occupied: vec![false; part2_cells * ZONING_DEPTH],
                 right_occupied: vec![false; part2_cells * ZONING_DEPTH],
+                left_blocked: vec![false; part2_cells * ZONING_DEPTH],
+                right_blocked: vec![false; part2_cells * ZONING_DEPTH],
                 cells_long: part2_cells,
             };
 
@@ -79,6 +82,8 @@ impl ZoningSystem {
                 g.right_side.truncate(actual_split_x * ZONING_DEPTH);
                 g.left_occupied.truncate(actual_split_x * ZONING_DEPTH);
                 g.right_occupied.truncate(actual_split_x * ZONING_DEPTH);
+                g.left_blocked.truncate(actual_split_x * ZONING_DEPTH);
+                g.right_blocked.truncate(actual_split_x * ZONING_DEPTH);
                 g.cells_long = actual_split_x;
             }
         }
@@ -92,6 +97,8 @@ impl ZoningSystem {
             first_grid.right_side.extend_from_slice(&second_grid.right_side);
             first_grid.left_occupied.extend_from_slice(&second_grid.left_occupied);
             first_grid.right_occupied.extend_from_slice(&second_grid.right_occupied);
+            first_grid.left_blocked.extend_from_slice(&second_grid.left_blocked);
+            first_grid.right_blocked.extend_from_slice(&second_grid.right_blocked);
             first_grid.cells_long += second_grid.cells_long;
         }
     }
@@ -103,6 +110,8 @@ impl ZoningSystem {
             right_side: vec![ZoneType::None; cells_long * ZONING_DEPTH],
             left_occupied: vec![false; cells_long * ZONING_DEPTH],
             right_occupied: vec![false; cells_long * ZONING_DEPTH],
+            left_blocked: vec![false; cells_long * ZONING_DEPTH],
+            right_blocked: vec![false; cells_long * ZONING_DEPTH],
             cells_long,
         });
 
@@ -111,6 +120,8 @@ impl ZoningSystem {
             entry.right_side.resize(cells_long * ZONING_DEPTH, ZoneType::None);
             entry.left_occupied.resize(cells_long * ZONING_DEPTH, false);
             entry.right_occupied.resize(cells_long * ZONING_DEPTH, false);
+            entry.left_blocked.resize(cells_long * ZONING_DEPTH, false);
+            entry.right_blocked.resize(cells_long * ZONING_DEPTH, false);
             entry.cells_long = cells_long;
         }
     }
@@ -157,6 +168,27 @@ impl ZoningSystem {
         }
     }
 
+    pub fn set_blocked(&mut self, edge_idx: usize, side: i8, x: usize, y: usize, blocked: bool) {
+        if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
+            let cells = if side > 0 { &mut grid.left_blocked } else { &mut grid.right_blocked };
+            if x < grid.cells_long && x * ZONING_DEPTH + y < cells.len() {
+                let idx = x * ZONING_DEPTH + y;
+                cells[idx] = blocked;
+            }
+        }
+    }
+
+    pub fn is_blocked(&self, edge_idx: usize, side: i8, x: usize, y: usize) -> bool {
+        if let Some(grid) = self.edge_grids.get(&edge_idx) {
+            let cells = if side > 0 { &grid.left_blocked } else { &grid.right_blocked };
+            if x < grid.cells_long && x * ZONING_DEPTH + y < cells.len() {
+                let idx = x * ZONING_DEPTH + y;
+                return cells[idx];
+            }
+        }
+        false
+    }
+
     pub fn get_cell_center(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph) -> Vector2 {
         if edge_idx >= graph.edges.len() { return Vector2::new(0.0, 0.0); }
         let edge = &graph.edges[edge_idx];
@@ -192,7 +224,7 @@ impl ZoningSystem {
             }
         }
 
-        let normal = Vector2::new(-tangent.y, tangent.x) * (side as f32);
+        let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
         let depth = (y as f32 + 0.5) * self.grid_cell_size;
         let half_width = graph.edges[edge_idx].width * 0.5;
         
@@ -218,7 +250,7 @@ impl ZoningSystem {
                 
                 let t = (local_x / edge.physical_length).clamp(0.0, 1.0);
                 let (pos_on_edge, tangent) = self.get_edge_pos_and_tangent_static(edge_idx, t, graph);
-                let normal = Vector2::new(-tangent.y, tangent.x) * (side as f32);
+                let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
                 let intended_d = hw + local_y;
                 check_pts_with_dist.push((pos_on_edge + normal * intended_d, intended_d));
             }
@@ -243,15 +275,32 @@ impl ZoningSystem {
                 if i == edge_idx { continue; }
                 if e.deleted { continue; }
 
-                // Sister Edge Detection
+                // Sister Edge Detection (Road continuation at 2-way junctions)
                 let is_sister = (e.start_node == edge.start_node || e.start_node == edge.end_node || 
                                  e.end_node == edge.start_node || e.end_node == edge.end_node) &&
                                  e.width == edge.width && e.primary_type == edge.primary_type;
                 
                 if is_sister {
                     let shared_node = if e.start_node == edge.start_node || e.start_node == edge.end_node { e.start_node } else { e.end_node };
-                    let conn_count = graph.edges.iter().filter(|o| !o.deleted && (o.start_node == shared_node || o.end_node == shared_node)).count();
-                    if conn_count <= 2 { continue; }
+                    let conn_count = graph.adjacency.get(&shared_node).map(|v| v.len()).unwrap_or(0);
+                    
+                    if conn_count <= 2 {
+                        // COLINEARITY CHECK: Only skip if it's a straight-ish continuation.
+                        // If it's a sharp V-turn, they must obstruct each other.
+                        let t1 = if edge.start_node == shared_node {
+                             (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
+                        } else {
+                             (edge.physical_geometry[edge.physical_geometry.len()-2] - edge.physical_geometry[edge.physical_geometry.len()-1]).normalized()
+                        };
+                        let t2 = if e.start_node == shared_node {
+                             (e.physical_geometry[1] - e.physical_geometry[0]).normalized()
+                        } else {
+                             (e.physical_geometry[e.physical_geometry.len()-2] - e.physical_geometry[e.physical_geometry.len()-1]).normalized()
+                        };
+                        
+                        // Dot product: -1.0 means opposite directions (straight line), 0.0 means 90deg, 1.0 means same dir.
+                        if t1.dot(t2) < -0.85 { continue; } 
+                    }
                 }
                 
                 edges_to_check.insert(i);
@@ -301,12 +350,10 @@ impl ZoningSystem {
             let self_d_sq = self.get_distance_to_edge_sq(edge_idx, pt, graph);
             
             // Priority bias for first few rows (within 15m - roughly first 1.5 cells)
-            let mut bias = 1.0;
-            if self_d_sq < (15.0f32).powi(2) {
-                bias = 2.0; // Effectively make owner 2x stronger
-            }
+            let bias = if self_d_sq < (25.0f32).powi(2) { 1.2 } else { 0.95 }; // 0.95 bias makes owners weaker in deep conflict to encourage nature gaps
             
-            if self_d_sq > (closest_competitor_d_sq * bias) + 0.1 { 
+            // If another road is "pretty close" (within ~1m margin in distance space), block it
+            if self_d_sq > (closest_competitor_d_sq * bias) - 2.0 { 
                 return true; 
             }
         }

@@ -1,6 +1,12 @@
 use godot::prelude::*;
 use super::graph::TransitGraph;
 
+pub struct ProjectionData {
+    pub t: f32,
+    pub side: i8,
+    pub dist_from_road: f32,
+}
+
 pub fn get_closest_point(graph: &TransitGraph, world_pos: Vector3, max_dist: f32) -> Option<Vector3> {
     let mut closest_pos = None;
     let mut min_score = f32::MAX;
