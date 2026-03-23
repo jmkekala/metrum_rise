@@ -7,6 +7,8 @@ pub struct NoiseSystem {
     pub grid: DataGrid<f32>,
 }
 
+use rayon::prelude::*;
+
 impl NoiseSystem {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
@@ -19,10 +21,10 @@ impl NoiseSystem {
         
         let w = self.grid.width;
         let h = self.grid.height;
-        let hw = (w as f32 - 1.0) * 0.5;
-        let hh = (h as f32 - 1.0) * 0.5;
+        let hw = (w as f32) * 0.5; // Centers for mapping world to grid
+        let hh = (h as f32) * 0.5;
 
-        // 1. Emission (Only built structures emit noise, not empty paint)
+        // 1. Emission (Sequential - small count)
         for b in &allocator.buildings {
             let cx = b.center_x.round() as usize;
             let cy = b.center_y.round() as usize;
@@ -40,44 +42,44 @@ impl NoiseSystem {
 
         // 1B. Emission (Roads)
         for edge in &graph.edges {
-            // Speed limits > 60 emit heavy noise (highways)
+            if edge.deleted { continue; }
             let road_noise = if edge.speed_limit > 60.0 { 4.0 } else { 1.0 };
-            for p in &edge.geometry {
-                let x = p.x + hw;
-                let y = p.z + hh;
-                if x >= 0.0 && x < w as f32 && y >= 0.0 && y < h as f32 {
-                    if let Some(val) = new_grid.get_mut(x as usize, y as usize) {
-                        *val += road_noise;
+            for p in &edge.physical_geometry {
+                let gx = (p.x + hw).round() as i32;
+                let gz = (p.z + hh).round() as i32;
+                if gx >= 0 && gx < w as i32 && gz >= 0 && gz < h as i32 {
+                    if let Some(val) = new_grid.get_mut(gx as usize, gz as usize) {
+                        *val = (*val + road_noise).min(100.0);
                     }
                 }
             }
         }
 
-        // 2. Diffusion & 3. Decay
-        for y in 0..h {
+        // 2. Diffusion & 3. Decay (Parallelized)
+        let old_grid_ref = &self.grid;
+        
+        new_grid.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
             for x in 0..w {
-                let current = *self.grid.get(x, y).unwrap_or(&0.0);
+                let current = *old_grid_ref.get(x, y).unwrap_or(&0.0);
                 
                 let mut neighbor_sum = 0.0;
                 let mut count = 0.0;
                 
-                if x > 0 { neighbor_sum += *self.grid.get(x - 1, y).unwrap_or(&0.0); count += 1.0; }
-                if x < w - 1 { neighbor_sum += *self.grid.get(x + 1, y).unwrap_or(&0.0); count += 1.0; }
-                if y > 0 { neighbor_sum += *self.grid.get(x, y - 1).unwrap_or(&0.0); count += 1.0; }
-                if y < h - 1 { neighbor_sum += *self.grid.get(x, y + 1).unwrap_or(&0.0); count += 1.0; }
+                if x > 0 { neighbor_sum += *old_grid_ref.get(x - 1, y).unwrap_or(&0.0); count += 1.0; }
+                if x < w - 1 { neighbor_sum += *old_grid_ref.get(x + 1, y).unwrap_or(&0.0); count += 1.0; }
+                if y > 0 { neighbor_sum += *old_grid_ref.get(x, y - 1).unwrap_or(&0.0); count += 1.0; }
+                if y < h - 1 { neighbor_sum += *old_grid_ref.get(x, y + 1).unwrap_or(&0.0); count += 1.0; }
                 
                 let avg = if count > 0.0 { neighbor_sum / count } else { 0.0 };
                 
                 // Noise diffuses very fast, but naturally decays over distance.
                 let mut propagated = current * 0.50 + avg * 0.50;
-                propagated *= 0.90; // 10% decay per tick (reaches further than 15%)
+                propagated *= 0.90; // 10% decay per tick
                 
-                if let Some(val) = new_grid.get_mut(x, y) {
-                    *val = (*val - current).max(0.0) + propagated; 
-                    *val = val.min(100.0).max(0.0); 
-                }
+                row[x] = (row[x] - current).max(0.0) + propagated; 
+                row[x] = row[x].min(100.0).max(0.0); 
             }
-        }
+        });
         
         self.grid = new_grid;
     }
