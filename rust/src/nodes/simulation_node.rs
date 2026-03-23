@@ -39,6 +39,8 @@ pub struct SimulationNode {
     undo_stack: Vec<SimulationSnapshot>,
     last_tick_duration: f64,
     benchmark_mode: bool,
+    terrain_dirty: bool,
+    water_dirty: bool,
     base: Base<Node3D>,
 }
 
@@ -126,6 +128,7 @@ impl SimulationNode {
     pub fn sculpt_terrain(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.push_undo_state(true, false, true, false); // Sculpt triggers transit geometry re-flow
         self.heightmap.sculpt(pos.x, pos.y, radius, strength);
+        self.terrain_dirty = true;
         
         // STICKY ROADS: Sync network and re-flatten
         self.transit_network.sync_to_terrain(&self.heightmap);
@@ -141,7 +144,20 @@ impl SimulationNode {
     #[func]
     pub fn add_water_source(&mut self, pos: Vector2, rate_add: f32) {
         self.watermap.update_source(pos.x as usize, pos.y as usize, rate_add);
+        self.water_dirty = true;
     }
+
+    #[func]
+    pub fn is_terrain_dirty(&self) -> bool { self.terrain_dirty }
+    
+    #[func]
+    pub fn is_water_dirty(&self) -> bool { self.water_dirty }
+
+    #[func]
+    pub fn clear_terrain_dirty(&mut self) { self.terrain_dirty = false; }
+    
+    #[func]
+    pub fn clear_water_dirty(&mut self) { self.water_dirty = false; }
 
     #[func]
     pub fn get_heightmap_data(&self) -> PackedFloat32Array {
@@ -1184,6 +1200,7 @@ impl SimulationNode {
         };
         self.transit_network.flatten_terrain(&ref_terrain, &mut self.heightmap.data, size);
         self.transit_network.sync_to_terrain(&self.heightmap);
+        self.terrain_dirty = true;
     }
 
     #[func]
@@ -1213,6 +1230,7 @@ impl SimulationNode {
             // Sync roads to the new map
             self.transit_network.sync_to_terrain(&self.heightmap);
             self.flatten_terrain_for_roads();
+            self.terrain_dirty = true;
         } else {
             
         }
@@ -1287,7 +1305,7 @@ impl SimulationNode {
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let version = env!("CARGO_PKG_VERSION");
             let agents = self.agents.count;
-            let map_size = format!("{}x{}", config::MAP_WIDTH, config::MAP_HEIGHT);
+            let map_size = format!("{}x{}", self.heightmap.width, self.heightmap.height);
             let tick_ms = self.last_tick_duration;
             let fps = godot::classes::Engine::singleton().get_frames_per_second();
             let paths = self.agents.pathfind_count;
@@ -1312,8 +1330,12 @@ impl INode3D for SimulationNode {
             }
         }
 
-        let w = config::MAP_WIDTH;
-        let h = config::MAP_HEIGHT;
+        let mut w = config::MAP_WIDTH;
+        let mut h = config::MAP_HEIGHT;
+        if is_huge {
+            w = 2000;
+            h = 2000;
+        }
         let mut sim = Self { 
             base,
             time: TimeSystem::new(),
@@ -1331,6 +1353,8 @@ impl INode3D for SimulationNode {
             undo_stack: Vec::new(),
             last_tick_duration: 0.0,
             benchmark_mode: is_huge,
+            terrain_dirty: true, // Initial push
+            water_dirty: true,
         };
 
         if is_huge {
@@ -1368,17 +1392,18 @@ impl INode3D for SimulationNode {
             self.simulate_tick();
         }
         
-        // Let's keep water ticking fast, unrelated to the slow "Game Day" clock.
-        let sub_steps = 2;
-        let sub_dt = delta as f32 / sub_steps as f32;
-        for _ in 0..sub_steps {
-            self.watermap.tick(&self.heightmap.data, sub_dt);
-        }
-
         // High-frequency agent physics!
         if self.time.speed_multiplier > 0.0 {
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
             self.agents.tick(&self.allocator, &self.transit_network.hpa_graph, &mut self.transit_network.graph, dt);
+            
+            // Water ticks with game speed too, but keep it at a fixed substep for stability
+            let sub_steps = 2;
+            let sub_dt = dt / sub_steps as f32;
+            for _ in 0..sub_steps {
+                self.watermap.tick(&self.heightmap.data, sub_dt);
+            }
+            self.water_dirty = true;
         }
     }
 }

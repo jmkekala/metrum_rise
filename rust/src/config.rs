@@ -1,5 +1,5 @@
-pub const MAP_WIDTH: usize = 2000;
-pub const MAP_HEIGHT: usize = 2000;
+pub const MAP_WIDTH: usize = 1000;
+pub const MAP_HEIGHT: usize = 1000;
 pub const HEIGHT_SCALE: f32 = 20.0;
 pub const SNAP_TOLERANCE: f32 = 1.0;
 pub const INTERSECTION_TOLERANCE: f32 = 1.0;

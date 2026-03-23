@@ -50,7 +50,9 @@ func _ready():
 	self.material_override = material
 
 func _process(delta):
-	update_terrain_visuals()
+	if simulation_node.is_terrain_dirty():
+		update_terrain_visuals()
+		simulation_node.clear_terrain_dirty()
 	
 	var input_manager = get_node("../InputManager")
 	if input_manager and input_manager.current_tool == input_manager.Tool.SCULPT:

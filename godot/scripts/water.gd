@@ -40,7 +40,9 @@ func _ready():
 	self.material_override = material
 
 func _process(delta):
-	update_water_visuals()
+	if simulation_node.is_water_dirty():
+		update_water_visuals()
+		simulation_node.clear_water_dirty()
 	handle_water_input(delta)
 
 func update_water_visuals():

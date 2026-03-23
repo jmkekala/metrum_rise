@@ -13,4 +13,4 @@ mkdir -p ../godot/bin
 cp target/debug/libmetrum_rise.so ../godot/bin/libmetrum_rise.so
 
 echo "Launching Metrum Rise..."
-cd ../godot && godot
+cd ../godot && godot -- "$@"
