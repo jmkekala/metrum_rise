@@ -230,7 +230,6 @@ impl ZoningSystem {
         
         pos + normal * (half_width + depth)
     }
-
     pub fn is_cell_obstructed(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph) -> bool {
         let center = self.get_cell_center(edge_idx, side, x, y, graph);
         if center.x == 0.0 && center.y == 0.0 { return true; }
@@ -240,8 +239,7 @@ impl ZoningSystem {
         let hw = edge.width * 0.5;
 
         // We check 5 points: 4 corners + center
-        // All points must "belong" to our edge and not be on any other road.
-        let mut check_pts_with_dist = Vec::new();
+        let mut check_pts_with_t = Vec::new();
         
         for dx in [-0.5, 0.5] {
             for dy in [-0.5, 0.5] {
@@ -252,88 +250,111 @@ impl ZoningSystem {
                 let (pos_on_edge, tangent) = self.get_edge_pos_and_tangent_static(edge_idx, t, graph);
                 let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
                 let intended_d = hw + local_y;
-                check_pts_with_dist.push((pos_on_edge + normal * intended_d, intended_d));
+                check_pts_with_t.push((pos_on_edge + normal * intended_d, t));
+            }
+        }
+
+        // CURVE SPLAY CHECK: If the cell fans out or pinches too much, it's a useless sliver.
+        if check_pts_with_t.len() >= 4 {
+            let p1 = check_pts_with_t[0].0; // Start, Inner
+            let p2 = check_pts_with_t[1].0; // Start, Outer
+            let p3 = check_pts_with_t[2].0; // End, Inner
+            let p4 = check_pts_with_t[3].0; // End, Outer
+            
+            let inner_width = p1.distance_to(p3);
+            let outer_width = p2.distance_to(p4);
+            
+            // Tighten to 1.4x (40% splay threshold) to satisfy 'minimum 2 wide' feel.
+            if outer_width > inner_width * 1.4 || outer_width < inner_width * 0.7 {
+                return true; 
             }
         }
         
         // Also check the center
-        let center_intended = hw + ((y as f32 + 0.5) * size);
-        check_pts_with_dist.push((center, center_intended));
+        let t_center = (x as f32 + 0.5) * size / edge.physical_length;
+        check_pts_with_t.push((center, t_center));
 
-        for (pt, _intended_d) in check_pts_with_dist {
+        for (pt, t_us) in check_pts_with_t {
             let mut closest_competitor_d_sq = f32::MAX;
             let mut asphalt_collision = false;
 
-            let mut edges_to_check = std::collections::HashSet::new();
-            
-            // Spatial Filtered Search using centralized RoadSpatialGrid
             let pt_3d = godot::prelude::Vector3::new(pt.x, 0.0, pt.y);
             let nearby_edges = graph.get_edges_near_point(pt_3d, 120.0);
 
+            let mut edges_to_check = std::collections::HashSet::new();
+            edges_to_check.insert(edge_idx); // SELF-VORONOI: Check ourselves too for hairpin overlaps!
+
             for i in nearby_edges {
                 let e = &graph.edges[i];
-                if i == edge_idx { continue; }
                 if e.deleted { continue; }
-
-                // Sister Edge Detection (Road continuation at 2-way junctions)
-                let is_sister = (e.start_node == edge.start_node || e.start_node == edge.end_node || 
-                                 e.end_node == edge.start_node || e.end_node == edge.end_node) &&
-                                 e.width == edge.width && e.primary_type == edge.primary_type;
                 
-                if is_sister {
-                    let shared_node = if e.start_node == edge.start_node || e.start_node == edge.end_node { e.start_node } else { e.end_node };
-                    let conn_count = graph.adjacency.get(&shared_node).map(|v| v.len()).unwrap_or(0);
+                // SELF-AWARENESS FILTER: If it's our own road, we skip the SISTER check
+                // and let the asphalt/voronoi check decide if we've self-overlapped.
+                if i != edge_idx {
+                    // Sister Edge Detection (Road continuation at 2-way junctions)
+                    let is_sister = (e.start_node == edge.start_node || e.start_node == edge.end_node || 
+                                     e.end_node == edge.start_node || e.end_node == edge.end_node) &&
+                                     e.width == edge.width && e.primary_type == edge.primary_type;
                     
-                    if conn_count <= 2 {
-                        // COLINEARITY CHECK: Only skip if it's a straight-ish continuation.
-                        // If it's a sharp V-turn, they must obstruct each other.
-                        let t1 = if edge.start_node == shared_node {
-                             (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
-                        } else {
-                             (edge.physical_geometry[edge.physical_geometry.len()-2] - edge.physical_geometry[edge.physical_geometry.len()-1]).normalized()
-                        };
-                        let t2 = if e.start_node == shared_node {
-                             (e.physical_geometry[1] - e.physical_geometry[0]).normalized()
-                        } else {
-                             (e.physical_geometry[e.physical_geometry.len()-2] - e.physical_geometry[e.physical_geometry.len()-1]).normalized()
-                        };
+                    if is_sister {
+                        let shared_node = if e.start_node == edge.start_node || e.start_node == edge.end_node { e.start_node } else { e.end_node };
+                        let conn_count = graph.adjacency.get(&shared_node).map(|v| v.len()).unwrap_or(0);
                         
-                        // Dot product: -1.0 means opposite directions (straight line), 0.0 means 90deg, 1.0 means same dir.
-                        if t1.dot(t2) < -0.85 { continue; } 
+                        if conn_count <= 2 {
+                            let t1 = if edge.start_node == shared_node {
+                                 (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
+                            } else {
+                                 (edge.physical_geometry[edge.physical_geometry.len()-2] - edge.physical_geometry[edge.physical_geometry.len()-1]).normalized()
+                            };
+                            let t2 = if e.start_node == shared_node {
+                                 (e.physical_geometry[1] - e.physical_geometry[0]).normalized()
+                            } else {
+                                 (e.physical_geometry[e.physical_geometry.len()-2] - e.physical_geometry[e.physical_geometry.len()-1]).normalized()
+                            };
+                            if t1.dot(t2) < -0.85 { continue; } 
+                        }
                     }
                 }
-                
                 edges_to_check.insert(i);
             }
             
             for &i in &edges_to_check {
-                let other_edge = &graph.edges[i];
-                let pts = &other_edge.physical_geometry;
+                let e = &graph.edges[i];
+                let pts = &e.physical_geometry;
                 if pts.len() < 2 { continue; }
                 
                 for j in 0..pts.len() - 1 {
                     let p1 = pts[j]; let p2 = pts[j+1];
                     let p1_2d = Vector2::new(p1.x, p1.z);
                     let p2_2d = Vector2::new(p2.x, p2.z);
-                    let l2 = (p2_2d - p1_2d).length_squared();
+                    let seg_vec = p2_2d - p1_2d;
+                    let l2 = seg_vec.length_squared();
                     if l2 == 0.0 { continue; }
 
-                    let seg_vec = p2_2d - p1_2d;
-                    let t_val = (((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2).clamp(0.0, 1.0);
-                    let proj = p1_2d + seg_vec * t_val;
-                    let d_sq = (pt - proj).length_squared();
-                    
-                    // A. Asphalt Collision: Absolute block
-                    if d_sq < (other_edge.width * 0.5 + 0.1).powi(2) {
-                        asphalt_collision = true;
-                        break;
+                    let mut t_proj = ((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2;
+                    t_proj = t_proj.clamp(0.0, 1.0);
+                    let proj = p1_2d + seg_vec * t_proj;
+                    let d_sq = pt.distance_squared_to(proj);
+
+                    // A. Asphalt Collision: Overlapping other road surface
+                    let hw_other = e.width * 0.5;
+
+                    // SELF-PROTECTION: Don't hit our own curb if we are straight.
+                    if i == edge_idx {
+                        let t_proj_global = j as f32 / (pts.len()-1) as f32; // Rough T
+                        if (t_proj_global - t_us).abs() < 0.20 { continue; }
                     }
 
                     // B. Zoning Claim: Competitor for space
                     let tangent = seg_vec.normalized();
                     let rel_pt = pt - proj;
-                    let is_left = (tangent.x * rel_pt.y - tangent.y * rel_pt.x) < 0.0;
-                    let other_is_claiming = if is_left { other_edge.zoning_left } else { other_edge.zoning_right };
+                    let other_is_left = (tangent.x * rel_pt.y - tangent.y * rel_pt.x) < 0.0;
+                    
+                    // IF checking self: always compete (unless it's the exact same side/point).
+                    // IF checking neighbor: check their zoning property.
+                    let other_is_claiming = if i == edge_idx { true } else {
+                        if other_is_left { e.zoning_left } else { e.zoning_right }
+                    };
 
                     if other_is_claiming {
                         if d_sq < closest_competitor_d_sq {
@@ -348,16 +369,11 @@ impl ZoningSystem {
 
             // 2. Voronoi Comparison: Is this point closer to its own centerline than any competitor?
             let self_d_sq = self.get_distance_to_edge_sq(edge_idx, pt, graph);
-            
-            // Priority bias for first few rows (within 15m - roughly first 1.5 cells)
-            let bias = if self_d_sq < (25.0f32).powi(2) { 1.2 } else { 0.95 }; // 0.95 bias makes owners weaker in deep conflict to encourage nature gaps
-            
-            // If another road is "pretty close" (within ~1m margin in distance space), block it
-            if self_d_sq > (closest_competitor_d_sq * bias) - 2.0 { 
+            let bias = if self_d_sq < (25.0f32).powi(2) { 1.2 } else { 1.0 }; 
+            if self_d_sq > (closest_competitor_d_sq * bias) + 0.5 { 
                 return true; 
             }
         }
-
         false
     }
 
@@ -368,9 +384,9 @@ impl ZoningSystem {
             let p1 = edge.physical_geometry[j]; let p2 = edge.physical_geometry[j+1];
             let p1_2d = Vector2::new(p1.x, p1.z);
             let p2_2d = Vector2::new(p2.x, p2.z);
-            let l2 = (p2_2d - p1_2d).length_squared();
-            if l2 == 0.0 { continue; }
             let seg_vec = p2_2d - p1_2d;
+            let l2 = seg_vec.length_squared();
+            if l2 == 0.0 { continue; }
             let t = (((pt.x-p1_2d.x)*seg_vec.x + (pt.y-p1_2d.y)*seg_vec.y)/l2).clamp(0.0, 1.0);
             let d_sq = (pt - (p1_2d + seg_vec * t)).length_squared();
             if d_sq < min_d_sq { min_d_sq = d_sq; }

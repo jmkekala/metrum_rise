@@ -217,7 +217,7 @@ impl SimulationNode {
     pub fn is_zoning_cell_obstructed(&self, edge_idx: i32, side: i32, x: i32, y: i32) -> bool {
         let graph = &self.transit_network.graph;
         if let Some(edge) = graph.edges.get(edge_idx as usize) {
-            if (side == 1 && !edge.zoning_right) || (side == -1 && !edge.zoning_left) {
+            if (side == 1 && !edge.zoning_left) || (side == -1 && !edge.zoning_right) {
                 return true;
             }
         }
@@ -227,9 +227,11 @@ impl SimulationNode {
     #[func]
     pub fn set_zoning_enabled(&mut self, edge_idx: i32, side: i32, enabled: bool) {
         if let Some(edge) = self.transit_network.graph.edges.get_mut(edge_idx as usize) {
-            if side <= -1 { edge.zoning_left = enabled; }
-            else if side >= 1 { edge.zoning_right = enabled; }
+            if side >= 1 { edge.zoning_left = enabled; }
+            else if side <= -1 { edge.zoning_right = enabled; }
         }
+        // TRIGGER LOCAL RE-FLOW: Now that zoning claims changed, neighbors might want to move in!
+        self.recalculate_zoning_local(edge_idx as usize);
     }
 
     #[func]
@@ -264,7 +266,7 @@ impl SimulationNode {
             let cells_long = (edge.physical_length / cell_size).floor() as usize;
 
             for side in [1, -1] {
-                if (side == 1 && !edge.zoning_right) || (side == -1 && !edge.zoning_left) { continue; }
+                if (side == 1 && !edge.zoning_left) || (side == -1 && !edge.zoning_right) { continue; }
 
                 for x in 0..cells_long {
                     let t_param = (x as f32 + 0.5) * cell_size / edge.physical_length;
@@ -440,7 +442,7 @@ impl SimulationNode {
             
             for side in [1, -1] {
                 // SKIP if zoning is disabled for this side on this road
-                if (side == 1 && !edge.zoning_right) || (side == -1 && !edge.zoning_left) {
+                if (side == 1 && !edge.zoning_left) || (side == -1 && !edge.zoning_right) {
                     continue;
                 }
                 for x in 0..cells_long {
