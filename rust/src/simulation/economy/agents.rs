@@ -260,6 +260,22 @@ impl AgentSystem {
         self.count = 0;
         self.pathfind_count = 0;
     }
+
+    /// Remaps the edge indices stored in all agents from [Old ID] to [New ID].
+    pub fn update_edge_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+        for i in 0..self.count {
+            if self.current_edge[i] != usize::MAX {
+                if let Some(&new_id) = mapping.get(&self.current_edge[i]) {
+                    self.current_edge[i] = new_id;
+                } else {
+                    // Current edge was removed or not part of the compaction.
+                    // Recover by placing the agent back at the start of their search segment.
+                    self.current_edge[i] = usize::MAX;
+                    self.current_path[i].clear();
+                }
+            }
+        }
+    }
     
     pub fn kill_agent(&mut self, index: usize) {
         if index >= self.count { return; }

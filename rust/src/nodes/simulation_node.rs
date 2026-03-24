@@ -102,6 +102,28 @@ impl SimulationNode {
     pub fn get_heightmap_size_internal(&self) -> Vector2 {
         Vector2::new(self.heightmap.width as f32, self.heightmap.height as f32)
     }
+
+    /// Performs a full edge compaction, removing deleted edges and remapping all internal indices.
+    pub fn perform_edge_compaction_internal(&mut self) {
+        let deleted_count = self.transit_network.graph.edges.iter().filter(|e| e.deleted).count();
+        if deleted_count == 0 { return; }
+        
+        godot_print!("SimulationNode: Compacting road network (removing {} deleted edges)...", deleted_count);
+        
+        let mapping = self.transit_network.graph.compact_edges();
+        if mapping.is_empty() { return; }
+        
+        // 1. Update Agents
+        self.agents.update_edge_indices(&mapping);
+        
+        // 2. Update Zoning
+        self.zoning.update_edge_indices(&mapping);
+        
+        // 3. Rebuild HPA Graph (as its internal cached indices are now invalid)
+        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
+        
+        godot_print!("SimulationNode: Compaction complete. Edge count: {}", self.transit_network.graph.edges.len());
+    }
 }
 
 #[godot_api]

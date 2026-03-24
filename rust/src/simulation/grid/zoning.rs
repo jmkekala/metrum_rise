@@ -83,6 +83,17 @@ impl ZoningSystem {
         self.edge_grids.clear();
     }
 
+    /// Remaps the keys of edge_grids from [Old ID] to [New ID].
+    pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
+        let mut new_grids = HashMap::new();
+        for (old_idx, grid) in self.edge_grids.drain() {
+            if let Some(&new_id) = mapping.get(&old_idx) {
+                new_grids.insert(new_id, grid);
+            }
+        }
+        self.edge_grids = new_grids;
+    }
+
     pub fn split_edge_grid(&mut self, old_idx: usize, new_idx: usize, split_x: usize) {
         if let Some(old_grid) = self.edge_grids.get(&old_idx).cloned() {
             let cells_long = old_grid.cells_long;

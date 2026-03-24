@@ -107,15 +107,15 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 | B2 | `pathing/hpa.rs::find_path` | [DONE] Hierarchical search implemented; concrete adjacency list cached. | `[BLOCKER]` |
 | B5 | `buildings/allocator.rs` | [DONE] Desirability gate enforced (> 50). | `[BLOCKER]` |
 | B6 | `buildings/allocator.rs` | [DONE] Spawn throttle (max 10/tick) and HPA* batching implemented. | `[BLOCKER]` |
-| B7 | `simulation_node.rs` | God-object: 1,655 lines mixing API, rendering, editing, undo, benchmarking — must split | `[BLOCKER]` |
+| B7 | `simulation_node.rs` | [DONE] God-object split into `editing.rs`, `query.rs`, `undo.rs`. | `[BLOCKER]` |
 | B8 | `network/graph.rs::find_or_add_node` | [DONE] O(N) scan replaced with 16m spatial node grid | `[BLOCKER]` |
 | B9 | `pollution.rs` line 30 | [DONE] Emission corrected: +100 → +5 per tick | `[BUG]` |
 | B10 | `agents.rs` | [DONE] Happiness and money wired: commute penalties, daily activity rewards, and pollution effects implemented. | `[BUG]` |
 | B11 | `pathing/hpa.rs` A* heuristic | [DONE] Divisor precomputed from max speed limit during graph build | `[BUG]` |
-| B12 | `simulation_node.rs` | `undo_stack.remove(0)` is O(N); replace `Vec` with `VecDeque` | Minor |
-| B13 | `simulation_node.rs::get_node_connection_count` | O(E) scan; should use `graph.adjacency` | Minor |
-| B14 | `network/graph.rs::remove_from_spatial_index` | O(chunks × edges/chunk) full scan on delete | Minor |
-| B15 | `network/graph.rs` | Soft deletion: edges marked `deleted = true` but never compacted — all O(E) scans degrade over a session | Minor |
+| B12 | `simulation_node.rs` | [DONE] `undo_stack` replaced with `VecDeque` for O(1) removals. | Minor |
+| B13 | `simulation_node.rs` | [DONE] `get_node_connection_count` uses `graph.adjacency` (O(1)). | Minor |
+| B14 | `network/graph.rs` | [DONE] `remove_from_spatial_index` uses targeted chunk lookups. | Minor |
+| B15 | `network/graph.rs` | [DONE] Edge compaction implemented with index remapping (Agents, Zoning, HPA). | Minor |
 
 ---
 

@@ -449,13 +449,7 @@ impl SimulationNode {
     /// Returns the number of road connections for a node.
     pub fn get_node_connection_count_internal(&self, node_id: i32) -> i32 {
         if node_id < 0 { return 0; }
-        let mut count = 0;
-        for edge in &self.transit_network.graph.edges {
-            if !edge.deleted && (edge.start_node == node_id as u32 || edge.end_node == node_id as u32) {
-                count += 1;
-            }
-        }
-        count
+        self.transit_network.graph.adjacency.get(&(node_id as u32)).map_or(0, |v| v.len() as i32)
     }
 
     /// Returns all junction node positions.

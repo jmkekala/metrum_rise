@@ -159,10 +159,11 @@ impl TransitGraph {
     }
 
     pub fn remove_from_spatial_index(&mut self, edge_idx: usize) {
-        // Since edges are rarely removed but often 'deleted' (marked), we can 
-        // just filter them out during lookup, but for splits/merges we clean up.
-        for chunk in self.spatial_edge_grid.values_mut() {
-            chunk.retain(|&idx| idx != edge_idx);
+        let chunks = self.get_edge_chunks(edge_idx);
+        for coords in chunks {
+            if let Some(chunk) = self.spatial_edge_grid.get_mut(&coords) {
+                chunk.retain(|&idx| idx != edge_idx);
+            }
         }
     }
 
@@ -258,6 +259,61 @@ impl TransitGraph {
             self.adjacency.entry(e.start_node).or_default().push(i);
             self.adjacency.entry(e.end_node).or_default().push(i);
         }
+    }
+
+    /// Removes all edges marked as `deleted` and remaps all internal indices.
+    /// Returns a mapping from [Old Edge Index] -> [New Edge Index].
+    pub fn compact_edges(&mut self) -> HashMap<usize, usize> {
+        let mut old_to_new = HashMap::new();
+        let mut new_edges = Vec::new();
+
+        for (old_idx, edge) in self.edges.iter().enumerate() {
+            if !edge.deleted {
+                let new_idx = new_edges.len();
+                old_to_new.insert(old_idx, new_idx);
+                new_edges.push(edge.clone());
+            }
+        }
+
+        // If no edges were deleted, we're already compacted.
+        if new_edges.len() == self.edges.len() {
+            return HashMap::new();
+        }
+
+        self.edges = new_edges;
+
+        // 1. Rebuild Adjacency List (Fastest way to update indices)
+        self.rebuild_adjacency_list();
+
+        // 2. Rebuild Spatial Index
+        self.spatial_edge_grid.clear();
+        for i in 0..self.edges.len() {
+            self.add_to_spatial_index(i);
+        }
+
+        // 3. Update Lane Connection rules inside each Node
+        for node in &mut self.nodes {
+            let mut new_lane_conns = HashMap::new();
+            for (src, targets) in node.lane_connections.drain() {
+                // If the source edge still exists, remap it
+                if let Some(&new_src_idx) = old_to_new.get(&src.0) {
+                    let mut new_targets = Vec::new();
+                    for mut tgt in targets {
+                        // If the target edge still exists, remap it
+                        if let Some(&new_tgt_idx) = old_to_new.get(&tgt.0) {
+                            tgt.0 = new_tgt_idx;
+                            new_targets.push(tgt);
+                        }
+                    }
+                    if !new_targets.is_empty() {
+                        new_lane_conns.insert((new_src_idx, src.1), new_targets);
+                    }
+                }
+            }
+            node.lane_connections = new_lane_conns;
+        }
+
+        old_to_new
     }
 
     pub fn new() -> Self {
@@ -432,13 +488,13 @@ impl TransitGraph {
         
         // 5. Update existing edge as first half
         let old_end_node = self.edges[edge_idx].end_node;
+        self.remove_from_spatial_index(edge_idx); // Remove BEFORE changing geometry
         self.edges[edge_idx].end_node = new_node_id;
         self.edges[edge_idx].geometry = first_geom;
         self.edges[edge_idx].physical_geometry = first_phys;
         self.edges[edge_idx].physical_length = self.calculate_length(&self.edges[edge_idx].physical_geometry);
         
-        // 5.5 RE-INDEX and UPDATE ADJACENCY for modified edge
-        self.remove_from_spatial_index(edge_idx);
+        // 5.5 RE-INDEX for modified edge
         self.add_to_spatial_index(edge_idx);
         
         if let Some(adj) = self.adjacency.get_mut(&old_end_node) {
@@ -641,6 +697,13 @@ impl TransitGraph {
         self.nodes[node_id as usize].pos = new_pos;
         self.add_node_to_spatial_index(node_id);
 
+        // Pre-remove modified edges from spatial index while they still have old geometry
+        for i in 0..self.edges.len() {
+            if !self.edges[i].deleted && (self.edges[i].start_node == node_id || self.edges[i].end_node == node_id) {
+                self.remove_from_spatial_index(i);
+            }
+        }
+
         for edge in &mut self.edges {
             if edge.deleted { continue; }
             if edge.start_node == node_id || edge.end_node == node_id {
@@ -670,14 +733,7 @@ impl TransitGraph {
             }
         }
         
-        // Update spatial index for all affected edges
-        for i in 0..self.edges.len() {
-            if !self.edges[i].deleted && (self.edges[i].start_node == node_id || self.edges[i].end_node == node_id) {
-                self.remove_from_spatial_index(i);
-                self.add_to_spatial_index(i);
-            }
-        }
-        
+        // Re-index all affected edges (rebuild_intersection_clips will also clear everything, but we do it for consistency if that changes)
         self.rebuild_intersection_clips();
     }
 
