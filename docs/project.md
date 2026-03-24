@@ -59,8 +59,8 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - All three use `DataGrid<f32>` at 2000 × 2000 resolution (current; target is 500 × 500 — see Backlog).
 
 ### Buildings
-- `simulation/buildings/allocator.rs` (255 lines) — `BuildingAllocator` scans zoned cells and spawns 3×3-cell (30 m × 30 m) buildings when zoned and demand > 0.
-- Desirability gate **not enforced** (see Bugs). Spawn throttle **absent** (see Bugs).
+- Desirability gate enforced (> 50). Spawn throttle active (max 10 buildings per tick).
+- Rendered via MultiMesh instancing: one draw call per zone type.
 - Rendered via MultiMesh instancing: one draw call per zone type.
 - Building deletion via swap-remove, O(1).
 - Save/load via `serde_json` — **not yet wired end-to-end**.
@@ -76,9 +76,6 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **Immigration**: agents spawn at highway border nodes, arrive by car. Capped at `residential_capacity × 1.1`.
 - **Housing search**: immigrants drive toward city centre and claim the first residential building with free capacity (6 agents per plot, hard-coded).
 - **Daily cycle**: Home (rest/happiness recovery) → Work (Industrial or Commercial, earn money) → Shop (Commercial, spend money) → Home.
-- **Transit decision**: walk if distance ≤ 500 m (code value; spec originally said 200 m — align when revisiting). Pedestrians ignore one-way rules; drivers obey lane directions.
-- **Park-and-walk**: drivers stop at the nearest road node to their destination, search connected edges for parking (1 car per 6 m per side). `parking_occupied` is **never incremented** (see Bugs).
-- **Car retrieval**: agent walks back to `parked_edge`/`parked_progression` before next trip. **Not implemented** (see Bugs).
 - **Happiness/money**: fields initialised (happiness = 50, money = 100) but **never modified** (see Bugs).
 
 ### Pathfinding
@@ -108,15 +105,13 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
 | B2 | `pathing/hpa.rs::find_path` | [DONE] Hierarchical search implemented; concrete adjacency list cached. | `[BLOCKER]` |
-| B3 | `agents.rs` | `parking_occupied` never incremented — parking capacity effectively infinite | `[BLOCKER]` |
-| B4 | `agents.rs` | `parked_edge`/`parked_progression` written but never read for car retrieval — parking loop incomplete | `[BLOCKER]` |
-| B5 | `buildings/allocator.rs` | Desirability not checked before building placement — buildings spawn in polluted zones | `[BLOCKER]` |
-| B6 | `buildings/allocator.rs` | No spawn throttle — can spawn hundreds of buildings per tick, each triggering an HPA* rebuild | `[BLOCKER]` |
+| B5 | `buildings/allocator.rs` | [DONE] Desirability gate enforced (> 50). | `[BLOCKER]` |
+| B6 | `buildings/allocator.rs` | [DONE] Spawn throttle (max 10/tick) and HPA* batching implemented. | `[BLOCKER]` |
 | B7 | `simulation_node.rs` | God-object: 1,655 lines mixing API, rendering, editing, undo, benchmarking — must split | `[BLOCKER]` |
-| B8 | `network/graph.rs::find_or_add_node` | O(N) linear scan over all nodes — degrades with dense road networks | `[BLOCKER]` |
-| B9 | `pollution.rs` line 30 | Emission = +100/tick, spec = +5 — pollution saturates near-instantly | `[BUG]` |
-| B10 | `agents.rs` | `happiness` and `money` never modified — economic feedback loop non-functional | `[BUG]` |
-| B11 | `pathing/hpa.rs` A* heuristic | Divisor is constant 100 instead of `v_max`; weak heuristic degrades A* toward Dijkstra | `[BUG]` |
+| B8 | `network/graph.rs::find_or_add_node` | [DONE] O(N) scan replaced with 16m spatial node grid | `[BLOCKER]` |
+| B9 | `pollution.rs` line 30 | [DONE] Emission corrected: +100 → +5 per tick | `[BUG]` |
+| B10 | `agents.rs` | [DONE] Happiness and money wired: commute penalties, daily activity rewards, and pollution effects implemented. | `[BUG]` |
+| B11 | `pathing/hpa.rs` A* heuristic | [DONE] Divisor precomputed from max speed limit during graph build | `[BUG]` |
 | B12 | `simulation_node.rs` | `undo_stack.remove(0)` is O(N); replace `Vec` with `VecDeque` | Minor |
 | B13 | `simulation_node.rs::get_node_connection_count` | O(E) scan; should use `graph.adjacency` | Minor |
 | B14 | `network/graph.rs::remove_from_spatial_index` | O(chunks × edges/chunk) full scan on delete | Minor |
@@ -130,24 +125,23 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 1. [DONE] **Fix HPA* query** (B2): rewrite `find_path` to run A* on the pre-built abstract graph for inter-chunk traversal, then local A* within source and destination chunk. Cache shared read-only adjacency list inside `HpaGraph` post-`build()`.
 2. [DONE] **Fix `pollution.tick()` double-call** (B1): remove one of the two calls in `simulate_tick`.
-3. **Fix parking counter** (B3, B4): increment `parking_occupied` on park; decrement on retrieval; wire car retrieval path through `parked_edge`/`parked_progression` before the agent's next outbound trip.
-4. **Add desirability gate to `allocator.tick`** (B5): read `desirability.grid.get(cx, cy) > 50` before spawning.
-5. **Add spawn throttle to `allocator.tick`** (B6): max ~10 buildings per tick; batch-dirty HPA*; rebuild once at end of tick.
+4. [DONE] **Add desirability gate to `allocator.tick`** (B5): read `desirability.grid.get(cx, cy) > 50` before spawning.
+5. [DONE] **Add spawn throttle to `allocator.tick`** (B6): max ~10 buildings per tick; batch-dirty HPA*; rebuild once at end of tick.
 6. [DONE] **B7: Split `simulation_node.rs`** into modules.
 7. [DONE] **B12: Fix Undo O(N) performance** by using `VecDeque`.
 8. [DONE] **REGRESSION: Zoning cell overlap** (FIXED - Graph consistency & Cache refresh)
 9. [DONE] **REGRESSION: Building-Road overlap** (FIXED - Sidewalk offsets added)
 10. [DONE] **REGRESSION: Frontage Split Zoning Loss** (FIXED - Cache migration)
-11. **Fix `find_or_add_node`** (B8): replace O(N) scan with a spatial hash of node positions (16 m grid or HashMap keyed by snapped position).
+11. [DONE] **Fix `find_or_add_node`** (B8): replaced O(N) scan with a 16m spatial node grid.
 
 ### v0.01 Goals — strong targets for v0.01 quality
 
-8. **Wire happiness and money** (B10): happiness +1/day at home, −commute_time/60 per trip, −pollution × 0.1/day; money +10/day at work, −20 per shop.
-9. **Fix pollution emission** (B9): change +100 to +5 in `pollution.rs`.
-10. **Fix A* heuristic** (B11): replace divisor `100.0` with `graph.max_speed_limit()` precomputed at HPA* build time.
-11. [DONE] **Cache `is_cell_obstructed`** in existing `left_blocked`/`right_blocked` arrays on `EdgeZoning`. Implemented batch spatial queries per road segment to eliminate $O(E)$ overhead during placement.
-12. **Coarsen environmental grids to 500 × 500**: run diffusion at 1 MB instead of 16 MB per grid; bilinear upsample for display. 16× memory and compute reduction.
-13. **Incremental HPA* rebuild** on road edit: mark affected 512 m chunks dirty, rebuild only those. O(E_chunk) instead of O(E_total).
+8. [DONE] **Wire happiness and money** (B10): happiness +1/day at home, −commute_time/60 per trip, −pollution × 0.1/day; money +10/day at work, −20 per shop.
+9. [DONE] **Fix pollution emission** (B9): change +100 to +5 in `pollution.rs`.
+10. [DONE] **Fix A* heuristic** (B11): replace divisor `100.0` with `graph.max_speed_limit()` precomputed at HPA* build time.
+11. [DONE] **Optimize Zoning Cache & Parallelize** (B5/B11ish): Fixed $O(Cells \times E \times L)$ regression in visualization by correctly using the obstruction cache. Parallelised `recalculate_obstructions` with Rayon and implemented spatial invalidation for nearby roads.
+12. [DONE] **Coarsen environmental grids to 500 × 500**: run diffusion at 1 MB instead of 16 MB per grid; bilinear upsample for display. 16× memory and compute reduction.
+13. [DONE] **Incremental HPA* rebuild** on road edit: mark affected 512 m chunks dirty, rebuild only those. O(E_chunk) instead of O(E_total).
 14. **Split `agents.rs`** (708 lines) into `agents/data.rs`, `agents/decisions.rs`, `agents/tick.rs`.
 15. **Split `graph.rs`** (801 lines) into `graph/data.rs`, `graph/spatial.rs`, `graph/topology.rs`, `graph/rebuild.rs`.
 16. **Add pathfinding unit tests**: highway cheaper than dirt road; slope penalty forces bypass; flow field Dijkstra < 5 ms on a 1,000-node graph.

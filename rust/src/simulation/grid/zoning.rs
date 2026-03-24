@@ -17,6 +17,7 @@
 
 use godot::prelude::*;
 use std::collections::HashMap;
+use rayon::prelude::*;
 use crate::config::{ZONING_DEPTH, GRID_CELL_SIZE};
 
 /// Land-use category painted onto a zoning grid cell.
@@ -238,9 +239,6 @@ impl ZoningSystem {
             return;
         };
 
-        let mut left_results = vec![false; cells_long * ZONING_DEPTH];
-        let mut right_results = vec![false; cells_long * ZONING_DEPTH];
-
         // Batch fetch nearby edges for the entire road segment
         let edge = &graph.edges[edge_idx];
         let mut min_x = f32::MAX; let mut max_x = f32::MIN;
@@ -255,16 +253,20 @@ impl ZoningSystem {
             godot::prelude::Vector3::new(max_x + padding, 0.0, max_z + padding)
         );
 
-        for x in 0..cells_long {
-            for y in 0..ZONING_DEPTH {
-                left_results[x * ZONING_DEPTH + y] = self.is_cell_obstructed(edge_idx, 1, x, y, graph, Some(&nearby_edges));
-                right_results[x * ZONING_DEPTH + y] = self.is_cell_obstructed(edge_idx, -1, x, y, graph, Some(&nearby_edges));
-            }
-        }
+        // Parallelize the per-cell checks
+        let results: Vec<(bool, bool)> = (0..cells_long * ZONING_DEPTH).into_par_iter().map(|idx| {
+            let x = idx / ZONING_DEPTH;
+            let y = idx % ZONING_DEPTH;
+            let l = self.is_cell_obstructed(edge_idx, 1, x, y, graph, Some(&nearby_edges));
+            let r = self.is_cell_obstructed(edge_idx, -1, x, y, graph, Some(&nearby_edges));
+            (l, r)
+        }).collect();
 
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
-            grid.left_blocked = left_results;
-            grid.right_blocked = right_results;
+            for (i, (l_blocked, r_blocked)) in results.into_iter().enumerate() {
+                grid.left_blocked[i] = l_blocked;
+                grid.right_blocked[i] = r_blocked;
+            }
         }
     }
 
@@ -539,7 +541,10 @@ impl ZoningSystem {
                         if idx >= cells.len() { continue; } // Extra safety
                         let z_type = cells[idx];
                         if z_type == ZoneType::None { continue; }
-                        if self.is_cell_obstructed(edge_idx, side, x, y, graph, None) { continue; }
+
+                        // PERFORMANCE: Use the pre-computed obstruction cache!
+                        let blocked_cells = if side > 0 { &grid.left_blocked } else { &grid.right_blocked };
+                        if blocked_cells.get(idx).cloned().unwrap_or(true) { continue; }
                         
                         // Calculate world position of this cell
                         // This is a simplified version; real implementation needs tangent/normal integration

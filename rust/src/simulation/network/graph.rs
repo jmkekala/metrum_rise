@@ -71,9 +71,6 @@ pub struct Edge {
     pub geometry: Vec<Vector3>,
     /// Clipped polyline used for actual road mesh rendering and agent movement.
     pub physical_geometry: Vec<Vector3>,
-    /// Number of parking spaces currently in use on this edge. Should be incremented on park,
-    /// decremented on retrieval — currently never modified (bug B3).
-    pub parking_occupied: u32,
     /// Whether the left side of this edge (relative to travel direction) is enabled for zoning.
     pub zoning_left: bool,
     /// Whether the right side of this edge is enabled for zoning.
@@ -83,20 +80,6 @@ pub struct Edge {
     pub deleted: bool,
 }
 
-impl Edge {
-    /// Returns the total parking capacity of this edge based on its physical length.
-    ///
-    /// Capacity = `floor(length / 6 m) × 2` (one car per 6 m, both sides).
-    pub fn get_parking_capacity(&self) -> u32 {
-        if self.physical_geometry.len() < 2 { return 0; }
-        let mut length = 0.0;
-        for i in 0..self.physical_geometry.len()-1 {
-            length += self.physical_geometry[i].distance_to(self.physical_geometry[i+1]);
-        }
-        // 6 meters per car, two sides (left and right), regardless of lanes
-        ((length / 6.0) as u32) * 2
-    }
-}
 
 /// Pre-computed mesh data for a road junction polygon, passed to Godot for rendering.
 #[derive(Clone)]
@@ -129,13 +112,20 @@ pub struct TransitGraph {
     pub spatial_edge_grid: HashMap<(i32, i32), Vec<usize>>,
     /// Adjacency list: node ID → list of outgoing edge indices. Rebuilt after every road edit.
     pub adjacency: HashMap<u32, Vec<usize>>,
+    /// Spatial acceleration structure for nodes: 16 m grid chunks → node IDs.
+    pub spatial_node_grid: HashMap<(i32, i32), Vec<u32>>,
 }
 
 impl TransitGraph {
     pub const CHUNK_SIZE: f32 = 512.0;
+    pub const NODE_CHUNK_SIZE: f32 = 16.0;
 
     pub fn get_chunk_coords(pos: godot::prelude::Vector3) -> (i32, i32) {
         ((pos.x / Self::CHUNK_SIZE).floor() as i32, (pos.z / Self::CHUNK_SIZE).floor() as i32)
+    }
+
+    pub fn get_node_chunk_coords(pos: godot::prelude::Vector3) -> (i32, i32) {
+        ((pos.x / Self::NODE_CHUNK_SIZE).floor() as i32, (pos.z / Self::NODE_CHUNK_SIZE).floor() as i32)
     }
 
     pub fn get_node_chunk(&self, node_id: u32) -> (i32, i32) {
@@ -176,6 +166,22 @@ impl TransitGraph {
         }
     }
 
+    pub fn add_node_to_spatial_index(&mut self, node_id: u32) {
+        let pos = self.nodes[node_id as usize].pos;
+        let chunk_coords = Self::get_node_chunk_coords(pos);
+        let chunk = self.spatial_node_grid.entry(chunk_coords).or_default();
+        if !chunk.contains(&node_id) {
+            chunk.push(node_id);
+        }
+    }
+
+    pub fn remove_node_from_spatial_index(&mut self, node_id: u32, pos: Vector3) {
+        let chunk_coords = Self::get_node_chunk_coords(pos);
+        if let Some(chunk) = self.spatial_node_grid.get_mut(&chunk_coords) {
+            chunk.retain(|&id| id != node_id);
+        }
+    }
+
     pub fn get_edges_near_point(&self, pos: godot::prelude::Vector3, radius: f32) -> Vec<usize> {
         let min = godot::prelude::Vector3::new(pos.x - radius, 0.0, pos.z - radius);
         let max = godot::prelude::Vector3::new(pos.x + radius, 0.0, pos.z + radius);
@@ -196,6 +202,31 @@ impl TransitGraph {
                         }
                     }
                 }
+            }
+        }
+        result
+    }
+
+    /// Returns the coordinates of all chunks (512m) that an edge's AABB overlaps.
+    pub fn get_edge_chunks(&self, edge_idx: usize) -> Vec<(i32, i32)> {
+        let mut result = Vec::new();
+        if edge_idx >= self.edges.len() { return result; }
+        let edge = &self.edges[edge_idx];
+        if edge.deleted { return result; }
+        
+        let mut min_x = f32::MAX; let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX; let mut max_z = f32::MIN;
+        for p in &edge.physical_geometry {
+            min_x = min_x.min(p.x); max_x = max_x.max(p.x);
+            min_z = min_z.min(p.z); max_z = max_z.max(p.z);
+        }
+        
+        let min_c = Self::get_chunk_coords(godot::prelude::Vector3::new(min_x, 0.0, min_z));
+        let max_c = Self::get_chunk_coords(godot::prelude::Vector3::new(max_x, 0.0, max_z));
+        
+        for cx in min_c.0..=max_c.0 {
+            for cz in min_c.1..=max_c.1 {
+                result.push((cx, cz));
             }
         }
         result
@@ -237,24 +268,35 @@ impl TransitGraph {
             node_aliases: std::collections::HashMap::new(),
             spatial_edge_grid: HashMap::new(),
             adjacency: HashMap::new(),
+            spatial_node_grid: HashMap::new(),
         }
     }
 
     pub fn add_node(&mut self, pos: Vector3, node_type: NodeType) -> u32 {
         let id = self.nodes.len() as u32;
         self.nodes.push(Node { pos, node_type, lane_connections: HashMap::new() });
+        self.add_node_to_spatial_index(id);
         id
     }
 
     pub fn find_or_add_node(&mut self, pos: Vector3, threshold: f32, node_type: NodeType) -> u32 {
-        for i in 0..self.nodes.len() {
-            if self.nodes[i].pos.distance_to(pos) < threshold {
-                let id = self.get_valid_node(i as u32);
-                if node_type == NodeType::Junction && self.nodes[id as usize].node_type == NodeType::Frontage {
-                    self.nodes[id as usize].node_type = NodeType::Junction;
-                    self.nodes[id as usize].lane_connections.clear();
+        let chunk_coords = Self::get_node_chunk_coords(pos);
+        
+        // Search current and adjacent chunks
+        for dx in -1..=1 {
+            for dz in -1..=1 {
+                if let Some(chunk) = self.spatial_node_grid.get(&(chunk_coords.0 + dx, chunk_coords.1 + dz)) {
+                    for &node_id in chunk {
+                        if self.nodes[node_id as usize].pos.distance_to(pos) < threshold {
+                            let id = self.get_valid_node(node_id);
+                            if node_type == NodeType::Junction && self.nodes[id as usize].node_type == NodeType::Frontage {
+                                self.nodes[id as usize].node_type = NodeType::Junction;
+                                self.nodes[id as usize].lane_connections.clear();
+                            }
+                            return id;
+                        }
+                    }
                 }
-                return id;
             }
         }
         self.add_node(pos, node_type)
@@ -594,7 +636,10 @@ impl TransitGraph {
     pub fn move_node(&mut self, node_id: u32, new_pos: Vector3) {
         let old_pos = self.nodes[node_id as usize].pos;
         let delta = new_pos - old_pos;
+        
+        self.remove_node_from_spatial_index(node_id, old_pos);
         self.nodes[node_id as usize].pos = new_pos;
+        self.add_node_to_spatial_index(node_id);
 
         for edge in &mut self.edges {
             if edge.deleted { continue; }

@@ -77,6 +77,9 @@ impl SimulationNode {
         self.noise.tick(&self.allocator, &self.transit_network.graph);
         self.desirability.tick(&self.zoning, &self.pollution, &self.noise);
 
+        // AGENTS: Daily update (happiness, money, pollution)
+        self.agents.daily_update(&self.pollution);
+
         self.agents.pathfind_count = 0;
         self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
         
@@ -89,22 +92,10 @@ impl SimulationNode {
     pub fn recalculate_zoning_local(&mut self, edge_idx: usize) {
         if edge_idx >= self.transit_network.graph.edges.len() { return; }
         
-        // 1. Update the triggered edge itself
-        self.zoning.recalculate_obstructions(edge_idx, &self.transit_network.graph);
-        
-        // 2. Find and update nearby edges that might be affected
-        let edge_pos = {
-            let edge = &self.transit_network.graph.edges[edge_idx];
-            if edge.physical_geometry.is_empty() { return; }
-            edge.physical_geometry[edge.physical_geometry.len() / 2]
-        };
-        
-        let nearby = self.transit_network.graph.get_edges_near_point(edge_pos, 120.0);
-        for other_idx in nearby {
-            if other_idx != edge_idx {
-                self.zoning.recalculate_obstructions(other_idx, &self.transit_network.graph);
-            }
-        }
+        // Use the batched invalidation and parallelized flush
+        self.transit_network.zoning_dirty_edges.insert(edge_idx);
+        self.transit_network.invalidate_zoning_near_edge(edge_idx);
+        self.transit_network.flush_zoning_updates(&mut self.zoning);
     }
 
     /// Returns the dimensions of the heightmap.
@@ -118,19 +109,19 @@ impl SimulationNode {
     /// Returns the pollution image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_pollution_image_data(&self) -> PackedByteArray {
-        Self::grid_to_image_data_internal(&self.pollution.grid, 255, 50, 50, 100.0)
+        Self::grid_to_image_data_internal(&self.pollution.grid, self.heightmap.width, self.heightmap.height, 255, 50, 50, 100.0)
     }
 
     /// Returns the noise image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_noise_image_data(&self) -> PackedByteArray {
-        Self::grid_to_image_data_internal(&self.noise.grid, 200, 200, 200, 100.0)
+        Self::grid_to_image_data_internal(&self.noise.grid, self.heightmap.width, self.heightmap.height, 200, 200, 200, 100.0)
     }
 
     /// Returns the desirability image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_desirability_image_data(&self) -> PackedByteArray {
-        Self::grid_to_image_data_internal(&self.desirability.grid, 50, 255, 50, 100.0)
+        Self::grid_to_image_data_internal(&self.desirability.grid, self.heightmap.width, self.heightmap.height, 50, 255, 50, 100.0)
     }
 
     /// Undoes the last action. Returns true if successful.
@@ -472,20 +463,20 @@ impl SimulationNode {
         self.get_perf_stats_internal()
     }
 
-    /// Helper to convert a DataGrid<f32> to a PackedByteArray for Godot ImageTexture.
-    pub fn grid_to_image_data_internal(grid: &crate::simulation::grid::data_grid::DataGrid<f32>, r: u8, g: u8, b: u8, max_val: f32) -> PackedByteArray {
-        let mut pixels = Vec::with_capacity(grid.width * grid.height * 4);
-        for y in 0..grid.height {
-            for x in 0..grid.width {
-                let val = *grid.get(x, y).unwrap_or(&0.0);
+    /// Helper to convert a DataGrid<f32> to an upsampled PackedByteArray for Godot ImageTexture.
+    pub fn grid_to_image_data_internal(grid: &crate::simulation::grid::data_grid::DataGrid<f32>, target_w: usize, target_h: usize, r: u8, g: u8, b: u8, max_val: f32) -> PackedByteArray {
+        let mut pixels = Vec::with_capacity(target_w * target_h * 4);
+        let scale_x = grid.width as f32 / target_w as f32;
+        let scale_y = grid.height as f32 / target_h as f32;
+
+        for y in 0..target_h {
+            for x in 0..target_w {
+                let val = grid.sample_bilinear(x as f32 * scale_x, y as f32 * scale_y);
                 if val <= 0.01 {
-                    pixels.push(0); pixels.push(0); pixels.push(0); pixels.push(0);
+                    pixels.extend_from_slice(&[0, 0, 0, 0]);
                 } else {
                     let alpha = ((val / max_val).clamp(0.0, 1.0) * 200.0) as u8;
-                    pixels.push(r);
-                    pixels.push(g);
-                    pixels.push(b);
-                    pixels.push(alpha);
+                    pixels.extend_from_slice(&[r, g, b, alpha]);
                 }
             }
         }
@@ -521,9 +512,9 @@ impl INode3D for SimulationNode {
             watermap: WaterSystem::new(w, h),
             transit_network: TransitNetwork::new(),
             zoning: ZoningSystem::new(),
-            pollution: PollutionSystem::new(w, h),
-            noise: NoiseSystem::new(w, h),
-            desirability: DesirabilitySystem::new(w, h),
+            pollution: PollutionSystem::new(config::ENV_GRID_SIZE, config::ENV_GRID_SIZE),
+            noise: NoiseSystem::new(config::ENV_GRID_SIZE, config::ENV_GRID_SIZE),
+            desirability: DesirabilitySystem::new(config::ENV_GRID_SIZE, config::ENV_GRID_SIZE),
             demand: DemandSystem::new(),
             allocator: BuildingAllocator::new(w, h),
             agents: AgentSystem::new(),

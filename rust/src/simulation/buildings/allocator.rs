@@ -72,8 +72,9 @@ impl BuildingAllocator {
     ///
     /// Removes stale buildings, grows new ones into high-demand zones, and spawns immigrants.
     /// Calls `network.rebuild_pathing()` once if any building was added or removed.
-    pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, zoning: &mut ZoningSystem, _desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, network: &mut crate::simulation::network::TransitNetwork) {
-        let mut graph_changed = false;
+    pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, zoning: &mut ZoningSystem, desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, network: &mut crate::simulation::network::TransitNetwork) {
+        let mut spawned_this_tick = 0;
+        let max_spawns = 10;
         
         // 1. Cleanup: Remove buildings if their cells are no longer zoned correctly OR if the edge they're on is gone.
         let mut i = 0;
@@ -105,7 +106,6 @@ impl BuildingAllocator {
                     }
                 }
                 self.buildings.swap_remove(i);
-                graph_changed = true;
             } else {
                 i += 1;
             }
@@ -115,6 +115,7 @@ impl BuildingAllocator {
         let edges_to_check: Vec<usize> = zoning.edge_grids.keys().cloned().collect();
         
         for edge_idx in edges_to_check {
+            if spawned_this_tick >= max_spawns { break; }
             let (edge_len, edge_width) = if let Some(edge) = network.graph.edges.get(edge_idx) {
                 if edge.deleted || edge.physical_geometry.len() < 2 { (0.0, 0.0) }
                 else { (edge.physical_length, edge.width) }
@@ -142,6 +143,7 @@ impl BuildingAllocator {
                 let cells_long = if let Some(g) = zoning.edge_grids.get(&edge_idx) { g.cells_long } else { 0 };
                 
                 for x in 0..cells_long.saturating_sub(2) {
+                    if spawned_this_tick >= max_spawns { break; }
                     let z_type = zoning.get_cell(edge_idx, side, x, 0);
                     if z_type == ZoneType::None { continue; }
                     
@@ -170,6 +172,27 @@ impl BuildingAllocator {
                         if !can_build { break; }
                     }
 
+                    // B5: Desirability Gate
+                    if can_build {
+                        let t_center = (x as f32 + 1.5) * zoning.grid_cell_size / edge_len;
+                        let world_pos = self.get_pos_on_edge(&network.graph, edge_idx, t_center);
+                        let tangent = self.get_tangent_on_edge(&network.graph, edge_idx, t_center);
+                        let normal = godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
+                        let depth_offset = crate::config::SIDEWALK_WIDTH + (1.5 * zoning.grid_cell_size);
+                        let center_2d = world_pos + normal * (edge_width * 0.5 + depth_offset);
+
+                        // Map world to grid coordinates
+                        let world_size_x = crate::config::MAP_WIDTH as f32 * crate::config::GRID_CELL_SIZE;
+                        let world_size_y = crate::config::MAP_HEIGHT as f32 * crate::config::GRID_CELL_SIZE;
+                        let gx = (((center_2d.x / world_size_x) + 0.5) * desirability.grid.width as f32).round() as usize;
+                        let gy = (((center_2d.y / world_size_y) + 0.5) * desirability.grid.height as f32).round() as usize;
+
+                        let val = *desirability.grid.get(gx, gy).unwrap_or(&0.0);
+                        if val < 50.0 {
+                            can_build = false;
+                        }
+                    }
+
                     if can_build {
                         let t = (x as f32) * zoning.grid_cell_size / edge_len;
                         let world_pos_on_edge = self.get_pos_on_edge(&network.graph, edge_idx, t);
@@ -184,7 +207,7 @@ impl BuildingAllocator {
                         
                         let frontage_pos_3d = godot::prelude::Vector3::new(world_pos_on_edge.x, 0.0, world_pos_on_edge.y);
                         let (frontage_node, new_edge_id, split_x) = network.split_for_frontage(edge_idx, frontage_pos_3d, zoning, self);
-                        graph_changed = true;
+                        spawned_this_tick += 1;
 
                         let mut b_edge_idx = edge_idx;
                         let mut b_cell_x = x;
@@ -232,9 +255,7 @@ impl BuildingAllocator {
             }
         }
 
-        if graph_changed {
-            network.rebuild_pathing();
-        }
+        network.rebuild_pathing_if_dirty();
 
         // 3. Immigration Logic
         let total_capacity: usize = self.buildings.iter()

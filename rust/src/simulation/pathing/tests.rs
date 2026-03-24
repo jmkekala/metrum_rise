@@ -28,7 +28,6 @@ fn test_cost_calculation_slope_penalty() {
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
         ],
-        parking_occupied: 0,
         zoning_left: false,
         zoning_right: false,
         deleted: false,
@@ -69,7 +68,6 @@ fn test_highway_vs_dirt_road_cost() {
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(10000.0, 0.0, 0.0),
         ],
-        parking_occupied: 0,
         zoning_left: false,
         zoning_right: false,
         deleted: false,
@@ -97,7 +95,6 @@ fn test_highway_vs_dirt_road_cost() {
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(5000.0, 0.0, 0.0),
         ],
-        parking_occupied: 0,
         zoning_left: false,
         zoning_right: false,
         deleted: false,
@@ -133,13 +130,12 @@ fn test_bidirectional_walkway_pathing() {
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-        parking_occupied: 0,
         zoning_left: false,
         zoning_right: false,
         deleted: false,
     });
 
-    let hpa = HpaGraph::new();
+    let hpa = HpaGraph::build(&graph);
     
     // 1. Pedestrian should be able to walk n0 -> n1
     let path_fwd = hpa.find_path(n0, n1, usize::MAX, &graph, true);
@@ -177,13 +173,12 @@ fn test_car_uturn_allowed() {
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-        parking_occupied: 0,
         zoning_left: false,
         zoning_right: false,
         deleted: false,
     });
 
-    let hpa = HpaGraph::new();
+    let hpa = HpaGraph::build(&graph);
     
     // Agent is at n1, having come from n0 via edge_idx.
     // They want to go back to n0.
@@ -191,7 +186,7 @@ fn test_car_uturn_allowed() {
     let path = hpa.find_path(n1, n0, edge_idx, &graph, false);
     assert!(path.is_some(), "Car should be allowed to U-turn on bidirectional road");
     let (_, _, nodes) = path.unwrap();
-    assert_eq!(nodes, vec![n0]);
+    assert_eq!(nodes, vec![n1, n0]);
 }
 
 #[test]
@@ -210,7 +205,7 @@ fn test_car_avoids_walkway_shortcut() {
         primary_type: TransitType::Road, allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 10.0,
         physical_length: 100.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
-        geometry: vec![], physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 100.0], parking_occupied: 0,
+        geometry: vec![], physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 100.0],
         zoning_left: false, zoning_right: false, deleted: false,
     });
     graph.add_edge(Edge {
@@ -218,7 +213,7 @@ fn test_car_avoids_walkway_shortcut() {
         primary_type: TransitType::Road, allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 10.0,
         physical_length: 100.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
-        geometry: vec![], physical_geometry: vec![Vector3::RIGHT * 100.0, Vector3::RIGHT * 200.0], parking_occupied: 0,
+        geometry: vec![], physical_geometry: vec![Vector3::RIGHT * 100.0, Vector3::RIGHT * 200.0],
         zoning_left: false, zoning_right: false, deleted: false,
     });
     
@@ -228,17 +223,17 @@ fn test_car_avoids_walkway_shortcut() {
         primary_type: TransitType::Foot, allowed_types: TransitFlags::FOOT,
         width: 2.0, fwd_lanes: 0, bkw_lanes: 0, speed_limit: 10.0, base_cost: 5.0, // Cheaper than road
         physical_length: 200.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
-        geometry: vec![], physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 200.0], parking_occupied: 0,
+        geometry: vec![], physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 200.0],
         zoning_left: false, zoning_right: false, deleted: false,
     });
     
-    let hpa = hpa::HpaGraph::new();
+    let hpa = hpa::HpaGraph::build(&graph);
     
     // Car should take the road path (2 nodes) and ignore the shortcut
     let path_car = hpa.find_path(n0, n2, usize::MAX, &graph, false);
     assert!(path_car.is_some());
     let (_cost, _dist, nodes) = path_car.unwrap();
-    assert_eq!(nodes.len(), 2, "Car should take 2rd node (n1 then n2) or just direct if n1 is intermediate?");
+    assert_eq!(nodes.len(), 3, "Car should take 3 nodes (n0, n1, n2)");
     // Wait, if n0->n1 and n1->n2 are separate edges, path should be [n1, n2].
     assert!(nodes.contains(&n1), "Car must travel through n1 to avoid walkway");
     
@@ -246,6 +241,7 @@ fn test_car_avoids_walkway_shortcut() {
     let path_ped = hpa.find_path(n0, n2, usize::MAX, &graph, true);
     assert!(path_ped.is_some());
     let (_c, _d, nodes_ped) = path_ped.unwrap();
-    assert_eq!(nodes_ped.len(), 1, "Pedestrian should take direct walkway shortcut [n2]");
-    assert_eq!(nodes_ped[0], n2);
+    assert_eq!(nodes_ped.len(), 2, "Pedestrian should take direct walkway shortcut [n0, n2]");
+    assert_eq!(nodes_ped[0], n0);
+    assert_eq!(nodes_ped[1], n2);
 }

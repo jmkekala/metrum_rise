@@ -9,6 +9,9 @@
 pub const MAP_WIDTH: usize = 1000;
 /// Height of the simulation map in zoning grid cells. Physical height = `MAP_HEIGHT × GRID_CELL_SIZE` metres.
 pub const MAP_HEIGHT: usize = 1000;
+/// Size of the environmental grids (pollution, noise, desirability).
+/// Reducing this from 2000/1000 to 500 provides a 16x/4x reduction in compute/memory.
+pub const ENV_GRID_SIZE: usize = 500;
 /// Vertical exaggeration applied to the terrain heightmap for rendering. Raw height values are multiplied by this.
 pub const HEIGHT_SCALE: f32 = 20.0;
 /// Maximum distance (metres) within which two road endpoint positions are snapped to the same node.

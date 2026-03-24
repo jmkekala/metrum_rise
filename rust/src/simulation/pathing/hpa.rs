@@ -49,6 +49,8 @@ pub struct HpaGraph {
     pub concrete_adj: Vec<Vec<(u32, usize, f32)>>,
     /// Reverse adjacency list for backward searches (goal to boundary).
     pub concrete_rev_adj: Vec<Vec<(u32, usize, f32)>>,
+    /// Maximum design speed in the network (m/s), used as the A* heuristic divisor.
+    pub max_v: f32,
 }
 
 impl HpaGraph {
@@ -60,6 +62,7 @@ impl HpaGraph {
             is_abstract: HashSet::new(),
             concrete_adj: Vec::new(),
             concrete_rev_adj: Vec::new(),
+            max_v: 1.0,
         }
     }
 
@@ -74,118 +77,36 @@ impl HpaGraph {
         let n = graph.nodes.len();
         if n == 0 { return hpa; }
 
-        // 1. Build concrete adjacency list (cached for future find_path calls)
+        // 1. Build concrete adjacency list
         hpa.concrete_adj = vec![Vec::new(); n];
         hpa.concrete_rev_adj = vec![Vec::new(); n];
+        let mut max_speed = 1.0_f32;
+
         for (idx, edge) in graph.edges.iter().enumerate() {
             if edge.deleted { continue; }
-            let cost = edge.base_cost * (1.0 + edge.current_congestion);
-            let can_fwd = edge.fwd_lanes > 0 || edge.primary_type == TransitType::Foot;
-            let can_bkw = edge.bkw_lanes > 0 || edge.primary_type == TransitType::Foot;
-
-            if can_fwd {
-                hpa.concrete_adj[edge.start_node as usize].push((edge.end_node, idx, cost));
-                hpa.concrete_rev_adj[edge.end_node as usize].push((edge.start_node, idx, cost));
-            }
-            if can_bkw {
-                hpa.concrete_adj[edge.end_node as usize].push((edge.start_node, idx, cost));
-                hpa.concrete_rev_adj[edge.start_node as usize].push((edge.end_node, idx, cost));
-            }
+            max_speed = max_speed.max(edge.speed_limit);
+            hpa.add_concrete_edge(edge, idx);
             
             let chunk_a = graph.get_node_chunk(edge.start_node);
             let chunk_b = graph.get_node_chunk(edge.end_node);
             
             if chunk_a != chunk_b {
-                hpa.is_abstract.insert(edge.start_node);
-                hpa.is_abstract.insert(edge.end_node);
-                
-                hpa.chunk_entries.entry(chunk_a).or_default().push(edge.start_node);
-                hpa.chunk_entries.entry(chunk_b).or_default().push(edge.end_node);
-                
-                hpa.abstract_edges.entry(edge.start_node).or_default().push(AbstractEdge {
-                    target: edge.end_node, cost, inner_path: vec![edge.end_node]
-                });
-                hpa.abstract_edges.entry(edge.end_node).or_default().push(AbstractEdge {
-                    target: edge.start_node, cost, inner_path: vec![edge.start_node]
-                });
+                hpa.add_abstract_crossing(edge.start_node, edge.end_node, edge, chunk_a);
+                hpa.add_abstract_crossing(edge.end_node, edge.start_node, edge, chunk_b);
             }
         }
+        hpa.max_v = max_speed.max(1.0);
 
         for entries in hpa.chunk_entries.values_mut() {
             entries.sort();
             entries.dedup();
         }
 
-        for (&chunk, entries) in &hpa.chunk_entries {
-            for &start_node in entries {
-                let mut costs: HashMap<(u32, usize), (f32, f32)> = HashMap::new();
-                let mut prev: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
-                let mut heap = BinaryHeap::new();
-                
-                costs.insert((start_node, usize::MAX), (0.0, 0.0));
-                heap.push(State { priority: 0.0, cost: 0.0, dist: 0.0, node: start_node, incoming_edge: usize::MAX });
-                
-                while let Some(State { priority: _, cost, dist, node, incoming_edge }) = heap.pop() {
-                    if cost > costs.get(&(node, incoming_edge)).unwrap_or(&(f32::MAX, f32::MAX)).0 { continue; }
-                    
-                    for &(neighbor, out_edge, edge_cost) in &hpa.concrete_adj[node as usize] {
-                        if graph.get_node_chunk(neighbor) != chunk { continue; }
-                        
-                        if incoming_edge != usize::MAX && incoming_edge != out_edge {
-                            let mut has_any = false;
-                            let mut valid = false;
-                            let n_ref = &graph.nodes[node as usize];
-                            for (src, tgts) in &n_ref.lane_connections {
-                                if src.0 == incoming_edge { 
-                                    has_any = true;
-                                    for t in tgts {
-                                        if t.0 == out_edge { valid = true; break; }
-                                    }
-                                }
-                            }
-                            if has_any && !valid { continue; }
-                        }
-                        
-                        let next_cost = cost + edge_cost;
-                        let next_dist = dist + graph.edges[out_edge].physical_length;
-                        if next_cost < costs.get(&(neighbor, out_edge)).unwrap_or(&(f32::MAX, f32::MAX)).0 {
-                            costs.insert((neighbor, out_edge), (next_cost, next_dist));
-                            prev.insert((neighbor, out_edge), (node, incoming_edge));
-                            heap.push(State { priority: next_cost, cost: next_cost, dist: next_dist, node: neighbor, incoming_edge: out_edge });
-                        }
-                    }
-                }
-                
-                for &end_node in entries {
-                    if start_node != end_node {
-                        let mut best_inc = usize::MAX;
-                        let mut min_c = f32::MAX;
-                        for (&(n, inc), &(c, _d)) in &costs {
-                            if n == end_node && c < min_c {
-                                min_c = c;
-                                best_inc = inc;
-                            }
-                        }
-                        
-                        if best_inc != usize::MAX {
-                            let mut path = Vec::new();
-                            let mut curr = (end_node, best_inc);
-                            while curr.0 != start_node {
-                                path.push(curr.0);
-                                curr = *prev.get(&curr).unwrap();
-                            }
-                            path.reverse();
-                            
-                            hpa.abstract_edges.entry(start_node).or_default().push(AbstractEdge {
-                                target: end_node,
-                                cost: min_c,
-                                inner_path: path
-                            });
-                        }
-                    }
-                }
-            }
+        let all_chunks: Vec<_> = hpa.chunk_entries.keys().cloned().collect();
+        for chunk in all_chunks {
+            hpa.rebuild_chunk_paths(graph, chunk);
         }
+
         // Logging disabled in tests to avoid Godot FFI initialization errors
         #[cfg(not(test))]
         {
@@ -197,6 +118,195 @@ impl HpaGraph {
         }
 
         hpa
+    }
+
+    /// Incremental HPA* update: only rebuilds Dijkstra for the specified chunks.
+    pub fn update_incremental(&mut self, graph: &TransitGraph, dirty_chunks: &HashSet<(i32, i32)>) {
+        let _start_time = std::time::Instant::now();
+        
+        // 1. Sync concrete adjacency list size
+        let n = graph.nodes.len();
+        if self.concrete_adj.len() < n {
+            self.concrete_adj.resize(n, Vec::new());
+            self.concrete_rev_adj.resize(n, Vec::new());
+        }
+
+        // 2. Identify all affected nodes to sync their concrete adjacency
+        let mut affected_nodes = HashSet::new();
+        let mut max_speed = self.max_v;
+
+        for &chunk_coords in dirty_chunks {
+            if let Some(edge_idxs) = graph.spatial_edge_grid.get(&chunk_coords) {
+                for &e_idx in edge_idxs {
+                    let edge = &graph.edges[e_idx];
+                    if edge.deleted { continue; }
+                    affected_nodes.insert(edge.start_node);
+                    affected_nodes.insert(edge.end_node);
+                    max_speed = max_speed.max(edge.speed_limit);
+                }
+            }
+        }
+        self.max_v = max_speed;
+
+        for &node_id in &affected_nodes {
+            let idx = node_id as usize;
+            self.concrete_adj[idx].clear();
+            self.concrete_rev_adj[idx].clear();
+            
+            if let Some(edges) = graph.adjacency.get(&node_id) {
+                for &e_idx in edges {
+                    if graph.edges[e_idx].deleted { continue; }
+                    self.add_concrete_edge(&graph.edges[e_idx], e_idx);
+                }
+            }
+        }
+
+        // 3. Update Abstract Nodes and Crossings
+        for &chunk_coords in dirty_chunks {
+             if let Some(nodes) = self.chunk_entries.get(&chunk_coords).cloned() {
+                 for n in nodes {
+                     self.is_abstract.remove(&n);
+                     self.abstract_edges.remove(&n);
+                 }
+             }
+             self.chunk_entries.remove(&chunk_coords);
+        }
+
+        for &chunk_coords in dirty_chunks {
+            if let Some(edge_idxs) = graph.spatial_edge_grid.get(&chunk_coords) {
+                for &e_idx in edge_idxs {
+                    let edge = &graph.edges[e_idx];
+                    if edge.deleted { continue; }
+                    
+                    let chunk_a = graph.get_node_chunk(edge.start_node);
+                    let chunk_b = graph.get_node_chunk(edge.end_node);
+                    
+                    if chunk_a != chunk_b {
+                        if chunk_a == chunk_coords {
+                            self.add_abstract_crossing(edge.start_node, edge.end_node, edge, chunk_a);
+                        }
+                        if chunk_b == chunk_coords {
+                            self.add_abstract_crossing(edge.end_node, edge.start_node, edge, chunk_b);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Recalculate intra-chunk paths
+        for &chunk in dirty_chunks {
+            if let Some(entries) = self.chunk_entries.get_mut(&chunk) {
+                entries.sort();
+                entries.dedup();
+            }
+            self.rebuild_chunk_paths(graph, chunk);
+        }
+
+        #[cfg(not(test))]
+        {
+            godot::prelude::godot_print!("HPA* Incremental Rebuild of {} chunks completed in {:.2}ms", 
+                dirty_chunks.len(),
+                _start_time.elapsed().as_secs_f32() * 1000.0
+            );
+        }
+    }
+
+    fn add_concrete_edge(&mut self, edge: &crate::simulation::network::graph::Edge, idx: usize) {
+        let cost = edge.base_cost * (1.0 + edge.current_congestion);
+        let can_fwd = edge.fwd_lanes > 0 || edge.primary_type == TransitType::Foot;
+        let can_bkw = edge.bkw_lanes > 0 || edge.primary_type == TransitType::Foot;
+
+        if can_fwd {
+            self.concrete_adj[edge.start_node as usize].push((edge.end_node, idx, cost));
+            self.concrete_rev_adj[edge.end_node as usize].push((edge.start_node, idx, cost));
+        }
+        if can_bkw {
+            self.concrete_adj[edge.end_node as usize].push((edge.start_node, idx, cost));
+            self.concrete_rev_adj[edge.start_node as usize].push((edge.end_node, idx, cost));
+        }
+    }
+
+    fn add_abstract_crossing(&mut self, from: u32, to: u32, edge: &crate::simulation::network::graph::Edge, chunk: (i32, i32)) {
+        self.is_abstract.insert(from);
+        self.chunk_entries.entry(chunk).or_default().push(from);
+        
+        let cost = edge.base_cost * (1.0 + edge.current_congestion);
+        self.abstract_edges.entry(from).or_default().push(AbstractEdge {
+            target: to, cost, inner_path: vec![to]
+        });
+    }
+
+    fn rebuild_chunk_paths(&mut self, graph: &TransitGraph, chunk: (i32, i32)) {
+        let entries = if let Some(e) = self.chunk_entries.get(&chunk) { e.clone() } else { return; };
+        
+        for &start_node in &entries {
+            let mut costs: HashMap<(u32, usize), (f32, f32)> = HashMap::new();
+            let mut prev: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
+            let mut heap = BinaryHeap::new();
+            
+            costs.insert((start_node, usize::MAX), (0.0, 0.0));
+            heap.push(State { priority: 0.0, cost: 0.0, dist: 0.0, node: start_node, incoming_edge: usize::MAX });
+            
+            while let Some(State { priority: _, cost, dist, node, incoming_edge }) = heap.pop() {
+                if cost > costs.get(&(node, incoming_edge)).unwrap_or(&(f32::MAX, f32::MAX)).0 { continue; }
+                
+                for &(neighbor, out_edge, edge_cost) in &self.concrete_adj[node as usize] {
+                    if graph.get_node_chunk(neighbor) != chunk { continue; }
+                    
+                    if incoming_edge != usize::MAX && incoming_edge != out_edge {
+                        let mut has_any = false;
+                        let mut valid = false;
+                        let n_ref = &graph.nodes[node as usize];
+                        for (src, tgts) in &n_ref.lane_connections {
+                            if src.0 == incoming_edge { 
+                                has_any = true;
+                                for t in tgts {
+                                    if t.0 == out_edge { valid = true; break; }
+                                }
+                            }
+                        }
+                        if has_any && !valid { continue; }
+                    }
+                    
+                    let next_cost = cost + edge_cost;
+                    let next_dist = dist + graph.edges[out_edge].physical_length;
+                    if next_cost < costs.get(&(neighbor, out_edge)).unwrap_or(&(f32::MAX, f32::MAX)).0 {
+                        costs.insert((neighbor, out_edge), (next_cost, next_dist));
+                        prev.insert((neighbor, out_edge), (node, incoming_edge));
+                        heap.push(State { priority: next_cost, cost: next_cost, dist: next_dist, node: neighbor, incoming_edge: out_edge });
+                    }
+                }
+            }
+            
+            for &end_node in &entries {
+                if start_node != end_node {
+                    let mut best_inc = usize::MAX;
+                    let mut min_c = f32::MAX;
+                    for (&(n, inc), &(c, _d)) in &costs {
+                        if n == end_node && c < min_c {
+                            min_c = c;
+                            best_inc = inc;
+                        }
+                    }
+                    
+                    if best_inc != usize::MAX {
+                        let mut path = Vec::new();
+                        let mut curr = (end_node, best_inc);
+                        while curr.0 != start_node {
+                            path.push(curr.0);
+                            curr = *prev.get(&curr).unwrap();
+                        }
+                        path.reverse();
+                        
+                        self.abstract_edges.entry(start_node).or_default().push(AbstractEdge {
+                            target: end_node,
+                            cost: min_c,
+                            inner_path: path
+                        });
+                    }
+                }
+            }
+        }
     }
 
     /// Finds a path from `start_raw` to `end_raw` and returns `(time_cost, distance_m, node_sequence)`.
@@ -246,7 +356,7 @@ impl HpaGraph {
 
         for (node, (c, d, _inc, _path)) in &start_borders {
             costs.insert(*node, (*c, *d));
-            let h_val = graph.nodes[*node as usize].pos.distance_to(graph.nodes[end as usize].pos) / 100.0;
+            let h_val = graph.nodes[*node as usize].pos.distance_to(graph.nodes[end as usize].pos) / self.max_v;
             h.push(State { priority: *c + h_val, cost: *c, dist: *d, node: *node, incoming_edge: usize::MAX });
         }
 
@@ -283,7 +393,7 @@ impl HpaGraph {
                     if next_cost < costs.get(&abs.target).unwrap_or(&(f32::MAX, f32::MAX)).0 {
                         costs.insert(abs.target, (next_cost, next_dist));
                         prev.insert(abs.target, (node, abs.inner_path.clone()));
-                        let h_val = graph.nodes[abs.target as usize].pos.distance_to(graph.nodes[end as usize].pos) / 100.0;
+                        let h_val = graph.nodes[abs.target as usize].pos.distance_to(graph.nodes[end as usize].pos) / self.max_v;
                         h.push(State { priority: next_cost + h_val, cost: next_cost, dist: next_dist, node: abs.target, incoming_edge: usize::MAX });
                     }
                 }
@@ -402,7 +512,7 @@ impl HpaGraph {
                 if next_cost < costs.get(&(neighbor, out_edge)).unwrap_or(&(f32::MAX, f32::MAX)).0 {
                     costs.insert((neighbor, out_edge), (next_cost, next_dist));
                     prev.insert((neighbor, out_edge), (node, incoming_edge));
-                    let h_val = graph.nodes[neighbor as usize].pos.distance_to(graph.nodes[end as usize].pos) / 100.0;
+                    let h_val = graph.nodes[neighbor as usize].pos.distance_to(graph.nodes[end as usize].pos) / self.max_v;
                     h.push(State { priority: next_cost + h_val, cost: next_cost, dist: next_dist, node: neighbor, incoming_edge: out_edge });
                 }
             }
@@ -561,7 +671,7 @@ mod tests {
                 start_node: 0, end_node: 0, primary_type: TransitType::Road, allowed_types: 0,
                 width: 0.0, fwd_lanes: 0, bkw_lanes: 0, speed_limit: 0.0, base_cost: 0.0,
                 physical_length: 0.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
-                geometry: Vec::new(), physical_geometry: Vec::new(), parking_occupied: 0,
+                geometry: Vec::new(), physical_geometry: Vec::new(),
                 zoning_left: false, zoning_right: false, deleted: false
             }
         }
@@ -627,5 +737,31 @@ mod tests {
         // Car should NOT take the shortcut (0->3->1->2)
         let path_c = hpa.find_path(0, 2, usize::MAX, &graph, false).unwrap();
         assert!(!path_c.2.contains(&4));
+    }
+
+    #[test]
+    fn test_incremental_update() {
+        let mut graph = setup_test_graph();
+        let mut hpa = HpaGraph::build(&graph);
+        
+        // Add a new node and edge in a new chunk (1,2)
+        let n4 = graph.add_node(Vector3::new(600.0, 0.0, 1200.0), NodeType::Junction); // 4
+        let e3 = graph.add_edge(Edge {
+            start_node: 2, end_node: n4,
+            primary_type: TransitType::Road, allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            width: 10.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 20.0, base_cost: 30.0,
+            physical_length: 600.0, physical_geometry: vec![Vector3::new(600.0,0.0,600.0), Vector3::new(600.0,0.0,1200.0)],
+            deleted: false, ..Edge::default_test()
+        });
+        
+        let mut dirty = HashSet::new();
+        dirty.insert(graph.get_node_chunk(2)); // (1,1)
+        dirty.insert(graph.get_node_chunk(n4)); // (1,2)
+        
+        hpa.update_incremental(&graph, &dirty);
+        
+        // Should now be able to find path from 0 to 4
+        let path = hpa.find_path(0, n4, usize::MAX, &graph, false).expect("Path 0->4 should exist after incremental update");
+        assert_eq!(path.2, vec![0, 3, 1, 2, 4]);
     }
 }

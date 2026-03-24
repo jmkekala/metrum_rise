@@ -20,14 +20,17 @@ impl PollutionSystem {
         
         let w = self.grid.width;
         let h = self.grid.height;
+        let world_size_x = crate::config::MAP_WIDTH as f32 * crate::config::GRID_CELL_SIZE;
+        let world_size_y = crate::config::MAP_HEIGHT as f32 * crate::config::GRID_CELL_SIZE;
 
         // 1. Emission (Sequential as building count is small compared to grid)
         for b in &allocator.buildings {
             if b.zone_type == ZoneType::Industrial {
-                let cx = b.center_x.round() as usize;
-                let cy = b.center_y.round() as usize;
-                if let Some(val) = new_grid.get_mut(cx, cy) {
-                    *val += 100.0;
+                let gx = ((b.center_x / world_size_x) + 0.5) * w as f32;
+                let gy = ((b.center_y / world_size_y) + 0.5) * h as f32;
+                
+                if let Some(val) = new_grid.get_mut(gx.round() as usize, gy.round() as usize) {
+                    *val += 5.0;
                 }
             }
         }

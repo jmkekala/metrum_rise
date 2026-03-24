@@ -172,7 +172,6 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
         end_clip: 0.0,
         geometry: part2_geo.clone(),
         physical_geometry: part2_geo.clone(),
-        parking_occupied: 0,
         zoning_left,
         zoning_right,
         deleted: false,
@@ -197,6 +196,12 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
             b.cell_x -= split_x;
         }
     }
+
+    // --- DIRTY MARKING ---
+    network.zoning_dirty_edges.insert(edge_id);
+    network.zoning_dirty_edges.insert(new_edge_id);
+    network.invalidate_zoning_near_edge(edge_id);
+    network.invalidate_zoning_near_edge(new_edge_id);
 }
 
 #[cfg(test)]

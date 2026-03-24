@@ -16,6 +16,7 @@ pub mod terrain;
 pub mod interaction;
 pub mod topology;
 use crate::config;
+use std::collections::HashSet;
 
 use types::*;
 use graph::*;
@@ -29,8 +30,12 @@ use crate::simulation::pathing::hpa::HpaGraph;
 pub struct TransitNetwork {
     /// The concrete road graph (nodes, edges, spatial index, adjacency).
     pub graph: TransitGraph,
-    /// The hierarchical abstract graph built from chunk-boundary nodes. Rebuilt on each road edit.
+    /// The hierarchical abstract graph built from chunk-boundary nodes.
     pub hpa_graph: HpaGraph,
+    /// Chunks (512m) that need abstract graph recalculation. If empty, graph is in sync.
+    pub hpa_dirty_chunks: HashSet<(i32, i32)>,
+    /// Edges that need their zoning obstruction cache recalculated.
+    pub zoning_dirty_edges: HashSet<usize>,
 }
 
 impl TransitNetwork {
@@ -38,12 +43,16 @@ impl TransitNetwork {
         Self {
             graph: TransitGraph::new(),
             hpa_graph: HpaGraph::new(),
+            hpa_dirty_chunks: HashSet::new(),
+            zoning_dirty_edges: HashSet::new(),
         }
     }
 
     pub fn clear(&mut self, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
         self.graph = TransitGraph::new();
         self.hpa_graph = HpaGraph::new();
+        self.hpa_dirty_chunks.clear();
+        self.zoning_dirty_edges.clear();
         zoning.clear();
         allocator.clear();
     }
@@ -161,8 +170,7 @@ impl TransitNetwork {
             self.create_edge_internal(current_start_id, end_id, active_segment, fwd_lanes, bkw_lanes, zoning_left, zoning_right, zoning, allocator);
         }
 
-        // Rebuild massive DoD pathing table for agents
-        self.hpa_graph = HpaGraph::build(&self.graph);
+        self.flush_zoning_updates(zoning);
     }
 
     /// Helper to consistently add a road edge and handle its side effects
@@ -197,7 +205,6 @@ impl TransitNetwork {
             end_clip: 0.0,
             geometry: points.clone(),
             physical_geometry: points,
-            parking_occupied: 0,
             zoning_left,
             zoning_right,
             deleted: false,
@@ -208,16 +215,49 @@ impl TransitNetwork {
         self.graph.edges[edge_id].physical_length = length;
         
         zoning.update_edge_grid_size(edge_id, length);
-        zoning.recalculate_obstructions(edge_id, &self.graph);
+        self.zoning_dirty_edges.insert(edge_id);
+        self.invalidate_zoning_near_edge(edge_id);
 
         topology::process_intersections(self, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(); // Clean edge_id if it's dup
         self.graph.rebuild_intersection_clips();
+
+        // Mark chunks as dirty
+        let chunks = self.graph.get_edge_chunks(edge_id);
+        self.hpa_dirty_chunks.extend(chunks);
     }
 
     pub fn generate_mesh_data(&self, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData {
         let renderer = RoadRenderer; 
         renderer.generate_mesh_data(&self.graph, terrain)
+    }
+
+    pub fn invalidate_zoning_near_edge(&mut self, edge_id: usize) {
+        if edge_id >= self.graph.edges.len() { return; }
+        let edge = &self.graph.edges[edge_id];
+        let mut min_x = f32::MAX; let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX; let mut max_z = f32::MIN;
+        for p in &edge.physical_geometry {
+            min_x = min_x.min(p.x); max_x = max_x.max(p.x);
+            min_z = min_z.min(p.z); max_z = max_z.max(p.z);
+        }
+        let padding = 125.0; // Zoning depth is 100m, so 125m is safe
+        let nearby = self.graph.get_edges_near_aabb(
+            Vector3::new(min_x - padding, 0.0, min_z - padding),
+            Vector3::new(max_x + padding, 0.0, max_z + padding)
+        );
+        for &e_idx in &nearby {
+            self.zoning_dirty_edges.insert(e_idx);
+        }
+    }
+
+    pub fn flush_zoning_updates(&mut self, zoning: &mut crate::simulation::grid::zoning::ZoningSystem) {
+        let dirty: Vec<usize> = self.zoning_dirty_edges.drain().collect();
+        for &edge_idx in &dirty {
+             if edge_idx < self.graph.edges.len() && !self.graph.edges[edge_idx].deleted {
+                zoning.recalculate_obstructions(edge_idx, &self.graph);
+            }
+        }
     }
 
     pub fn flatten_terrain(&self, terrain: &crate::simulation::terrain::TerrainSystem, output_heightmap: &mut [f32], map_size: Vector2) {
@@ -254,6 +294,7 @@ impl TransitNetwork {
         zoning.recalculate_obstructions(edge_idx, &self.graph);
         zoning.recalculate_obstructions(new_edge_id, &self.graph);
 
+        self.mark_point_dirty(pos);
         (node_id, new_edge_id, split_x)
     }
 
@@ -281,11 +322,33 @@ impl TransitNetwork {
                     b.cell_x += offset;
                 }
             }
+            self.mark_point_dirty(self.graph.nodes[node_id as usize].pos);
         }
     }
 
     pub fn rebuild_pathing(&mut self) {
-        self.hpa_graph = HpaGraph::build(&self.graph);
+        if self.hpa_dirty_chunks.is_empty() { return; }
+        
+        // v0.01: For now, if many chunks are dirty, do a full rebuild
+        if self.hpa_dirty_chunks.len() > 10 || self.hpa_graph.concrete_adj.is_empty() {
+            self.hpa_graph = HpaGraph::build(&self.graph);
+        } else {
+            self.hpa_graph.update_incremental(&self.graph, &self.hpa_dirty_chunks);
+        }
+        self.hpa_dirty_chunks.clear();
+    }
+
+    /// Rebuilds the HPA* graph only if it has been marked dirty.
+    pub fn rebuild_pathing_if_dirty(&mut self) {
+        if !self.hpa_dirty_chunks.is_empty() {
+            self.rebuild_pathing();
+        }
+    }
+
+    /// Marks the chunk containing this world-space point as requiring HPA* update.
+    pub fn mark_point_dirty(&mut self, pos: Vector3) {
+        let coords = TransitGraph::get_chunk_coords(pos);
+        self.hpa_dirty_chunks.insert(coords);
     }
 
     fn cleanup_duplicate_edges(&mut self) {

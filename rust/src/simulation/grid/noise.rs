@@ -21,20 +21,21 @@ impl NoiseSystem {
         
         let w = self.grid.width;
         let h = self.grid.height;
-        let hw = (w as f32) * 0.5; // Centers for mapping world to grid
-        let hh = (h as f32) * 0.5;
+        let world_size_x = crate::config::MAP_WIDTH as f32 * crate::config::GRID_CELL_SIZE;
+        let world_size_y = crate::config::MAP_HEIGHT as f32 * crate::config::GRID_CELL_SIZE;
 
         // 1. Emission (Sequential - small count)
         for b in &allocator.buildings {
-            let cx = b.center_x.round() as usize;
-            let cy = b.center_y.round() as usize;
+            let gx = (((b.center_x / world_size_x) + 0.5) * w as f32).round() as usize;
+            let gy = (((b.center_y / world_size_y) + 0.5) * h as f32).round() as usize;
+
             if b.zone_type == ZoneType::Commercial {
-                if let Some(val) = new_grid.get_mut(cx, cy) {
+                if let Some(val) = new_grid.get_mut(gx, gy) {
                     *val = (*val + 30.0).min(100.0);
                 }
             }
             if b.zone_type == ZoneType::Industrial {
-                if let Some(val) = new_grid.get_mut(cx, cy) {
+                if let Some(val) = new_grid.get_mut(gx, gy) {
                     *val = (*val + 80.0).min(100.0);
                 }
             }
@@ -45,8 +46,8 @@ impl NoiseSystem {
             if edge.deleted { continue; }
             let road_noise = if edge.speed_limit > 60.0 { 4.0 } else { 1.0 };
             for p in &edge.physical_geometry {
-                let gx = (p.x + hw).round() as i32;
-                let gz = (p.z + hh).round() as i32;
+                let gx = (((p.x / world_size_x) + 0.5) * w as f32).round() as i32;
+                let gz = (((p.z / world_size_y) + 0.5) * h as f32).round() as i32;
                 if gx >= 0 && gx < w as i32 && gz >= 0 && gz < h as i32 {
                     if let Some(val) = new_grid.get_mut(gx as usize, gz as usize) {
                         *val = (*val + road_noise).min(100.0);

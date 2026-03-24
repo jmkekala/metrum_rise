@@ -14,8 +14,6 @@
 //!
 //! # Known issues (see `docs/project.md`)
 //! - `AgentSystem::tick` is single-threaded — Rayon parallelisation is a v0.01 goal.
-//! - `parking_occupied` is never incremented (bug B3).
-//! - `parked_edge`/`parked_progression` are written but never read for car retrieval (bug B4).
 //! - `happiness` and `money` are never modified (bug B10).
 
 use crate::simulation::grid::zoning::ZoneType;
@@ -69,10 +67,14 @@ pub struct AgentSystem {
     pub activity: Vec<u8>,
     /// Current transit phase. One of the `TRANSIT_*` constants defined in this module.
     pub transit: Vec<u8>,
-    /// Agent wellbeing in `[0, 100]`. Not yet read or modified by any logic (bug B10).
+    /// Agent wellbeing in `[0, 100]`.
     pub happiness: Vec<f32>,
-    /// Agent cash balance. Initialised at 100 for immigrants. Not yet modified (bug B10).
+    /// Agent cash balance. Initialised at 100 for immigrants.
     pub money: Vec<f32>,
+    /// Internal clock for journey duration calculation.
+    pub journey_start_time: Vec<f32>,
+    /// Global simulation time for this system.
+    pub sim_time: f32,
 
     // Routing Geometry
 
@@ -121,16 +123,8 @@ pub struct AgentSystem {
     /// Index into `current_path` of the node the agent is currently heading toward.
     pub current_path_index: Vec<usize>,
 
-    // Persistent Vehicle & Parking
-
     /// `true` if the agent owns a car and drove to their current location.
     pub has_car: Vec<bool>,
-    /// Edge index where the agent's car is parked. `usize::MAX` = no car parked.
-    /// Written on park, but never read for car retrieval (bug B4).
-    pub parked_edge: Vec<usize>,
-    /// Segment position along `parked_edge` where the car was parked.
-    /// Written on park, but never read for car retrieval (bug B4).
-    pub parked_progression: Vec<isize>,
     /// Running count of pathfinding calls this session, used for benchmark logging.
     pub pathfind_count: u32,
 }
@@ -168,8 +162,8 @@ impl AgentSystem {
             current_path: Vec::new(),
             current_path_index: Vec::new(),
             has_car: Vec::new(),
-            parked_edge: Vec::new(),
-            parked_progression: Vec::new(),
+            journey_start_time: Vec::new(),
+            sim_time: 0.0,
             pathfind_count: 0,
         }
     }
@@ -184,6 +178,7 @@ impl AgentSystem {
         self.transit.push(TRANSIT_IMMIGRATING); 
         self.happiness.push(50.0);
         self.money.push(100.0); // Immigrants bring $100
+        self.journey_start_time.push(self.sim_time);
         
         self.current_building.push(usize::MAX);
         self.target_building.push(home);
@@ -206,8 +201,6 @@ impl AgentSystem {
         self.current_path_index.push(0);
         
         self.has_car.push(true); // Immigrants arrive with a car!
-        self.parked_edge.push(usize::MAX);
-        self.parked_progression.push(0);
         self.count += 1;
         
         if home == usize::MAX {
@@ -262,8 +255,8 @@ impl AgentSystem {
         self.current_path.clear();
         self.current_path_index.clear();
         self.has_car.clear();
-        self.parked_edge.clear();
-        self.parked_progression.clear();
+        self.journey_start_time.clear();
+        self.sim_time = 0.0;
         self.count = 0;
         self.pathfind_count = 0;
     }
@@ -300,6 +293,7 @@ impl AgentSystem {
         self.bezier_t.swap(index, last_idx);
         self.current_path.swap(index, last_idx);
         self.current_path_index.swap(index, last_idx);
+        self.journey_start_time.swap(index, last_idx);
 
         self.home_building.pop();
         self.work_building.pop();
@@ -329,6 +323,7 @@ impl AgentSystem {
         self.bezier_t.pop();
         self.current_path.pop();
         self.current_path_index.pop();
+        self.journey_start_time.pop();
 
         self.count -= 1;
     }
@@ -388,18 +383,6 @@ impl AgentSystem {
         return (target_node, false);
     }
 
-    pub fn find_parking_spot(&self, node_id: u32, graph: &TransitGraph) -> Option<(usize, u32)> {
-        for (e_idx, e) in graph.edges.iter().enumerate() {
-            if e.primary_type == TransitType::Road && (e.start_node == node_id || e.end_node == node_id) {
-                if e.parking_occupied < e.get_parking_capacity() {
-                    let p = if e.start_node == node_id { 0 } else { (e.physical_geometry.len() as u32).saturating_sub(1) };
-                    return Some((e_idx, p));
-                }
-            }
-        }
-        None
-    }
-
     pub fn find_available_home(&self, allocator: &BuildingAllocator) -> Option<usize> {
         let mut occupancy = vec![0; allocator.buildings.len()];
         for i in 0..self.count {
@@ -417,6 +400,7 @@ impl AgentSystem {
     }
     
     pub fn tick(&mut self, allocator: &BuildingAllocator, hpa_graph: &HpaGraph, graph: &mut TransitGraph, delta: f32) {
+        self.sim_time += delta;
         let mut rng = rand::thread_rng();
         
         // 1. Safety Scrub: Building indices are volatile
@@ -502,6 +486,7 @@ impl AgentSystem {
                         if next_bldg != usize::MAX && next_bldg < allocator.buildings.len() {
                             self.target_building[i] = next_bldg;
                             self.activity[i] = next_act;
+                            self.journey_start_time[i] = self.sim_time;
                             let target_node = allocator.buildings[next_bldg].frontage_node;
                             let (_final_target, driving) = self.decide_transit_mode(i, target_node, graph, hpa_graph);
                             self.target_node[i] = target_node; // Simple: always go to frontage
@@ -738,7 +723,6 @@ impl AgentSystem {
                             self.current_node[i] = if is_fwd { edge.end_node } else { edge.start_node };
                             
                             self.current_edge[i] = usize::MAX;
-                            // continue loop to either park or pick next edge
                         }
                     }
                 }
@@ -756,6 +740,7 @@ impl AgentSystem {
                     let step = speed * delta;
                     
                     if dist < step {
+                        let prev_activity = self.activity[i];
                         self.pos_x[i] = center_vec.x; self.pos_y[i] = center_vec.y;
                         self.current_building[i] = b_id;
                         self.is_visible[i] = false;
@@ -763,6 +748,13 @@ impl AgentSystem {
                         self.is_driving[i] = false;
                         self.current_edge[i] = usize::MAX;
                         self.edge_progression[i] = 0;
+
+                        // Apply commute penalty and activity outcomes
+                        let commute_time = self.sim_time - self.journey_start_time[i];
+                        self.happiness[i] = (self.happiness[i] - commute_time / 60.0).clamp(0.0, 100.0);
+                        if prev_activity == 2 { // Returned from Shopping
+                            self.money[i] = (self.money[i] - 20.0).max(0.0);
+                        }
                     } else if dist > 0.0001 {
                         let mv = dir_to_center.normalized() * step;
                         self.pos_x[i] += mv.x; self.pos_y[i] += mv.y;
@@ -773,6 +765,38 @@ impl AgentSystem {
                 }
                 _ => { self.transit[i] = TRANSIT_IDLE; }
             }
+        }
+    }
+
+    /// Update per-day agent state: home/work bonuses and pollution penalties.
+    pub fn daily_update(&mut self, pollution: &crate::simulation::grid::pollution::PollutionSystem) {
+        let w = pollution.grid.width as f32;
+        let h = pollution.grid.height as f32;
+        let world_size_x = crate::config::MAP_WIDTH as f32 * crate::config::GRID_CELL_SIZE;
+        let world_size_y = crate::config::MAP_HEIGHT as f32 * crate::config::GRID_CELL_SIZE;
+
+        for i in 0..self.count {
+            // 1. Snapshot-based Activity Rewards
+            if self.transit[i] == TRANSIT_IDLE {
+                if self.activity[i] == 0 { // Home
+                    self.happiness[i] += 1.0;
+                } else if self.activity[i] == 1 { // Work
+                    self.money[i] += 10.0;
+                }
+            }
+
+            // 2. Pollution Penalty
+            let gx = (((self.pos_x[i] / world_size_x) + 0.5) * w).round() as i32;
+            let gy = (((self.pos_y[i] / world_size_y) + 0.5) * h).round() as i32;
+            if gx >= 0 && gx < w as i32 && gy >= 0 && gy < h as i32 {
+                if let Some(p) = pollution.grid.get(gx as usize, gy as usize) {
+                    self.happiness[i] -= p * 0.1;
+                }
+            }
+
+            // 3. Final Clamping
+            self.happiness[i] = self.happiness[i].clamp(0.0, 100.0);
+            self.money[i] = self.money[i].max(0.0);
         }
     }
 }
