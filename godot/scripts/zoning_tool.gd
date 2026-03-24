@@ -1,3 +1,12 @@
+## Zoning paint tool — projects mouse position onto road edges and paints land-use cells.
+##
+## Rust methods called: update_zoning_visuals(), get_hovered_edge(), set_zoning_cell(),
+##   set_zoning_enabled(), get_closest_network_point()
+## Zone types: 1=Residential, 2=Commercial, 3=Industrial, 4=Office, 5=Mixed.
+## Modes: SINGLE (one cell), PAINT (drag to paint), FILL (flood-fill edge), DELETE.
+## Cell projection uses Rust's edge geometry to compute (edge_idx, side, cell_x, cell_y)
+## from a world-space mouse ray — all projection math lives in update_zoning_visuals() on
+## the Rust side; GDScript only forwards the hovered edge and mouse position.
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"

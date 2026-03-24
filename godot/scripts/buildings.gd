@@ -1,3 +1,9 @@
+## Building renderer — maintains one MultiMeshInstance3D per zone type and updates it each frame.
+##
+## Rust methods called: get_building_transforms(zone_id: int)
+## Building transforms arrive as a flat PackedFloat32Array of 12 floats per building,
+## using the same layout as agent transforms (Transform3D basis + origin).
+## Zone IDs: 1=Residential, 2=Commercial, 3=Industrial, 4=Mixed.
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"

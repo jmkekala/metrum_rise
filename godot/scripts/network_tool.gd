@@ -1,3 +1,9 @@
+## Base class for all road-network editing tools (RoadTool, MoveTool, CulDeSacTool).
+##
+## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
+##   get_road_mesh_data(), get_network_nodes(), get_node_pos(), get_height_at()
+## Owns the shared preview mesh, blueprint spline, and node snapping MultiMesh.
+## Subclasses override _handle_input() and _commit() for their specific editing behaviour.
 extends Node3D
 class_name NetworkTool
 

@@ -1,3 +1,10 @@
+## Lane connection editor — visual tool for configuring turn restrictions at road junctions.
+##
+## Rust methods called: get_node_lanes(), get_lane_connections_array(), set_lane_connection(),
+##   clear_lane_source(), clear_lane_connections(), get_node_pos(), get_closest_node(),
+##   get_edge_geometry(), get_edge_width(), get_lane_width()
+## Click a node to select it; drag from a source lane arrow to a target lane arrow to permit
+## that turn. Right-click clears all connections on the selected node.
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"

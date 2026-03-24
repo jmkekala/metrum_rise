@@ -1,7 +1,9 @@
+## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
+##
+## Does not call SimulationNode directly. Routes input events to the active tool node
+## (RoadTool, ZoningTool, MoveTool, LaneTool, CulDeSacTool) and handles global shortcuts
+## (Undo, Save/Load, simulation speed, overlay toggles).
 extends Node
-
-# Centralized Input Orchestrator
-# Manages tool switching, system shortcuts, and global modal state.
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"

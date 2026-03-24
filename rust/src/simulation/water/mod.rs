@@ -1,10 +1,23 @@
+//! Shallow-water simulation using the Saint-Venant equations.
+//!
+//! Water depth and flux are stored on the same grid as the terrain heightmap.
+//! The tick is parallelised with `rayon` over grid rows.
+//! Water sources (player-placed) inject depth at a fixed rate per tick.
+
+/// Shallow-water state for the entire map.
 pub struct WaterSystem {
+    /// Grid width in cells (matches terrain width).
     pub width: usize,
+    /// Grid height in cells (matches terrain height).
     pub height: usize,
+    /// Water depth (metres) per cell.
     pub depth: Vec<f32>,
+    /// Flow velocity magnitude per cell, used for rendering foam/current effects.
     pub velocity: Vec<f32>,
-    pub flux: Vec<[f32; 4]>, // [Left, Right, Top, Bottom]
-    pub sources: Vec<(usize, usize, f32)>, // (x, y, rate)
+    /// Directional flux per cell: `[Left, Right, Top, Bottom]` (m³/s).
+    pub flux: Vec<[f32; 4]>,
+    /// Player-placed water sources: `(grid_x, grid_y, rate_m_per_tick)`.
+    pub sources: Vec<(usize, usize, f32)>,
 }
 
 use rayon::prelude::*;

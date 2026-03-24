@@ -1,3 +1,12 @@
+//! Road network: graph data, topology operations, rendering, and pathfinding integration.
+//!
+//! The public entry point for road edits is [`TransitNetwork`], which owns both the
+//! concrete [`graph::TransitGraph`] and the [`crate::simulation::pathing::hpa::HpaGraph`].
+//! All structural modifications (add, split, merge, remove) go through `TransitNetwork` methods
+//! so that the HPA* graph is rebuilt atomically after each change.
+//!
+//! **Never modify [`graph::TransitGraph`] directly from outside this module.**
+
 use godot::prelude::*;
 pub mod types;
 pub mod graph;
@@ -14,8 +23,13 @@ use render::TransitRenderer;
 use render::road::RoadRenderer;
 use crate::simulation::pathing::hpa::HpaGraph;
 
+/// Top-level road network owning both the concrete graph and the pre-computed HPA* abstract graph.
+///
+/// Use this struct for all road edits. It ensures the HPA* graph is rebuilt after structural changes.
 pub struct TransitNetwork {
+    /// The concrete road graph (nodes, edges, spatial index, adjacency).
     pub graph: TransitGraph,
+    /// The hierarchical abstract graph built from chunk-boundary nodes. Rebuilt on each road edit.
     pub hpa_graph: HpaGraph,
 }
 

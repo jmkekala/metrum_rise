@@ -1,3 +1,23 @@
+//! Agent simulation: state machine, movement, pathfinding decisions, and immigration.
+//!
+//! # Memory layout
+//!
+//! [`AgentSystem`] uses a Structure-of-Arrays (SoA) layout — every field is a separate
+//! `Vec<T>` indexed by agent ID. This enables cache-friendly bulk iteration and is a
+//! prerequisite for future `rayon::par_iter_mut` parallelisation.
+//!
+//! # Finite state machine
+//!
+//! Each agent has two independent state axes:
+//! - **Activity** (`activity[i]`): what the agent is trying to do — Home, Work, or Shop.
+//! - **Transit** (`transit[i]`): the agent's current movement phase (see `TRANSIT_*` constants).
+//!
+//! # Known issues (see `docs/project.md`)
+//! - `AgentSystem::tick` is single-threaded — Rayon parallelisation is a v0.01 goal.
+//! - `parking_occupied` is never incremented (bug B3).
+//! - `parked_edge`/`parked_progression` are written but never read for car retrieval (bug B4).
+//! - `happiness` and `money` are never modified (bug B10).
+
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::graph::TransitGraph;
@@ -7,60 +27,111 @@ use godot::prelude::*;
 use rand::Rng;
 
 
-// Transit States
-pub const TRANSIT_IDLE: u8 = 0;        // Inside building
-pub const TRANSIT_DEPARTING: u8 = 1;   // Building -> Road Offset
-pub const TRANSIT_ON_ROAD: u8 = 2;     // Moving along road
-pub const TRANSIT_ARRIVING: u8 = 3;    // Road Offset -> Building Center
-pub const TRANSIT_IMMIGRATING: u8 = 4; // Border -> Home
+/// Agent is inside a building — not moving. Waiting for the next activity trigger.
+pub const TRANSIT_IDLE: u8 = 0;
+/// Agent is walking from building interior to the road edge (departure animation phase).
+pub const TRANSIT_DEPARTING: u8 = 1;
+/// Agent is actively moving along road edges toward `target_node`.
+pub const TRANSIT_ON_ROAD: u8 = 2;
+/// Agent has reached the road node nearest their destination and is walking the final distance to the building.
+pub const TRANSIT_ARRIVING: u8 = 3;
+/// Newly spawned agent travelling from a highway border node to their first home — has no current building.
+pub const TRANSIT_IMMIGRATING: u8 = 4;
+/// Agent is traversing a bezier curve through a road intersection (lane-change phase).
 pub const TRANSIT_INTERSECTION: u8 = 5;
 
+/// Simulation-wide agent state stored in Structure-of-Arrays layout.
+///
+/// All `Vec` fields are parallel arrays indexed by agent ID `i` (0..`count`).
+/// Add/remove agents only through [`spawn_agent`](Self::spawn_agent) and
+/// [`kill_agent`](Self::kill_agent) to keep all arrays in sync.
 pub struct AgentSystem {
+    /// Number of live agents. All parallel `Vec` fields have exactly this many elements.
     pub count: usize,
-    
+
     // Core Identity
-    pub home_building: Vec<usize>, 
-    pub work_building: Vec<usize>, 
-    
+
+    /// Index into `BuildingAllocator::buildings` for the agent's home. `usize::MAX` = homeless (immigrating).
+    pub home_building: Vec<usize>,
+    /// Index into `BuildingAllocator::buildings` for the agent's workplace. `usize::MAX` = unemployed.
+    pub work_building: Vec<usize>,
+
     // Physics / Rendering
+
+    /// World-space X position (metres).
     pub pos_x: Vec<f32>,
+    /// World-space Z position (metres, Godot forward axis).
     pub pos_y: Vec<f32>,
+    /// Whether the agent should be rendered this frame.
     pub is_visible: Vec<bool>,
-    
-    pub activity: Vec<u8>, // 0=Home, 1=Work, 2=Shop
-    pub transit: Vec<u8>,  // 0=Inside, 1=ToRoad, 2=OnRoad, 3=ToBldg, 4=Immigrating
-    pub happiness: Vec<f32>, 
+
+    /// Current activity: `0` = Home, `1` = Work, `2` = Shop.
+    pub activity: Vec<u8>,
+    /// Current transit phase. One of the `TRANSIT_*` constants defined in this module.
+    pub transit: Vec<u8>,
+    /// Agent wellbeing in `[0, 100]`. Not yet read or modified by any logic (bug B10).
+    pub happiness: Vec<f32>,
+    /// Agent cash balance. Initialised at 100 for immigrants. Not yet modified (bug B10).
     pub money: Vec<f32>,
-    
+
     // Routing Geometry
+
+    /// Building the agent is currently inside. `usize::MAX` = on the road.
     pub current_building: Vec<usize>,
+    /// Building the agent is travelling toward. `usize::MAX` = no active destination.
     pub target_building: Vec<usize>,
+    /// Graph node the agent is currently at or most recently passed through.
     pub current_node: Vec<u32>,
+    /// Graph node the agent is navigating toward.
     pub target_node: Vec<u32>,
-    
+
     // Spline Geometry
+
+    /// Index into `TransitGraph::edges` for the edge the agent is currently traversing.
     pub current_edge: Vec<usize>,
+    /// Progress along `current_edge` as a signed segment index. Positive = forward, negative = reverse.
     pub edge_progression: Vec<isize>,
+    /// Lateral lane offset index on the current edge. Positive = forward lane, negative = backward lane.
     pub current_lane: Vec<i8>,
+    /// `true` if the agent is currently in a car; `false` if walking.
     pub is_driving: Vec<bool>,
-    
-    // Traffic Lane Manager Bezier Intersection Pathing
+
+    // Traffic Lane Manager — Bezier Intersection Pathing
+
+    /// Bezier control point 0 (start), world-space X/Z.
     pub bezier_p0_x: Vec<f32>,
+    /// Bezier control point 0, world-space Z.
     pub bezier_p0_y: Vec<f32>,
+    /// Bezier control point 1 (first handle), world-space X.
     pub bezier_p1_x: Vec<f32>,
+    /// Bezier control point 1, world-space Z.
     pub bezier_p1_y: Vec<f32>,
+    /// Bezier control point 2 (second handle), world-space X.
     pub bezier_p2_x: Vec<f32>,
+    /// Bezier control point 2, world-space Z.
     pub bezier_p2_y: Vec<f32>,
+    /// Bezier control point 3 (end), world-space X.
     pub bezier_p3_x: Vec<f32>,
+    /// Bezier control point 3, world-space Z.
     pub bezier_p3_y: Vec<f32>,
+    /// Normalised interpolation parameter `t ∈ [0, 1]` along the current bezier curve.
     pub bezier_t: Vec<f32>,
+    /// Sequence of node IDs forming the planned route. Each inner `Vec` is one path segment.
     pub current_path: Vec<Vec<u32>>,
+    /// Index into `current_path` of the node the agent is currently heading toward.
     pub current_path_index: Vec<usize>,
-    
+
     // Persistent Vehicle & Parking
+
+    /// `true` if the agent owns a car and drove to their current location.
     pub has_car: Vec<bool>,
+    /// Edge index where the agent's car is parked. `usize::MAX` = no car parked.
+    /// Written on park, but never read for car retrieval (bug B4).
     pub parked_edge: Vec<usize>,
+    /// Segment position along `parked_edge` where the car was parked.
+    /// Written on park, but never read for car retrieval (bug B4).
     pub parked_progression: Vec<isize>,
+    /// Running count of pathfinding calls this session, used for benchmark logging.
     pub pathfind_count: u32,
 }
 

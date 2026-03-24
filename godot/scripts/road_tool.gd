@@ -1,3 +1,9 @@
+## Road drawing tool — straight and spline modes with live preview and lane configuration.
+##
+## Extends NetworkTool. Adds: Taubin-smoothed spline preview, G1 continuity guard at
+## junctions, angle snapping (Shift), and fwd/bkw lane count selection.
+## Commits via NetworkTool.add_road() with the smoothed polyline on right-click or Enter.
+## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → commit → IDLE.
 extends "res://scripts/network_tool.gd"
 
 enum State { IDLE, SETTING_CONTROL, SETTING_END }

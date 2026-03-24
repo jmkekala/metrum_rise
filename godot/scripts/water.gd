@@ -1,3 +1,9 @@
+## Water surface renderer — visualises shallow-water simulation depth and velocity.
+##
+## Rust methods called: get_heightmap_size(), get_water_data(), get_water_velocity_data(),
+##   add_water_source(), is_water_dirty(), clear_water_dirty()
+## Water depth arrives as a flat PackedFloat32Array (same layout as the heightmap).
+## Velocity data is a parallel PackedFloat32Array used to drive foam/current shader effects.
 extends MeshInstance3D
 
 @onready var simulation_node = $"../SimulationNode"

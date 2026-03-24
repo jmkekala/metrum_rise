@@ -1,1 +1,1 @@
-// Utility helpers for math and threading
+//! Utility helpers shared across modules (math, threading, etc.).

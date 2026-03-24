@@ -1,3 +1,11 @@
+## Terrain mesh renderer and editor — displays the heightmap and handles sculpting input.
+##
+## Rust methods called: get_heightmap_size(), get_heightmap_data(), sculpt_terrain(),
+##   flatten_terrain_for_roads(), load_heightmap_data(), is_terrain_dirty(), clear_terrain_dirty(),
+##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data()
+## The heightmap arrives as a flat PackedFloat32Array in row-major order (width × height f32 values).
+## Overlay textures (pollution/noise/desirability) arrive as RGBA8 PackedByteArray and are
+## uploaded to a shader texture each frame when the active overlay mode is non-zero.
 extends MeshInstance3D
 
 @onready var simulation_node = $"../SimulationNode"

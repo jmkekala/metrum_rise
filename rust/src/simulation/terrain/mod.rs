@@ -1,10 +1,22 @@
+//! Heightmap terrain system used for road grade, raycasting, and rendering.
+//!
+//! Two height arrays are maintained: `source_data` (user-sculpted, never modified by roads)
+//! and `data` (final map with road beds stamped in). Road snapping and cost calculations
+//! always read from `source_data` to avoid feedback loops.
+
 use godot::prelude::Vector3;
 
+/// Dual-buffer heightmap for the terrain surface.
 pub struct TerrainSystem {
+    /// Map width in height samples. One sample per metre at standard resolution.
     pub width: usize,
+    /// Map height (depth) in height samples.
     pub height: usize,
-    pub data: Vec<f32>,        // Visual/Final map (includes road beds)
-    pub source_data: Vec<f32>, // "Untouched" map (for road snapping)
+    /// Final/visual heightmap (metres). Road-bed depressions are baked into this buffer.
+    pub data: Vec<f32>,
+    /// Source heightmap as sculpted by the player, without road modifications.
+    /// Used for road grade calculation and slope cost — never written by road placement.
+    pub source_data: Vec<f32>,
 }
 
 impl TerrainSystem {

@@ -1,22 +1,53 @@
+//! Hierarchical Pathfinding A* (HPA*) — two-phase routing over the road graph.
+//!
+//! # How it works
+//!
+//! **Build phase** ([`HpaGraph::build`]): nodes that sit on a 512 m chunk boundary
+//! are designated *abstract nodes*. For each chunk, Dijkstra is run from every
+//! abstract entry node to every other abstract entry node within that chunk,
+//! respecting turn restrictions. The resulting inter-node costs are stored as
+//! [`AbstractEdge`]s in [`HpaGraph::abstract_edges`].
+//!
+//! **Query phase** ([`HpaGraph::find_path`]): **currently broken** — the pre-built
+//! abstract graph is ignored and a full A* is run on the concrete graph instead.
+//! Fix required before v0.01: route long-distance queries through the abstract graph,
+//! falling back to local A* only within the source and destination chunks.
+//!
+//! The build phase is correct and should not be modified until the query phase is fixed.
+
 use crate::simulation::network::graph::TransitGraph;
 use crate::simulation::network::types::TransitType;
 use super::astar::State;
 use std::collections::{HashMap, BinaryHeap, HashSet};
 
+/// A directed edge in the abstract (chunk-boundary) graph produced by the HPA* build phase.
 #[derive(Clone)]
 pub struct AbstractEdge {
+    /// The abstract node this edge leads to.
     pub target: u32,
+    /// Pre-computed traversal cost (seconds) along the intra-chunk shortest path.
     pub cost: f32,
+    /// Sequence of concrete node IDs forming the intra-chunk path from source to `target`,
+    /// used to expand the abstract route back to a concrete road sequence.
     pub inner_path: Vec<u32>,
 }
 
+/// Pre-computed hierarchical graph used to accelerate long-distance pathfinding queries.
+///
+/// Built once by [`HpaGraph::build`] after every road-network change.
+/// Queries are issued via [`HpaGraph::find_path`].
 pub struct HpaGraph {
+    /// Outgoing abstract edges keyed by source node ID.
+    /// Only nodes in [`is_abstract`] appear as keys.
     pub abstract_edges: HashMap<u32, Vec<AbstractEdge>>,
+    /// Abstract (chunk-boundary) node IDs present in each 512 m chunk, keyed by `(chunk_x, chunk_z)`.
     pub chunk_entries: HashMap<(i32, i32), Vec<u32>>,
+    /// Set of node IDs that lie on a chunk boundary and participate in the abstract graph.
     pub is_abstract: HashSet<u32>,
 }
 
 impl HpaGraph {
+    /// Returns an empty `HpaGraph`. Call [`build`](Self::build) to populate it.
     pub fn new() -> Self {
         Self {
             abstract_edges: HashMap::new(),
@@ -25,6 +56,11 @@ impl HpaGraph {
         }
     }
 
+    /// Constructs the abstract graph from the current road network.
+    ///
+    /// Nodes that straddle a 512 m chunk boundary become abstract nodes.
+    /// Per-chunk Dijkstra computes intra-chunk costs between all abstract entries.
+    /// Must be called (and rebuilt) after every structural road-network change.
     pub fn build(graph: &TransitGraph) -> Self {
         let mut hpa = Self::new();
         let n = graph.nodes.len();
@@ -140,6 +176,13 @@ impl HpaGraph {
         hpa
     }
 
+    /// Finds a path from `start_raw` to `end_raw` and returns `(time_cost, distance_m, node_sequence)`.
+    ///
+    /// `start_edge` is the edge the agent is currently traversing (`usize::MAX` if at a bare node).
+    /// If `pedestrian` is `true`, road edges are heavily penalised and one-way restrictions are ignored.
+    ///
+    /// **Known bug**: the pre-built abstract graph is ignored; this runs a full concrete A* on every call.
+    /// See `docs/project.md` bug B2 for the fix required before v0.01.
     pub fn find_path(&self, start_raw: u32, end_raw: u32, start_edge: usize, graph: &TransitGraph, pedestrian: bool) -> Option<(f32, f32, Vec<u32>)> {
         let start = graph.get_valid_node(start_raw);
         let end = graph.get_valid_node(end_raw);

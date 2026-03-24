@@ -1,3 +1,9 @@
+## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
+##
+## Rust methods called: get_agent_transforms(), get_agent_paths_debug(), get_city_demographics()
+## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
+##   [basis.x(3), basis.y(3), basis.z(3), origin(3)] — matches Godot's Transform3D memory layout.
+## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"

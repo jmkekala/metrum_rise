@@ -1,34 +1,73 @@
+//! Zoning grid system — land-use cells aligned to road edges.
+//!
+//! Each road edge that has zoning enabled gets an [`EdgeZoning`] grid. The grid is
+//! `cells_long` columns wide (one column per `GRID_CELL_SIZE` metres of road length)
+//! and [`ZONING_DEPTH`] rows deep (perpendicular to the road). The grid exists on both
+//! the left and right sides of the road independently.
+//!
+//! Cell indices: `(col, row)` where `col` runs along the road and `row` runs away from it.
+//! `row = 0` is the first row adjacent to the sidewalk.
+//!
+//! # Obstruction check
+//!
+//! [`ZoningSystem::is_cell_obstructed`] tests 5 sample points per cell using asphalt
+//! collision and Voronoi ownership against nearby edges. This is O(K × L) per cell
+//! where K = nearby edges and L = polyline segments. Results should be cached in
+//! `left_blocked`/`right_blocked` (cache currently not wired — bug in `docs/project.md`).
+
 use godot::prelude::*;
 use std::collections::HashMap;
 use crate::config::{ZONING_DEPTH, GRID_CELL_SIZE};
 
-
+/// Land-use category painted onto a zoning grid cell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub enum ZoneType {
+    /// No zoning — cell is unbuildable and transparent in the UI.
     None = 0,
+    /// Residential housing — agents live here, consumes residential demand.
     Residential = 1,
+    /// Retail / services — agents shop and work here, consumes commercial demand.
     Commercial = 2,
+    /// Manufacturing / logistics — agents work here, consumes industrial demand.
     Industrial = 3,
+    /// Office employment — treated as commercial demand at 50% weight currently.
     Office = 4,
+    /// Dual-use: serves as both residential and commercial, consumes both demands.
     Mixed = 5,
 }
 
+/// Per-edge zoning grid holding zone type and occupancy for both road sides.
+///
+/// Storage layout: flat `Vec` of length `cells_long × ZONING_DEPTH`, indexed as
+/// `col * ZONING_DEPTH + row`. Left and right sides are separate Vecs.
 #[derive(Clone, Debug, Default)]
 pub struct EdgeZoning {
-    pub left_side: Vec<ZoneType>,  // ZONING_DEPTH rows deep, N columns long
-    pub right_side: Vec<ZoneType>, // ZONING_DEPTH rows deep, N columns long
+    /// Zone type for each cell on the left side (relative to edge travel direction).
+    pub left_side: Vec<ZoneType>,
+    /// Zone type for each cell on the right side.
+    pub right_side: Vec<ZoneType>,
+    /// `true` if a building's footprint covers this left-side cell.
     pub left_occupied: Vec<bool>,
+    /// `true` if a building's footprint covers this right-side cell.
     pub right_occupied: Vec<bool>,
+    /// Cached obstruction result for left-side cells. Stale after road edits —
+    /// not yet used as a read-through cache (see `docs/project.md`).
     pub left_blocked: Vec<bool>,
+    /// Cached obstruction result for right-side cells.
     pub right_blocked: Vec<bool>,
+    /// Number of columns in this grid (= `floor(edge_length / GRID_CELL_SIZE)`).
     pub cells_long: usize,
 }
 
+/// Manages all [`EdgeZoning`] grids across the entire road network.
 #[derive(Clone)]
 pub struct ZoningSystem {
+    /// Zoning grids keyed by edge index in [`TransitGraph::edges`].
+    /// Only edges with `zoning_left || zoning_right` have entries here.
     pub edge_grids: HashMap<usize, EdgeZoning>,
-    pub grid_cell_size: f32, // 8.0f32
+    /// Physical size of one zoning cell in metres. Matches [`GRID_CELL_SIZE`].
+    pub grid_cell_size: f32,
 }
 
 impl ZoningSystem {
@@ -238,6 +277,7 @@ impl ZoningSystem {
         let edge = &graph.edges[edge_idx];
         let hw = edge.width * 0.5;
 
+
         // We check 5 points: 4 corners + center
         let mut check_pts_with_t = Vec::new();
         
@@ -254,7 +294,7 @@ impl ZoningSystem {
             }
         }
 
-        // CURVE SPLAY CHECK: If the cell fans out or pinches too much, it's a useless sliver.
+        // 0. SPLAY CHECK: On sharp curves, cells fan out or crunch. 
         if check_pts_with_t.len() >= 4 {
             let p1 = check_pts_with_t[0].0; // Start, Inner
             let p2 = check_pts_with_t[1].0; // Start, Outer
@@ -264,8 +304,9 @@ impl ZoningSystem {
             let inner_width = p1.distance_to(p3);
             let outer_width = p2.distance_to(p4);
             
-            // Tighten to 1.4x (40% splay threshold) to satisfy 'minimum 2 wide' feel.
-            if outer_width > inner_width * 1.4 || outer_width < inner_width * 0.7 {
+            // Tighten to 1.15x (15% splay threshold) for perfect cohesion.
+            // This ensures only thick, building-capable zones are kept on curves.
+            if outer_width > inner_width * 1.15 || outer_width < inner_width * 0.85 {
                 return true; 
             }
         }
@@ -281,45 +322,40 @@ impl ZoningSystem {
             let pt_3d = godot::prelude::Vector3::new(pt.x, 0.0, pt.y);
             let nearby_edges = graph.get_edges_near_point(pt_3d, 120.0);
 
-            let mut edges_to_check = std::collections::HashSet::new();
-            edges_to_check.insert(edge_idx); // SELF-VORONOI: Check ourselves too for hairpin overlaps!
+            let mut edges_to_check = std::collections::HashSet::<usize>::new();
 
             for i in nearby_edges {
                 let e = &graph.edges[i];
                 if e.deleted { continue; }
                 
-                // SELF-AWARENESS FILTER: If it's our own road, we skip the SISTER check
-                // and let the asphalt/voronoi check decide if we've self-overlapped.
-                if i != edge_idx {
-                    // Sister Edge Detection (Road continuation at 2-way junctions)
-                    let is_sister = (e.start_node == edge.start_node || e.start_node == edge.end_node || 
-                                     e.end_node == edge.start_node || e.end_node == edge.end_node) &&
-                                     e.width == edge.width && e.primary_type == edge.primary_type;
+                // Skip own road — self-overlap is handled by Splay Check only.
+                if i == edge_idx { continue; }
+
+                // Sister Edge Detection (Road continuation at 2-way junctions)
+                let is_sister = i != edge_idx && (e.start_node == edge.start_node || e.start_node == edge.end_node || 
+                                 e.end_node == edge.start_node || e.end_node == edge.end_node) &&
+                                 e.width == edge.width && e.primary_type == edge.primary_type;
+                
+                if is_sister {
+                    let shared_node = if e.start_node == edge.start_node || e.start_node == edge.end_node { e.start_node } else { e.end_node };
+                    let conn_count = graph.adjacency.get(&shared_node).map(|v| v.len()).unwrap_or(0);
                     
-                    if is_sister {
-                        let shared_node = if e.start_node == edge.start_node || e.start_node == edge.end_node { e.start_node } else { e.end_node };
-                        let conn_count = graph.adjacency.get(&shared_node).map(|v| v.len()).unwrap_or(0);
-                        
-                        if conn_count <= 2 {
-                            let t1 = if edge.start_node == shared_node {
-                                 (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
-                            } else {
-                                 (edge.physical_geometry[edge.physical_geometry.len()-2] - edge.physical_geometry[edge.physical_geometry.len()-1]).normalized()
-                            };
-                            let t2 = if e.start_node == shared_node {
-                                 (e.physical_geometry[1] - e.physical_geometry[0]).normalized()
-                            } else {
-                                 (e.physical_geometry[e.physical_geometry.len()-2] - e.physical_geometry[e.physical_geometry.len()-1]).normalized()
-                            };
-                            if t1.dot(t2) < -0.85 { continue; } 
-                        }
+                    if conn_count <= 2 {
+                        let t1 = if edge.start_node == shared_node {
+                             (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
+                        } else {
+                             (edge.physical_geometry[edge.physical_geometry.len()-2] - edge.physical_geometry[edge.physical_geometry.len()-1]).normalized()
+                        };
+                        let t2 = if e.start_node == shared_node {
+                             (e.physical_geometry[1] - e.physical_geometry[0]).normalized()
+                        } else {
+                             (e.physical_geometry[e.physical_geometry.len()-2] - e.physical_geometry[e.physical_geometry.len()-1]).normalized()
+                        };
+                        if t1.dot(t2) < -0.85 { continue; } 
                     }
                 }
-                edges_to_check.insert(i);
-            }
-            
-            for &i in &edges_to_check {
-                let e = &graph.edges[i];
+                
+                // SUB-SCAN (Check other edge for asphalt/zoning claims)
                 let pts = &e.physical_geometry;
                 if pts.len() < 2 { continue; }
                 
@@ -339,22 +375,17 @@ impl ZoningSystem {
                     // A. Asphalt Collision: Overlapping other road surface
                     let hw_other = e.width * 0.5;
 
-                    // SELF-PROTECTION: Don't hit our own curb if we are straight.
-                    if i == edge_idx {
-                        let t_proj_global = j as f32 / (pts.len()-1) as f32; // Rough T
-                        if (t_proj_global - t_us).abs() < 0.20 { continue; }
+                    // RESTORED: Explicit Asphalt Hit-Test
+                    if d_sq < (hw_other + 0.1).powi(2) {
+                        asphalt_collision = true;
                     }
 
                     // B. Zoning Claim: Competitor for space
                     let tangent = seg_vec.normalized();
                     let rel_pt = pt - proj;
-                    let other_is_left = (tangent.x * rel_pt.y - tangent.y * rel_pt.x) < 0.0;
+                    let is_left = (tangent.x * rel_pt.y - tangent.y * rel_pt.x) < 0.0;
                     
-                    // IF checking self: always compete (unless it's the exact same side/point).
-                    // IF checking neighbor: check their zoning property.
-                    let other_is_claiming = if i == edge_idx { true } else {
-                        if other_is_left { e.zoning_left } else { e.zoning_right }
-                    };
+                    let other_is_claiming = if is_left { e.zoning_left } else { e.zoning_right };
 
                     if other_is_claiming {
                         if d_sq < closest_competitor_d_sq {
@@ -375,6 +406,33 @@ impl ZoningSystem {
             }
         }
         false
+    }
+
+    fn get_t_nearest(&self, edge_idx: usize, pt: Vector2, graph: &crate::simulation::network::graph::TransitGraph) -> f32 {
+        let edge = &graph.edges[edge_idx];
+        let mut min_d_sq = f32::MAX;
+        let mut best_t = 0.0;
+        let pts = &edge.physical_geometry;
+        
+        for j in 0..pts.len() - 1 {
+            let p1 = pts[j]; let p2 = pts[j+1];
+            let p1_2d = Vector2::new(p1.x, p1.z);
+            let p2_2d = Vector2::new(p2.x, p2.z);
+            let seg_vec = p2_2d - p1_2d;
+            let l2 = seg_vec.length_squared();
+            if l2 == 0.0 { continue; }
+            
+            let mut t_val = ((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2;
+            t_val = t_val.clamp(0.0, 1.0);
+            let d_sq = (pt - (p1_2d + seg_vec * t_val)).length_squared();
+            
+            if d_sq < min_d_sq {
+                min_d_sq = d_sq;
+                let seg_relative_t = (j as f32 + t_val) / (pts.len() - 1) as f32;
+                best_t = seg_relative_t;
+            }
+        }
+        best_t
     }
 
     fn get_distance_to_edge_sq(&self, edge_idx: usize, pt: Vector2, graph: &crate::simulation::network::graph::TransitGraph) -> f32 {

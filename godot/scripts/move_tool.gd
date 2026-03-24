@@ -1,3 +1,8 @@
+## Road node move tool — click to select a node, drag to reposition it on the terrain.
+##
+## Extends NetworkTool.
+## Rust methods called: get_closest_node(), get_node_pos(), move_network_node()
+## PgUp/PgDown adjusts height; Esc or right-click cancels and reverts to last committed position.
 extends "res://scripts/network_tool.gd"
 
 enum State { IDLE, SELECTED, DRAGGING }

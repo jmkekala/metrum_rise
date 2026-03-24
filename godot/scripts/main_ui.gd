@@ -1,3 +1,8 @@
+## Procedurally built HUD — all UI panels, buttons, and overlays constructed at runtime.
+##
+## Rust methods called: get_city_demographics(), set_simulation_speed(), undo_action(),
+##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data()
+## No scene file for the UI; every control is created in _ready() and helper functions.
 extends CanvasLayer
 
 const InputManager = preload("res://scripts/input_manager.gd")

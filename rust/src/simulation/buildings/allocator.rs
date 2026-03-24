@@ -1,29 +1,60 @@
+//! Building placement and lifecycle management.
+//!
+//! [`BuildingAllocator::tick`] runs once per simulation tick. It:
+//! 1. Removes buildings whose zoning cell has been changed or whose road edge was deleted.
+//! 2. Scans zoned, unoccupied cells with sufficient demand and spawns new buildings.
+//! 3. Spawns immigrant agents up to the current residential capacity.
+//!
+//! **Known issues (see `docs/project.md`):**
+//! - No spawn throttle — can spawn hundreds of buildings per tick (bug B6).
+//! - Desirability is not checked before placement (bug B5).
+//! - Each placement triggers a full HPA* rebuild via `split_for_frontage`.
+
 use crate::simulation::network::graph::TransitGraph;
 use crate::simulation::grid::zoning::{ZoningSystem, ZoneType};
 use godot::prelude::Vector2;
 
+/// A placed building occupying a 3 × 3 cell (30 m × 30 m) footprint on a zoning grid.
 pub struct Building {
+    /// World-space X centre of the building footprint (metres).
     pub center_x: f32,
+    /// World-space Z centre of the building footprint (metres, Godot's forward axis).
     pub center_y: f32,
+    /// Footprint width in metres (always 30 at present).
     pub width: u8,
+    /// Footprint depth in metres (always 30 at present).
     pub depth: u8,
+    /// Zone category this building was spawned into.
     pub zone_type: ZoneType,
+    /// Unit vector pointing from the road toward the building (outward normal from the road edge).
     pub facing_dir: Vector2,
+    /// Node ID in [`TransitGraph`] created by splitting the road at this building's frontage.
     pub frontage_node: u32,
-    pub side_offset: f32, 
+    /// Signed side of the road: `+1.0` = left, `-1.0` = right (relative to edge direction).
+    pub side_offset: f32,
+    /// Ticks since this building lost its zoning. Non-zero values are reserved for future
+    /// abandonment / decay logic; currently unused.
     pub abandoned_timer: u32,
+    /// Index into [`TransitGraph::edges`] for the road segment this building fronts.
     pub edge_idx: usize,
+    /// Road side: `1` = left, `-1` = right.
     pub side: i8,
+    /// Column index (along the road) of the building's leading cell in the zoning grid.
     pub cell_x: usize,
+    /// Row index (depth from road) of the building's leading cell; always `0` (first row).
     pub cell_y: usize,
 }
 
+/// Manages the full lifecycle of [`Building`]s: placement, removal, and immigrant spawning.
 pub struct BuildingAllocator {
+    /// All currently placed buildings. Removal uses `swap_remove` — order is not preserved.
     pub buildings: Vec<Building>,
+    /// Set to `true` when the building list changes in a tick, signalling renderers to refresh.
     pub dirty: bool,
 }
 
 impl BuildingAllocator {
+    /// Creates an empty allocator. `_width` and `_height` are reserved for future spatial indexing.
     pub fn new(_width: usize, _height: usize) -> Self {
         Self {
             buildings: Vec::new(),
@@ -31,11 +62,16 @@ impl BuildingAllocator {
         }
     }
 
+    /// Removes all buildings and resets the dirty flag.
     pub fn clear(&mut self) {
         self.buildings.clear();
         self.dirty = false;
     }
 
+    /// Advances the building lifecycle by one simulation tick.
+    ///
+    /// Removes stale buildings, grows new ones into high-demand zones, and spawns immigrants.
+    /// Calls `network.rebuild_pathing()` once if any building was added or removed.
     pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, zoning: &mut ZoningSystem, _desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, network: &mut crate::simulation::network::TransitNetwork) {
         let mut graph_changed = false;
         

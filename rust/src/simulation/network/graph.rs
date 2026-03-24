@@ -1,43 +1,92 @@
+//! Core road-network data structures: [`Node`], [`Edge`], and [`TransitGraph`].
+//!
+//! The graph is stored as two parallel flat `Vec`s (`nodes`, `edges`) plus several
+//! acceleration structures. Node and edge IDs are indices into those vecs.
+//!
+//! # Spatial indexing
+//!
+//! `TransitGraph::spatial_edge_grid` maps 512 m chunks to the edge indices whose AABB
+//! overlaps that chunk. Use [`TransitGraph::get_edges_near_point`] for all spatial queries —
+//! never scan the full `edges` vec.
+//!
+//! # Soft deletion
+//!
+//! Edges are never physically removed from the `edges` vec. When an edge is "deleted"
+//! `edge.deleted` is set to `true`. All O(E) scans must skip deleted edges. This causes
+//! degradation over long sessions (bug B15 in `docs/project.md`).
+
 use godot::prelude::*;
 use super::types::*;
 
 use std::collections::HashMap;
 
+/// A junction or endpoint in the road graph.
 #[derive(Clone)]
 pub struct Node {
+    /// World-space 3-D position (metres). Y component reflects terrain height.
     pub pos: Vector3,
     #[allow(dead_code)]
+    /// Classification of the node (regular junction, cul-de-sac end, highway border, etc.).
     pub node_type: NodeType,
-    
-    // Traffic Lane Manager Constraints: (From Edge, From Lane) -> List of (To Edge, To Lane)
+    /// Turn restriction table for vehicles at this junction.
+    ///
+    /// Key `(from_edge, from_lane)` → list of `(to_edge, to_lane)` pairs that are permitted.
+    /// If the key is absent, all turns from that edge/lane are allowed (open junction).
+    /// Pedestrians bypass this table entirely.
     pub lane_connections: HashMap<(usize, i8), Vec<(usize, i8)>>,
 }
 
+/// A directed road segment connecting two [`Node`]s.
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct Edge {
+    /// Index of the start node in [`TransitGraph::nodes`].
     pub start_node: u32,
+    /// Index of the end node in [`TransitGraph::nodes`].
     pub end_node: u32,
+    /// The dominant transit mode this edge was built for (Road, Foot, etc.).
     pub primary_type: TransitType,
+    /// Bitmask of permitted transit modes. Bit 0 = Foot, Bit 1 = Road/Car.
     pub allowed_types: u8,
+    /// Total road width in metres (asphalt + sidewalks).
     pub width: f32,
+    /// Number of forward (start→end) vehicle lanes.
     pub fwd_lanes: u8,
+    /// Number of backward (end→start) vehicle lanes.
     pub bkw_lanes: u8,
+    /// Design speed in m/s used for pathfinding cost calculation.
     pub speed_limit: f32,
+    /// Pre-computed traversal cost (seconds) at `speed_limit` with slope penalty applied.
+    /// Updated by [`crate::simulation::pathing::cost::CostCalculator::calculate_costs`].
     pub base_cost: f32,
+    /// Arc length of `physical_geometry` in metres.
     pub physical_length: f32,
+    /// Dynamic congestion multiplier in `[0, ∞)`. `0.0` = free-flow. Applied on top of `base_cost`.
     pub current_congestion: f32,
-    pub start_clip: f32, 
+    /// Fraction of `geometry` clipped from the start end at junctions (for junction mesh rendering).
+    pub start_clip: f32,
+    /// Fraction of `geometry` clipped from the end at junctions (for junction mesh rendering).
     pub end_clip: f32,
-    pub geometry: Vec<Vector3>, 
-    pub physical_geometry: Vec<Vector3>, 
+    /// Unclipped polyline control points (may extend into junction areas), used for zoning placement.
+    pub geometry: Vec<Vector3>,
+    /// Clipped polyline used for actual road mesh rendering and agent movement.
+    pub physical_geometry: Vec<Vector3>,
+    /// Number of parking spaces currently in use on this edge. Should be incremented on park,
+    /// decremented on retrieval — currently never modified (bug B3).
     pub parking_occupied: u32,
+    /// Whether the left side of this edge (relative to travel direction) is enabled for zoning.
     pub zoning_left: bool,
+    /// Whether the right side of this edge is enabled for zoning.
     pub zoning_right: bool,
+    /// Soft-deletion flag. `true` = edge is logically removed but still occupies its index.
+    /// All O(E) scans must skip edges where `deleted == true`.
     pub deleted: bool,
 }
 
 impl Edge {
+    /// Returns the total parking capacity of this edge based on its physical length.
+    ///
+    /// Capacity = `floor(length / 6 m) × 2` (one car per 6 m, both sides).
     pub fn get_parking_capacity(&self) -> u32 {
         if self.physical_geometry.len() < 2 { return 0; }
         let mut length = 0.0;
@@ -49,20 +98,36 @@ impl Edge {
     }
 }
 
+/// Pre-computed mesh data for a road junction polygon, passed to Godot for rendering.
 #[derive(Clone)]
 pub struct JunctionMesh {
+    /// Vertex positions of the junction polygon in world space.
     pub vertices: Vec<Vector3>,
+    /// UV texture coordinates, parallel to `vertices`.
     pub uvs: Vec<Vector2>,
+    /// Vertex colours used for road marking overlays, parallel to `vertices`.
     pub colors: Vec<Color>,
 }
 
+/// The complete road network: nodes, edges, and all acceleration structures.
+///
+/// This is the central data structure of the simulation. All pathfinding, zoning,
+/// agent movement, and building placement operate on this graph.
 #[derive(Clone)]
 pub struct TransitGraph {
+    /// All road nodes (junctions and endpoints). Indexed by node ID (`u32`).
     pub nodes: Vec<Node>,
+    /// All road edges (segments). Indexed by edge ID (`usize`). Includes soft-deleted entries.
     pub edges: Vec<Edge>,
+    /// Pre-computed junction mesh polygons keyed by the central node ID.
     pub junction_polygons: HashMap<u32, JunctionMesh>,
+    /// Node alias map for the union-find structure used during node merging.
+    /// Maps a node ID to its canonical representative after `unite_nodes`.
     pub node_aliases: HashMap<u32, u32>,
+    /// Spatial acceleration structure: 512 m grid chunks → edge indices whose AABB overlaps the chunk.
+    /// Query via [`get_edges_near_point`](Self::get_edges_near_point); do not access directly.
     pub spatial_edge_grid: HashMap<(i32, i32), Vec<usize>>,
+    /// Adjacency list: node ID → list of outgoing edge indices. Rebuilt after every road edit.
     pub adjacency: HashMap<u32, Vec<usize>>,
 }
 

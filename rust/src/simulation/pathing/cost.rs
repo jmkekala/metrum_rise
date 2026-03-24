@@ -1,6 +1,13 @@
+//! Edge traversal cost calculation for the pathfinding system.
+//!
+//! Cost is expressed in **time** (seconds), not distance, so that roads with
+//! higher speed limits are correctly preferred over shorter but slower roads.
+//! A slope penalty multiplier is applied on top of the time cost for steep grades.
+
 use crate::simulation::network::graph::Edge;
 use godot::prelude::Vector3;
 
+/// Stateless helper that computes traversal costs for a single [`Edge`].
 pub struct CostCalculator;
 
 impl CostCalculator {
