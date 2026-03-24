@@ -146,7 +146,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 8. **Wire happiness and money** (B10): happiness +1/day at home, −commute_time/60 per trip, −pollution × 0.1/day; money +10/day at work, −20 per shop.
 9. **Fix pollution emission** (B9): change +100 to +5 in `pollution.rs`.
 10. **Fix A* heuristic** (B11): replace divisor `100.0` with `graph.max_speed_limit()` precomputed at HPA* build time.
-11. **Cache `is_cell_obstructed`** in existing `left_blocked`/`right_blocked` arrays on `EdgeZoning`. Invalidate only when a road overlapping the zoning area is added/removed/moved. Eliminates per-frame full recomputation.
+11. [DONE] **Cache `is_cell_obstructed`** in existing `left_blocked`/`right_blocked` arrays on `EdgeZoning`. Implemented batch spatial queries per road segment to eliminate $O(E)$ overhead during placement.
 12. **Coarsen environmental grids to 500 × 500**: run diffusion at 1 MB instead of 16 MB per grid; bilinear upsample for display. 16× memory and compute reduction.
 13. **Incremental HPA* rebuild** on road edit: mark affected 512 m chunks dirty, rebuild only those. O(E_chunk) instead of O(E_total).
 14. **Split `agents.rs`** (708 lines) into `agents/data.rs`, `agents/decisions.rs`, `agents/tick.rs`.

@@ -232,7 +232,7 @@ impl SimulationNode {
                 return true;
             }
         }
-        self.zoning.is_cell_obstructed(edge_idx as usize, side as i8, x as usize, y as usize, graph)
+        self.zoning.is_cell_obstructed(edge_idx as usize, side as i8, x as usize, y as usize, graph, None)
     }
 
     /// Enables or disables zoning for a specific side of a road edge.

@@ -124,6 +124,20 @@ impl BuildingAllocator {
             
             if edge_len < 0.1 { continue; }
             
+            // Batch fetch nearby edges for the entire edge to optimize obstruction checks
+            let padding = 120.0;
+            let edge = &network.graph.edges[edge_idx];
+            let mut min_x = f32::MAX; let mut max_x = f32::MIN;
+            let mut min_z = f32::MAX; let mut max_z = f32::MIN;
+            for p in &edge.physical_geometry {
+                min_x = min_x.min(p.x); max_x = max_x.max(p.x);
+                min_z = min_z.min(p.z); max_z = max_z.max(p.z);
+            }
+            let nearby_edges = network.graph.get_edges_near_aabb(
+                godot::prelude::Vector3::new(min_x - padding, 0.0, min_z - padding),
+                godot::prelude::Vector3::new(max_x + padding, 0.0, max_z + padding)
+            );
+
             for side in [1, -1] {
                 let cells_long = if let Some(g) = zoning.edge_grids.get(&edge_idx) { g.cells_long } else { 0 };
                 
@@ -148,7 +162,7 @@ impl BuildingAllocator {
                         for dy in 0..3 {
                             if zoning.get_cell(edge_idx, side, x + dx, dy) != z_type || 
                                zoning.is_occupied(edge_idx, side, x + dx, dy) ||
-                               zoning.is_cell_obstructed(edge_idx, side, x + dx, dy, &network.graph) {
+                               zoning.is_cell_obstructed(edge_idx, side, x + dx, dy, &network.graph, Some(&nearby_edges)) {
                                 can_build = false;
                                 break;
                             }
@@ -160,7 +174,7 @@ impl BuildingAllocator {
                         let t = (x as f32) * zoning.grid_cell_size / edge_len;
                         let world_pos_on_edge = self.get_pos_on_edge(&network.graph, edge_idx, t);
                         let tangent = self.get_tangent_on_edge(&network.graph, edge_idx, t);
-                        let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x) * (side as f32);
+                        let normal = godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
                         
                         let b_width = 3.0 * zoning.grid_cell_size;
                         let b_depth = 3.0 * zoning.grid_cell_size;

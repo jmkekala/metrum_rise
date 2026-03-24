@@ -177,9 +177,15 @@ impl TransitGraph {
     }
 
     pub fn get_edges_near_point(&self, pos: godot::prelude::Vector3, radius: f32) -> Vec<usize> {
+        let min = godot::prelude::Vector3::new(pos.x - radius, 0.0, pos.z - radius);
+        let max = godot::prelude::Vector3::new(pos.x + radius, 0.0, pos.z + radius);
+        self.get_edges_near_aabb(min, max)
+    }
+
+    pub fn get_edges_near_aabb(&self, min: godot::prelude::Vector3, max: godot::prelude::Vector3) -> Vec<usize> {
         let mut result = Vec::new();
-        let min_c = Self::get_chunk_coords(godot::prelude::Vector3::new(pos.x - radius, 0.0, pos.z - radius));
-        let max_c = Self::get_chunk_coords(godot::prelude::Vector3::new(pos.x + radius, 0.0, pos.z + radius));
+        let min_c = Self::get_chunk_coords(min);
+        let max_c = Self::get_chunk_coords(max);
         
         for cx in min_c.0..=max_c.0 {
             for cz in min_c.1..=max_c.1 {

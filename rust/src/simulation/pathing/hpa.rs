@@ -69,7 +69,8 @@ impl HpaGraph {
     /// Per-chunk Dijkstra computes intra-chunk costs between all abstract entries.
     /// Must be called (and rebuilt) after every structural road-network change.
     pub fn build(graph: &TransitGraph) -> Self {
-        let mut hpa = Self::new();
+        let start_time = std::time::Instant::now();
+        let mut hpa = HpaGraph::new();
         let n = graph.nodes.len();
         if n == 0 { return hpa; }
 
@@ -185,6 +186,16 @@ impl HpaGraph {
                 }
             }
         }
+        // Logging disabled in tests to avoid Godot FFI initialization errors
+        #[cfg(not(test))]
+        {
+            godot::prelude::godot_print!("HPA* Build completed in {:.2}ms ({} abstract nodes, {} abstract edges)", 
+                start_time.elapsed().as_secs_f32() * 1000.0,
+                hpa.is_abstract.len(),
+                hpa.abstract_edges.values().map(|v| v.len()).sum::<usize>()
+            );
+        }
+
         hpa
     }
 
@@ -196,25 +207,36 @@ impl HpaGraph {
         let start = graph.get_valid_node(start_raw);
         let end = graph.get_valid_node(end_raw);
 
+        if self.concrete_adj.is_empty() { return None; }
+        if start as usize >= graph.nodes.len() || end as usize >= graph.nodes.len() { return None; }
         if start == end { return Some((0.0, 0.0, vec![start])); }
-        let n = graph.nodes.len();
-        if start as usize >= n || end as usize >= n { return None; }
-
+        
         let start_chunk = graph.get_node_chunk(start);
         let end_chunk = graph.get_node_chunk(end);
 
-        // 1. Direct Search if same chunk (or very close)
-        if start_chunk == end_chunk || graph.nodes[start as usize].pos.distance_to(graph.nodes[end as usize].pos) < 600.0 {
-            return self.local_concrete_search(start, end, start_edge, graph, pedestrian, None);
+        // Path optimization: If start/end in same chunk, use local concrete search
+        if start_chunk == end_chunk {
+            return self.local_concrete_search(start, end, start_edge, graph, pedestrian, Some(start_chunk));
         }
 
-        // 2. Hierarchical Search
-        // Phase A: Search from start to abstract boundaries of start chunk
-        let start_borders = self.local_boundary_search(start, start_edge, start_chunk, graph, pedestrian, false);
+        // --- Phase A: Start local search ---
+        let start_borders = if self.is_abstract.contains(&start) {
+            let mut results = HashMap::new();
+            results.insert(start, (0.0, 0.0, start_edge, Vec::new()));
+            results
+        } else {
+            self.local_boundary_search(start, start_edge, start_chunk, graph, pedestrian, false)
+        };
         if start_borders.is_empty() { return None; }
 
-        // Phase B: Search from abstract boundaries of end chunk to end (backward)
-        let end_borders = self.local_boundary_search(end, usize::MAX, end_chunk, graph, pedestrian, true);
+        // --- Phase B: End local search ---
+        let end_borders = if self.is_abstract.contains(&end) {
+            let mut results = HashMap::new();
+            results.insert(end, (0.0, 0.0, usize::MAX, Vec::new()));
+            results
+        } else {
+            self.local_boundary_search(end, usize::MAX, end_chunk, graph, pedestrian, true)
+        };
         if end_borders.is_empty() { return None; }
 
         // Phase C: A* on the abstract graph
@@ -277,9 +299,12 @@ impl HpaGraph {
             // Walk back from best_end_node via 'prev' to find the start_border node.
             let mut route = Vec::new();
             let mut node = best_end_node;
+            let mut loop_cap = 10000;
             while let Some((prev_node, inner_path)) = prev.get(&node) {
                 route.push(inner_path.clone());
                 node = *prev_node;
+                loop_cap -= 1;
+                if loop_cap == 0 { panic!("HPA* Path Reconstruction: Infinite loop in abstract path!"); }
             }
             let abstract_start_node = node;
             
@@ -423,9 +448,12 @@ impl HpaGraph {
                 if !results.contains_key(&node) || cost < results.get(&node).unwrap().0 {
                     let mut path = Vec::new();
                     let mut curr = (node, incoming_edge);
+                    let mut loop_cap = 10000;
                     while curr.0 != start {
                         path.push(curr.0);
-                        curr = *prev.get(&curr).unwrap();
+                        curr = *prev.get(&curr).expect("HPA* local_boundary_search: Predecessor missing!");
+                        loop_cap -= 1;
+                        if loop_cap == 0 { panic!("HPA* local_boundary_search: Infinite loop in path reconstruction!"); }
                     }
                     results.insert(node, (cost, dist, incoming_edge, path));
                 }

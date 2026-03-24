@@ -241,10 +241,24 @@ impl ZoningSystem {
         let mut left_results = vec![false; cells_long * ZONING_DEPTH];
         let mut right_results = vec![false; cells_long * ZONING_DEPTH];
 
+        // Batch fetch nearby edges for the entire road segment
+        let edge = &graph.edges[edge_idx];
+        let mut min_x = f32::MAX; let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX; let mut max_z = f32::MIN;
+        for p in &edge.physical_geometry {
+            min_x = min_x.min(p.x); max_x = max_x.max(p.x);
+            min_z = min_z.min(p.z); max_z = max_z.max(p.z);
+        }
+        let padding = 120.0;
+        let nearby_edges = graph.get_edges_near_aabb(
+            godot::prelude::Vector3::new(min_x - padding, 0.0, min_z - padding),
+            godot::prelude::Vector3::new(max_x + padding, 0.0, max_z + padding)
+        );
+
         for x in 0..cells_long {
             for y in 0..ZONING_DEPTH {
-                left_results[x * ZONING_DEPTH + y] = self.is_cell_obstructed(edge_idx, 1, x, y, graph);
-                right_results[x * ZONING_DEPTH + y] = self.is_cell_obstructed(edge_idx, -1, x, y, graph);
+                left_results[x * ZONING_DEPTH + y] = self.is_cell_obstructed(edge_idx, 1, x, y, graph, Some(&nearby_edges));
+                right_results[x * ZONING_DEPTH + y] = self.is_cell_obstructed(edge_idx, -1, x, y, graph, Some(&nearby_edges));
             }
         }
 
@@ -295,7 +309,7 @@ impl ZoningSystem {
         
         pos + normal * (half_width + crate::config::SIDEWALK_WIDTH + depth)
     }
-    pub fn is_cell_obstructed(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph) -> bool {
+    pub fn is_cell_obstructed(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph, nearby_edges_cache: Option<&[usize]>) -> bool {
         let center = self.get_cell_center(edge_idx, side, x, y, graph);
         if center.x == 0.0 && center.y == 0.0 { return true; }
 
@@ -346,11 +360,16 @@ impl ZoningSystem {
             let mut asphalt_collision = false;
 
             let pt_3d = godot::prelude::Vector3::new(pt.x, 0.0, pt.y);
-            let nearby_edges = graph.get_edges_near_point(pt_3d, 120.0);
+            
+            let nearby_edges_vec;
+            let nearby_edges = if let Some(cache) = nearby_edges_cache {
+                cache
+            } else {
+                nearby_edges_vec = graph.get_edges_near_point(pt_3d, 120.0);
+                &nearby_edges_vec
+            };
 
-            let mut edges_to_check = std::collections::HashSet::<usize>::new();
-
-            for i in nearby_edges {
+            for &i in nearby_edges {
                 let e = &graph.edges[i];
                 if e.deleted { continue; }
                 
@@ -520,7 +539,7 @@ impl ZoningSystem {
                         if idx >= cells.len() { continue; } // Extra safety
                         let z_type = cells[idx];
                         if z_type == ZoneType::None { continue; }
-                        if self.is_cell_obstructed(edge_idx, side, x, y, graph) { continue; }
+                        if self.is_cell_obstructed(edge_idx, side, x, y, graph, None) { continue; }
                         
                         // Calculate world position of this cell
                         // This is a simplified version; real implementation needs tangent/normal integration
