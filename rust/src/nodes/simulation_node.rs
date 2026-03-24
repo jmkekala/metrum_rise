@@ -64,7 +64,6 @@ impl SimulationNode {
         godot_print!("Tick! Day {}", self.time.current_day);
         
         // 1. Environmental Spread
-        self.pollution.tick(&self.allocator);
         let tick_start = std::time::Instant::now();
         
         // ECONOMY: Demand update

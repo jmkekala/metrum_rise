@@ -107,7 +107,6 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
-| B1 | `simulate_tick` lines 668+678 | `pollution.tick()` called twice per day tick — all emissions doubled | `[BLOCKER]` |
 | B2 | `pathing/hpa.rs::find_path` | [DONE] Hierarchical search implemented; concrete adjacency list cached. | `[BLOCKER]` |
 | B3 | `agents.rs` | `parking_occupied` never incremented — parking capacity effectively infinite | `[BLOCKER]` |
 | B4 | `agents.rs` | `parked_edge`/`parked_progression` written but never read for car retrieval — parking loop incomplete | `[BLOCKER]` |
@@ -130,7 +129,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 ### v0.01 Blockers — fix before tagging
 
 1. [DONE] **Fix HPA* query** (B2): rewrite `find_path` to run A* on the pre-built abstract graph for inter-chunk traversal, then local A* within source and destination chunk. Cache shared read-only adjacency list inside `HpaGraph` post-`build()`.
-2. **Fix `pollution.tick()` double-call** (B1): remove one of the two calls in `simulate_tick`.
+2. [DONE] **Fix `pollution.tick()` double-call** (B1): remove one of the two calls in `simulate_tick`.
 3. **Fix parking counter** (B3, B4): increment `parking_occupied` on park; decrement on retrieval; wire car retrieval path through `parked_edge`/`parked_progression` before the agent's next outbound trip.
 4. **Add desirability gate to `allocator.tick`** (B5): read `desirability.grid.get(cx, cy) > 50` before spawning.
 5. **Add spawn throttle to `allocator.tick`** (B6): max ~10 buildings per tick; batch-dirty HPA*; rebuild once at end of tick.
