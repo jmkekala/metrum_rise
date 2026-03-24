@@ -90,6 +90,15 @@ Do not introduce workarounds that mask known bugs. Fix the root cause and remove
 - Do not add docstrings, comments, or type annotations to code you did not change.
 - Do not introduce new dependencies without a clear justification — the crate list is intentionally lean.
 - State the complexity bound of any new hot-path code. If it is worse than the existing path, it must be explicitly justified.
+- Do not introduce `unsafe` blocks without explicit approval. If unsafe is necessary, explain exactly which invariant you are upholding and why safe alternatives were ruled out.
+- Follow the existing error handling pattern in the module. Do not switch between `anyhow`, `thiserror`, `?`-propagation styles, or panic/unwrap approaches unless explicitly asked.
+- If a borrow checker conflict arises, explain the ownership issue before proposing a solution. If resolving it requires a structural refactor (splitting a struct, reordering operations, changing ownership), flag it to the user rather than doing it silently — these conflicts often surface real architectural decisions.
+- All suggested code must compile. If you are uncertain whether something compiles, say so explicitly rather than presenting it with false confidence.
+- Do not add, remove, or modify tests outside the scope of the current task. If new logic clearly needs a test, flag it rather than silently writing one.
+- Show changes as minimal diffs, not full file rewrites, unless a full rewrite was explicitly requested.
+- Atomic Checklist Updates: When updating docs/project.md or other tracking files, use the smallest possible `TargetContent` to avoid overwriting adjacent tasks. 
+- Preserve Pending Task Identifiers: Never remove or modify lines containing [(B1, B2, etc.)] identifiers unless explicitly tasked with those specific items.
+- Section Integrity: When refactoring a list (e.g., merging "Technical Debt" into "DONE"), ensure that all uncompleted items are either preserved in their original section or explicitly moved, never deleted.
 
 ### Rust Code Style
 

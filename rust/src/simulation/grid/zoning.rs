@@ -110,6 +110,8 @@ impl ZoningSystem {
                         new_grid.right_side[new_i] = old_grid.right_side[old_i];
                         new_grid.left_occupied[new_i] = old_grid.left_occupied[old_i];
                         new_grid.right_occupied[new_i] = old_grid.right_occupied[old_i];
+                        new_grid.left_blocked[new_i] = old_grid.left_blocked[old_i];
+                        new_grid.right_blocked[new_i] = old_grid.right_blocked[old_i];
                     }
                 }
             }
@@ -228,6 +230,30 @@ impl ZoningSystem {
         false
     }
 
+    /// Explicitly updates the obstruction cache for an edge.
+    pub fn recalculate_obstructions(&mut self, edge_idx: usize, graph: &crate::simulation::network::graph::TransitGraph) {
+        let cells_long = if let Some(grid) = self.edge_grids.get(&edge_idx) {
+            grid.cells_long
+        } else {
+            return;
+        };
+
+        let mut left_results = vec![false; cells_long * ZONING_DEPTH];
+        let mut right_results = vec![false; cells_long * ZONING_DEPTH];
+
+        for x in 0..cells_long {
+            for y in 0..ZONING_DEPTH {
+                left_results[x * ZONING_DEPTH + y] = self.is_cell_obstructed(edge_idx, 1, x, y, graph);
+                right_results[x * ZONING_DEPTH + y] = self.is_cell_obstructed(edge_idx, -1, x, y, graph);
+            }
+        }
+
+        if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
+            grid.left_blocked = left_results;
+            grid.right_blocked = right_results;
+        }
+    }
+
     pub fn get_cell_center(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph) -> Vector2 {
         if edge_idx >= graph.edges.len() { return Vector2::new(0.0, 0.0); }
         let edge = &graph.edges[edge_idx];
@@ -267,7 +293,7 @@ impl ZoningSystem {
         let depth = (y as f32 + 0.5) * self.grid_cell_size;
         let half_width = graph.edges[edge_idx].width * 0.5;
         
-        pos + normal * (half_width + depth)
+        pos + normal * (half_width + crate::config::SIDEWALK_WIDTH + depth)
     }
     pub fn is_cell_obstructed(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph) -> bool {
         let center = self.get_cell_center(edge_idx, side, x, y, graph);
@@ -289,7 +315,7 @@ impl ZoningSystem {
                 let t = (local_x / edge.physical_length).clamp(0.0, 1.0);
                 let (pos_on_edge, tangent) = self.get_edge_pos_and_tangent_static(edge_idx, t, graph);
                 let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
-                let intended_d = hw + local_y;
+                let intended_d = hw + crate::config::SIDEWALK_WIDTH + local_y;
                 check_pts_with_t.push((pos_on_edge + normal * intended_d, t));
             }
         }
@@ -329,7 +355,8 @@ impl ZoningSystem {
                 if e.deleted { continue; }
                 
                 // Skip own road — self-overlap is handled by Splay Check only.
-                if i == edge_idx { continue; }
+                // Skip own road segment unless it's a sharp curve that overlaps itself
+                let is_self = i == edge_idx;
 
                 // Sister Edge Detection (Road continuation at 2-way junctions)
                 let is_sister = i != edge_idx && (e.start_node == edge.start_node || e.start_node == edge.end_node || 
@@ -369,13 +396,19 @@ impl ZoningSystem {
 
                     let mut t_proj = ((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2;
                     t_proj = t_proj.clamp(0.0, 1.0);
+                    
+                    if is_self {
+                        let t_at_seg = (j as f32 + t_proj) / (pts.len() as f32 - 1.0);
+                        if (t_at_seg - t_us).abs() < 0.25 { continue; }
+                    }
+
                     let proj = p1_2d + seg_vec * t_proj;
                     let d_sq = pt.distance_squared_to(proj);
 
-                    // A. Asphalt Collision: Overlapping other road surface
-                    let hw_other = e.width * 0.5;
+                    // A. Road Footprint Collision: Overlapping other road asphalt or sidewalk
+                    let hw_other = (e.width * 0.5) + crate::config::SIDEWALK_WIDTH;
 
-                    // RESTORED: Explicit Asphalt Hit-Test
+                    // RESTORED: Explicit Asphalt/Sidewalk Hit-Test
                     if d_sq < (hw_other + 0.1).powi(2) {
                         asphalt_collision = true;
                     }

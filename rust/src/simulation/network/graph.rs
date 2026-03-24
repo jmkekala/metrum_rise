@@ -383,10 +383,20 @@ impl TransitGraph {
         }
         
         // 5. Update existing edge as first half
+        let old_end_node = self.edges[edge_idx].end_node;
         self.edges[edge_idx].end_node = new_node_id;
         self.edges[edge_idx].geometry = first_geom;
         self.edges[edge_idx].physical_geometry = first_phys;
         self.edges[edge_idx].physical_length = self.calculate_length(&self.edges[edge_idx].physical_geometry);
+        
+        // 5.5 RE-INDEX and UPDATE ADJACENCY for modified edge
+        self.remove_from_spatial_index(edge_idx);
+        self.add_to_spatial_index(edge_idx);
+        
+        if let Some(adj) = self.adjacency.get_mut(&old_end_node) {
+            adj.retain(|&i| i != edge_idx);
+        }
+        self.adjacency.entry(new_node_id).or_default().push(edge_idx);
         
         // 6. Create new edge as second half
         let new_edge_id = self.add_edge(Edge {
@@ -544,11 +554,14 @@ impl TransitGraph {
         // (Cul-de-sac logic removed)
         
         // Update all edges using the 'remove' node to use 'keep' node instead
-        for edge in &mut self.edges {
+        let mut affected_edges = Vec::new();
+        for (i, edge) in self.edges.iter_mut().enumerate() {
             if edge.deleted { continue; }
+            let mut changed = false;
             if edge.start_node == remove { 
                 edge.start_node = keep; 
                 if !edge.geometry.is_empty() { edge.geometry[0] = new_pos; }
+                changed = true;
             }
             if edge.end_node == remove { 
                 edge.end_node = keep; 
@@ -556,7 +569,16 @@ impl TransitGraph {
                     let last = edge.geometry.len() - 1;
                     edge.geometry[last] = new_pos; 
                 }
+                changed = true;
             }
+            if changed {
+                affected_edges.push(i);
+            }
+        }
+        
+        for i in affected_edges {
+            self.remove_from_spatial_index(i);
+            self.add_to_spatial_index(i);
         }
         
         // Note: We don't remove the node from the Vec to keep indices stable

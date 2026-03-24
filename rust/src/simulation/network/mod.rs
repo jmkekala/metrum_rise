@@ -208,6 +208,7 @@ impl TransitNetwork {
         self.graph.edges[edge_id].physical_length = length;
         
         zoning.update_edge_grid_size(edge_id, length);
+        zoning.recalculate_obstructions(edge_id, &self.graph);
 
         topology::process_intersections(self, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(); // Clean edge_id if it's dup
@@ -249,6 +250,9 @@ impl TransitNetwork {
                 b.cell_x -= split_x;
             }
         }
+
+        zoning.recalculate_obstructions(edge_idx, &self.graph);
+        zoning.recalculate_obstructions(new_edge_id, &self.graph);
 
         (node_id, new_edge_id, split_x)
     }

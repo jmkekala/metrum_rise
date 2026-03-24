@@ -139,12 +139,22 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     let zoning_left = old_edge.zoning_left;
     let zoning_right = old_edge.zoning_right;
 
+    let old_end_node = network.graph.edges[edge_id].end_node;
     network.graph.edges[edge_id].end_node = junction_node_id;
     network.graph.edges[edge_id].geometry = part1_geo.clone();
     network.graph.edges[edge_id].physical_geometry = part1_geo;
     let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&network.graph.edges[edge_id]);
     network.graph.edges[edge_id].base_cost = cost;
     network.graph.edges[edge_id].physical_length = length;
+
+    // RE-INDEX and UPDATE ADJACENCY for modified edge
+    network.graph.remove_from_spatial_index(edge_id);
+    network.graph.add_to_spatial_index(edge_id);
+    
+    if let Some(adj) = network.graph.adjacency.get_mut(&old_end_node) {
+        adj.retain(|&i| i != edge_id);
+    }
+    network.graph.adjacency.entry(junction_node_id).or_default().push(edge_id);
 
     let mut new_edge = Edge {
         start_node: junction_node_id,

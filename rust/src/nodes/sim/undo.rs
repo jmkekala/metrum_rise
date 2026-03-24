@@ -1,0 +1,52 @@
+//! Undo/Redo system for simulation state.
+
+use godot::prelude::*;
+use std::collections::VecDeque;
+use crate::nodes::simulation_node::{SimulationNode, SimulationSnapshot};
+
+impl SimulationNode {
+    /// Pushes a new state snapshot onto the undo stack.
+    /// 
+    /// Parameters `inc_terrain`, `inc_water`, `inc_transit`, `inc_zoning` controls 
+    /// which components are included in the snapshot.
+    pub fn push_undo_state(&mut self, inc_terrain: bool, inc_water: bool, inc_transit: bool, inc_zoning: bool) {
+        if self.undo_stack.len() >= 30 {
+            self.undo_stack.pop_front(); // Constant 30-size rolling window
+        }
+        self.undo_stack.push_back(SimulationSnapshot {
+            terrain: if inc_terrain { Some(self.heightmap.data.clone()) } else { None },
+            water: if inc_water { Some(self.watermap.depth.clone()) } else { None },
+            transit: if inc_transit { Some(self.transit_network.graph.clone()) } else { None },
+            zoning: if inc_zoning { Some(self.zoning.clone()) } else { None },
+        });
+    }
+
+    /// Pops the last state snapshot from the undo stack and restores simulation state.
+    /// Returns true if an action was undone.
+    pub fn undo_action_internal(&mut self) -> bool {
+        if let Some(state) = self.undo_stack.pop_back() {
+            let mut sync_transit = false;
+
+            if let Some(t_data) = state.terrain {
+                self.heightmap.data = t_data;
+                sync_transit = true; 
+            }
+            if let Some(w_data) = state.water {
+                self.watermap.depth = w_data;
+            }
+            if let Some(tr_graph) = state.transit {
+                self.transit_network.graph = tr_graph;
+                sync_transit = true;
+            }
+            if let Some(z_sys) = state.zoning {
+                self.zoning = z_sys;
+            }
+
+            if sync_transit {
+                self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
+            }
+            return true;
+        }
+        false
+    }
+}

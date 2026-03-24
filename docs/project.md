@@ -134,15 +134,12 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 3. **Fix parking counter** (B3, B4): increment `parking_occupied` on park; decrement on retrieval; wire car retrieval path through `parked_edge`/`parked_progression` before the agent's next outbound trip.
 4. **Add desirability gate to `allocator.tick`** (B5): read `desirability.grid.get(cx, cy) > 50` before spawning.
 5. **Add spawn throttle to `allocator.tick`** (B6): max ~10 buildings per tick; batch-dirty HPA*; rebuild once at end of tick.
-6. **Split `simulation_node.rs`** (B7) into:
-   - `nodes/sim/api.rs` — `#[func]` Godot API declarations (~200 lines)
-   - `nodes/sim/render_helpers.rs` — transform and mesh helpers (~400 lines)
-   - `nodes/sim/editing.rs` — road, terrain, zoning, lane editing (~250 lines)
-   - `nodes/sim/undo.rs` — snapshot, push, pop; `Vec` → `VecDeque` (~60 lines)
-   - `nodes/sim/benchmark.rs` — city setup, CSV logging, perf stats (~80 lines)
-   - `nodes/sim/query.rs` — edge hover, node projection, tangent queries (~200 lines)
-   - `simulation_node.rs` (residual) — struct, `init`, `ready`, `process`, `simulate_tick` (target < 150 lines)
-7. **Fix `find_or_add_node`** (B8): replace O(N) scan with a spatial hash of node positions (16 m grid or HashMap keyed by snapped position).
+6. [DONE] **B7: Split `simulation_node.rs`** into modules.
+7. [DONE] **B12: Fix Undo O(N) performance** by using `VecDeque`.
+8. [DONE] **REGRESSION: Zoning cell overlap** (FIXED - Graph consistency & Cache refresh)
+9. [DONE] **REGRESSION: Building-Road overlap** (FIXED - Sidewalk offsets added)
+10. [DONE] **REGRESSION: Frontage Split Zoning Loss** (FIXED - Cache migration)
+11. **Fix `find_or_add_node`** (B8): replace O(N) scan with a spatial hash of node positions (16 m grid or HashMap keyed by snapped position).
 
 ### v0.01 Goals — strong targets for v0.01 quality
 
