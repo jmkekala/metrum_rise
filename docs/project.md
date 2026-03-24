@@ -66,7 +66,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Save/load via `serde_json` — **not yet wired end-to-end**.
 
 ### Agents
-- `simulation/economy/agents.rs` (708 lines) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
+- `simulation/economy/agents/` (Submodule) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
 - FSM states: `IDLE → DEPARTING → ON_ROAD → ARRIVING → IDLE` + `IMMIGRATING`.
 - Movement: polyline traversal with sub-tick `remaining_dist` budget; lane offsets from road width / lane count.
 - Agent kill: swap-and-pop, O(1).
@@ -142,7 +142,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 11. [DONE] **Optimize Zoning Cache & Parallelize** (B5/B11ish): Fixed $O(Cells \times E \times L)$ regression in visualization by correctly using the obstruction cache. Parallelised `recalculate_obstructions` with Rayon and implemented spatial invalidation for nearby roads.
 12. [DONE] **Coarsen environmental grids to 500 × 500**: run diffusion at 1 MB instead of 16 MB per grid; bilinear upsample for display. 16× memory and compute reduction.
 13. [DONE] **Incremental HPA* rebuild** on road edit: mark affected 512 m chunks dirty, rebuild only those. O(E_chunk) instead of O(E_total).
-14. **Split `agents.rs`** (708 lines) into `agents/data.rs`, `agents/decisions.rs`, `agents/tick.rs`.
+14. [DONE] **Split `agents.rs`** into `agents/data.rs`, `agents/decisions.rs`, `agents/tick.rs`.
 15. **Split `graph.rs`** (801 lines) into `graph/data.rs`, `graph/spatial.rs`, `graph/topology.rs`, `graph/rebuild.rs`.
 16. **Add pathfinding unit tests**: highway cheaper than dirt road; slope penalty forces bypass; flow field Dijkstra < 5 ms on a 1,000-node graph.
 
@@ -151,7 +151,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 17. **Virtual Frontages**: change building address from physical edge splits to `(EdgeID, t: f32)`. Agents arrive by reaching the T-coordinate and trigger arriving state. Decouples graph size from city density.
 18. **Flow fields for shared destinations**: one Dijkstra from destination per zone type per tick produces a `DataGrid<f32>` cost map. Agents query their cell instead of running individual A*. Reduces O(A × E log N) pathfinding to O(M × E log N) where M ≈ 10–100 zone types.
 19. **Parallelise `AgentSystem::tick`** with `rayon::par_iter_mut` over agent chunks. Use `AtomicU32` for `parking_occupied`; accumulate congestion deltas per chunk and merge after parallel phase.
-20. **Compact deleted edges** periodically: drain soft-deleted entries and remap all indices.
+20. [DONE] **Compact deleted edges** (B15): implemented early in v0.01.
 21. **R-Tree spatial index** (`rstar` crate) for fine-grain edge queries — O(log N) insert/delete/query vs. current O(N) scan on delete.
 
 ### v1.0 — 1M-agent milestone
@@ -261,3 +261,8 @@ The Godot side is a thin bridge: no simulation logic lives here. All GDScript sc
 | Agent transforms | `PackedFloat32Array` | 12 floats per agent: `[basis.x(3), basis.y(3), basis.z(3), origin(3)]` — matches `Transform3D` |
 | Building transforms | `PackedFloat32Array` | Same 12-float layout as agent transforms |
 | Pollution / Noise / Desirability | `PackedByteArray` | RGBA8, one pixel per grid cell; uploaded to a shader `ImageTexture` |
+
+# Future changes
+
+## Zoning
+- Add SimCity 4 style zoning (remove automatic zoning, use manual, no restictions on the size of the zone)
