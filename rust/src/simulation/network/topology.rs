@@ -211,7 +211,7 @@ mod tests {
     #[test]
     fn test_topology_t_junction() {
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new(100, 100);
+        let mut zoning = ZoningSystem::new();
         let mut allocator = BuildingAllocator::new(100, 100);
         // straight road
         net.add_road(vec![

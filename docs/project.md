@@ -85,7 +85,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/pathing/astar.rs` — binary-heap A* with `(node, incoming_edge)` state key (correctly handles turn restrictions at `Node::lane_connections`).
 - `simulation/pathing/cost.rs` — edge cost = `length / speed_limit`.
 - A* heuristic: `euclidean_distance / 100` — admissible but weak; divisor should be `v_max` (see Bugs).
-- `simulation/pathing/hpa.rs` — HPA* **build phase correct**: chunk boundary abstract nodes, per-chunk Dijkstra, stores `abstract_edges`. **Query phase broken** — ignores abstract graph entirely (see Bugs).
+- `simulation/pathing/hpa.rs` — HPA* **build phase correct**: chunk boundary abstract nodes, per-chunk Dijkstra, stores `abstract_edges`. **Query phase optimized**: utilizes hierarchical search (local searches + abstract graph A*) and caches concrete adjacency list for O(1) fetch.
 
 ### Demand
 - `simulation/economy/demand.rs` — global R/C/I demand counters. Demand increments globally; buildings consume it on spawn.
@@ -108,7 +108,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
 | B1 | `simulate_tick` lines 668+678 | `pollution.tick()` called twice per day tick — all emissions doubled | `[BLOCKER]` |
-| B2 | `pathing/hpa.rs::find_path` | Rebuilds full concrete adjacency list every call (O(N+E) alloc); abstract graph never used — every query is O(E log N) | `[BLOCKER]` |
+| B2 | `pathing/hpa.rs::find_path` | [DONE] Hierarchical search implemented; concrete adjacency list cached. | `[BLOCKER]` |
 | B3 | `agents.rs` | `parking_occupied` never incremented — parking capacity effectively infinite | `[BLOCKER]` |
 | B4 | `agents.rs` | `parked_edge`/`parked_progression` written but never read for car retrieval — parking loop incomplete | `[BLOCKER]` |
 | B5 | `buildings/allocator.rs` | Desirability not checked before building placement — buildings spawn in polluted zones | `[BLOCKER]` |
@@ -129,7 +129,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### v0.01 Blockers — fix before tagging
 
-1. **Fix HPA* query** (B2): rewrite `find_path` to run A* on the pre-built abstract graph for inter-chunk traversal, then local A* within source and destination chunk. Cache shared read-only adjacency list inside `HpaGraph` post-`build()`.
+1. [DONE] **Fix HPA* query** (B2): rewrite `find_path` to run A* on the pre-built abstract graph for inter-chunk traversal, then local A* within source and destination chunk. Cache shared read-only adjacency list inside `HpaGraph` post-`build()`.
 2. **Fix `pollution.tick()` double-call** (B1): remove one of the two calls in `simulate_tick`.
 3. **Fix parking counter** (B3, B4): increment `parking_occupied` on park; decrement on retrieval; wire car retrieval path through `parked_edge`/`parked_progression` before the agent's next outbound trip.
 4. **Add desirability gate to `allocator.tick`** (B5): read `desirability.grid.get(cx, cy) > 50` before spawning.

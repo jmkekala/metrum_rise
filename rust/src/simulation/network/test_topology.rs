@@ -12,7 +12,7 @@ mod tests {
         let mut net = TransitNetwork::new();
         // long road with many segments
         let mut pts = Vec::new();
-        let mut zoning = ZoningSystem::new(100, 100);
+        let mut zoning = ZoningSystem::new();
         let mut allocator = BuildingAllocator::new(100, 100);
         net.add_road(pts.into(), 1, 1, false, false, &mut zoning, &mut allocator);
         
@@ -32,7 +32,7 @@ mod tests {
     #[test]
     fn test_shallow_angle_intersection() {
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new(200, 200);
+        let mut zoning = ZoningSystem::new();
         let mut allocator = BuildingAllocator::new(200, 200);
         // straight road
         net.add_road(vec![
@@ -72,7 +72,7 @@ mod tests {
             Vector3::new(-100.0, 0.0, 0.0),
         ];
         
-        let mut zoning = ZoningSystem::new(200, 200);
+        let mut zoning = ZoningSystem::new();
         let mut allocator = BuildingAllocator::new(200, 200);
         
         for dir in dirs {
@@ -100,7 +100,7 @@ mod tests {
                 let mut net = TransitNetwork::new();
                 let _center = net.graph.find_or_add_node(Vector3::new(0.0, 0.0, 0.0), 0.1, NodeType::Junction);
                 
-                let mut zoning = ZoningSystem::new(200, 200);
+                let mut zoning = ZoningSystem::new();
                 let mut allocator = BuildingAllocator::new(200, 200);
                 
                 // Standard evenly spaced roads
