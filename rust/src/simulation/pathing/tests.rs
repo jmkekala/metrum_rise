@@ -50,13 +50,12 @@ fn test_pathing_avoids_steep_slope() {
     let n_a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     // B (100,0,0) - Goal
     let n_b = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-    // C (50,-50,0) - Detour point
-    let n_c = graph.add_node(Vector3::new(50.0, -50.0, 0.0), NodeType::Junction);
+    // C (50, 0, 100) - Detour point
+    let n_c = graph.add_node(Vector3::new(50.0, 0.0, 100.0), NodeType::Junction);
 
     // 1. Short but very steep road: A -> B
     // Slope = 50m height / 100m length = 50%.
-    // Cost should be massive due to exponential penalty: 1 + (0.5 * 5)^2 = 1 + 2.5^2 = 7.25x multiplier.
-    graph.add_edge(Edge {
+    let mut edge_ab = Edge {
         start_node: n_a, end_node: n_b,
         primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
         width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 0.0,
@@ -64,52 +63,50 @@ fn test_pathing_avoids_steep_slope() {
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 50.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 50.0, 0.0)],
         zoning_left: false, zoning_right: false, deleted: false,
-    });
+    };
+    let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);
+    edge_ab.base_cost = cost_ab;
+    edge_ab.physical_length = dist_ab;
+    graph.add_edge(edge_ab);
 
     // 2. Long but flat detour: A -> C -> B
-    // A -> C (70.7m)
-    graph.add_edge(Edge {
+    // A -> C (111.8m)
+    let mut edge_ac = Edge {
         start_node: n_a, end_node: n_c,
         primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
         width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 0.0,
-        physical_length: 70.7, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
-        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, -50.0, 0.0)],
-        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, -50.0, 0.0)],
+        physical_length: 0.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
+        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
         zoning_left: false, zoning_right: false, deleted: false,
-    });
-    // C -> B (70.7m)
-    graph.add_edge(Edge {
+    };
+    let (cost_ac, dist_ac) = cost::CostCalculator::calculate_costs(&edge_ac);
+    edge_ac.base_cost = cost_ac;
+    edge_ac.physical_length = dist_ac;
+    graph.add_edge(edge_ac);
+
+    // C -> B (111.8m)
+    let mut edge_cb = Edge {
         start_node: n_c, end_node: n_b,
         primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
         width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 0.0,
-        physical_length: 70.7, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
-        geometry: vec![Vector3::new(50.0, -50.0, 0.0), Vector3::new(100.0, 50.0, 0.0)], // Wait, B is at y=50? 
-        // Let's re-eval coordinates.
-        // A (0,0,0)
-        // B (100, 0, 0)
-        // Let's make B flat too.
-        physical_geometry: vec![Vector3::new(50.0, -50.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        physical_length: 0.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        geometry: vec![Vector3::new(50.0, 0.0, 100.0), Vector3::new(100.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(50.0, 0.0, 100.0), Vector3::new(100.0, 0.0, 0.0)],
         zoning_left: false, zoning_right: false, deleted: false,
-    });
-    
-    // Correction:
-    // A = (0,0,0)
-    // B = (100,0,0)
-    // C = (50, -100, 0)
-    // Edge A-B: geometry [ (0,0,0), (100, 50, 0) ] -> steep
-    // Edge A-C: geometry [ (0,0,0), (50, -100, 0) ] -> flat
-    // Edge C-B: geometry [ (50,-100,0), (100, 0, 0) ] -> flat
-    
-    // Total flat distance = dist(A,C) + dist(C,B) = sqrt(50^2 + 100^2) * 2 = 111.8 * 2 = 223.6m
-    // Steep distance = 100m, but 50% slope.
+    };
+    let (cost_cb, dist_cb) = cost::CostCalculator::calculate_costs(&edge_cb);
+    edge_cb.base_cost = cost_cb;
+    edge_cb.physical_length = dist_cb;
+    graph.add_edge(edge_cb);
     
     let hpa = HpaGraph::build(&graph);
     let path = hpa.find_path(n_a, n_b, usize::MAX, &graph, TransitFlags::CAR);
     
     assert!(path.is_some(), "Should find a path");
-    let (_cost, _dist, nodes) = path.unwrap();
+    let (cost_found, _dist, nodes) = path.unwrap();
     
-    assert!(nodes.contains(&n_c), "Router should have detoured through node C to avoid the steep slope on A-B. Path was: {:?}", nodes);
+    assert!(nodes.contains(&n_c), "Router should have detoured through node C (cost {}) to avoid the steep slope on A-B (cost {}). Path was: {:?}", cost_ac + cost_cb, cost_ab, nodes);
     assert_eq!(nodes, vec![n_a, n_c, n_b]);
 }
 

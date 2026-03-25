@@ -123,7 +123,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 ### v0.01 Goals — strong targets for v0.01 quality
 
 2. **Complete pathfinding unit tests** — two of three originally listed tests now exist; one is missing, one is deferred:
-   - `test_cost_calculation_slope_penalty` ✓ exists but only checks that a steep edge costs more — it does **not** verify that the router actually bypasses a steep road in favour of a longer flat route. Add a three-node graph test: `A –(steep)→ B` and `A –(long flat)→ C –(flat)→ B`; assert the router chooses the flat detour.
+   - [DONE] `test_cost_calculation_slope_penalty` — added `test_pathing_avoids_steep_slope` which verifies the router detours around steep grades.
    - Flow field Dijkstra < 5 ms on a 1,000-node graph: **deferred to v0.2** — cannot be written until flow fields are implemented.
 5. **`TransitGraph` mutation tests** — the road editing pipeline has no test coverage. Add tests for:
    - `add_road`: resulting adjacency is bidirectional for a bidirectional edge; node count and edge count increase by expected amounts.
