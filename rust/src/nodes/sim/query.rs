@@ -180,8 +180,9 @@ impl SimulationNode {
             }
         }
         
-        // Return if mouse is near the road, or within the 110 meters bounding limit (matching grid depth + padding)
-        if best_dist <= (110.0 * 110.0) { 
+        // Return if mouse is near the road, or within the dynamic bounding limit (grid depth + padding)
+        let max_depth = (ZONING_DEPTH as f32 * self.config.zone_cell_m) + 10.0;
+        if best_dist <= (max_depth * max_depth) { 
             best_edge
         } else {
             -1

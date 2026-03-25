@@ -2,9 +2,10 @@
 mod tests {
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::types::{TransitType, NodeType};
-    use crate::simulation::network::topology::process_intersections;
+    // use crate::simulation::network::topology::process_intersections; // UNUSED
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::core::config::MapConfig;
     use godot::prelude::Vector3;
 
     #[test]
@@ -15,8 +16,9 @@ mod tests {
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(250.0, 0.0, 0.0),
         ];
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         net.add_road(pts, 1, 1, false, false, &mut zoning, &mut allocator);
         
         // side road connecting near the end (segment 8 of 9)
@@ -35,8 +37,9 @@ mod tests {
     #[test]
     fn test_shallow_angle_intersection() {
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(200, 200);
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         // straight road
         net.add_road(vec![
             Vector3::new(-100.0, 0.0, 0.0),
@@ -75,8 +78,9 @@ mod tests {
             Vector3::new(-100.0, 0.0, 0.0),
         ];
         
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(200, 200);
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         
         for dir in dirs {
             net.add_road(vec![dir, Vector3::new(0.0, 0.0, 0.0)], 1, 1, false, false, &mut zoning, &mut allocator);
@@ -84,7 +88,7 @@ mod tests {
         
         println!("4-way Graph has {} edges", net.graph.edges.len());
         for (i, edge) in net.graph.edges.iter().enumerate() {
-            println!("Edge {}: start_clip: {}, end_clip: {}", i, edge.start_clip, edge.end_clip);
+            println!("Edge {}: nodes {}->{}, start_clip: {}, end_clip: {}", i, edge.start_node, edge.end_node, edge.start_clip, edge.end_clip);
             assert!(edge.end_clip >= 1.0 && edge.end_clip <= 10.0, "Clip distance should be reasonable for 90 degree angles");
         }
         
@@ -101,10 +105,11 @@ mod tests {
         for ways in way_counts {
             for deg in 2..=178 {
                 let mut net = TransitNetwork::new();
-                let _center = net.graph.find_or_add_node(Vector3::new(0.0, 0.0, 0.0), 0.1, NodeType::Junction);
+                let center = net.graph.find_or_add_node(Vector3::new(0.0, 0.0, 0.0), 0.1, NodeType::Junction);
                 
-                let mut zoning = ZoningSystem::new();
-                let mut allocator = BuildingAllocator::new(200, 200);
+                let config = MapConfig::default();
+                let mut zoning = ZoningSystem::new(&config);
+                let mut allocator = BuildingAllocator::new();
                 
                 // Standard evenly spaced roads
                 for w in 0..ways-1 {
@@ -131,8 +136,9 @@ mod tests {
     #[test]
     fn test_transit_graph_add_road() {
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         
         // Add a 250m straight road
         net.add_road(vec![
@@ -157,8 +163,9 @@ mod tests {
     fn test_transit_graph_split_edge() {
         use crate::simulation::network::topology::split_edge;
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         
         // 1. Add a 100m road. Physical cell size is 10.0m.
         net.add_road(vec![
@@ -206,8 +213,9 @@ mod tests {
     #[test]
     fn test_transit_graph_compact_edges() {
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         
         // 1. Add two 100m roads
         net.add_road(vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, true, &mut zoning, &mut allocator);

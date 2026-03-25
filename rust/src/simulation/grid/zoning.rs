@@ -18,7 +18,8 @@
 use godot::prelude::*;
 use std::collections::HashMap;
 use rayon::prelude::*;
-use crate::config::{ZONING_DEPTH, GRID_CELL_SIZE};
+use crate::simulation::core::config::MapConfig;
+use crate::config::ZONING_DEPTH;
 
 /// Land-use category painted onto a zoning grid cell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -67,16 +68,16 @@ pub struct ZoningSystem {
     /// Zoning grids keyed by edge index in [`TransitGraph::edges`].
     /// Only edges with `zoning_left || zoning_right` have entries here.
     pub edge_grids: HashMap<usize, EdgeZoning>,
-    /// Physical size of one zoning cell in metres. Matches [`GRID_CELL_SIZE`].
-    pub grid_cell_size: f32,
+    /// Global map configuration.
+    pub config: MapConfig,
 }
 
 impl ZoningSystem {
     /// Creates a new, empty zoning system.
-    pub fn new() -> Self {
+    pub fn new(config: &MapConfig) -> Self {
         Self {
             edge_grids: HashMap::new(),
-            grid_cell_size: GRID_CELL_SIZE,
+            config: config.clone(),
         }
     }
 
@@ -163,7 +164,7 @@ impl ZoningSystem {
 
     /// Resizes or creates the zoning grid for an edge based on its physical length.
     pub fn update_edge_grid_size(&mut self, edge_idx: usize, length: f32) {
-        let cells_long = (length / self.grid_cell_size).floor() as usize;
+        let cells_long = (length / self.config.zone_cell_m).floor() as usize;
         let entry = self.edge_grids.entry(edge_idx).or_insert_with(|| EdgeZoning {
             left_side: vec![ZoneType::None; cells_long * ZONING_DEPTH],
             right_side: vec![ZoneType::None; cells_long * ZONING_DEPTH],
@@ -304,7 +305,7 @@ impl ZoningSystem {
         let total_l = edge.physical_length;
         if total_l < 0.1 { return Vector2::new(0.0, 0.0); }
 
-        let t = (x as f32 + 0.5) * self.grid_cell_size / total_l;
+        let t = (x as f32 + 0.5) * self.config.zone_cell_m / total_l;
         if t > 1.0 { return Vector2::new(0.0, 0.0); }
 
         // Find position and tangent at T
@@ -331,7 +332,7 @@ impl ZoningSystem {
         }
 
         let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
-        let depth = (y as f32 + 0.5) * self.grid_cell_size;
+        let depth = (y as f32 + 0.5) * self.config.zone_cell_m;
         let half_width = graph.edges[edge_idx].width * 0.5;
         
         pos + normal * (half_width + crate::config::SIDEWALK_WIDTH + depth)
@@ -341,7 +342,7 @@ impl ZoningSystem {
         let center = self.get_cell_center(edge_idx, side, x, y, graph);
         if center.x == 0.0 && center.y == 0.0 { return true; }
 
-        let size = self.grid_cell_size;
+        let size = self.config.zone_cell_m;
         let edge = &graph.edges[edge_idx];
         let hw = edge.width * 0.5;
 

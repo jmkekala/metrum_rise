@@ -11,7 +11,8 @@ impl SimulationNode {
         self.transit_network.clear(&mut self.zoning, &mut self.allocator);
         self.agents.clear();
 
-        let spacing = 100.0;
+        let cell_size = self.config.zone_cell_m;
+        let spacing = cell_size * 10.0; // Roads every 10 cells
         let start_offset = -(grid_size as f32 * spacing * 0.5);
 
         // 1. Create Road Grid
@@ -38,7 +39,7 @@ impl SimulationNode {
         self.demand.commercial = 1000.0;
         self.demand.industrial = 1000.0;
         for _ in 0..10 { // Burst growth
-            self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network);
+            self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network, &self.config);
         }
 
         // 4. Batch Spawn Agents
@@ -50,6 +51,7 @@ impl SimulationNode {
     pub fn get_perf_stats_internal(&self) -> VarDictionary {
         let mut dict = VarDictionary::new();
         let _ = dict.insert("agent_count", self.agents.count as i32);
+        let _ = dict.insert("cell_size", self.config.zone_cell_m);
         let _ = dict.insert("last_tick_ms", self.last_tick_duration);
         let _ = dict.insert("pathfind_calls", self.agents.pathfind_count as i32);
         let _ = dict.insert("fps", godot::classes::Engine::singleton().get_frames_per_second());

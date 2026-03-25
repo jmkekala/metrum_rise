@@ -82,8 +82,8 @@ impl BuildingAllocator {
         }
     }
 
-    /// Creates an empty allocator. `_width` and `_height` are reserved for future spatial indexing.
-    pub fn new(_width: usize, _height: usize) -> Self {
+    /// Creates an empty allocator.
+    pub fn new() -> Self {
         Self {
             buildings: Vec::new(),
             dirty: false,
@@ -112,7 +112,7 @@ impl BuildingAllocator {
     ///
     /// Removes stale buildings, grows new ones into high-demand zones, and spawns immigrants.
     /// Calls `network.rebuild_pathing()` once if any building was added or removed.
-    pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, zoning: &mut ZoningSystem, desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, network: &mut crate::simulation::network::TransitNetwork) {
+    pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, zoning: &mut ZoningSystem, desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, network: &mut crate::simulation::network::TransitNetwork, config: &crate::simulation::core::config::MapConfig) {
         let mut spawned_this_tick = 0;
         let max_spawns = 10;
         
@@ -137,8 +137,8 @@ impl BuildingAllocator {
 
                 // network.remove_frontage(frontage_node, zoning, self); // DELETED: Virtual Frontages
                 // Clear occupancy for the entire footprint
-                let w_cells = (b_width as f32 / zoning.grid_cell_size).round() as usize;
-                let d_cells = (b_depth as f32 / zoning.grid_cell_size).round() as usize;
+                let w_cells = (b_width as f32 / zoning.config.zone_cell_m).round() as usize;
+                let d_cells = (b_depth as f32 / zoning.config.zone_cell_m).round() as usize;
                 for dx in 0..w_cells {
                     for dy in 0..d_cells {
                         zoning.set_occupied(b_edge_idx, b_side, b_cell_x + dx, b_cell_y + dy, false);
@@ -221,16 +221,16 @@ impl BuildingAllocator {
 
                     // B5: Desirability Gate
                     if can_build {
-                        let t_center = (x as f32 + 1.5) * zoning.grid_cell_size / edge_len;
+                        let t_center = (x as f32 + 1.5) * zoning.config.zone_cell_m / edge_len;
                         let world_pos = self.get_pos_on_edge(&network.graph, edge_idx, t_center);
                         let tangent = self.get_tangent_on_edge(&network.graph, edge_idx, t_center);
                         let normal = godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
-                        let depth_offset = crate::config::SIDEWALK_WIDTH + (1.5 * zoning.grid_cell_size);
+                        let depth_offset = crate::config::SIDEWALK_WIDTH + (1.5 * zoning.config.zone_cell_m);
                         let center_2d = world_pos + normal * (edge_width * 0.5 + depth_offset);
 
                         // Map world to grid coordinates
-                        let world_size_x = crate::config::MAP_WIDTH as f32 * crate::config::GRID_CELL_SIZE;
-                        let world_size_y = crate::config::MAP_HEIGHT as f32 * crate::config::GRID_CELL_SIZE;
+                        let world_size_x = config.width_m;
+                        let world_size_y = config.height_m;
                         let gx = (((center_2d.x / world_size_x) + 0.5) * desirability.grid.width as f32).round() as usize;
                         let gy = (((center_2d.y / world_size_y) + 0.5) * desirability.grid.height as f32).round() as usize;
 
@@ -241,18 +241,18 @@ impl BuildingAllocator {
                     }
 
                     if can_build {
-                        let t = (x as f32) * zoning.grid_cell_size / edge_len;
+                        let t = (x as f32) * zoning.config.zone_cell_m / edge_len;
                         let world_pos_on_edge = self.get_pos_on_edge(&network.graph, edge_idx, t);
                         let tangent = self.get_tangent_on_edge(&network.graph, edge_idx, t);
                         let normal = godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
                         
-                        let b_width = 3.0 * zoning.grid_cell_size;
-                        let b_depth = 3.0 * zoning.grid_cell_size;
+                        let b_width = 3.0 * zoning.config.zone_cell_m;
+                        let b_depth = 3.0 * zoning.config.zone_cell_m;
                         // Center of the 3-cell deep footprint (1.5 cells out from road edge)
-                        let depth_offset = crate::config::SIDEWALK_WIDTH + (1.5 * zoning.grid_cell_size); 
+                        let depth_offset = crate::config::SIDEWALK_WIDTH + (1.5 * zoning.config.zone_cell_m); 
                         let center_2d = world_pos_on_edge + normal * (edge_width * 0.5 + depth_offset);
                         
-                        let frontage_t = (x as f32 + 1.5) * zoning.grid_cell_size / edge_len;
+                        let frontage_t = (x as f32 + 1.5) * zoning.config.zone_cell_m / edge_len;
                         // let (frontage_node, new_edge_id, split_x) = network.split_for_frontage(edge_idx, frontage_pos_3d, zoning, self); // DELETED: Virtual Frontages
                         spawned_this_tick += 1;
 
@@ -266,7 +266,7 @@ impl BuildingAllocator {
                         */
 
                         // Center along road (1.5 cells in)
-                        let center_adjustment = tangent * (1.5 * zoning.grid_cell_size);
+                        let center_adjustment = tangent * (1.5 * zoning.config.zone_cell_m);
                         let final_center_2d = center_2d + center_adjustment;
 
                         let b = Building {
@@ -473,12 +473,13 @@ mod tests {
     use super::*;
     use crate::simulation::grid::zoning::ZoneType;
     use crate::simulation::economy::agents::AgentSystem;
+    use crate::simulation::core::config::MapConfig;
     use godot::prelude::Vector2;
     use rand::SeedableRng;
 
     #[test]
     fn test_zone_index_consistency() {
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut allocator = BuildingAllocator::new();
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
         // 1. Add buildings
@@ -523,7 +524,7 @@ mod tests {
 
     #[test]
     fn test_vacancy_index_consistency() {
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut allocator = BuildingAllocator::new();
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);
 
         // 1. Add 5 Residential buildings
@@ -587,15 +588,17 @@ mod tests {
         use crate::simulation::grid::zoning::ZoningSystem;
         use godot::prelude::Vector3;
 
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut allocator = BuildingAllocator::new();
         let mut demand = DemandSystem::new();
         demand.residential = 100.0;
         
-        let mut zoning = ZoningSystem::new();
-        let mut desirability = DesirabilitySystem::new(100, 100);
-        for i in 0..desirability.grid.data.len() { desirability.grid.data[i] = 100.0; } // High desirability
+        let map_cfg = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&map_cfg);
+        let mut desirability = DesirabilitySystem::new(&map_cfg);
+        let (env_w, env_h) = map_cfg.get_env_grid_size();
+        for x in 0..env_w { for y in 0..env_h { desirability.grid.set(x, y, 100.0); } } // High desirability
         
-        let mut noise = NoiseSystem::new(100, 100);
+        let noise = NoiseSystem::new(&map_cfg);
         let mut agents = AgentSystem::new();
         let mut network = TransitNetwork::new();
         
@@ -603,7 +606,7 @@ mod tests {
         for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
         zoning.recalculate_obstructions(0, &network.graph);
 
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &map_cfg);
         
         assert_eq!(allocator.buildings.len(), 1);
         assert_eq!(demand.residential, 95.0, "Residential demand should decrease by 5.0 after placement");
@@ -619,15 +622,17 @@ mod tests {
         use crate::simulation::grid::zoning::ZoningSystem;
         use godot::prelude::Vector3;
 
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut allocator = BuildingAllocator::new();
         let mut demand = DemandSystem::new();
         demand.residential = 14.0; // Enough for placement (>10.0)
         
-        let mut zoning = ZoningSystem::new();
-        let mut desirability = DesirabilitySystem::new(100, 100);
-        for i in 0..desirability.grid.data.len() { desirability.grid.data[i] = 20.0; } // Low desirability
+        let map_cfg = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&map_cfg);
+        let mut desirability = DesirabilitySystem::new(&map_cfg);
+        let (env_w, env_h) = map_cfg.get_env_grid_size();
+        for x in 0..env_w { for y in 0..env_h { desirability.grid.set(x, y, 20.0); } } // Low desirability
         
-        let mut noise = NoiseSystem::new(100, 100);
+        let mut noise = NoiseSystem::new(&map_cfg);
         let mut agents = AgentSystem::new();
         let mut network = TransitNetwork::new();
         
@@ -635,7 +640,7 @@ mod tests {
         for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
         zoning.recalculate_obstructions(0, &network.graph);
 
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &map_cfg);
         
         assert_eq!(allocator.buildings.len(), 0, "No building should spawn when desirability is below 50.0");
     }
@@ -650,11 +655,12 @@ mod tests {
         use crate::simulation::grid::zoning::ZoningSystem;
         use godot::prelude::Vector3;
 
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut allocator = BuildingAllocator::new();
         let mut demand = DemandSystem::new();
-        let mut zoning = ZoningSystem::new();
-        let desirability = DesirabilitySystem::new(100, 100);
-        let noise = NoiseSystem::new(100, 100);
+        let map_cfg = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&map_cfg);
+        let desirability = DesirabilitySystem::new(&map_cfg);
+        let noise = NoiseSystem::new(&map_cfg);
         let mut agents = AgentSystem::new();
         let mut network = TransitNetwork::new();
         
@@ -670,7 +676,7 @@ mod tests {
         // Remove zoning trigger
         for dx in 0..3 { for dy in 0..3 { zoning.set_cell(0, 1, dx, dy, ZoneType::None); } }
 
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &map_cfg);
         
         assert_eq!(allocator.buildings.len(), 0, "Building should have been removed");
         assert!(!zoning.is_occupied(0, 1, 0, 0), "Zoning cell occupancy should be cleared after building removal");

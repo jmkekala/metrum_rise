@@ -11,20 +11,21 @@ pub struct NoiseSystem {
 use rayon::prelude::*;
 
 impl NoiseSystem {
-    pub fn new(width: usize, height: usize) -> Self {
+    pub fn new(config: &crate::simulation::core::config::MapConfig) -> Self {
+        let (w, h) = config.get_env_grid_size();
         Self {
-            grid: DataGrid::new(width, height, 0.0),
-            swap: DataGrid::new(width, height, 0.0),
+            grid: DataGrid::new(w, h, 0.0),
+            swap: DataGrid::new(w, h, 0.0),
         }
     }
 
-    pub fn tick(&mut self, allocator: &BuildingAllocator, graph: &TransitGraph) {
+    pub fn tick(&mut self, allocator: &BuildingAllocator, graph: &TransitGraph, config: &crate::simulation::core::config::MapConfig) {
         std::mem::swap(&mut self.grid, &mut self.swap);
         
         let w = self.grid.width;
         let h = self.grid.height;
-        let world_size_x = crate::config::MAP_WIDTH as f32 * crate::config::GRID_CELL_SIZE;
-        let world_size_y = crate::config::MAP_HEIGHT as f32 * crate::config::GRID_CELL_SIZE;
+        let world_size_x = config.width_m;
+        let world_size_y = config.height_m;
 
         // 1. Emission (Sequential - small count)
         for b in &allocator.buildings {

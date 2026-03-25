@@ -5,6 +5,9 @@ mod tests {
     use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
     use crate::simulation::pathing::hpa::HpaGraph;
     use crate::simulation::economy::demand::DemandSystem;
+    use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::grid::zoning::{ZoningSystem, ZoneType};
     use godot::prelude::Vector3;
 
     #[test]
@@ -144,8 +147,6 @@ mod tests {
 
     #[test]
     fn test_agent_fsm_lifecycle() {
-        use crate::simulation::grid::zoning::ZoneType;
-        use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
         use godot::prelude::Vector2;
 
         let mut g = TransitGraph::new();
@@ -164,8 +165,9 @@ mod tests {
         });
 
         let hpa = HpaGraph::build(&g);
-        let mut allocator = BuildingAllocator::new(10, 10);
-        
+        let config = MapConfig::default();
+        let mut allocator = BuildingAllocator::new();
+        let mut zoning = ZoningSystem::new(&config);
         // 1. Setup Buildings
         // Residential (Home) at 5m
         allocator.buildings.push(Building {

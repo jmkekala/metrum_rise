@@ -14,6 +14,7 @@ use crate::simulation::grid::zoning::{ZoningSystem};
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
+use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
@@ -55,6 +56,7 @@ pub struct SimulationNode {
     pub(crate) benchmark_mode: bool,
     pub(crate) terrain_dirty: bool,
     pub(crate) water_dirty: bool,
+    pub(crate) config: MapConfig,
     base: Base<Node3D>,
 }
 
@@ -70,15 +72,15 @@ impl SimulationNode {
         self.demand.tick();
         
         // ZONING: Growth & Immigration
-        self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network);
+        self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network, &self.config);
         
         // POLLUTION & NOISE: Dissipation
-        self.pollution.tick(&self.allocator);
-        self.noise.tick(&self.allocator, &self.transit_network.graph);
+        self.pollution.tick(&self.allocator, &self.config);
+        self.noise.tick(&self.allocator, &self.transit_network.graph, &self.config);
         self.desirability.tick(&self.zoning, &self.pollution, &self.noise);
 
         // AGENTS: Daily update (happiness, money, pollution)
-        self.agents.daily_update(&self.pollution);
+        self.agents.daily_update(&self.pollution, &self.config);
 
         self.agents.pathfind_count = 0;
         self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
@@ -231,7 +233,7 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
         if let Some(grid) = self.zoning.edge_grids.get(&(edge_idx as usize)) {
             dict.set("cells_long", grid.cells_long as i32);
-            dict.set("cell_size", self.zoning.grid_cell_size);
+            dict.set("cell_size", self.config.zone_cell_m);
             dict.set("left_side", PackedByteArray::from_iter(grid.left_side.iter().map(|&z| z as u8)));
             dict.set("right_side", PackedByteArray::from_iter(grid.right_side.iter().map(|&z| z as u8)));
         }
@@ -523,12 +525,18 @@ impl INode3D for SimulationNode {
             }
         }
 
-        let mut w = config::MAP_WIDTH;
-        let mut h = config::MAP_HEIGHT;
+        let mut config = MapConfig::default();
         if is_huge {
-            w = 2000;
-            h = 2000;
+            config.width_m = 20000.0;
+            config.height_m = 20000.0;
+        } else {
+            config.width_m = 10000.0;
+            config.height_m = 10000.0;
         }
+        
+        let w = config.zone_grid_width();
+        let h = config.zone_grid_height();
+
         let mut sim = Self { 
             base,
             time: TimeSystem::new(),
@@ -536,30 +544,31 @@ impl INode3D for SimulationNode {
             heightmap: TerrainSystem::new(w, h),
             watermap: WaterSystem::new(w, h),
             transit_network: TransitNetwork::new(),
-            zoning: ZoningSystem::new(),
-            pollution: PollutionSystem::new(config::ENV_GRID_SIZE, config::ENV_GRID_SIZE),
-            noise: NoiseSystem::new(config::ENV_GRID_SIZE, config::ENV_GRID_SIZE),
-            desirability: DesirabilitySystem::new(config::ENV_GRID_SIZE, config::ENV_GRID_SIZE),
+            zoning: ZoningSystem::new(&config),
+            pollution: PollutionSystem::new(&config),
+            noise: NoiseSystem::new(&config),
+            desirability: DesirabilitySystem::new(&config),
             demand: DemandSystem::new(),
-            allocator: BuildingAllocator::new(w, h),
+            allocator: BuildingAllocator::new(),
             agents: AgentSystem::new(),
             undo_stack: VecDeque::new(),
             last_tick_duration: 0.0,
             benchmark_mode: is_huge,
             terrain_dirty: true,
             water_dirty: true,
+            config,
         };
 
         if is_huge {
             godot_print!("HUGE MAP BENCHMARK MODE ENABLED");
             let mut pts = PackedVector3Array::new();
-            let border = (config::MAP_HEIGHT as f32 * 0.5) - 1.0;
+            let border = (config.height_m * 0.5) - 1.0;
             pts.push(Vector3::new(0.0, 0.0, -border));
             pts.push(Vector3::new(0.0, 0.0, -border + 100.0));
             sim.add_road_internal(pts, 2, 2, true, true);
         } else {
             let mut pts = PackedVector3Array::new();
-            let border = (config::MAP_HEIGHT as f32 * 0.5) - 1.0;
+            let border = (config.height_m * 0.5) - 1.0;
             pts.push(Vector3::new(0.0, 0.0, -border));
             pts.push(Vector3::new(0.0, 0.0, -border / 2.0));
             sim.add_road_internal(pts, 2, 2, true, true);

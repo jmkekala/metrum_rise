@@ -10,9 +10,10 @@ pub struct DesirabilitySystem {
 }
 
 impl DesirabilitySystem {
-    pub fn new(width: usize, height: usize) -> Self {
+    pub fn new(config: &crate::simulation::core::config::MapConfig) -> Self {
+        let (w, h) = config.get_env_grid_size();
         Self {
-            grid: DataGrid::new(width, height, 0.0),
+            grid: DataGrid::new(w, h, 0.0),
         }
     }
 

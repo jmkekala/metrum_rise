@@ -46,6 +46,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
     - `rebuild.rs`: batch remapping, soft-deletion compaction, and intersection clipping.
     - **Road Network (`TransitGraph`)**: Adjacency-list based directed graph with spatial acceleration. Pathfinding via HPA*. Now supports multi-modal queries via `allowed_mask`.
 - `TransitNetwork` (`network/mod.rs`) — `add_road`, `split_edge`, `merge_nodes`.
+- **Unit tests** (`simulation/network/test_topology.rs`): `add_road` (bidirectional adjacency, 100 m subdivision logic), `split_edge` (physical length summation, node sharing, zoning/building migration), `compact_edges` (index remapping consistency for agents and buildings).
 - Topology: intersection detection and edge splitting in `topology.rs`.
 - Road and junction mesh generation in `network/render/road.rs` (405 lines).
 - Soft deletion with compaction: edges marked `deleted = true`; `compact_edges()` removes them and remaps all indices (agents, zoning, routing graph).
@@ -60,11 +61,16 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Obstruction cache correctly wired: `recalculate_obstructions` is parallelised with Rayon and spatially invalidated on nearby road edits.
 - Zone types: Residential, Commercial, Industrial, Office, Mixed.
 
+### Configuration
+- `simulation/core/config.rs` — `MapConfig` struct replacing all hardcoded map-size constants. Fields: `width_m`, `height_m`, `env_cell_m` (environmental grid cell size, default 40 m), `zone_cell_m` (zoning cell size, default 10 m).
+- All `DataGrid` initialisations and grid-dimension calculations (`PollutionSystem`, `NoiseSystem`, `DesirabilitySystem`, `ZoningSystem`) derive their dimensions from `MapConfig` at construction time. No hardcoded grid sizes remain in simulation code.
+- Benchmark mode passes the default 20 km × 20 km config; player-configurable map sizes are supported without code changes.
+
 ### Environmental Grids
 - `simulation/grid/pollution.rs` — industrial emission (+5/tick) + 4-neighbour diffusion (explicit finite-difference), decay ×0.995, parallelised with Rayon.
 - `simulation/grid/noise.rs` — traffic noise diffusion, parallelised.
 - `simulation/grid/desirability.rs` — composite formula: `50 − pollution × 2 − noise × 1.5`, parallelised.
-- All three use `DataGrid<f32>` at 500 × 500 resolution (`ENV_GRID_SIZE`); bilinear upsampled for display.
+- All three use `DataGrid<f32>` with dimensions calculated dynamically from `MapConfig` (default 500 × 500 at 20 km); bilinear upsampled for display.
 - `PollutionSystem` and `NoiseSystem` use pre-allocated `swap: DataGrid<f32>` fields; each tick calls `std::mem::swap()` instead of `clone()` — hot-path allocation is zero. `DesirabilitySystem` computes derived values from the pollution and noise grids directly and never reads from its own previous state, so no swap buffer is needed there.
 
 ### Buildings
@@ -73,6 +79,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Building deletion via swap-remove, O(1).
 - Save/load via `serde_json` — **not yet wired end-to-end**.
 - **Building Index**: Inverted zone-type index (`zone_index: [Vec<usize>; 6]`) and vacancy index (`vacancy_index: [Vec<usize>; 6]`, `vacancy_pos: Vec<usize>`) implemented in `BuildingAllocator`. `find_available_home()` is O(1) random selection from the vacancy index. `claim_vacancy`/`release_vacancy` maintain the index incrementally in O(1); `kill_agent` calls `release_vacancy` before swap-remove. Building deletion triggers a full `rebuild_zone_index()` via `dirty_index`. Prerequisite for parallel tick.
+- **Unit tests** (`buildings/allocator.rs`): desirability gate (no spawn when grid value < 50.0), demand subtraction (residential demand decreases on spawn), occupancy clearing (3×3 zoning cells cleared on building removal).
 
 ### Agents
 - `simulation/economy/agents/` (Submodule) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
@@ -82,6 +89,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Agent kill: swap-and-pop, O(1). Note: agent indices are not stable across ticks (swap-remove invalidates the last agent's index).
 - **Single-threaded tick** — Rayon parallelisation is a v0.1 goal (see Backlog).
 - **Transit Mode Enum** — migrated `is_driving: Vec<bool>` to `transit_mode: Vec<u8>` using constants (WALK=0, CAR=1, ...). This provides the multi-modal foundation for bicycles, buses, and rail.
+- **Unit tests** (`economy/agents_test.rs`): `test_agent_fsm_lifecycle` verifies the complete daily cycle (Home → Work → Shop → Home) including FSM state transitions, money tracking, and arrival detection via virtual frontage T-coordinates.
 
 #### Agent Rules
 - **Immigration**: agents spawn at highway border nodes, arrive by car. Capped at `residential_capacity × 1.1`.
@@ -94,6 +102,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/pathing/cost.rs` — edge cost = `length / speed_limit` (time in seconds) with exponential slope penalty for grades > 10%: `1 + (max_slope × 5)²`.
 - A* heuristic: `euclidean_distance / max_v` — admissible and consistent; `max_v` is the maximum edge speed limit in the network, precomputed at graph build time.
 - `simulation/pathing/hpa.rs` — current HPA* implementation (three-phase query). **Superseded by CCH (item 31, v0.1 blocker); will be removed when CCH lands.**
+- **Unit tests** (`simulation/pathing/tests.rs`): `test_slope_cost_calculation` (50% grade edge receives a 7.25× cost multiplier vs a flat edge of equal length), `test_pathing_avoids_steep_slope` (router selects the longer flat detour A→C→B over the steep direct A→B). **Known geometry inconsistency in `test_pathing_avoids_steep_slope`**: `edge_ab`'s geometry endpoint is `(100, 50, 0)` but node `n_b` is placed at `(100, 0, 0)`. `CostCalculator` reads `edge.geometry`, so the slope penalty is computed correctly and the test passes, but the endpoint violates the invariant that edge geometry must start and end at the node positions. Fix: place `n_b` at `(100, 50, 0)`, or represent the slope with an intermediate waypoint while keeping the geometry endpoint at `n_b`'s flat position.
 
 ### Demand
 - `simulation/economy/demand.rs` — global R/C/I demand counters. Demand increments globally; buildings consume it on spawn.
@@ -122,23 +131,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### v0.01 Goals — strong targets for v0.01 quality
 
-2. **Complete pathfinding unit tests** — two of three originally listed tests now exist; one is missing, one is deferred:
-   - [DONE] `test_cost_calculation_slope_penalty` — added `test_pathing_avoids_steep_slope` which verifies the router detours around steep grades.
-   - Flow field Dijkstra < 5 ms on a 1,000-node graph: **deferred to v0.2** — cannot be written until flow fields are implemented.
-5. [DONE] **`TransitGraph` mutation tests** — added `test_topology.rs` with coverage for:
-   - `add_road`: verified bidirectional adjacency and 100m subdivision logic.
-   - `split_edge`: verified physical length summation, node sharing, and zoning/building migration.
-   - `compact_edges`: verified index remapping consistency for agents and buildings (fixes B20).
-6. [DONE] **Agent FSM integration test** — added `test_agent_fsm_lifecycle` in `agents_test.rs`; verifies complete Trip Cycle (Home -> Work -> Shop -> Home).
-8. [DONE] **`BuildingAllocator` placement and removal tests** — added unit tests in `allocator.rs` for:
-   - Desirability gate: verified no spawn when grid value < 50.0.
-   - Demand subtraction: verified residential demand decreases on spawn.
-   - Occupancy: verified 3×3 footprint occupancy mask is set on placement and cleared on removal.
-10. **`MapConfig` — replace hardcoded map-size constants**: extract `config.rs` map-size constants into a `MapConfig` struct passed at simulation construction time.
-    - Fields: `width_m: f32`, `height_m: f32`, `env_cell_m: f32` (environmental grid cell size, default 40 m), `zone_cell_m: f32` (zoning cell size, default 10 m).
-    - All `DataGrid` initialisations and grid-dimension calculations read from `MapConfig` instead of `const`. The benchmark mode passes the default 20 km × 20 km config; players can pass any dimensions.
-    - **Do this before the grid systems grow any larger.** Every new system that reads a map-size constant bakes in a hardcoded assumption that becomes progressively more expensive to remove. At v0.01 with a handful of grid systems the change is ~20 lines; at v0.2 with env grids, zoning, pollution, noise, desirability, built-layer, and congestion heatmap all initialised with constants, it becomes a multi-file audit.
-    - Memory and performance at larger sizes: 60 km × 60 km at 40 m/cell = 1500 × 1500 env grid (27 MB for 3 grids, 9× diffusion work — still Rayon-parallelised). Zoning at 10 m/cell = 6000 × 6000 (36 MB at 1 byte/cell). Both are within budget.
+- Flow field Dijkstra < 5 ms on a 1,000-node graph: **deferred to v0.2** (item 18) — cannot be written until flow fields are implemented.
 
 ### v0.1 — 100k-agent milestone
 

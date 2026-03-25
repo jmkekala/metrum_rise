@@ -3,7 +3,7 @@
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::TransitGraph;
-use crate::simulation::network::types::{TransitType, TransitFlags};
+use crate::simulation::network::types::TransitFlags;
 use crate::simulation::pathing::hpa::HpaGraph;
 use godot::prelude::*;
 use rand::Rng;
@@ -171,7 +171,7 @@ impl AgentSystem {
                             let b = &allocator.buildings[t_bldg_idx];
                             if self.current_edge[i] == b.edge_idx {
                                 // We are on the target edge!
-                                let edge = &graph.edges[b.edge_idx];
+                                let _edge = &graph.edges[b.edge_idx];
                                 let frontage_world_pos = allocator.get_pos_on_edge(graph, b.edge_idx, b.frontage_t);
                                 let tangent = allocator.get_tangent_on_edge(graph, b.edge_idx, b.frontage_t);
                                 let current_pos = Vector2::new(self.pos_x[i], self.pos_y[i]);

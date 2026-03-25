@@ -11,7 +11,7 @@ impl SimulationNode {
     /// Updates the zoning visual MultiMeshes for tool feedback.
     pub fn update_zoning_visuals_internal(&self, mut grid_mm: Gd<MultiMesh>, mut paint_mm: Gd<MultiMesh>, hovered_edge: i32, mode: i32, mouse_pos_3d: Vector3) {
         let graph = &self.transit_network.graph;
-        let cell_size = self.zoning.grid_cell_size;
+        let cell_size = self.config.zone_cell_m;
         let zoning_depth = config::ZONING_DEPTH;
 
         // 1. PRE-CALCULATE MOUSE CELL DATA (for brush highlighting)

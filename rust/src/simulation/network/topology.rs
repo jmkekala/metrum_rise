@@ -181,7 +181,7 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     let new_edge_id = network.graph.add_edge(new_edge);
 
     // --- MIGRATION LOGIC ---
-    let cell_size = zoning.grid_cell_size;
+    let cell_size = zoning.config.zone_cell_m;
     let split_x = (length / cell_size).floor() as usize;
 
     // 1. Migrate Zoning
@@ -208,14 +208,16 @@ mod tests {
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::core::config::MapConfig;
     use crate::simulation::network::types::TransitType;
     use godot::prelude::Vector3;
 
     #[test]
     fn test_topology_t_junction() {
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         // straight road
         net.add_road(vec![
             Vector3::new(-10.0, 0.0, 0.0),

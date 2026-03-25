@@ -8,23 +8,26 @@ mod tests {
     use crate::simulation::economy::agents::AgentSystem;
     use crate::simulation::economy::agents::{TRANSIT_ON_ROAD, TRANSIT_ARRIVING, MODE_CAR, MODE_WALK};
     use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::core::config::MapConfig;
     use godot::prelude::Vector3;
 
     #[test]
     fn test_virtual_frontage_placement() {
+        let config = MapConfig::default();
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         let mut agents = AgentSystem::new();
         let mut demand = DemandSystem::new();
         
-        let mut desirability = DesirabilitySystem::new(500, 500); 
-        for x in 0..500 {
-            for y in 0..500 {
+        let mut desirability = DesirabilitySystem::new(&config); 
+        let (env_w, env_h) = config.get_env_grid_size();
+        for x in 0..env_w {
+            for y in 0..env_h {
                 desirability.grid.set(x, y, 100.0);
             }
         }
-        let noise = NoiseSystem::new(100, 100);
+        let noise = NoiseSystem::new(&config);
 
         // Create a single 100m road with zoning enabled
         net.add_road(vec![
@@ -46,7 +49,7 @@ mod tests {
         let initial_edges = net.graph.edges.len();
 
         // Tick allocator to spawn building
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &config);
 
         // Verify building was spawned
         assert_eq!(allocator.buildings.len(), 1, "Building should have spawned");
@@ -64,19 +67,21 @@ mod tests {
 
     #[test]
     fn test_virtual_frontage_routing_targets() {
+        let config = MapConfig::default();
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         let mut agents = AgentSystem::new();
         let mut demand = DemandSystem::new();
         
-        let mut desirability = DesirabilitySystem::new(500, 500);
-        for x in 0..500 {
-            for y in 0..500 {
+        let mut desirability = DesirabilitySystem::new(&config);
+        let (env_w, env_h) = config.get_env_grid_size();
+        for x in 0..env_w {
+            for y in 0..env_h {
                 desirability.grid.set(x, y, 100.0);
             }
         }
-        let noise = NoiseSystem::new(100, 100);
+        let noise = NoiseSystem::new(&config);
 
         // Create a road from (0,0,0) to (100,0,0) with zoning
         net.add_road(vec![
@@ -91,7 +96,7 @@ mod tests {
             }
         }
         demand.residential = 500.0;
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &config);
         
         // Spawn building at t=0.85 (near end_node)
         for dx in 0..3 {
@@ -99,7 +104,7 @@ mod tests {
                 zoning.set_cell(0, 1, 7 + dx, dy, ZoneType::Residential);
             }
         }
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &config);
 
         assert_eq!(allocator.buildings.len(), 2);
         
@@ -118,19 +123,21 @@ mod tests {
 
     #[test]
     fn test_wide_road_arrival() {
+        let config = MapConfig::default();
         let mut net = TransitNetwork::new();
-        let mut zoning = ZoningSystem::new();
-        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
         let mut agents = AgentSystem::new();
         let mut demand = DemandSystem::new();
         
-        let mut desirability = DesirabilitySystem::new(500, 500);
-        for x in 0..500 {
-            for y in 0..500 {
+        let mut desirability = DesirabilitySystem::new(&config);
+        let (env_w, env_h) = config.get_env_grid_size();
+        for x in 0..env_w {
+            for y in 0..env_h {
                 desirability.grid.set(x, y, 100.0);
             }
         }
-        let noise = NoiseSystem::new(100, 100);
+        let noise = NoiseSystem::new(&config);
 
         // 4-lane road (14m wide)
         net.add_road(vec![
@@ -145,7 +152,7 @@ mod tests {
             }
         }
         demand.residential = 500.0;
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &config);
         
         let b_idx = 0;
         let b = &allocator.buildings[b_idx];

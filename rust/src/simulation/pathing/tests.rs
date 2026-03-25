@@ -60,8 +60,16 @@ fn test_pathing_avoids_steep_slope() {
         primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
         width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 0.0,
         physical_length: 100.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
-        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 50.0, 0.0)],
-        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 50.0, 0.0)],
+        geometry: vec![
+            Vector3::new(0.0, 0.0, 0.0), 
+            Vector3::new(50.0, 50.0, 0.0), 
+            Vector3::new(100.0, 0.0, 0.0)
+        ],
+        physical_geometry: vec![
+            Vector3::new(0.0, 0.0, 0.0), 
+            Vector3::new(50.0, 50.0, 0.0), 
+            Vector3::new(100.0, 0.0, 0.0)
+        ],
         zoning_left: false, zoning_right: false, deleted: false,
     };
     let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);

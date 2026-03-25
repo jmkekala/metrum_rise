@@ -11,7 +11,7 @@ use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::TransitGraph;
 use crate::simulation::grid::pollution::PollutionSystem;
 use super::{TRANSIT_IMMIGRATING, TRANSIT_IDLE, MODE_CAR};
-use godot::prelude::*;
+// No Godot imports needed here
 use rand::Rng;
 use std::collections::HashMap;
 
@@ -415,11 +415,11 @@ impl AgentSystem {
 
     /// Update per-day agent state: home/work bonuses and pollution penalties.
     /// Update per-day agent state: home/work bonuses and pollution penalties.
-    pub fn daily_update(&mut self, pollution: &PollutionSystem) {
+    pub fn daily_update(&mut self, pollution: &PollutionSystem, config: &crate::simulation::core::config::MapConfig) {
         let w = pollution.grid.width as f32;
         let h = pollution.grid.height as f32;
-        let world_size_x = crate::config::MAP_WIDTH as f32 * crate::config::GRID_CELL_SIZE;
-        let world_size_y = crate::config::MAP_HEIGHT as f32 * crate::config::GRID_CELL_SIZE;
+        let world_size_x = config.width_m;
+        let world_size_y = config.height_m;
 
         for i in 0..self.count {
             // 1. Snapshot-based Activity Rewards

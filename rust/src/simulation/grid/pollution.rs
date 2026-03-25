@@ -10,22 +10,23 @@ pub struct PollutionSystem {
 use rayon::prelude::*;
 
 impl PollutionSystem {
-    pub fn new(width: usize, height: usize) -> Self {
+    pub fn new(config: &crate::simulation::core::config::MapConfig) -> Self {
+        let (w, h) = config.get_env_grid_size();
         Self {
-            grid: DataGrid::new(width, height, 0.0),
-            swap: DataGrid::new(width, height, 0.0),
+            grid: DataGrid::new(w, h, 0.0),
+            swap: DataGrid::new(w, h, 0.0),
         }
     }
 
-    pub fn tick(&mut self, allocator: &BuildingAllocator) {
+    pub fn tick(&mut self, allocator: &BuildingAllocator, config: &crate::simulation::core::config::MapConfig) {
         // Swap buffers: current grid moves to swap (source), 
         // swap (old data) moves to grid (target for this tick)
         std::mem::swap(&mut self.grid, &mut self.swap);
         
         let w = self.grid.width;
         let h = self.grid.height;
-        let world_size_x = crate::config::MAP_WIDTH as f32 * crate::config::GRID_CELL_SIZE;
-        let world_size_y = crate::config::MAP_HEIGHT as f32 * crate::config::GRID_CELL_SIZE;
+        let world_size_x = config.width_m;
+        let world_size_y = config.height_m;
 
         // 1. Emission (Sequential as building count is small compared to grid)
         for b in &allocator.buildings {

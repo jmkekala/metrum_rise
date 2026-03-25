@@ -5,13 +5,15 @@ mod tests {
     use crate::simulation::economy::agents::AgentSystem;
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::grid::zoning::{ZoningSystem, ZoneType};
+    use crate::simulation::core::config::MapConfig;
 
     #[test]
     fn test_edge_compaction_remapping() {
         let mut network = TransitNetwork::new();
         let mut agents = AgentSystem::new();
-        let mut allocator = BuildingAllocator::new(100, 100);
-        let mut zoning = ZoningSystem::new();
+        let config = MapConfig::default();
+        let mut allocator = BuildingAllocator::new();
+        let mut zoning = ZoningSystem::new(&config);
 
         // 1. Add Road A (Index 0)
         network.add_road(

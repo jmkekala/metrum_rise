@@ -1,7 +1,6 @@
 //! Undo/Redo system for simulation state.
 
-use godot::prelude::*;
-use std::collections::VecDeque;
+// No imports needed here
 use crate::nodes::simulation_node::{SimulationNode, SimulationSnapshot};
 
 impl SimulationNode {
