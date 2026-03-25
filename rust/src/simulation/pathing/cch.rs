@@ -225,7 +225,7 @@ impl CchGraph {
                     let mut inner = s_in_inner.clone();
                     inner.extend(&s_out_inner);
                     
-                    self.add_or_update_shortcut(
+                    self.add_shortcut(
                         s_in_start, 
                         s_out_target, 
                         inner, 
@@ -267,24 +267,12 @@ impl CchGraph {
         });
     }
 
-    fn add_or_update_shortcut(&mut self, start: u32, end: u32, inner: Vec<usize>, first: usize, last: usize, mask: u8) {
-        // In full CCH, we keep ALL triangles. But for memory, we can merge parallel shortcuts 
-        // if they have the same first/last edges and allowed types.
-        // However, for correctness with dynamic metric, we should keep the one that is "likely" faster.
-        // But since we are metric-independent now, we just keep one or both.
-        // Rule: if an existing shortcut start->end with same first/last exists, skip.
-        if let Some(existing) = self.shortcuts.iter_mut().find(|s| s.start_node == start && s.target_node == end && s.first_edge == first && s.last_edge == last) {
-            if inner.len() < existing.inner_edges.len() {
-                existing.inner_edges = inner;
-            }
-            return;
-        }
-        
+    fn add_shortcut(&mut self, start: u32, end: u32, inner: Vec<usize>, first: usize, last: usize, mask: u8) {
         self.shortcuts.push(CchShortcut {
             start_node: start,
             target_node: end,
             cost: 0.0,
-            dist: 0.0, // Updated in customize or accumulated here
+            dist: 0.0,
             inner_edges: inner,
             first_edge: first,
             last_edge: last,
@@ -302,16 +290,36 @@ impl CchGraph {
         }
         self.max_v = max_speed;
 
-        // Customization as per 31c Phase 2: Iterate following the elimination tree bottom-up.
-        // Since node_order is rank-sorted, iterating ranks 0..N is bottom-up.
+        // 1. Update all shortcut costs in one pass
+        for idx in 0..self.shortcuts.len() {
+            self.update_shortcut_cost(idx, graph);
+        }
+
+        // 2. Prune fwd_up and bwd_up following elimination tree order
         for rank in 0..graph.nodes.len() {
             let u = self.node_order[rank] as usize;
             
-            // Collect upward shortcuts from u
-            let upwards: Vec<usize> = self.fwd_up[u].iter().chain(self.bwd_up[u].iter()).cloned().collect();
-            for idx in upwards {
-                self.update_shortcut_cost(idx, graph);
+            // Deduplicate fwd_up[u]: best shortcut per (target, first_edge, last_edge)
+            let mut best_fwd: HashMap<(u32, usize, usize), (usize, f32)> = HashMap::new();
+            for &idx in &self.fwd_up[u] {
+                let s = &self.shortcuts[idx];
+                let key = (s.target_node, s.first_edge, s.last_edge);
+                if s.cost < best_fwd.get(&key).map(|&(_, c)| c).unwrap_or(f32::MAX) {
+                    best_fwd.insert(key, (idx, s.cost));
+                }
             }
+            self.fwd_up[u] = best_fwd.values().map(|(idx, _)| *idx).collect();
+
+            // Deduplicate bwd_up[u]: best shortcut per (start, first_edge, last_edge)
+            let mut best_bwd: HashMap<(u32, usize, usize), (usize, f32)> = HashMap::new();
+            for &idx in &self.bwd_up[u] {
+                let s = &self.shortcuts[idx];
+                let key = (s.start_node, s.first_edge, s.last_edge);
+                if s.cost < best_bwd.get(&key).map(|&(_, c)| c).unwrap_or(f32::MAX) {
+                    best_bwd.insert(key, (idx, s.cost));
+                }
+            }
+            self.bwd_up[u] = best_bwd.values().map(|(idx, _)| *idx).collect();
         }
     }
 
@@ -350,7 +358,9 @@ impl CchGraph {
         
         while !fwd_heap.is_empty() || !bwd_heap.is_empty() {
             // Forward expansion
-            if let Some(CchState { cost, node, incoming_edge: l_edge, .. }) = fwd_heap.pop() {
+            if let Some(state) = fwd_heap.pop() {
+                if state.cost >= min_total_cost { break; }
+                let (cost, node, l_edge) = (state.cost, state.node, state.incoming_edge);
                 if let Some(&(best_cost, _, _, _)) = fwd_data.get(&(node, l_edge)) {
                     if cost > best_cost { continue; }
                     
@@ -384,7 +394,9 @@ impl CchGraph {
             }
             
             // Backward expansion
-            if let Some(CchState { cost, node, incoming_edge: outgoing_edge, .. }) = bwd_heap.pop() {
+            if let Some(state) = bwd_heap.pop() {
+                if state.cost >= min_total_cost { break; }
+                let (cost, node, outgoing_edge) = (state.cost, state.node, state.incoming_edge);
                 if let Some(&(best_cost, _, _, _)) = bwd_data.get(&(node, outgoing_edge)) {
                     if cost > best_cost { continue; }
                     
