@@ -39,7 +39,11 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/water/` — shallow-water equations (SWE), parallelised with Rayon.
 
 ### Road Network
-- `TransitGraph` in `simulation/network/graph.rs` — two parallel flat `Vec`s (`nodes`, `edges`) plus three acceleration structures: 512 m spatial edge grid (`HashMap<(i32,i32), Vec<usize>>`), 16 m spatial node grid (`HashMap<(i32,i32), Vec<u32>>`), and a per-node adjacency list (`HashMap<u32, Vec<usize>>`). Union-find alias map for node merging.
+- `TransitGraph` — refactored into a modular package in `simulation/network/graph/`.
+    - `data.rs`: `Node`, `Edge`, and `TransitGraph` struct definitions.
+    - `spatial.rs`: 512 m spatial edge grid and 16 m node grid logic.
+    - `topology.rs`: intersection detection, edge splitting, and node merging.
+    - `rebuild.rs`: batch remapping, soft-deletion compaction, and intersection clipping.
 - Supported road types: 2-lane standard (10 m total: 7 m asphalt + 1.5 m sidewalk each side).
 - `TransitNetwork` (`network/mod.rs`) — `add_road`, `split_edge`, `merge_nodes`.
 - Topology: intersection detection and edge splitting in `topology.rs`.
@@ -113,8 +117,8 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 |----|------|-------------|----------|
 | B16 | `agents/tick.rs` IDLE branch | O(B) linear scan + heap `Vec` allocation for every job/shop search. At 500k buildings and 1% agent activation rate: ~5 × 10⁹ comparisons/tick. Fix: inverted zone-type index on `BuildingAllocator`. | `[BUG]` |
 | B18 | `grid/pollution.rs`, `noise.rs`, `desirability.rs` | `grid.clone()` inside each `tick()` allocates ~1 MB per grid per call. 3 grids × 10 Hz = 30 MB/s allocator pressure. Fix: pre-allocate a permanent swap `DataGrid` in each system struct. | `[v0.1]` |
-| B19 | `network/graph.rs` | `adjacency: HashMap<u32, Vec<usize>>` — HashMap overhead (~40–100 ns/lookup when cold) on every A* node expansion. Node IDs are dense `u32`s; a `Vec<Vec<usize>>` indexed directly would give O(1) with a single bounds-check. | `[v0.1]` |
-| B20 | `network/graph.rs` `compact_edges` | No test coverage for the old→new edge index remap. `compact_edges` simultaneously remaps agent `current_path` node sequences and building `edge_idx` fields after any edge deletion. A bug in either remap pass produces silently corrupted simulation state — agents navigate to wrong locations, buildings reference phantom edges — with no runtime error. | `[BUG]` |
+| B19 | `network/graph/` | `adjacency: HashMap<u32, Vec<usize>>` — HashMap overhead (~40–100 ns/lookup when cold) on every A* node expansion. Node IDs are dense `u32`s; a `Vec<Vec<usize>>` indexed directly would give O(1) with a single bounds-check. | `[v0.1]` |
+| B20 | `network/graph/` (`rebuild.rs`) | No test coverage for the old→new edge index remap. `compact_edges` simultaneously remaps agent `current_path` node sequences and building `edge_idx` fields after any edge deletion. A bug in either remap pass produces silently corrupted simulation state — agents navigate to wrong locations, buildings reference phantom edges — with no runtime error. | `[BUG]` |
 
 ---
 
@@ -125,7 +129,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### v0.01 Goals — strong targets for v0.01 quality
 
-1. **Split `graph.rs`** (801 lines) into `graph/data.rs`, `graph/spatial.rs`, `graph/topology.rs`, `graph/rebuild.rs`.
+1. [DONE] **Split `graph.rs`** (801 lines) into `graph/data.rs`, `graph/spatial.rs`, `graph/topology.rs`, `graph/rebuild.rs`.
 2. **Complete pathfinding unit tests** — two of three originally listed tests now exist; one is missing, one is deferred:
    - `test_highway_vs_dirt_road_cost` ✓ exists in `pathing/tests.rs`
    - `test_cost_calculation_slope_penalty` ✓ exists but only checks that a steep edge costs more — it does **not** verify that the router actually bypasses a steep road in favour of a longer flat route. Add a three-node graph test: `A –(steep)→ B` and `A –(long flat)→ C –(flat)→ B`; assert the router chooses the flat detour.
