@@ -44,6 +44,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
     - `spatial.rs`: 512 m spatial edge grid and 16 m node grid logic.
     - `topology.rs`: intersection detection, edge splitting, and node merging.
     - `rebuild.rs`: batch remapping, soft-deletion compaction, and intersection clipping.
+    - **Adjacency**: `Vec<Vec<usize>>` indexed by Node ID for O(1) pathfinding lookups (Fix B19).
 - Supported road types: 2-lane standard (10 m total: 7 m asphalt + 1.5 m sidewalk each side).
 - `TransitNetwork` (`network/mod.rs`) — `add_road`, `split_edge`, `merge_nodes`.
 - Topology: intersection detection and edge splitting in `topology.rs`.
@@ -116,14 +117,10 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
 | B16 | `agents/tick.rs` IDLE branch | O(B) linear scan + heap `Vec` allocation for every job/shop search. At 500k buildings and 1% agent activation rate: ~5 × 10⁹ comparisons/tick. Fix: inverted zone-type index on `BuildingAllocator`. | `[BUG]` |
-| B18 | `grid/pollution.rs`, `noise.rs`, `desirability.rs` | `grid.clone()` inside each `tick()` allocates ~1 MB per grid per call. 3 grids × 10 Hz = 30 MB/s allocator pressure. Fix: pre-allocate a permanent swap `DataGrid` in each system struct. | `[v0.1]` |
 
 ---
 
 ## Backlog
-
-### v0.01 Blockers — fix before tagging
-
 
 ### v0.01 Goals — strong targets for v0.01 quality
 
@@ -156,7 +153,7 @@ Feature completion and correctness fixes. Performance tuning is not the focus he
 
 #### v0.1 Blockers — must complete before tagging v0.1
 
-23. **Fix B19 — adjacency Vec migration**: convert `adjacency: HashMap<u32, Vec<usize>>` to `Vec<Vec<usize>>` in `TransitGraph`. Node IDs are dense from 0; direct indexing removes HashMap overhead (~40–100 ns/lookup when cold) from every A* node expansion. Prerequisite for CCH (item 31) — the CCH build phase reads the base graph adjacency in a tight loop and must not pay HashMap overhead there.
+23. [DONE] **Fix B19 — adjacency Vec migration**: convert `adjacency: HashMap<u32, Vec<usize>>` to `Vec<Vec<usize>>` in `TransitGraph`. Direct indexing removes HashMap overhead.
 31. **CCH / CRP implementation** — supersedes HPA* for all long-distance routing:
     - **RegionGraph design**: `TransitGraph` must not be scoped to a single city. Rename or extend it to `RegionGraph`; it is the single graph for all current and future city tiles. Adding a second city later means adding nodes/edges to this graph and triggering a topology rebuild — not creating a separate graph instance. Do this structural rename before building the CCH data structures on top of it.
     - **Topology phase**: compute contraction order (node importance by edge-difference heuristic); add shortcut edges bypassing contracted nodes. Output: an elimination tree and a contracted graph. This phase runs once on full topology rebuild (when roads are added or removed). O(E log E).
@@ -194,7 +191,7 @@ The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) i
 
 20. **Fix B16 — inverted zone-type index**: add `zone_index: Vec<Vec<usize>>` to `BuildingAllocator`, maintained on every building add/remove. Replaces O(B) linear scan with O(1) index lookup + O(1) random selection. At 500k agents with 50k buildings and a 1% activation rate: eliminates ~2.5 × 10⁸ comparisons/tick. **Do this before parallelising the tick — it is the prerequisite.**
 19. **Parallelise `AgentSystem::tick`**: remove `&mut TransitGraph` from tick signature (currently unused as mut); switch to `rayon::par_iter_mut` over agent index ranges. Use `AtomicU32` for building vacancy counters (enabled by item 20's index); batch immigration assignments in a post-parallel sequential phase. Prerequisite for all subsequent agent-scale targets.
-22. **Fix B18 — env grid double-buffering**: add a `swap: DataGrid<f32>` field to `PollutionSystem`, `NoiseSystem`, and `DesirabilitySystem`. Replace `self.grid.clone()` with a raw `Vec` pointer swap, reducing hot-path allocation to zero. Eliminates 30 MB/s sustained allocator pressure that grows with tick rate.
+22. [DONE] **Fix B18 — env grid double-buffering**: add a `swap: DataGrid<f32>` field to `PollutionSystem`, `NoiseSystem`, and `DesirabilitySystem`. Replace `self.grid.clone()` with a raw `Vec` pointer swap, reducing hot-path allocation to zero. Eliminates 30 MB/s sustained allocator pressure.
 18. **Flow fields for shared destinations**: one reverse Dijkstra from each active destination zone type produces a next-node map of length V. Agents query O(1) instead of running individual CCH queries. Reduces O(A × CCH_cost) to O(M × (V + E) log V) where M ≈ 10–100 active zone types. Retain CCH for immigration and one-off novel destinations. Requires parallel tick (item 19) to be useful — flow field lookup is the O(1) work that fills each parallel agent slot. Add a timing test on completion: Dijkstra from one destination on a 1,000-node graph must complete in < 5 ms (originally listed in v0.01 goals but deferred here until the system exists).
 25. **Car collision — Intelligent Driver Model (IDM)**:
     - Add `speed: Vec<f32>` to `AgentSystem` SoA. Current model uses a hardcoded fixed speed; IDM requires a dynamic per-agent speed state (~4 MB at 1M agents).

@@ -4,6 +4,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 
 pub struct PollutionSystem {
     pub grid: DataGrid<f32>,
+    pub swap: DataGrid<f32>,
 }
 
 use rayon::prelude::*;
@@ -12,11 +13,14 @@ impl PollutionSystem {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             grid: DataGrid::new(width, height, 0.0),
+            swap: DataGrid::new(width, height, 0.0),
         }
     }
 
     pub fn tick(&mut self, allocator: &BuildingAllocator) {
-        let mut new_grid = self.grid.clone();
+        // Swap buffers: current grid moves to swap (source), 
+        // swap (old data) moves to grid (target for this tick)
+        std::mem::swap(&mut self.grid, &mut self.swap);
         
         let w = self.grid.width;
         let h = self.grid.height;
@@ -29,16 +33,16 @@ impl PollutionSystem {
                 let gx = ((b.center_x / world_size_x) + 0.5) * w as f32;
                 let gy = ((b.center_y / world_size_y) + 0.5) * h as f32;
                 
-                if let Some(val) = new_grid.get_mut(gx.round() as usize, gy.round() as usize) {
+                if let Some(val) = self.grid.get_mut(gx.round() as usize, gy.round() as usize) {
                     *val += 5.0;
                 }
             }
         }
 
         // 2. Diffusion & 3. Decay (Parallelized)
-        let old_grid = &self.grid;
+        let old_grid = &self.swap;
         
-        new_grid.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        self.grid.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
             for x in 0..w {
                 let current = *old_grid.get(x, y).unwrap_or(&0.0);
                 
@@ -62,7 +66,5 @@ impl PollutionSystem {
                 row[x] = row[x].min(100.0).max(0.0);
             }
         });
-        
-        self.grid = new_grid;
     }
 }

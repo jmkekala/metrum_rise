@@ -5,6 +5,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 
 pub struct NoiseSystem {
     pub grid: DataGrid<f32>,
+    pub swap: DataGrid<f32>,
 }
 
 use rayon::prelude::*;
@@ -13,11 +14,12 @@ impl NoiseSystem {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             grid: DataGrid::new(width, height, 0.0),
+            swap: DataGrid::new(width, height, 0.0),
         }
     }
 
     pub fn tick(&mut self, allocator: &BuildingAllocator, graph: &TransitGraph) {
-        let mut new_grid = self.grid.clone();
+        std::mem::swap(&mut self.grid, &mut self.swap);
         
         let w = self.grid.width;
         let h = self.grid.height;
@@ -30,12 +32,12 @@ impl NoiseSystem {
             let gy = (((b.center_y / world_size_y) + 0.5) * h as f32).round() as usize;
 
             if b.zone_type == ZoneType::Commercial {
-                if let Some(val) = new_grid.get_mut(gx, gy) {
+                if let Some(val) = self.grid.get_mut(gx, gy) {
                     *val = (*val + 30.0).min(100.0);
                 }
             }
             if b.zone_type == ZoneType::Industrial {
-                if let Some(val) = new_grid.get_mut(gx, gy) {
+                if let Some(val) = self.grid.get_mut(gx, gy) {
                     *val = (*val + 80.0).min(100.0);
                 }
             }
@@ -49,7 +51,7 @@ impl NoiseSystem {
                 let gx = (((p.x / world_size_x) + 0.5) * w as f32).round() as i32;
                 let gz = (((p.z / world_size_y) + 0.5) * h as f32).round() as i32;
                 if gx >= 0 && gx < w as i32 && gz >= 0 && gz < h as i32 {
-                    if let Some(val) = new_grid.get_mut(gx as usize, gz as usize) {
+                    if let Some(val) = self.grid.get_mut(gx as usize, gz as usize) {
                         *val = (*val + road_noise).min(100.0);
                     }
                 }
@@ -57,9 +59,9 @@ impl NoiseSystem {
         }
 
         // 2. Diffusion & 3. Decay (Parallelized)
-        let old_grid_ref = &self.grid;
+        let old_grid_ref = &self.swap;
         
-        new_grid.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        self.grid.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
             for x in 0..w {
                 let current = *old_grid_ref.get(x, y).unwrap_or(&0.0);
                 
@@ -81,7 +83,5 @@ impl NoiseSystem {
                 row[x] = row[x].min(100.0).max(0.0); 
             }
         });
-        
-        self.grid = new_grid;
     }
 }
