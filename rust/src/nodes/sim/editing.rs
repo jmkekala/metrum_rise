@@ -53,6 +53,31 @@ impl SimulationNode {
         self.recalculate_zoning_local(edge_idx as usize);
     }
 
+    /// Sets the classification of an edge.
+    pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) {
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() { return; }
+        
+        let class = match class_int {
+            1 => crate::simulation::network::types::EdgeClass::Bridge,
+            2 => crate::simulation::network::types::EdgeClass::Tunnel,
+            _ => crate::simulation::network::types::EdgeClass::Standard,
+        };
+        
+        {
+            let edge = &mut self.region_graph.edges[edge_idx as usize];
+            edge.class = class;
+            
+            // If promoting to Bridge/Tunnel, zoning is automatically disabled
+            if class != crate::simulation::network::types::EdgeClass::Standard {
+                edge.zoning_left = false;
+                edge.zoning_right = false;
+            }
+        }
+        
+        self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+        self.recalculate_zoning_local(edge_idx as usize);
+    }
+
     /// Adds a new road segment to the transit network.
     pub fn add_road_internal(&mut self, points: PackedVector3Array, fwd_lanes: i32, bkw_lanes: i32, zoning_left: bool, zoning_right: bool) {
         self.push_undo_state(false, false, true, false);
@@ -63,14 +88,27 @@ impl SimulationNode {
         let hw = (w - 1) as f32 * 0.5;
         let hh = (h - 1) as f32 * 0.5;
         
+        let mut class = crate::simulation::network::types::EdgeClass::Standard;
+        
         for p in &mut fixed_points {
             let gx = p.x + hw;
             let gz = p.z + hh;
             let terrain_h = self.heightmap.get_height_interpolated(gx, gz) * config::HEIGHT_SCALE;
-            p.y = terrain_h;
+            
+            if p.y - terrain_h > 1.0 { class = crate::simulation::network::types::EdgeClass::Bridge; }
+            else if terrain_h - p.y > 1.0 { class = crate::simulation::network::types::EdgeClass::Tunnel; }
         }
 
-        self.transit_network.add_road(&mut self.region_graph, fixed_points, fwd_lanes as u8, bkw_lanes as u8, zoning_left, zoning_right, &mut self.zoning, &mut self.allocator);
+        // Only force grounded roads to terrain
+        if class == crate::simulation::network::types::EdgeClass::Standard {
+            for p in &mut fixed_points {
+                let gx = p.x + hw;
+                let gz = p.z + hh;
+                p.y = self.heightmap.get_height_interpolated(gx, gz) * config::HEIGHT_SCALE;
+            }
+        }
+
+        self.transit_network.add_road(&mut self.region_graph, fixed_points, fwd_lanes as u8, bkw_lanes as u8, zoning_left, zoning_right, class, &mut self.zoning, &mut self.allocator);
 
         // Robustly update zoning for all nearby area
         if let Some(first_pt) = points.to_vec().first() {

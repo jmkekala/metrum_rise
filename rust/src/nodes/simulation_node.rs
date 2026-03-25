@@ -357,6 +357,12 @@ impl SimulationNode {
         self.add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
     }
 
+    /// Sets the classification of an edge (Standard, Bridge, Tunnel).
+    #[func]
+    pub fn set_edge_class(&mut self, edge_idx: i32, class_int: u8) {
+        self.set_edge_class_internal(edge_idx, class_int);
+    }
+
     /// Returns dictionary of road/intersection mesh data.
     #[func]
     pub fn get_road_mesh_data(&self) -> VarDictionary {

@@ -14,8 +14,9 @@ extends Node
 var cul_de_sac_tool: Node3D
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
+var select_tool: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, LANE, AGENT, SCULPT, WATER, CUL_DE_SAC }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, LANE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
 var current_tool: Tool = Tool.NONE
 
 func _ready():
@@ -25,6 +26,13 @@ func _ready():
 		rt.set_script(load("res://scripts/cul_de_sac_tool.gd"))
 		get_parent().call_deferred("add_child", rt)
 		cul_de_sac_tool = rt
+	
+	if not has_node("../SelectTool"):
+		var st = Node3D.new()
+		st.name = "SelectTool"
+		st.set_script(load("res://scripts/select_tool.gd"))
+		get_parent().call_deferred("add_child", st)
+		select_tool = st
 	
 	# Hide overlay mesh if exists in cul-de-sac tool
 	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
@@ -42,6 +50,7 @@ func _unhandled_input(event):
 			KEY_Y: _toggle_tool(Tool.SCULPT)
 			KEY_K: _toggle_tool(Tool.WATER) # Moved from W to avoid WASD overlap
 			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
+			KEY_S: _toggle_tool(Tool.SELECT)
 			KEY_Z: 
 				if event.ctrl_pressed:
 					_handle_undo()
@@ -62,6 +71,10 @@ func _unhandled_input(event):
 			# Overlay Modes
 			KEY_7, KEY_8, KEY_9, KEY_0:
 				_handle_overlay_mode(event.keycode)
+
+			# Altitude Adjustments
+			KEY_PAGEUP: _handle_altitude_adjust(2.5)
+			KEY_PAGEDOWN: _handle_altitude_adjust(-2.5)
 
 			# Zoning Selection
 			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
@@ -131,6 +144,8 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 		Tool.ZONING: 
 			if zoning_tool: zoning_tool.active = enabled
 			if terrain_node: terrain_node.show_global_zoning = enabled
+		Tool.SELECT:
+			if select_tool: select_tool.active = enabled
 
 func _toggle_zoning_overlay():
 	if terrain_node:
@@ -188,3 +203,7 @@ func _handle_right_click():
 
 	else:
 		_cancel_active_tool()
+
+func _handle_altitude_adjust(delta):
+	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool:
+		road_tool.adjust_altitude(delta)

@@ -134,6 +134,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
+| B_BENCH1 | `benches/agent_benchmark.rs` | **Stale `HpaGraph` reference — benchmark does not compile.** Still imports `metrum_rise::simulation::pathing::hpa::HpaGraph` and passes `&hpa` to `agents.tick()`, but `HpaGraph` was removed when CCH shipped. Fix: replace `HpaGraph` import and construction with `CchGraph::build(&graph)`, update the `tick` call signature to match. | `[BUG]` |
 
 ---
 
@@ -146,6 +147,13 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 #### v0.1 Goals
 
 28b. **`NoiseSystem` unit tests** — mirrors item 28 (PollutionSystem). Add a smoke test that ticks `NoiseSystem` with one road edge source: assert the source cell is positive, a cell 5 steps away has a nonzero diffused value, no cell is infinite or NaN, and the average decays after the source is removed. Also verify that a high-speed edge (`speed_limit > 60`) produces a higher source-cell value than a low-speed edge, to catch any regression in the per-point road-noise emission logic.
+
+35. **Stale HPA* references cleanup** — `HpaGraph` was replaced by CCH but several names and comments were not updated:
+    - Rename `TransitNetwork::hpa_dirty_chunks` → `cch_dirty_chunks` in `network/mod.rs` and all call sites (lines ~34, 45, 53, 228, 275, 279, 290, 298).
+    - Update `network/mod.rs` `//!` module header (lines 4, 6): replace "HPA* abstract graph" / "HPA* graph is rebuilt" with CCH equivalents.
+    - Update `mark_point_dirty` doc comment in `network/mod.rs`: "requiring HPA* update" → "requiring CCH rebuild".
+    - Update `buildings/allocator.rs` `//!` header line 11: "full HPA* rebuild" → "full CCH rebuild".
+    - Fix `benches/agent_benchmark.rs` (tracked separately as B_BENCH1).
 
 27. **Bridge and tunnel renderer + editor tool** (`EdgeClass` data model is done — item 26 simulation side complete):
     - Renderer (`network/render/road.rs` + GDScript): branch on `edge.class` — `Bridge` generates a floating deck mesh at geometry Y elevation (no terrain deformation); `Tunnel` generates portal entrance meshes at both endpoints only, road mesh between portals hidden.

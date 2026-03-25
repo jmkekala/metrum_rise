@@ -12,6 +12,9 @@ pub fn flatten_terrain_for_network(graph: &RegionGraph, terrain: &crate::simulat
     let mut min_dist_map = vec![f32::MAX; width * height];
     
     for edge in &graph.edges {
+        if edge.deleted || edge.class != crate::simulation::network::types::EdgeClass::Standard {
+            continue;
+        }
         if edge.primary_type != TransitType::Road && edge.primary_type != TransitType::Rail && edge.primary_type != TransitType::Foot {
             continue;
         }

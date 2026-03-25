@@ -57,7 +57,7 @@ impl TransitNetwork {
         allocator.clear();
     }
 
-    pub fn add_road(&mut self, graph: &mut RegionGraph, points: Vec<Vector3>, fwd_lanes: u8, bkw_lanes: u8, zoning_left: bool, zoning_right: bool, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
+    pub fn add_road(&mut self, graph: &mut RegionGraph, points: Vec<Vector3>, fwd_lanes: u8, bkw_lanes: u8, zoning_left: bool, zoning_right: bool, class: EdgeClass, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
         // 1. Simplify points
         let mut simplified_points = Vec::with_capacity(points.len());
         if !points.is_empty() {
@@ -134,7 +134,7 @@ impl TransitNetwork {
                     let mid_id = graph.find_or_add_node(split_pos, 0.1, NodeType::Junction);
                     
                     // Add this edge
-                    self.create_edge_internal(graph, current_start_id, mid_id, active_segment.clone(), fwd_lanes, bkw_lanes, zoning_left, zoning_right, zoning, allocator);
+                    self.create_edge_internal(graph, current_start_id, mid_id, active_segment.clone(), fwd_lanes, bkw_lanes, zoning_left, zoning_right, class, zoning, allocator);
                     
                     // Reset for next segment
                     current_start_id = mid_id;
@@ -167,14 +167,14 @@ impl TransitNetwork {
             // Replace last point with snapped end_id pos
             let last_idx = active_segment.len() - 1;
             active_segment[last_idx] = graph.nodes[end_id as usize].pos;
-            self.create_edge_internal(graph, current_start_id, end_id, active_segment, fwd_lanes, bkw_lanes, zoning_left, zoning_right, zoning, allocator);
+            self.create_edge_internal(graph, current_start_id, end_id, active_segment, fwd_lanes, bkw_lanes, zoning_left, zoning_right, class, zoning, allocator);
         }
 
         self.flush_zoning_updates(zoning, graph);
     }
 
     /// Helper to consistently add a road edge and handle its side effects
-    fn create_edge_internal(&mut self, graph: &mut RegionGraph, start: u32, end: u32, points: Vec<Vector3>, fwd: u8, bkw: u8, zoning_left: bool, zoning_right: bool, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
+    fn create_edge_internal(&mut self, graph: &mut RegionGraph, start: u32, end: u32, points: Vec<Vector3>, fwd: u8, bkw: u8, zoning_left: bool, zoning_right: bool, class: EdgeClass, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
         if start == end { return; }
         
         // Final sanity check on points
@@ -195,7 +195,7 @@ impl TransitNetwork {
             primary_type: if is_walkway { TransitType::Foot } else { TransitType::Road },
             allowed_types,
             width: ((fwd + bkw) as f32 * config::LANE_WIDTH).max(2.0),
-            class: EdgeClass::Standard,
+            class,
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             speed_limit: 50.0,

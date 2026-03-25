@@ -17,6 +17,7 @@ var current_path: Path3D
 var fwd_lanes: int = 1
 var bkw_lanes: int = 1
 var lanes_label: Label
+var altitude_offset: float = 0.0
 
 var draw_mode: int = 0 # 0: straight, 1: spline
 
@@ -29,6 +30,10 @@ func adjust_lanes(fwd_delta: int, bkw_delta: int):
 	if bkw_delta != 0: bkw_lanes = clamp(bkw_lanes + bkw_delta, 0, 4)
 	# Allow 0,0 for walkways
 	_update_lanes_label()
+
+func adjust_altitude(delta: float):
+	altitude_offset += delta
+	_update_preview()
 
 func _unhandled_input(event):
 	if active and event is InputEventMouseMotion:
@@ -103,27 +108,29 @@ func _update_preview():
 	_draw_blueprint()
 
 func _draw_blueprint():
-	var preview_verts = current_path.curve.get_baked_points()
+	var preview_verts = _get_processed_points()
 	if preview_verts.size() > 1:
 		var slope_too_steep = false
 		
 		# HARMONIC CONFORMANCE PREVIEW (Laplacian Smoothing)
-		var start_h = simulation_node.get_height_at(Vector2(preview_verts[0].x, preview_verts[0].z))
-		var end_h = simulation_node.get_height_at(Vector2(preview_verts[-1].x, preview_verts[-1].z))
+		var start_h = preview_verts[0].y
+		var end_h = preview_verts[-1].y
 		
-		# 1. Sample raw terrain for all points
-		for i in range(preview_verts.size()):
-			if i == 0:
-				preview_verts[i].y = start_h
-			elif i == preview_verts.size() - 1:
-				preview_verts[i].y = end_h
-			else:
+		var start_terrain = simulation_node.get_height_at(Vector2(preview_verts[0].x, preview_verts[0].z))
+		var end_terrain = simulation_node.get_height_at(Vector2(preview_verts[-1].x, preview_verts[-1].z))
+		
+		var is_bridge_or_tunnel = abs(start_h - start_terrain) > 0.5 or abs(end_h - end_terrain) > 0.5 or (altitude_offset != 0.0)
+
+		# 1. Sample raw terrain for all points ONLY if grounded
+		if not is_bridge_or_tunnel:
+			for i in range(preview_verts.size()):
 				preview_verts[i].y = simulation_node.get_height_at(Vector2(preview_verts[i].x, preview_verts[i].z))
 				
 		# 2. Taubin Smoothing (Iron out bumps without volume shrinkage)
+		# Skip if bridge (already smooth from spline) or follow terrain logic
 		var iters = 50
 		var num_verts = preview_verts.size()
-		if num_verts > 2:
+		if num_verts > 2 and not is_bridge_or_tunnel:
 			var temp_h = []
 			temp_h.resize(num_verts)
 			var lambda_val = 0.5
@@ -142,6 +149,11 @@ func _draw_blueprint():
 					temp_h[i] = preview_verts[i].y + mu_val * laplacian
 				for i in range(1, num_verts - 1):
 					preview_verts[i].y = temp_h[i]
+		elif num_verts > 2 and is_bridge_or_tunnel:
+			# Linear interpolation of height for bridges across the spline
+			for i in range(1, num_verts - 1):
+				var t = float(i) / (num_verts - 1)
+				preview_verts[i].y = lerp(start_h, end_h, t)
 		
 		# 3. Apply vertical offset and slope checks
 		for i in range(preview_verts.size()):
@@ -163,6 +175,17 @@ func _draw_blueprint():
 		
 		if slope_too_steep:
 			is_valid = false
+			
+		# 4. Bridge/Tunnel Height Validation
+		if is_bridge_or_tunnel and num_verts > 2:
+			var mid_idx = num_verts / 2
+			var terrain_mid_h = simulation_node.get_height_at(Vector2(preview_verts[mid_idx].x, preview_verts[mid_idx].z))
+			if altitude_offset > 0.5: # Bridge
+				if preview_verts[mid_idx].y < terrain_mid_h + 1.0:
+					is_valid = false # Bridge is too low at midpoint
+			elif altitude_offset < -0.5: # Tunnel
+				if preview_verts[mid_idx].y > terrain_mid_h - 1.0:
+					is_valid = false # Tunnel is too high at midpoint
 			
 		var arr_mesh = ArrayMesh.new()
 		var arrays = []
@@ -195,7 +218,7 @@ func _draw_blueprint():
 func _commit_segment(end_pos):
 	if not is_valid: return
 	
-	var points = current_path.curve.get_baked_points()
+	var points = _get_processed_points()
 	if points.size() > 1:
 		var main_ui = get_node("../MainUI")
 		var z_left = main_ui.road_zoning_left_btn.button_pressed
@@ -231,7 +254,21 @@ func cancel_road():
 
 # Override to add Self-Snapping and Angle Snapping
 func get_world_mouse_pos() -> Vector3:
-	var pos = super.get_world_mouse_pos()
+	var pos_variant = get_terrain_interaction()
+	if pos_variant == null: 
+		is_valid = false
+		return Vector3.ZERO
+	
+	var pos: Vector3 = pos_variant
+	
+	# 1. Snap to existing network (High priority)
+	var snapped_pos = simulation_node.get_closest_network_point(pos, 5.0)
+	if snapped_pos != null:
+		is_valid = true
+		return snapped_pos
+	
+	# 2. Apply altitude offset if not snapped
+	pos.y += altitude_offset
 	
 	if active and Input.is_key_pressed(KEY_SHIFT):
 		var ref_pos = start_pos if current_state == State.SETTING_CONTROL else control_pos
@@ -253,3 +290,47 @@ func get_world_mouse_pos() -> Vector3:
 				return control_pos
 				
 	return pos
+
+func _get_processed_points() -> PackedVector3Array:
+	if current_path == null: return PackedVector3Array()
+	var preview_verts = current_path.curve.get_baked_points()
+	if preview_verts.size() <= 1: return preview_verts
+	
+	var start_h = preview_verts[0].y
+	var end_h = preview_verts[-1].y
+	
+	var start_terrain = simulation_node.get_height_at(Vector2(preview_verts[0].x, preview_verts[0].z))
+	var end_terrain = simulation_node.get_height_at(Vector2(preview_verts[-1].x, preview_verts[-1].z))
+	
+	var is_bridge_or_tunnel = abs(start_h - start_terrain) > 0.5 or abs(end_h - end_terrain) > 0.5 or (altitude_offset != 0.0)
+
+	# 1. Sample raw terrain for all points ONLY if grounded
+	if not is_bridge_or_tunnel:
+		for i in range(preview_verts.size()):
+			preview_verts[i].y = simulation_node.get_height_at(Vector2(preview_verts[i].x, preview_verts[i].z))
+			
+	# 2. Taubin Smoothing
+	var iters = 50
+	var num_verts = preview_verts.size()
+	if num_verts > 2 and not is_bridge_or_tunnel:
+		var temp_h = []
+		temp_h.resize(num_verts)
+		var lambda_val = 0.5
+		var mu_val = -0.53
+		for it in range(iters):
+			for i in range(1, num_verts - 1):
+				var laplacian = 0.5 * (preview_verts[i-1].y + preview_verts[i+1].y) - preview_verts[i].y
+				temp_h[i] = preview_verts[i].y + lambda_val * laplacian
+			for i in range(1, num_verts - 1):
+				preview_verts[i].y = temp_h[i]
+			for i in range(1, num_verts - 1):
+				var laplacian = 0.5 * (preview_verts[i-1].y + preview_verts[i+1].y) - preview_verts[i].y
+				temp_h[i] = preview_verts[i].y + mu_val * laplacian
+			for i in range(1, num_verts - 1):
+				preview_verts[i].y = temp_h[i]
+	elif num_verts > 2 and is_bridge_or_tunnel:
+		for i in range(1, num_verts - 1):
+			var t = float(i) / (num_verts - 1)
+			preview_verts[i].y = lerp(start_h, end_h, t)
+	
+	return preview_verts

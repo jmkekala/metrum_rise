@@ -40,9 +40,18 @@ pub fn process_intersections(network: &mut TransitNetwork, graph: &mut crate::si
                     edge1_geo[i], edge1_geo[i+1],
                     edge2_geo[j], edge2_geo[j+1]
                 ) {
+                    let p1 = edge1_geo[i].lerp(edge1_geo[i+1], t);
+                    let p2 = edge2_geo[j].lerp(edge2_geo[j+1], u);
+                    
+                    // VERTICAL CLEARANCE CHECK: Ignore intersections if they are vertically separated
+                    // Use a 4.5m threshold (slightly less than CLEARANCE_THRESHOLD to ensure 5m bridges pass)
+                    if (p1.y - p2.y).abs() > 4.5 {
+                        continue;
+                    }
+
                     let factor_t = i as f32 + t;
                     let factor_u = j as f32 + u;
-                    let pos = edge1_geo[i].lerp(edge1_geo[i+1], t);
+                    let pos = p1; // or p2, they are 2D identical and vertically close
                     
                     // Unified Node Capture
                     let junction_id = graph.find_or_add_node(pos, config::INTERSECTION_TOLERANCE, NodeType::Junction);
@@ -68,7 +77,7 @@ pub fn process_intersections(network: &mut TransitNetwork, graph: &mut crate::si
                 let closest2d = Vector2::new(closest.x, closest.z);
                 let dist = p2d.distance_to(closest2d);
 
-                if dist < config::INTERSECTION_TOLERANCE { 
+                if dist < config::INTERSECTION_TOLERANCE && (p.y - closest.y).abs() < 4.5 { 
                     let factor_u = j as f32 + (closest2d - Vector2::new(p1.x, p1.z)).length() / Vector2::new(p2.x - p1.x, p2.z - p1.z).length().max(0.001);
                     
                     let junction_id = graph.find_or_add_node(closest, config::INTERSECTION_TOLERANCE, NodeType::Junction);

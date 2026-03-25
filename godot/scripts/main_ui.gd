@@ -42,6 +42,8 @@ var zoning_sub_menu: HBoxContainer
 # Road zoning options
 var road_zoning_left_btn: Button
 var road_zoning_right_btn: Button
+var select_main_btn: Button
+var road_properties_panel: PanelContainer
 
 func _ready():
 	_build_ui()
@@ -358,6 +360,49 @@ func _build_ui():
 	terrain_main_btn.add_theme_stylebox_override("normal", style.duplicate())
 	main_toolbar.add_child(terrain_main_btn)
 	
+	select_main_btn = Button.new()
+	select_main_btn.text = "Inspect"
+	select_main_btn.custom_minimum_size = Vector2(100, 50)
+	select_main_btn.add_theme_stylebox_override("normal", style.duplicate())
+	main_toolbar.add_child(select_main_btn)
+	
+	# --- Road Properties Panel (Side) ---
+	road_properties_panel = PanelContainer.new()
+	root.add_child(road_properties_panel)
+	road_properties_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
+	road_properties_panel.position.x -= 20
+	road_properties_panel.visible = false
+	
+	var prop_style = StyleBoxFlat.new()
+	prop_style.bg_color = Color(0.1, 0.1, 0.1, 0.8)
+	prop_style.set_corner_radius_all(10)
+	road_properties_panel.add_theme_stylebox_override("panel", prop_style)
+	
+	var prop_vbox = VBoxContainer.new()
+	prop_vbox.add_theme_constant_override("separation", 10)
+	var prop_padding = MarginContainer.new()
+	prop_padding.add_theme_constant_override("margin_left", 15)
+	prop_padding.add_theme_constant_override("margin_right", 15)
+	prop_padding.add_theme_constant_override("margin_top", 15)
+	prop_padding.add_theme_constant_override("margin_bottom", 15)
+	road_properties_panel.add_child(prop_padding)
+	prop_padding.add_child(prop_vbox)
+	
+	var title = Label.new()
+	title.text = "Road Properties"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	prop_vbox.add_child(title)
+	
+	var classes = ["Standard", "Bridge", "Tunnel"]
+	for i in range(classes.size()):
+		var btn = Button.new()
+		btn.text = classes[i]
+		prop_vbox.add_child(btn)
+		btn.pressed.connect(func(): 
+			if input_manager.select_tool:
+				input_manager.select_tool.set_selected_edge_class(i)
+		)
+	
 	# Wrapper to center main toolbar
 	var hbox_main_center = HBoxContainer.new()
 	hbox_main_center.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -369,6 +414,7 @@ func _connect_signals():
 	road_main_btn.pressed.connect(_on_road_main_pressed)
 	terrain_main_btn.pressed.connect(_on_terrain_main_pressed)
 	zoning_main_btn.pressed.connect(_on_zoning_main_pressed)
+	select_main_btn.pressed.connect(_on_select_main_pressed)
 	
 	road_2l_btn.pressed.connect(func(): _select_road_type(1, 1))
 	road_4l_btn.pressed.connect(func(): _select_road_type(2, 2))
@@ -431,3 +477,15 @@ func _set_draw_mode(mode: int):
 		else:
 			if "draw_mode" in road_tool:
 				road_tool.draw_mode = 1
+
+func _on_select_main_pressed():
+	road_combined_hbox.visible = false
+	terrain_sub_menu.visible = false
+	zoning_combined_hbox.visible = false
+	input_manager._toggle_tool(InputManager.Tool.SELECT)
+
+func show_road_properties(_edge_idx):
+	road_properties_panel.visible = true
+
+func hide_road_properties():
+	road_properties_panel.visible = false

@@ -2,7 +2,7 @@ use godot::prelude::*;
 use crate::config;
 use std::collections::HashMap;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::TransitType;
+use crate::simulation::network::types::{TransitType, EdgeClass};
 use super::{TransitRenderer, NetworkMeshData};
 
 pub struct RoadRenderer;
@@ -138,6 +138,29 @@ impl TransitRenderer for RoadRenderer {
                     }
                 }
                 continue; // Skip the road-specific sidewalk/lane logic below
+            }
+
+            if edge.class == EdgeClass::Tunnel {
+                // Portal entrance quads at endpoints only
+                for &p_idx in &[0, resampled_count - 1] {
+                    let p = edge.physical_geometry[p_idx];
+                    let tangent = if p_idx == 0 { edge.physical_geometry[1] - edge.physical_geometry[0] } else { edge.physical_geometry[p_idx] - edge.physical_geometry[p_idx-1] };
+                    let tangent = if tangent.length_squared() > 1e-6 { tangent.normalized() } else { Vector3::FORWARD };
+                    let side = Vector3::new(-tangent.z, 0.0, tangent.x);
+                    let hw = edge.width * 0.5 + config::SIDEWALK_WIDTH;
+                    let hh = 4.0; // Portal height
+                    
+                    let p_elevated = p + Vector3::UP * 0.2;
+                    let v_bl = p_elevated - side * hw;
+                    let v_br = p_elevated + side * hw;
+                    let v_tl = v_bl + Vector3::UP * hh;
+                    let v_tr = v_br + Vector3::UP * hh;
+
+                    vertices.push(v_bl); vertices.push(v_tl); vertices.push(v_tr);
+                    vertices.push(v_bl); vertices.push(v_tr); vertices.push(v_br);
+                    for _ in 0..6 { normals.push(-tangent); colors.push(Color::from_rgb(0.1, 0.1, 0.1)); uvs.push(Vector2::ZERO); }
+                }
+                continue;
             }
 
             if edge.primary_type != TransitType::Road { continue; }
@@ -286,6 +309,40 @@ impl TransitRenderer for RoadRenderer {
                     dist_acc += segment_len;
                 }
             }
+
+            if edge.class == EdgeClass::Bridge {
+                let hw = edge.width * 0.5 + config::SIDEWALK_WIDTH;
+                let thickness = 1.0;
+                let deck_color = Color::from_rgb(0.3, 0.3, 0.31);
+
+                for i in 0..resampled_count - 1 {
+                    let p0 = edge.physical_geometry[i];
+                    let p1 = edge.physical_geometry[i+1];
+                    let side0 = point_side_dirs[i];
+                    let side1 = point_side_dirs[i+1];
+
+                    let p0_l = p0 - side0 * hw; let p0_r = p0 + side0 * hw;
+                    let p1_l = p1 - side1 * hw; let p1_r = p1 + side1 * hw;
+
+                    let p0_lb = p0_l - Vector3::UP * thickness; let p0_rb = p0_r - Vector3::UP * thickness;
+                    let p1_lb = p1_l - Vector3::UP * thickness; let p1_rb = p1_r - Vector3::UP * thickness;
+
+                    // Left Side Quad
+                    vertices.push(p0_l); vertices.push(p1_lb); vertices.push(p0_lb);
+                    vertices.push(p0_l); vertices.push(p1_l); vertices.push(p1_lb);
+                    for _ in 0..6 { normals.push(-side0); colors.push(deck_color); uvs.push(Vector2::ZERO); }
+
+                    // Right Side Quad
+                    vertices.push(p0_r); vertices.push(p0_rb); vertices.push(p1_rb);
+                    vertices.push(p0_r); vertices.push(p1_rb); vertices.push(p1_r);
+                    for _ in 0..6 { normals.push(side0); colors.push(deck_color); uvs.push(Vector2::ZERO); }
+
+                    // Bottom face (inverted Up)
+                    vertices.push(p0_lb); vertices.push(p1_rb); vertices.push(p1_lb);
+                    vertices.push(p0_lb); vertices.push(p0_rb); vertices.push(p1_rb);
+                    for _ in 0..6 { normals.push(Vector3::DOWN); colors.push(deck_color); uvs.push(Vector2::ZERO); }
+                }
+            }
         }
 
         // 2. Junction meshes
@@ -303,6 +360,11 @@ impl TransitRenderer for RoadRenderer {
             if edges_at_node.is_empty() { continue; }
 
             if edges_at_node.len() < 2 { continue; }
+            
+            // If all edges connecting here are tunnels, hide the junction mesh
+            if edges_at_node.iter().all(|(_, e)| e.class == EdgeClass::Tunnel) {
+                continue;
+            }
 
             struct JPoint {
                 e_idx: usize,

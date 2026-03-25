@@ -116,8 +116,19 @@ impl RegionGraph {
         let hw = (terrain.width as f32 - 1.0) * 0.5;
         let hh = (terrain.height as f32 - 1.0) * 0.5;
         
-        // 1. Sync Nodes Only
-        for node in &mut self.nodes {
+        // 0. Pre-calculate which nodes are snappable (Standard only)
+        let mut node_snappable = vec![true; self.nodes.len()];
+        for edge in &self.edges {
+            if edge.deleted { continue; }
+            if edge.class != EdgeClass::Standard {
+                node_snappable[edge.start_node as usize] = false;
+                node_snappable[edge.end_node as usize] = false;
+            }
+        }
+
+        // 1. Sync Nodes Only if snappable
+        for (i, node) in self.nodes.iter_mut().enumerate() {
+            if !node_snappable[i] { continue; }
             let gx = node.pos.x + hw;
             let gz = node.pos.z + hh;
             node.pos.y = terrain.get_height_interpolated(gx, gz) * crate::config::HEIGHT_SCALE;
@@ -126,6 +137,8 @@ impl RegionGraph {
         // 2. Re-interpolate Edge Geometry (Smooth Grades)
         for edge in &mut self.edges {
             if edge.deleted { continue; }
+            if edge.class != EdgeClass::Standard { continue; }
+            
             let count = edge.geometry.len();
             if count < 2 { continue; }
             
