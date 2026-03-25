@@ -3,6 +3,7 @@ mod tests {
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::grid::zoning::{ZoningSystem, ZoneType};
+    use crate::simulation::network::types::EdgeClass;
     use crate::simulation::grid::desirability::DesirabilitySystem;
     use crate::simulation::grid::noise::NoiseSystem;
     use crate::simulation::economy::demand::DemandSystem;
@@ -145,7 +146,7 @@ mod tests {
         net.add_road(&mut graph, vec![
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
-        ], 2, 2, true, true, &mut zoning, &mut allocator);
+        ], 2, 2, true, true, EdgeClass::Standard, &mut zoning, &mut allocator);
 
         // Spawn building at t=0.5
         for dx in 0..3 {

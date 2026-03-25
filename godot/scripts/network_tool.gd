@@ -182,8 +182,23 @@ func update_main_mesh():
 	var data = simulation_node.get_road_mesh_data()
 	if not data: return
 	
-	var arr_mesh = ArrayMesh.new()
+	if _road_mat == null:
+		_road_mat = ShaderMaterial.new()
+		_road_mat.shader = load("res://assets/materials/road.gdshader")
+		_road_mat.set_shader_parameter("albedo_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_diff_4k.jpg"))
+		_road_mat.set_shader_parameter("normal_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_nor_gl_4k.png"))
+		_road_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"))
+		_road_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_disp_4k.png"))
 	
+	if _concrete_mat == null:
+		_concrete_mat = ShaderMaterial.new()
+		_concrete_mat.shader = load("res://assets/materials/concrete.gdshader")
+		_concrete_mat.set_shader_parameter("albedo_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_diff_4k.jpg"))
+		_concrete_mat.set_shader_parameter("normal_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_nor_gl_4k.png"))
+		_concrete_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_rough_4k.png"))
+		_concrete_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_disp_4k.png"))
+
+	var arr_mesh = ArrayMesh.new()
 	var surface_map = [] # To keep track of which material goes to which surface
 	
 	# Surface 0: Asphalt & Junctions
@@ -221,22 +236,6 @@ func update_main_mesh():
 	
 	mesh_instance.mesh = arr_mesh
 	
-	if _road_mat == null:
-		_road_mat = ShaderMaterial.new()
-		_road_mat.shader = load("res://assets/materials/road.gdshader")
-		_road_mat.set_shader_parameter("albedo_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_diff_4k.jpg"))
-		_road_mat.set_shader_parameter("normal_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_nor_gl_4k.png"))
-		_road_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"))
-		_road_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_disp_4k.png"))
-	
-	if _concrete_mat == null:
-		_concrete_mat = ShaderMaterial.new()
-		_concrete_mat.shader = load("res://assets/materials/concrete.gdshader")
-		_concrete_mat.set_shader_parameter("albedo_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_diff_4k.jpg"))
-		_concrete_mat.set_shader_parameter("normal_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_nor_gl_4k.png"))
-		_concrete_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_rough_4k.png"))
-		_concrete_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_disp_4k.png"))
-
 	# Apply materials according to the mapped surface indices
 	for i in range(surface_map.size()):
 		mesh_instance.set_surface_override_material(i, surface_map[i])

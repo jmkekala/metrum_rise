@@ -9,6 +9,7 @@ const InputManager = preload("res://scripts/input_manager.gd")
 
 @onready var input_manager = $"../InputManager"
 @onready var road_tool = $"../RoadTool"
+@onready var simulation_node = $"../SimulationNode"
 
 var bottom_panel: MarginContainer
 var main_toolbar: HBoxContainer
@@ -370,7 +371,9 @@ func _build_ui():
 	road_properties_panel = PanelContainer.new()
 	root.add_child(road_properties_panel)
 	road_properties_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_RIGHT)
-	road_properties_panel.position.x -= 20
+	road_properties_panel.custom_minimum_size = Vector2(250, 0)
+	road_properties_panel.offset_left = -270 # Position it inside the screen from the right
+	road_properties_panel.offset_right = -20
 	road_properties_panel.visible = false
 	
 	var prop_style = StyleBoxFlat.new()
@@ -388,10 +391,19 @@ func _build_ui():
 	road_properties_panel.add_child(prop_padding)
 	prop_padding.add_child(prop_vbox)
 	
+	var title_hbox = HBoxContainer.new()
+	prop_vbox.add_child(title_hbox)
+	
 	var title = Label.new()
 	title.text = "Road Properties"
-	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	prop_vbox.add_child(title)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	title_hbox.add_child(title)
+	
+	var close_btn = Button.new()
+	close_btn.text = "X"
+	close_btn.custom_minimum_size = Vector2(30, 30)
+	title_hbox.add_child(close_btn)
+	close_btn.pressed.connect(hide_road_properties)
 	
 	var warning_label = Label.new()
 	warning_label.name = "WarningLabel"
@@ -502,12 +514,12 @@ func show_road_properties(edge_idx):
 	# Basic Validation Logic (Item 27)
 	var p0 = geo[0]
 	var p1 = geo[-1]
-	var h0 = simulation_node.get_height_at(p0.x, p0.z)
-	var h1 = simulation_node.get_height_at(p1.x, p1.z)
+	var h0 = simulation_node.get_height_at(Vector2(p0.x, p0.z))
+	var h1 = simulation_node.get_height_at(Vector2(p1.x, p1.z))
 	
 	# Sample midpoint for terrain clearance
 	var t_mid = geo[geo.size()/2]
-	var h_mid = simulation_node.get_height_at(t_mid.x, t_mid.z)
+	var h_mid = simulation_node.get_height_at(Vector2(t_mid.x, t_mid.z))
 	
 	# We'd need the edge class to show specific warnings
 	# For now, general "incorrect elevation" warning based on common sense
