@@ -139,13 +139,46 @@ Feature completion and correctness fixes. Performance tuning is not the focus he
 
 #### v0.1 Blockers — must complete before tagging v0.1
 
-31. **CCH / CRP implementation** — supersedes HPA* for all long-distance routing:
-    - **RegionGraph design**: `TransitGraph` must not be scoped to a single city. Rename or extend it to `RegionGraph`; it is the single graph for all current and future city tiles. Adding a second city later means adding nodes/edges to this graph and triggering a topology rebuild — not creating a separate graph instance. Do this structural rename before building the CCH data structures on top of it.
-    - **Topology phase**: compute contraction order (node importance by edge-difference heuristic); add shortcut edges bypassing contracted nodes. Output: an elimination tree and a contracted graph. This phase runs once on full topology rebuild (when roads are added or removed). O(E log E).
-    - **Metric customization phase**: propagate current edge weights (speed limits, congestion) through the elimination tree. O(E). Runs on every road edit or congestion update — this is CRP's key property: metric updates are cheap even though topology rebuilds are not.
-    - **Query**: bidirectional Dijkstra on the contracted graph. Forward from source, backward from goal, meeting at the highest-hierarchy node. O(√E log √E) vs O((V+E) log V) for A*. The `(node, incoming_edge)` state key for turn restrictions must be preserved.
-    - **Modal filtering**: `allowed_mask: u8` (v0.01 goal 4) gates which edges are visible during query — the contracted graph is built per-mask or masks are applied at query time.
-    - On completion, `HpaGraph` and the three-phase HPA* query are removed. All `find_path` call sites in `decisions.rs` switch to CCH query.
+31a. **`TransitGraph` → `RegionGraph` rename** — prerequisite for CCH; must be done first.
+    - `TransitGraph` is currently city-scoped. CCH must operate on a single unified graph for all city tiles — a city-scoped graph produces incorrect inter-city shortcuts.
+    - Rename the struct to `RegionGraph`. Update all call sites (approximately 20 files). Move ownership out of any city-specific module into global simulation state.
+    - Update the Godot bridge API to reflect the rename. No simulation logic changes — only naming and ownership.
+    - This is a mechanical rename, not a refactor. Do it in one commit before touching any CCH data structures.
+
+31b. **Metric customisation strategy — decide before writing data structures.**
+    - CRP requires shortcut weights to reflect current dynamic costs (`base_cost * (1 + current_congestion)`). Two viable options:
+      - **Single hierarchy, inner-path expansion (recommended):** Build one CCH hierarchy. Each shortcut stores the `inner_path` (sequence of contracted node IDs). At query time, recompute shortcut cost by summing the current dynamic costs of the underlying edges. O(path_length) per shortcut expansion — acceptable because paths are short. This is close to what HPA* already does with `AbstractEdge::inner_path`.
+      - **Multiple per-metric hierarchies:** Build a separate CCH for each cost function. Correct and fast at query time, but memory and rebuild cost grow with the number of metrics. Not worth it at this stage.
+    - **Decision: use single hierarchy with inner-path expansion.** Revisit at v1.0 if multiple metrics are needed.
+
+31c. **CCH / CRP implementation** — supersedes HPA* for all long-distance routing. Prerequisites: 31a and 31b complete.
+
+    **Phase 1 — Contraction (topology phase):**
+    - Compute contraction order using the edge-difference heuristic (number of shortcuts added minus edges removed when contracting a node). Lower importance = contracted first.
+    - Contract nodes in order: for each contracted node u, add a shortcut edge (v → w) for every pair of neighbours (v, w) where the path v → u → w is the only shortest path. Store `inner_path: Vec<u32>` in each shortcut.
+    - Output: `CchGraph` struct containing `node_order: Vec<u32>`, `shortcuts: Vec<Shortcut>` (with `start_node`, `end_node`, `inner_path`), and `elimination_tree: Vec<Option<u32>>` (parent pointers for O(E) customisation).
+    - Runs once on full topology rebuild (road added or removed). O(E log E). Triggered by the same dirty-chunk mechanism that currently triggers `HpaGraph::build`.
+    - One-way enforcement: when building shortcuts, check `fwd_lanes` / `bkw_lanes` on edges — do not create a shortcut through a node if the traversal direction violates lane counts.
+    - Run `compact_edges()` before each topology rebuild to ensure contiguous node/edge IDs.
+
+    **Phase 2 — Customisation (metric phase):**
+    - Walk the elimination tree bottom-up. For each shortcut, recompute its cost as the sum of the current dynamic costs of its `inner_path` edges: `base_cost * (1 + current_congestion)`.
+    - O(E). Runs on every `current_congestion` update — this is CRP's key property.
+    - Replaces the current chunk-wise incremental Dijkstra rebuild. Two dirty modes: topology-dirty (full Phase 1 + Phase 2) and metric-dirty (Phase 2 only).
+
+    **Phase 3 — Query:**
+    - Bidirectional Dijkstra on the contracted graph. Forward search from source upward in hierarchy; backward search from goal upward; meeting condition at the highest-hierarchy node reached by both.
+    - O(√E log √E) vs O((V+E) log V) for A*.
+    - Preserve the `(node, incoming_edge)` state key from the existing A* for turn-restriction correctness at `Node::lane_connections`.
+    - Modal filtering: apply `allowed_mask` at edge expansion — skip edges where `(edge.allowed_types & allowed_mask) == 0`. One hierarchy serves all modes.
+    - Path reconstruction: expand shortcuts via `inner_path` to recover the full concrete node sequence.
+    - Signature matches current `HpaGraph::find_path` exactly: `find_path(start, end, start_edge, graph, allowed_mask) -> Option<(f32, f32, Vec<u32>)>`. No caller changes needed.
+
+    **Phase 4 — Integration:**
+    - Replace all `HpaGraph::find_path` call sites (two: `decisions.rs` and `tick.rs`) with `CchGraph::find_path`.
+    - Delete `HpaGraph`, `hpa.rs`, and the chunk-wise incremental Dijkstra rebuild logic.
+    - Update `TransitNetwork::rebuild_pathing_if_dirty` to dispatch topology-dirty vs. metric-dirty rebuilds.
+    - Add a CCH correctness test: same graph as `test_pathing_avoids_steep_slope`; verify `CchGraph::find_path` returns the same path as the current HPA* implementation.
 
 #### v0.1 Goals
 
