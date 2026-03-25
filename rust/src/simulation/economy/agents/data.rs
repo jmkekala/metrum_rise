@@ -191,7 +191,9 @@ impl AgentSystem {
 
         for _ in 0..count {
             let home_idx = rng.gen_range(0..bldg_count);
-            let home_node = allocator.buildings[home_idx].frontage_node;
+            let b = &allocator.buildings[home_idx];
+            let edge = &graph.edges[b.edge_idx];
+            let home_node = if b.frontage_t < 0.5 { edge.start_node } else { edge.end_node };
             let start_node = rng.gen_range(0..node_count) as u32;
             let start_pos = graph.nodes[start_node as usize].pos;
 

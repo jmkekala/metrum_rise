@@ -41,8 +41,10 @@ impl AgentSystem {
                 let curr = $self.current_building[$i];
                 if curr != usize::MAX && curr < allocator.buildings.len() {
                     let b = &allocator.buildings[curr];
+                    let edge = &graph.edges[b.edge_idx];
                     $self.transit[$i] = TRANSIT_DEPARTING; 
-                    $self.current_node[$i] = b.frontage_node;
+                    // Start node for the path is the nearest end of current edge
+                    $self.current_node[$i] = if b.frontage_t < 0.5 { edge.start_node } else { edge.end_node };
                     $self.is_visible[$i] = true;
                     // Note: current_building is cleared AFTER reaching frontage in Transit 1
                 } else {
@@ -96,9 +98,11 @@ impl AgentSystem {
                             self.target_building[i] = next_bldg;
                             self.activity[i] = next_act;
                             self.journey_start_time[i] = self.sim_time;
-                            let target_node = allocator.buildings[next_bldg].frontage_node;
+                            let b = &allocator.buildings[next_bldg];
+                            let edge = &graph.edges[b.edge_idx];
+                            let target_node = if b.frontage_t < 0.5 { edge.start_node } else { edge.end_node };
                             let (_final_target, driving) = self.decide_transit_mode(i, target_node, graph, hpa_graph);
-                            self.target_node[i] = target_node; // Simple: always go to frontage
+                            self.target_node[i] = target_node; // Target nearest node for routing
                             self.is_driving[i] = driving;
                             self.current_path[i].clear();
                             self.current_path_index[i] = 0;
@@ -112,52 +116,31 @@ impl AgentSystem {
                     
                     // To avoid the "centerline detour", we target the actual lane/sidewalk offset point
                     let target_vec = {
-                        let node_pos = graph.nodes[node_idx as usize].pos;
-                        let mut base_vec = Vector2::new(node_pos.x, node_pos.z);
-                        
-                        // If path is empty, find it NOW so we can get the first edge
-                        if self.current_path[i].is_empty() {
-                            if let Some((_, _, path)) = hpa_graph.find_path(node_idx, self.target_node[i], usize::MAX, graph, !self.is_driving[i]) {
-                                let mut final_p = path;
-                                if !final_p.is_empty() && final_p[0] == node_idx { final_p.remove(0); }
-                                self.current_path[i] = final_p;
-                                self.current_path_index[i] = 0;
+                        let b_id = self.current_building[i];
+                        if b_id == usize::MAX || b_id >= allocator.buildings.len() {
+                            Vector2::new(self.pos_x[i], self.pos_y[i])
+                        } else {
+                            let b = &allocator.buildings[b_id];
+                            let edge = &graph.edges[b.edge_idx];
+                            let world_pos_on_edge = allocator.get_pos_on_edge(graph, b.edge_idx, b.frontage_t);
+                            let tangent = allocator.get_tangent_on_edge(graph, b.edge_idx, b.frontage_t);
+                            let normal = Vector2::new(tangent.y, -tangent.x) * (b.side as f32);
+                            
+                            // Target point on the road/sidewalk
+                            let mut base_vec = world_pos_on_edge;
+                            if self.is_driving[i] {
+                                let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
+                                let lane_w = edge.width / total_lanes;
+                                // For departure, we'll just target the first lane for now
+                                let lane_offset = (total_lanes * 0.5 - 0.5) * lane_w;
+                                base_vec += normal * (lane_offset);
+                            } else {
+                                let sw_w = crate::config::SIDEWALK_WIDTH;
+                                let offset_amt = edge.width * 0.5 + sw_w * 0.5;
+                                base_vec += normal * (offset_amt);
                             }
+                            base_vec
                         }
-
-                        if !self.current_path[i].is_empty() {
-                            let next_node = self.current_path[i][0];
-                            if let Some(found_e) = graph.get_edge_between_nodes(node_idx, next_node) {
-                                let edge = &graph.edges[found_e];
-                                let is_fwd = edge.start_node == node_idx;
-                                let tangent = if is_fwd {
-                                    (edge.geometry[1] - edge.geometry[0]).normalized()
-                                } else {
-                                    (edge.geometry[edge.geometry.len()-1] - edge.geometry[edge.geometry.len()-2]).normalized()
-                                };
-                                let normal = Vector2::new(-tangent.z, tangent.x);
-                                
-                                if self.is_driving[i] {
-                                     let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
-                                     let lane_w = edge.width / total_lanes;
-                                     let lane_idx = if is_fwd { self.current_lane[i] as f32 } else { (edge.fwd_lanes as i8 + (-self.current_lane[i] - 1)) as f32 };
-                                    let offset = (total_lanes * 0.5 - lane_idx - 0.5) * lane_w;
-                                    base_vec += normal * offset;
-                                } else {
-                                    let b_id = self.current_building[i];
-                                    if b_id != usize::MAX && b_id < allocator.buildings.len() {
-                                        let b = &allocator.buildings[b_id];
-                                        let sw_w = crate::config::SIDEWALK_WIDTH;
-                                        let offset_amt = edge.width * 0.5 + sw_w * 0.5;
-                                        
-                                        let b_side = b.side_offset;
-                                        self.bezier_t[i] = b_side; // Store side preference
-                                        base_vec += normal * (b_side * offset_amt);
-                                    }
-                                }
-                            }
-                        }
-                        base_vec
                     };
 
                     let dir = target_vec - Vector2::new(self.pos_x[i], self.pos_y[i]);
@@ -177,17 +160,52 @@ impl AgentSystem {
 
                     while remaining_dist > 0.0 {
                         // 1. Arrival Check
-                        if self.current_node[i] == self.target_node[i] && self.current_edge[i] == usize::MAX {
+                        let t_bldg_idx = self.target_building[i];
+                        if t_bldg_idx != usize::MAX && t_bldg_idx < allocator.buildings.len() {
+                            let b = &allocator.buildings[t_bldg_idx];
+                            if self.current_edge[i] == b.edge_idx {
+                                // We are on the target edge!
+                                let edge = &graph.edges[b.edge_idx];
+                                let frontage_world_pos = allocator.get_pos_on_edge(graph, b.edge_idx, b.frontage_t);
+                                let tangent = allocator.get_tangent_on_edge(graph, b.edge_idx, b.frontage_t);
+                                let current_pos = Vector2::new(self.pos_x[i], self.pos_y[i]);
+                                let to_agent = current_pos - frontage_world_pos;
+                                
+                                // Projected distance along the edge longitudinal axis
+                                let dist_along = to_agent.dot(tangent).abs();
+                                if dist_along < 2.0 {
+                                    self.transit[i] = TRANSIT_ARRIVING;
+                                    break;
+                                }
+                            } else if self.current_node[i] == self.target_node[i] && self.current_edge[i] == usize::MAX {
+                                // Reached the nearest node, now must enter the target edge
+                                let b = &allocator.buildings[t_bldg_idx];
+                                self.current_edge[i] = b.edge_idx;
+                                let edge = &graph.edges[b.edge_idx];
+                                let is_fwd = edge.start_node == self.current_node[i];
+                                if is_fwd {
+                                    self.edge_progression[i] = 0;
+                                    self.current_lane[i] = if edge.fwd_lanes > 0 { rng.gen_range(0..edge.fwd_lanes) as i8 } else { 0 };
+                                } else {
+                                    self.edge_progression[i] = edge.physical_geometry.len() as isize - 1;
+                                    self.current_lane[i] = if edge.bkw_lanes > 0 { -(rng.gen_range(0..edge.bkw_lanes) as i8) - 1 } else { -1 };
+                                }
+                                // Continue to move along this edge
+                            }
+                        } else if self.current_node[i] == self.target_node[i] && self.current_edge[i] == usize::MAX {
+                            // Immigrating or wandering case (no target building)
                             if self.transit[i] == TRANSIT_IMMIGRATING && self.home_building[i] == usize::MAX {
                                 if let Some(h) = self.find_available_home(allocator) {
-                                    godot_print!("Agent {}: Settled in home {}", i, h);
+                                    if cfg!(not(test)) {
+                                        godot_print!("Agent {}: Settled in home {}", i, h);
+                                    }
                                     self.home_building[i] = h;
-                                     self.target_building[i] = h;
-                                     self.target_node[i] = allocator.buildings[h].frontage_node;
-                                     // Set side preference for arriving at new home
-                                     let b = &allocator.buildings[h];
-                                     self.bezier_t[i] = b.side_offset;
-                                     self.current_path[i].clear();
+                                    self.target_building[i] = h;
+                                    let b = &allocator.buildings[h];
+                                    let edge = &graph.edges[b.edge_idx];
+                                    self.target_node[i] = if b.frontage_t < 0.5 { edge.start_node } else { edge.end_node };
+                                    self.bezier_t[i] = b.side_offset;
+                                    self.current_path[i].clear();
                                     self.current_path_index[i] = 0;
                                     self.transit[i] = TRANSIT_ON_ROAD;
                                 } else {
@@ -201,11 +219,6 @@ impl AgentSystem {
                                         }
                                     }
                                 }
-                            } else {
-                                // Arrived at building frontage!
-                                // Keep is_driving true for now so we "drive" into the driveway in Transit 3
-                                self.transit[i] = TRANSIT_ARRIVING;
-                                break;
                             }
                         }
 
@@ -228,7 +241,9 @@ impl AgentSystem {
                                         // Give up, teleport home or become idle
                                         if self.home_building[i] != usize::MAX && self.home_building[i] < allocator.buildings.len() {
                                             self.target_building[i] = self.home_building[i];
-                                            self.target_node[i] = allocator.buildings[self.home_building[i]].frontage_node;
+                                            let b = &allocator.buildings[self.home_building[i]];
+                                            let edge = &graph.edges[b.edge_idx];
+                                            self.target_node[i] = if b.frontage_t < 0.5 { edge.start_node } else { edge.end_node };
                                             self.transit[i] = TRANSIT_ARRIVING; // Jump into arriving phase
                                         } else {
                                             self.transit[i] = TRANSIT_IDLE;

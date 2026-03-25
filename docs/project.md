@@ -74,6 +74,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/economy/agents/` (Submodule) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
 - FSM states: `IDLE → DEPARTING → ON_ROAD → ARRIVING → IDLE` + `IMMIGRATING`.
 - Movement: polyline traversal with sub-tick `remaining_dist` budget; lane offsets from road width / lane count. Agents move at a **fixed speed** with no interaction — cars on the same edge pass through each other. No car-following model, no capacity constraint per lane. See Backlog.
+- **Virtual Frontages**: agents arrive at buildings via `(edge_id, t: f32)` T-coordinates rather than physical graph nodes. The arrival trigger is a **projected distance check along the edge tangent**, ensuring agents on wide roads or sidewalks correctly identify they have reached their destination regardless of lateral offset.
 - Agent kill: swap-and-pop, O(1). Note: agent indices are not stable across ticks (swap-remove invalidates the last agent's index).
 - **Single-threaded tick** — Rayon parallelisation is a v0.1 goal (see Backlog).
 
@@ -120,10 +121,6 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### v0.01 Blockers — fix before tagging
 
-- **Virtual Frontages** — replace physical edge-split building addresses with `(edge_id, t: f32)` T-coordinates.
-  - **Root cause**: `BuildingAllocator::tick` calls `network.split_for_frontage` once per new building. Each call physically inserts a node into `TransitGraph` and splits one edge into two, then triggers a routing graph topology rebuild. At v0.01 (500 buildings on 50 edges) this means ~500 extra nodes, ~500 extra edge splits, and up to 500 incremental routing graph topology rebuilds during the city-growth phase. The graph size grows proportionally to building count, not road count — the wrong invariant.
-  - **Fix summary**: remove `split_for_frontage` and `remove_frontage` entirely. Store `frontage_t: f32` on `Building` instead of `frontage_node: u32`. Derive the routing target node from `edges[edge_idx].start_node` (if `t < 0.5`) or `edges[edge_idx].end_node` (if `t ≥ 0.5`). See detailed implementation below and `docs/analysis.md §2` for context.
-  - **Files**: `buildings/allocator.rs`, `network/mod.rs`, `economy/agents/data.rs`, `economy/agents/tick.rs`.
 
 ### v0.01 Goals — strong targets for v0.01 quality
 
@@ -139,9 +136,6 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
    - `split_edge`: produces two edges whose `physical_length` values sum to the original; both edges share the inserted midpoint node; zoning grid is remapped correctly.
    - `compact_edges` (fixes B20): add two roads, delete one, call `compact_edges`, verify all remaining agent `current_path` node IDs are valid indices into `nodes`, all building `edge_idx` values reference non-deleted edges.
 6. **Agent FSM integration test** — no test currently drives a complete agent trip. Add a minimal test: build a two-node, one-edge graph; spawn one agent at node 0 with home at node 1; tick up to N times; assert the agent reaches `TRANSIT_ARRIVING` and then `TRANSIT_IDLE` with `current_node == target_node`. This is the single most important behavioural regression guard for the core simulation loop.
-7. **Virtual Frontages migration test** — to be written alongside the v0.01 blocker implementation:
-   - *Before* (regression baseline): place one building, assert `graph.nodes.len()` increased by 1 (confirming `split_for_frontage` ran).
-   - *After* (correctness proof): place one building, assert `graph.nodes.len()` is unchanged; assert `building.routing_node(&graph)` returns `edge.start_node` when `frontage_t < 0.5` and `edge.end_node` when `frontage_t >= 0.5`.
 8. **`BuildingAllocator` placement and removal tests** — no tests exist for the spawning pipeline. Add:
    - Desirability gate: when grid value < 50.0, no building is spawned regardless of demand.
    - Demand subtraction: after a residential building spawns, `demand.residential` decreases by the expected amount.

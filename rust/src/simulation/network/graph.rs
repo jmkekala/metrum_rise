@@ -345,10 +345,6 @@ impl TransitGraph {
                     for &node_id in chunk {
                         if self.nodes[node_id as usize].pos.distance_to(pos) < threshold {
                             let id = self.get_valid_node(node_id);
-                            if node_type == NodeType::Junction && self.nodes[id as usize].node_type == NodeType::Frontage {
-                                self.nodes[id as usize].node_type = NodeType::Junction;
-                                self.nodes[id as usize].lane_connections.clear();
-                            }
                             return id;
                         }
                     }
@@ -419,8 +415,8 @@ impl TransitGraph {
             return (old_edge.end_node, edge_idx);
         }
 
-        // 2. Create the new frontage node
-        let new_node_id = self.add_node(best_closest, NodeType::Frontage);
+        // 2. Create the new node
+        let new_node_id = self.add_node(best_closest, NodeType::Junction);
         
         // 3. Split logical geometry
         let mut first_geom = Vec::new();
@@ -650,10 +646,8 @@ impl TransitGraph {
         self.node_aliases.insert(remove, keep);
         
         // Merging two network pieces transforms any restrictive node type into a Junction
-        if self.nodes[keep as usize].node_type == NodeType::Frontage {
-            self.nodes[keep as usize].node_type = NodeType::Junction;
-            self.nodes[keep as usize].lane_connections.clear();
-        }
+        self.nodes[keep as usize].node_type = NodeType::Junction;
+        self.nodes[keep as usize].lane_connections.clear();
 
         // (Cul-de-sac logic removed)
         

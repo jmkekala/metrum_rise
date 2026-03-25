@@ -28,8 +28,8 @@ pub struct Building {
     pub zone_type: ZoneType,
     /// Unit vector pointing from the road toward the building (outward normal from the road edge).
     pub facing_dir: Vector2,
-    /// Node ID in [`TransitGraph`] created by splitting the road at this building's frontage.
-    pub frontage_node: u32,
+    /// T-coordinate (0.0 to 1.0) along the road edge [`edge_idx`] for this building's frontage.
+    pub frontage_t: f32,
     /// Signed side of the road: `+1.0` = left, `-1.0` = right (relative to edge direction).
     pub side_offset: f32,
     /// Ticks since this building lost its zoning. Non-zero values are reserved for future
@@ -88,7 +88,6 @@ impl BuildingAllocator {
             };
 
             if remove {
-                let frontage_node = b.frontage_node;
                 let b_edge_idx = b.edge_idx;
                 let b_side = b.side;
                 let b_cell_x = b.cell_x;
@@ -96,7 +95,7 @@ impl BuildingAllocator {
                 let b_width = b.width;
                 let b_depth = b.depth;
 
-                network.remove_frontage(frontage_node, zoning, self);
+                // network.remove_frontage(frontage_node, zoning, self); // DELETED: Virtual Frontages
                 // Clear occupancy for the entire footprint
                 let w_cells = (b_width as f32 / zoning.grid_cell_size).round() as usize;
                 let d_cells = (b_depth as f32 / zoning.grid_cell_size).round() as usize;
@@ -205,16 +204,18 @@ impl BuildingAllocator {
                         let depth_offset = crate::config::SIDEWALK_WIDTH + (1.5 * zoning.grid_cell_size); 
                         let center_2d = world_pos_on_edge + normal * (edge_width * 0.5 + depth_offset);
                         
-                        let frontage_pos_3d = godot::prelude::Vector3::new(world_pos_on_edge.x, 0.0, world_pos_on_edge.y);
-                        let (frontage_node, new_edge_id, split_x) = network.split_for_frontage(edge_idx, frontage_pos_3d, zoning, self);
+                        let frontage_t = (x as f32 + 1.5) * zoning.grid_cell_size / edge_len;
+                        // let (frontage_node, new_edge_id, split_x) = network.split_for_frontage(edge_idx, frontage_pos_3d, zoning, self); // DELETED: Virtual Frontages
                         spawned_this_tick += 1;
 
-                        let mut b_edge_idx = edge_idx;
-                        let mut b_cell_x = x;
+                        let b_edge_idx = edge_idx;
+                        let b_cell_x = x;
+                        /* // DELETED: Virtual Frontages
                         if x >= split_x {
                             b_edge_idx = new_edge_id;
                             b_cell_x = x - split_x;
                         }
+                        */
 
                         // Center along road (1.5 cells in)
                         let center_adjustment = tangent * (1.5 * zoning.grid_cell_size);
@@ -227,7 +228,7 @@ impl BuildingAllocator {
                             depth: b_depth as u8,
                             zone_type: z_type,
                             facing_dir: -normal,
-                            frontage_node,
+                            frontage_t,
                             side_offset: side as f32,
                             abandoned_timer: 0,
                             edge_idx: b_edge_idx,
@@ -279,7 +280,7 @@ impl BuildingAllocator {
         self.dirty = false;
     }
 
-    fn get_pos_on_edge(&self, graph: &TransitGraph, edge_idx: usize, t: f32) -> Vector2 {
+    pub fn get_pos_on_edge(&self, graph: &TransitGraph, edge_idx: usize, t: f32) -> Vector2 {
         let edge = &graph.edges[edge_idx];
         let geo = &edge.physical_geometry;
         if geo.is_empty() { return Vector2::ZERO; }
@@ -300,7 +301,7 @@ impl BuildingAllocator {
         Vector2::new(geo.last().unwrap().x, geo.last().unwrap().z)
     }
 
-    fn get_tangent_on_edge(&self, graph: &TransitGraph, edge_idx: usize, t: f32) -> Vector2 {
+    pub fn get_tangent_on_edge(&self, graph: &TransitGraph, edge_idx: usize, t: f32) -> Vector2 {
         let edge = &graph.edges[edge_idx];
         let geo = &edge.physical_geometry;
         if geo.len() < 2 { return Vector2::new(1.0, 0.0); }
