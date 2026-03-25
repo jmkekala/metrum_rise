@@ -18,3 +18,19 @@ pub const TRANSIT_ARRIVING: u8 = 3;
 pub const TRANSIT_IMMIGRATING: u8 = 4;
 /// Agent is traversing a bezier curve through a road intersection (lane-change phase).
 pub const TRANSIT_INTERSECTION: u8 = 5;
+
+// Transit Modes
+/// Agent is walking on foot (sidewalks/crosswalks).
+pub const MODE_WALK: u8 = 0;
+/// Agent is driving a private car (road edges).
+pub const MODE_CAR: u8 = 1;
+/// Agent is cycling (sidewalks or road edges).
+pub const MODE_BIKE: u8 = 2;
+/// Agent is a passenger on a bus.
+pub const MODE_BUS_PASSENGER: u8 = 3;
+/// Agent is a passenger on a train/metro.
+pub const MODE_TRAIN_PASSENGER: u8 = 4;
+/// Agent is a passenger in a taxi.
+pub const MODE_TAXI_PASSENGER: u8 = 5;
+/// Agent is a passenger on a ship/ferry.
+pub const MODE_SHIP_PASSENGER: u8 = 6;

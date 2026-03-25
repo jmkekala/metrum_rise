@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::simulation::economy::agents::AgentSystem;
+    use crate::simulation::economy::agents::{AgentSystem, MODE_WALK};
     use crate::simulation::network::graph::{TransitGraph, Edge};
     use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
     use crate::simulation::pathing::hpa::HpaGraph;
@@ -138,7 +138,7 @@ mod tests {
         let hpa = HpaGraph::build(&g);
         let (target, driving) = agents.decide_transit_mode(i, n_far, &g, &hpa);
         
-        assert_eq!(driving, false, "Should NOT be able to drive if car is at home and agent is at work");
+        assert_eq!(driving, MODE_WALK, "Should NOT be able to drive if car is at home and agent is at work");
         assert_eq!(target, n_far, "Should head to far target by foot");
     }
 

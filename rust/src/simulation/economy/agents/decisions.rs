@@ -3,6 +3,7 @@
 use crate::simulation::network::graph::TransitGraph;
 use crate::simulation::pathing::hpa::HpaGraph;
 use super::data::AgentSystem;
+use super::{MODE_CAR, MODE_WALK};
 
 impl AgentSystem {
     pub fn decide_transit_mode(
@@ -11,7 +12,7 @@ impl AgentSystem {
         target_node: u32,
         graph: &TransitGraph,
         hpa: &HpaGraph,
-    ) -> (u32, bool) {
+    ) -> (u32, u8) {
         self.pathfind_count += 1;
         let current_node = self.current_node[i];
         let mut pedestrian_dist = 10000.0;
@@ -24,11 +25,11 @@ impl AgentSystem {
             // Far target and has car, but ONLY drive if a driving path actually exists!
             self.pathfind_count += 1;
             if hpa.find_path(current_node, target_node, usize::MAX, graph, false).is_some() {
-                return (target_node, true);
+                return (target_node, MODE_CAR);
             }
         }
         
         // Close target, no car, OR car path disconnected -> Walk
-        return (target_node, false);
+        return (target_node, MODE_WALK);
     }
 }

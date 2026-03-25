@@ -10,7 +10,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::TransitGraph;
 use crate::simulation::grid::pollution::PollutionSystem;
-use super::{TRANSIT_IMMIGRATING, TRANSIT_IDLE};
+use super::{TRANSIT_IMMIGRATING, TRANSIT_IDLE, MODE_CAR};
 use godot::prelude::*;
 use rand::Rng;
 use std::collections::HashMap;
@@ -72,8 +72,8 @@ pub struct AgentSystem {
     pub edge_progression: Vec<isize>,
     /// Lateral lane offset index on the current edge. Positive = forward lane, negative = backward lane.
     pub current_lane: Vec<i8>,
-    /// `true` if the agent is currently in a car; `false` if walking.
-    pub is_driving: Vec<bool>,
+    /// Current transit mode. One of the `MODE_*` constants.
+    pub transit_mode: Vec<u8>,
 
     // Traffic Lane Manager — Bezier Intersection Pathing
 
@@ -126,7 +126,7 @@ impl AgentSystem {
             current_edge: Vec::new(),
             edge_progression: Vec::new(),
             current_lane: Vec::new(),
-            is_driving: Vec::new(),
+            transit_mode: Vec::new(),
             bezier_p0_x: Vec::new(),
             bezier_p0_y: Vec::new(),
             bezier_p1_x: Vec::new(),
@@ -164,7 +164,7 @@ impl AgentSystem {
         self.current_edge.push(usize::MAX);
         self.edge_progression.push(0);
         self.current_lane.push(0);
-        self.is_driving.push(true); // Immigrants always arrive in cars!
+        self.transit_mode.push(MODE_CAR); // Immigrants always arrive in cars!
         self.bezier_p0_x.push(0.0);
         self.bezier_p0_y.push(0.0);
         self.bezier_p1_x.push(0.0);
@@ -218,7 +218,7 @@ impl AgentSystem {
         self.current_edge.clear();
         self.edge_progression.clear();
         self.current_lane.clear();
-        self.is_driving.clear();
+        self.transit_mode.clear();
         self.bezier_p0_x.clear();
         self.bezier_p0_y.clear();
         self.bezier_p1_x.clear();
@@ -271,7 +271,7 @@ impl AgentSystem {
         self.current_edge.swap(index, last_idx);
         self.edge_progression.swap(index, last_idx);
         self.current_lane.swap(index, last_idx);
-        self.is_driving.swap(index, last_idx);
+        self.transit_mode.swap(index, last_idx);
         self.bezier_p0_x.swap(index, last_idx);
         self.bezier_p0_y.swap(index, last_idx);
         self.bezier_p1_x.swap(index, last_idx);
@@ -301,7 +301,7 @@ impl AgentSystem {
         self.current_edge.pop();
         self.edge_progression.pop();
         self.current_lane.pop();
-        self.is_driving.pop();
+        self.transit_mode.pop();
         self.bezier_p0_x.pop();
         self.bezier_p0_y.pop();
         self.bezier_p1_x.pop();

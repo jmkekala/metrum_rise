@@ -178,7 +178,8 @@ impl SimulationNode {
             let mut basis_y = Vector3::UP;
             let mut basis_z = Vector3::BACK;
 
-            if self.agents.is_driving[i] {
+            use crate::simulation::economy::agents::MODE_CAR;
+            if self.agents.transit_mode[i] == MODE_CAR {
                 scale_x = 2.0; 
                 scale_y = 1.5; 
                 scale_z = 3.5; 

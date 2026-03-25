@@ -77,6 +77,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **Virtual Frontages**: agents arrive at buildings via `(edge_id, t: f32)` T-coordinates rather than physical graph nodes. The arrival trigger is a **projected distance check along the edge tangent**, ensuring agents on wide roads or sidewalks correctly identify they have reached their destination regardless of lateral offset.
 - Agent kill: swap-and-pop, O(1). Note: agent indices are not stable across ticks (swap-remove invalidates the last agent's index).
 - **Single-threaded tick** — Rayon parallelisation is a v0.1 goal (see Backlog).
+- **Transit Mode Enum** — migrated `is_driving: Vec<bool>` to `transit_mode: Vec<u8>` using constants (WALK=0, CAR=1, ...). This provides the multi-modal foundation for bicycles, buses, and rail.
 
 #### Agent Rules
 - **Immigration**: agents spawn at highway border nodes, arrive by car. Capped at `residential_capacity × 1.1`.
@@ -129,7 +130,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
    - `test_highway_vs_dirt_road_cost` ✓ exists in `pathing/tests.rs`
    - `test_cost_calculation_slope_penalty` ✓ exists but only checks that a steep edge costs more — it does **not** verify that the router actually bypasses a steep road in favour of a longer flat route. Add a three-node graph test: `A –(steep)→ B` and `A –(long flat)→ C –(flat)→ B`; assert the router chooses the flat detour.
    - Flow field Dijkstra < 5 ms on a 1,000-node graph: **deferred to v0.2** — cannot be written until flow fields are implemented.
-3. **`transit_mode: Vec<u8>` migration** — replace `is_driving: Vec<bool>` in `AgentSystem` SoA with `transit_mode: Vec<u8>` using constants `WALK=0, CAR=1, BIKE=2, BUS_PASSENGER=3, TRAIN_PASSENGER=4, TAXI_PASSENGER=5, SHIP_PASSENGER=6`. Update all four `is_driving` sites in `tick.rs`. `decide_transit_mode` return type changes from `(u32, bool)` to `(u32, u8)`. Memory impact: identical. **Do this before any new transport mode is wired up — retrofitting a bool into an enum after the fact is painful.**
+3. [DONE] **`transit_mode: Vec<u8>` migration** — replace `is_driving: Vec<bool>` in `AgentSystem` SoA with `transit_mode: Vec<u8>` using constants `WALK=0, CAR=1, BIKE=2, BUS_PASSENGER=3, TRAIN_PASSENGER=4, TAXI_PASSENGER=5, SHIP_PASSENGER=6`.
 4. **`allowed_mask: u8` in pathfinding query** — replace the `pedestrian: bool` parameter with `allowed_mask: u8` using the existing `TransitFlags` bit constants (`FOOT=1<<0, CAR=1<<1, BIKE=1<<2, RAIL=1<<3, SHIP=1<<4, AIR=1<<5`). Add `transit_flags: u8` to `Edge`; the query inner loop skips edges incompatible with the agent's mask at zero overhead. Do this now while HPA* is still in place — CCH (item 31) inherits the same `allowed_mask` parameter and `Edge::transit_flags` field unchanged. **This one field addition simultaneously unblocks bicycles, ferries, rail, and air routes — the entire multi-modal backlog depends on it.**
 5. **`TransitGraph` mutation tests** — the road editing pipeline has no test coverage. Add tests for:
    - `add_road`: resulting adjacency is bidirectional for a bidirectional edge; node count and edge count increase by expected amounts.
@@ -343,7 +344,7 @@ The type vocabulary for all planned transport modes already exists in `network/t
 | `TransitFlags` | `FOOT=1<<0, CAR=1<<1, RAIL=1<<2, SHIP=1<<3, AIR=1<<4` (bit 5+ free for `BIKE`) |
 | `NodeType` | `Junction, Station, Harbor, Airport, Transfer, Frontage` |
 
-The gap is entirely in the agent system: `is_driving: Vec<bool>` is binary and must be migrated to `transit_mode: Vec<u8>` (backlog item 28) before any new mode can be added. The pathfinding query takes a `pedestrian: bool` which must become `allowed_mask: u8` (backlog item 29, v0.01 goal 4) — CCH inherits this same parameter. These two changes are the shared prerequisites for all multi-modal work.
+The gap is entirely in the agent system: `transit_mode: Vec<u8>` migration is complete. The remaining pathfinding query take of `pedestrian: bool` must become `allowed_mask: u8` (backlog item 4, v0.01 goal) — CCH (item 31) inherits this same parameter. These two changes are the shared prerequisites for all multi-modal work.
 
 ### Memory Budget (20 km map)
 

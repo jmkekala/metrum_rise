@@ -7,7 +7,7 @@ use crate::simulation::pathing::hpa::HpaGraph;
 use godot::prelude::*;
 use rand::Rng;
 use super::data::AgentSystem;
-use super::{TRANSIT_IDLE, TRANSIT_DEPARTING, TRANSIT_ON_ROAD, TRANSIT_ARRIVING, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION};
+use super::{TRANSIT_IDLE, TRANSIT_DEPARTING, TRANSIT_ON_ROAD, TRANSIT_ARRIVING, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, MODE_CAR, MODE_WALK};
 
 impl AgentSystem {
     pub fn tick(&mut self, allocator: &BuildingAllocator, hpa_graph: &HpaGraph, graph: &mut TransitGraph, delta: f32) {
@@ -101,9 +101,9 @@ impl AgentSystem {
                             let b = &allocator.buildings[next_bldg];
                             let edge = &graph.edges[b.edge_idx];
                             let target_node = if b.frontage_t < 0.5 { edge.start_node } else { edge.end_node };
-                            let (_final_target, driving) = self.decide_transit_mode(i, target_node, graph, hpa_graph);
+                            let (_final_target, mode) = self.decide_transit_mode(i, target_node, graph, hpa_graph);
                             self.target_node[i] = target_node; // Target nearest node for routing
-                            self.is_driving[i] = driving;
+                            self.transit_mode[i] = mode;
                             self.current_path[i].clear();
                             self.current_path_index[i] = 0;
                             initiate_journey!(self, i);
@@ -128,7 +128,7 @@ impl AgentSystem {
                             
                             // Target point on the road/sidewalk
                             let mut base_vec = world_pos_on_edge;
-                            if self.is_driving[i] {
+                            if self.transit_mode[i] == MODE_CAR {
                                 let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
                                 let lane_w = edge.width / total_lanes;
                                 // For departure, we'll just target the first lane for now
@@ -145,7 +145,7 @@ impl AgentSystem {
 
                     let dir = target_vec - Vector2::new(self.pos_x[i], self.pos_y[i]);
                     let dist = dir.length();
-                    let speed = if self.is_driving[i] { 10.0 } else { 4.0 };
+                    let speed = if self.transit_mode[i] == MODE_CAR { 10.0 } else { 4.0 };
                     let step = speed * delta;
                     if dist < step {
                         self.pos_x[i] = target_vec.x; self.pos_y[i] = target_vec.y;
@@ -156,7 +156,7 @@ impl AgentSystem {
                     }
                 }
                 TRANSIT_ON_ROAD | TRANSIT_IMMIGRATING => { // ON ROAD 
-                    let mut remaining_dist = (if self.is_driving[i] { 20.0 } else { 4.0 }) * delta;
+                    let mut remaining_dist = (if self.transit_mode[i] == MODE_CAR { 20.0 } else { 4.0 }) * delta;
 
                     while remaining_dist > 0.0 {
                         // 1. Arrival Check
@@ -226,7 +226,7 @@ impl AgentSystem {
                         if self.current_edge[i] == usize::MAX {
                             if self.current_path[i].is_empty() {
                                 self.pathfind_count += 1;
-                                if let Some((_, _, path)) = hpa_graph.find_path(self.current_node[i], self.target_node[i], usize::MAX, graph, !self.is_driving[i]) {
+                                if let Some((_, _, path)) = hpa_graph.find_path(self.current_node[i], self.target_node[i], usize::MAX, graph, self.transit_mode[i] == MODE_WALK) {
                                     self.current_path[i] = path;
                                     self.current_path_index[i] = 1;
                                 } else {
@@ -315,7 +315,7 @@ impl AgentSystem {
                             let tangent = diff.normalized();
                             let normal = Vector2::new(-tangent.y, tangent.x);
                                                         let mut offset_target = Vector2::new(p_target.x, p_target.z);
-                             if self.is_driving[i] {
+                             if self.transit_mode[i] == MODE_CAR {
                                   let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
                                   let lane_w = edge.width / total_lanes;
                                   let lane_idx = if is_fwd { self.current_lane[i] as f32 } else { (edge.fwd_lanes as i8 + (-self.current_lane[i] - 1)) as f32 };
@@ -360,7 +360,7 @@ impl AgentSystem {
                     // to the building center. No more gateway detour!
                     let dir_to_center = center_vec - Vector2::new(self.pos_x[i], self.pos_y[i]);
                     let dist = dir_to_center.length();
-                    let speed = if self.is_driving[i] { 10.0 } else { 4.0 };
+                    let speed = if self.transit_mode[i] == MODE_CAR { 10.0 } else { 4.0 };
                     let step = speed * delta;
                     
                     if dist < step {
@@ -369,7 +369,7 @@ impl AgentSystem {
                         self.current_building[i] = b_id;
                         self.is_visible[i] = false;
                         self.transit[i] = TRANSIT_IDLE;
-                        self.is_driving[i] = false;
+                        self.transit_mode[i] = MODE_WALK;
                         self.current_edge[i] = usize::MAX;
                         self.edge_progression[i] = 0;
 
