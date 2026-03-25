@@ -4,7 +4,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
-use crate::simulation::pathing::hpa::HpaGraph;
+use crate::simulation::pathing::cch::CchGraph;
 use godot::prelude::*;
 use rand::Rng;
 use super::data::AgentSystem;
@@ -18,7 +18,7 @@ impl AgentSystem {
     /// 2. Activity state transitions (Home -> Work -> Shop).
     /// 3. Pathfinding and movement along road edges.
     /// 4. Arrival and departure logic for buildings.
-    pub fn tick(&mut self, allocator: &mut BuildingAllocator, hpa_graph: &HpaGraph, graph: &mut RegionGraph, delta: f32) {
+    pub fn tick(&mut self, allocator: &mut BuildingAllocator, cch_graph: &CchGraph, graph: &mut RegionGraph, delta: f32) {
         self.sim_time += delta;
         let mut rng = rand::rngs::ThreadRng::default();
         
@@ -107,7 +107,7 @@ impl AgentSystem {
                             let b = &allocator.buildings[next_bldg];
                             let edge = &graph.edges[b.edge_idx];
                             let target_node = if b.frontage_t < 0.5 { edge.start_node } else { edge.end_node };
-                            let (_final_target, mode) = self.decide_transit_mode(i, target_node, graph, hpa_graph);
+                            let (_final_target, mode) = self.decide_transit_mode(i, target_node, graph, cch_graph);
                             self.target_node[i] = target_node; // Target nearest node for routing
                             self.transit_mode[i] = mode;
                             self.current_path[i].clear();
@@ -233,7 +233,7 @@ impl AgentSystem {
                             if self.current_path[i].is_empty() {
                                 self.pathfind_count += 1;
                                 let allowed_mask = if self.transit_mode[i] == MODE_WALK { TransitFlags::FOOT } else { TransitFlags::CAR };
-                                if let Some((_, _, path)) = hpa_graph.find_path(self.current_node[i], self.target_node[i], usize::MAX, graph, allowed_mask) {
+                                if let Some((_, _, path)) = cch_graph.find_path(self.current_node[i], self.target_node[i], usize::MAX, graph, allowed_mask) {
                                     self.current_path[i] = path;
                                     self.current_path_index[i] = 1;
                                 } else {

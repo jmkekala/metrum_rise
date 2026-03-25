@@ -22,16 +22,18 @@ use types::*;
 use graph::*;
 use render::TransitRenderer;
 use render::road::RoadRenderer;
-use crate::simulation::pathing::hpa::HpaGraph;
+use crate::simulation::pathing::cch::CchGraph;
 
 /// Top-level road network manager for pathfinding integration and coordinate conversion.
 ///
-/// Use this struct for all road edits. It ensures the HPA* graph is rebuilt after structural changes.
+/// Use this struct for all road edits. It ensures the CCH graph is rebuilt after structural changes.
 pub struct TransitNetwork {
-    /// The hierarchical abstract graph built from chunk-boundary nodes.
-    pub hpa_graph: HpaGraph,
-    /// Chunks (512m) that need abstract graph recalculation. If empty, graph is in sync.
+    /// The Customizable Contraction Hierarchy (CCH) graph for global routing.
+    pub cch_graph: CchGraph,
+    /// Chunks (512m) that need topology recalculation. If not empty, triggers CCH Phase 1.
     pub hpa_dirty_chunks: HashSet<(i32, i32)>,
+    /// Flags that edge costs have changed, requiring CCH Phase 2 (Metric Customization).
+    pub metric_dirty: bool,
     /// Edges that need their zoning obstruction cache recalculated.
     pub zoning_dirty_edges: HashSet<usize>,
 }
@@ -39,15 +41,17 @@ pub struct TransitNetwork {
 impl TransitNetwork {
     pub fn new() -> Self {
         Self {
-            hpa_graph: HpaGraph::new(),
+            cch_graph: CchGraph::new(0),
             hpa_dirty_chunks: HashSet::new(),
+            metric_dirty: false,
             zoning_dirty_edges: HashSet::new(),
         }
     }
 
     pub fn clear(&mut self, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
-        self.hpa_graph = HpaGraph::new();
+        self.cch_graph = CchGraph::new(0);
         self.hpa_dirty_chunks.clear();
+        self.metric_dirty = false;
         self.zoning_dirty_edges.clear();
         zoning.clear();
         allocator.clear();
@@ -265,21 +269,24 @@ impl TransitNetwork {
     }
 
 
-    pub fn rebuild_pathing(&mut self, graph: &RegionGraph) {
-        if self.hpa_dirty_chunks.is_empty() { return; }
-        
-        // v0.01: For now, if many chunks are dirty, do a full rebuild
-        if self.hpa_dirty_chunks.len() > 10 || self.hpa_graph.concrete_adj.is_empty() {
-            self.hpa_graph = HpaGraph::build(graph);
-        } else {
-            self.hpa_graph.update_incremental(graph, &self.hpa_dirty_chunks);
+    pub fn rebuild_pathing(&mut self, graph: &mut RegionGraph) {
+        // Topology changes (Phase 1)
+        if !self.hpa_dirty_chunks.is_empty() {
+            // Run compaction as required by 31c Phase 1
+            graph.compact_edges();
+            self.cch_graph = CchGraph::build(graph);
+            self.hpa_dirty_chunks.clear();
+            self.metric_dirty = false; // Phase 1 includes customize
+        } else if self.metric_dirty {
+            // Metric-only change (Phase 2)
+            self.cch_graph.customize(graph);
+            self.metric_dirty = false;
         }
-        self.hpa_dirty_chunks.clear();
     }
 
-    /// Rebuilds the HPA* graph only if it has been marked dirty.
-    pub fn rebuild_pathing_if_dirty(&mut self, graph: &RegionGraph) {
-        if !self.hpa_dirty_chunks.is_empty() {
+    /// Rebuilds the routing hierarchy if it has been marked dirty.
+    pub fn rebuild_pathing_if_dirty(&mut self, graph: &mut RegionGraph) {
+        if !self.hpa_dirty_chunks.is_empty() || self.metric_dirty {
             self.rebuild_pathing(graph);
         }
     }

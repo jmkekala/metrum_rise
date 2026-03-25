@@ -1,5 +1,4 @@
-//! A* priority-queue state used by both the concrete-graph query in [`super::hpa`]
-//! and the per-chunk Dijkstra in the HPA* build phase.
+//! A* priority-queue state used by the bidirectional Dijkstra query in [`super::cch`].
 //!
 //! State is keyed by `(node_id, incoming_edge)` rather than just `node_id` so that
 //! turn restrictions stored in [`crate::simulation::network::graph::Node::lane_connections`]

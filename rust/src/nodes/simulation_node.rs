@@ -125,8 +125,8 @@ impl SimulationNode {
         // 3. Update Buildings
         self.allocator.update_edge_indices(&mapping);
         
-        // 4. Rebuild HPA Graph (as its internal cached indices are now invalid)
-        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.region_graph);
+        // 4. Rebuild CCH Graph (as its internal cached indices are now invalid)
+        self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
         
         godot_print!("SimulationNode: Compaction complete. Edge count: {}", self.region_graph.edges.len());
     }
@@ -595,7 +595,7 @@ impl INode3D for SimulationNode {
         
         if self.time.speed_multiplier > 0.0 {
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
-            self.agents.tick(&mut self.allocator, &self.transit_network.hpa_graph, &mut self.region_graph, dt);
+            self.agents.tick(&mut self.allocator, &self.transit_network.cch_graph, &mut self.region_graph, dt);
             
             let _sub_steps = 2;
             // ... water process logic ...

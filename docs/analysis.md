@@ -79,20 +79,21 @@ Swap-and-pop in O(1): the dead agent's index is filled with the last agent's dat
 
 ### 1.4 `HpaGraph` — Current Pathfinding Precompute (v0.1 blocker: replaced by CCH)
 
-**Current structure.** The live implementation uses HPA* (Botea et al., 2004): `abstract_edges: HashMap<u32, Vec<AbstractEdge>>` stores pairwise intra-chunk costs; `concrete_adj: Vec<Vec<(u32, usize, f32)>>` is the hot-path adjacency cache (Vec-indexed, not HashMap). See §2.2 for the full algorithm description and known weaknesses. This structure is removed when CCH (§2.9) lands at v0.1.
+**Status: REPLACED BY CCH.** This structure has been removed in favour of CCH (§1.5).
 
-### 1.5 `CchGraph` — Planned CCH Data Structure (v0.1)
+### 1.5 `CchGraph` — Implemented (v0.1)
 
-The CCH precompute produces two persistent structures:
+The CCH implementation stores:
 
 | Field | Type | Role |
 |-------|------|------|
-| `order` | `Vec<u32>` | Contraction order: `order[i]` = node contracted at step i (lowest importance first) |
-| `shortcuts` | `Vec<Vec<(u32, f32, Option<u32>)>>` | Per-node upward shortcut edges: `(to, weight, via_node)` where `via_node` is the node bypassed by this shortcut |
-| `upward_adj` | `Vec<Vec<u32>>` | CSR-style upward adjacency (edges to higher-ranked nodes only) — forward search |
-| `downward_adj` | `Vec<Vec<u32>>` | CSR-style downward adjacency (edges from higher-ranked nodes) — backward search |
-| `node_rank` | `Vec<u32>` | `node_rank[v]` = contraction step at which node v was contracted; used for upward/downward edge filtering during query |
-| `max_v` | `f32` | Maximum edge speed in network; used for A*-style pruning during bidirectional search |
+| `node_order` | `Vec<u32>` | Contraction order based on importance heuristic. |
+| `shortcuts` | `Vec<CchShortcut>` | Permanent shortcuts; `inner_edges` stores base edges. |
+| `fwd_up`, `bwd_up` | `Vec<Vec<usize>>` | Upward adjacency for bidirectional query. |
+| `elimination_tree` | `Vec<Option<u32>>` | Parent pointers for O(E) customization pass. |
+| `node_rank` | `Vec<usize>` | Rank of each node in the hierarchy. |
+
+**Performance.** A contracted graph for 100k edges adds ~30–40% shortcut edges. Query time is empirically 100–1000x faster than A* at city scale. Customization is O(E) and handles congestion/speed changes bottom-up through the elimination tree.
 
 **Separation of topology and metrics (CRP property).** The contraction order (`order`, `upward_adj`, `downward_adj`) depends only on graph topology and is rebuilt when edges are added or removed — a rare interactive event. Edge weights (`shortcuts` field, specifically the `f32` weight component) are updated independently via the *customization phase*: propagate new weights through the elimination tree in O(E). This runs on every congestion update or speed limit change without touching the contraction order.
 
@@ -118,51 +119,18 @@ Dijkstra (h = 0) is admissible and consistent but explores far more nodes. Landm
 
 ---
 
-### 2.2 HPA* — Current Implementation (v0.1 blocker: replaced by CCH, §2.9)
+### 2.2 HPA* (Replaced by CCH)
+**Status: Obsolete.** Replaced by Customizable Contraction Hierarchies (§2.9) for 100k-agent scalability.
 
-**Theory.**
-HPA* (Botea et al., 2004) hierarchically abstracts the search space. The map is divided into rectangular chunks. Nodes on chunk boundaries become *abstract nodes*; intra-chunk Dijkstra computes pairwise costs between all abstract nodes within each chunk, yielding an *abstract graph* on which long-distance A* can route without expanding every concrete node.
+### 2.9 CCH / CRP — Implemented (v0.1)
 
-**Build phase.**
-For each chunk, run Dijkstra from every abstract entry node to every other abstract entry node within the chunk. Store `(cost, inner_path)` as `AbstractEdge`. Complexity: O(K × B² × (V_chunk + E_chunk) log V_chunk) where K = number of chunks, B = abstract nodes per chunk boundary. Given 512 m chunks on a 20 km map: K ≈ 40² = 1,600; B is typically 2–8 per boundary side.
+**Status: COMPLETE.** Replaces HPA* as the primary routing engine.
 
-**Query phase — three phases.**
-1. **Local boundary search from start**: Dijkstra within the start chunk from `start` to all abstract boundary nodes.
-2. **Backward local boundary search from goal**: same, reversed adjacency.
-3. **Abstract A***: connects Phase A and Phase B results via `abstract_edges`. Heuristic is `dist(v, goal) / max_v`. Search is **unidirectional** — the backward adjacency (`concrete_rev_adj`) is not used in Phase C.
+**Topology Phase.** Node contraction using edge-difference heuristic. Turn restrictions are handled by including `incoming_edge` in the search state and shortcut definition.
 
-**Known weaknesses (all resolved by CCH).**
-- Phase C accumulates `dist + 0.0` — abstract distance is not tracked through the contracted graph; returned `dist` is inaccurate until concrete reconstruction runs.
-- Abstraction completeness: edges entirely within one 512 m chunk have no abstract representation. On small graphs, HPA* degrades to full concrete A*.
-- Unidirectional abstract search misses the ~2× speedup from bidirectional meet-in-the-middle.
-- Chunk size (512 m) is calibrated for road networks; rail lines with 500 m–5 km inter-station gaps produce few or no abstract nodes, degrading rail pathfinding to full A*.
+**Metric Customization.** Propagation through elimination tree in O(E). Triggered by congestion or speed limit changes.
 
-This section is retained as historical context. The algorithm is removed when CCH (§2.9) lands.
-
-### 2.9 CCH / CRP — Planned Replacement (v0.1 blocker)
-
-**Algorithm family.** Customizable Contraction Hierarchies (Dibbelt et al., 2016) / Customizable Route Planning (Vetter et al., 2009). CCH separates three phases: topology preprocessing (once per graph structure change), metric customization (once per weight change — congestion, speed limits), and query (per routing request).
-
-**Topology phase — contraction.**
-Nodes are contracted in order of increasing *importance* (edge-difference heuristic: importance(v) = added shortcuts − removed edges when v is contracted). Contracting node v: for every pair of neighbours (u, w) where the shortest u→w path passes through v, add a shortcut edge u→w with cost `cost(u,v) + cost(v,w)` if no alternative path of equal or lesser cost exists. After all contractions, the graph has V levels; a node at level k was contracted at step k.
-
-The key property: every shortest path in the original graph corresponds to an *upward-then-downward* path in the contracted graph — forward search only follows edges to higher-ranked nodes, backward search only follows edges from higher-ranked nodes. The two frontiers meet at the highest-ranked node on the optimal path.
-
-Complexity: O(E log E) preprocessing. For a 100k-edge city graph: ~140k edges after shortcuts, ~0.4 s preprocessing time (estimated from RoutingKit benchmarks at this scale).
-
-**Metric customization.**
-Edge weights (speed limits, congestion multipliers) can change without altering the contraction order. The customization phase propagates new weights through the elimination tree bottom-up in O(E): for each shortcut edge, recompute `weight = min(weight, cost(u,v_contracted) + cost(v_contracted,w))`. This is the CRP property that makes CCH suitable for interactive editing: a road speed change triggers only the O(E) customization, not a full O(E log E) topology rebuild.
-
-When a road edit adds or removes an edge (topology change), the contraction order is recomputed in full. This is O(E log E) and acceptable because road edits are rare interactive events — the same justification that makes CSR acceptable for the base graph.
-
-**Query — bidirectional Dijkstra.**
-Forward search from source s expands only upward edges (to nodes with higher rank). Backward search from goal t expands only downward edges (from nodes with higher rank). The searches meet at the node u that minimises `dist_forward(u) + dist_backward(u)`. Complexity: O(√E log √E) — empirically 100–1,000× faster than A* on city-scale graphs.
-
-**Turn restriction compatibility.**
-The `(node, incoming_edge)` state key used in §2.1 must be preserved. CCH with turn restrictions expands state (node, incoming_edge) instead of node alone; the contracted graph encodes turn-restriction-aware shortcut costs. This increases the state space by a factor of average junction degree (~3–4×) but does not change the asymptotic complexity.
-
-**Modal filtering.**
-`allowed_mask: u8` (v0.01 goal 4) filters edges during both topology preprocessing and query. A CCH graph can be built per modal mask (one for CAR, one for FOOT, etc.) or masks can be applied at query time. Per-mask precomputation is preferred at scale — it produces smaller contracted graphs and faster queries.
+**Query.** Bidirectional upward search. Meets at the highest-rank node on the shortest path. `allowed_mask: u8` applied at query time.
 
 **RegionGraph compatibility.**
 CCH operates on whatever graph is present. A single `RegionGraph` containing one city tile produces a CCH contracted graph for that city. When a second city tile is added (with inter-city highway/rail/ship/air edges), the topology phase rebuilds on the full region graph and the contraction hierarchy naturally promotes inter-city connectors to the top of the hierarchy — they have high betweenness centrality and are contracted last. Cross-city queries immediately escalate to the inter-city edge level and route there, without exploring local streets of the intermediate cities.

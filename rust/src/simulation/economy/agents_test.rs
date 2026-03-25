@@ -3,7 +3,7 @@ mod tests {
     use crate::simulation::economy::agents::{AgentSystem, MODE_WALK};
     use crate::simulation::network::graph::{RegionGraph, Edge};
     use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
-    use crate::simulation::pathing::hpa::HpaGraph;
+    use crate::simulation::pathing::cch::CchGraph;
     use crate::simulation::economy::demand::DemandSystem;
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::core::config::MapConfig;
@@ -54,10 +54,10 @@ mod tests {
             deleted: false,
         });
 
-        let hpa = HpaGraph::build(&g);
+        let cch = CchGraph::build(&g);
         
         // Find path for CAR (pedestrian = false)
-        let (_cost, _dist, p) = hpa.find_path(n0, n1, usize::MAX, &g, TransitFlags::CAR).expect("Car should find a path");
+        let (_cost, _dist, p) = cch.find_path(n0, n1, usize::MAX, &g, TransitFlags::CAR).expect("Car should find a path");
         // Path should be A -> C -> B (nodes 0, 2, 1)
         assert_eq!(p.len(), 3);
         assert_eq!(p[0], n0);
@@ -76,7 +76,7 @@ mod tests {
         g.add_edge(Edge {
             start_node: n0, end_node: n1,
             primary_type: TransitType::Road, allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 1.0, physical_length: 1.0,
+            width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 2.0, physical_length: 1.0,
             current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
@@ -109,12 +109,11 @@ mod tests {
             deleted: false,
         });
 
-        let hpa = HpaGraph::build(&g);
+        let cch = CchGraph::build(&g);
         
         // Find path for PEDESTRIAN (pedestrian = true)
-        let (_cost, _dist, p) = hpa.find_path(n0, n1, usize::MAX, &g, TransitFlags::FOOT).unwrap();
-        // Path should be A -> C -> B (nodes 0, 2, 1) because Road A-B is 1.0 * 10 = 10.0 cost for pedestrians.
-        // Walkway A-C-B is 0.5 + 0.5 = 1.0 cost.
+        let (_cost, _dist, p) = cch.find_path(n0, n1, usize::MAX, &g, TransitFlags::FOOT).unwrap();
+        // Path should be A -> C -> B (nodes 0, 2, 1) because Road A-B costs 2.0 while Walkway A-C-B costs 0.5 + 0.5 = 1.0.
         assert_eq!(p.len(), 3);
         assert_eq!(p[0], n0);
         assert_eq!(p[1], n2);
@@ -138,8 +137,8 @@ mod tests {
         agents.pos_x[i] = 10.0;
         agents.pos_y[i] = 0.0;
 
-        let hpa = HpaGraph::build(&g);
-        let (target, driving) = agents.decide_transit_mode(i, n_far, &g, &hpa);
+        let cch = CchGraph::build(&g);
+        let (target, driving) = agents.decide_transit_mode(i, n_far, &g, &cch);
         
         assert_eq!(driving, MODE_WALK, "Should NOT be able to drive if car is at home and agent is at work");
         assert_eq!(target, n_far, "Should head to far target by foot");
@@ -164,7 +163,7 @@ mod tests {
             zoning_left: true, zoning_right: true, deleted: false,
         });
 
-        let hpa = HpaGraph::build(&g);
+        let cch = CchGraph::build(&g);
         let config = MapConfig::default();
         let mut allocator = BuildingAllocator::new();
         let mut zoning = ZoningSystem::new(&config);
@@ -208,7 +207,7 @@ mod tests {
 
         // 3. Tick Simulation
         for _ in 0..1000 {
-            agents.tick(&mut allocator, &hpa, &mut g, 1.0);
+            agents.tick(&mut allocator, &cch, &mut g, 1.0);
             
             for i in 0..agents.count {
                 if agents.activity[i] != 0 || agents.transit[i] != 0 {

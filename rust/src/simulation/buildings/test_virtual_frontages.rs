@@ -51,7 +51,7 @@ mod tests {
         let initial_edges = graph.edges.len();
 
         // Tick allocator to spawn building
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &graph, &config);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &mut graph, &config);
 
         // Verify building was spawned
         assert_eq!(allocator.buildings.len(), 1, "Building should have spawned");
@@ -97,7 +97,7 @@ mod tests {
             }
         }
         demand.residential = 500.0;
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &graph, &config);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &mut graph, &config);
         
         // Spawn building at t=0.85 (near end_node)
         for dx in 0..3 {
@@ -105,7 +105,7 @@ mod tests {
                 zoning.set_cell(0, 1, 7 + dx, dy, ZoneType::Residential);
             }
         }
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &graph, &config);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &mut graph, &config);
 
         assert_eq!(allocator.buildings.len(), 2);
         
@@ -154,7 +154,7 @@ mod tests {
             }
         }
         demand.residential = 500.0;
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &graph, &config);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut net, &mut graph, &config);
         
         let b_idx = 0;
         let b = &allocator.buildings[b_idx];
@@ -177,8 +177,8 @@ mod tests {
         // Move agent near the frontage (dist_along < 2m, but Euclidean distance > 5m)
         agents.pos_x[agent_idx] = frontage_x - 1.0; 
         
-        let hpa = crate::simulation::pathing::hpa::HpaGraph::build(&graph);
-        agents.tick(&mut allocator, &hpa, &mut graph, 0.016);
+        let cch = crate::simulation::pathing::cch::CchGraph::build(&graph);
+        agents.tick(&mut allocator, &cch, &mut graph, 0.016);
         
         assert_eq!(agents.transit[agent_idx], TRANSIT_ARRIVING, 
             "Agent should have arrived via projected distance check");

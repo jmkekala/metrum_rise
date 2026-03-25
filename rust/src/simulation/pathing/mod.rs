@@ -1,12 +1,11 @@
-//! Pathfinding: cost calculation, A* state, and HPA* hierarchical routing.
+//! Pathfinding: cost calculation, A* state, and CCH/CRP hierarchical routing.
 //!
-//! Use [`hpa::HpaGraph::find_path`] for all agent route queries.
-//! Rebuild [`hpa::HpaGraph`] via [`crate::simulation::network::TransitNetwork::rebuild_pathing`]
-//! after any structural road-network change.
+//! Use [`cch::CchGraph::find_path`] for all agent route queries.
+//! Rebuild [`cch::CchGraph`] via [`crate::simulation::network::TransitNetwork::rebuild_pathing`]
+//! after any structural road-network change or metric update.
 
 pub mod cost;
 pub mod astar;
-pub mod hpa;
 pub mod cch;
 
 #[cfg(test)]

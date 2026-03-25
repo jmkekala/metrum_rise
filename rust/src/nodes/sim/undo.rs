@@ -42,7 +42,7 @@ impl SimulationNode {
             }
 
             if sync_trans_graph {
-                self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.region_graph);
+                self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
             }
             return true;
         }

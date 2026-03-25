@@ -122,7 +122,7 @@ impl SimulationNode {
                 node.lane_connections.get_mut(&key).unwrap().push(target);
             }
         }
-        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.region_graph);
+        self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
     }
 
     /// Clears all lane connections at a junction node.
@@ -131,7 +131,7 @@ impl SimulationNode {
         if let Some(node) = self.region_graph.nodes.get_mut(node_id as usize) {
             node.lane_connections.clear();
         }
-        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.region_graph);
+        self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
     }
 
     /// Clears lane connections for a specific source edge/lane at a junction.
@@ -144,7 +144,7 @@ impl SimulationNode {
             node.lane_connections.remove(&key);
         }
         
-        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.region_graph);
+        self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
     }
 
     /// Flattens the terrain to match the grade of the road network.

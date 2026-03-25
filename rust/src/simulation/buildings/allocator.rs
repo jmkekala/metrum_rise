@@ -112,7 +112,7 @@ impl BuildingAllocator {
     ///
     /// Removes stale buildings, grows new ones into high-demand zones, and spawns immigrants.
     /// Calls `network.rebuild_pathing()` once if any building was added or removed.
-    pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, zoning: &mut ZoningSystem, desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, network: &mut crate::simulation::network::TransitNetwork, graph: &RegionGraph, config: &crate::simulation::core::config::MapConfig) {
+    pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, zoning: &mut ZoningSystem, desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, network: &mut crate::simulation::network::TransitNetwork, graph: &mut RegionGraph, config: &crate::simulation::core::config::MapConfig) {
         let mut spawned_this_tick = 0;
         let max_spawns = 10;
         
@@ -607,7 +607,7 @@ mod tests {
         for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
         zoning.recalculate_obstructions(0, &graph);
 
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &graph, &map_cfg);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &mut graph, &map_cfg);
         
         assert_eq!(allocator.buildings.len(), 1);
         assert_eq!(demand.residential, 95.0, "Residential demand should decrease by 5.0 after placement");
@@ -642,7 +642,7 @@ mod tests {
         for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
         zoning.recalculate_obstructions(0, &graph);
 
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &graph, &map_cfg);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &mut graph, &map_cfg);
         
         assert_eq!(allocator.buildings.len(), 0, "No building should spawn when desirability is below 50.0");
     }
@@ -679,7 +679,7 @@ mod tests {
         // Remove zoning trigger
         for dx in 0..3 { for dy in 0..3 { zoning.set_cell(0, 1, dx, dy, ZoneType::None); } }
 
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &graph, &map_cfg);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &mut graph, &map_cfg);
         
         assert_eq!(allocator.buildings.len(), 0, "Building should have been removed");
         assert!(!zoning.is_occupied(0, 1, 0, 0), "Zoning cell occupancy should be cleared after building removal");

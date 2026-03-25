@@ -44,9 +44,10 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
     - `spatial.rs`: 512 m spatial edge grid and 16 m node grid logic.
     - `topology.rs`: intersection detection, edge splitting, and node merging.
     - `rebuild.rs`: batch remapping, soft-deletion compaction, and intersection clipping.
-    - **Road Network (`RegionGraph`)**: Adjacency-list based directed graph with spatial acceleration. Pathfinding via HPA*. Now supports multi-modal queries via `allowed_mask`.
+    - **Road Network (`RegionGraph`)**: Adjacency-list based directed graph with spatial acceleration. Pathfinding via Customizable Contraction Hierarchies (CCH). Supports multi-modal queries via `allowed_mask`.
 - **`RegionGraph` rename** — `TransitGraph` renamed to `RegionGraph`; struct is now globally owned in `SimulationNode`, not city-scoped. All call sites updated. Prerequisite for CCH (item 31b/c).
 - `TransitNetwork` (`network/mod.rs`) — `add_road`, `split_edge`, `merge_nodes`.
+- **Pathfinding (CCH)**: `simulation/pathing/cch.rs` implements a Customizable Contraction Hierarchy with O(E) metric customization and bidirectional upward Dijkstra. Replaces HpaGraph for all agent routing.
 - **Unit tests** (`simulation/network/test_topology.rs`): `add_road` (bidirectional adjacency, 100 m subdivision logic), `split_edge` (physical length summation, node sharing, zoning/building migration), `compact_edges` (index remapping consistency for agents and buildings).
 - Topology: intersection detection and edge splitting in `topology.rs`.
 - Road and junction mesh generation in `network/render/road.rs` (405 lines).
@@ -102,7 +103,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/pathing/astar.rs` — binary-heap A* with `(node, incoming_edge)` state key (mandatory for correct turn-restriction enforcement at `Node::lane_connections`).
 - `simulation/pathing/cost.rs` — edge cost = `length / speed_limit` (time in seconds) with exponential slope penalty for grades > 10%: `1 + (max_slope × 5)²`.
 - A* heuristic: `euclidean_distance / max_v` — admissible and consistent; `max_v` is the maximum edge speed limit in the network, precomputed at graph build time.
-- `simulation/pathing/hpa.rs` — current HPA* implementation (three-phase query). **Superseded by CCH (item 31, v0.1 blocker); will be removed when CCH lands.**
+- `simulation/pathing/cch.rs` — CCH / CRP implementation replacing HPA*. Single hierarchy with inner-path expansion (`CchShortcut::inner_edges: Vec<usize>`). Three phases: contraction (degree-based node order, shortcut generation into `fwd_up`/`bwd_up`), customisation (`customize()` walks all shortcuts and sums `base_cost * (1 + current_congestion)` — O(E), called on every congestion update), query (bidirectional upward Dijkstra, `allowed_mask` applied at expansion, path reconstructed from edge sequence). `hpa.rs` deleted; all call sites updated.
 - **`simulation/pathing/cch.rs`** — initial CCH implementation (31b). Implements building a single contraction hierarchy with shortcut inner path storage. High-performance customization strategy: recomputes shortcut costs by summing underlying concrete edge costs (base_cost * (1 + congestion)) in O(path_length). Supported by bidirectional upward query phase.
 - **Unit tests** (`simulation/pathing/tests.rs`): `test_slope_cost_calculation` (50% grade edge receives a 7.25× cost multiplier vs a flat edge of equal length), `test_pathing_avoids_steep_slope` (router selects the longer flat detour A→C→B over the steep direct A→B). **Known geometry inconsistency in `test_pathing_avoids_steep_slope`**: `edge_ab`'s geometry endpoint is `(100, 50, 0)` but node `n_b` is placed at `(100, 0, 0)`. `CostCalculator` reads `edge.geometry`, so the slope penalty is computed correctly and the test passes, but the endpoint violates the invariant that edge geometry must start and end at the node positions. Fix: place `n_b` at `(100, 50, 0)`, or represent the slope with an intermediate waypoint while keeping the geometry endpoint at `n_b`'s flat position.
 
@@ -138,37 +139,6 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 ### v0.1 — 100k-agent milestone
 
 Feature completion and correctness fixes. Performance tuning is not the focus here — the benchmark target is 100k agents at ≥ 30 FPS on a single core, which is achievable without parallelism given the current per-agent cost.
-
-#### v0.1 Blockers — must complete before tagging v0.1
-
-31c. **CCH / CRP implementation** — supersedes HPA* for all long-distance routing.
-
-    **Phase 1 — Contraction (topology phase):**
-    - Compute contraction order using the edge-difference heuristic (number of shortcuts added minus edges removed when contracting a node). Lower importance = contracted first.
-    - Contract nodes in order: for each contracted node u, add a shortcut edge (v → w) for every pair of neighbours (v, w) where the path v → u → w is the only shortest path. Store `inner_path: Vec<u32>` in each shortcut.
-    - Output: `CchGraph` struct containing `node_order: Vec<u32>`, `shortcuts: Vec<Shortcut>` (with `start_node`, `end_node`, `inner_path`), and `elimination_tree: Vec<Option<u32>>` (parent pointers for O(E) customisation).
-    - Runs once on full topology rebuild (road added or removed). O(E log E). Triggered by the same dirty-chunk mechanism that currently triggers `HpaGraph::build`.
-    - One-way enforcement: when building shortcuts, check `fwd_lanes` / `bkw_lanes` on edges — do not create a shortcut through a node if the traversal direction violates lane counts.
-    - Run `compact_edges()` before each topology rebuild to ensure contiguous node/edge IDs.
-
-    **Phase 2 — Customisation (metric phase):**
-    - Walk the elimination tree bottom-up. For each shortcut, recompute its cost as the sum of the current dynamic costs of its `inner_path` edges: `base_cost * (1 + current_congestion)`.
-    - O(E). Runs on every `current_congestion` update — this is CRP's key property.
-    - Replaces the current chunk-wise incremental Dijkstra rebuild. Two dirty modes: topology-dirty (full Phase 1 + Phase 2) and metric-dirty (Phase 2 only).
-
-    **Phase 3 — Query:**
-    - Bidirectional Dijkstra on the contracted graph. Forward search from source upward in hierarchy; backward search from goal upward; meeting condition at the highest-hierarchy node reached by both.
-    - O(√E log √E) vs O((V+E) log V) for A*.
-    - Preserve the `(node, incoming_edge)` state key from the existing A* for turn-restriction correctness at `Node::lane_connections`.
-    - Modal filtering: apply `allowed_mask` at edge expansion — skip edges where `(edge.allowed_types & allowed_mask) == 0`. One hierarchy serves all modes.
-    - Path reconstruction: expand shortcuts via `inner_path` to recover the full concrete node sequence.
-    - Signature matches current `HpaGraph::find_path` exactly: `find_path(start, end, start_edge, graph, allowed_mask) -> Option<(f32, f32, Vec<u32>)>`. No caller changes needed.
-
-    **Phase 4 — Integration:**
-    - Replace all `HpaGraph::find_path` call sites (two: `decisions.rs` and `tick.rs`) with `CchGraph::find_path`.
-    - Delete `HpaGraph`, `hpa.rs`, and the chunk-wise incremental Dijkstra rebuild logic.
-    - Update `TransitNetwork::rebuild_pathing_if_dirty` to dispatch topology-dirty vs. metric-dirty rebuilds.
-    - Add a CCH correctness test: same graph as `test_pathing_avoids_steep_slope`; verify `CchGraph::find_path` returns the same path as the current HPA* implementation.
 
 #### v0.1 Goals
 
@@ -368,7 +338,7 @@ The type vocabulary for all planned transport modes already exists in `network/t
 | `TransitFlags` | `FOOT=1<<0, CAR=1<<1, RAIL=1<<2, SHIP=1<<3, AIR=1<<4` (bit 5+ free for `BIKE`) |
 | `NodeType` | `Junction, Station, Harbor, Airport, Transfer, Frontage` |
 
-The gap is entirely in the agent system: `transit_mode: Vec<u8>` migration is complete. The remaining pathfinding query take of `pedestrian: bool` must become `allowed_mask: u8` (backlog item 4, v0.01 goal) — CCH (item 31) inherits this same parameter. These two changes are the shared prerequisites for all multi-modal work.
+The gap is entirely in the agent system: `transit_mode: Vec<u8>` migration is complete. The pathfinding query uses `allowed_mask: u8` — CCH implements this as a query-time filter. These two changes are the shared prerequisites for all multi-modal work.
 
 ### Memory Budget (20 km map)
 

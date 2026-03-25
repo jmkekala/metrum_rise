@@ -235,7 +235,7 @@ impl SimulationNode {
                 
                 let current_pos = get_h(Vector3::new(self.agents.pos_x[i], 0.0, self.agents.pos_y[i]));
                 
-                if let Some((_cost, _dist, path)) = self.transit_network.hpa_graph.find_path(curr, target, usize::MAX, &self.region_graph, TransitFlags::CAR) {
+                if let Some((_cost, _dist, path)) = self.transit_network.cch_graph.find_path(curr, target, usize::MAX, &self.region_graph, TransitFlags::CAR) {
                     let mut prev_pos = current_pos;
                     for &n in &path {
                         let np = get_h(self.region_graph.nodes[n as usize].pos);

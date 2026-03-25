@@ -1,7 +1,7 @@
 use super::*;
 use crate::simulation::network::graph::{RegionGraph, Edge};
 use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
-use crate::simulation::pathing::hpa::HpaGraph;
+use crate::simulation::pathing::cch::CchGraph;
 use godot::prelude::Vector3;
 
 #[test]
@@ -106,8 +106,8 @@ fn test_pathing_avoids_steep_slope() {
     edge_cb.physical_length = dist_cb;
     graph.add_edge(edge_cb);
     
-    let hpa = HpaGraph::build(&graph);
-    let path = hpa.find_path(n_a, n_b, usize::MAX, &graph, TransitFlags::CAR);
+    let cch = CchGraph::build(&graph);
+    let path = cch.find_path(n_a, n_b, usize::MAX, &graph, TransitFlags::CAR);
     
     assert!(path.is_some(), "Should find a path");
     let (cost_found, _dist, nodes) = path.unwrap();
@@ -144,18 +144,18 @@ fn test_bidirectional_walkway_pathing() {
         deleted: false,
     });
 
-    let hpa = HpaGraph::build(&graph);
+    let cch = CchGraph::build(&graph);
     
     // 1. Pedestrian should be able to walk n0 -> n1
-    let path_fwd = hpa.find_path(n0, n1, usize::MAX, &graph, TransitFlags::FOOT);
+    let path_fwd = cch.find_path(n0, n1, usize::MAX, &graph, TransitFlags::FOOT);
     assert!(path_fwd.is_some(), "Pedestrian should find path n0 -> n1 on walkway");
     
     // 2. Pedestrian should be able to walk n1 -> n0
-    let path_bkw = hpa.find_path(n1, n0, usize::MAX, &graph, TransitFlags::FOOT);
+    let path_bkw = cch.find_path(n1, n0, usize::MAX, &graph, TransitFlags::FOOT);
     assert!(path_bkw.is_some(), "Pedestrian should find path n1 -> n0 on walkway");
     
     // 3. Car should NOT be able to use walkway
-    let path_car = hpa.find_path(n0, n1, usize::MAX, &graph, TransitFlags::CAR);
+    let path_car = cch.find_path(n0, n1, usize::MAX, &graph, TransitFlags::CAR);
     assert!(path_car.is_none(), "Car should NOT find path on walkway");
 }
 
@@ -187,12 +187,12 @@ fn test_car_uturn_allowed() {
         deleted: false,
     });
 
-    let hpa = HpaGraph::build(&graph);
+    let cch = CchGraph::build(&graph);
     
     // Agent is at n1, having come from n0 via edge_idx.
     // They want to go back to n0.
     // If U-turns are allowed on same edge, they should find path [n0] via edge_idx.
-    let path = hpa.find_path(n1, n0, edge_idx, &graph, TransitFlags::CAR);
+    let path = cch.find_path(n1, n0, edge_idx, &graph, TransitFlags::CAR);
     assert!(path.is_some(), "Car should be allowed to U-turn on bidirectional road");
     let (_, _, nodes) = path.unwrap();
     assert_eq!(nodes, vec![n1, n0]);
@@ -236,17 +236,17 @@ fn test_car_avoids_walkway_shortcut() {
         zoning_left: false, zoning_right: false, deleted: false,
     });
     
-    let hpa = hpa::HpaGraph::build(&graph);
+    let cch = cch::CchGraph::build(&graph);
     
     // Car should take the road path (2 nodes) and ignore the shortcut
-    let path_car = hpa.find_path(n0, n2, usize::MAX, &graph, TransitFlags::CAR);
+    let path_car = cch.find_path(n0, n2, usize::MAX, &graph, TransitFlags::CAR);
     assert!(path_car.is_some());
     let (_cost, _dist, nodes) = path_car.unwrap();
     assert_eq!(nodes.len(), 3, "Car should take 3 nodes (n0, n1, n2)");
     assert!(nodes.contains(&n1), "Car must travel through n1 to avoid walkway");
     
     // Pedestrian should take the shortcut (n2 only)
-    let path_ped = hpa.find_path(n0, n2, usize::MAX, &graph, TransitFlags::FOOT);
+    let path_ped = cch.find_path(n0, n2, usize::MAX, &graph, TransitFlags::FOOT);
     assert!(path_ped.is_some());
     let (_c, _d, nodes_ped) = path_ped.unwrap();
     assert_eq!(nodes_ped.len(), 2, "Pedestrian should take direct walkway shortcut [n0, n2]");
