@@ -6,15 +6,15 @@ use super::graph::Edge;
 use super::types::NodeType;
 use super::interaction;
 
-pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
+pub fn process_intersections(network: &mut TransitNetwork, graph: &mut crate::simulation::network::graph::RegionGraph, edge_id: usize, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
     let mut all_splits: HashMap<usize, Vec<(f32, u32)>> = HashMap::new();
     
     // 1. Find all intersections (crossing AND touching/snapping)
-    let edge_count = network.graph.edges.len();
+    let edge_count = graph.edges.len();
     for other_id in 0..edge_count {
-        if network.graph.edges[other_id].deleted { continue; }
+        if graph.edges[other_id].deleted { continue; }
         let (edge1_geo, edge2_geo) = {
-            (network.graph.edges[edge_id].geometry.clone(), network.graph.edges[other_id].geometry.clone())
+            (graph.edges[edge_id].geometry.clone(), graph.edges[other_id].geometry.clone())
         };
 
         // Check crossing segments
@@ -45,7 +45,7 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize, zonin
                     let pos = edge1_geo[i].lerp(edge1_geo[i+1], t);
                     
                     // Unified Node Capture
-                    let junction_id = network.graph.find_or_add_node(pos, config::INTERSECTION_TOLERANCE, NodeType::Junction);
+                    let junction_id = graph.find_or_add_node(pos, config::INTERSECTION_TOLERANCE, NodeType::Junction);
 
                     all_splits.entry(edge_id).or_default().push((factor_t, junction_id));
                     all_splits.entry(other_id).or_default().push((factor_u, junction_id));
@@ -71,7 +71,7 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize, zonin
                 if dist < config::INTERSECTION_TOLERANCE { 
                     let factor_u = j as f32 + (closest2d - Vector2::new(p1.x, p1.z)).length() / Vector2::new(p2.x - p1.x, p2.z - p1.z).length().max(0.001);
                     
-                    let junction_id = network.graph.find_or_add_node(closest, config::INTERSECTION_TOLERANCE, NodeType::Junction);
+                    let junction_id = graph.find_or_add_node(closest, config::INTERSECTION_TOLERANCE, NodeType::Junction);
                     all_splits.entry(edge_id).or_default().push((factor_t, junction_id));
                     all_splits.entry(other_id).or_default().push((factor_u, junction_id));
                 }
@@ -81,6 +81,7 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize, zonin
 
     // 2. Process splits for each edge
     for (eid, mut splits) in all_splits {
+        let geo_len = graph.edges[eid].geometry.len();
         splits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
         // Only dedup if it's the EXACT same junction ID to avoid skipping nearby splits
         splits.dedup_by(|a, b| a.1 == b.1);
@@ -89,28 +90,27 @@ pub fn process_intersections(network: &mut TransitNetwork, edge_id: usize, zonin
             let seg_idx = factor.floor() as usize;
             let sub_t = factor.fract();
             
-            let geo_len = network.graph.edges[eid].geometry.len();
             if factor < 0.1 {
-                let start_node = network.graph.edges[eid].start_node;
-                network.graph.unite_nodes(junction_id, start_node);
+                let start_node = graph.edges[eid].start_node;
+                graph.unite_nodes(junction_id, start_node);
                 continue;
             }
             if factor > (geo_len - 1) as f32 - 0.1 {
-                let end_node = network.graph.edges[eid].end_node;
-                network.graph.unite_nodes(junction_id, end_node);
+                let end_node = graph.edges[eid].end_node;
+                graph.unite_nodes(junction_id, end_node);
                 continue;
             }
-            let valid_junction_id = network.graph.get_valid_node(junction_id);
-            split_edge(network, eid, seg_idx, sub_t, valid_junction_id, zoning, allocator);
+            let valid_junction_id = graph.get_valid_node(junction_id);
+            split_edge(network, graph, eid, seg_idx, sub_t, valid_junction_id, zoning, allocator);
         }
     }
 }
 
-pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usize, _t: f32, junction_node_id: u32, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
-    let old_edge = &network.graph.edges[edge_id];
+pub fn split_edge(network: &mut TransitNetwork, graph: &mut crate::simulation::network::graph::RegionGraph, edge_id: usize, segment_idx: usize, _t: f32, junction_node_id: u32, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
+    let old_edge = &graph.edges[edge_id];
     let geometry = &old_edge.geometry;
     let _length = old_edge.physical_length;
-    let split_pos = network.graph.nodes[junction_node_id as usize].pos;
+    let split_pos = graph.nodes[junction_node_id as usize].pos;
 
     // Physical distance guard: Don't split if too close to either end (e.g. < 0.2m)
     let start_pos = geometry[0];
@@ -139,20 +139,20 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     let zoning_left = old_edge.zoning_left;
     let zoning_right = old_edge.zoning_right;
 
-    let old_end_node = network.graph.edges[edge_id].end_node;
-    network.graph.edges[edge_id].end_node = junction_node_id;
-    network.graph.edges[edge_id].geometry = part1_geo.clone();
-    network.graph.edges[edge_id].physical_geometry = part1_geo;
-    let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&network.graph.edges[edge_id]);
-    network.graph.edges[edge_id].base_cost = cost;
-    network.graph.edges[edge_id].physical_length = length;
+    let old_end_node = graph.edges[edge_id].end_node;
+    graph.edges[edge_id].end_node = junction_node_id;
+    graph.edges[edge_id].geometry = part1_geo.clone();
+    graph.edges[edge_id].physical_geometry = part1_geo;
+    let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&graph.edges[edge_id]);
+    graph.edges[edge_id].base_cost = cost;
+    graph.edges[edge_id].physical_length = length;
 
     // RE-INDEX and UPDATE ADJACENCY for modified edge
-    network.graph.remove_from_spatial_index(edge_id);
-    network.graph.add_to_spatial_index(edge_id);
+    graph.remove_from_spatial_index(edge_id);
+    graph.add_to_spatial_index(edge_id);
     
-    network.graph.adjacency[old_end_node as usize].retain(|&i| i != edge_id);
-    network.graph.adjacency[junction_node_id as usize].push(edge_id);
+    graph.adjacency[old_end_node as usize].retain(|&i| i != edge_id);
+    graph.adjacency[junction_node_id as usize].push(edge_id);
 
     let mut new_edge = Edge {
         start_node: junction_node_id,
@@ -178,7 +178,7 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     new_edge.base_cost = cost_new;
     new_edge.physical_length = length_new;
     
-    let new_edge_id = network.graph.add_edge(new_edge);
+    let new_edge_id = graph.add_edge(new_edge);
 
     // --- MIGRATION LOGIC ---
     let cell_size = zoning.config.zone_cell_m;
@@ -198,8 +198,8 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     // --- DIRTY MARKING ---
     network.zoning_dirty_edges.insert(edge_id);
     network.zoning_dirty_edges.insert(new_edge_id);
-    network.invalidate_zoning_near_edge(edge_id);
-    network.invalidate_zoning_near_edge(new_edge_id);
+    network.invalidate_zoning_near_edge(edge_id, graph);
+    network.invalidate_zoning_near_edge(new_edge_id, graph);
 }
 
 #[cfg(test)]
@@ -215,23 +215,24 @@ mod tests {
     #[test]
     fn test_topology_t_junction() {
         let mut net = TransitNetwork::new();
+        let mut graph = crate::simulation::network::graph::RegionGraph::new();
         let config = MapConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
         // straight road
-        net.add_road(vec![
+        net.add_road(&mut graph, vec![
             Vector3::new(-10.0, 0.0, 0.0),
             Vector3::new(10.0, 0.0, 0.0),
         ].into(), 1, 1, false, false, &mut zoning, &mut allocator);
         
         // side road connecting to the middle
-        net.add_road(vec![
+        net.add_road(&mut graph, vec![
             Vector3::new(0.0, 0.0, 10.0),
             Vector3::new(0.0, 0.0, 0.0),
         ].into(), 1, 1, false, false, &mut zoning, &mut allocator);
         
-        println!("Graph has {} edges", net.graph.edges.len());
-        for (i, edge) in net.graph.edges.iter().enumerate() {
+        println!("Graph has {} edges", graph.edges.len());
+        for (i, edge) in graph.edges.iter().enumerate() {
             println!("Edge {}: start node {}, end node {}, geometry len {}", i, edge.start_node, edge.end_node, edge.geometry.len());
         }
     }

@@ -1,6 +1,6 @@
 //! Decision-making logic for agents: transit mode selection, path planning triggers.
 
-use crate::simulation::network::graph::TransitGraph;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::pathing::hpa::HpaGraph;
 use crate::simulation::network::types::TransitFlags;
 use super::data::AgentSystem;
@@ -13,7 +13,7 @@ impl AgentSystem {
         &mut self,
         i: usize,
         target_node: u32,
-        graph: &TransitGraph,
+        graph: &RegionGraph,
         hpa: &HpaGraph,
     ) -> (u32, u8) {
         self.pathfind_count += 1;

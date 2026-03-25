@@ -1,6 +1,6 @@
 use super::data_grid::DataGrid;
 use crate::simulation::grid::zoning::ZoneType;
-use crate::simulation::network::graph::TransitGraph;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 
 pub struct NoiseSystem {
@@ -19,7 +19,7 @@ impl NoiseSystem {
         }
     }
 
-    pub fn tick(&mut self, allocator: &BuildingAllocator, graph: &TransitGraph, config: &crate::simulation::core::config::MapConfig) {
+    pub fn tick(&mut self, allocator: &BuildingAllocator, graph: &RegionGraph, config: &crate::simulation::core::config::MapConfig) {
         std::mem::swap(&mut self.grid, &mut self.swap);
         
         let w = self.grid.width;

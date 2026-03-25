@@ -1,16 +1,16 @@
 //! Network topology management: node/edge creation, splitting, merging, and movement.
 //!
-//! This module handles the structural mutation of the [`TransitGraph`], ensuring that
+//! This module handles the structural mutation of the [`RegionGraph`], ensuring that
 //! adjacency lists and spatial indices are kept in sync after every edit.
 
 use godot::prelude::*;
-use super::data::TransitGraph;
+use super::data::RegionGraph;
 use super::data::Edge;
 use super::data::Node;
 use super::super::types::*;
 use std::collections::HashMap;
 
-impl TransitGraph {
+impl RegionGraph {
     /// Returns the canonical node ID for a given ID, following any merge aliases.
     pub fn get_valid_node(&self, mut id: u32) -> u32 {
         while let Some(&alias) = self.node_aliases.get(&id) {

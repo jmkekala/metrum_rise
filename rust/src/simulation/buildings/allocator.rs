@@ -10,7 +10,7 @@
 //! - Desirability is not checked before placement (bug B5).
 //! - Each placement triggers a full HPA* rebuild via `split_for_frontage`.
 
-use crate::simulation::network::graph::TransitGraph;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::grid::zoning::{ZoningSystem, ZoneType};
 use godot::prelude::Vector2;
 
@@ -35,7 +35,7 @@ pub struct Building {
     /// Ticks since this building lost its zoning. Non-zero values are reserved for future
     /// abandonment / decay logic; currently unused.
     pub abandoned_timer: u32,
-    /// Index into [`TransitGraph::edges`] for the road segment this building fronts.
+    /// Index into [`RegionGraph::edges`] for the road segment this building fronts.
     pub edge_idx: usize,
     /// Road side: `1` = left, `-1` = right.
     pub side: i8,
@@ -112,7 +112,7 @@ impl BuildingAllocator {
     ///
     /// Removes stale buildings, grows new ones into high-demand zones, and spawns immigrants.
     /// Calls `network.rebuild_pathing()` once if any building was added or removed.
-    pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, zoning: &mut ZoningSystem, desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, network: &mut crate::simulation::network::TransitNetwork, config: &crate::simulation::core::config::MapConfig) {
+    pub fn tick(&mut self, _demand: &mut crate::simulation::economy::demand::DemandSystem, zoning: &mut ZoningSystem, desirability: &crate::simulation::grid::desirability::DesirabilitySystem, _noise: &crate::simulation::grid::noise::NoiseSystem, _agents: &mut crate::simulation::economy::agents::AgentSystem, network: &mut crate::simulation::network::TransitNetwork, graph: &RegionGraph, config: &crate::simulation::core::config::MapConfig) {
         let mut spawned_this_tick = 0;
         let max_spawns = 10;
         
@@ -122,7 +122,7 @@ impl BuildingAllocator {
             let b = &self.buildings[i];
             let remove = if let Some(_) = zoning.edge_grids.get(&b.edge_idx) {
                 let current_type = zoning.get_cell(b.edge_idx, b.side, b.cell_x, b.cell_y);
-                current_type != b.zone_type || network.graph.edges[b.edge_idx].deleted
+                current_type != b.zone_type || graph.edges[b.edge_idx].deleted
             } else {
                 true // Edge gone
             };
@@ -163,7 +163,7 @@ impl BuildingAllocator {
         
         for edge_idx in edges_to_check {
             if spawned_this_tick >= max_spawns { break; }
-            let (edge_len, edge_width) = if let Some(edge) = network.graph.edges.get(edge_idx) {
+            let (edge_len, edge_width) = if let Some(edge) = graph.edges.get(edge_idx) {
                 if edge.deleted || edge.physical_geometry.len() < 2 { (0.0, 0.0) }
                 else { (edge.physical_length, edge.width) }
             } else {
@@ -174,14 +174,14 @@ impl BuildingAllocator {
             
             // Batch fetch nearby edges for the entire edge to optimize obstruction checks
             let padding = 120.0;
-            let edge = &network.graph.edges[edge_idx];
+            let edge = &graph.edges[edge_idx];
             let mut min_x = f32::MAX; let mut max_x = f32::MIN;
             let mut min_z = f32::MAX; let mut max_z = f32::MIN;
             for p in &edge.physical_geometry {
                 min_x = min_x.min(p.x); max_x = max_x.max(p.x);
                 min_z = min_z.min(p.z); max_z = max_z.max(p.z);
             }
-            let nearby_edges = network.graph.get_edges_near_aabb(
+            let nearby_edges = graph.get_edges_near_aabb(
                 godot::prelude::Vector3::new(min_x - padding, 0.0, min_z - padding),
                 godot::prelude::Vector3::new(max_x + padding, 0.0, max_z + padding)
             );
@@ -211,7 +211,7 @@ impl BuildingAllocator {
                         for dy in 0..3 {
                             if zoning.get_cell(edge_idx, side, x + dx, dy) != z_type || 
                                zoning.is_occupied(edge_idx, side, x + dx, dy) ||
-                               zoning.is_cell_obstructed(edge_idx, side, x + dx, dy, &network.graph, Some(&nearby_edges)) {
+                               zoning.is_cell_obstructed(edge_idx, side, x + dx, dy, &graph, Some(&nearby_edges)) {
                                 can_build = false;
                                 break;
                             }
@@ -222,8 +222,8 @@ impl BuildingAllocator {
                     // B5: Desirability Gate
                     if can_build {
                         let t_center = (x as f32 + 1.5) * zoning.config.zone_cell_m / edge_len;
-                        let world_pos = self.get_pos_on_edge(&network.graph, edge_idx, t_center);
-                        let tangent = self.get_tangent_on_edge(&network.graph, edge_idx, t_center);
+                        let world_pos = self.get_pos_on_edge(&graph, edge_idx, t_center);
+                        let tangent = self.get_tangent_on_edge(&graph, edge_idx, t_center);
                         let normal = godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
                         let depth_offset = crate::config::SIDEWALK_WIDTH + (1.5 * zoning.config.zone_cell_m);
                         let center_2d = world_pos + normal * (edge_width * 0.5 + depth_offset);
@@ -242,8 +242,8 @@ impl BuildingAllocator {
 
                     if can_build {
                         let t = (x as f32) * zoning.config.zone_cell_m / edge_len;
-                        let world_pos_on_edge = self.get_pos_on_edge(&network.graph, edge_idx, t);
-                        let tangent = self.get_tangent_on_edge(&network.graph, edge_idx, t);
+                        let world_pos_on_edge = self.get_pos_on_edge(&graph, edge_idx, t);
+                        let tangent = self.get_tangent_on_edge(&graph, edge_idx, t);
                         let normal = godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
                         
                         let b_width = 3.0 * zoning.config.zone_cell_m;
@@ -306,7 +306,7 @@ impl BuildingAllocator {
             }
         }
 
-        network.rebuild_pathing_if_dirty();
+        network.rebuild_pathing_if_dirty(graph);
         
         if self.dirty_index {
             self.rebuild_zone_index();
@@ -324,8 +324,8 @@ impl BuildingAllocator {
             
             for _ in 0..num_to_spawn {
                 let highway_pos = godot::prelude::Vector3::new(0.0, 0.0, -127.0);
-                if let Some(highway_node) = crate::simulation::network::interaction::get_closest_node(&network.graph, highway_pos, 1000.0) {
-                    let highway_world_pos = network.graph.nodes[highway_node as usize].pos;
+                if let Some(highway_node) = crate::simulation::network::interaction::get_closest_node(graph, highway_pos, 1000.0) {
+                    let highway_world_pos = graph.nodes[highway_node as usize].pos;
                     _agents.spawn_agent(usize::MAX, highway_node, 0.0, 0.0, highway_node, highway_world_pos.x, highway_world_pos.z);
                 }
             }
@@ -334,7 +334,7 @@ impl BuildingAllocator {
         self.dirty = false;
     }
 
-    pub fn get_pos_on_edge(&self, graph: &TransitGraph, edge_idx: usize, t: f32) -> Vector2 {
+    pub fn get_pos_on_edge(&self, graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
         let edge = &graph.edges[edge_idx];
         let geo = &edge.physical_geometry;
         if geo.is_empty() { return Vector2::ZERO; }
@@ -355,7 +355,7 @@ impl BuildingAllocator {
         Vector2::new(geo.last().unwrap().x, geo.last().unwrap().z)
     }
 
-    pub fn get_tangent_on_edge(&self, graph: &TransitGraph, edge_idx: usize, t: f32) -> Vector2 {
+    pub fn get_tangent_on_edge(&self, graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
         let edge = &graph.edges[edge_idx];
         let geo = &edge.physical_geometry;
         if geo.len() < 2 { return Vector2::new(1.0, 0.0); }
@@ -601,12 +601,13 @@ mod tests {
         let noise = NoiseSystem::new(&map_cfg);
         let mut agents = AgentSystem::new();
         let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
         
-        network.add_road(vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
+        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
         for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
-        zoning.recalculate_obstructions(0, &network.graph);
+        zoning.recalculate_obstructions(0, &graph);
 
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &map_cfg);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &graph, &map_cfg);
         
         assert_eq!(allocator.buildings.len(), 1);
         assert_eq!(demand.residential, 95.0, "Residential demand should decrease by 5.0 after placement");
@@ -635,12 +636,13 @@ mod tests {
         let mut noise = NoiseSystem::new(&map_cfg);
         let mut agents = AgentSystem::new();
         let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
         
-        network.add_road(vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
+        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
         for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
-        zoning.recalculate_obstructions(0, &network.graph);
+        zoning.recalculate_obstructions(0, &graph);
 
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &map_cfg);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &graph, &map_cfg);
         
         assert_eq!(allocator.buildings.len(), 0, "No building should spawn when desirability is below 50.0");
     }
@@ -663,8 +665,9 @@ mod tests {
         let noise = NoiseSystem::new(&map_cfg);
         let mut agents = AgentSystem::new();
         let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
         
-        network.add_road(vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
+        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
         
         allocator.buildings.push(Building {
             center_x: 5.0, center_y: 10.0, width: 30, depth: 30,
@@ -676,7 +679,7 @@ mod tests {
         // Remove zoning trigger
         for dx in 0..3 { for dy in 0..3 { zoning.set_cell(0, 1, dx, dy, ZoneType::None); } }
 
-        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &map_cfg);
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &graph, &map_cfg);
         
         assert_eq!(allocator.buildings.len(), 0, "Building should have been removed");
         assert!(!zoning.is_occupied(0, 1, 0, 0), "Zoning cell occupancy should be cleared after building removal");

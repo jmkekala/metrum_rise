@@ -7,43 +7,39 @@ use crate::nodes::simulation_node::SimulationNode;
 impl SimulationNode {
     /// Sets up a large-scale benchmark city with a grid of roads and agents.
     pub fn setup_benchmark_city_internal(&mut self, grid_size: i32, agent_count: i32) {
-        godot_print!("Setting up benchmark city: {}x{} grid, {} agents", grid_size, grid_size, agent_count);
-        self.transit_network.clear(&mut self.zoning, &mut self.allocator);
-        self.agents.clear();
-
-        let cell_size = self.config.zone_cell_m;
-        let spacing = cell_size * 10.0; // Roads every 10 cells
-        let start_offset = -(grid_size as f32 * spacing * 0.5);
-
-        // 1. Create Road Grid
+        godot_print!("SimulationNode: Setting up benchmark city (Grid: {}x{}, Agents: {})...", grid_size, grid_size, agent_count);
+        
+        let mut pts = PackedVector3Array::new();
+        
+        // 1. Create a large grid of roads
+        let step = (self.config.width_m - 400.0) / grid_size as f32;
+        let start_x = -self.config.width_m * 0.5 + 200.0;
+        let start_z = -self.config.height_m * 0.5 + 200.0;
+        
+        // Horizontal roads
         for i in 0..=grid_size {
-            let offset = start_offset + (i as f32 * spacing);
-            // Horizontal
-            let mut h_pts = PackedVector3Array::new();
-            h_pts.push(Vector3::new(start_offset, 0.0, offset));
-            h_pts.push(Vector3::new(-start_offset, 0.0, offset));
-            self.add_road_internal(h_pts, 2, 2, true, true);
-
-            // Vertical
-            let mut v_pts = PackedVector3Array::new();
-            v_pts.push(Vector3::new(offset, 0.0, start_offset));
-            v_pts.push(Vector3::new(offset, 0.0, -start_offset));
-            self.add_road_internal(v_pts, 2, 2, true, true);
+            pts.clear();
+            pts.push(Vector3::new(start_x, 0.0, start_z + i as f32 * step));
+            pts.push(Vector3::new(start_x + self.config.width_m - 400.0, 0.0, start_z + i as f32 * step));
+            self.add_road_internal(pts.clone(), 2, 2, true, true);
+        }
+        
+        // Vertical roads
+        for i in 0..=grid_size {
+            pts.clear();
+            pts.push(Vector3::new(start_x + i as f32 * step, 0.0, start_z));
+            pts.push(Vector3::new(start_x + i as f32 * step, 0.0, start_z + self.config.height_m - 400.0));
+            self.add_road_internal(pts.clone(), 2, 2, true, true);
         }
 
-        // 2. Initial Tick to build zoning/pathing
-        self.simulate_tick();
-
-        // 3. Fill with buildings (forced growth)
-        self.demand.residential = 1000.0;
-        self.demand.commercial = 1000.0;
-        self.demand.industrial = 1000.0;
-        for _ in 0..10 { // Burst growth
-            self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network, &self.config);
-        }
+        // 2. Force Zoning Rebuild
+        self.transit_network.flush_zoning_updates(&mut self.zoning, &self.region_graph);
+        
+        // 3. Fill with buildings
+        self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network, &mut self.region_graph, &self.config);
 
         // 4. Batch Spawn Agents
-        self.agents.spawn_random_agents(agent_count as usize, &self.transit_network.graph, &self.allocator);
+        self.agents.spawn_random_agents(agent_count as usize, &self.region_graph, &self.allocator);
         godot_print!("Benchmark city ready. Agents: {}", self.agents.count);
     }
 

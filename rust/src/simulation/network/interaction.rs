@@ -1,5 +1,5 @@
 use godot::prelude::*;
-use super::graph::TransitGraph;
+use super::graph::RegionGraph;
 
 pub struct ProjectionData {
     pub t: f32,
@@ -7,7 +7,7 @@ pub struct ProjectionData {
     pub dist_from_road: f32,
 }
 
-pub fn get_closest_point(graph: &TransitGraph, world_pos: Vector3, max_dist: f32) -> Option<Vector3> {
+pub fn get_closest_point(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) -> Option<Vector3> {
     let mut closest_pos = None;
     let mut min_score = f32::MAX;
 
@@ -78,7 +78,32 @@ pub fn get_closest_point(graph: &TransitGraph, world_pos: Vector3, max_dist: f32
     closest_pos
 }
 
-pub fn get_closest_node(graph: &TransitGraph, world_pos: Vector3, max_dist: f32) -> Option<u32> {
+pub fn find_closest_edge(graph: &RegionGraph, pos: Vector3, max_dist: f32) -> Option<(usize, f32)> {
+    let mut closest_edge_idx = None;
+    let mut min_dist_sq = max_dist * max_dist;
+
+    // Iterate over all edges to find the closest point on any segment
+    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+        if edge.deleted { continue; }
+
+        for i in 0..edge.geometry.len() - 1 {
+            let p0 = edge.geometry[i];
+            let p1 = edge.geometry[i+1];
+            
+            let closest_point_on_segment = get_closest_point_on_segment(pos, p0, p1);
+            let d_sq = closest_point_on_segment.distance_squared_to(pos);
+            
+            if d_sq < min_dist_sq {
+                min_dist_sq = d_sq;
+                closest_edge_idx = Some(edge_idx);
+            }
+        }
+    }
+    
+    closest_edge_idx.map(|idx| (idx, min_dist_sq.sqrt()))
+}
+
+pub fn get_closest_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) -> Option<u32> {
     let mut closest_node = None;
     let mut min_dist_sq = max_dist * max_dist;
 

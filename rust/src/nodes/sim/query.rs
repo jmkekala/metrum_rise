@@ -46,7 +46,7 @@ impl SimulationNode {
 
     /// Returns the position and tangent of a point on a road edge at parameter t.
     pub fn get_edge_pos_and_tangent(&self, edge_idx: usize, t: f32) -> (godot::prelude::Vector2, godot::prelude::Vector2) {
-        let edge = &self.transit_network.graph.edges[edge_idx];
+        let edge = &self.region_graph.edges[edge_idx];
         let geom = &edge.physical_geometry;
         if geom.len() < 2 {
             return (godot::prelude::Vector2::new(0.0, 0.0), godot::prelude::Vector2::new(1.0, 0.0));
@@ -76,14 +76,14 @@ impl SimulationNode {
         let mut count = 0.0;
         data.push(0.0); // Placeholder for count
 
-        for (i, edge) in self.transit_network.graph.edges.iter().enumerate() {
+        for (i, edge) in self.region_graph.edges.iter().enumerate() {
             if edge.deleted || i as i32 == ignore_edge_idx { continue; }
             let hw = edge.width / 2.0;
 
             let mut poly = Vec::new();
             if edge.physical_geometry.is_empty() {
-                let n1 = godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.start_node as usize].pos.x, self.transit_network.graph.nodes[edge.start_node as usize].pos.z);
-                let n2 = godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.end_node as usize].pos.x, self.transit_network.graph.nodes[edge.end_node as usize].pos.z);
+                let n1 = godot::prelude::Vector2::new(self.region_graph.nodes[edge.start_node as usize].pos.x, self.region_graph.nodes[edge.start_node as usize].pos.z);
+                let n2 = godot::prelude::Vector2::new(self.region_graph.nodes[edge.end_node as usize].pos.x, self.region_graph.nodes[edge.end_node as usize].pos.z);
                 let dir = (n2 - n1).normalized();
                 if dir.length_squared() > 0.0 {
                     let norm = godot::prelude::Vector2::new(-dir.y, dir.x);
@@ -131,7 +131,7 @@ impl SimulationNode {
         }
 
         // 3. Include Road Nodes as obstacles to prevent zoning through intersections
-        for node in &self.transit_network.graph.nodes {
+        for node in &self.region_graph.nodes {
             let r = 5.0; // Intersections are protected 5m radius
             data.push(8.0); // Simple octagon
             for j in 0..8 {
@@ -152,7 +152,7 @@ impl SimulationNode {
         let mut best_dist = f32::MAX;
         let mut best_edge = -1;
         
-        for (i, edge) in self.transit_network.graph.edges.iter().enumerate() {
+        for (i, edge) in self.region_graph.edges.iter().enumerate() {
             let pts = &edge.physical_geometry;
             if pts.len() < 2 { continue; }
             for j in 0..pts.len() - 1 {
@@ -196,7 +196,7 @@ impl SimulationNode {
         
         let mut min_t = max_search;
         
-        for edge in &self.transit_network.graph.edges {
+        for edge in &self.region_graph.edges {
             let pts = &edge.physical_geometry;
             if pts.len() < 2 { continue; }
             for i in 0..pts.len() - 1 {
@@ -222,15 +222,15 @@ impl SimulationNode {
 
     /// Returns the closest point on an edge's boundary to the given point.
     pub fn get_closest_point_on_edge_internal(&self, edge_idx: i32, point_x: f32, point_y: f32) -> godot::prelude::Vector2 {
-        if edge_idx < 0 || edge_idx as usize >= self.transit_network.graph.edges.len() {
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() {
             return godot::prelude::Vector2::new(point_x, point_y);
         }
-        let edge = &self.transit_network.graph.edges[edge_idx as usize];
+        let edge = &self.region_graph.edges[edge_idx as usize];
         let hw = edge.width / 2.0;
 
         if edge.physical_geometry.is_empty() {
-            let n1 = self.transit_network.graph.nodes[edge.start_node as usize].pos;
-            let n2 = self.transit_network.graph.nodes[edge.end_node as usize].pos;
+            let n1 = self.region_graph.nodes[edge.start_node as usize].pos;
+            let n2 = self.region_graph.nodes[edge.end_node as usize].pos;
             let a = godot::prelude::Vector2::new(n1.x, n1.z);
             let b = godot::prelude::Vector2::new(n2.x, n2.z);
             let p = godot::prelude::Vector2::new(point_x, point_y);
@@ -277,12 +277,12 @@ impl SimulationNode {
     /// Returns the physical geometry of a road edge as a sequence of points.
     pub fn get_edge_geometry_internal(&self, edge_idx: i32) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
-        if edge_idx < 0 || edge_idx as usize >= self.transit_network.graph.edges.len() { return arr; }
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() { return arr; }
         
-        let edge = &self.transit_network.graph.edges[edge_idx as usize];
+        let edge = &self.region_graph.edges[edge_idx as usize];
         if edge.physical_geometry.is_empty() {
-            let n1 = self.transit_network.graph.nodes[edge.start_node as usize].pos;
-            let n2 = self.transit_network.graph.nodes[edge.end_node as usize].pos;
+            let n1 = self.region_graph.nodes[edge.start_node as usize].pos;
+            let n2 = self.region_graph.nodes[edge.end_node as usize].pos;
             arr.push(godot::prelude::Vector2::new(n1.x, n1.z));
             arr.push(godot::prelude::Vector2::new(n2.x, n2.z));
         } else {
@@ -296,10 +296,10 @@ impl SimulationNode {
     /// Returns a sequence of points representing the curved frontage between two points on an edge.
     pub fn get_curved_frontage_internal(&self, edge_idx: i32, start_p: godot::prelude::Vector2, end_p: godot::prelude::Vector2) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
-        if edge_idx < 0 || edge_idx as usize >= self.transit_network.graph.edges.len() { 
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() { 
             return arr; // Explicitly Fail! No straight-line phantom frontages.
         }
-        let edge = &self.transit_network.graph.edges[edge_idx as usize];
+        let edge = &self.region_graph.edges[edge_idx as usize];
         let hw = edge.width / 2.0;
 
         let get_proj = |p: godot::prelude::Vector2| -> (usize, f32, godot::prelude::Vector2, godot::prelude::Vector2) {
@@ -311,8 +311,8 @@ impl SimulationNode {
             
             let pts: Vec<godot::prelude::Vector2> = if edge.physical_geometry.is_empty() {
                 vec![
-                    godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.start_node as usize].pos.x, self.transit_network.graph.nodes[edge.start_node as usize].pos.z),
-                    godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.end_node as usize].pos.x, self.transit_network.graph.nodes[edge.end_node as usize].pos.z)
+                    godot::prelude::Vector2::new(self.region_graph.nodes[edge.start_node as usize].pos.x, self.region_graph.nodes[edge.start_node as usize].pos.z),
+                    godot::prelude::Vector2::new(self.region_graph.nodes[edge.end_node as usize].pos.x, self.region_graph.nodes[edge.end_node as usize].pos.z)
                 ]
             } else {
                 edge.physical_geometry.iter().map(|v| godot::prelude::Vector2::new(v.x, v.z)).collect()
@@ -349,8 +349,8 @@ impl SimulationNode {
 
         let pts: Vec<godot::prelude::Vector2> = if edge.physical_geometry.is_empty() {
             vec![
-                godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.start_node as usize].pos.x, self.transit_network.graph.nodes[edge.start_node as usize].pos.z),
-                godot::prelude::Vector2::new(self.transit_network.graph.nodes[edge.end_node as usize].pos.x, self.transit_network.graph.nodes[edge.end_node as usize].pos.z)
+                godot::prelude::Vector2::new(self.region_graph.nodes[edge.start_node as usize].pos.x, self.region_graph.nodes[edge.start_node as usize].pos.z),
+                godot::prelude::Vector2::new(self.region_graph.nodes[edge.end_node as usize].pos.x, self.region_graph.nodes[edge.end_node as usize].pos.z)
             ]
         } else {
             edge.physical_geometry.iter().map(|v| godot::prelude::Vector2::new(v.x, v.z)).collect()
@@ -430,14 +430,14 @@ impl SimulationNode {
 
     /// Returns the closest network point (node/edge) within range.
     pub fn get_closest_network_point_internal(&self, world_pos: Vector3, max_dist: f32) -> Option<Vector3> {
-        interaction::get_closest_point(&self.transit_network.graph, world_pos, max_dist)
+        interaction::get_closest_point(&self.region_graph, world_pos, max_dist)
     }
 
     /// Returns the ID of the closest network node.
     pub fn get_closest_node_internal(&self, world_pos: Vector3, max_dist: f32) -> i32 {
         let mut best_id = -1;
         let mut min_d = max_dist;
-        for (i, n) in self.transit_network.graph.nodes.iter().enumerate() {
+        for (i, n) in self.region_graph.nodes.iter().enumerate() {
             let d = n.pos.distance_to(world_pos);
             if d < min_d {
                 min_d = d;
@@ -449,14 +449,14 @@ impl SimulationNode {
 
     /// Returns the number of road connections for a node.
     pub fn get_node_connection_count_internal(&self, node_id: i32) -> i32 {
-        if node_id < 0 || node_id as usize >= self.transit_network.graph.adjacency.len() { return 0; }
-        self.transit_network.graph.adjacency[node_id as usize].len() as i32
+        if node_id < 0 || node_id as usize >= self.region_graph.adjacency.len() { return 0; }
+        self.region_graph.adjacency[node_id as usize].len() as i32
     }
 
     /// Returns all junction node positions.
     pub fn get_network_nodes_internal(&self) -> PackedVector3Array {
         let mut arr = PackedVector3Array::new();
-        for node in &self.transit_network.graph.nodes {
+        for node in &self.region_graph.nodes {
             arr.push(node.pos);
         }
         arr
@@ -464,9 +464,9 @@ impl SimulationNode {
 
     /// Returns the world-space position of a node.
     pub fn get_node_pos_internal(&self, node_id: u32) -> Vector3 {
-        let valid_id = self.transit_network.graph.get_valid_node(node_id);
-        if (valid_id as usize) < self.transit_network.graph.nodes.len() {
-            self.transit_network.graph.nodes[valid_id as usize].pos
+        let valid_id = self.region_graph.get_valid_node(node_id);
+        if (valid_id as usize) < self.region_graph.nodes.len() {
+            self.region_graph.nodes[valid_id as usize].pos
         } else {
             Vector3::ZERO
         }
@@ -475,8 +475,8 @@ impl SimulationNode {
     /// Returns an array of current lane turn restrictions at a node.
     pub fn get_lane_connections_array_internal(&self, node_id: u32) -> VarArray {
         let mut arr = VarArray::new();
-        if node_id as usize >= self.transit_network.graph.nodes.len() { return arr; }
-        let node = &self.transit_network.graph.nodes[node_id as usize];
+        if node_id as usize >= self.region_graph.nodes.len() { return arr; }
+        let node = &self.region_graph.nodes[node_id as usize];
         
         for (src, targets) in &node.lane_connections {
             for tgt in targets {
@@ -496,9 +496,9 @@ impl SimulationNode {
         let mut avg_dir = Vector3::ZERO;
         let mut count = 0;
         
-        for (i, node) in self.transit_network.graph.nodes.iter().enumerate() {
+        for (i, node) in self.region_graph.nodes.iter().enumerate() {
             if node.pos.distance_to(pos) < 0.1 {
-                for edge in &self.transit_network.graph.edges {
+                for edge in &self.region_graph.edges {
                     if edge.start_node == i as u32 {
                         if edge.physical_geometry.len() >= 2 {
                             let dir = (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized();
@@ -534,12 +534,12 @@ impl SimulationNode {
     pub fn get_node_lanes_internal(&self, node_id: u32) -> VarArray {
         let mut arr = VarArray::new();
         
-        let valid_node_id = self.transit_network.graph.get_valid_node(node_id);
-        if valid_node_id as usize >= self.transit_network.graph.nodes.len() { return arr; }
+        let valid_node_id = self.region_graph.get_valid_node(node_id);
+        if valid_node_id as usize >= self.region_graph.nodes.len() { return arr; }
         
-        let junction_pos = self.transit_network.graph.nodes[valid_node_id as usize].pos;
+        let junction_pos = self.region_graph.nodes[valid_node_id as usize].pos;
 
-        for (e_id, edge) in self.transit_network.graph.edges.iter().enumerate() {
+        for (e_id, edge) in self.region_graph.edges.iter().enumerate() {
             // Check both ends independently
             let check_start = edge.start_node == valid_node_id;
             let check_end = edge.end_node == valid_node_id;
@@ -592,7 +592,7 @@ impl SimulationNode {
                    } else {
                        // Absolute fallback: other node's pos
                        let other_node = if is_start_side { edge.end_node } else { edge.start_node };
-                       diff = self.transit_network.graph.nodes[other_node as usize].pos - junction_pos;
+                       diff = self.region_graph.nodes[other_node as usize].pos - junction_pos;
                    }
                 }
 

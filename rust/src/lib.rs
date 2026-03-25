@@ -8,7 +8,7 @@
 //!
 //! **Reading order for new contributors / AI models:**
 //! 1. [`config`] — global constants (map size, grid cell sizes, lane widths).
-//! 2. [`simulation::network::graph`] — road graph schema (`Node`, `Edge`, `TransitGraph`).
+//! 2. [`simulation::network::graph`] — road graph schema (`Node`, `Edge`, `RegionGraph`).
 //! 3. [`simulation::economy::agents`] — agent state machine and SoA layout.
 //! 4. [`simulation::grid::zoning`] — zoning cell grid attached to each road edge.
 //! 5. [`simulation::pathing::hpa`] — two-phase hierarchical pathfinding.

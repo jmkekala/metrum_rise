@@ -1,14 +1,14 @@
 use godot::prelude::*;
 use crate::config;
 use std::collections::HashMap;
-use crate::simulation::network::graph::TransitGraph;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitType;
 use super::{TransitRenderer, NetworkMeshData};
 
 pub struct RoadRenderer;
 
 impl TransitRenderer for RoadRenderer {
-    fn generate_mesh_data(&self, graph: &TransitGraph, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData {
+    fn generate_mesh_data(&self, graph: &RegionGraph, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData {
         let mut vertices = PackedVector3Array::new();
         let mut normals = PackedVector3Array::new();
         let mut uvs = PackedVector2Array::new();

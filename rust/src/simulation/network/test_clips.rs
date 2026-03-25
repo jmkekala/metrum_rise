@@ -1,12 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use crate::simulation::network::graph::{TransitGraph, Edge, Node};
+    use crate::simulation::network::graph::{RegionGraph, Edge};
     use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
     use godot::prelude::Vector3;
 
     #[test]
     fn test_t_junction_clipping() {
-        let mut g = TransitGraph::new();
+        let mut g = RegionGraph::new();
         // T intersection at (0,0) resulting from a split
         let n_center = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
         
@@ -61,17 +61,5 @@ mod tests {
         });
 
         g.rebuild_intersection_clips();
-        
-        println!("Edge 0 (Left -> Center) Clips: {} to {}", g.edges[0].start_clip, g.edges[0].end_clip);
-        println!("Edge 1 (Center -> Right) Clips: {} to {}", g.edges[1].start_clip, g.edges[1].end_clip);
-        println!("Edge 2 (Bot -> Center) Clips: {} to {}", g.edges[2].start_clip, g.edges[2].end_clip);
-        
-        println!("Junction Polygons count: {}", g.junction_polygons.len());
-        if let Some(poly) = g.junction_polygons.get(&n_center) {
-            println!("Junction Polygon points:");
-            for p in &poly.vertices {
-                println!("  {:?}", p);
-            }
-        }
     }
 }

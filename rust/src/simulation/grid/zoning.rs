@@ -65,7 +65,7 @@ pub struct EdgeZoning {
 /// Manages all [`EdgeZoning`] grids across the entire road network.
 #[derive(Clone)]
 pub struct ZoningSystem {
-    /// Zoning grids keyed by edge index in [`TransitGraph::edges`].
+    /// Zoning grids keyed by edge index in [`RegionGraph::edges`].
     /// Only edges with `zoning_left || zoning_right` have entries here.
     pub edge_grids: HashMap<usize, EdgeZoning>,
     /// Global map configuration.
@@ -257,7 +257,7 @@ impl ZoningSystem {
 
     /// Explicitly updates the obstruction cache for an edge.
     /// Explicitly updates the obstruction cache for an edge by performing 5-point sampling per cell.
-    pub fn recalculate_obstructions(&mut self, edge_idx: usize, graph: &crate::simulation::network::graph::TransitGraph) {
+    pub fn recalculate_obstructions(&mut self, edge_idx: usize, graph: &crate::simulation::network::graph::RegionGraph) {
         let cells_long = if let Some(grid) = self.edge_grids.get(&edge_idx) {
             grid.cells_long
         } else {
@@ -296,7 +296,7 @@ impl ZoningSystem {
     }
 
     /// Returns the world-space center position of a specific zoning cell.
-    pub fn get_cell_center(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph) -> Vector2 {
+    pub fn get_cell_center(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::RegionGraph) -> Vector2 {
         if edge_idx >= graph.edges.len() { return Vector2::new(0.0, 0.0); }
         let edge = &graph.edges[edge_idx];
         let geom = &edge.physical_geometry;
@@ -338,7 +338,7 @@ impl ZoningSystem {
         pos + normal * (half_width + crate::config::SIDEWALK_WIDTH + depth)
     }
     /// Tests whether a specific cell is obstructed by asphalt, other road footprints, or competitor zoning.
-    pub fn is_cell_obstructed(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph, nearby_edges_cache: Option<&[usize]>) -> bool {
+    pub fn is_cell_obstructed(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::RegionGraph, nearby_edges_cache: Option<&[usize]>) -> bool {
         let center = self.get_cell_center(edge_idx, side, x, y, graph);
         if center.x == 0.0 && center.y == 0.0 { return true; }
 
@@ -489,7 +489,7 @@ impl ZoningSystem {
         false
     }
 
-    fn get_t_nearest(&self, edge_idx: usize, pt: Vector2, graph: &crate::simulation::network::graph::TransitGraph) -> f32 {
+    fn get_t_nearest(&self, edge_idx: usize, pt: Vector2, graph: &crate::simulation::network::graph::RegionGraph) -> f32 {
         let edge = &graph.edges[edge_idx];
         let mut min_d_sq = f32::MAX;
         let mut best_t = 0.0;
@@ -516,7 +516,7 @@ impl ZoningSystem {
         best_t
     }
 
-    fn get_distance_to_edge_sq(&self, edge_idx: usize, pt: Vector2, graph: &crate::simulation::network::graph::TransitGraph) -> f32 {
+    fn get_distance_to_edge_sq(&self, edge_idx: usize, pt: Vector2, graph: &crate::simulation::network::graph::RegionGraph) -> f32 {
         let edge = &graph.edges[edge_idx];
         let mut min_d_sq = f32::MAX;
         for j in 0..edge.physical_geometry.len() - 1 {
@@ -533,7 +533,7 @@ impl ZoningSystem {
         min_d_sq
     }
 
-    fn get_edge_pos_and_tangent_static(&self, edge_idx: usize, t: f32, graph: &crate::simulation::network::graph::TransitGraph) -> (Vector2, Vector2) {
+    fn get_edge_pos_and_tangent_static(&self, edge_idx: usize, t: f32, graph: &crate::simulation::network::graph::RegionGraph) -> (Vector2, Vector2) {
         let edge = &graph.edges[edge_idx];
         let geom = &edge.physical_geometry;
         let total_l = edge.physical_length;
@@ -555,7 +555,7 @@ impl ZoningSystem {
 
     // Helper for rendering all painted cells
     /// Packs and returns all painted and non-blocked zoning cells for Godot-side rendering.
-    pub fn get_render_data(&self, graph: &crate::simulation::network::graph::TransitGraph) -> PackedFloat32Array {
+    pub fn get_render_data(&self, graph: &crate::simulation::network::graph::RegionGraph) -> PackedFloat32Array {
         let mut data = Vec::new();
         for (&edge_idx, grid) in &self.edge_grids {
             if edge_idx >= graph.edges.len() || graph.edges[edge_idx].deleted { continue; }

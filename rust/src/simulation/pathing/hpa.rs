@@ -15,7 +15,7 @@
 //! abstract inner paths, and end connection. The heuristic divisor is `max_v`, precomputed
 //! from the maximum edge speed limit during [`HpaGraph::build`].
 
-use crate::simulation::network::graph::TransitGraph;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{TransitType, TransitFlags};
 use super::astar::State;
 use std::collections::{HashMap, BinaryHeap, HashSet};
@@ -71,7 +71,7 @@ impl HpaGraph {
     /// Nodes that straddle a 512 m chunk boundary become abstract nodes.
     /// Per-chunk Dijkstra computes intra-chunk costs between all abstract entries.
     /// Must be called (and rebuilt) after every structural road-network change.
-    pub fn build(graph: &TransitGraph) -> Self {
+    pub fn build(graph: &RegionGraph) -> Self {
         let start_time = std::time::Instant::now();
         let mut hpa = HpaGraph::new();
         let n = graph.nodes.len();
@@ -121,7 +121,7 @@ impl HpaGraph {
     }
 
     /// Incremental HPA* update: only rebuilds Dijkstra for the specified chunks.
-    pub fn update_incremental(&mut self, graph: &TransitGraph, dirty_chunks: &HashSet<(i32, i32)>) {
+    pub fn update_incremental(&mut self, graph: &RegionGraph, dirty_chunks: &HashSet<(i32, i32)>) {
         let _start_time = std::time::Instant::now();
         
         // 1. Sync concrete adjacency list size
@@ -234,7 +234,7 @@ impl HpaGraph {
         });
     }
 
-    fn rebuild_chunk_paths(&mut self, graph: &TransitGraph, chunk: (i32, i32)) {
+    fn rebuild_chunk_paths(&mut self, graph: &RegionGraph, chunk: (i32, i32)) {
         let entries = if let Some(e) = self.chunk_entries.get(&chunk) { e.clone() } else { return; };
         
         for &start_node in &entries {
@@ -311,7 +311,7 @@ impl HpaGraph {
     ///
     /// `start_edge` is the edge the agent is currently traversing (`usize::MAX` if at a bare node).
     /// `allowed_mask` is a bitmask of [`TransitFlags`] defining which edge types are navigable.
-    pub fn find_path(&self, start_raw: u32, end_raw: u32, start_edge: usize, graph: &TransitGraph, allowed_mask: u8) -> Option<(f32, f32, Vec<u32>)> {
+    pub fn find_path(&self, start_raw: u32, end_raw: u32, start_edge: usize, graph: &RegionGraph, allowed_mask: u8) -> Option<(f32, f32, Vec<u32>)> {
         let start = graph.get_valid_node(start_raw);
         let end = graph.get_valid_node(end_raw);
 
@@ -463,7 +463,7 @@ impl HpaGraph {
     /// Internal: Run concrete A* over a specific chunk or globally (fallback).
     /// 
     /// Used for short-distance paths or intra-chunk routing.
-    fn local_concrete_search(&self, start: u32, end: u32, start_edge: usize, graph: &TransitGraph, allowed_mask: u8, _chunk: Option<(i32, i32)>) -> Option<(f32, f32, Vec<u32>)> {
+    fn local_concrete_search(&self, start: u32, end: u32, start_edge: usize, graph: &RegionGraph, allowed_mask: u8, _chunk: Option<(i32, i32)>) -> Option<(f32, f32, Vec<u32>)> {
         let mut h = BinaryHeap::new();
         let mut costs: HashMap<(u32, usize), (f32, f32)> = HashMap::new();
         let mut prev: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
@@ -533,7 +533,7 @@ impl HpaGraph {
     /// Internal: Find all abstract nodes reachable within a chunk via local traversal.
     /// 
     /// Returns a map of abstract node IDs to their cost, distance, and the path taken.
-    fn local_boundary_search(&self, start: u32, start_edge: usize, chunk: (i32, i32), graph: &TransitGraph, allowed_mask: u8, backward: bool) -> HashMap<u32, (f32, f32, usize, Vec<u32>)> {
+    fn local_boundary_search(&self, start: u32, start_edge: usize, chunk: (i32, i32), graph: &RegionGraph, allowed_mask: u8, backward: bool) -> HashMap<u32, (f32, f32, usize, Vec<u32>)> {
         let mut h = BinaryHeap::new();
         let mut costs: HashMap<(u32, usize), (f32, f32)> = HashMap::new();
         let mut prev: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
@@ -617,12 +617,12 @@ impl HpaGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::network::graph::{TransitGraph, Edge};
+    use crate::simulation::network::graph::{RegionGraph, Edge};
     use crate::simulation::network::types::{TransitType, NodeType, TransitFlags};
     use godot::prelude::Vector3;
 
-    fn setup_test_graph() -> TransitGraph {
-        let mut graph = TransitGraph::new();
+    fn setup_test_graph() -> RegionGraph {
+        let mut graph = RegionGraph::new();
         // Chunk boundary at 512m. We place nodes to span chunks.
         // Chunk (0,0): 0,0,0
         graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction); // 0

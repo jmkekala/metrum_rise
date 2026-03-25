@@ -10,7 +10,7 @@ use crate::config::{self, ZONING_DEPTH};
 impl SimulationNode {
     /// Updates the zoning visual MultiMeshes for tool feedback.
     pub fn update_zoning_visuals_internal(&self, mut grid_mm: Gd<MultiMesh>, mut paint_mm: Gd<MultiMesh>, hovered_edge: i32, mode: i32, mouse_pos_3d: Vector3) {
-        let graph = &self.transit_network.graph;
+        let graph = &self.region_graph;
         let cell_size = self.config.zone_cell_m;
         let zoning_depth = config::ZONING_DEPTH;
 
@@ -186,8 +186,8 @@ impl SimulationNode {
                 scale_z = 3.5; 
                 
                 let edge_idx = self.agents.current_edge[i];
-                if edge_idx != usize::MAX && edge_idx < self.transit_network.graph.edges.len() {
-                    let edge = &self.transit_network.graph.edges[edge_idx];
+                if edge_idx != usize::MAX && edge_idx < self.region_graph.edges.len() {
+                    let edge = &self.region_graph.edges[edge_idx];
                     let prog = self.agents.edge_progression[i] as usize;
                     if edge.physical_geometry.len() >= 2 {
                         let p1_idx = prog.min(edge.physical_geometry.len() - 2);
@@ -235,10 +235,10 @@ impl SimulationNode {
                 
                 let current_pos = get_h(Vector3::new(self.agents.pos_x[i], 0.0, self.agents.pos_y[i]));
                 
-                if let Some((_cost, _dist, path)) = self.transit_network.hpa_graph.find_path(curr, target, usize::MAX, &self.transit_network.graph, TransitFlags::CAR) {
+                if let Some((_cost, _dist, path)) = self.transit_network.hpa_graph.find_path(curr, target, usize::MAX, &self.region_graph, TransitFlags::CAR) {
                     let mut prev_pos = current_pos;
                     for &n in &path {
-                        let np = get_h(self.transit_network.graph.nodes[n as usize].pos);
+                        let np = get_h(self.region_graph.nodes[n as usize].pos);
                         lines.push(prev_pos);
                         lines.push(np);
                         prev_pos = np;
@@ -317,7 +317,7 @@ impl SimulationNode {
 
     /// Returns a dictionary containing all road mesh geometry for Godot.
     pub fn get_road_mesh_data_internal(&self) -> VarDictionary {
-        let mesh_data = self.transit_network.generate_mesh_data(&self.heightmap);
+        let mesh_data = self.transit_network.generate_mesh_data(&self.region_graph, &self.heightmap);
         let mut dict = VarDictionary::new();
         dict.set("vertices", mesh_data.vertices);
         dict.set("normals", mesh_data.normals);

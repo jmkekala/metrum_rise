@@ -1,9 +1,9 @@
 // No imports needed here
-use super::data::TransitGraph;
+use super::data::RegionGraph;
 use super::super::types::*;
 use std::collections::HashMap;
 
-impl TransitGraph {
+impl RegionGraph {
     pub fn rebuild_adjacency_list(&mut self) {
         self.adjacency.clear();
         self.adjacency.resize(self.nodes.len(), Vec::new());

@@ -22,9 +22,9 @@ pub struct Node {
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct Edge {
-    /// Index of the start node in [`TransitGraph::nodes`].
+    /// Index of the start node in [`RegionGraph::nodes`].
     pub start_node: u32,
-    /// Index of the end node in [`TransitGraph::nodes`].
+    /// Index of the end node in [`RegionGraph::nodes`].
     pub end_node: u32,
     /// The dominant transit mode this edge was built for (Road, Foot, etc.).
     pub primary_type: TransitType,
@@ -73,12 +73,15 @@ pub struct JunctionMesh {
     pub colors: Vec<Color>,
 }
 
-/// The complete road network: nodes, edges, and all acceleration structures.
+/// A unified directed graph representing the road and transit network of the entire region.
+///
+/// High-performance road network graph using a Structure-of-Arrays (SoA) layout.
+/// and global pathfinding (CCH/CRP). It owns all nodes, edges, and the spatial acceleration grid.
 ///
 /// This is the central data structure of the simulation. All pathfinding, zoning,
 /// agent movement, and building placement operate on this graph.
 #[derive(Clone)]
-pub struct TransitGraph {
+pub struct RegionGraph {
     /// All road nodes (junctions and endpoints). Indexed by node ID (`u32`).
     pub nodes: Vec<Node>,
     /// All road edges (segments). Indexed by edge ID (`usize`). Includes soft-deleted entries.
@@ -97,7 +100,7 @@ pub struct TransitGraph {
     pub spatial_node_grid: HashMap<(i32, i32), Vec<u32>>,
 }
 
-impl TransitGraph {
+impl RegionGraph {
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),

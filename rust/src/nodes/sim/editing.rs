@@ -13,7 +13,7 @@ impl SimulationNode {
         self.heightmap.sculpt(pos.x, pos.y, radius, strength);
         self.terrain_dirty = true;
         
-        self.transit_network.sync_to_terrain(&self.heightmap);
+        self.transit_network.sync_to_terrain(&mut self.region_graph, &self.heightmap);
         self.flatten_terrain_for_roads_internal();
     }
 
@@ -46,7 +46,7 @@ impl SimulationNode {
 
     /// Enables or disables zoning on a specific side of a road edge.
     pub fn set_zoning_enabled_internal(&mut self, edge_idx: i32, side: i32, enabled: bool) {
-        if let Some(edge) = self.transit_network.graph.edges.get_mut(edge_idx as usize) {
+        if let Some(edge) = self.region_graph.edges.get_mut(edge_idx as usize) {
             if side >= 1 { edge.zoning_left = enabled; }
             else if side <= -1 { edge.zoning_right = enabled; }
         }
@@ -70,25 +70,25 @@ impl SimulationNode {
             p.y = terrain_h;
         }
 
-        self.transit_network.add_road(fixed_points, fwd_lanes as u8, bkw_lanes as u8, zoning_left, zoning_right, &mut self.zoning, &mut self.allocator);
+        self.transit_network.add_road(&mut self.region_graph, fixed_points, fwd_lanes as u8, bkw_lanes as u8, zoning_left, zoning_right, &mut self.zoning, &mut self.allocator);
 
         // Robustly update zoning for all nearby area
         if let Some(first_pt) = points.to_vec().first() {
-            let nearby = self.transit_network.graph.get_edges_near_point(*first_pt, 200.0);
+            let nearby = self.region_graph.get_edges_near_point(*first_pt, 200.0);
             for edge_idx in nearby {
                 self.recalculate_zoning_local(edge_idx);
             }
         }
         if let Some(last_pt) = points.to_vec().last() {
-            let nearby = self.transit_network.graph.get_edges_near_point(*last_pt, 200.0);
+            let nearby = self.region_graph.get_edges_near_point(*last_pt, 200.0);
             for edge_idx in nearby {
                 self.recalculate_zoning_local(edge_idx);
             }
         }
 
         // AUTO-COMPACT if technical debt (deleted edges) grows too large
-        let total_edges = self.transit_network.graph.edges.len();
-        let deleted_edges = self.transit_network.graph.edges.iter().filter(|e| e.deleted).count();
+        let total_edges = self.region_graph.edges.len();
+        let deleted_edges = self.region_graph.edges.iter().filter(|e| e.deleted).count();
         if deleted_edges > 50 || (total_edges > 0 && deleted_edges as f32 / total_edges as f32 > 0.2) {
             self.perform_edge_compaction_internal();
         }
@@ -96,12 +96,12 @@ impl SimulationNode {
 
     /// Repositions a network node in world space.
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) {
-        if node_id >= 0 && (node_id as usize) < self.transit_network.graph.nodes.len() {
-            self.transit_network.graph.move_node(node_id as u32, pos);
+        if node_id >= 0 && (node_id as usize) < self.region_graph.nodes.len() {
+            self.region_graph.move_node(node_id as u32, pos);
             self.push_undo_state(false, false, true, false);
             
             // Recalculate zoning for all affected edges
-            let affected_edges: Vec<usize> = self.transit_network.graph.edges.iter().enumerate()
+            let affected_edges: Vec<usize> = self.region_graph.edges.iter().enumerate()
                 .filter(|(_, e)| !e.deleted && (e.start_node == node_id as u32 || e.end_node == node_id as u32))
                 .map(|(i, _)| i)
                 .collect();
@@ -115,36 +115,36 @@ impl SimulationNode {
     /// Sets a lane connection rule at a junction node.
     pub fn set_lane_connection_internal(&mut self, node_id: u32, from_edge: i32, from_lane: i32, to_edge: i32, to_lane: i32) {
         self.push_undo_state(false, false, true, false);
-        if let Some(node) = self.transit_network.graph.nodes.get_mut(node_id as usize) {
+        if let Some(node) = self.region_graph.nodes.get_mut(node_id as usize) {
             let key = (from_edge as usize, from_lane as i8);
             let target = (to_edge as usize, to_lane as i8);
             if !node.lane_connections.entry(key).or_default().contains(&target) {
                 node.lane_connections.get_mut(&key).unwrap().push(target);
             }
         }
-        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
+        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.region_graph);
     }
 
     /// Clears all lane connections at a junction node.
     pub fn clear_lane_connections_internal(&mut self, node_id: u32) {
         self.push_undo_state(false, false, true, false);
-        if let Some(node) = self.transit_network.graph.nodes.get_mut(node_id as usize) {
+        if let Some(node) = self.region_graph.nodes.get_mut(node_id as usize) {
             node.lane_connections.clear();
         }
-        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
+        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.region_graph);
     }
 
     /// Clears lane connections for a specific source edge/lane at a junction.
     pub fn clear_lane_source_internal(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
-        if node_id as usize >= self.transit_network.graph.nodes.len() { return; }
+        if node_id as usize >= self.region_graph.nodes.len() { return; }
         
         {
-            let node = &mut self.transit_network.graph.nodes[node_id as usize];
+            let node = &mut self.region_graph.nodes[node_id as usize];
             let key = (from_edge as usize, from_lane as i8);
             node.lane_connections.remove(&key);
         }
         
-        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
+        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.region_graph);
     }
 
     /// Flattens the terrain to match the grade of the road network.
@@ -158,8 +158,8 @@ impl SimulationNode {
             data: self.heightmap.data.clone(),
             source_data: self.heightmap.source_data.clone(),
         };
-        self.transit_network.flatten_terrain(&ref_terrain, &mut self.heightmap.data, size);
-        self.transit_network.sync_to_terrain(&self.heightmap);
+        self.transit_network.flatten_terrain(&self.region_graph, &ref_terrain, &mut self.heightmap.data, size);
+        self.transit_network.sync_to_terrain(&mut self.region_graph, &self.heightmap);
         self.terrain_dirty = true;
     }
 
@@ -167,7 +167,7 @@ impl SimulationNode {
     pub fn load_heightmap_data_internal(&mut self, data: PackedFloat32Array) {
         if (data.len() as usize) == self.heightmap.width * self.heightmap.height {
             self.heightmap.data = data.to_vec();
-            self.transit_network.sync_to_terrain(&self.heightmap);
+            self.transit_network.sync_to_terrain(&mut self.region_graph, &self.heightmap);
             self.flatten_terrain_for_roads_internal();
             self.terrain_dirty = true;
         }

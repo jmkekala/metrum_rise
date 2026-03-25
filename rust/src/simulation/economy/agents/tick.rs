@@ -2,7 +2,7 @@
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
-use crate::simulation::network::graph::TransitGraph;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::simulation::pathing::hpa::HpaGraph;
 use godot::prelude::*;
@@ -18,7 +18,7 @@ impl AgentSystem {
     /// 2. Activity state transitions (Home -> Work -> Shop).
     /// 3. Pathfinding and movement along road edges.
     /// 4. Arrival and departure logic for buildings.
-    pub fn tick(&mut self, allocator: &mut BuildingAllocator, hpa_graph: &HpaGraph, graph: &mut TransitGraph, delta: f32) {
+    pub fn tick(&mut self, allocator: &mut BuildingAllocator, hpa_graph: &HpaGraph, graph: &mut RegionGraph, delta: f32) {
         self.sim_time += delta;
         let mut rng = rand::rngs::ThreadRng::default();
         

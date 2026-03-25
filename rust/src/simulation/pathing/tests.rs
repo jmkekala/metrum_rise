@@ -1,5 +1,5 @@
 use super::*;
-use crate::simulation::network::graph::{TransitGraph, Edge};
+use crate::simulation::network::graph::{RegionGraph, Edge};
 use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
 use crate::simulation::pathing::hpa::HpaGraph;
 use godot::prelude::Vector3;
@@ -28,9 +28,7 @@ fn test_slope_cost_calculation() {
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
         ],
-        zoning_left: false,
-        zoning_right: false,
-        deleted: false,
+        zoning_left: false, zoning_right: false, deleted: false,
     };
 
     let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
@@ -45,7 +43,7 @@ fn test_slope_cost_calculation() {
 
 #[test]
 fn test_pathing_avoids_steep_slope() {
-    let mut graph = TransitGraph::new();
+    let mut graph = RegionGraph::new();
     // A (0,0,0)
     let n_a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     // B (100,0,0) - Goal
@@ -118,13 +116,9 @@ fn test_pathing_avoids_steep_slope() {
     assert_eq!(nodes, vec![n_a, n_c, n_b]);
 }
 
-
-
-
-
 #[test]
 fn test_bidirectional_walkway_pathing() {
-    let mut graph = TransitGraph::new();
+    let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
 
@@ -167,7 +161,7 @@ fn test_bidirectional_walkway_pathing() {
 
 #[test]
 fn test_car_uturn_allowed() {
-    let mut graph = TransitGraph::new();
+    let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
 
@@ -206,7 +200,7 @@ fn test_car_uturn_allowed() {
 
 #[test]
 fn test_car_avoids_walkway_shortcut() {
-    let mut graph = TransitGraph::new();
+    let mut graph = RegionGraph::new();
     // n0 --- (Road) --- n1 --- (Road) --- n2
     //  \--- (Walkway shortcut) ---/
     
@@ -249,7 +243,6 @@ fn test_car_avoids_walkway_shortcut() {
     assert!(path_car.is_some());
     let (_cost, _dist, nodes) = path_car.unwrap();
     assert_eq!(nodes.len(), 3, "Car should take 3 nodes (n0, n1, n2)");
-    // Wait, if n0->n1 and n1->n2 are separate edges, path should be [n1, n2].
     assert!(nodes.contains(&n1), "Car must travel through n1 to avoid walkway");
     
     // Pedestrian should take the shortcut (n2 only)

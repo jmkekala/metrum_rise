@@ -30,7 +30,7 @@ pub struct SimulationSnapshot {
     /// Water depth data.
     pub water: Option<Vec<f32>>,
     /// Road network graph state.
-    pub transit: Option<crate::simulation::network::graph::TransitGraph>,
+    pub trans_graph: Option<crate::simulation::network::graph::RegionGraph>,
     /// Zoning system state.
     pub zoning: Option<crate::simulation::grid::zoning::ZoningSystem>,
 }
@@ -43,6 +43,7 @@ pub struct SimulationNode {
     pub(crate) time_passed: f64,
     pub(crate) heightmap: TerrainSystem,
     pub(crate) watermap: WaterSystem,
+    pub(crate) region_graph: crate::simulation::network::graph::RegionGraph,
     pub(crate) transit_network: TransitNetwork,
     pub(crate) zoning: ZoningSystem,
     pub(crate) pollution: PollutionSystem,
@@ -72,11 +73,11 @@ impl SimulationNode {
         self.demand.tick();
         
         // ZONING: Growth & Immigration
-        self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network, &self.config);
+        self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network, &mut self.region_graph, &self.config);
         
         // POLLUTION & NOISE: Dissipation
         self.pollution.tick(&self.allocator, &self.config);
-        self.noise.tick(&self.allocator, &self.transit_network.graph, &self.config);
+        self.noise.tick(&self.allocator, &self.region_graph, &self.config);
         self.desirability.tick(&self.zoning, &self.pollution, &self.noise);
 
         // AGENTS: Daily update (happiness, money, pollution)
@@ -92,12 +93,12 @@ impl SimulationNode {
 
     /// Recalculates zoning for a local area around an edge.
     pub fn recalculate_zoning_local(&mut self, edge_idx: usize) {
-        if edge_idx >= self.transit_network.graph.edges.len() { return; }
+        if edge_idx >= self.region_graph.edges.len() { return; }
         
         // Use the batched invalidation and parallelized flush
         self.transit_network.zoning_dirty_edges.insert(edge_idx);
-        self.transit_network.invalidate_zoning_near_edge(edge_idx);
-        self.transit_network.flush_zoning_updates(&mut self.zoning);
+        self.transit_network.invalidate_zoning_near_edge(edge_idx, &self.region_graph);
+        self.transit_network.flush_zoning_updates(&mut self.zoning, &self.region_graph);
     }
 
     /// Returns the dimensions of the heightmap.
@@ -107,12 +108,12 @@ impl SimulationNode {
 
     /// Performs a full edge compaction, removing deleted edges and remapping all internal indices.
     pub fn perform_edge_compaction_internal(&mut self) {
-        let deleted_count = self.transit_network.graph.edges.iter().filter(|e| e.deleted).count();
+        let deleted_count = self.region_graph.edges.iter().filter(|e| e.deleted).count();
         if deleted_count == 0 { return; }
         
         godot_print!("SimulationNode: Compacting road network (removing {} deleted edges)...", deleted_count);
         
-        let mapping = self.transit_network.graph.compact_edges();
+        let mapping = self.region_graph.compact_edges();
         if mapping.is_empty() { return; }
         
         // 1. Update Agents
@@ -125,9 +126,9 @@ impl SimulationNode {
         self.allocator.update_edge_indices(&mapping);
         
         // 4. Rebuild HPA Graph (as its internal cached indices are now invalid)
-        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
+        self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.region_graph);
         
-        godot_print!("SimulationNode: Compaction complete. Edge count: {}", self.transit_network.graph.edges.len());
+        godot_print!("SimulationNode: Compaction complete. Edge count: {}", self.region_graph.edges.len());
     }
 }
 
@@ -224,7 +225,7 @@ impl SimulationNode {
     /// Returns a PackedFloat32Array for rendering the zone grid.
     #[func]
     pub fn get_zoning_grid_data(&self) -> PackedFloat32Array {
-        self.zoning.get_render_data(&self.transit_network.graph)
+        self.zoning.get_render_data(&self.region_graph)
     }
 
     /// Returns information about zoning on a particular edge.
@@ -243,7 +244,7 @@ impl SimulationNode {
     /// Returns whether a specific zoning cell is obstructed.
     #[func]
     pub fn is_zoning_cell_obstructed(&self, edge_idx: i32, side: i32, x: i32, y: i32) -> bool {
-        let graph = &self.transit_network.graph;
+        let graph = &self.region_graph;
         if let Some(edge) = graph.edges.get(edge_idx as usize) {
             if (side == 1 && !edge.zoning_left) || (side == -1 && !edge.zoning_right) {
                 return true;
@@ -261,7 +262,7 @@ impl SimulationNode {
     /// Returns the world-space center position of a specific zoning cell.
     #[func]
     pub fn get_zoning_cell_center(&self, edge_idx: i32, side: i8, x: i32, y: i32) -> Vector2 {
-        let v2 = self.zoning.get_cell_center(edge_idx as usize, side, x as usize, y as usize, &self.transit_network.graph);
+        let v2 = self.zoning.get_cell_center(edge_idx as usize, side, x as usize, y as usize, &self.region_graph);
         Vector2::new(v2.x, v2.y)
     }
 
@@ -340,8 +341,8 @@ impl SimulationNode {
     /// Returns the width of a specific road edge.
     #[func]
     pub fn get_edge_width(&self, edge_idx: i32) -> f32 {
-        if edge_idx < 0 || edge_idx as usize >= self.transit_network.graph.edges.len() { return 6.0; }
-        self.transit_network.graph.edges[edge_idx as usize].width
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() { return 6.0; }
+        self.region_graph.edges[edge_idx as usize].width
     }
 
     /// Returns a curved frontage between two points on an edge.
@@ -543,6 +544,7 @@ impl INode3D for SimulationNode {
             time_passed: 0.0,
             heightmap: TerrainSystem::new(w, h),
             watermap: WaterSystem::new(w, h),
+            region_graph: crate::simulation::network::graph::RegionGraph::new(),
             transit_network: TransitNetwork::new(),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
@@ -593,7 +595,7 @@ impl INode3D for SimulationNode {
         
         if self.time.speed_multiplier > 0.0 {
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
-            self.agents.tick(&mut self.allocator, &self.transit_network.hpa_graph, &mut self.transit_network.graph, dt);
+            self.agents.tick(&mut self.allocator, &self.transit_network.hpa_graph, &mut self.region_graph, dt);
             
             let _sub_steps = 2;
             // ... water process logic ...

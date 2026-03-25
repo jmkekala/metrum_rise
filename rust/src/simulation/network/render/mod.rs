@@ -1,6 +1,6 @@
 pub mod road;
 use godot::prelude::*;
-use super::graph::TransitGraph;
+use super::graph::RegionGraph;
 
 pub struct NetworkMeshData {
     pub vertices: PackedVector3Array,
@@ -14,5 +14,5 @@ pub struct NetworkMeshData {
 }
 
 pub trait TransitRenderer {
-    fn generate_mesh_data(&self, graph: &TransitGraph, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData;
+    fn generate_mesh_data(&self, graph: &RegionGraph, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData;
 }

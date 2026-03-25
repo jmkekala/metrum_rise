@@ -1,8 +1,8 @@
 use godot::prelude::*;
-use super::graph::TransitGraph;
+use super::graph::RegionGraph;
 use super::types::TransitType;
 
-pub fn flatten_terrain_for_network(graph: &TransitGraph, terrain: &crate::simulation::terrain::TerrainSystem, output_heightmap: &mut [f32], map_size: Vector2) {
+pub fn flatten_terrain_for_network(graph: &RegionGraph, terrain: &crate::simulation::terrain::TerrainSystem, output_heightmap: &mut [f32], map_size: Vector2) {
     let half_size = (map_size - Vector2::new(1.0, 1.0)) * 0.5;
     let width = terrain.width;
     let height = terrain.height;

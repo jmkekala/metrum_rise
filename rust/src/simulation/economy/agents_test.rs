@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::simulation::economy::agents::{AgentSystem, MODE_WALK};
-    use crate::simulation::network::graph::{TransitGraph, Edge};
+    use crate::simulation::network::graph::{RegionGraph, Edge};
     use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
     use crate::simulation::pathing::hpa::HpaGraph;
     use crate::simulation::economy::demand::DemandSystem;
@@ -12,7 +12,7 @@ mod tests {
 
     #[test]
     fn test_car_avoids_walkway() {
-        let mut g = TransitGraph::new();
+        let mut g = RegionGraph::new();
         let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
         let n1 = g.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         let n2 = g.add_node(Vector3::new(5.0, 0.0, 10.0), NodeType::Junction);
@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn test_pedestrian_prefers_walkway() {
-        let mut g = TransitGraph::new();
+        let mut g = RegionGraph::new();
         let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
         let n1 = g.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
         let n2 = g.add_node(Vector3::new(5.0, 0.0, 1.0), NodeType::Junction);
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn test_car_only_from_home_persistence() {
-        let mut g = TransitGraph::new();
+        let mut g = RegionGraph::new();
         let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
         let n_far = g.add_node(Vector3::new(1000.0, 0.0, 0.0), NodeType::Junction);
 
@@ -149,7 +149,7 @@ mod tests {
     fn test_agent_fsm_lifecycle() {
         use godot::prelude::Vector2;
 
-        let mut g = TransitGraph::new();
+        let mut g = RegionGraph::new();
         let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
         let n1 = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
         

@@ -7,6 +7,7 @@
 pub mod cost;
 pub mod astar;
 pub mod hpa;
+pub mod cch;
 
 #[cfg(test)]
 mod tests;

@@ -39,12 +39,13 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/water/` — shallow-water equations (SWE), parallelised with Rayon.
 
 ### Road Network
-- `TransitGraph` — refactored into a modular package in `simulation/network/graph/`.
-    - `data.rs`: `Node`, `Edge`, and `TransitGraph` struct definitions.
+- `RegionGraph` — refactored into a modular package in `simulation/network/graph/`.
+    - `data.rs`: `Node`, `Edge`, and `RegionGraph` struct definitions.
     - `spatial.rs`: 512 m spatial edge grid and 16 m node grid logic.
     - `topology.rs`: intersection detection, edge splitting, and node merging.
     - `rebuild.rs`: batch remapping, soft-deletion compaction, and intersection clipping.
-    - **Road Network (`TransitGraph`)**: Adjacency-list based directed graph with spatial acceleration. Pathfinding via HPA*. Now supports multi-modal queries via `allowed_mask`.
+    - **Road Network (`RegionGraph`)**: Adjacency-list based directed graph with spatial acceleration. Pathfinding via HPA*. Now supports multi-modal queries via `allowed_mask`.
+- **`RegionGraph` rename** — `TransitGraph` renamed to `RegionGraph`; struct is now globally owned in `SimulationNode`, not city-scoped. All call sites updated. Prerequisite for CCH (item 31b/c).
 - `TransitNetwork` (`network/mod.rs`) — `add_road`, `split_edge`, `merge_nodes`.
 - **Unit tests** (`simulation/network/test_topology.rs`): `add_road` (bidirectional adjacency, 100 m subdivision logic), `split_edge` (physical length summation, node sharing, zoning/building migration), `compact_edges` (index remapping consistency for agents and buildings).
 - Topology: intersection detection and edge splitting in `topology.rs`.
@@ -102,6 +103,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/pathing/cost.rs` — edge cost = `length / speed_limit` (time in seconds) with exponential slope penalty for grades > 10%: `1 + (max_slope × 5)²`.
 - A* heuristic: `euclidean_distance / max_v` — admissible and consistent; `max_v` is the maximum edge speed limit in the network, precomputed at graph build time.
 - `simulation/pathing/hpa.rs` — current HPA* implementation (three-phase query). **Superseded by CCH (item 31, v0.1 blocker); will be removed when CCH lands.**
+- **`simulation/pathing/cch.rs`** — initial CCH implementation (31b). Implements building a single contraction hierarchy with shortcut inner path storage. High-performance customization strategy: recomputes shortcut costs by summing underlying concrete edge costs (base_cost * (1 + congestion)) in O(path_length). Supported by bidirectional upward query phase.
 - **Unit tests** (`simulation/pathing/tests.rs`): `test_slope_cost_calculation` (50% grade edge receives a 7.25× cost multiplier vs a flat edge of equal length), `test_pathing_avoids_steep_slope` (router selects the longer flat detour A→C→B over the steep direct A→B). **Known geometry inconsistency in `test_pathing_avoids_steep_slope`**: `edge_ab`'s geometry endpoint is `(100, 50, 0)` but node `n_b` is placed at `(100, 0, 0)`. `CostCalculator` reads `edge.geometry`, so the slope penalty is computed correctly and the test passes, but the endpoint violates the invariant that edge geometry must start and end at the node positions. Fix: place `n_b` at `(100, 50, 0)`, or represent the slope with an intermediate waypoint while keeping the geometry endpoint at `n_b`'s flat position.
 
 ### Demand
@@ -139,19 +141,7 @@ Feature completion and correctness fixes. Performance tuning is not the focus he
 
 #### v0.1 Blockers — must complete before tagging v0.1
 
-31a. **`TransitGraph` → `RegionGraph` rename** — prerequisite for CCH; must be done first.
-    - `TransitGraph` is currently city-scoped. CCH must operate on a single unified graph for all city tiles — a city-scoped graph produces incorrect inter-city shortcuts.
-    - Rename the struct to `RegionGraph`. Update all call sites (approximately 20 files). Move ownership out of any city-specific module into global simulation state.
-    - Update the Godot bridge API to reflect the rename. No simulation logic changes — only naming and ownership.
-    - This is a mechanical rename, not a refactor. Do it in one commit before touching any CCH data structures.
-
-31b. **Metric customisation strategy — decide before writing data structures.**
-    - CRP requires shortcut weights to reflect current dynamic costs (`base_cost * (1 + current_congestion)`). Two viable options:
-      - **Single hierarchy, inner-path expansion (recommended):** Build one CCH hierarchy. Each shortcut stores the `inner_path` (sequence of contracted node IDs). At query time, recompute shortcut cost by summing the current dynamic costs of the underlying edges. O(path_length) per shortcut expansion — acceptable because paths are short. This is close to what HPA* already does with `AbstractEdge::inner_path`.
-      - **Multiple per-metric hierarchies:** Build a separate CCH for each cost function. Correct and fast at query time, but memory and rebuild cost grow with the number of metrics. Not worth it at this stage.
-    - **Decision: use single hierarchy with inner-path expansion.** Revisit at v1.0 if multiple metrics are needed.
-
-31c. **CCH / CRP implementation** — supersedes HPA* for all long-distance routing. Prerequisites: 31a and 31b complete.
+31c. **CCH / CRP implementation** — supersedes HPA* for all long-distance routing.
 
     **Phase 1 — Contraction (topology phase):**
     - Compute contraction order using the edge-difference heuristic (number of shortcuts added minus edges removed when contracting a node). Lower importance = contracted first.
@@ -182,7 +172,10 @@ Feature completion and correctness fixes. Performance tuning is not the focus he
 
 #### v0.1 Goals
 
-24. **R-Tree spatial index** (`rstar` crate) for fine-grain edge queries — O(log N) insert/delete/query. Current uniform 512 m grid degrades for edges that span multiple chunks.
+24. **R-Tree spatial index** (`rstar` crate) for fine-grain edge queries — O(log N) insert/delete/query. Three known issues with the current uniform 512 m grid (`spatial.rs`):
+    - **Long-edge false positives** (`get_edges_near_aabb`): a diagonal road spanning 3 km is registered in every 512 m chunk its AABB overlaps (~36 chunks). Any query touching those chunks pulls the edge into the candidate set regardless of actual proximity. At city scale with motorways and rail lines this compounds. R-Tree uses per-object tight bounding boxes so a long edge is only a candidate when the query AABB genuinely overlaps its bounds.
+    - **O(N) bucket removal** (`remove_from_spatial_index`): calls `.retain()` on each bucket Vec — O(bucket_size) per chunk. Can be fixed independently by switching bucket storage from `Vec<usize>` to `HashSet<usize>` (O(1) remove); this is a smaller fix than adopting R-Tree and should be done regardless.
+    - **O(N) deduplication** (`get_edges_near_aabb`): uses `.contains()` to avoid returning the same edge index twice when a query AABB spans multiple chunks — O(result_size) per edge found. R-Tree eliminates this because each edge has one canonical entry.
 26. **Bridge and tunnel support — `EdgeClass`**:
     - Add `EdgeClass` enum to `network/types.rs`: `Standard | Bridge | Tunnel`. Fits in a single byte; zero memory cost due to existing `Edge` struct padding.
     - Add `class: EdgeClass` field to `Edge`. No simulation logic changes — the 3D polyline geometry already stores correct Y positions for elevated or depressed roads.
@@ -310,6 +303,22 @@ Target: same agent scale as v0.2. No simulation changes. All work is in `render_
     - For each placed building, render a flat `QuadMesh` sized to the 3×3 footprint (30 m × 30 m) at `+0.02 m` above terrain height. Material uses a concrete/pavement albedo that matches the urban density map blend at `1.0`.
     - Add a second `MultiMeshInstance3D` per zone type in `buildings.gd` (e.g. `ResidentialFoundationMesh`). Reuse the same transform data already packed for the building mesh — the foundation quad uses the same center position and facing direction, with a flat scale.
     - No Rust changes beyond what item 52 already requires. Foundation quads are driven entirely from the existing `get_building_transforms()` call in GDScript.
+
+---
+
+## Speculative / Post-v1.0
+
+Ideas that may or may not ever be worth building. Recorded here so the reasoning is not lost, not because they are planned.
+
+### Multiple CCH metric hierarchies
+
+Instead of one CCH hierarchy with inner-path expansion, build a separate contraction hierarchy per cost function — e.g. a time hierarchy, a congestion-weighted hierarchy, an eco hierarchy (fuel or pollution cost). Each hierarchy precomputes shortcut costs for its own metric, so query time has no expansion overhead.
+
+**When this would be worth it:** if the game ever exposes routing preferences to players ("avoid congestion", "prefer scenic roads", "minimise emissions") or if agents genuinely optimise different objectives (trucks minimising fuel, tourists taking scenic routes, cyclists avoiding hills). Neither is currently planned — agents always take the fastest route and players have no routing controls.
+
+**How to add it when needed:** the contraction order is topology-only and is shared across all metrics — compute it once. Each additional metric runs its own O(E) customisation pass over the shared elimination tree to produce a separate shortcut cost table. Query selects the appropriate cost table. The `inner_path` storage in shortcuts can be dropped since costs are precomputed per metric. Memory scales linearly with metric count; topology rebuild cost is unchanged.
+
+**Why it is not worth it now:** one metric, no player routing preferences, and inner-path expansion overhead is negligible at city scale. Adding the infrastructure before the game design requires it is pure maintenance cost.
 
 ---
 

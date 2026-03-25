@@ -8,7 +8,7 @@
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
-use crate::simulation::network::graph::TransitGraph;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::grid::pollution::PollutionSystem;
 use super::{TRANSIT_IMMIGRATING, TRANSIT_IDLE, MODE_CAR};
 // No Godot imports needed here
@@ -66,7 +66,7 @@ pub struct AgentSystem {
 
     // Spline Geometry
 
-    /// Index into `TransitGraph::edges` for the edge the agent is currently traversing.
+    /// Index into `RegionGraph::edges` for the edge the agent is currently traversing.
     pub current_edge: Vec<usize>,
     /// Progress along `current_edge` as a signed segment index. Positive = forward, negative = reverse.
     pub edge_progression: Vec<isize>,
@@ -186,7 +186,7 @@ impl AgentSystem {
     }
 
     /// Efficiency helper to spawn a large number of agents at once for testing or benchmarks.
-    pub fn spawn_random_agents(&mut self, count: usize, graph: &TransitGraph, allocator: &BuildingAllocator) {
+    pub fn spawn_random_agents(&mut self, count: usize, graph: &RegionGraph, allocator: &BuildingAllocator) {
         let mut rng = rand::thread_rng();
         let node_count = graph.nodes.len();
         let bldg_count = allocator.buildings.len();

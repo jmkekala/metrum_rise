@@ -1,7 +1,7 @@
 use godot::prelude::*;
-use super::data::TransitGraph;
+use super::data::RegionGraph;
 
-impl TransitGraph {
+impl RegionGraph {
     pub const CHUNK_SIZE: f32 = 512.0;
     pub const NODE_CHUNK_SIZE: f32 = 16.0;
 
