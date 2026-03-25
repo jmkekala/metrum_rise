@@ -117,8 +117,6 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 |----|------|-------------|----------|
 | B16 | `agents/tick.rs` IDLE branch | O(B) linear scan + heap `Vec` allocation for every job/shop search. At 500k buildings and 1% agent activation rate: ~5 × 10⁹ comparisons/tick. Fix: inverted zone-type index on `BuildingAllocator`. | `[BUG]` |
 | B18 | `grid/pollution.rs`, `noise.rs`, `desirability.rs` | `grid.clone()` inside each `tick()` allocates ~1 MB per grid per call. 3 grids × 10 Hz = 30 MB/s allocator pressure. Fix: pre-allocate a permanent swap `DataGrid` in each system struct. | `[v0.1]` |
-| B19 | `network/graph/` | `adjacency: HashMap<u32, Vec<usize>>` — HashMap overhead (~40–100 ns/lookup when cold) on every A* node expansion. Node IDs are dense `u32`s; a `Vec<Vec<usize>>` indexed directly would give O(1) with a single bounds-check. | `[v0.1]` |
-| B20 | `network/graph/` (`rebuild.rs`) | No test coverage for the old→new edge index remap. `compact_edges` simultaneously remaps agent `current_path` node sequences and building `edge_idx` fields after any edge deletion. A bug in either remap pass produces silently corrupted simulation state — agents navigate to wrong locations, buildings reference phantom edges — with no runtime error. | `[BUG]` |
 
 ---
 

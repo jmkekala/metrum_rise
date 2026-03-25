@@ -153,11 +153,9 @@ impl HpaGraph {
             self.concrete_adj[idx].clear();
             self.concrete_rev_adj[idx].clear();
             
-            if let Some(edges) = graph.adjacency.get(&node_id) {
-                for &e_idx in edges {
-                    if graph.edges[e_idx].deleted { continue; }
-                    self.add_concrete_edge(&graph.edges[e_idx], e_idx);
-                }
+            for &e_idx in &graph.adjacency[idx] {
+                if graph.edges[e_idx].deleted { continue; }
+                self.add_concrete_edge(&graph.edges[e_idx], e_idx);
             }
         }
 

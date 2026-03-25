@@ -14,8 +14,8 @@ impl TransitGraph {
     }
 
     pub fn get_edge_between_nodes(&self, from: u32, to: u32) -> Option<usize> {
-        if let Some(edges) = self.adjacency.get(&from) {
-            for &idx in edges {
+        if (from as usize) < self.adjacency.len() {
+            for &idx in &self.adjacency[from as usize] {
                 let e = &self.edges[idx];
                 if !e.deleted && ((e.start_node == from && e.end_node == to) || (e.start_node == to && e.end_node == from)) {
                     return Some(idx);
@@ -28,6 +28,7 @@ impl TransitGraph {
     pub fn add_node(&mut self, pos: Vector3, node_type: NodeType) -> u32 {
         let id = self.nodes.len() as u32;
         self.nodes.push(Node { pos, node_type, lane_connections: HashMap::new() });
+        self.adjacency.push(Vec::new());
         self.add_node_to_spatial_index(id);
         id
     }
@@ -59,8 +60,8 @@ impl TransitGraph {
         
         // Update Adjacency
         let e = &self.edges[id];
-        self.adjacency.entry(e.start_node).or_default().push(id);
-        self.adjacency.entry(e.end_node).or_default().push(id);
+        self.adjacency[e.start_node as usize].push(id);
+        self.adjacency[e.end_node as usize].push(id);
         
         id
     }
@@ -190,10 +191,8 @@ impl TransitGraph {
         // 5.5 RE-INDEX for modified edge
         self.add_to_spatial_index(edge_idx);
         
-        if let Some(adj) = self.adjacency.get_mut(&old_end_node) {
-            adj.retain(|&i| i != edge_idx);
-        }
-        self.adjacency.entry(new_node_id).or_default().push(edge_idx);
+        self.adjacency[old_end_node as usize].retain(|&i| i != edge_idx);
+        self.adjacency[new_node_id as usize].push(edge_idx);
         
         // 6. Create new edge as second half
         let new_edge_id = self.add_edge(Edge {

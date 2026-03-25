@@ -6,10 +6,11 @@ use std::collections::HashMap;
 impl TransitGraph {
     pub fn rebuild_adjacency_list(&mut self) {
         self.adjacency.clear();
+        self.adjacency.resize(self.nodes.len(), Vec::new());
         for (i, e) in self.edges.iter().enumerate() {
             if e.deleted { continue; }
-            self.adjacency.entry(e.start_node).or_default().push(i);
-            self.adjacency.entry(e.end_node).or_default().push(i);
+            self.adjacency[e.start_node as usize].push(i);
+            self.adjacency[e.end_node as usize].push(i);
         }
     }
 

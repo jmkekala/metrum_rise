@@ -92,7 +92,7 @@ pub struct TransitGraph {
     /// Query via [`get_edges_near_point`](Self::get_edges_near_point); do not access directly.
     pub spatial_edge_grid: HashMap<(i32, i32), Vec<usize>>,
     /// Adjacency list: node ID -> list of outgoing edge indices. Rebuilt after every road edit.
-    pub adjacency: HashMap<u32, Vec<usize>>,
+    pub adjacency: Vec<Vec<usize>>,
     /// Spatial acceleration structure for nodes: 16 m grid chunks -> node IDs.
     pub spatial_node_grid: HashMap<(i32, i32), Vec<u32>>,
 }
@@ -105,7 +105,7 @@ impl TransitGraph {
             junction_polygons: std::collections::HashMap::new(),
             node_aliases: std::collections::HashMap::new(),
             spatial_edge_grid: HashMap::new(),
-            adjacency: HashMap::new(),
+            adjacency: Vec::new(),
             spatial_node_grid: HashMap::new(),
         }
     }

@@ -397,7 +397,7 @@ impl ZoningSystem {
                 
                 if is_sister {
                     let shared_node = if e.start_node == edge.start_node || e.start_node == edge.end_node { e.start_node } else { e.end_node };
-                    let conn_count = graph.adjacency.get(&shared_node).map(|v| v.len()).unwrap_or(0);
+                    let conn_count = graph.adjacency[shared_node as usize].len();
                     
                     if conn_count <= 2 {
                         let t1 = if edge.start_node == shared_node {

@@ -151,10 +151,8 @@ pub fn split_edge(network: &mut TransitNetwork, edge_id: usize, segment_idx: usi
     network.graph.remove_from_spatial_index(edge_id);
     network.graph.add_to_spatial_index(edge_id);
     
-    if let Some(adj) = network.graph.adjacency.get_mut(&old_end_node) {
-        adj.retain(|&i| i != edge_id);
-    }
-    network.graph.adjacency.entry(junction_node_id).or_default().push(edge_id);
+    network.graph.adjacency[old_end_node as usize].retain(|&i| i != edge_id);
+    network.graph.adjacency[junction_node_id as usize].push(edge_id);
 
     let mut new_edge = Edge {
         start_node: junction_node_id,
