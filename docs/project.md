@@ -73,7 +73,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Rendered via MultiMesh instancing: one draw call per zone type.
 - Building deletion via swap-remove, O(1).
 - Save/load via `serde_json` — **not yet wired end-to-end**.
-- **Known scaling issue**: no inverted zone-type index. Agent job/shop lookup scans all buildings linearly — O(B) per activation with a heap allocation. See Backlog (B16).
+- **Building Index**: Inverted zone-type index (B16) implemented. Agent job/shop lookup is now O(1) random selection. Prerequisite for parallel tick.
 
 ### Agents
 - `simulation/economy/agents/` (Submodule) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
@@ -116,7 +116,6 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
-| B16 | `agents/tick.rs` IDLE branch | O(B) linear scan + heap `Vec` allocation for every job/shop search. At 500k buildings and 1% agent activation rate: ~5 × 10⁹ comparisons/tick. Fix: inverted zone-type index on `BuildingAllocator`. | `[BUG]` |
 
 ---
 
@@ -189,7 +188,7 @@ The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) i
 
 **Implementation order matters.** Items 20 and 19 are mutually dependent: the zone index (20) must exist before the tick can be parallelised (19), because the parallel tick needs atomic vacancy counters that the index maintains. Do 20 first. Item 22 is independent. Item 18 (flow fields) requires 19 to be done first — flow field queries need to run inside the parallel tick loop. Item 25 (IDM) is independent. Item 30 (bicycle) requires v0.01 goals 3 and 4. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete — the `RegionGraph` rename and CCH query are the foundation the region system builds on.
 
-20. **Fix B16 — inverted zone-type index**: add `zone_index: Vec<Vec<usize>>` to `BuildingAllocator`, maintained on every building add/remove. Replaces O(B) linear scan with O(1) index lookup + O(1) random selection. At 500k agents with 50k buildings and a 1% activation rate: eliminates ~2.5 × 10⁸ comparisons/tick. **Do this before parallelising the tick — it is the prerequisite.**
+20. [DONE] **Fix B16 — inverted zone-type index**: add `zone_index: Vec<Vec<usize>>` to `BuildingAllocator`, maintained on every building add/remove. Replaces O(B) linear scan with O(1) index lookup + O(1) random selection. At 500k agents with 50k buildings and a 1% activation rate: eliminates ~2.5 × 10⁸ comparisons/tick.
 19. **Parallelise `AgentSystem::tick`**: remove `&mut TransitGraph` from tick signature (currently unused as mut); switch to `rayon::par_iter_mut` over agent index ranges. Use `AtomicU32` for building vacancy counters (enabled by item 20's index); batch immigration assignments in a post-parallel sequential phase. Prerequisite for all subsequent agent-scale targets.
 22. [DONE] **Fix B18 — env grid double-buffering**: add a `swap: DataGrid<f32>` field to `PollutionSystem`, `NoiseSystem`, and `DesirabilitySystem`. Replace `self.grid.clone()` with a raw `Vec` pointer swap, reducing hot-path allocation to zero. Eliminates 30 MB/s sustained allocator pressure.
 18. **Flow fields for shared destinations**: one reverse Dijkstra from each active destination zone type produces a next-node map of length V. Agents query O(1) instead of running individual CCH queries. Reduces O(A × CCH_cost) to O(M × (V + E) log V) where M ≈ 10–100 active zone types. Retain CCH for immigration and one-off novel destinations. Requires parallel tick (item 19) to be useful — flow field lookup is the O(1) work that fills each parallel agent slot. Add a timing test on completion: Dijkstra from one destination on a 1,000-node graph must complete in < 5 ms (originally listed in v0.01 goals but deferred here until the system exists).

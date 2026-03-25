@@ -51,25 +51,27 @@ pub struct BuildingAllocator {
     pub buildings: Vec<Building>,
     /// Set to `true` when the building list changes in a tick, signalling renderers to refresh.
     pub dirty: bool,
+    /// Inverted index: `zone_index[ZoneType as usize]` contains building indices (Bug B16).
+    pub zone_index: [Vec<usize>; 6],
+    /// If true, the `zone_index` needs to be recalculated.
+    pub dirty_index: bool,
 }
 
 impl BuildingAllocator {
     /// Remaps all building edge indices after a road network compaction.
     pub fn update_edge_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+        let old_len = self.buildings.len();
         for b in &mut self.buildings {
             if let Some(&new_id) = mapping.get(&b.edge_idx) {
                 b.edge_idx = new_id;
             } else {
-                // Edge was deleted! This building should have been removed by tick(),
-                // but we'll mark it for removal or handle it gracefully if needed.
-                // For now, we keep the index or set to a dummy to avoid out-of-bounds.
                 b.edge_idx = usize::MAX;
             }
         }
-        // Remove buildings that now point to deleted edges
         self.buildings.retain(|b| b.edge_idx != usize::MAX);
-        if self.buildings.len() != self.buildings.len() {
+        if self.buildings.len() != old_len {
              self.dirty = true;
+             self.dirty_index = true;
         }
     }
 
@@ -78,13 +80,19 @@ impl BuildingAllocator {
         Self {
             buildings: Vec::new(),
             dirty: false,
+            zone_index: [const { Vec::new() }; 6],
+            dirty_index: true,
         }
     }
 
     /// Removes all buildings and resets the dirty flag.
     pub fn clear(&mut self) {
         self.buildings.clear();
+        for list in &mut self.zone_index {
+            list.clear();
+        }
         self.dirty = false;
+        self.dirty_index = false;
     }
 
     /// Advances the building lifecycle by one simulation tick.
@@ -124,6 +132,7 @@ impl BuildingAllocator {
                     }
                 }
                 self.buildings.swap_remove(i);
+                self.dirty_index = true;
             } else {
                 i += 1;
             }
@@ -262,6 +271,7 @@ impl BuildingAllocator {
                             }
                         }
                         self.buildings.push(b);
+                        self.dirty_index = true;
                         
                         // Subtract from demand
                         match z_type {
@@ -276,6 +286,10 @@ impl BuildingAllocator {
         }
 
         network.rebuild_pathing_if_dirty();
+        
+        if self.dirty_index {
+            self.rebuild_zone_index();
+        }
 
         // 3. Immigration Logic
         let total_capacity: usize = self.buildings.iter()
@@ -341,5 +355,98 @@ impl BuildingAllocator {
         let p_prev = Vector2::new(geo[geo.len()-2].x, geo[geo.len()-2].z);
         let dist = p_end - p_prev;
         if dist.length() > 1e-6 { dist.normalized() } else { Vector2::new(1.0, 0.0) }
+    }
+
+    /// Repopulates the internal zone index (Bug B16 B-linear scan fix).
+    pub fn rebuild_zone_index(&mut self) {
+        for list in &mut self.zone_index {
+            list.clear();
+        }
+        for (idx, b) in self.buildings.iter().enumerate() {
+            let zi = b.zone_type as usize;
+            if zi < 6 {
+                self.zone_index[zi].push(idx);
+            }
+        }
+        self.dirty_index = false;
+    }
+
+    /// Pick a random building from a specific zone type. O(1).
+    pub fn get_random_building_by_zone(&self, zone: ZoneType, rng: &mut impl rand::Rng) -> Option<usize> {
+        let list = &self.zone_index[zone as usize];
+        if list.is_empty() { return None; }
+        Some(list[rng.gen_range(0..list.len())])
+    }
+
+    /// Pick a random building from any of the specified zone types. O(1).
+    pub fn get_random_building_by_zones(&self, zones: &[ZoneType], rng: &mut impl rand::Rng) -> Option<usize> {
+        // We sum the counts and pick based on weighted probability of lengths
+        let mut total = 0;
+        for &zone in zones {
+            total += self.zone_index[zone as usize].len();
+        }
+        if total == 0 { return None; }
+
+        let mut pick = rng.gen_range(0..total);
+        for &zone in zones {
+            let list = &self.zone_index[zone as usize];
+            if pick < list.len() {
+                return Some(list[pick]);
+            }
+            pick -= list.len();
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::grid::zoning::ZoneType;
+    use godot::prelude::Vector2;
+    use rand::SeedableRng;
+
+    #[test]
+    fn test_zone_index_consistency() {
+        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        // 1. Add buildings
+        for i in 0..10 {
+            allocator.buildings.push(Building {
+                center_x: i as f32,
+                center_y: 0.0,
+                width: 30,
+                depth: 30,
+                zone_type: if i % 2 == 0 { ZoneType::Residential } else { ZoneType::Commercial },
+                facing_dir: Vector2::new(0.0, 1.0),
+                frontage_t: 0.5,
+                side_offset: 0.0,
+                abandoned_timer: 0,
+                edge_idx: 0,
+                side: 1,
+                cell_x: i,
+                cell_y: 0,
+            });
+        }
+        allocator.dirty_index = true;
+        allocator.rebuild_zone_index();
+
+        assert_eq!(allocator.zone_index[ZoneType::Residential as usize].len(), 5);
+        assert_eq!(allocator.zone_index[ZoneType::Commercial as usize].len(), 5);
+
+        // 2. Remove a building (Residential at index 0)
+        allocator.buildings.swap_remove(0);
+        allocator.dirty_index = true;
+        allocator.rebuild_zone_index();
+
+        assert_eq!(allocator.buildings.len(), 9);
+        assert_eq!(allocator.zone_index[ZoneType::Residential as usize].len(), 4);
+        assert_eq!(allocator.zone_index[ZoneType::Commercial as usize].len(), 5);
+
+        // 3. Random selection
+        let pick = allocator.get_random_building_by_zone(ZoneType::Commercial, &mut rng);
+        assert!(pick.is_some());
+        assert_eq!(allocator.buildings[pick.unwrap()].zone_type, ZoneType::Commercial);
     }
 }

@@ -67,20 +67,16 @@ impl AgentSystem {
                         if self.activity[i] == 0 { // Heading to Work or Shop
                             if self.money[i] >= 20.0 && rng.gen_bool(0.4) {
                                 // Go Shopping
-                                let shops: Vec<usize> = allocator.buildings.iter().enumerate()
-                                    .filter(|(_, b)| b.zone_type == ZoneType::Commercial)
-                                    .map(|(idx, _)| idx).collect();
-                                if !shops.is_empty() {
-                                    next_bldg = shops[rng.gen_range(0..shops.len())];
+                                if let Some(h) = allocator.get_random_building_by_zone(ZoneType::Commercial, &mut rng) {
+                                    next_bldg = h;
                                     next_act = 2;
                                 }
                             } else {
                                 // Go to Work
                                 if self.work_building[i] == usize::MAX {
-                                    let jobs: Vec<usize> = allocator.buildings.iter().enumerate()
-                                        .filter(|(_, b)| b.zone_type == ZoneType::Industrial || b.zone_type == ZoneType::Commercial)
-                                        .map(|(idx, _)| idx).collect();
-                                    if !jobs.is_empty() { self.work_building[i] = jobs[rng.gen_range(0..jobs.len())]; }
+                                    if let Some(h) = allocator.get_random_building_by_zones(&[ZoneType::Industrial, ZoneType::Commercial], &mut rng) {
+                                        self.work_building[i] = h;
+                                    }
                                 }
                                 if self.work_building[i] != usize::MAX {
                                     next_bldg = self.work_building[i];

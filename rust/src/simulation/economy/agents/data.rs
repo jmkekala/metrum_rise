@@ -354,8 +354,13 @@ impl AgentSystem {
             }
         }
         
-        for (idx, b) in allocator.buildings.iter().enumerate() {
-            if b.zone_type == ZoneType::Residential && occupancy[idx] < 6 {
+        for &idx in &allocator.zone_index[ZoneType::Residential as usize] {
+            if occupancy[idx] < 6 {
+                return Some(idx);
+            }
+        }
+        for &idx in &allocator.zone_index[ZoneType::Mixed as usize] {
+            if occupancy[idx] < 6 {
                 return Some(idx);
             }
         }
