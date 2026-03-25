@@ -11,6 +11,10 @@ pub struct NetworkMeshData {
     pub marking_normals: PackedVector3Array,
     pub marking_uvs: PackedVector2Array,
     pub marking_colors: PackedColorArray,
+    pub concrete_vertices: PackedVector3Array,
+    pub concrete_normals: PackedVector3Array,
+    pub concrete_uvs: PackedVector2Array,
+    pub concrete_colors: PackedColorArray,
 }
 
 pub trait TransitRenderer {

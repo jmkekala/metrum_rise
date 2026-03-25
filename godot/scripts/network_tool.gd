@@ -176,21 +176,50 @@ func _load_texture(path: String) -> Texture2D:
 	return tex
 
 static var _road_mat: ShaderMaterial = null
+static var _concrete_mat: ShaderMaterial = null
 
 func update_main_mesh():
 	var data = simulation_node.get_road_mesh_data()
 	if not data: return
 	
 	var arr_mesh = ArrayMesh.new()
-	var arrays = []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = data.vertices
-	arrays[Mesh.ARRAY_NORMAL] = data.normals
-	arrays[Mesh.ARRAY_COLOR] = data.colors
-	arrays[Mesh.ARRAY_TEX_UV] = data.uvs
+	
+	var surface_map = [] # To keep track of which material goes to which surface
 	
 	# Surface 0: Asphalt & Junctions
-	arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	if data.vertices.size() > 0:
+		var arrays = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = data.vertices
+		arrays[Mesh.ARRAY_NORMAL] = data.normals
+		arrays[Mesh.ARRAY_COLOR] = data.colors
+		arrays[Mesh.ARRAY_TEX_UV] = data.uvs
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		surface_map.push_back(_road_mat)
+
+	# Surface 1: Markings
+	if data.has("marking_vertices") and data.marking_vertices.size() > 0:
+		var arrays = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = data.marking_vertices
+		arrays[Mesh.ARRAY_NORMAL] = data.marking_normals
+		arrays[Mesh.ARRAY_COLOR] = data.marking_colors
+		arrays[Mesh.ARRAY_TEX_UV] = data.marking_uvs
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		surface_map.push_back(_road_mat)
+
+	# Surface 2: Concrete
+	if data.has("concrete_vertices") and data.concrete_vertices.size() > 0:
+		var arrays = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = data.concrete_vertices
+		arrays[Mesh.ARRAY_NORMAL] = data.concrete_normals
+		arrays[Mesh.ARRAY_COLOR] = data.concrete_colors
+		arrays[Mesh.ARRAY_TEX_UV] = data.concrete_uvs
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		surface_map.push_back(_concrete_mat)
+	
+	mesh_instance.mesh = arr_mesh
 	
 	if _road_mat == null:
 		_road_mat = ShaderMaterial.new()
@@ -200,5 +229,14 @@ func update_main_mesh():
 		_road_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"))
 		_road_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_disp_4k.png"))
 	
-	mesh_instance.mesh = arr_mesh
-	mesh_instance.set_surface_override_material(0, _road_mat)
+	if _concrete_mat == null:
+		_concrete_mat = ShaderMaterial.new()
+		_concrete_mat.shader = load("res://assets/materials/concrete.gdshader")
+		_concrete_mat.set_shader_parameter("albedo_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_diff_4k.jpg"))
+		_concrete_mat.set_shader_parameter("normal_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_nor_gl_4k.png"))
+		_concrete_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_rough_4k.png"))
+		_concrete_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_disp_4k.png"))
+
+	# Apply materials according to the mapped surface indices
+	for i in range(surface_map.size()):
+		mesh_instance.set_surface_override_material(i, surface_map[i])

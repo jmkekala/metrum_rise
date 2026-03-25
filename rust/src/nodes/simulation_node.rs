@@ -338,6 +338,16 @@ impl SimulationNode {
         self.get_edge_geometry_internal(edge_idx)
     }
 
+    /// Returns the 3D geometry for a road edge.
+    #[func]
+    pub fn get_edge_geometry_3d(&self, edge_idx: i32) -> PackedVector3Array {
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() {
+            return PackedVector3Array::new();
+        }
+        let edge = &self.region_graph.edges[edge_idx as usize];
+        PackedVector3Array::from_iter(edge.physical_geometry.iter().cloned())
+    }
+
     /// Returns the width of a specific road edge.
     #[func]
     pub fn get_edge_width(&self, edge_idx: i32) -> f32 {

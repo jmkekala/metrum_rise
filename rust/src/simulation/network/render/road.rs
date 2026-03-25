@@ -14,12 +14,18 @@ impl TransitRenderer for RoadRenderer {
         let mut uvs = PackedVector2Array::new();
         let mut colors = PackedColorArray::new();
         
-        let marking_vertices = PackedVector3Array::new();
-        let marking_normals = PackedVector3Array::new();
-        let marking_uvs = PackedVector2Array::new();
-        let marking_colors = PackedColorArray::new();
+        let mut marking_vertices = PackedVector3Array::new();
+        let mut marking_normals = PackedVector3Array::new();
+        let mut marking_uvs = PackedVector2Array::new();
+        let mut marking_colors = PackedColorArray::new();
 
-        let _half_size = Vector2::new(terrain.width as f32 * 0.5, terrain.height as f32 * 0.5);
+        let mut concrete_vertices = PackedVector3Array::new();
+        let mut concrete_normals = PackedVector3Array::new();
+        let mut concrete_uvs = PackedVector2Array::new();
+        let mut concrete_colors = PackedColorArray::new();
+
+        let _hw = (terrain.width as f32 - 1.0) * 0.5;
+        let _hh = (terrain.height as f32 - 1.0) * 0.5;
 
         // 0. Connection mapping and Miter calculation
         let mut connection_counts = HashMap::new();
@@ -314,6 +320,9 @@ impl TransitRenderer for RoadRenderer {
                 let hw = edge.width * 0.5 + config::SIDEWALK_WIDTH;
                 let thickness = 1.0;
                 let deck_color = Color::from_rgb(0.3, 0.3, 0.31);
+                let concrete_color = Color::from_rgb(0.5, 0.5, 0.5);
+
+                let mut dist_acc_pillars = 0.0;
 
                 for i in 0..resampled_count - 1 {
                     let p0 = edge.physical_geometry[i];
@@ -327,20 +336,87 @@ impl TransitRenderer for RoadRenderer {
                     let p0_lb = p0_l - Vector3::UP * thickness; let p0_rb = p0_r - Vector3::UP * thickness;
                     let p1_lb = p1_l - Vector3::UP * thickness; let p1_rb = p1_r - Vector3::UP * thickness;
 
-                    // Left Side Quad
+                    // 1. Sidewalk/Deck structure (as implemented before)
                     vertices.push(p0_l); vertices.push(p1_lb); vertices.push(p0_lb);
                     vertices.push(p0_l); vertices.push(p1_l); vertices.push(p1_lb);
                     for _ in 0..6 { normals.push(-side0); colors.push(deck_color); uvs.push(Vector2::ZERO); }
 
-                    // Right Side Quad
                     vertices.push(p0_r); vertices.push(p0_rb); vertices.push(p1_rb);
                     vertices.push(p0_r); vertices.push(p1_rb); vertices.push(p1_r);
                     for _ in 0..6 { normals.push(side0); colors.push(deck_color); uvs.push(Vector2::ZERO); }
 
-                    // Bottom face (inverted Up)
                     vertices.push(p0_lb); vertices.push(p1_rb); vertices.push(p1_lb);
                     vertices.push(p0_lb); vertices.push(p0_rb); vertices.push(p1_rb);
                     for _ in 0..6 { normals.push(Vector3::DOWN); colors.push(deck_color); uvs.push(Vector2::ZERO); }
+
+                    // 2. CLEARANCE-BASED ADDITIONS (Item 582)
+                    let p_mid = p0.lerp(p1, 0.5);
+                    let gx = p_mid.x + _hw; let gz = p_mid.z + _hh;
+                    let terrain_y = terrain.get_height_interpolated(gx, gz) * crate::config::HEIGHT_SCALE;
+                    let clearance = p_mid.y - terrain_y;
+
+                    // RAILINGS (1.2m tall) - Full Length for bridges
+                    let rail_h = 1.2;
+                    let p0_lt = p0_l + Vector3::UP * rail_h; let p0_rt = p0_r + Vector3::UP * rail_h;
+                    let p1_lt = p1_l + Vector3::UP * rail_h; let p1_rt = p1_r + Vector3::UP * rail_h;
+
+                    // Left Railing
+                    concrete_vertices.push(p0_l); concrete_vertices.push(p1_lt); concrete_vertices.push(p0_lt);
+                    concrete_vertices.push(p0_l); concrete_vertices.push(p1_l); concrete_vertices.push(p1_lt);
+                    for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+
+                    // Right Railing
+                    concrete_vertices.push(p0_r); concrete_vertices.push(p0_rt); concrete_vertices.push(p1_rt);
+                    concrete_vertices.push(p0_r); concrete_vertices.push(p1_rt); concrete_vertices.push(p1_r);
+                    for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+
+                    if clearance <= 5.0 {
+                        // SIDE WALLS down to terrain
+                        let p0_lg = Vector3::new(p0_l.x, terrain.get_height_interpolated(p0_l.x + _hw, p0_l.z + _hh) * crate::config::HEIGHT_SCALE, p0_l.z);
+                        let p0_rg = Vector3::new(p0_r.x, terrain.get_height_interpolated(p0_r.x + _hw, p0_r.z + _hh) * crate::config::HEIGHT_SCALE, p0_r.z);
+                        let p1_lg = Vector3::new(p1_l.x, terrain.get_height_interpolated(p1_l.x + _hw, p1_l.z + _hh) * crate::config::HEIGHT_SCALE, p1_l.z);
+                        let p1_rg = Vector3::new(p1_r.x, terrain.get_height_interpolated(p1_r.x + _hw, p1_r.z + _hh) * crate::config::HEIGHT_SCALE, p1_r.z);
+
+                        // Left Wall
+                        concrete_vertices.push(p0_l); concrete_vertices.push(p0_lg); concrete_vertices.push(p1_lg);
+                        concrete_vertices.push(p0_l); concrete_vertices.push(p1_lg); concrete_vertices.push(p1_l);
+                        for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+
+                        // Right Wall
+                        concrete_vertices.push(p0_r); concrete_vertices.push(p1_rg); concrete_vertices.push(p0_rg);
+                        concrete_vertices.push(p0_r); concrete_vertices.push(p1_r); concrete_vertices.push(p1_rg);
+                        for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    } else {
+                        // PILLARS every 15m
+                        let seg_len = (p1 - p0).length();
+                        dist_acc_pillars += seg_len;
+                        if dist_acc_pillars >= 15.0 || i == 0 {
+                            if i > 0 { dist_acc_pillars = 0.0; }
+                            
+                            let p_w = edge.width * 0.3;
+                            let p_h_top = p_mid.y - thickness;
+                            let p_h_bot = terrain_y;
+                            
+                            // 4-sided column
+                            let c_p0 = p_mid - side0 * (p_w * 0.5); let c_p1 = p_mid + side0 * (p_w * 0.5);
+                            let fwd = (p1 - p0).normalized();
+                            let c_p2 = c_p1 + fwd * p_w; let c_p3 = c_p0 + fwd * p_w;
+                            
+                            let verts = [c_p0, c_p1, c_p2, c_p3];
+                            for j in 0..4 {
+                                let va = verts[j]; let vb = verts[(j+1)%4];
+                                let va_g = Vector3::new(va.x, p_h_bot, va.z);
+                                let vb_g = Vector3::new(vb.x, p_h_bot, vb.z);
+                                let va_t = Vector3::new(va.x, p_h_top, va.z);
+                                let vb_t = Vector3::new(vb.x, p_h_top, vb.z);
+                                
+                                concrete_vertices.push(va_t); concrete_vertices.push(vb_g); concrete_vertices.push(va_g);
+                                concrete_vertices.push(va_t); concrete_vertices.push(vb_t); concrete_vertices.push(vb_g);
+                                let n = (vb - va).cross(Vector3::UP).normalized();
+                                for _ in 0..6 { concrete_normals.push(n); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -461,6 +537,7 @@ impl TransitRenderer for RoadRenderer {
         NetworkMeshData {
             vertices, normals, uvs, colors,
             marking_vertices, marking_normals, marking_uvs, marking_colors,
+            concrete_vertices, concrete_normals, concrete_uvs, concrete_colors,
         }
     }
 }

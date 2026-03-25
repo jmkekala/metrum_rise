@@ -160,6 +160,8 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
     - Rust `#[func]` in `simulation_node.rs`: `set_edge_class(edge_idx, class)` — writes `class` field, triggers CCH rebuild for affected edges, signals re-render.
     - GDScript editor panel: UI action on a selected edge to promote to `Bridge` or `Tunnel`.
     - Validation: warn if bridge endpoints are not at a higher Y than the terrain midpoint; warn if tunnel endpoints are not below the terrain surface.
+    - **Side walls** (`road.rs`): for each Bridge edge segment compute `clearance = point.y − terrain.get_height_interpolated(point.xz)`. If clearance ≤ 5 m, generate solid rectangular wall quads on both road edges from road surface down to terrain height at that XZ. Uses a separate mesh surface with a bare concrete material.
+    - **Pillars** (`road.rs`): if clearance > 5 m, generate a rectangular 4-sided column every ~15 m of arc length, from terrain Y up to road underside Y. Width scaled to `edge.width * 0.3`. Also generate short railing walls (1.2 m tall) on both road edges for the full length. Same concrete material surface as side walls.
 
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 

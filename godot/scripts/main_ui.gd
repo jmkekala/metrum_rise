@@ -393,6 +393,13 @@ func _build_ui():
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	prop_vbox.add_child(title)
 	
+	var warning_label = Label.new()
+	warning_label.name = "WarningLabel"
+	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+	warning_label.add_theme_color_override("font_color", Color.YELLOW)
+	prop_vbox.add_child(warning_label)
+	road_properties_panel.set_meta("warning_label", warning_label)
+	
 	var classes = ["Standard", "Bridge", "Tunnel"]
 	for i in range(classes.size()):
 		var btn = Button.new()
@@ -484,8 +491,32 @@ func _on_select_main_pressed():
 	zoning_combined_hbox.visible = false
 	input_manager._toggle_tool(InputManager.Tool.SELECT)
 
-func show_road_properties(_edge_idx):
+func show_road_properties(edge_idx):
 	road_properties_panel.visible = true
+	var warning = road_properties_panel.get_meta("warning_label")
+	warning.text = ""
+	
+	var geo = simulation_node.get_edge_geometry_3d(edge_idx)
+	if geo.size() < 2: return
+	
+	# Basic Validation Logic (Item 27)
+	var p0 = geo[0]
+	var p1 = geo[-1]
+	var h0 = simulation_node.get_height_at(p0.x, p0.z)
+	var h1 = simulation_node.get_height_at(p1.x, p1.z)
+	
+	# Sample midpoint for terrain clearance
+	var t_mid = geo[geo.size()/2]
+	var h_mid = simulation_node.get_height_at(t_mid.x, t_mid.z)
+	
+	# We'd need the edge class to show specific warnings
+	# For now, general "incorrect elevation" warning based on common sense
+	if p0.y > h0 + 1.0 and p1.y > h1 + 1.0:
+		if t_mid.y < h_mid + 2.0:
+			warning.text = "Warning: Bridge may clash with terrain!"
+	elif p0.y < h0 - 1.0 and p1.y < h1 - 1.0:
+		if t_mid.y > h_mid - 2.0:
+			warning.text = "Warning: Tunnel might be above surface!"
 
 func hide_road_properties():
 	road_properties_panel.visible = false

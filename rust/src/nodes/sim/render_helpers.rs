@@ -328,6 +328,11 @@ impl SimulationNode {
         dict.set("marking_normals", mesh_data.marking_normals);
         dict.set("marking_uvs", mesh_data.marking_uvs);
         dict.set("marking_colors", mesh_data.marking_colors);
+        
+        dict.set("concrete_vertices", mesh_data.concrete_vertices);
+        dict.set("concrete_normals", mesh_data.concrete_normals);
+        dict.set("concrete_uvs", mesh_data.concrete_uvs);
+        dict.set("concrete_colors", mesh_data.concrete_colors);
         dict
     }
 }
