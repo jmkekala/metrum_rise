@@ -72,6 +72,7 @@ pub struct ZoningSystem {
 }
 
 impl ZoningSystem {
+    /// Creates a new, empty zoning system.
     pub fn new() -> Self {
         Self {
             edge_grids: HashMap::new(),
@@ -79,11 +80,13 @@ impl ZoningSystem {
         }
     }
 
+    /// Clears all zoning data from the system.
     pub fn clear(&mut self) {
         self.edge_grids.clear();
     }
 
     /// Remaps the keys of edge_grids from [Old ID] to [New ID].
+    /// Remaps the keys of edge_grids from [Old ID] to [New ID]. Used during graph compaction.
     pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
         let mut new_grids = HashMap::new();
         for (old_idx, grid) in self.edge_grids.drain() {
@@ -94,6 +97,7 @@ impl ZoningSystem {
         self.edge_grids = new_grids;
     }
 
+    /// Splits an existing edge's zoning grid into two at the specified column index `split_x`.
     pub fn split_edge_grid(&mut self, old_idx: usize, new_idx: usize, split_x: usize) {
         if let Some(old_grid) = self.edge_grids.get(&old_idx).cloned() {
             let cells_long = old_grid.cells_long;
@@ -142,6 +146,7 @@ impl ZoningSystem {
         }
     }
 
+    /// Merges two adjacent edge zoning grids into one.
     pub fn merge_edge_grids(&mut self, first_idx: usize, second_idx: usize) {
         let second_grid = if let Some(g) = self.edge_grids.remove(&second_idx) { g } else { return; };
         
@@ -156,6 +161,7 @@ impl ZoningSystem {
         }
     }
 
+    /// Resizes or creates the zoning grid for an edge based on its physical length.
     pub fn update_edge_grid_size(&mut self, edge_idx: usize, length: f32) {
         let cells_long = (length / self.grid_cell_size).floor() as usize;
         let entry = self.edge_grids.entry(edge_idx).or_insert_with(|| EdgeZoning {
@@ -179,6 +185,7 @@ impl ZoningSystem {
         }
     }
 
+    /// Sets the zone type of a specific cell.
     pub fn set_cell(&mut self, edge_idx: usize, side: i8, x: usize, y: usize, zone_type: ZoneType) {
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
             let cells = if side > 0 { &mut grid.left_side } else { &mut grid.right_side };
@@ -189,6 +196,7 @@ impl ZoningSystem {
         }
     }
 
+    /// Returns the zone type of a specific cell.
     pub fn get_cell(&self, edge_idx: usize, side: i8, x: usize, y: usize) -> ZoneType {
         if let Some(grid) = self.edge_grids.get(&edge_idx) {
             let cells = if side > 0 { &grid.left_side } else { &grid.right_side };
@@ -200,6 +208,7 @@ impl ZoningSystem {
         ZoneType::None
     }
 
+    /// Returns `true` if a building's footprint covers the specified cell.
     pub fn is_occupied(&self, edge_idx: usize, side: i8, x: usize, y: usize) -> bool {
         if let Some(grid) = self.edge_grids.get(&edge_idx) {
             let cells = if side > 0 { &grid.left_occupied } else { &grid.right_occupied };
@@ -211,6 +220,7 @@ impl ZoningSystem {
         true // Assume occupied if out of bounds or grid missing
     }
 
+    /// Sets the occupancy state of a specific cell.
     pub fn set_occupied(&mut self, edge_idx: usize, side: i8, x: usize, y: usize, occupied: bool) {
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
             let cells = if side > 0 { &mut grid.left_occupied } else { &mut grid.right_occupied };
@@ -221,6 +231,7 @@ impl ZoningSystem {
         }
     }
 
+    /// Sets the obstruction state of a specific cell in the cache.
     pub fn set_blocked(&mut self, edge_idx: usize, side: i8, x: usize, y: usize, blocked: bool) {
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
             let cells = if side > 0 { &mut grid.left_blocked } else { &mut grid.right_blocked };
@@ -231,6 +242,7 @@ impl ZoningSystem {
         }
     }
 
+    /// Returns the cached obstruction state of a specific cell.
     pub fn is_blocked(&self, edge_idx: usize, side: i8, x: usize, y: usize) -> bool {
         if let Some(grid) = self.edge_grids.get(&edge_idx) {
             let cells = if side > 0 { &grid.left_blocked } else { &grid.right_blocked };
@@ -243,6 +255,7 @@ impl ZoningSystem {
     }
 
     /// Explicitly updates the obstruction cache for an edge.
+    /// Explicitly updates the obstruction cache for an edge by performing 5-point sampling per cell.
     pub fn recalculate_obstructions(&mut self, edge_idx: usize, graph: &crate::simulation::network::graph::TransitGraph) {
         let cells_long = if let Some(grid) = self.edge_grids.get(&edge_idx) {
             grid.cells_long
@@ -281,6 +294,7 @@ impl ZoningSystem {
         }
     }
 
+    /// Returns the world-space center position of a specific zoning cell.
     pub fn get_cell_center(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph) -> Vector2 {
         if edge_idx >= graph.edges.len() { return Vector2::new(0.0, 0.0); }
         let edge = &graph.edges[edge_idx];
@@ -322,6 +336,7 @@ impl ZoningSystem {
         
         pos + normal * (half_width + crate::config::SIDEWALK_WIDTH + depth)
     }
+    /// Tests whether a specific cell is obstructed by asphalt, other road footprints, or competitor zoning.
     pub fn is_cell_obstructed(&self, edge_idx: usize, side: i8, x: usize, y: usize, graph: &crate::simulation::network::graph::TransitGraph, nearby_edges_cache: Option<&[usize]>) -> bool {
         let center = self.get_cell_center(edge_idx, side, x, y, graph);
         if center.x == 0.0 && center.y == 0.0 { return true; }
@@ -538,6 +553,7 @@ impl ZoningSystem {
     }
 
     // Helper for rendering all painted cells
+    /// Packs and returns all painted and non-blocked zoning cells for Godot-side rendering.
     pub fn get_render_data(&self, graph: &crate::simulation::network::graph::TransitGraph) -> PackedFloat32Array {
         let mut data = Vec::new();
         for (&edge_idx, grid) in &self.edge_grids {

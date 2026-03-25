@@ -107,6 +107,7 @@ pub struct AgentSystem {
 }
 
 impl AgentSystem {
+    /// Creates a new, empty agent system.
     pub fn new() -> Self {
         Self {
             count: 0,
@@ -145,6 +146,7 @@ impl AgentSystem {
         }
     }
 
+    /// Spawns a single agent arriving at the city as an immigrant.
     pub fn spawn_agent(&mut self, home: usize, home_node: u32, _target_x: f32, _target_y: f32, highway_node: u32, init_x: f32, init_y: f32) -> usize {
         self.home_building.push(home);
         self.work_building.push(usize::MAX);
@@ -183,6 +185,7 @@ impl AgentSystem {
         self.count - 1
     }
 
+    /// Efficiency helper to spawn a large number of agents at once for testing or benchmarks.
     pub fn spawn_random_agents(&mut self, count: usize, graph: &TransitGraph, allocator: &BuildingAllocator) {
         let mut rng = rand::thread_rng();
         let node_count = graph.nodes.len();
@@ -201,6 +204,7 @@ impl AgentSystem {
         }
     }
 
+    /// Clears all agents from the system.
     pub fn clear(&mut self) {
         self.home_building.clear();
         self.work_building.clear();
@@ -238,6 +242,7 @@ impl AgentSystem {
     }
 
     /// Remaps the edge indices stored in all agents from [Old ID] to [New ID].
+    /// Remaps the edge indices stored in all agents from [Old ID] to [New ID].
     pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
         for i in 0..self.count {
             if self.current_edge[i] != usize::MAX {
@@ -251,6 +256,7 @@ impl AgentSystem {
         }
     }
     
+    /// Permanently removes an agent from the simulation using O(1) swap-remove.
     pub fn kill_agent(&mut self, index: usize) {
         if index >= self.count { return; }
         let last_idx = self.count - 1;
@@ -318,6 +324,7 @@ impl AgentSystem {
         self.count -= 1;
     }
 
+    /// Forcefully removes all agents from a building that has been deleted.
     pub fn evict_building(&mut self, building_id: usize, allocator: &BuildingAllocator) {
         for i in 0..self.count {
             if self.work_building[i] == building_id {
@@ -346,6 +353,7 @@ impl AgentSystem {
         }
     }
     
+    /// Finds a residential or mixed-use building with available vacancy for a new agent.
     pub fn find_available_home(&self, allocator: &BuildingAllocator) -> Option<usize> {
         let mut occupancy = vec![0; allocator.buildings.len()];
         for i in 0..self.count {
@@ -367,6 +375,7 @@ impl AgentSystem {
         None
     }
 
+    /// Update per-day agent state: home/work bonuses and pollution penalties.
     /// Update per-day agent state: home/work bonuses and pollution penalties.
     pub fn daily_update(&mut self, pollution: &PollutionSystem) {
         let w = pollution.grid.width as f32;

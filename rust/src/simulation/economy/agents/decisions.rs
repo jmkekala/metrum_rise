@@ -6,6 +6,8 @@ use super::data::AgentSystem;
 use super::{MODE_CAR, MODE_WALK};
 
 impl AgentSystem {
+    /// Selects the most appropriate transit mode (Walk vs Car) for the agent based on distance and car ownership.
+    /// Returns the target node and the chosen `MODE_*` constant.
     pub fn decide_transit_mode(
         &mut self,
         i: usize,

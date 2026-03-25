@@ -10,6 +10,13 @@ use super::data::AgentSystem;
 use super::{TRANSIT_IDLE, TRANSIT_DEPARTING, TRANSIT_ON_ROAD, TRANSIT_ARRIVING, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, MODE_CAR, MODE_WALK};
 
 impl AgentSystem {
+    /// Advances the agent simulation by `delta` seconds.
+    ///
+    /// This is the main simulation entry point for all agents. It handles:
+    /// 1. Safety cleanup of volatile building indices.
+    /// 2. Activity state transitions (Home -> Work -> Shop).
+    /// 3. Pathfinding and movement along road edges.
+    /// 4. Arrival and departure logic for buildings.
     pub fn tick(&mut self, allocator: &BuildingAllocator, hpa_graph: &HpaGraph, graph: &mut TransitGraph, delta: f32) {
         self.sim_time += delta;
         let mut rng = rand::thread_rng();
