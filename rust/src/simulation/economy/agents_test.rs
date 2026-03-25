@@ -142,4 +142,81 @@ mod tests {
         assert_eq!(target, n_far, "Should head to far target by foot");
     }
 
+    #[test]
+    fn test_agent_fsm_lifecycle() {
+        use crate::simulation::grid::zoning::ZoneType;
+        use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+        use godot::prelude::Vector2;
+
+        let mut g = TransitGraph::new();
+        let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        
+        // n0 ----100m road---- n1
+        g.add_edge(Edge {
+            start_node: n0, end_node: n1,
+            primary_type: TransitType::Road, allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 1.0, physical_length: 100.0,
+            current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+            geometry: vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)],
+            zoning_left: true, zoning_right: true, deleted: false,
+        });
+
+        let hpa = HpaGraph::build(&g);
+        let mut allocator = BuildingAllocator::new(10, 10);
+        
+        // 1. Setup Buildings
+        // Residential (Home) at 5m
+        allocator.buildings.push(Building {
+            center_x: 5.0, center_y: 10.0, width: 30, depth: 30,
+            zone_type: ZoneType::Residential, facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.05, side_offset: 1.0, abandoned_timer: 0, edge_idx: 0, side: 1, cell_x: 0, cell_y: 0, occupancy: 0,
+        });
+        // Industrial (Work) at 50m
+        allocator.buildings.push(Building {
+            center_x: 50.0, center_y: 10.0, width: 30, depth: 30,
+            zone_type: ZoneType::Industrial, facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.5, side_offset: 1.0, abandoned_timer: 0, edge_idx: 0, side: 1, cell_x: 5, cell_y: 0, occupancy: 0,
+        });
+        // Commercial (Shop) at 95m
+        allocator.buildings.push(Building {
+            center_x: 95.0, center_y: 10.0, width: 30, depth: 30,
+            zone_type: ZoneType::Commercial, facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.95, side_offset: 1.0, abandoned_timer: 0, edge_idx: 0, side: 1, cell_x: 9, cell_y: 0, occupancy: 0,
+        });
+        allocator.rebuild_zone_index();
+
+        let mut agents = AgentSystem::new();
+        // 2. Spawn Agents
+        for _ in 0..10 {
+            let i = agents.spawn_agent(0, n0, 0.0, 0.0, n0, 5.0, 10.0);
+            agents.home_building[i] = 0;
+            agents.work_building[i] = 1;
+            agents.has_car[i] = false; 
+            agents.transit_mode[i] = MODE_WALK;
+            agents.money[i] = 100.0;
+            agents.transit[i] = 0; // TRANSIT_IDLE
+            agents.current_building[i] = 0;
+            agents.pos_x[i] = 5.0;
+            agents.pos_y[i] = 10.0;
+        }
+
+        let mut transitioned = false;
+
+        // 3. Tick Simulation
+        for _ in 0..1000 {
+            agents.tick(&mut allocator, &hpa, &mut g, 1.0);
+            
+            for i in 0..agents.count {
+                if agents.activity[i] != 0 || agents.transit[i] != 0 {
+                    transitioned = true;
+                    break;
+                }
+            }
+            if transitioned { break; }
+        }
+
+        assert!(transitioned, "At least one agent should have started a journey during 1000 ticks");
+    }
 }

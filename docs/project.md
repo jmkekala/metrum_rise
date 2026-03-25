@@ -125,15 +125,15 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 2. **Complete pathfinding unit tests** — two of three originally listed tests now exist; one is missing, one is deferred:
    - [DONE] `test_cost_calculation_slope_penalty` — added `test_pathing_avoids_steep_slope` which verifies the router detours around steep grades.
    - Flow field Dijkstra < 5 ms on a 1,000-node graph: **deferred to v0.2** — cannot be written until flow fields are implemented.
-5. **`TransitGraph` mutation tests** — the road editing pipeline has no test coverage. Add tests for:
-   - `add_road`: resulting adjacency is bidirectional for a bidirectional edge; node count and edge count increase by expected amounts.
-   - `split_edge`: produces two edges whose `physical_length` values sum to the original; both edges share the inserted midpoint node; zoning grid is remapped correctly.
-   - `compact_edges` (fixes B20): add two roads, delete one, call `compact_edges`, verify all remaining agent `current_path` node IDs are valid indices into `nodes`, all building `edge_idx` values reference non-deleted edges.
-6. **Agent FSM integration test** — no test currently drives a complete agent trip. Add a minimal test: build a two-node, one-edge graph; spawn one agent at node 0 with home at node 1; tick up to N times; assert the agent reaches `TRANSIT_ARRIVING` and then `TRANSIT_IDLE` with `current_node == target_node`. This is the single most important behavioural regression guard for the core simulation loop.
-8. **`BuildingAllocator` placement and removal tests** — no tests exist for the spawning pipeline. Add:
-   - Desirability gate: when grid value < 50.0, no building is spawned regardless of demand.
-   - Demand subtraction: after a residential building spawns, `demand.residential` decreases by the expected amount.
-   - Occupancy: after placement, all 9 cells of the 3×3 footprint report `is_occupied == true`; after removal, all 9 report false.
+5. [DONE] **`TransitGraph` mutation tests** — added `test_topology.rs` with coverage for:
+   - `add_road`: verified bidirectional adjacency and 100m subdivision logic.
+   - `split_edge`: verified physical length summation, node sharing, and zoning/building migration.
+   - `compact_edges`: verified index remapping consistency for agents and buildings (fixes B20).
+6. [DONE] **Agent FSM integration test** — added `test_agent_fsm_lifecycle` in `agents_test.rs`; verifies complete Trip Cycle (Home -> Work -> Shop -> Home).
+8. [DONE] **`BuildingAllocator` placement and removal tests** — added unit tests in `allocator.rs` for:
+   - Desirability gate: verified no spawn when grid value < 50.0.
+   - Demand subtraction: verified residential demand decreases on spawn.
+   - Occupancy: verified 3×3 footprint occupancy mask is set on placement and cleared on removal.
 10. **`MapConfig` — replace hardcoded map-size constants**: extract `config.rs` map-size constants into a `MapConfig` struct passed at simulation construction time.
     - Fields: `width_m: f32`, `height_m: f32`, `env_cell_m: f32` (environmental grid cell size, default 40 m), `zone_cell_m: f32` (zoning cell size, default 10 m).
     - All `DataGrid` initialisations and grid-dimension calculations read from `MapConfig` instead of `const`. The benchmark mode passes the default 20 km × 20 km config; players can pass any dimensions.

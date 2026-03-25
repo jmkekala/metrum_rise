@@ -576,4 +576,103 @@ mod tests {
         assert_eq!(allocator.zone_index[ZoneType::Residential as usize].len(), 4);
         assert_eq!(allocator.vacancy_index[ZoneType::Residential as usize].len(), 4);
     }
+
+    #[test]
+    fn test_building_placement_demand_subtraction() {
+        use crate::simulation::economy::demand::DemandSystem;
+        use crate::simulation::grid::desirability::DesirabilitySystem;
+        use crate::simulation::grid::noise::NoiseSystem;
+        use crate::simulation::grid::pollution::PollutionSystem;
+        use crate::simulation::network::TransitNetwork;
+        use crate::simulation::grid::zoning::ZoningSystem;
+        use godot::prelude::Vector3;
+
+        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut demand = DemandSystem::new();
+        demand.residential = 100.0;
+        
+        let mut zoning = ZoningSystem::new();
+        let mut desirability = DesirabilitySystem::new(100, 100);
+        for i in 0..desirability.grid.data.len() { desirability.grid.data[i] = 100.0; } // High desirability
+        
+        let mut noise = NoiseSystem::new(100, 100);
+        let mut agents = AgentSystem::new();
+        let mut network = TransitNetwork::new();
+        
+        network.add_road(vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
+        for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
+        zoning.recalculate_obstructions(0, &network.graph);
+
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network);
+        
+        assert_eq!(allocator.buildings.len(), 1);
+        assert_eq!(demand.residential, 95.0, "Residential demand should decrease by 5.0 after placement");
+    }
+
+    #[test]
+    fn test_building_placement_desirability_gate() {
+        use crate::simulation::economy::demand::DemandSystem;
+        use crate::simulation::grid::desirability::DesirabilitySystem;
+        use crate::simulation::grid::noise::NoiseSystem;
+        use crate::simulation::grid::pollution::PollutionSystem;
+        use crate::simulation::network::TransitNetwork;
+        use crate::simulation::grid::zoning::ZoningSystem;
+        use godot::prelude::Vector3;
+
+        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut demand = DemandSystem::new();
+        demand.residential = 14.0; // Enough for placement (>10.0)
+        
+        let mut zoning = ZoningSystem::new();
+        let mut desirability = DesirabilitySystem::new(100, 100);
+        for i in 0..desirability.grid.data.len() { desirability.grid.data[i] = 20.0; } // Low desirability
+        
+        let mut noise = NoiseSystem::new(100, 100);
+        let mut agents = AgentSystem::new();
+        let mut network = TransitNetwork::new();
+        
+        network.add_road(vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
+        for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
+        zoning.recalculate_obstructions(0, &network.graph);
+
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network);
+        
+        assert_eq!(allocator.buildings.len(), 0, "No building should spawn when desirability is below 50.0");
+    }
+
+    #[test]
+    fn test_building_removal_clears_zoning_occupancy() {
+        use crate::simulation::economy::demand::DemandSystem;
+        use crate::simulation::grid::desirability::DesirabilitySystem;
+        use crate::simulation::grid::noise::NoiseSystem;
+        use crate::simulation::grid::pollution::PollutionSystem;
+        use crate::simulation::network::TransitNetwork;
+        use crate::simulation::grid::zoning::ZoningSystem;
+        use godot::prelude::Vector3;
+
+        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut demand = DemandSystem::new();
+        let mut zoning = ZoningSystem::new();
+        let desirability = DesirabilitySystem::new(100, 100);
+        let noise = NoiseSystem::new(100, 100);
+        let mut agents = AgentSystem::new();
+        let mut network = TransitNetwork::new();
+        
+        network.add_road(vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
+        
+        allocator.buildings.push(Building {
+            center_x: 5.0, center_y: 10.0, width: 30, depth: 30,
+            zone_type: ZoneType::Residential, facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.05, side_offset: 1.0, abandoned_timer: 0, edge_idx: 0, side: 1, cell_x: 0, cell_y: 0, occupancy: 0,
+        });
+        for dx in 0..3 { for dy in 0..3 { zoning.set_occupied(0, 1, dx, dy, true); } }
+        
+        // Remove zoning trigger
+        for dx in 0..3 { for dy in 0..3 { zoning.set_cell(0, 1, dx, dy, ZoneType::None); } }
+
+        allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network);
+        
+        assert_eq!(allocator.buildings.len(), 0, "Building should have been removed");
+        assert!(!zoning.is_occupied(0, 1, 0, 0), "Zoning cell occupancy should be cleared after building removal");
+    }
 }
