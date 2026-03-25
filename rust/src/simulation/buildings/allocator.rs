@@ -15,6 +15,7 @@ use crate::simulation::grid::zoning::{ZoningSystem, ZoneType};
 use godot::prelude::Vector2;
 
 /// A placed building occupying a 3 × 3 cell (30 m × 30 m) footprint on a zoning grid.
+#[derive(Clone)]
 pub struct Building {
     /// World-space X centre of the building footprint (metres).
     pub center_x: f32,
@@ -48,6 +49,7 @@ pub struct Building {
 }
 
 /// Manages the full lifecycle of [`Building`]s: placement, removal, and immigrant spawning.
+#[derive(Clone)]
 pub struct BuildingAllocator {
     /// All currently placed buildings. Removal uses `swap_remove` — order is not preserved.
     pub buildings: Vec<Building>,
