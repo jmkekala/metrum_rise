@@ -39,7 +39,7 @@ impl RegionGraph {
         self.rebuild_adjacency_list();
 
         // 2. Rebuild Spatial Index
-        self.spatial_edge_grid.clear();
+        self.spatial_edge_rt = rstar::RTree::new();
         for i in 0..self.edges.len() {
             self.add_to_spatial_index(i);
         }
@@ -281,7 +281,7 @@ impl RegionGraph {
         }
 
         // Re-index all roads after a massive batch clip rebuild (e.g. after terrain sync)
-        self.spatial_edge_grid.clear();
+        self.spatial_edge_rt = rstar::RTree::new();
         for i in 0..self.edges.len() {
             self.add_to_spatial_index(i);
         }

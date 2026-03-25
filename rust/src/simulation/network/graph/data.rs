@@ -1,6 +1,37 @@
 use godot::prelude::*;
 use super::super::types::*;
 use std::collections::HashMap;
+use rstar::{RTree, AABB, RTreeObject, PointDistance};
+
+/// A spatial index entry for a road edge.
+#[derive(Clone, Copy, Debug)]
+pub struct EdgeEntry {
+    /// The index of the edge in the [`RegionGraph::edges`] list.
+    pub edge_idx: usize,
+    /// The tightest possible axis-aligned bounding box (AABB) in the XZ plane.
+    pub envelope: AABB<[f32; 2]>,
+}
+
+impl PartialEq for EdgeEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.edge_idx == other.edge_idx
+    }
+}
+
+impl Eq for EdgeEntry {}
+
+impl RTreeObject for EdgeEntry {
+    type Envelope = AABB<[f32; 2]>;
+    fn envelope(&self) -> Self::Envelope {
+        self.envelope
+    }
+}
+
+impl PointDistance for EdgeEntry {
+    fn distance_2(&self, point: &[f32; 2]) -> f32 {
+        self.envelope.distance_2(point)
+    }
+}
 
 /// A junction or endpoint in the road graph.
 #[derive(Clone)]
@@ -91,9 +122,9 @@ pub struct RegionGraph {
     /// Node alias map for the union-find structure used during node merging.
     /// Maps a node ID to its canonical representative after `unite_nodes`.
     pub node_aliases: HashMap<u32, u32>,
-    /// Spatial acceleration structure: 512 m grid chunks -> edge indices whose AABB overlaps the chunk.
+    /// Spatial acceleration structure for edges: RTree of EdgeEntry.
     /// Query via [`get_edges_near_point`](Self::get_edges_near_point); do not access directly.
-    pub spatial_edge_grid: HashMap<(i32, i32), Vec<usize>>,
+    pub spatial_edge_rt: RTree<EdgeEntry>,
     /// Adjacency list: node ID -> list of outgoing edge indices. Rebuilt after every road edit.
     pub adjacency: Vec<Vec<usize>>,
     /// Spatial acceleration structure for nodes: 16 m grid chunks -> node IDs.
@@ -107,7 +138,7 @@ impl RegionGraph {
             edges: Vec::new(),
             junction_polygons: std::collections::HashMap::new(),
             node_aliases: std::collections::HashMap::new(),
-            spatial_edge_grid: HashMap::new(),
+            spatial_edge_rt: RTree::new(),
             adjacency: Vec::new(),
             spatial_node_grid: HashMap::new(),
         }

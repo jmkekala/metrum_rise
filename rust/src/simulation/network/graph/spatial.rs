@@ -1,5 +1,6 @@
 use godot::prelude::*;
-use super::data::RegionGraph;
+use super::data::{RegionGraph, EdgeEntry};
+use rstar::AABB;
 
 impl RegionGraph {
     pub const CHUNK_SIZE: f32 = 512.0;
@@ -21,7 +22,7 @@ impl RegionGraph {
         let edge = &self.edges[edge_idx];
         if edge.deleted { return; }
         
-        // Find all chunks touched by this edge's AABB
+        // Find the bounding box for this edge
         let mut min_x = f32::MAX; let mut max_x = f32::MIN;
         let mut min_z = f32::MAX; let mut max_z = f32::MIN;
         
@@ -30,26 +31,30 @@ impl RegionGraph {
             min_z = min_z.min(p.z); max_z = max_z.max(p.z);
         }
         
-        let min_c = Self::get_chunk_coords(godot::prelude::Vector3::new(min_x, 0.0, min_z));
-        let max_c = Self::get_chunk_coords(godot::prelude::Vector3::new(max_x, 0.0, max_z));
-        
-        for cx in min_c.0..=max_c.0 {
-            for cz in min_c.1..=max_c.1 {
-                let chunk = self.spatial_edge_grid.entry((cx, cz)).or_default();
-                if !chunk.contains(&edge_idx) {
-                    chunk.push(edge_idx);
-                }
-            }
-        }
+        self.spatial_edge_rt.insert(EdgeEntry {
+            edge_idx,
+            envelope: AABB::from_corners([min_x, min_z], [max_x, max_z]),
+        });
     }
 
     pub fn remove_from_spatial_index(&mut self, edge_idx: usize) {
-        let chunks = self.get_edge_chunks(edge_idx);
-        for coords in chunks {
-            if let Some(chunk) = self.spatial_edge_grid.get_mut(&coords) {
-                chunk.retain(|&idx| idx != edge_idx);
-            }
+        // Recompute AABB to find the entry in the R-Tree.
+        // Assumes this is called while the edge still has its original geometry.
+        let edge = &self.edges[edge_idx];
+        let mut min_x = f32::MAX; let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX; let mut max_z = f32::MIN;
+        
+        for p in &edge.physical_geometry {
+            min_x = min_x.min(p.x); max_x = max_x.max(p.x);
+            min_z = min_z.min(p.z); max_z = max_z.max(p.z);
         }
+
+        let entry = EdgeEntry {
+            edge_idx,
+            envelope: AABB::from_corners([min_x, min_z], [max_x, max_z]),
+        };
+        
+        self.spatial_edge_rt.remove(&entry);
     }
 
     pub fn add_node_to_spatial_index(&mut self, node_id: u32) {
@@ -75,22 +80,11 @@ impl RegionGraph {
     }
 
     pub fn get_edges_near_aabb(&self, min: godot::prelude::Vector3, max: godot::prelude::Vector3) -> Vec<usize> {
-        let mut result = Vec::new();
-        let min_c = Self::get_chunk_coords(min);
-        let max_c = Self::get_chunk_coords(max);
-        
-        for cx in min_c.0..=max_c.0 {
-            for cz in min_c.1..=max_c.1 {
-                if let Some(chunk) = self.spatial_edge_grid.get(&(cx, cz)) {
-                    for &idx in chunk {
-                        if !result.contains(&idx) {
-                            result.push(idx);
-                        }
-                    }
-                }
-            }
-        }
-        result
+        let envelope = AABB::from_corners([min.x, min.z], [max.x, max.z]);
+        self.spatial_edge_rt
+            .locate_in_envelope_intersecting(&envelope)
+            .map(|e| e.edge_idx)
+            .collect()
     }
 
     /// Returns the coordinates of all chunks (512m) that an edge's AABB overlaps.

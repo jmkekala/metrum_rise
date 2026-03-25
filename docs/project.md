@@ -41,10 +41,10 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 ### Road Network
 - `RegionGraph` — refactored into a modular package in `simulation/network/graph/`.
     - `data.rs`: `Node`, `Edge`, and `RegionGraph` struct definitions.
-    - `spatial.rs`: 512 m spatial edge grid and 16 m node grid logic.
+    - `spatial.rs`: `rstar` R-Tree for edges and 16 m uniform grid for nodes.
     - `topology.rs`: intersection detection, edge splitting, and node merging.
     - `rebuild.rs`: batch remapping, soft-deletion compaction, and intersection clipping.
-    - **Road Network (`RegionGraph`)**: Adjacency-list based directed graph with spatial acceleration. Pathfinding via Customizable Contraction Hierarchies (CCH). Supports multi-modal queries via `allowed_mask`.
+    - **Road Network (`RegionGraph`)**: Adjacency-list based directed graph with spatial acceleration via `rstar` R-Tree (Item 24). Pathfinding via Customizable Contraction Hierarchies (CCH). Supports multi-modal queries via `allowed_mask`.
 - **`RegionGraph` rename** — `TransitGraph` renamed to `RegionGraph`; struct is now globally owned in `SimulationNode`, not city-scoped. All call sites updated. Prerequisite for CCH (item 31b/c).
 - `TransitNetwork` (`network/mod.rs`) — `add_road`, `split_edge`, `merge_nodes`.
 - **Pathfinding (CCH)**: `simulation/pathing/cch.rs` implements a Customizable Contraction Hierarchy with O(E) metric customization and bidirectional upward Dijkstra. Replaces HpaGraph for all agent routing.
@@ -55,6 +55,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Lane types and one-way rules in `network/types.rs`.
 - Edge geometry is 3D (`Vec<Vector3>`) — grade-separated roads are natively representable as elevated or depressed polylines. Node snapping uses 3D Euclidean distance, so bridge abutments and underpass nodes with ≥ 2 m vertical separation will not snap together.
 - **No `EdgeClass` yet**: the renderer assumes all edges are ground-level. Bridge decks and tunnel bores require an `EdgeClass` field and a renderer branch. See Backlog.
+- **R-Tree Spatial Index**: `spatial_edge_rt` replaces the uniform 512m grid for all edge queries. O(log N) insert/delete/query provides tight AABB filtering, zero manual deduplication, and eliminates long-edge false positives.
 
 ### Zoning
 - `simulation/grid/zoning.rs` (470 lines) — edge-aligned zoning cells, 10 m × 10 m.
@@ -142,10 +143,6 @@ Feature completion and correctness fixes. Performance tuning is not the focus he
 
 #### v0.1 Goals
 
-24. **R-Tree spatial index** (`rstar` crate) for fine-grain edge queries — O(log N) insert/delete/query. Three known issues with the current uniform 512 m grid (`spatial.rs`):
-    - **Long-edge false positives** (`get_edges_near_aabb`): a diagonal road spanning 3 km is registered in every 512 m chunk its AABB overlaps (~36 chunks). Any query touching those chunks pulls the edge into the candidate set regardless of actual proximity. At city scale with motorways and rail lines this compounds. R-Tree uses per-object tight bounding boxes so a long edge is only a candidate when the query AABB genuinely overlaps its bounds.
-    - **O(N) bucket removal** (`remove_from_spatial_index`): calls `.retain()` on each bucket Vec — O(bucket_size) per chunk. Can be fixed independently by switching bucket storage from `Vec<usize>` to `HashSet<usize>` (O(1) remove); this is a smaller fix than adopting R-Tree and should be done regardless.
-    - **O(N) deduplication** (`get_edges_near_aabb`): uses `.contains()` to avoid returning the same edge index twice when a query AABB spans multiple chunks — O(result_size) per edge found. R-Tree eliminates this because each edge has one canonical entry.
 26. **Bridge and tunnel support — `EdgeClass`**:
     - Add `EdgeClass` enum to `network/types.rs`: `Standard | Bridge | Tunnel`. Fits in a single byte; zero memory cost due to existing `Edge` struct padding.
     - Add `class: EdgeClass` field to `Edge`. No simulation logic changes — the 3D polyline geometry already stores correct Y positions for elevated or depressed roads.
@@ -153,7 +150,7 @@ Feature completion and correctness fixes. Performance tuning is not the focus he
     - `Bridge`: renderer generates a floating deck mesh at the geometry's Y elevation; mesh does not deform to terrain. Zoning disabled on both sides.
     - `Tunnel`: renderer generates portal entrance meshes at both endpoints only; the road mesh between portals is hidden. Zoning disabled.
     - Zoning obstruction check: `is_cell_obstructed` must ignore bridge edges when checking cells at ground level directly beneath the deck (bridge Y − cell Y > clearance threshold).
-    - 512 m chunk index is XZ-only and will place a bridge edge and an underpass edge in the same bucket — harmless because all chunk queries operate on graph topology, not rendered geometry.
+    - **Spatial index is XZ-only** and will place a bridge edge and an underpass edge in the same R-Tree leaf if their XZ AABBs overlap — harmless because all spatial queries operate on graph topology, not rendered geometry.
 27. **Bridge and tunnel editor tool**:
     - UI action on an existing edge to promote it to `Bridge` or `Tunnel` (single `EdgeClass` field write + CCH topology rebuild for affected edges + re-render).
     - Validation: warn if bridge endpoints are not at a higher Y than the terrain midpoint; warn if tunnel endpoints are not below the terrain surface.
