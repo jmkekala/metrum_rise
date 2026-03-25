@@ -5,7 +5,7 @@ use crate::simulation::pathing::hpa::HpaGraph;
 use godot::prelude::Vector3;
 
 #[test]
-fn test_cost_calculation_slope_penalty() {
+fn test_slope_cost_calculation() {
     let mut edge = Edge {
         start_node: 0,
         end_node: 1,
@@ -41,6 +41,76 @@ fn test_cost_calculation_slope_penalty() {
     let (steep_cost, _) = cost::CostCalculator::calculate_costs(&edge);
 
     assert!(steep_cost > flat_cost * 2.0, "Steep route cost ({}) should heavily penalize over flat route cost ({})", steep_cost, flat_cost);
+}
+
+#[test]
+fn test_pathing_avoids_steep_slope() {
+    let mut graph = TransitGraph::new();
+    // A (0,0,0)
+    let n_a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    // B (100,0,0) - Goal
+    let n_b = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+    // C (50,-50,0) - Detour point
+    let n_c = graph.add_node(Vector3::new(50.0, -50.0, 0.0), NodeType::Junction);
+
+    // 1. Short but very steep road: A -> B
+    // Slope = 50m height / 100m length = 50%.
+    // Cost should be massive due to exponential penalty: 1 + (0.5 * 5)^2 = 1 + 2.5^2 = 7.25x multiplier.
+    graph.add_edge(Edge {
+        start_node: n_a, end_node: n_b,
+        primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
+        width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 0.0,
+        physical_length: 100.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 50.0, 0.0)],
+        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 50.0, 0.0)],
+        zoning_left: false, zoning_right: false, deleted: false,
+    });
+
+    // 2. Long but flat detour: A -> C -> B
+    // A -> C (70.7m)
+    graph.add_edge(Edge {
+        start_node: n_a, end_node: n_c,
+        primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
+        width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 0.0,
+        physical_length: 70.7, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, -50.0, 0.0)],
+        physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, -50.0, 0.0)],
+        zoning_left: false, zoning_right: false, deleted: false,
+    });
+    // C -> B (70.7m)
+    graph.add_edge(Edge {
+        start_node: n_c, end_node: n_b,
+        primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
+        width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 0.0,
+        physical_length: 70.7, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        geometry: vec![Vector3::new(50.0, -50.0, 0.0), Vector3::new(100.0, 50.0, 0.0)], // Wait, B is at y=50? 
+        // Let's re-eval coordinates.
+        // A (0,0,0)
+        // B (100, 0, 0)
+        // Let's make B flat too.
+        physical_geometry: vec![Vector3::new(50.0, -50.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        zoning_left: false, zoning_right: false, deleted: false,
+    });
+    
+    // Correction:
+    // A = (0,0,0)
+    // B = (100,0,0)
+    // C = (50, -100, 0)
+    // Edge A-B: geometry [ (0,0,0), (100, 50, 0) ] -> steep
+    // Edge A-C: geometry [ (0,0,0), (50, -100, 0) ] -> flat
+    // Edge C-B: geometry [ (50,-100,0), (100, 0, 0) ] -> flat
+    
+    // Total flat distance = dist(A,C) + dist(C,B) = sqrt(50^2 + 100^2) * 2 = 111.8 * 2 = 223.6m
+    // Steep distance = 100m, but 50% slope.
+    
+    let hpa = HpaGraph::build(&graph);
+    let path = hpa.find_path(n_a, n_b, usize::MAX, &graph, TransitFlags::CAR);
+    
+    assert!(path.is_some(), "Should find a path");
+    let (_cost, _dist, nodes) = path.unwrap();
+    
+    assert!(nodes.contains(&n_c), "Router should have detoured through node C to avoid the steep slope on A-B. Path was: {:?}", nodes);
+    assert_eq!(nodes, vec![n_a, n_c, n_b]);
 }
 
 
