@@ -33,7 +33,11 @@ metrum_rise/
 │       ├── pathing/                   A*, HPA* (hierarchical pathfinding)
 │       ├── grid/                      DataGrid<T>, zoning, pollution, noise, desirability
 │       ├── buildings/allocator.rs     BuildingAllocator
-│       └── economy/agents.rs          AgentSystem (Structure-of-Arrays FSM, 707 lines)
+│       └── economy/agents/            AgentSystem (Structure-of-Arrays FSM)
+│           ├── mod.rs                 Constants (TRANSIT_*, MODE_*)
+│           ├── data.rs                SoA layout, spawn_agent, kill_agent
+│           ├── tick.rs                FSM tick loop and movement
+│           └── decisions.rs           Transit mode selection, CCH queries
 ├── godot/scripts/                     GDScript: UI, input, tool panels, rendering bridges
 ├── docs/                              Architecture notes, phase plans, benchmarking howto
 └── run.sh                             Build script: cargo build → deploy .so → launch Godot
@@ -115,6 +119,27 @@ Do not introduce workarounds that mask known bugs. Fix the root cause and remove
 - Parallelism must use Rayon. Do not introduce `std::thread::spawn` for simulation work.
 - Avoid allocating inside hot loops. Prefer pre-allocated buffers and SoA patterns consistent with `AgentSystem`.
 - All new spatial lookups must use the chunk-based spatial index or `DataGrid`. Linear scans over full collections are not acceptable at simulation scale.
+
+### Simulation Infrastructure Invariants
+
+These are non-obvious sharp edges that have caused bugs or severe performance regressions. Read this section before touching the listed systems.
+
+**TransitNetwork / RegionGraph mutations:**
+- `TransitNetwork::add_road()` triggers cascading side effects: zoning cell allocation, Voronoi obstruction passes over up to 4 million grid cells (2000×2000 for a 20 km map), intersection topology scanning (O(E²) worst case), and CCH dirty-chunk marking. **Never call it in tests or benchmarks.** For isolated graph construction (tests, benchmarks), use `graph.add_node()` + `graph.add_edge()` + `graph.rebuild_adjacency_list()` directly — the same pattern used in `simulation/pathing/tests.rs`.
+- Never mutate `RegionGraph` directly from outside the `network/` module in production code. All road edits go through `TransitNetwork`.
+- After any edge addition or deletion on `RegionGraph`, `rebuild_adjacency_list()` must be called before the graph is used for traversal, rendering, or pathfinding. The adjacency list does not self-update.
+- Before calling `CchGraph::build()`, call `graph.compact_edges()` first. No error is raised if you skip this — the CCH will silently be built from a graph that still contains deleted edges, producing an incomplete and incorrect result.
+- When `compact_edges()` is called, all four dependents must be remapped in the same step: `AgentSystem::update_edge_indices()`, `ZoningSystem::update_edge_indices()`, `BuildingAllocator::update_edge_indices()`, and the `Node::lane_connections` map (handled inside `compact_edges` itself). Forgetting any one of these silently corrupts agent routing, zoning queries, or building placement.
+
+**AgentSystem / SoA:**
+- `AgentSystem` has 29 parallel `Vec<T>` fields. All must have exactly `self.count` elements at all times. Never push to or remove from individual fields — use `spawn_agent()` and `kill_agent()` exclusively. If bypassing these for benchmark or test setup, push to **all 29 fields** in the exact order defined in `data.rs`; a single missed field silently corrupts every subsequent agent operation.
+- `spawn_agent()` sets `transit = TRANSIT_IMMIGRATING` (not `TRANSIT_IDLE`). Every agent spawned this way will call CCH `find_path()` on its very first tick. Spawning 1M agents via `spawn_agent()` causes 1M pathfinding calls on tick 1, which balloons glibc malloc arena memory to 50–60 GB via transient `BinaryHeap` allocations. For bulk benchmark/test setups, set `transit = TRANSIT_IDLE` (= 0) manually, or ensure `home_building`/`work_building` are `usize::MAX` so the safety scrub blocks all activations.
+- Agents in `TRANSIT_ON_ROAD` or `TRANSIT_IMMIGRATING` with an empty `current_path` call `find_path()` on every tick until a path is found. Never create agents whose `target_node` is unreachable from `current_node` — they will pathfind on every tick forever.
+- `decide_transit_mode()` in `decisions.rs` allocates a `BinaryHeap` twice per call (once for FOOT, once for CAR). At simulation scale, even a small per-tick activation rate produces thousands of allocations per tick. The empty `BuildingAllocator` pattern — which causes the safety scrub to set all building refs to `usize::MAX`, blocking all activations — is the correct way to isolate on-road benchmarks from this overhead.
+
+**BuildingAllocator:**
+- Building indices are stable until a swap-remove occurs. After any operation that swap-removes from the buildings vec, `BuildingAllocator::remap_building_indices()` must be called and the mapping applied to the four agent fields `home_building`, `work_building`, `current_building`, `target_building`. Skipping this silently corrupts all agent-to-building relationships.
+- `zone_index` and `vacancy_index` are kept consistent via `claim_vacancy()` and `release_vacancy()`. Never modify `Building::occupancy` directly — always go through these methods.
 
 ### Godot / GDScript
 
