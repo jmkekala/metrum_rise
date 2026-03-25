@@ -21,6 +21,7 @@ impl NoiseSystem {
 
     pub fn tick(&mut self, allocator: &BuildingAllocator, graph: &RegionGraph, config: &crate::simulation::core::config::MapConfig) {
         std::mem::swap(&mut self.grid, &mut self.swap);
+        self.grid.data.fill(0.0);
         
         let w = self.grid.width;
         let h = self.grid.height;
@@ -77,11 +78,9 @@ impl NoiseSystem {
                 let avg = if count > 0.0 { neighbor_sum / count } else { 0.0 };
                 
                 // Noise diffuses very fast, but naturally decays over distance.
-                let mut propagated = current * 0.50 + avg * 0.50;
-                propagated *= 0.90; // 10% decay per tick
+                let propagated = (current * 0.50 + avg * 0.50) * 0.90; 
                 
-                row[x] = (row[x] - current).max(0.0) + propagated; 
-                row[x] = row[x].min(100.0).max(0.0); 
+                row[x] = (row[x] + propagated).min(100.0).max(0.0); 
             }
         });
     }

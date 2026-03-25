@@ -68,3 +68,60 @@ impl DataGrid<f32> {
         v0 * (1.0 - ty) + v1 * ty
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_grid_get_set() {
+        let mut grid = DataGrid::new(10, 10, 0);
+        assert_eq!(*grid.get(5, 5).unwrap(), 0);
+        
+        grid.set(5, 5, 42);
+        assert_eq!(*grid.get(5, 5).unwrap(), 42);
+        
+        // Out of bounds
+        assert!(grid.get(10, 10).is_none());
+        assert!(grid.get(5, 10).is_none());
+        assert!(grid.get(10, 5).is_none());
+        
+        // set should silenty ignore if out of bounds (current behavior)
+        grid.set(10, 10, 100);
+        assert!(grid.get(10, 10).is_none());
+    }
+
+    #[test]
+    fn test_bilinear_interpolation() {
+        let mut grid = DataGrid::new(2, 2, 0.0);
+        grid.set(0, 0, 10.0);
+        grid.set(1, 0, 20.0);
+        grid.set(0, 1, 30.0);
+        grid.set(1, 1, 40.0);
+
+        // Exact corners
+        assert_eq!(grid.sample_bilinear(0.0, 0.0), 10.0);
+        assert_eq!(grid.sample_bilinear(1.0, 0.0), 20.0);
+        assert_eq!(grid.sample_bilinear(0.0, 1.0), 30.0);
+        assert_eq!(grid.sample_bilinear(1.0, 1.0), 40.0);
+
+        // Middle
+        assert_eq!(grid.sample_bilinear(0.5, 0.5), 25.0); // (10+20+30+40)/4
+
+        // Edges
+        assert_eq!(grid.sample_bilinear(0.5, 0.0), 15.0); // (10+20)/2
+        assert_eq!(grid.sample_bilinear(1.0, 0.5), 30.0); // (20+40)/2
+        assert_eq!(grid.sample_bilinear(0.5, 1.0), 35.0); // (30+40)/2
+        assert_eq!(grid.sample_bilinear(0.0, 0.5), 20.0); // (10+30)/2
+    }
+
+    #[test]
+    fn test_bilinear_clamping() {
+        let mut grid = DataGrid::new(2, 2, 0.0);
+        grid.set(1, 1, 100.0);
+
+        // Clamping should return the edge value
+        assert_eq!(grid.sample_bilinear(2.0, 2.0), 100.0);
+        assert_eq!(grid.sample_bilinear(-1.0, -1.0), 0.0);
+    }
+}

@@ -69,12 +69,17 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - All `DataGrid` initialisations and grid-dimension calculations (`PollutionSystem`, `NoiseSystem`, `DesirabilitySystem`, `ZoningSystem`) derive their dimensions from `MapConfig` at construction time. No hardcoded grid sizes remain in simulation code.
 - Benchmark mode passes the default 20 km × 20 km config; player-configurable map sizes are supported without code changes.
 
+### Foundational Grid System
+- `DataGrid<T>` — flat memory-efficient 2D grid with bilinear interpolation support and bounds checking.
+- **Unit tests**: Verified get/set round-trip for arbitrary coordinates, exact corner values for bilinear interpolation, and boundary condition clamping.
+
 ### Environmental Grids
 - `simulation/grid/pollution.rs` — industrial emission (+5/tick) + 4-neighbour diffusion (explicit finite-difference), decay ×0.995, parallelised with Rayon.
 - `simulation/grid/noise.rs` — traffic noise diffusion, parallelised.
 - `simulation/grid/desirability.rs` — composite formula: `50 − pollution × 2 − noise × 1.5`, parallelised.
 - All three use `DataGrid<f32>` with dimensions calculated dynamically from `MapConfig` (default 500 × 500 at 20 km); bilinear upsampled for display.
-- `PollutionSystem` and `NoiseSystem` use pre-allocated `swap: DataGrid<f32>` fields; each tick calls `std::mem::swap()` instead of `clone()` — hot-path allocation is zero. `DesirabilitySystem` computes derived values from the pollution and noise grids directly and never reads from its own previous state, so no swap buffer is needed there.
+- `PollutionSystem` and `NoiseSystem` use pre-allocated `swap: DataGrid<f32>` fields; each tick calls `std::mem::swap()` and then clears the target grid with `.fill(0.0)` — hot-path allocation is zero. Correctly isolates new emissions and prevents ghost pollution/noise accumulation from stale buffers.
+- **Unit tests (Item 28)**: Verified diffusion (source spreads to neighbors over time), decay (average grid value decreases after source removal), and stability (all values remain finite) for `PollutionSystem`. `NoiseSystem` benefits from the same architectural fixes.
 
 ### Buildings
 - Desirability gate enforced (> 50). Spawn throttle active (max 10 buildings per tick).
@@ -154,8 +159,6 @@ Feature completion and correctness fixes. Performance tuning is not the focus he
 27. **Bridge and tunnel editor tool**:
     - UI action on an existing edge to promote it to `Bridge` or `Tunnel` (single `EdgeClass` field write + CCH topology rebuild for affected edges + re-render).
     - Validation: warn if bridge endpoints are not at a higher Y than the terrain midpoint; warn if tunnel endpoints are not below the terrain surface.
-28. **Environmental grid regression tests** — the diffusion PDE and decay constants are undocumented invariants with no verification. Add a test that ticks `PollutionSystem` 200 times with one industrial source cell; assert: the source cell has a positive value, a cell 5 steps away has a nonzero diffused value, no cell in the grid is infinite or NaN, and the average grid value decays over time after the source is removed. This is a smoke test for the explicit FD stability condition and the decay half-life documented in `analysis.md §2.3`.
-29. **`DataGrid<T>` unit tests** — used by every environmental system and the terrain but has no direct tests. Add: get/set round-trip for arbitrary coordinates; bilinear interpolation returns the exact corner value when querying at a grid point; out-of-bounds query returns `None` (or clamps, whichever the implementation guarantees).
 
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 
