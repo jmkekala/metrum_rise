@@ -1,6 +1,13 @@
 # Metrum Rise — Project State
 
-**Scale target**: ≥ 1,000,000 concurrent agents across a multi-city region. City tiles are variable size (default 20 km × 20 km, player-configurable up to at least 100 km × 100 km); cities are connected by highways, rail, ships, and air routes via a single unified `RegionGraph`. Background cities run as statistical models; only the active city runs full agent simulation.
+**Scale target**: ≥ 1,000,000 total population across a multi-city region, with a clear distinction between simulation tiers:
+- **Full FSM** (individual pathfinding, real movement, all state transitions): ~300–500k agents on a 20-core machine with DDR5. This is the hardware-honest ceiling — the DDR5 memory bandwidth wall at ~190 MB/tick for 1M SoA entries limits throughput regardless of core count.
+- **Flow-field tier** (group movement via shared destination maps, no per-agent CCH queries): extends the active zone to ~1M total when combined with the full-FSM layer. Requires item 18.
+- **Statistical tier** (aggregate population counters, demand flow numbers, no individual simulation): background cities and distant city regions. No per-tick FSM cost.
+
+"1M agents" in this document means 1M total population across all tiers. It does not mean 1M simultaneously running full FSM. Any claim of full individual simulation at that scale on current hardware is dishonest — the memory bandwidth arithmetic does not support it.
+
+City tiles are variable size (default 20 km × 20 km, player-configurable); cities are connected via a single unified `RegionGraph`. Only the active city runs full-FSM simulation; background cities run as statistical models.
 **Current milestone**: v0.01 — playable and correct at 10,000 agents, 500 buildings, 50 road edges, ≥ 30 FPS.
 
 Severity tags: `[BLOCKER]` = must fix before v0.01. `[BUG]` = correctness failure, fix in v0.01. `[v0.01]` = strong target for v0.01 quality. `[v0.1]` = 100k-agent milestone. `[v1.0]` = 1M-agent milestone.
@@ -136,13 +143,11 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Criterion micro-benchmarks: `cd rust && cargo bench` → `target/criterion/`.
 - Memory note: huge-map mode uses ~1 GB+ RAM.
 - **`AgentSystem::tick` baseline (single-threaded, 2026-03-25)**:
-  | Agents | Time/tick | Per-agent |
-  |--------|-----------|-----------|
-  | 1,000 | 5.34 µs | 5.34 ns |
-  | 10,000 | 53.5 µs | 5.35 ns |
-  | 100,000 | 534 µs | 5.34 ns |
-  | 1,000,000 | 5.52 ms | 5.52 ns |
-  Near-perfect O(N). At 1M agents the tick consumes ~33% of a 16.7 ms frame budget single-threaded; Rayon parallelisation (item 19) is the next multiplier.
+  | Benchmark | 1k | 10k | 100k | 1M | Per-agent |
+  |-----------|-----|------|-------|-----|-----------|
+  | `on_road` (polyline traversal + lane offset) | 12.6 µs | 124.8 µs | 1.23 ms | ~12.3 ms* | ~12.3 ns |
+  | `idle_scaling` (SoA iteration floor) | 5.29 µs | 52.9 µs | 537 µs | 5.72 ms | ~5.3 ns |
+  *extrapolated. Near-perfect O(N) on both. Movement costs ~2.3× the idle iteration floor (~7 ns/agent for traversal maths). At 1M on_road agents single-threaded: ~12.3 ms = 74% of a 16.7 ms frame budget; Rayon parallelisation (item 19) is the next multiplier.
 
 ---
 
@@ -157,11 +162,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### Infrastructure
 
-57. **Realistic agent benchmark** (`benches/agent_benchmark.rs`): current setup places all agents in `IDLE` with no roads, no buildings, and empty paths — the tick exits early for every agent and the measured 5.34 ns/agent reflects iteration cost, not real work. Replace with a setup that exercises the actual hot paths:
-    - Build a real road network (e.g. 5×5 or 10×10 grid) using `RegionGraph` and `TransitNetwork::add_road`.
-    - Place buildings at valid zoning cells in `BuildingAllocator`.
-    - Distribute agents across realistic FSM states: a mix of `ON_ROAD` agents with valid `current_path` and `edge_progression`, `ARRIVING` agents near their destination, and a minority of `IDLE` agents.
-    - Run the benchmark at 1k / 10k / 100k / 1M to get a truthful per-agent cost. Expect 5–20× slower than the current idle-only number. Record new baseline in `docs/project.md` once measured.
+58. **Split `buildings/allocator.rs`** — 689 lines mixing two concerns. Split into `buildings/allocator/lifecycle.rs` (spawn, kill, evict, remap) and `buildings/allocator/index.rs` (zone_index, vacancy_index, claim_vacancy, release_vacancy). Low complexity, no behaviour change. Do when next working in that file.
 
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 
