@@ -1,9 +1,11 @@
 # Metrum Rise — Project State
 
-**Scale target**: ≥ 1,000,000 concurrent agents on a 20 km × 20 km map.
+**Scale target**: ≥ 1,000,000 concurrent agents across a multi-city region. City tiles are variable size (default 20 km × 20 km, player-configurable up to at least 100 km × 100 km); cities are connected by highways, rail, ships, and air routes via a single unified `RegionGraph`. Background cities run as statistical models; only the active city runs full agent simulation.
 **Current milestone**: v0.01 — playable and correct at 10,000 agents, 500 buildings, 50 road edges, ≥ 30 FPS.
 
 Severity tags: `[BLOCKER]` = must fix before v0.01. `[BUG]` = correctness failure, fix in v0.01. `[v0.01]` = strong target for v0.01 quality. `[v0.1]` = 100k-agent milestone. `[v1.0]` = 1M-agent milestone.
+
+See [`docs/analysis.md`](analysis.md) for a detailed algorithmic and data-structure analysis, including scaling assessment for the 1M-agent target and comparisons to alternative approaches.
 
 ## Core Principles
 
@@ -37,58 +39,61 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/water/` — shallow-water equations (SWE), parallelised with Rayon.
 
 ### Road Network
-- `TransitGraph` in `simulation/network/graph.rs` — adjacency list as two parallel `Vec`s (`nodes`, `edges`) plus a `HashMap<(i32,i32), Vec<usize>>` spatial chunk index (512 m chunks) and a union-find alias map.
+- `TransitGraph` in `simulation/network/graph.rs` — two parallel flat `Vec`s (`nodes`, `edges`) plus three acceleration structures: 512 m spatial edge grid (`HashMap<(i32,i32), Vec<usize>>`), 16 m spatial node grid (`HashMap<(i32,i32), Vec<u32>>`), and a per-node adjacency list (`HashMap<u32, Vec<usize>>`). Union-find alias map for node merging.
 - Supported road types: 2-lane standard (10 m total: 7 m asphalt + 1.5 m sidewalk each side).
 - `TransitNetwork` (`network/mod.rs`) — `add_road`, `split_edge`, `merge_nodes`.
 - Topology: intersection detection and edge splitting in `topology.rs`.
 - Road and junction mesh generation in `network/render/road.rs` (405 lines).
-- Soft deletion: edges set `deleted = true` but never physically removed (see Bugs).
+- Soft deletion with compaction: edges marked `deleted = true`; `compact_edges()` removes them and remaps all indices (agents, zoning, routing graph).
 - Lane types and one-way rules in `network/types.rs`.
+- Edge geometry is 3D (`Vec<Vector3>`) — grade-separated roads are natively representable as elevated or depressed polylines. Node snapping uses 3D Euclidean distance, so bridge abutments and underpass nodes with ≥ 2 m vertical separation will not snap together.
+- **No `EdgeClass` yet**: the renderer assumes all edges are ground-level. Bridge decks and tunnel bores require an `EdgeClass` field and a renderer branch. See Backlog.
 
 ### Zoning
 - `simulation/grid/zoning.rs` (470 lines) — edge-aligned zoning cells, 10 m × 10 m.
 - Cells extend up to 10 cells deep (100 m) from the road sidewalk edge, starting 5 m from road centreline.
 - Obstruction check (`is_cell_obstructed`): 5-point sampling (4 corners + centre) per cell with asphalt collision and Voronoi ownership test.
-- `left_blocked` / `right_blocked` cache fields exist on `EdgeZoning` but are not correctly wired as an invalidation cache (see Bugs).
+- Obstruction cache correctly wired: `recalculate_obstructions` is parallelised with Rayon and spatially invalidated on nearby road edits.
 - Zone types: Residential, Commercial, Industrial, Office, Mixed.
 
 ### Environmental Grids
-- `simulation/grid/pollution.rs` — industrial emission (+100/tick, **spec says +5** — see Bugs) + 4-neighbour diffusion, decay ×0.995, parallelised with Rayon.
+- `simulation/grid/pollution.rs` — industrial emission (+5/tick) + 4-neighbour diffusion (explicit finite-difference), decay ×0.995, parallelised with Rayon.
 - `simulation/grid/noise.rs` — traffic noise diffusion, parallelised.
 - `simulation/grid/desirability.rs` — composite formula: `50 − pollution × 2 − noise × 1.5`, parallelised.
-- All three use `DataGrid<f32>` at 2000 × 2000 resolution (current; target is 500 × 500 — see Backlog).
+- All three use `DataGrid<f32>` at 500 × 500 resolution (`ENV_GRID_SIZE`); bilinear upsampled for display.
+- **Known allocation issue**: each tick calls `grid.clone()` to produce the read snapshot, allocating ~1 MB per grid. Fix is double-buffering (pre-allocated swap grid). See Backlog.
 
 ### Buildings
 - Desirability gate enforced (> 50). Spawn throttle active (max 10 buildings per tick).
 - Rendered via MultiMesh instancing: one draw call per zone type.
-- Rendered via MultiMesh instancing: one draw call per zone type.
 - Building deletion via swap-remove, O(1).
 - Save/load via `serde_json` — **not yet wired end-to-end**.
+- **Known scaling issue**: no inverted zone-type index. Agent job/shop lookup scans all buildings linearly — O(B) per activation with a heap allocation. See Backlog (B16).
 
 ### Agents
 - `simulation/economy/agents/` (Submodule) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
 - FSM states: `IDLE → DEPARTING → ON_ROAD → ARRIVING → IDLE` + `IMMIGRATING`.
-- Movement: polyline traversal with sub-tick `remaining_dist` budget; lane offsets from road width / lane count.
-- Agent kill: swap-and-pop, O(1).
-- **Single-threaded tick** — Rayon parallelisation is a v0.01 goal (see Backlog).
+- Movement: polyline traversal with sub-tick `remaining_dist` budget; lane offsets from road width / lane count. Agents move at a **fixed speed** with no interaction — cars on the same edge pass through each other. No car-following model, no capacity constraint per lane. See Backlog.
+- Agent kill: swap-and-pop, O(1). Note: agent indices are not stable across ticks (swap-remove invalidates the last agent's index).
+- **Single-threaded tick** — Rayon parallelisation is a v0.1 goal (see Backlog).
 
 #### Agent Rules
 - **Immigration**: agents spawn at highway border nodes, arrive by car. Capped at `residential_capacity × 1.1`.
 - **Housing search**: immigrants drive toward city centre and claim the first residential building with free capacity (6 agents per plot, hard-coded).
 - **Daily cycle**: Home (rest/happiness recovery) → Work (Industrial or Commercial, earn money) → Shop (Commercial, spend money) → Home.
-- **Happiness/money**: fields initialised (happiness = 50, money = 100) but **never modified** (see Bugs).
+- **Happiness/money**: home +1 happiness/day; commute penalty −commute_time/60 per trip; pollution effect −p × 0.1/day; work +$10/day; shop −$20.
 
 ### Pathfinding
-- `simulation/pathing/astar.rs` — binary-heap A* with `(node, incoming_edge)` state key (correctly handles turn restrictions at `Node::lane_connections`).
-- `simulation/pathing/cost.rs` — edge cost = `length / speed_limit`.
-- A* heuristic: `euclidean_distance / 100` — admissible but weak; divisor should be `v_max` (see Bugs).
-- `simulation/pathing/hpa.rs` — HPA* **build phase correct**: chunk boundary abstract nodes, per-chunk Dijkstra, stores `abstract_edges`. **Query phase optimized**: utilizes hierarchical search (local searches + abstract graph A*) and caches concrete adjacency list for O(1) fetch.
+- `simulation/pathing/astar.rs` — binary-heap A* with `(node, incoming_edge)` state key (mandatory for correct turn-restriction enforcement at `Node::lane_connections`).
+- `simulation/pathing/cost.rs` — edge cost = `length / speed_limit` (time in seconds) with exponential slope penalty for grades > 10%: `1 + (max_slope × 5)²`.
+- A* heuristic: `euclidean_distance / max_v` — admissible and consistent; `max_v` is the maximum edge speed limit in the network, precomputed at graph build time.
+- `simulation/pathing/hpa.rs` — current HPA* implementation (three-phase query). **Superseded by CCH (item 31, v0.1 blocker); will be removed when CCH lands.**
 
 ### Demand
 - `simulation/economy/demand.rs` — global R/C/I demand counters. Demand increments globally; buildings consume it on spawn.
 
 ### Godot Bridge
-- `nodes/simulation_node.rs` (1,655 lines) — all Godot `#[func]` API, rendering helpers, editor tools, undo stack, benchmarking. `[BLOCKER]` for splitting (see Backlog).
+- `nodes/simulation_node.rs` — entry point; split into `sim/editing.rs` (road/zoning mutations), `sim/query.rs` (read-only `#[func]` API), `sim/undo.rs` (VecDeque-backed undo stack, O(1) push/pop), `sim/render_helpers.rs`, `sim/benchmark.rs`.
 
 ### Benchmark Mode
 - Launch: `./run.sh --huge-map`
@@ -104,18 +109,10 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
-| B2 | `pathing/hpa.rs::find_path` | [DONE] Hierarchical search implemented; concrete adjacency list cached. | `[BLOCKER]` |
-| B5 | `buildings/allocator.rs` | [DONE] Desirability gate enforced (> 50). | `[BLOCKER]` |
-| B6 | `buildings/allocator.rs` | [DONE] Spawn throttle (max 10/tick) and HPA* batching implemented. | `[BLOCKER]` |
-| B7 | `simulation_node.rs` | [DONE] God-object split into `editing.rs`, `query.rs`, `undo.rs`. | `[BLOCKER]` |
-| B8 | `network/graph.rs::find_or_add_node` | [DONE] O(N) scan replaced with 16m spatial node grid | `[BLOCKER]` |
-| B9 | `pollution.rs` line 30 | [DONE] Emission corrected: +100 → +5 per tick | `[BUG]` |
-| B10 | `agents.rs` | [DONE] Happiness and money wired: commute penalties, daily activity rewards, and pollution effects implemented. | `[BUG]` |
-| B11 | `pathing/hpa.rs` A* heuristic | [DONE] Divisor precomputed from max speed limit during graph build | `[BUG]` |
-| B12 | `simulation_node.rs` | [DONE] `undo_stack` replaced with `VecDeque` for O(1) removals. | Minor |
-| B13 | `simulation_node.rs` | [DONE] `get_node_connection_count` uses `graph.adjacency` (O(1)). | Minor |
-| B14 | `network/graph.rs` | [DONE] `remove_from_spatial_index` uses targeted chunk lookups. | Minor |
-| B15 | `network/graph.rs` | [DONE] Edge compaction implemented with index remapping (Agents, Zoning, HPA). | Minor |
+| B16 | `agents/tick.rs` IDLE branch | O(B) linear scan + heap `Vec` allocation for every job/shop search. At 500k buildings and 1% agent activation rate: ~5 × 10⁹ comparisons/tick. Fix: inverted zone-type index on `BuildingAllocator`. | `[BUG]` |
+| B18 | `grid/pollution.rs`, `noise.rs`, `desirability.rs` | `grid.clone()` inside each `tick()` allocates ~1 MB per grid per call. 3 grids × 10 Hz = 30 MB/s allocator pressure. Fix: pre-allocate a permanent swap `DataGrid` in each system struct. | `[v0.1]` |
+| B19 | `network/graph.rs` | `adjacency: HashMap<u32, Vec<usize>>` — HashMap overhead (~40–100 ns/lookup when cold) on every A* node expansion. Node IDs are dense `u32`s; a `Vec<Vec<usize>>` indexed directly would give O(1) with a single bounds-check. | `[v0.1]` |
+| B20 | `network/graph.rs` `compact_edges` | No test coverage for the old→new edge index remap. `compact_edges` simultaneously remaps agent `current_path` node sequences and building `edge_idx` fields after any edge deletion. A bug in either remap pass produces silently corrupted simulation state — agents navigate to wrong locations, buildings reference phantom edges — with no runtime error. | `[BUG]` |
 
 ---
 
@@ -123,45 +120,186 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### v0.01 Blockers — fix before tagging
 
-1. [DONE] **Fix HPA* query** (B2): rewrite `find_path` to run A* on the pre-built abstract graph for inter-chunk traversal, then local A* within source and destination chunk. Cache shared read-only adjacency list inside `HpaGraph` post-`build()`.
-2. [DONE] **Fix `pollution.tick()` double-call** (B1): remove one of the two calls in `simulate_tick`.
-4. [DONE] **Add desirability gate to `allocator.tick`** (B5): read `desirability.grid.get(cx, cy) > 50` before spawning.
-5. [DONE] **Add spawn throttle to `allocator.tick`** (B6): max ~10 buildings per tick; batch-dirty HPA*; rebuild once at end of tick.
-6. [DONE] **B7: Split `simulation_node.rs`** into modules.
-7. [DONE] **B12: Fix Undo O(N) performance** by using `VecDeque`.
-8. [DONE] **REGRESSION: Zoning cell overlap** (FIXED - Graph consistency & Cache refresh)
-9. [DONE] **REGRESSION: Building-Road overlap** (FIXED - Sidewalk offsets added)
-10. [DONE] **REGRESSION: Frontage Split Zoning Loss** (FIXED - Cache migration)
-11. [DONE] **Fix `find_or_add_node`** (B8): replaced O(N) scan with a 16m spatial node grid.
+- **Virtual Frontages** — replace physical edge-split building addresses with `(edge_id, t: f32)` T-coordinates.
+  - **Root cause**: `BuildingAllocator::tick` calls `network.split_for_frontage` once per new building. Each call physically inserts a node into `TransitGraph` and splits one edge into two, then triggers a routing graph topology rebuild. At v0.01 (500 buildings on 50 edges) this means ~500 extra nodes, ~500 extra edge splits, and up to 500 incremental routing graph topology rebuilds during the city-growth phase. The graph size grows proportionally to building count, not road count — the wrong invariant.
+  - **Fix summary**: remove `split_for_frontage` and `remove_frontage` entirely. Store `frontage_t: f32` on `Building` instead of `frontage_node: u32`. Derive the routing target node from `edges[edge_idx].start_node` (if `t < 0.5`) or `edges[edge_idx].end_node` (if `t ≥ 0.5`). See detailed implementation below and `docs/analysis.md §2` for context.
+  - **Files**: `buildings/allocator.rs`, `network/mod.rs`, `economy/agents/data.rs`, `economy/agents/tick.rs`.
 
 ### v0.01 Goals — strong targets for v0.01 quality
 
-8. [DONE] **Wire happiness and money** (B10): happiness +1/day at home, −commute_time/60 per trip, −pollution × 0.1/day; money +10/day at work, −20 per shop.
-9. [DONE] **Fix pollution emission** (B9): change +100 to +5 in `pollution.rs`.
-10. [DONE] **Fix A* heuristic** (B11): replace divisor `100.0` with `graph.max_speed_limit()` precomputed at HPA* build time.
-11. [DONE] **Optimize Zoning Cache & Parallelize** (B5/B11ish): Fixed $O(Cells \times E \times L)$ regression in visualization by correctly using the obstruction cache. Parallelised `recalculate_obstructions` with Rayon and implemented spatial invalidation for nearby roads.
-12. [DONE] **Coarsen environmental grids to 500 × 500**: run diffusion at 1 MB instead of 16 MB per grid; bilinear upsample for display. 16× memory and compute reduction.
-13. [DONE] **Incremental HPA* rebuild** on road edit: mark affected 512 m chunks dirty, rebuild only those. O(E_chunk) instead of O(E_total).
-14. [DONE] **Split `agents.rs`** into `agents/data.rs`, `agents/decisions.rs`, `agents/tick.rs`.
-15. **Split `graph.rs`** (801 lines) into `graph/data.rs`, `graph/spatial.rs`, `graph/topology.rs`, `graph/rebuild.rs`.
-16. **Add pathfinding unit tests**: highway cheaper than dirt road; slope penalty forces bypass; flow field Dijkstra < 5 ms on a 1,000-node graph.
+1. **Split `graph.rs`** (801 lines) into `graph/data.rs`, `graph/spatial.rs`, `graph/topology.rs`, `graph/rebuild.rs`.
+2. **Complete pathfinding unit tests** — two of three originally listed tests now exist; one is missing, one is deferred:
+   - `test_highway_vs_dirt_road_cost` ✓ exists in `pathing/tests.rs`
+   - `test_cost_calculation_slope_penalty` ✓ exists but only checks that a steep edge costs more — it does **not** verify that the router actually bypasses a steep road in favour of a longer flat route. Add a three-node graph test: `A –(steep)→ B` and `A –(long flat)→ C –(flat)→ B`; assert the router chooses the flat detour.
+   - Flow field Dijkstra < 5 ms on a 1,000-node graph: **deferred to v0.2** — cannot be written until flow fields are implemented.
+3. **`transit_mode: Vec<u8>` migration** — replace `is_driving: Vec<bool>` in `AgentSystem` SoA with `transit_mode: Vec<u8>` using constants `WALK=0, CAR=1, BIKE=2, BUS_PASSENGER=3, TRAIN_PASSENGER=4, TAXI_PASSENGER=5, SHIP_PASSENGER=6`. Update all four `is_driving` sites in `tick.rs`. `decide_transit_mode` return type changes from `(u32, bool)` to `(u32, u8)`. Memory impact: identical. **Do this before any new transport mode is wired up — retrofitting a bool into an enum after the fact is painful.**
+4. **`allowed_mask: u8` in pathfinding query** — replace the `pedestrian: bool` parameter with `allowed_mask: u8` using the existing `TransitFlags` bit constants (`FOOT=1<<0, CAR=1<<1, BIKE=1<<2, RAIL=1<<3, SHIP=1<<4, AIR=1<<5`). Add `transit_flags: u8` to `Edge`; the query inner loop skips edges incompatible with the agent's mask at zero overhead. Do this now while HPA* is still in place — CCH (item 31) inherits the same `allowed_mask` parameter and `Edge::transit_flags` field unchanged. **This one field addition simultaneously unblocks bicycles, ferries, rail, and air routes — the entire multi-modal backlog depends on it.**
+5. **`TransitGraph` mutation tests** — the road editing pipeline has no test coverage. Add tests for:
+   - `add_road`: resulting adjacency is bidirectional for a bidirectional edge; node count and edge count increase by expected amounts.
+   - `split_edge`: produces two edges whose `physical_length` values sum to the original; both edges share the inserted midpoint node; zoning grid is remapped correctly.
+   - `compact_edges` (fixes B20): add two roads, delete one, call `compact_edges`, verify all remaining agent `current_path` node IDs are valid indices into `nodes`, all building `edge_idx` values reference non-deleted edges.
+6. **Agent FSM integration test** — no test currently drives a complete agent trip. Add a minimal test: build a two-node, one-edge graph; spawn one agent at node 0 with home at node 1; tick up to N times; assert the agent reaches `TRANSIT_ARRIVING` and then `TRANSIT_IDLE` with `current_node == target_node`. This is the single most important behavioural regression guard for the core simulation loop.
+7. **Virtual Frontages migration test** — to be written alongside the v0.01 blocker implementation:
+   - *Before* (regression baseline): place one building, assert `graph.nodes.len()` increased by 1 (confirming `split_for_frontage` ran).
+   - *After* (correctness proof): place one building, assert `graph.nodes.len()` is unchanged; assert `building.routing_node(&graph)` returns `edge.start_node` when `frontage_t < 0.5` and `edge.end_node` when `frontage_t >= 0.5`.
+8. **`BuildingAllocator` placement and removal tests** — no tests exist for the spawning pipeline. Add:
+   - Desirability gate: when grid value < 50.0, no building is spawned regardless of demand.
+   - Demand subtraction: after a residential building spawns, `demand.residential` decreases by the expected amount.
+   - Occupancy: after placement, all 9 cells of the 3×3 footprint report `is_occupied == true`; after removal, all 9 report false.
+9. **`allowed_mask` pathfinding tests** — to be written when v0.01 goal 4 is implemented. The 9 existing pathfinding tests use `pedestrian: bool`; they must be migrated to `allowed_mask: u8`. Add new tests: `FOOT|BIKE` mask routes onto foot-only edges; `CAR` mask does not; a combined `CAR|FOOT` mask can use either.
+10. **`MapConfig` — replace hardcoded map-size constants**: extract `config.rs` map-size constants into a `MapConfig` struct passed at simulation construction time.
+    - Fields: `width_m: f32`, `height_m: f32`, `env_cell_m: f32` (environmental grid cell size, default 40 m), `zone_cell_m: f32` (zoning cell size, default 10 m).
+    - All `DataGrid` initialisations and grid-dimension calculations read from `MapConfig` instead of `const`. The benchmark mode passes the default 20 km × 20 km config; players can pass any dimensions.
+    - **Do this before the grid systems grow any larger.** Every new system that reads a map-size constant bakes in a hardcoded assumption that becomes progressively more expensive to remove. At v0.01 with a handful of grid systems the change is ~20 lines; at v0.2 with env grids, zoning, pollution, noise, desirability, built-layer, and congestion heatmap all initialised with constants, it becomes a multi-file audit.
+    - Memory and performance at larger sizes: 60 km × 60 km at 40 m/cell = 1500 × 1500 env grid (27 MB for 3 grids, 9× diffusion work — still Rayon-parallelised). Zoning at 10 m/cell = 6000 × 6000 (36 MB at 1 byte/cell). Both are within budget.
 
 ### v0.1 — 100k-agent milestone
 
-17. **Virtual Frontages**: change building address from physical edge splits to `(EdgeID, t: f32)`. Agents arrive by reaching the T-coordinate and trigger arriving state. Decouples graph size from city density.
-18. **Flow fields for shared destinations**: one Dijkstra from destination per zone type per tick produces a `DataGrid<f32>` cost map. Agents query their cell instead of running individual A*. Reduces O(A × E log N) pathfinding to O(M × E log N) where M ≈ 10–100 zone types.
-19. **Parallelise `AgentSystem::tick`** with `rayon::par_iter_mut` over agent chunks. Use `AtomicU32` for `parking_occupied`; accumulate congestion deltas per chunk and merge after parallel phase.
-20. [DONE] **Compact deleted edges** (B15): implemented early in v0.01.
-21. **R-Tree spatial index** (`rstar` crate) for fine-grain edge queries — O(log N) insert/delete/query vs. current O(N) scan on delete.
+Feature completion and correctness fixes. Performance tuning is not the focus here — the benchmark target is 100k agents at ≥ 30 FPS on a single core, which is achievable without parallelism given the current per-agent cost.
 
-### v1.0 — 1M-agent milestone
+#### v0.1 Blockers — must complete before tagging v0.1
 
-22. **Contraction Hierarchies or Customizable Route Planning (CRP)**: CH for static costs; CRP if congestion changes per-tick (separates topology preprocessing from per-tick metric updates).
-23. **Agent Level-of-Detail**: full FSM for camera-visible agents (~50k), flow-field only within 2 km (~500k), statistical counts only beyond 2 km.
-24. **GPU compute (`wgpu`)**: move agent position update arithmetic (linear interpolation along polylines, lane offset, transform generation) to GPU. Keep FSM decisions and pathfinding on CPU.
-25. **Building levels (1→3)**: upgrade driven by demand pressure history and neighbourhood desirability.
-26. **Congestion heatmap**: agent spatial grid (`DataGrid<Vec<AgentID>>`) → edge congestion → dynamic cost update → routing feedback loop.
-27. **Incremental road mesh updates**: rebuild only modified edges; simplified LOD geometry at camera distance.
+23. **Fix B19 — adjacency Vec migration**: convert `adjacency: HashMap<u32, Vec<usize>>` to `Vec<Vec<usize>>` in `TransitGraph`. Node IDs are dense from 0; direct indexing removes HashMap overhead (~40–100 ns/lookup when cold) from every A* node expansion. Prerequisite for CCH (item 31) — the CCH build phase reads the base graph adjacency in a tight loop and must not pay HashMap overhead there.
+31. **CCH / CRP implementation** — supersedes HPA* for all long-distance routing:
+    - **RegionGraph design**: `TransitGraph` must not be scoped to a single city. Rename or extend it to `RegionGraph`; it is the single graph for all current and future city tiles. Adding a second city later means adding nodes/edges to this graph and triggering a topology rebuild — not creating a separate graph instance. Do this structural rename before building the CCH data structures on top of it.
+    - **Topology phase**: compute contraction order (node importance by edge-difference heuristic); add shortcut edges bypassing contracted nodes. Output: an elimination tree and a contracted graph. This phase runs once on full topology rebuild (when roads are added or removed). O(E log E).
+    - **Metric customization phase**: propagate current edge weights (speed limits, congestion) through the elimination tree. O(E). Runs on every road edit or congestion update — this is CRP's key property: metric updates are cheap even though topology rebuilds are not.
+    - **Query**: bidirectional Dijkstra on the contracted graph. Forward from source, backward from goal, meeting at the highest-hierarchy node. O(√E log √E) vs O((V+E) log V) for A*. The `(node, incoming_edge)` state key for turn restrictions must be preserved.
+    - **Modal filtering**: `allowed_mask: u8` (v0.01 goal 4) gates which edges are visible during query — the contracted graph is built per-mask or masks are applied at query time.
+    - On completion, `HpaGraph` and the three-phase HPA* query are removed. All `find_path` call sites in `decisions.rs` switch to CCH query.
+
+#### v0.1 Goals
+
+24. **R-Tree spatial index** (`rstar` crate) for fine-grain edge queries — O(log N) insert/delete/query. Current uniform 512 m grid degrades for edges that span multiple chunks.
+26. **Bridge and tunnel support — `EdgeClass`**:
+    - Add `EdgeClass` enum to `network/types.rs`: `Standard | Bridge | Tunnel`. Fits in a single byte; zero memory cost due to existing `Edge` struct padding.
+    - Add `class: EdgeClass` field to `Edge`. No simulation logic changes — the 3D polyline geometry already stores correct Y positions for elevated or depressed roads.
+    - `Standard`: current behaviour; road mesh follows terrain.
+    - `Bridge`: renderer generates a floating deck mesh at the geometry's Y elevation; mesh does not deform to terrain. Zoning disabled on both sides.
+    - `Tunnel`: renderer generates portal entrance meshes at both endpoints only; the road mesh between portals is hidden. Zoning disabled.
+    - Zoning obstruction check: `is_cell_obstructed` must ignore bridge edges when checking cells at ground level directly beneath the deck (bridge Y − cell Y > clearance threshold).
+    - 512 m chunk index is XZ-only and will place a bridge edge and an underpass edge in the same bucket — harmless because all chunk queries operate on graph topology, not rendered geometry.
+27. **Bridge and tunnel editor tool**:
+    - UI action on an existing edge to promote it to `Bridge` or `Tunnel` (single `EdgeClass` field write + CCH topology rebuild for affected edges + re-render).
+    - Validation: warn if bridge endpoints are not at a higher Y than the terrain midpoint; warn if tunnel endpoints are not below the terrain surface.
+28. **Environmental grid regression tests** — the diffusion PDE and decay constants are undocumented invariants with no verification. Add a test that ticks `PollutionSystem` 200 times with one industrial source cell; assert: the source cell has a positive value, a cell 5 steps away has a nonzero diffused value, no cell in the grid is infinite or NaN, and the average grid value decays over time after the source is removed. This is a smoke test for the explicit FD stability condition and the decay half-life documented in `analysis.md §2.3`.
+29. **`DataGrid<T>` unit tests** — used by every environmental system and the terrain but has no direct tests. Add: get/set round-trip for arbitrary coordinates; bilinear interpolation returns the exact corner value when querying at a grid point; out-of-bounds query returns `None` (or clamps, whichever the implementation guarantees).
+
+### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
+
+Target: ~250k–500k agents with the first non-car transport mode live and the multi-city region architecture in place.
+
+At ~200k agents three independent performance walls converge: (1) the single-threaded agent tick saturates one core, (2) the O(B) building scan in every IDLE activation becomes the dominant tick cost as the city fills, and (3) per-agent pathfinding accumulates to an unacceptable fraction of frame time even with CCH (flow fields are the answer — item 18). All three must be resolved before the v1.0 path is smooth — deferring any one of them past v0.2 means hitting a hard wall instead of a gradual ramp.
+
+The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) install the two-wire harness. v0.2 validates it by shipping bicycle support — the simplest possible new mode (no VehicleSystem, no WAITING state, no timetables). If bicycles work correctly under load, every subsequent mode (taxi, bus, rail) is an incremental addition, not a structural change.
+
+**Implementation order matters.** Items 20 and 19 are mutually dependent: the zone index (20) must exist before the tick can be parallelised (19), because the parallel tick needs atomic vacancy counters that the index maintains. Do 20 first. Item 22 is independent. Item 18 (flow fields) requires 19 to be done first — flow field queries need to run inside the parallel tick loop. Item 25 (IDM) is independent. Item 30 (bicycle) requires v0.01 goals 3 and 4. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete — the `RegionGraph` rename and CCH query are the foundation the region system builds on.
+
+20. **Fix B16 — inverted zone-type index**: add `zone_index: Vec<Vec<usize>>` to `BuildingAllocator`, maintained on every building add/remove. Replaces O(B) linear scan with O(1) index lookup + O(1) random selection. At 500k agents with 50k buildings and a 1% activation rate: eliminates ~2.5 × 10⁸ comparisons/tick. **Do this before parallelising the tick — it is the prerequisite.**
+19. **Parallelise `AgentSystem::tick`**: remove `&mut TransitGraph` from tick signature (currently unused as mut); switch to `rayon::par_iter_mut` over agent index ranges. Use `AtomicU32` for building vacancy counters (enabled by item 20's index); batch immigration assignments in a post-parallel sequential phase. Prerequisite for all subsequent agent-scale targets.
+22. **Fix B18 — env grid double-buffering**: add a `swap: DataGrid<f32>` field to `PollutionSystem`, `NoiseSystem`, and `DesirabilitySystem`. Replace `self.grid.clone()` with a raw `Vec` pointer swap, reducing hot-path allocation to zero. Eliminates 30 MB/s sustained allocator pressure that grows with tick rate.
+18. **Flow fields for shared destinations**: one reverse Dijkstra from each active destination zone type produces a next-node map of length V. Agents query O(1) instead of running individual CCH queries. Reduces O(A × CCH_cost) to O(M × (V + E) log V) where M ≈ 10–100 active zone types. Retain CCH for immigration and one-off novel destinations. Requires parallel tick (item 19) to be useful — flow field lookup is the O(1) work that fills each parallel agent slot. Add a timing test on completion: Dijkstra from one destination on a 1,000-node graph must complete in < 5 ms (originally listed in v0.01 goals but deferred here until the system exists).
+25. **Car collision — Intelligent Driver Model (IDM)**:
+    - Add `speed: Vec<f32>` to `AgentSystem` SoA. Current model uses a hardcoded fixed speed; IDM requires a dynamic per-agent speed state (~4 MB at 1M agents).
+    - Each tick, build a transient `lane_agents: Vec<Vec<u32>>` indexed by `edge_idx * MAX_LANES + lane_idx`, each sub-Vec sorted by `edge_progression`. O(A) to build from the SoA; thrown away after the tick. Finding the car directly ahead is O(1) (adjacent element in sorted list).
+    - Apply IDM per car: `a = a_max × [1 − (v/v_max)⁴ − (s*(v,Δv) / gap)²]` where desired gap `s*(v,Δv) = s_min + v·T + v·Δv / (2√(a_max·b))`. Produces realistic stop-and-go waves and jam dissolution at O(1) per car.
+    - Intersection queuing: if a car is at the last polyline segment of its edge and the target node has no accepted entry slot this tick, set `speed = 0`. One entry slot per incoming lane per tick.
+    - After the movement pass, write average speed per edge into `Edge::current_congestion`. Feeds directly into the CCH metric customization phase (triggers a fast O(E) weight refresh) and the v1.0 congestion heatmap.
+    - Bridges and tunnels: cars on different vertical levels are on different edges and therefore different lane lists — no cross-level interaction, correct without modification.
+    - Bicycles, buses: both participate in per-lane occupancy lists naturally. A bicycle is just a slow narrow vehicle; a bus is a long slow one. No mode-specific changes to IDM.
+30. **Bicycle support** — first new transport mode; validates the multi-modal foundation (v0.01 goals 3 and 4):
+    - Add `BIKE=1<<2` bit to `TransitFlags`. Set it on all edges with a sidewalk or dedicated cycle path — at minimum every `Standard` road edge. Bridges and tunnels: same flag if their geometry accommodates a cycle lane.
+    - Speed: 5.5 m/s (~20 km/h). `decide_transit_mode` selects `BIKE` when distance < ~2 km (shorter than car threshold) or when the agent has no car.
+    - No VehicleSystem, no WAITING state, no timetables — bicycles are individual agents with `transit_mode=BIKE`, routed via `allowed_mask = BIKE | FOOT`.
+    - IDM applies on shared road edges. Bikes have their own lane slot, lower `v_max`, and shorter desired gap parameters.
+    - After this item ships, adding taxis is one FSM state + one dispatch call. Buses add VehicleSystem + WAITING. Rail adds an `EdgeClass` variant. The foundation holds.
+
+54. **Multi-city region — background city statistical model**: each inactive city tile is represented by ~15 numbers per tick: population, employment capacity, demand by zone type, and throughput per inter-city connection. Updated on a coarse schedule (~1/s game time, not per tick). No agent simulation runs for background cities. The `RegionGraph` (see item 31) contains all city tiles' road/rail/air nodes and edges so CCH can route through them; agents on those edges are statistical counters on the edge, not FSM objects.
+55. **Multi-city region — border crossing spawn/despawn**: when an agent leaves the active city onto an inter-city edge, it is demoted to a statistical entry in a queue attached to that edge (arrival time estimated from CCH path cost). When it arrives at the destination city boundary, it is promoted to a full FSM agent and spawned at the border node. If the destination city is inactive, it is absorbed into that city's statistical population counter. Border nodes already exist as `NodeType::Border` in `types.rs`; immigration logic in `tick.rs` (highway border spawn) is the direct predecessor of this system.
+56. **Multi-city region — region view**: a coarse top-level view showing all city tiles, inter-city connection throughput, and aggregate demand flow. No agent rendering at this zoom level — statistical flow numbers only. Switching the active city promotes it to full simulation and demotes the previous active city to statistical mode.
+32. **Agent Level-of-Detail**: full FSM + rendering for camera-visible agents (~50k); flow-field-only routing within 2 km (~500k, no individual pathfinding); statistical aggregate counts only beyond 2 km (~450k). Promotion/demotion at LoD boundaries must preserve city-level supply/demand statistics.
+33. **AoSoA agent layout**: replace flat SoA with 8-wide SIMD batches (Array of Structures of Arrays). Enables AVX2 to process 8 agents per instruction for position update, lane offset, and transform generation. Prerequisite for GPU-offload of movement arithmetic.
+34. **GPU compute (`wgpu`)**: move agent position update (polyline interpolation, lane offset, transform assembly) to GPU compute shader. Keep FSM state transitions and pathfinding on CPU. Requires AoSoA layout.
+35. **CSR graph for pathfinding**: convert `nodes`/`edges` + `adjacency` to Compressed Sparse Row format for the read-only pathfinding phase. Single cache line per node expansion. Road edits trigger an O(E) CSR rebuild (acceptable since edits are rare interactive events).
+36. **Building levels (1→3)**: upgrade driven by demand pressure history and neighbourhood desirability.
+37. **Congestion heatmap**: agent spatial grid (`DataGrid<Vec<AgentID>>`) → edge congestion → dynamic cost update → CRP metric refresh → routing feedback loop.
+38. **Incremental road mesh updates**: rebuild only modified edges; simplified LOD geometry at camera distance.
+39. **VehicleSystem** (shared prerequisite for buses and trains):
+    - Add `VehicleSystem` alongside `AgentSystem`: SoA of vehicle state (`route: Vec<RouteID>`, `stop_idx: Vec<u8>`, `capacity: Vec<u8>`, `occupants: Vec<SmallVec<[u32; 8]>>`).
+    - Vehicles follow the same CCH-computed path as agents but tick independently. Passenger agents delegate movement to the vehicle while in `BUS_PASSENGER` or `TRAIN_PASSENGER` mode — their position is overwritten from the vehicle's position each tick.
+40. **WAITING FSM state** (shared prerequisite for buses, trains, and taxis):
+    - Add `WAITING` to the agent FSM, between `IDLE` and `DEPARTING`.
+    - Agents enter `WAITING` when their chosen mode requires an external vehicle (bus stop, train platform, taxi pickup).
+    - `waiting_target: Vec<u32>` in SoA: node ID of the stop/pickup point the agent is walking toward, then standing at.
+    - Agents are promoted to `ON_ROAD` when the vehicle arrives and has capacity.
+41. **Taxi support**:
+    - Prerequisites: items 28, 40.
+    - Taxis modelled as specialised agents (`transit_mode=CAR`) with two extra FSM states: `DRIVING_TO_PICKUP` and `CARRYING_PASSENGER`.
+    - No VehicleSystem needed — each taxi carries exactly one passenger group.
+    - Dispatch: O(1) amortised greedy matching via the existing 512 m spatial chunk index. When a passenger enters `WAITING`, query the nearest idle taxi chunk; assign the closest idle taxi.
+42. **Bus support**:
+    - Prerequisites: Virtual Frontages (v0.01 blocker), items 28, 29, 39, 40.
+    - Bus stops use Virtual Frontages `(EdgeID, t: f32)` — no physical graph splits at every stop. Stops are T-coordinates on existing edges; the router inserts a synthetic zero-cost node only during the relevant path query.
+    - Buses use CAR-flagged edges and participate in IDM naturally (buses are large, slow vehicles on the lane list).
+    - Fixed-route, fixed-headway scheduling: a `RouteID` → `Vec<StopID>` table, a departure timetable, and a next-stop pointer per vehicle.
+    - Passenger routing is two-phase: walk to nearest stop → `WAITING` → `BUS_PASSENGER` (vehicle carries) → walk from stop to destination.
+43. **Train and metro support**:
+    - Prerequisites: items 28, 29, 39, 40. Requires `EdgeClass::Rail` variant (shares same byte field as `Standard/Bridge/Tunnel`).
+    - Trains use `RAIL`-flagged edges only. The `allowed_mask` mechanism (item 29) isolates the rail subgraph from road routing automatically.
+    - Rail edges: no road mesh; separate rendered track geometry. Metro: `EdgeClass::Tunnel` with `RAIL` flag and underground portal renderer branch.
+    - Timetables required — fixed departure slots; stochastic headways are not appropriate at ≥ 10 min service intervals.
+44. **Ship support**:
+    - Prerequisites: items 28, 29. `NodeType::Harbor` already declared in `types.rs`.
+    - Add `SHIP`-flagged edges for water channels and ferry routes. Ships use `NodeType::Harbor` as access nodes.
+    - Pathfinding mask: `allowed_mask = SHIP | FOOT` — walk to harbor, sail to destination harbor, walk on.
+    - Ship edges are graph-level only; no mesh-based interaction with the SWE water simulation.
+45. **Airplane and border-node support**:
+    - Prerequisites: items 28, 29. `NodeType::Airport` already declared in `types.rs`.
+    - Airplanes connect `NodeType::Airport` nodes with `AIR`-flagged edges at ~200 m/s; agents effectively teleport between airports on the city graph.
+    - Each map border highway node gains `NodeType::Border` flag. Immigration agents always use `CAR`-flagged edges from border nodes; the existing immigration cap logic is unchanged.
+
+### v0.3 — 3D asset pipeline
+
+Target: same agent scale as v0.2. No simulation changes. All work is in `render_helpers.rs` (Rust FFI layer) and `godot/scripts/` (GDScript renderers). The 12-float Transform3D format and the MultiMesh instancing architecture are retained — only the meshes assigned to those MultiMesh nodes change.
+
+**Hard architectural constraint**: Godot's `MultiMesh` does not support per-instance skeletal animation. Bone-animated pedestrians require individual `Node3D` nodes, which does not scale past a few thousand agents. The approach for v0.3 is to use static 3D models (a mid-stride static pose for pedestrians, a static car mesh). GPU vertex animation (baked walk cycle sampled via a custom shader using a per-instance phase offset) is noted as a follow-on and can be added without any simulation or API changes once the static models are in place.
+
+46. **Split agent MultiMesh by transit mode** — prerequisite for all other agent visual work:
+    - In `render_helpers.rs`, split `get_agent_transforms_internal` into `get_car_transforms()` and `get_pedestrian_transforms()`. Both return `PackedFloat32Array` of 12-float transforms; the existing road-tangent rotation logic moves into `get_car_transforms`.
+    - In `agents.gd`, replace the single `MultiMeshInstance3D` with two nodes: `CarMesh` and `PedestrianMesh`, each updated independently.
+    - No change to simulation, pathfinding, or SoA layout.
+47. **Car 3D model**:
+    - Load a `.glb` car model and assign it to the `CarMesh` MultiMesh node. No code changes beyond the assignment.
+    - The existing road-tangent basis vectors already produce correct car orientation on roads.
+    - When `transit_mode` migration (v0.01 goal 3) is complete, this MultiMesh extends naturally to buses (`transit_mode=BUS`), taxis, etc. by filtering the transform array by mode.
+48. **Pedestrian SDF billboard shader** — recommended over loading a 3D model for this scale:
+    - Replace the `CapsuleMesh` on the `PedestrianMesh` MultiMesh with a `QuadMesh` (2 triangles). The quad is billboard-oriented in the vertex shader to always face the camera.
+    - A custom `gdshader` fragment shader reconstructs the human silhouette from sphere and capsule SDF primitives (head, torso, two legs). SDF edges are anti-aliased via `smoothstep` — pedestrians stay crisp at 3 px or 30 px without a texture. Animation is driven by `sin(phase * TAU)` on the leg offsets — a walking cycle at zero model-file cost.
+    - **Rust change required**: add `walk_phase: Vec<f32>` to `AgentSystem` SoA (~4 MB at 1M agents). Increment each tick: `walk_phase[i] = (walk_phase[i] + delta / stride_length) % 1.0`. Expose via `get_pedestrian_phases() -> PackedFloat32Array`. Pass as MultiMesh `CUSTOM_DATA_FLOAT` channel (Godot `per_instance_color` repurposed as 4 floats).
+    - **Why SDF over a 3D model here**: MultiMesh cannot do per-instance skeletal animation, so a 3D model would be a static pose anyway. An SDF billboard looks better than a static mesh at city-view distances (3–20 px), produces clean anti-aliased edges at any resolution, requires no texture VRAM, and the walking animation is trivially added. A 3D model only wins at close range — the v1.0 Agent LoD system (item 32) handles that case by switching to individual `AnimationPlayer` nodes within ~50 m.
+    - Colour the silhouette by agent state: walking = neutral tone, idle = slightly desaturated, stressed/unhappy = cooler tint. This visual feedback is free — just sample `happiness[i]` and pass it in another custom data channel.
+49. **Building variant system** — small Rust change, prerequisite for building model variety:
+    - Add `variant: u8` to `Building` struct. Assign during placement: `variant = (cell_x ^ cell_y ^ edge_idx) as u8 % NUM_VARIANTS` for deterministic pseudo-random variety without an RNG call.
+    - Add `get_building_transforms_by_variant(zone_id: i32, variant: i32) -> PackedFloat32Array` to `render_helpers.rs`.
+    - In `buildings.gd`, replace the single MultiMesh per zone type with one `MultiMeshInstance3D` per `(zone_type, variant)` pair. With 5 zone types and 3–4 variants each, this is 15–20 draw calls total — well within budget.
+50. **Building 3D models**:
+    - Load zone-appropriate `.glb` models per `(zone_type, variant)`. Replace the procedural `SurfaceTool` mesh in `buildings.gd`.
+    - Enable Godot's built-in `GeometryInstance3D` LOD on each `MultiMeshInstance3D`: simplified mesh beyond 150 m, billboard imposter beyond 400 m. No code required — set `lod_min_distance` and `lod_max_distance` in the Inspector or via script.
+    - Building facing direction is already encoded in the transform basis (from `facing_dir: Vector2` in `Building`). Models must be authored facing +Z so the existing basis assignment produces correct road-facing orientation.
+51. **Environment detail assets** (stretch goal):
+    - Trees, benches, streetlights placed at fixed offsets from road edges, derived from the zoning grid cell positions already computed in `ZoningSystem`.
+    - One `MultiMeshInstance3D` per asset type; placement computed once when a road edge is added or removed, not per tick.
+    - No simulation interaction — purely visual. No Rust simulation changes; a new `environment.gd` script reads edge geometry via existing `get_edge_geometry()` calls.
+52. **Terrain built-layer ("urban density map")** — eliminates grass visible under roads and buildings:
+    - Add a new `DataGrid<f32>` named `built_layer` to the environment system (same architecture as `pollution`, `noise`, `desirability`). Values: `0.0` = natural, `1.0` = fully developed.
+    - Write to the grid on road placement: cells within `SIDEWALK_WIDTH` on both sides of each edge → set to `~0.8`. Write on building placement: all 9 cells of the 3×3 footprint → set to `1.0`. Clear on removal.
+    - Expose as `get_built_layer_data() -> PackedByteArray` (same interface as `get_pollution_data()` etc.) for the terrain shader.
+    - In the terrain `gdshader`, sample the built-layer texture and blend: `mix(grass_color, concrete_color, built_density)`. No change to terrain mesh geometry.
+    - **Complexity**: O(E × W) write on road placement (E edges, W = cells per edge), O(1) per building cell. Grid tick is unnecessary — values only change on network/building events.
+53. **Building foundation quads** — eliminates z-fighting and grass bleed at building perimeters:
+    - For each placed building, render a flat `QuadMesh` sized to the 3×3 footprint (30 m × 30 m) at `+0.02 m` above terrain height. Material uses a concrete/pavement albedo that matches the urban density map blend at `1.0`.
+    - Add a second `MultiMeshInstance3D` per zone type in `buildings.gd` (e.g. `ResidentialFoundationMesh`). Reuse the same transform data already packed for the building mesh — the foundation quad uses the same center position and facing direction, with a flat scale.
+    - No Rust changes beyond what item 52 already requires. Foundation quads are driven entirely from the existing `get_building_transforms()` call in GDScript.
 
 ---
 
@@ -169,30 +307,49 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### Grid Specifications
 
-| Parameter | Value |
-|-----------|-------|
-| Zoning cell | 10 m × 10 m |
-| Building footprint | 3 × 3 cells (30 m × 30 m) |
-| Road width (2-lane) | 10 m (7 m asphalt + 1.5 m sidewalk each side) |
-| Zoning offset from centreline | 5 m |
-| Zoning depth | 10 cells (100 m) |
-| Road spatial chunk | 512 m |
-| Environmental grid (current) | 2000 × 2000 |
-| Environmental grid (target) | 500 × 500 |
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| City tile size | Player-configurable | Default 20 km × 20 km; no hardcoded upper limit. Set via `MapConfig` at construction. |
+| Zoning cell | 10 m × 10 m (`zone_cell_m`) | Configurable via `MapConfig`. |
+| Building footprint | 3 × 3 cells (30 m × 30 m) | Fixed relative to zoning cell size. |
+| Road width (2-lane) | 10 m (7 m asphalt + 1.5 m sidewalk each side) | Fixed. |
+| Zoning offset from centreline | 5 m | Fixed. |
+| Zoning depth | 10 cells (100 m) | Fixed relative to zoning cell size. |
+| Road spatial chunk | 512 m | Fixed; scales correctly to any map size. |
+| Environmental grid cell | 40 m (`env_cell_m`) | Configurable via `MapConfig`. Grid dimensions = map size / cell size. |
+| Environmental grid (default 20 km map) | 500 × 500 | Scales with map size: 60 km map → 1500 × 1500. |
 
 ### Movement Speeds
 
-| Mode | Speed | Notes |
-|------|-------|-------|
-| Walking | 4.0 m/s (14.4 km/h) | ~3× real life; 10 m road takes 2.5 s |
-| Driving | 20.0 m/s (72 km/h) | Standard suburban |
+| Mode | Speed | Status | Notes |
+|------|-------|--------|-------|
+| Walking | 4.0 m/s (14.4 km/h) | Implemented | ~3× real life; 10 m road takes 2.5 s |
+| Driving (car) | 20.0 m/s (72 km/h) | Implemented | Standard suburban |
+| Bicycle | 5.5 m/s (20 km/h) | Planned (item 30) | Shares sidewalk / dedicated cycle edges |
+| Bus | 10–15 m/s (36–54 km/h) | Planned (item 42) | Slower than car due to stop dwell time |
+| Train / Metro | 20–40 m/s (72–144 km/h) | Planned (item 43) | Higher value for intercity; metro ≈ 25 m/s |
+| Ship / Ferry | 5–10 m/s (18–36 km/h) | Planned (item 44) | Slow; used for harbor-to-harbor routes |
+| Airplane | ~200 m/s (720 km/h) | Planned (item 45) | Near-teleport at city scale |
 
 ### Key Design Patterns
 
-- **DataGrid\<T\>**: flat `Vec<T>` with stride `width`. Row-wise parallel iteration with `rayon::par_chunks_mut`. All spatial grids (terrain, pollution, noise, desirability, planned car collision) use this type.
+- **DataGrid\<T\>**: flat `Vec<T>` with stride `width`. Row-wise parallel iteration with `rayon::par_chunks_mut`. All spatial grids (terrain, pollution, noise, desirability) use this type. The planned congestion heatmap (`DataGrid<f32>`, written from per-edge average speed) will also use it.
+- **Per-lane occupancy lists (planned)**: transient `Vec<Vec<u32>>` built each tick from the SoA, indexed by `edge_idx * MAX_LANES + lane_idx`, sorted by `edge_progression`. Provides O(1) car-ahead lookup for IDM without any persistent spatial structure. Thrown away after each tick.
 - **SoA (Structure-of-Arrays)**: `AgentSystem` stores all fields as parallel `Vec<T>` indexed by agent ID. Cache-friendly for bulk iteration.
-- **512 m spatial chunks**: road edge AABB registered in all overlapping chunks. Used for editor queries (radius ≈ 120 m → typically 1 chunk) and HPA* chunk assignment.
+- **512 m spatial chunks**: road edge AABB registered in all overlapping chunks. Used for editor queries (radius ≈ 120 m → typically 1 chunk) and spatial snapping. CCH manages its own contraction hierarchy independently of this grid.
 - **`(node, incoming_edge)` pathfinding state**: required for turn restriction correctness at `Node::lane_connections`. Must be preserved in any pathfinding replacement.
+
+### Multi-modal Transport Vocabulary
+
+The type vocabulary for all planned transport modes already exists in `network/types.rs`:
+
+| Type | Declared values |
+|------|----------------|
+| `TransitType` | `Road, Rail, Ship, Air, Foot` |
+| `TransitFlags` | `FOOT=1<<0, CAR=1<<1, RAIL=1<<2, SHIP=1<<3, AIR=1<<4` (bit 5+ free for `BIKE`) |
+| `NodeType` | `Junction, Station, Harbor, Airport, Transfer, Frontage` |
+
+The gap is entirely in the agent system: `is_driving: Vec<bool>` is binary and must be migrated to `transit_mode: Vec<u8>` (backlog item 28) before any new mode can be added. The pathfinding query takes a `pedestrian: bool` which must become `allowed_mask: u8` (backlog item 29, v0.01 goal 4) — CCH inherits this same parameter. These two changes are the shared prerequisites for all multi-modal work.
 
 ### Memory Budget (20 km map)
 
@@ -200,15 +357,15 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 |----------|------|
 | Terrain heightmap (2000²) | 16 MB |
 | Terrain source copy | 16 MB |
-| 3 environmental grids at target 500² | 3 MB |
-| 3 environmental grids at current 2000² | 48 MB |
+| 3 environmental grids at 500² | 3 MB |
 | Road edges (50k × ~512 B) | 25 MB |
 | Road nodes (100k × ~128 B) | 12 MB |
 | Agent SoA (1M × ~120 B) | 120 MB |
-| HPA* abstract graph | ~10 MB |
+| Agent speed field (1M × 4 B, added by IDM) | 4 MB |
+| CCH contracted graph (shortcuts + elimination tree) | ~20–30 MB |
 | Road mesh VRAM (50k edges) | ~144 MB VRAM |
 
-**Bandwidth note**: 3 environmental grids at 2000² = 48 MB of memory traffic per tick. At 10 ticks/s this approaches practical DDR4 bandwidth. Coarsening to 500² is mandatory before raising tick rates.
+**Bandwidth note**: 3 environmental grids at 500² = 3 MB of memory traffic per diffusion pass. At 10 ticks/s this is well within DDR4 bandwidth. The remaining allocation concern is the per-tick `grid.clone()` (~1 MB each); see B18.
 
 ---
 

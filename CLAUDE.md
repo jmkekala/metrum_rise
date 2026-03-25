@@ -68,16 +68,25 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 
 ## Bugs and Backlog
 
-See `docs/project.md` for the full list of known bugs (with severity), the v0.01 blocker checklist, and the feature backlog through v1.0. Keep that file up to date as work progresses — it is the single source of truth for project state.
+`docs/project.md` is the **single source of truth** for the current state of the codebase. It must be kept accurate at all times. Update it whenever:
+
+- **A bug is fixed** — remove the entry from the Known Bugs table entirely. Do not leave it in with a "fixed" note.
+- **A backlog item is implemented** — move it from the Backlog section into Implemented Systems with an accurate description of what was built.
+- **A system's behaviour changes** — update the relevant Implemented Systems entry. Stale descriptions are as harmful as missing ones.
+- **A new bug is discovered** — add it to Known Bugs with a severity tag and the exact file/function where the root cause lives.
+- **A new backlog item is identified** — add it to the appropriate milestone section with complexity and dependency notes.
 
 Do not introduce workarounds that mask known bugs. Fix the root cause and remove the entry from the bug table.
 
+`docs/project.md` has a milestone structure: **v0.01 Blockers** (must fix before tagging), **v0.01 Goals** (quality targets including the multi-modal transport foundation), **v0.1** (100k-agent feature milestone), **v0.2** (250k–500k agent scaling baseline + first new transport mode), **v1.0** (1M-agent target). Backlog items belong in the earliest milestone where they become necessary — do not defer performance-critical items to a later milestone just because they are not yet visibly broken.
+
 ## Documentation Practices
 
-- **All project state lives in `docs/project.md`** — the single source of truth for what is implemented, what is broken, and what is planned. Update it when implementing features, fixing bugs, or adding backlog items.
-- **Do not create additional `*.md` files in `docs/`** unless they are truly standalone references (e.g., a formal algorithm specification that `project.md` links to). Default is to edit `project.md`.
+- **`docs/project.md`** — single source of truth for what is implemented, what is broken, and what is planned. Update it as described above. It must reflect the actual state of the code, not an aspirational state.
+- **`docs/analysis.md`** — contains the detailed algorithmic and data-structure analysis: which technologies were selected, why, what alternatives exist, and how each system scales toward 1M agents. It also documents the multi-modal transport compatibility analysis (bicycles, buses, taxis, trains, ships, airplanes). **Update `docs/analysis.md` only when explicitly requested** — it is a reference document, not a living log. When updated, it should be re-exported to `docs/analysis.pdf` via `pandoc docs/analysis.md -o docs/analysis.pdf --pdf-engine=xelatex`.
+- **Do not create additional `*.md` files in `docs/`** unless they are truly standalone references that `project.md` links to. Default is to edit `project.md`.
 - **Do not create standalone `*.md` files outside `docs/`** (except `CLAUDE.md` and `README`).
-- **Severity tags in `docs/project.md`**: `[BLOCKER]` = must fix before v0.01, `[BUG]` = correctness failure fix in v0.01, `[v0.01]` = strong v0.01 target, `[v0.1]` / `[v1.0]` = later milestones. Use these consistently.
+- **Severity tags in `docs/project.md`**: `[BLOCKER]` = must fix before v0.01, `[BUG]` = correctness failure, `[v0.01]` / `[v0.1]` / `[v0.2]` / `[v1.0]` = milestone targets. Use these consistently.
 - When a bug is fixed, remove it from the Known Bugs table. When a backlog item ships, move it to Implemented Systems.
 
 ## AI Behaviour Guidelines

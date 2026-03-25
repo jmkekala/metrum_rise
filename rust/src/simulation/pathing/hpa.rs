@@ -8,12 +8,12 @@
 //! respecting turn restrictions. The resulting inter-node costs are stored as
 //! [`AbstractEdge`]s in [`HpaGraph::abstract_edges`].
 //!
-//! **Query phase** ([`HpaGraph::find_path`]): **currently broken** — the pre-built
-//! abstract graph is ignored and a full A* is run on the concrete graph instead.
-//! Fix required before v0.01: route long-distance queries through the abstract graph,
-//! falling back to local A* only within the source and destination chunks.
-//!
-//! The build phase is correct and should not be modified until the query phase is fixed.
+//! **Query phase** ([`HpaGraph::find_path`]): same-chunk queries use `local_concrete_search`
+//! directly. Cross-chunk queries run in three phases: (A) local boundary search from start,
+//! (B) backward local boundary search from end, (C) A* over `abstract_edges` connecting the
+//! two boundary sets. The concrete path is reconstructed by stitching the start connection,
+//! abstract inner paths, and end connection. The heuristic divisor is `max_v`, precomputed
+//! from the maximum edge speed limit during [`HpaGraph::build`].
 
 use crate::simulation::network::graph::TransitGraph;
 use crate::simulation::network::types::TransitType;
