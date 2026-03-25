@@ -27,6 +27,14 @@ impl TransitRenderer for RoadRenderer {
         let _hw = (terrain.width as f32 - 1.0) * 0.5;
         let _hh = (terrain.height as f32 - 1.0) * 0.5;
 
+        // 0. Transition Graph Adjacency (B_BRIDGE5)
+        let mut node_to_edges = vec![Vec::new(); graph.nodes.len()];
+        for (e_idx, edge) in graph.edges.iter().enumerate() {
+            if edge.deleted || (edge.primary_type != TransitType::Road && edge.primary_type != TransitType::Foot) { continue; }
+            node_to_edges[graph.get_valid_node(edge.start_node) as usize].push((e_idx, edge));
+            node_to_edges[graph.get_valid_node(edge.end_node) as usize].push((e_idx, edge));
+        }
+
         // 0. Connection mapping and Miter calculation
         let mut connection_counts = HashMap::new();
         let mut node_dirs: HashMap<u32, Vec<(usize, Vector2)>> = HashMap::new();
@@ -320,13 +328,33 @@ impl TransitRenderer for RoadRenderer {
                 let hw = edge.width * 0.5 + config::SIDEWALK_WIDTH;
                 let thickness = 1.0;
                 let deck_color = Color::from_rgb(0.3, 0.3, 0.31);
-                let concrete_color = Color::from_rgb(0.5, 0.5, 0.5);
-
+                let concrete_color = Color::from_rgba(0.9, 0.9, 0.9, 1.0);
+                
+                let mut dist_acc = 0.0;
                 let mut dist_acc_pillars = 0.0;
 
                 for i in 0..resampled_count - 1 {
-                    let p0 = edge.physical_geometry[i];
-                    let p1 = edge.physical_geometry[i+1];
+                    let p0_raw = edge.physical_geometry[i];
+                    let p1_raw = edge.physical_geometry[i + 1];
+                    let segment_len = (p1_raw - p0_raw).length();
+                    let segment_start = dist_acc;
+                    let segment_end = dist_acc + segment_len;
+
+                    // Skip if entirely clipped (B_BRIDGE5)
+                    if segment_end <= start_clip || segment_start >= total_len - end_clip {
+                        dist_acc += segment_len;
+                        continue;
+                    }
+
+                    // Clip the segment
+                    let mut t0 = 0.0f32;
+                    let mut t1 = 1.0f32;
+                    if segment_start < start_clip { t0 = (start_clip - segment_start) / segment_len; }
+                    if segment_end > total_len - end_clip { t1 = (total_len - end_clip - segment_start) / segment_len; }
+
+                    let p0 = p0_raw + (p1_raw - p0_raw) * t0;
+                    let p1 = p0_raw + (p1_raw - p0_raw) * t1;
+                    
                     let side0 = point_side_dirs[i];
                     let side1 = point_side_dirs[i+1];
 
@@ -336,7 +364,7 @@ impl TransitRenderer for RoadRenderer {
                     let p0_lb = p0_l - Vector3::UP * thickness; let p0_rb = p0_r - Vector3::UP * thickness;
                     let p1_lb = p1_l - Vector3::UP * thickness; let p1_rb = p1_r - Vector3::UP * thickness;
 
-                    // 1. Sidewalk/Deck structure (as implemented before)
+                    // 1. Sidewalk/Deck structure (Clipped)
                     vertices.push(p0_l); vertices.push(p1_lb); vertices.push(p0_lb);
                     vertices.push(p0_l); vertices.push(p1_l); vertices.push(p1_lb);
                     for _ in 0..6 { normals.push(-side0); colors.push(deck_color); uvs.push(Vector2::ZERO); }
@@ -349,67 +377,71 @@ impl TransitRenderer for RoadRenderer {
                     vertices.push(p0_lb); vertices.push(p0_rb); vertices.push(p1_rb);
                     for _ in 0..6 { normals.push(Vector3::DOWN); colors.push(deck_color); uvs.push(Vector2::ZERO); }
 
-                    // 2. CLEARANCE-BASED ADDITIONS (Item 582)
+                    // 2. CLEARANCE-BASED ADDITIONS (Railings & Walls)
                     let p_mid = p0.lerp(p1, 0.5);
                     let gx = p_mid.x + _hw; let gz = p_mid.z + _hh;
                     let terrain_y = terrain.get_height_interpolated(gx, gz) * crate::config::HEIGHT_SCALE;
                     let clearance = p_mid.y - terrain_y;
 
-                    // RAILINGS (1.2m tall) - Full Length for bridges
-                    let rail_h = 1.2;
-                    let p0_lt = p0_l + Vector3::UP * rail_h; let p0_rt = p0_r + Vector3::UP * rail_h;
-                    let p1_lt = p1_l + Vector3::UP * rail_h; let p1_rt = p1_r + Vector3::UP * rail_h;
+                    // RAILINGS (1.2m tall, 10cm thick)
+                    let rail_h = 1.2; let rail_t = 0.1;
+                    let p0_lo = p0_l + side0 * rail_t; let p1_lo = p1_l + side0 * rail_t; 
+                    let p0_lt = p0_l + Vector3::UP * rail_h; let p1_lt = p1_l + Vector3::UP * rail_h;
+                    let p0_lto = p0_lo + Vector3::UP * rail_h; let p1_lto = p1_lo + Vector3::UP * rail_h;
 
-                    // Left Railing
                     concrete_vertices.push(p0_l); concrete_vertices.push(p1_lt); concrete_vertices.push(p0_lt);
                     concrete_vertices.push(p0_l); concrete_vertices.push(p1_l); concrete_vertices.push(p1_lt);
                     for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    concrete_vertices.push(p0_lo); concrete_vertices.push(p0_lto); concrete_vertices.push(p1_lto);
+                    concrete_vertices.push(p0_lo); concrete_vertices.push(p1_lto); concrete_vertices.push(p1_lo);
+                    for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    concrete_vertices.push(p0_lt); concrete_vertices.push(p1_lt); concrete_vertices.push(p1_lto);
+                    concrete_vertices.push(p0_lt); concrete_vertices.push(p1_lto); concrete_vertices.push(p0_lto);
+                    for _ in 0..6 { concrete_normals.push(Vector3::UP); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
 
-                    // Right Railing
+                    let rail_dir_r = -side0;
+                    let p0_ro = p0_r + rail_dir_r * rail_t; let p1_ro = p1_r + rail_dir_r * rail_t;
+                    let p0_rt = p0_r + Vector3::UP * rail_h; let p1_rt = p1_r + Vector3::UP * rail_h;
+                    let p0_rto = p0_ro + Vector3::UP * rail_h; let p1_rto = p1_ro + Vector3::UP * rail_h;
+
                     concrete_vertices.push(p0_r); concrete_vertices.push(p0_rt); concrete_vertices.push(p1_rt);
                     concrete_vertices.push(p0_r); concrete_vertices.push(p1_rt); concrete_vertices.push(p1_r);
                     for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    concrete_vertices.push(p0_ro); concrete_vertices.push(p1_rto); concrete_vertices.push(p0_rto);
+                    concrete_vertices.push(p0_ro); concrete_vertices.push(p1_ro); concrete_vertices.push(p1_rto);
+                    for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    concrete_vertices.push(p0_rt); concrete_vertices.push(p0_rto); concrete_vertices.push(p1_rto);
+                    concrete_vertices.push(p0_rt); concrete_vertices.push(p1_rto); concrete_vertices.push(p1_rt);
+                    for _ in 0..6 { concrete_normals.push(Vector3::UP); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
 
                     if clearance <= 5.0 {
-                        // SIDE WALLS down to terrain
-                        let p0_lg = Vector3::new(p0_l.x, terrain.get_height_interpolated(p0_l.x + _hw, p0_l.z + _hh) * crate::config::HEIGHT_SCALE, p0_l.z);
-                        let p0_rg = Vector3::new(p0_r.x, terrain.get_height_interpolated(p0_r.x + _hw, p0_r.z + _hh) * crate::config::HEIGHT_SCALE, p0_r.z);
-                        let p1_lg = Vector3::new(p1_l.x, terrain.get_height_interpolated(p1_l.x + _hw, p1_l.z + _hh) * crate::config::HEIGHT_SCALE, p1_l.z);
-                        let p1_rg = Vector3::new(p1_r.x, terrain.get_height_interpolated(p1_r.x + _hw, p1_r.z + _hh) * crate::config::HEIGHT_SCALE, p1_r.z);
+                        let sink = 1.0;
+                        let p0_lg = Vector3::new(p0_l.x, (terrain.get_height_interpolated(p0_l.x + _hw, p0_l.z + _hh) * crate::config::HEIGHT_SCALE) - sink, p0_l.z);
+                        let p0_rg = Vector3::new(p0_r.x, (terrain.get_height_interpolated(p0_r.x + _hw, p0_r.z + _hh) * crate::config::HEIGHT_SCALE) - sink, p0_r.z);
+                        let p1_lg = Vector3::new(p1_l.x, (terrain.get_height_interpolated(p1_l.x + _hw, p1_l.z + _hh) * crate::config::HEIGHT_SCALE) - sink, p1_l.z);
+                        let p1_rg = Vector3::new(p1_r.x, (terrain.get_height_interpolated(p1_r.x + _hw, p1_r.z + _hh) * crate::config::HEIGHT_SCALE) - sink, p1_r.z);
 
-                        // Left Wall
                         concrete_vertices.push(p0_l); concrete_vertices.push(p0_lg); concrete_vertices.push(p1_lg);
                         concrete_vertices.push(p0_l); concrete_vertices.push(p1_lg); concrete_vertices.push(p1_l);
                         for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
-
-                        // Right Wall
                         concrete_vertices.push(p0_r); concrete_vertices.push(p1_rg); concrete_vertices.push(p0_rg);
                         concrete_vertices.push(p0_r); concrete_vertices.push(p1_r); concrete_vertices.push(p1_rg);
                         for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
                     } else {
-                        // PILLARS every 15m
+                        // PILLARS
                         let seg_len = (p1 - p0).length();
                         dist_acc_pillars += seg_len;
                         if dist_acc_pillars >= 15.0 || i == 0 {
                             if i > 0 { dist_acc_pillars = 0.0; }
-                            
-                            let p_w = edge.width * 0.3;
-                            let p_h_top = p_mid.y - thickness;
-                            let p_h_bot = terrain_y;
-                            
-                            // 4-sided column
-                            let c_p0 = p_mid - side0 * (p_w * 0.5); let c_p1 = p_mid + side0 * (p_w * 0.5);
+                            let p_w = edge.width * 0.3; let p_h_top = p_mid.y - thickness; let p_h_bot = terrain_y;
                             let fwd = (p1 - p0).normalized();
+                            let c_p0 = p_mid - side0 * (p_w * 0.5); let c_p1 = p_mid + side0 * (p_w * 0.5);
                             let c_p2 = c_p1 + fwd * p_w; let c_p3 = c_p0 + fwd * p_w;
-                            
                             let verts = [c_p0, c_p1, c_p2, c_p3];
                             for j in 0..4 {
                                 let va = verts[j]; let vb = verts[(j+1)%4];
-                                let va_g = Vector3::new(va.x, p_h_bot, va.z);
-                                let vb_g = Vector3::new(vb.x, p_h_bot, vb.z);
-                                let va_t = Vector3::new(va.x, p_h_top, va.z);
-                                let vb_t = Vector3::new(vb.x, p_h_top, vb.z);
-                                
+                                let va_g = Vector3::new(va.x, p_h_bot, va.z); let vb_g = Vector3::new(vb.x, p_h_bot, vb.z);
+                                let va_t = Vector3::new(va.x, p_h_top, va.z); let vb_t = Vector3::new(vb.x, p_h_top, vb.z);
                                 concrete_vertices.push(va_t); concrete_vertices.push(vb_g); concrete_vertices.push(va_g);
                                 concrete_vertices.push(va_t); concrete_vertices.push(vb_t); concrete_vertices.push(vb_g);
                                 let n = (vb - va).cross(Vector3::UP).normalized();
@@ -417,26 +449,36 @@ impl TransitRenderer for RoadRenderer {
                             }
                         }
                     }
+
+                    // 3. END CAPS (Only at DEAD ENDS, respecting B_BRIDGE5)
+                    let start_deg = *connection_counts.get(&edge.start_node).unwrap_or(&0);
+                    let end_deg = *connection_counts.get(&edge.end_node).unwrap_or(&0);
+                    let is_start_cap = (i == 0) && (t0 == 0.0) && (start_deg == 1);
+                    let is_end_cap = (i == (resampled_count - 2)) && (t1 == 1.0) && (end_deg == 1);
+                    if is_start_cap || is_end_cap {
+                        let fwd = (p1 - p0).normalized();
+                        let (v_l, v_r, v_lb, v_rb, norm) = if is_start_cap {
+                            (p0_l, p0_r, p0_lb, p0_rb, -fwd)
+                        } else {
+                            (p1_l, p1_r, p1_lb, p1_rb, fwd)
+                        };
+                        concrete_vertices.push(v_l); concrete_vertices.push(v_rb); concrete_vertices.push(v_lb);
+                        concrete_vertices.push(v_l); concrete_vertices.push(v_r); concrete_vertices.push(v_rb);
+                        for _ in 0..6 { concrete_normals.push(norm); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    }
+                    dist_acc += segment_len;
                 }
             }
         }
 
-        // 2. Junction meshes
-        // Optimize by pre-building an adjacency list
-        let mut node_to_edges = vec![Vec::new(); graph.nodes.len()];
-        for (e_idx, edge) in graph.edges.iter().enumerate() {
-            if edge.deleted || (edge.primary_type != TransitType::Road && edge.primary_type != TransitType::Foot) { continue; }
-            node_to_edges[graph.get_valid_node(edge.start_node) as usize].push((e_idx, edge));
-            node_to_edges[graph.get_valid_node(edge.end_node) as usize].push((e_idx, edge));
-        }
-
+        // 2. Junction meshes (B_BRIDGE5: skip caps already handled in edge loop)
         for (n_idx, node) in graph.nodes.iter().enumerate() {
             if graph.get_valid_node(n_idx as u32) != n_idx as u32 { continue; }
             let edges_at_node = &node_to_edges[n_idx];
-            if edges_at_node.is_empty() { continue; }
-
             if edges_at_node.len() < 2 { continue; }
             
+            let concrete_color = Color::from_rgba(0.9, 0.9, 0.9, 1.0);
+
             // If all edges connecting here are tunnels, hide the junction mesh
             if edges_at_node.iter().all(|(_, e)| e.class == EdgeClass::Tunnel) {
                 continue;
@@ -447,6 +489,8 @@ impl TransitRenderer for RoadRenderer {
                 inner: Vector3,
                 outer: Vector3,
                 angle: f32,
+                class: EdgeClass,
+                tangent: Vector3,
             }
             let mut j_pts = Vec::new();
 
@@ -487,7 +531,7 @@ impl TransitRenderer for RoadRenderer {
                     let pt_outer = p + side_dir * (sw * side);
                     let da = pt_inner - node.pos;
                     let angle = f32::atan2(da.z, da.x);
-                    j_pts.push(JPoint { e_idx, inner: pt_inner, outer: pt_outer, angle });
+                    j_pts.push(JPoint { e_idx, inner: pt_inner, outer: pt_outer, angle, class: edge.class, tangent });
                 }
             }
 

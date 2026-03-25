@@ -39,4 +39,7 @@ void fragment() {
 	// Note: triplanar normal mapping is complex, using simplified approach here
 	ROUGHNESS = roughness;
 	METALLIC = 0.0;
+	
+	// Fix B_BRIDGE4: Add a small depth bias to prevent Z-fighting with deck edges
+	DEPTH = FRAGCOORD.z - 0.0001;
 }

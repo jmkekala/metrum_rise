@@ -25,9 +25,10 @@ func _ready():
 	_setup_visuals()
 
 func _setup_visuals():
-	# Final mesh container
-	mesh_instance = MeshInstance3D.new()
-	add_child(mesh_instance)
+	# Final mesh container (ONLY RoadTool owns the final mesh)
+	if name == "RoadTool":
+		mesh_instance = MeshInstance3D.new()
+		add_child(mesh_instance)
 	
 	# Blueprint mesh container
 	blueprint_mesh = MeshInstance3D.new()
@@ -179,6 +180,12 @@ static var _road_mat: ShaderMaterial = null
 static var _concrete_mat: ShaderMaterial = null
 
 func update_main_mesh():
+	if name != "RoadTool":
+		var road_tool = get_node_or_null("../RoadTool")
+		if road_tool:
+			road_tool.update_main_mesh()
+		return
+
 	var data = simulation_node.get_road_mesh_data()
 	if not data: return
 	

@@ -57,6 +57,11 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Edge geometry is 3D (`Vec<Vector3>`) — grade-separated roads are natively representable as elevated or depressed polylines. Node snapping uses 3D Euclidean distance, so bridge abutments and underpass nodes with ≥ 2 m vertical separation will not snap together.
 - **`EdgeClass` data model complete**: `Standard | Bridge | Tunnel` enum in `types.rs`; `class: EdgeClass` field on `Edge`; new edges default to `Standard`; `split_edge` copies `class` to the new half-edge. Renderer still assumes all edges are ground-level — bridge deck mesh and tunnel portal mesh generation remain in the backlog (item 27).
 - **R-Tree Spatial Index**: `spatial_edge_rt` replaces the uniform 512m grid for all edge queries. O(log N) insert/delete/query provides tight AABB filtering, zero manual deduplication, and eliminates long-edge false positives.
+- **Bridge & Tunnel Visuals**:
+    - **Structural Geometry**: Automated generation of `EdgeClass::Bridge` deck slabs (1m thick), side walls (sunk 1m into terrain), 10cm thick volumetric railings (1.2m tall), and supporting pillars (every 15m).
+    - **Node Continuity (B_BRIDGE5)**: Bridge structural components (railings, walls, deck) are precisely clipped to the `start_clip`/`end_clip` boundaries. **End caps** (concrete faces) are generated only at dead-end terminations (node degree == 1), ensuring seamless transitions through junctions without internal obstructions.
+    - **Z-Fighting Fix (B_BRIDGE4)**: Resolved flicking on bridge side walls via depth biasing (`DEPTH += -0.0001`) in `concrete.gdshader`.
+    - **Texture Initialization**: Resolved "white road" bug by ensuring `ShaderMaterial` instances are fully prepared before surface assignment.
 
 ### Zoning
 - `simulation/grid/zoning.rs` (470 lines) — edge-aligned zoning cells, 10 m × 10 m.
@@ -162,6 +167,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
     - Validation: warn if bridge endpoints are not at a higher Y than the terrain midpoint; warn if tunnel endpoints are not below the terrain surface.
     - **Side walls** (`road.rs`): for each Bridge edge segment compute `clearance = point.y − terrain.get_height_interpolated(point.xz)`. If clearance ≤ 5 m, generate solid rectangular wall quads on both road edges from road surface down to terrain height at that XZ. Uses a separate mesh surface with a bare concrete material.
     - **Pillars** (`road.rs`): if clearance > 5 m, generate a rectangular 4-sided column every ~15 m of arc length, from terrain Y up to road underside Y. Width scaled to `edge.width * 0.3`. Also generate short railing walls (1.2 m tall) on both road edges for the full length. Same concrete material surface as side walls.
+    - **Bridge junction concrete** (`road.rs`): the junction mesh loop emits no concrete geometry. When any edge at a node is `EdgeClass::Bridge`, the junction has bare asphalt with no guardrails, side walls, or railing continuation. Fix: in the junction loop, after the asphalt fan, iterate the sorted `j_pts` outer ring and emit railing box segments on the concrete surface between consecutive points that belong to bridge edges. Mixed Standard/Bridge junctions (one ground road + one bridge meeting at a node) need partial coverage — only the bridge-side outer perimeter gets railings. Non-trivial due to arbitrary junction valence and mixed edge classes at the same node.
 
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 
