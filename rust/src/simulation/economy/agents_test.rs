@@ -54,7 +54,7 @@ mod tests {
         let hpa = HpaGraph::build(&g);
         
         // Find path for CAR (pedestrian = false)
-        let (_cost, _dist, p) = hpa.find_path(n0, n1, usize::MAX, &g, false).expect("Car should find a path");
+        let (_cost, _dist, p) = hpa.find_path(n0, n1, usize::MAX, &g, TransitFlags::CAR).expect("Car should find a path");
         // Path should be A -> C -> B (nodes 0, 2, 1)
         assert_eq!(p.len(), 3);
         assert_eq!(p[0], n0);
@@ -109,7 +109,7 @@ mod tests {
         let hpa = HpaGraph::build(&g);
         
         // Find path for PEDESTRIAN (pedestrian = true)
-        let (_cost, _dist, p) = hpa.find_path(n0, n1, usize::MAX, &g, true).unwrap();
+        let (_cost, _dist, p) = hpa.find_path(n0, n1, usize::MAX, &g, TransitFlags::FOOT).unwrap();
         // Path should be A -> C -> B (nodes 0, 2, 1) because Road A-B is 1.0 * 10 = 10.0 cost for pedestrians.
         // Walkway A-C-B is 0.5 + 0.5 = 1.0 cost.
         assert_eq!(p.len(), 3);

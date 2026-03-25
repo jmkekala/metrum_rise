@@ -4,6 +4,7 @@ use godot::prelude::*;
 use godot::classes::MultiMesh;
 use crate::nodes::simulation_node::SimulationNode;
 use crate::simulation::grid::zoning::{ZoneType};
+use crate::simulation::network::types::TransitFlags;
 use crate::config::{self, ZONING_DEPTH};
 
 impl SimulationNode {
@@ -234,7 +235,7 @@ impl SimulationNode {
                 
                 let current_pos = get_h(Vector3::new(self.agents.pos_x[i], 0.0, self.agents.pos_y[i]));
                 
-                if let Some((_cost, _dist, path)) = self.transit_network.hpa_graph.find_path(curr, target, usize::MAX, &self.transit_network.graph, false) {
+                if let Some((_cost, _dist, path)) = self.transit_network.hpa_graph.find_path(curr, target, usize::MAX, &self.transit_network.graph, TransitFlags::CAR) {
                     let mut prev_pos = current_pos;
                     for &n in &path {
                         let np = get_h(self.transit_network.graph.nodes[n as usize].pos);

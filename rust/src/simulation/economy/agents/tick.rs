@@ -3,6 +3,7 @@
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::TransitGraph;
+use crate::simulation::network::types::{TransitType, TransitFlags};
 use crate::simulation::pathing::hpa::HpaGraph;
 use godot::prelude::*;
 use rand::Rng;
@@ -24,6 +25,10 @@ impl AgentSystem {
         // 1. Safety Scrub: Building indices are volatile
         for i in 0..self.count {
             if self.home_building[i] != usize::MAX && self.home_building[i] >= allocator.buildings.len() {
+                let h = self.home_building[i];
+                if h < self.home_occupancy.len() {
+                    self.home_occupancy[h] = self.home_occupancy[h].saturating_sub(1);
+                }
                 self.home_building[i] = usize::MAX;
             }
             if self.work_building[i] != usize::MAX && self.work_building[i] >= allocator.buildings.len() {
@@ -203,6 +208,10 @@ impl AgentSystem {
                                         godot_print!("Agent {}: Settled in home {}", i, h);
                                     }
                                     self.home_building[i] = h;
+                                    if h >= self.home_occupancy.len() {
+                                        self.home_occupancy.resize(h + 1, 0);
+                                    }
+                                    self.home_occupancy[h] += 1;
                                     self.target_building[i] = h;
                                     let b = &allocator.buildings[h];
                                     let edge = &graph.edges[b.edge_idx];
@@ -229,7 +238,8 @@ impl AgentSystem {
                         if self.current_edge[i] == usize::MAX {
                             if self.current_path[i].is_empty() {
                                 self.pathfind_count += 1;
-                                if let Some((_, _, path)) = hpa_graph.find_path(self.current_node[i], self.target_node[i], usize::MAX, graph, self.transit_mode[i] == MODE_WALK) {
+                                let allowed_mask = if self.transit_mode[i] == MODE_WALK { TransitFlags::FOOT } else { TransitFlags::CAR };
+                                if let Some((_, _, path)) = hpa_graph.find_path(self.current_node[i], self.target_node[i], usize::MAX, graph, allowed_mask) {
                                     self.current_path[i] = path;
                                     self.current_path_index[i] = 1;
                                 } else {

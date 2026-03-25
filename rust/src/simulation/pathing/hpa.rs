@@ -16,7 +16,7 @@
 //! from the maximum edge speed limit during [`HpaGraph::build`].
 
 use crate::simulation::network::graph::TransitGraph;
-use crate::simulation::network::types::TransitType;
+use crate::simulation::network::types::{TransitType, TransitFlags};
 use super::astar::State;
 use std::collections::{HashMap, BinaryHeap, HashSet};
 
@@ -310,8 +310,8 @@ impl HpaGraph {
     /// Finds a path from `start_raw` to `end_raw` and returns `(time_cost, distance_m, node_sequence)`.
     ///
     /// `start_edge` is the edge the agent is currently traversing (`usize::MAX` if at a bare node).
-    /// If `pedestrian` is `true`, road edges are heavily penalised and one-way restrictions are ignored.
-    pub fn find_path(&self, start_raw: u32, end_raw: u32, start_edge: usize, graph: &TransitGraph, pedestrian: bool) -> Option<(f32, f32, Vec<u32>)> {
+    /// `allowed_mask` is a bitmask of [`TransitFlags`] defining which edge types are navigable.
+    pub fn find_path(&self, start_raw: u32, end_raw: u32, start_edge: usize, graph: &TransitGraph, allowed_mask: u8) -> Option<(f32, f32, Vec<u32>)> {
         let start = graph.get_valid_node(start_raw);
         let end = graph.get_valid_node(end_raw);
 
@@ -324,7 +324,7 @@ impl HpaGraph {
 
         // Path optimization: If start/end in same chunk, use local concrete search
         if start_chunk == end_chunk {
-            return self.local_concrete_search(start, end, start_edge, graph, pedestrian, Some(start_chunk));
+            return self.local_concrete_search(start, end, start_edge, graph, allowed_mask, Some(start_chunk));
         }
 
         // --- Phase A: Start local search ---
@@ -333,7 +333,7 @@ impl HpaGraph {
             results.insert(start, (0.0, 0.0, start_edge, Vec::new()));
             results
         } else {
-            self.local_boundary_search(start, start_edge, start_chunk, graph, pedestrian, false)
+            self.local_boundary_search(start, start_edge, start_chunk, graph, allowed_mask, false)
         };
         if start_borders.is_empty() { return None; }
 
@@ -343,7 +343,7 @@ impl HpaGraph {
             results.insert(end, (0.0, 0.0, usize::MAX, Vec::new()));
             results
         } else {
-            self.local_boundary_search(end, usize::MAX, end_chunk, graph, pedestrian, true)
+            self.local_boundary_search(end, usize::MAX, end_chunk, graph, allowed_mask, true)
         };
         if end_borders.is_empty() { return None; }
 
@@ -378,11 +378,10 @@ impl HpaGraph {
                     // Transit type filtering for abstract edges
                     if let Some(edge_idx) = graph.get_edge_between_nodes(node, abs.target) {
                         let edge = &graph.edges[edge_idx];
-                        if pedestrian {
-                            if (edge.allowed_types & 1) == 0 { continue; }
-                        } else {
-                            if (edge.allowed_types & 2) == 0 || edge.fwd_lanes == 0 { continue; }
-                        }
+                        if (edge.allowed_types & allowed_mask) == 0 { continue; }
+                        
+                        // Cars cannot traverse one-way roads backward (already handled by abstract construction usually, but checked here for safety)
+                        if (allowed_mask & TransitFlags::CAR) != 0 && edge.fwd_lanes == 0 { continue; }
                     }
 
                     let next_cost = cost + abs.cost;
@@ -464,7 +463,7 @@ impl HpaGraph {
     /// Internal: Run concrete A* over a specific chunk or globally (fallback).
     /// 
     /// Used for short-distance paths or intra-chunk routing.
-    fn local_concrete_search(&self, start: u32, end: u32, start_edge: usize, graph: &TransitGraph, pedestrian: bool, chunk: Option<(i32, i32)>) -> Option<(f32, f32, Vec<u32>)> {
+    fn local_concrete_search(&self, start: u32, end: u32, start_edge: usize, graph: &TransitGraph, allowed_mask: u8, _chunk: Option<(i32, i32)>) -> Option<(f32, f32, Vec<u32>)> {
         let mut h = BinaryHeap::new();
         let mut costs: HashMap<(u32, usize), (f32, f32)> = HashMap::new();
         let mut prev: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
@@ -481,13 +480,10 @@ impl HpaGraph {
                 let edge = &graph.edges[out_edge];
                 
                 // Transit type filtering
-                if pedestrian {
-                    if (edge.allowed_types & 1) == 0 { continue; }
-                    if edge.primary_type == crate::simulation::network::types::TransitType::Road {
-                        edge_cost *= 10.0;
-                    }
-                } else {
-                    if (edge.allowed_types & 2) == 0 || edge.fwd_lanes == 0 { continue; }
+                if (edge.allowed_types & allowed_mask) == 0 { continue; }
+                
+                if (allowed_mask & TransitFlags::CAR) != 0 {
+                    if edge.fwd_lanes == 0 { continue; }
                     // Turn restriction check
                     if incoming_edge != usize::MAX && incoming_edge != out_edge {
                         let mut has_any = false;
@@ -502,6 +498,10 @@ impl HpaGraph {
                             }
                         }
                         if has_any && !valid { continue; }
+                    }
+                } else if (allowed_mask & TransitFlags::FOOT) != 0 {
+                    if edge.primary_type == crate::simulation::network::types::TransitType::Road {
+                        edge_cost *= 10.0;
                     }
                 }
                 
@@ -533,7 +533,7 @@ impl HpaGraph {
     /// Internal: Find all abstract nodes reachable within a chunk via local traversal.
     /// 
     /// Returns a map of abstract node IDs to their cost, distance, and the path taken.
-    fn local_boundary_search(&self, start: u32, start_edge: usize, chunk: (i32, i32), graph: &TransitGraph, pedestrian: bool, backward: bool) -> HashMap<u32, (f32, f32, usize, Vec<u32>)> {
+    fn local_boundary_search(&self, start: u32, start_edge: usize, chunk: (i32, i32), graph: &TransitGraph, allowed_mask: u8, backward: bool) -> HashMap<u32, (f32, f32, usize, Vec<u32>)> {
         let mut h = BinaryHeap::new();
         let mut costs: HashMap<(u32, usize), (f32, f32)> = HashMap::new();
         let mut prev: HashMap<(u32, usize), (u32, usize)> = HashMap::new();
@@ -573,13 +573,9 @@ impl HpaGraph {
                 if graph.get_node_chunk(neighbor) != chunk { continue; }
 
                 // Transit type filtering
-                if pedestrian {
-                    if (edge.allowed_types & 1) == 0 { continue; }
-                    if edge.primary_type == crate::simulation::network::types::TransitType::Road {
-                        edge_cost *= 10.0;
-                    }
-                } else {
-                    if (edge.allowed_types & 2) == 0 { continue; }
+                if (edge.allowed_types & allowed_mask) == 0 { continue; }
+
+                if (allowed_mask & TransitFlags::CAR) != 0 {
                     // Note: backward search also checks fwd_lanes vs bkw_lanes implicitly by adj_ref
                     if !backward && edge.fwd_lanes == 0 { continue; }
 
@@ -598,6 +594,10 @@ impl HpaGraph {
                             }
                             if has_any && !valid { continue; }
                         }
+                    }
+                } else if (allowed_mask & TransitFlags::FOOT) != 0 {
+                    if edge.primary_type == crate::simulation::network::types::TransitType::Road {
+                        edge_cost *= 10.0;
                     }
                 }
                 
@@ -697,7 +697,7 @@ mod tests {
         let hpa = HpaGraph::build(&graph);
         
         // Path from 0 to 2 (span chunks 0,0 -> 1,0 -> 1,1)
-        let path_opt = hpa.find_path(0, 2, usize::MAX, &graph, false);
+        let path_opt = hpa.find_path(0, 2, usize::MAX, &graph, TransitFlags::CAR);
         assert!(path_opt.is_some());
         let (cost, dist, sequence) = path_opt.unwrap();
         
@@ -729,11 +729,11 @@ mod tests {
         let hpa = HpaGraph::build(&graph);
         
         // Pedestrian should take the shortcut (0->4->2)
-        let path_p = hpa.find_path(0, 2, usize::MAX, &graph, true).unwrap();
+        let path_p = hpa.find_path(0, 2, usize::MAX, &graph, TransitFlags::FOOT).unwrap();
         assert!(path_p.2.contains(&4));
         
         // Car should NOT take the shortcut (0->3->1->2)
-        let path_c = hpa.find_path(0, 2, usize::MAX, &graph, false).unwrap();
+        let path_c = hpa.find_path(0, 2, usize::MAX, &graph, TransitFlags::CAR).unwrap();
         assert!(!path_c.2.contains(&4));
     }
 
@@ -744,7 +744,7 @@ mod tests {
         
         // Add a new node and edge in a new chunk (1,2)
         let n4 = graph.add_node(Vector3::new(600.0, 0.0, 1200.0), NodeType::Junction); // 4
-        let e3 = graph.add_edge(Edge {
+        let _e3 = graph.add_edge(Edge {
             start_node: 2, end_node: n4,
             primary_type: TransitType::Road, allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             width: 10.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 20.0, base_cost: 30.0,
@@ -759,7 +759,7 @@ mod tests {
         hpa.update_incremental(&graph, &dirty);
         
         // Should now be able to find path from 0 to 4
-        let path = hpa.find_path(0, n4, usize::MAX, &graph, false).expect("Path 0->4 should exist after incremental update");
+        let path = hpa.find_path(0, n4, usize::MAX, &graph, TransitFlags::CAR).expect("Path 0->4 should exist after incremental update");
         assert_eq!(path.2, vec![0, 3, 1, 2, 4]);
     }
 }

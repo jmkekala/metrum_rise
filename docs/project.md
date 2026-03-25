@@ -44,8 +44,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
     - `spatial.rs`: 512 m spatial edge grid and 16 m node grid logic.
     - `topology.rs`: intersection detection, edge splitting, and node merging.
     - `rebuild.rs`: batch remapping, soft-deletion compaction, and intersection clipping.
-    - **Adjacency**: `Vec<Vec<usize>>` indexed by Node ID for O(1) pathfinding lookups (Fix B19).
-- Supported road types: 2-lane standard (10 m total: 7 m asphalt + 1.5 m sidewalk each side).
+    - **Road Network (`TransitGraph`)**: Adjacency-list based directed graph with spatial acceleration. Pathfinding via HPA*. Now supports multi-modal queries via `allowed_mask`.
 - `TransitNetwork` (`network/mod.rs`) — `add_road`, `split_edge`, `merge_nodes`.
 - Topology: intersection detection and edge splitting in `topology.rs`.
 - Road and junction mesh generation in `network/render/road.rs` (405 lines).
@@ -129,7 +128,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
    - `test_cost_calculation_slope_penalty` ✓ exists but only checks that a steep edge costs more — it does **not** verify that the router actually bypasses a steep road in favour of a longer flat route. Add a three-node graph test: `A –(steep)→ B` and `A –(long flat)→ C –(flat)→ B`; assert the router chooses the flat detour.
    - Flow field Dijkstra < 5 ms on a 1,000-node graph: **deferred to v0.2** — cannot be written until flow fields are implemented.
 3. [DONE] **`transit_mode: Vec<u8>` migration** — replace `is_driving: Vec<bool>` in `AgentSystem` SoA with `transit_mode: Vec<u8>` using constants `WALK=0, CAR=1, BIKE=2, BUS_PASSENGER=3, TRAIN_PASSENGER=4, TAXI_PASSENGER=5, SHIP_PASSENGER=6`.
-4. **`allowed_mask: u8` in pathfinding query** — replace the `pedestrian: bool` parameter with `allowed_mask: u8` using the existing `TransitFlags` bit constants (`FOOT=1<<0, CAR=1<<1, BIKE=1<<2, RAIL=1<<3, SHIP=1<<4, AIR=1<<5`). Add `transit_flags: u8` to `Edge`; the query inner loop skips edges incompatible with the agent's mask at zero overhead. Do this now while HPA* is still in place — CCH (item 31) inherits the same `allowed_mask` parameter and `Edge::transit_flags` field unchanged. **This one field addition simultaneously unblocks bicycles, ferries, rail, and air routes — the entire multi-modal backlog depends on it.**
+4. [DONE] **`allowed_mask: u8` in pathfinding query** — replaced `pedestrian: bool` with bitmask filtering (FOOT=1, CAR=2).
 5. **`TransitGraph` mutation tests** — the road editing pipeline has no test coverage. Add tests for:
    - `add_road`: resulting adjacency is bidirectional for a bidirectional edge; node count and edge count increase by expected amounts.
    - `split_edge`: produces two edges whose `physical_length` values sum to the original; both edges share the inserted midpoint node; zoning grid is remapped correctly.
@@ -139,7 +138,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
    - Desirability gate: when grid value < 50.0, no building is spawned regardless of demand.
    - Demand subtraction: after a residential building spawns, `demand.residential` decreases by the expected amount.
    - Occupancy: after placement, all 9 cells of the 3×3 footprint report `is_occupied == true`; after removal, all 9 report false.
-9. **`allowed_mask` pathfinding tests** — to be written when v0.01 goal 4 is implemented. The 9 existing pathfinding tests use `pedestrian: bool`; they must be migrated to `allowed_mask: u8`. Add new tests: `FOOT|BIKE` mask routes onto foot-only edges; `CAR` mask does not; a combined `CAR|FOOT` mask can use either.
+9. [DONE] **`allowed_mask` pathfinding tests** — migrated existing tests to use `TransitFlags` bitmasks.
 10. **`MapConfig` — replace hardcoded map-size constants**: extract `config.rs` map-size constants into a `MapConfig` struct passed at simulation construction time.
     - Fields: `width_m: f32`, `height_m: f32`, `env_cell_m: f32` (environmental grid cell size, default 40 m), `zone_cell_m: f32` (zoning cell size, default 10 m).
     - All `DataGrid` initialisations and grid-dimension calculations read from `MapConfig` instead of `const`. The benchmark mode passes the default 20 km × 20 km config; players can pass any dimensions.

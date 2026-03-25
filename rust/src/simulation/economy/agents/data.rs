@@ -104,6 +104,9 @@ pub struct AgentSystem {
     pub has_car: Vec<bool>,
     /// Running count of pathfinding calls this session, used for benchmark logging.
     pub pathfind_count: u32,
+    /// Cached count of agents living in each building, indexed by building ID.
+    /// Synchronised on spawn/kill/evict. Max 255 agents per building.
+    pub home_occupancy: Vec<u8>,
 }
 
 impl AgentSystem {
@@ -143,6 +146,7 @@ impl AgentSystem {
             journey_start_time: Vec::new(),
             sim_time: 0.0,
             pathfind_count: 0,
+            home_occupancy: Vec::new(),
         }
     }
 
@@ -181,6 +185,14 @@ impl AgentSystem {
         
         self.has_car.push(true); // Immigrants arrive with a car!
         self.count += 1;
+        
+        // Update occupancy cache
+        if home != usize::MAX {
+            if home >= self.home_occupancy.len() {
+                self.home_occupancy.resize(home + 1, 0);
+            }
+            self.home_occupancy[home] += 1;
+        }
         
         self.count - 1
     }
@@ -239,6 +251,7 @@ impl AgentSystem {
         self.sim_time = 0.0;
         self.count = 0;
         self.pathfind_count = 0;
+        self.home_occupancy.clear();
     }
 
     /// Remaps the edge indices stored in all agents from [Old ID] to [New ID].
@@ -320,18 +333,27 @@ impl AgentSystem {
         self.current_path.pop();
         self.current_path_index.pop();
         self.journey_start_time.pop();
+        
+        // Update occupancy cache
+        let home = self.home_building[index];
+        if home != usize::MAX && home < self.home_occupancy.len() {
+            self.home_occupancy[home] = self.home_occupancy[home].saturating_sub(1);
+        }
 
         self.count -= 1;
     }
 
     /// Forcefully removes all agents from a building that has been deleted.
-    pub fn evict_building(&mut self, building_id: usize, allocator: &BuildingAllocator) {
+    pub fn evict_building(&mut self, building_id: usize, _allocator: &BuildingAllocator) {
         for i in 0..self.count {
             if self.work_building[i] == building_id {
                 self.work_building[i] = usize::MAX; // Lose Job
             }
             if self.home_building[i] == building_id {
                 self.home_building[i] = usize::MAX; // Become Homeless
+                if building_id < self.home_occupancy.len() {
+                    self.home_occupancy[building_id] = self.home_occupancy[building_id].saturating_sub(1);
+                }
             }
             if self.current_building[i] == building_id { // Building collapsed while they were inside!
                 self.current_building[i] = usize::MAX;
@@ -354,21 +376,19 @@ impl AgentSystem {
     }
     
     /// Finds a residential or mixed-use building with available vacancy for a new agent.
-    pub fn find_available_home(&self, allocator: &BuildingAllocator) -> Option<usize> {
-        let mut occupancy = vec![0; allocator.buildings.len()];
-        for i in 0..self.count {
-            if self.home_building[i] != usize::MAX && self.home_building[i] < allocator.buildings.len() {
-                occupancy[self.home_building[i]] += 1;
-            }
+    /// Uses the pre-allocated `home_occupancy` cache to avoid O(A) scans.
+    pub fn find_available_home(&mut self, allocator: &BuildingAllocator) -> Option<usize> {
+        if self.home_occupancy.len() < allocator.buildings.len() {
+             self.home_occupancy.resize(allocator.buildings.len(), 0);
         }
         
         for &idx in &allocator.zone_index[ZoneType::Residential as usize] {
-            if occupancy[idx] < 6 {
+            if self.home_occupancy[idx] < 6 {
                 return Some(idx);
             }
         }
         for &idx in &allocator.zone_index[ZoneType::Mixed as usize] {
-            if occupancy[idx] < 6 {
+            if self.home_occupancy[idx] < 6 {
                 return Some(idx);
             }
         }
@@ -405,6 +425,18 @@ impl AgentSystem {
             // 3. Final Clamping
             self.happiness[i] = self.happiness[i].clamp(0.0, 100.0);
             self.money[i] = self.money[i].max(0.0);
+        }
+    }
+
+    /// Re-calculates building occupancy from scratch. Use after building deletions or major state changes.
+    pub fn recalculate_occupancy(&mut self, allocator: &BuildingAllocator) {
+        self.home_occupancy.clear();
+        self.home_occupancy.resize(allocator.buildings.len(), 0);
+        for i in 0..self.count {
+            let h = self.home_building[i];
+            if h != usize::MAX && h < self.home_occupancy.len() {
+                self.home_occupancy[h] += 1;
+            }
         }
     }
 }

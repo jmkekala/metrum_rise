@@ -1,3 +1,8 @@
+//! Network topology management: node/edge creation, splitting, merging, and movement.
+//!
+//! This module handles the structural mutation of the [`TransitGraph`], ensuring that
+//! adjacency lists and spatial indices are kept in sync after every edit.
+
 use godot::prelude::*;
 use super::data::TransitGraph;
 use super::data::Edge;
@@ -6,6 +11,7 @@ use super::super::types::*;
 use std::collections::HashMap;
 
 impl TransitGraph {
+    /// Returns the canonical node ID for a given ID, following any merge aliases.
     pub fn get_valid_node(&self, mut id: u32) -> u32 {
         while let Some(&alias) = self.node_aliases.get(&id) {
             id = alias;
@@ -13,6 +19,7 @@ impl TransitGraph {
         id
     }
 
+    /// Returns the index of the edge connecting two nodes, if one exists.
     pub fn get_edge_between_nodes(&self, from: u32, to: u32) -> Option<usize> {
         if (from as usize) < self.adjacency.len() {
             for &idx in &self.adjacency[from as usize] {
@@ -25,6 +32,7 @@ impl TransitGraph {
         None
     }
 
+    /// Adds a new node to the graph at the specified position.
     pub fn add_node(&mut self, pos: Vector3, node_type: NodeType) -> u32 {
         let id = self.nodes.len() as u32;
         self.nodes.push(Node { pos, node_type, lane_connections: HashMap::new() });
@@ -33,6 +41,7 @@ impl TransitGraph {
         id
     }
 
+    /// Finds an existing node within `threshold` distance or adds a new one.
     pub fn find_or_add_node(&mut self, pos: Vector3, threshold: f32, node_type: NodeType) -> u32 {
         let chunk_coords = Self::get_node_chunk_coords(pos);
         
@@ -52,6 +61,7 @@ impl TransitGraph {
         self.add_node(pos, node_type)
     }
 
+    /// Adds a new edge to the graph and updates adjacency and spatial indices.
     pub fn add_edge(&mut self, mut edge: Edge) -> usize {
         edge.deleted = false;
         let id = self.edges.len();
@@ -66,6 +76,7 @@ impl TransitGraph {
         id
     }
 
+    /// Splits an existing edge at `split_pos`, inserting a new node and returning `(new_node_id, new_edge_id)`.
     pub fn split_edge(&mut self, edge_idx: usize, split_pos: Vector3) -> (u32, usize) {
         let edge = &self.edges[edge_idx];
         let start_pos = self.nodes[edge.start_node as usize].pos;
@@ -242,6 +253,7 @@ impl TransitGraph {
         (new_node_id, new_edge_id)
     }
 
+    /// Calculates the total physical length of a polyline.
     pub fn calculate_length(&self, pts: &[Vector3]) -> f32 {
         let mut l = 0.0;
         for i in 0..pts.len().saturating_sub(1) {
@@ -250,6 +262,7 @@ impl TransitGraph {
         l
     }
 
+    /// Removes a node and merges its two connected edges if they are compatible.
     pub fn remove_node_and_merge_edges(&mut self, node_id: u32) -> Option<(usize, usize)> {
         if node_id as usize >= self.nodes.len() { return None; }
         
@@ -326,6 +339,7 @@ impl TransitGraph {
     }
 
     /// Merges two nodes into one, updating all edges that use them
+    /// Merges two nodes into one, updating all connected edges.
     pub fn unite_nodes(&mut self, id1: u32, id2: u32) {
         if id1 == id2 { return; }
         // Ensure we always map to the ultimate valid parent and don't loop
@@ -369,6 +383,7 @@ impl TransitGraph {
         }
     }
 
+    /// Moves a node to a new position, smoothly deforming all connected edges.
     pub fn move_node(&mut self, node_id: u32, new_pos: Vector3) {
         let old_pos = self.nodes[node_id as usize].pos;
         let delta = new_pos - old_pos;
