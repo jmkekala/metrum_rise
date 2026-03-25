@@ -54,6 +54,25 @@ pub struct BuildingAllocator {
 }
 
 impl BuildingAllocator {
+    /// Remaps all building edge indices after a road network compaction.
+    pub fn update_edge_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+        for b in &mut self.buildings {
+            if let Some(&new_id) = mapping.get(&b.edge_idx) {
+                b.edge_idx = new_id;
+            } else {
+                // Edge was deleted! This building should have been removed by tick(),
+                // but we'll mark it for removal or handle it gracefully if needed.
+                // For now, we keep the index or set to a dummy to avoid out-of-bounds.
+                b.edge_idx = usize::MAX;
+            }
+        }
+        // Remove buildings that now point to deleted edges
+        self.buildings.retain(|b| b.edge_idx != usize::MAX);
+        if self.buildings.len() != self.buildings.len() {
+             self.dirty = true;
+        }
+    }
+
     /// Creates an empty allocator. `_width` and `_height` are reserved for future spatial indexing.
     pub fn new(_width: usize, _height: usize) -> Self {
         Self {

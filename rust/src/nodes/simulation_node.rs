@@ -118,8 +118,11 @@ impl SimulationNode {
         
         // 2. Update Zoning
         self.zoning.update_edge_indices(&mapping);
+
+        // 3. Update Buildings
+        self.allocator.update_edge_indices(&mapping);
         
-        // 3. Rebuild HPA Graph (as its internal cached indices are now invalid)
+        // 4. Rebuild HPA Graph (as its internal cached indices are now invalid)
         self.transit_network.hpa_graph = crate::simulation::pathing::hpa::HpaGraph::build(&self.transit_network.graph);
         
         godot_print!("SimulationNode: Compaction complete. Edge count: {}", self.transit_network.graph.edges.len());
