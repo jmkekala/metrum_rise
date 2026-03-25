@@ -234,13 +234,13 @@ mod tests {
         net.add_road(&mut graph, vec![
             Vector3::new(-10.0, 0.0, 0.0),
             Vector3::new(10.0, 0.0, 0.0),
-        ].into(), 1, 1, false, false, &mut zoning, &mut allocator);
+        ].into(), 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         
         // side road connecting to the middle
         net.add_road(&mut graph, vec![
             Vector3::new(0.0, 0.0, 10.0),
             Vector3::new(0.0, 0.0, 0.0),
-        ].into(), 1, 1, false, false, &mut zoning, &mut allocator);
+        ].into(), 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         
         println!("Graph has {} edges", graph.edges.len());
         for (i, edge) in graph.edges.iter().enumerate() {

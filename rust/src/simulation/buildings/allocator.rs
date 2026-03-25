@@ -8,7 +8,7 @@
 //! **Known issues (see `docs/project.md`):**
 //! - No spawn throttle — can spawn hundreds of buildings per tick (bug B6).
 //! - Desirability is not checked before placement (bug B5).
-//! - Each placement triggers a full HPA* rebuild via `split_for_frontage`.
+//! - Each placement triggers a full CCH rebuild via `split_for_frontage`.
 
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::grid::zoning::{ZoningSystem, ZoneType};
@@ -603,7 +603,7 @@ mod tests {
         let mut network = TransitNetwork::new();
         let mut graph = RegionGraph::new();
         
-        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
+        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
         zoning.recalculate_obstructions(0, &graph);
 
@@ -638,7 +638,7 @@ mod tests {
         let mut network = TransitNetwork::new();
         let mut graph = RegionGraph::new();
         
-        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
+        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         for x in 0..3 { for y in 0..3 { zoning.set_cell(0, 1, x, y, ZoneType::Residential); } }
         zoning.recalculate_obstructions(0, &graph);
 
@@ -667,7 +667,7 @@ mod tests {
         let mut network = TransitNetwork::new();
         let mut graph = RegionGraph::new();
         
-        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, &mut zoning, &mut allocator);
+        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, true, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         
         allocator.buildings.push(Building {
             center_x: 5.0, center_y: 10.0, width: 30, depth: 30,

@@ -21,14 +21,14 @@ mod tests {
         network.add_road(
             &mut graph,
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            2, 2, true, true, &mut zoning, &mut allocator
+            2, 2, true, true, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator
         );
 
         // 2. Add Road B (Index 1)
         network.add_road(
             &mut graph,
             vec![Vector3::new(0.0, 0.0, 50.0), Vector3::new(100.0, 0.0, 50.0)],
-            2, 2, true, true, &mut zoning, &mut allocator
+            2, 2, true, true, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator
         );
 
         assert_eq!(graph.edges.len(), 2);

@@ -85,3 +85,109 @@ impl NoiseSystem {
         });
     }
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::types::{NodeType, EdgeClass, TransitFlags, TransitType};
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn test_noise_emission_and_diffusion() {
+        let config = MapConfig::default();
+        let mut noise = NoiseSystem::new(&config);
+        let allocator = BuildingAllocator::new();
+        let mut graph = RegionGraph::new();
+
+        // 1. Create a road edge (50m long) near center
+        let n1 = graph.add_node(Vector3::new(-25.0, 0.0, 0.0), NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(crate::simulation::network::graph::Edge {
+            start_node: n1, end_node: n2,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            width: 10.0, class: EdgeClass::Standard,
+            fwd_lanes: 1, bkw_lanes: 1,
+            speed_limit: 50.0, // Should emit '1.0' units
+            base_cost: 0.0, physical_length: 50.0, current_congestion: 0.0,
+            start_clip: 0.0, end_clip: 0.0,
+            geometry: vec![Vector3::new(-25.0, 0.0, 0.0), Vector3::ZERO, Vector3::new(25.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(-25.0, 0.0, 0.0), Vector3::ZERO, Vector3::new(25.0, 0.0, 0.0)],
+            zoning_left: false, zoning_right: false, deleted: false,
+        });
+
+        // 2. Tick once - source cells should be positive
+        noise.tick(&allocator, &graph, &config);
+        
+        // Find center cell (0,0) world -> middle of grid
+        let (w, h) = config.get_env_grid_size();
+        let cx = w / 2; let cy = h / 2;
+        let source_val = *noise.grid.get(cx, cy).unwrap();
+        assert!(source_val > 0.0, "Road should emit noise at its nodes/points");
+
+        // 3. Tick multiple times for diffusion
+        for _ in 0..10 {
+            noise.tick(&allocator, &graph, &config);
+        }
+
+        // Verify diffusion 5 cells away
+        let diffused_val = *noise.grid.get(cx + 5, cy).unwrap();
+        assert!(diffused_val > 0.0, "Noise should diffuse 5 cells away after 10 ticks");
+        assert!(!diffused_val.is_infinite() && !diffused_val.is_nan(), "Noise values must be finite");
+
+        // 4. Test Decay: remove road and observe values dropping
+        graph.edges[0].deleted = true;
+        let prev_sum: f32 = noise.grid.data.iter().sum();
+        
+        for _ in 0..20 {
+            noise.tick(&allocator, &graph, &config);
+        }
+        
+        let final_sum: f32 = noise.grid.data.iter().sum();
+        assert!(final_sum < prev_sum * 0.5, "Total noise should decay significantly after source is removed");
+    }
+
+    #[test]
+    fn test_noise_speed_sensitivity() {
+        let config = MapConfig::default();
+        let mut noise_low = NoiseSystem::new(&config);
+        let mut noise_high = NoiseSystem::new(&config);
+        let allocator = BuildingAllocator::new();
+        
+        let mut graph_low = RegionGraph::new();
+        let mut graph_high = RegionGraph::new();
+        
+        let n1_l = graph_low.add_node(Vector3::ZERO, NodeType::Junction);
+        let n2_l = graph_low.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+        graph_low.add_edge(crate::simulation::network::graph::Edge {
+            start_node: n1_l, end_node: n2_l,
+            speed_limit: 40.0, // Low speed
+            primary_type: TransitType::Road, allowed_types: TransitFlags::CAR, width: 10.0, class: EdgeClass::Standard, 
+            fwd_lanes: 1, bkw_lanes: 1, base_cost: 0.0, physical_length: 10.0, current_congestion: 0.0,
+            start_clip: 0.0, end_clip: 0.0, geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)], zoning_left: false, zoning_right: false, deleted: false,
+        });
+
+        let n1_h = graph_high.add_node(Vector3::ZERO, NodeType::Junction);
+        let n2_h = graph_high.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+        graph_high.add_edge(crate::simulation::network::graph::Edge {
+            start_node: n1_h, end_node: n2_h,
+            speed_limit: 100.0, // High speed
+            primary_type: TransitType::Road, allowed_types: TransitFlags::CAR, width: 10.0, class: EdgeClass::Standard, 
+            fwd_lanes: 1, bkw_lanes: 1, base_cost: 0.0, physical_length: 10.0, current_congestion: 0.0,
+            start_clip: 0.0, end_clip: 0.0, geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)], zoning_left: false, zoning_right: false, deleted: false,
+        });
+
+        noise_low.tick(&allocator, &graph_low, &config);
+        noise_high.tick(&allocator, &graph_high, &config);
+
+        let (w, h) = config.get_env_grid_size();
+        let val_low = noise_low.grid.get(w/2, h/2).unwrap();
+        let val_high = noise_high.grid.get(w/2, h/2).unwrap();
+        
+        assert!(*val_high > *val_low, "High speed road should emit more noise than low speed road");
+    }
+}

@@ -45,7 +45,14 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
     - `topology.rs`: intersection detection, edge splitting, and node merging.
     - `rebuild.rs`: batch remapping, soft-deletion compaction, and intersection clipping.
     - **Road Network (`RegionGraph`)**: Adjacency-list based directed graph with spatial acceleration via `rstar::RTree<EdgeEntry>` spatial index (Item 24). Pathfinding via Customizable Contraction Hierarchies (CCH). Supports multi-modal queries via `allowed_mask`.
-- `EdgeClass::Bridge` and `EdgeClass::Tunnel` support (Item 26). Zoning is automatically disabled for non-standard edges; obstruction checks now handle vertical clearance between bridges and ground-level zoning.
+- **Bridge & Tunnel Infrastructure (Item 27)**:
+    - **Structural Geometry**: Automated generation of `EdgeClass::Bridge` deck structural slabs (1m thick), vertical side walls with terrain grounding (1m sink), 10cm thick volumetric railings (1.2m tall), and supporting pillars (every 15m).
+    - **Node Continuity (B_BRIDGE5)**: Bridge structural components (railings, walls, deck) are precisely clipped to the `start_clip`/`end_clip` boundaries. **End caps** (concrete faces) are generated only at dead-end terminations (node degree == 1), ensuring seamless transitions through junctions without internal obstructions.
+    - **Junction Continuity**: Structural concrete railings and floor slabs now wrap through intersections, providing a continuous architectural profile across the network.
+    - **Tunnel Portals**: `EdgeClass::Tunnel` hide the road mesh between portals and generate solid entrance geometry at endpoints.
+    - **Editor Integration**: Real-time `EdgeClass` promotion via the `Inspect` tool and dedicated `Bridge` button. Includes validation warnings for invalid terrain clearances.
+    - **Shading**: Depth-biased concrete materials to eliminate Z-fighting on structural faces.
+    - **Texture Initialization**: Resolved "white road" initialization bug by ensuring `ShaderMaterial` instances are fully prepared before surface assignment.
 - **`RegionGraph` rename** — `TransitGraph` renamed to `RegionGraph`; struct is now globally owned in `SimulationNode`, not city-scoped. All call sites updated. Prerequisite for CCH (item 31b/c).
 - `TransitNetwork` (`network/mod.rs`) — `add_road`, `split_edge`, `merge_nodes`.
 - **Pathfinding (CCH)**: `simulation/pathing/cch.rs` implements a Customizable Contraction Hierarchy with O(E) metric customization and bidirectional upward Dijkstra. Replaces HpaGraph for all agent routing.
@@ -55,13 +62,8 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Soft deletion with compaction: edges marked `deleted = true`; `compact_edges()` removes them and remaps all indices (agents, zoning, routing graph).
 - Lane types and one-way rules in `network/types.rs`.
 - Edge geometry is 3D (`Vec<Vector3>`) — grade-separated roads are natively representable as elevated or depressed polylines. Node snapping uses 3D Euclidean distance, so bridge abutments and underpass nodes with ≥ 2 m vertical separation will not snap together.
-- **`EdgeClass` data model complete**: `Standard | Bridge | Tunnel` enum in `types.rs`; `class: EdgeClass` field on `Edge`; new edges default to `Standard`; `split_edge` copies `class` to the new half-edge. Renderer still assumes all edges are ground-level — bridge deck mesh and tunnel portal mesh generation remain in the backlog (item 27).
+- **`EdgeClass` data model complete**: `Standard | Bridge | Tunnel` enum in `types.rs`; `class: EdgeClass` field on `Edge`; new edges default to `Standard`; `split_edge` copies `class` to the new half-edge.
 - **R-Tree Spatial Index**: `spatial_edge_rt` replaces the uniform 512m grid for all edge queries. O(log N) insert/delete/query provides tight AABB filtering, zero manual deduplication, and eliminates long-edge false positives.
-- **Bridge & Tunnel Visuals**:
-    - **Structural Geometry**: Automated generation of `EdgeClass::Bridge` deck slabs (1m thick), side walls (sunk 1m into terrain), 10cm thick volumetric railings (1.2m tall), and supporting pillars (every 15m).
-    - **Node Continuity (B_BRIDGE5)**: Bridge structural components (railings, walls, deck) are precisely clipped to the `start_clip`/`end_clip` boundaries. **End caps** (concrete faces) are generated only at dead-end terminations (node degree == 1), ensuring seamless transitions through junctions without internal obstructions.
-    - **Z-Fighting Fix (B_BRIDGE4)**: Resolved flicking on bridge side walls via depth biasing (`DEPTH += -0.0001`) in `concrete.gdshader`.
-    - **Texture Initialization**: Resolved "white road" bug by ensuring `ShaderMaterial` instances are fully prepared before surface assignment.
 
 ### Zoning
 - `simulation/grid/zoning.rs` (470 lines) — edge-aligned zoning cells, 10 m × 10 m.
@@ -85,7 +87,8 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/grid/desirability.rs` — composite formula: `50 − pollution × 2 − noise × 1.5`, parallelised.
 - All three use `DataGrid<f32>` with dimensions calculated dynamically from `MapConfig` (default 500 × 500 at 20 km); bilinear upsampled for display.
 - `PollutionSystem` and `NoiseSystem` use pre-allocated `swap: DataGrid<f32>` fields; each tick calls `std::mem::swap()` and then clears the target grid with `.fill(0.0)` — hot-path allocation is zero. Correctly isolates new emissions and prevents ghost pollution/noise accumulation from stale buffers.
-- **Unit tests (Item 28)**: Verified diffusion (source spreads to neighbors over time), decay (average grid value decreases after source removal), and stability (all values remain finite) for `PollutionSystem`. `NoiseSystem` benefits from the same architectural fixes.
+- **Unit tests (Item 28)**: Verified diffusion (source spreads to neighbors over time), decay (average grid value decreases after source removal), and stability (all values remain finite) for `PollutionSystem`.
+- **NoiseSystem Unit Tests (Item 28b)**: Verified road-edge emission (high-speed roads emit 4x more noise), diffusion, decay, and stability.
 
 ### Buildings
 - Desirability gate enforced (> 50). Spawn throttle active (max 10 buildings per tick).
@@ -132,6 +135,14 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Results written to `godot/benchmark_results.csv`. Delete the file to reset.
 - Criterion micro-benchmarks: `cd rust && cargo bench` → `target/criterion/`.
 - Memory note: huge-map mode uses ~1 GB+ RAM.
+- **`AgentSystem::tick` baseline (single-threaded, 2026-03-25)**:
+  | Agents | Time/tick | Per-agent |
+  |--------|-----------|-----------|
+  | 1,000 | 5.34 µs | 5.34 ns |
+  | 10,000 | 53.5 µs | 5.35 ns |
+  | 100,000 | 534 µs | 5.34 ns |
+  | 1,000,000 | 5.52 ms | 5.52 ns |
+  Near-perfect O(N). At 1M agents the tick consumes ~33% of a 16.7 ms frame budget single-threaded; Rayon parallelisation (item 19) is the next multiplier.
 
 ---
 
@@ -139,35 +150,18 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
-| B_BENCH1 | `benches/agent_benchmark.rs` | **Stale `HpaGraph` reference — benchmark does not compile.** Still imports `metrum_rise::simulation::pathing::hpa::HpaGraph` and passes `&hpa` to `agents.tick()`, but `HpaGraph` was removed when CCH shipped. Fix: replace `HpaGraph` import and construction with `CchGraph::build(&graph)`, update the `tick` call signature to match. | `[BUG]` |
 
 ---
 
 ## Backlog
 
-### v0.01 Goals — strong targets for v0.01 quality
+### Infrastructure
 
-- Flow field Dijkstra < 5 ms on a 1,000-node graph: **deferred to v0.2** (item 18) — cannot be written until flow fields are implemented.
-
-#### v0.1 Goals
-
-28b. **`NoiseSystem` unit tests** — mirrors item 28 (PollutionSystem). Add a smoke test that ticks `NoiseSystem` with one road edge source: assert the source cell is positive, a cell 5 steps away has a nonzero diffused value, no cell is infinite or NaN, and the average decays after the source is removed. Also verify that a high-speed edge (`speed_limit > 60`) produces a higher source-cell value than a low-speed edge, to catch any regression in the per-point road-noise emission logic.
-
-35. **Stale HPA* references cleanup** — `HpaGraph` was replaced by CCH but several names and comments were not updated:
-    - Rename `TransitNetwork::hpa_dirty_chunks` → `cch_dirty_chunks` in `network/mod.rs` and all call sites (lines ~34, 45, 53, 228, 275, 279, 290, 298).
-    - Update `network/mod.rs` `//!` module header (lines 4, 6): replace "HPA* abstract graph" / "HPA* graph is rebuilt" with CCH equivalents.
-    - Update `mark_point_dirty` doc comment in `network/mod.rs`: "requiring HPA* update" → "requiring CCH rebuild".
-    - Update `buildings/allocator.rs` `//!` header line 11: "full HPA* rebuild" → "full CCH rebuild".
-    - Fix `benches/agent_benchmark.rs` (tracked separately as B_BENCH1).
-
-27. **Bridge and tunnel renderer + editor tool** (`EdgeClass` data model is done — item 26 simulation side complete):
-    - Renderer (`network/render/road.rs` + GDScript): branch on `edge.class` — `Bridge` generates a floating deck mesh at geometry Y elevation (no terrain deformation); `Tunnel` generates portal entrance meshes at both endpoints only, road mesh between portals hidden.
-    - Rust `#[func]` in `simulation_node.rs`: `set_edge_class(edge_idx, class)` — writes `class` field, triggers CCH rebuild for affected edges, signals re-render.
-    - GDScript editor panel: UI action on a selected edge to promote to `Bridge` or `Tunnel`.
-    - Validation: warn if bridge endpoints are not at a higher Y than the terrain midpoint; warn if tunnel endpoints are not below the terrain surface.
-    - **Side walls** (`road.rs`): for each Bridge edge segment compute `clearance = point.y − terrain.get_height_interpolated(point.xz)`. If clearance ≤ 5 m, generate solid rectangular wall quads on both road edges from road surface down to terrain height at that XZ. Uses a separate mesh surface with a bare concrete material.
-    - **Pillars** (`road.rs`): if clearance > 5 m, generate a rectangular 4-sided column every ~15 m of arc length, from terrain Y up to road underside Y. Width scaled to `edge.width * 0.3`. Also generate short railing walls (1.2 m tall) on both road edges for the full length. Same concrete material surface as side walls.
-    - **Bridge junction concrete** (`road.rs`): the junction mesh loop emits no concrete geometry. When any edge at a node is `EdgeClass::Bridge`, the junction has bare asphalt with no guardrails, side walls, or railing continuation. Fix: in the junction loop, after the asphalt fan, iterate the sorted `j_pts` outer ring and emit railing box segments on the concrete surface between consecutive points that belong to bridge edges. Mixed Standard/Bridge junctions (one ground road + one bridge meeting at a node) need partial coverage — only the bridge-side outer perimeter gets railings. Non-trivial due to arbitrary junction valence and mixed edge classes at the same node.
+57. **Realistic agent benchmark** (`benches/agent_benchmark.rs`): current setup places all agents in `IDLE` with no roads, no buildings, and empty paths — the tick exits early for every agent and the measured 5.34 ns/agent reflects iteration cost, not real work. Replace with a setup that exercises the actual hot paths:
+    - Build a real road network (e.g. 5×5 or 10×10 grid) using `RegionGraph` and `TransitNetwork::add_road`.
+    - Place buildings at valid zoning cells in `BuildingAllocator`.
+    - Distribute agents across realistic FSM states: a mix of `ON_ROAD` agents with valid `current_path` and `edge_progression`, `ARRIVING` agents near their destination, and a minority of `IDLE` agents.
+    - Run the benchmark at 1k / 10k / 100k / 1M to get a truthful per-agent cost. Expect 5–20× slower than the current idle-only number. Record new baseline in `docs/project.md` once measured.
 
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 

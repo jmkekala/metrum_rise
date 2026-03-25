@@ -567,7 +567,7 @@ impl PartialOrd for CchState {
 mod tests {
     use super::*;
     use crate::simulation::network::graph::{RegionGraph, Edge, Node};
-    use crate::simulation::network::types::{TransitType, NodeType, TransitFlags};
+    use crate::simulation::network::types::{TransitType, NodeType, TransitFlags, EdgeClass};
     use godot::prelude::Vector3;
     use std::collections::HashMap;
 

@@ -36,7 +36,7 @@ mod tests {
         net.add_road(&mut graph, vec![
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
-        ], 1, 1, true, true, &mut zoning, &mut allocator);
+        ], 1, 1, true, true, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
 
         // Set zoning for residential on the left side (3x3 area)
         let edge_idx = 0;
@@ -89,7 +89,7 @@ mod tests {
         net.add_road(&mut graph, vec![
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
-        ], 1, 1, true, true, &mut zoning, &mut allocator);
+        ], 1, 1, true, true, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
 
         // Spawn building at t=0.15 (near start_node)
         for dx in 0..3 {

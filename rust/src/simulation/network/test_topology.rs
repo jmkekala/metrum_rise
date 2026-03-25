@@ -20,13 +20,13 @@ mod tests {
         let config = MapConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
-        net.add_road(&mut graph, pts, 1, 1, false, false, &mut zoning, &mut allocator);
+        net.add_road(&mut graph, pts, 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         
         // side road connecting near the end (segment 8 of 9)
         net.add_road(&mut graph, vec![
             Vector3::new(8.0, 0.0, 10.0),
             Vector3::new(8.0, 0.0, 0.0),
-        ].into(), 1, 1, false, false, &mut zoning, &mut allocator);
+        ].into(), 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         
         assert!(graph.edges.len() > 0);
     }
@@ -42,13 +42,13 @@ mod tests {
         net.add_road(&mut graph, vec![
             Vector3::new(-100.0, 0.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
-        ], 1, 1, false, false, &mut zoning, &mut allocator);
+        ], 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         
         // super shallow angle road (approx 3 degrees)
         net.add_road(&mut graph, vec![
             Vector3::new(100.0, 0.0, 5.0),
             Vector3::new(0.0, 0.0, 0.0),
-        ], 1, 1, false, false, &mut zoning, &mut allocator);
+        ], 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         
         assert!(graph.edges.len() > 0);
     }
@@ -72,7 +72,7 @@ mod tests {
         let mut allocator = BuildingAllocator::new();
         
         for dir in dirs {
-            net.add_road(&mut graph, vec![dir, Vector3::new(0.0, 0.0, 0.0)], 1, 1, false, false, &mut zoning, &mut allocator);
+            net.add_road(&mut graph, vec![dir, Vector3::new(0.0, 0.0, 0.0)], 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         }
         
         assert!(graph.edges.len() >= 4);
@@ -98,13 +98,13 @@ mod tests {
                 for w in 0..ways-1 {
                     let standard_angle = (w as f32) * (PI * 2.0) / (ways as f32);
                     let dir = Vector3::new(standard_angle.cos() * 100.0, 0.0, standard_angle.sin() * 100.0);
-                    net.add_road(&mut graph, vec![dir, Vector3::new(0.0, 0.0, 0.0)], 1, 1, false, false, &mut zoning, &mut allocator);
+                    net.add_road(&mut graph, vec![dir, Vector3::new(0.0, 0.0, 0.0)], 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
                 }
                 
                 // One extreme sweeper road relative to the 0-degree East road
                 let rad = deg as f32 * PI / 180.0;
                 let dir_extreme = Vector3::new(rad.cos() * 100.0, 0.0, rad.sin() * 100.0);
-                net.add_road(&mut graph, vec![dir_extreme, Vector3::new(0.0, 0.0, 0.0)], 1, 1, false, false, &mut zoning, &mut allocator);
+                net.add_road(&mut graph, vec![dir_extreme, Vector3::new(0.0, 0.0, 0.0)], 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
                 
                 // Verify clips are mathematically bounded securely below the runaway thresholds
                 for edge in graph.edges.iter() {
@@ -126,7 +126,7 @@ mod tests {
         net.add_road(&mut graph, vec![
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(250.0, 0.0, 0.0),
-        ], 1, 1, false, false, &mut zoning, &mut allocator);
+        ], 1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         
         // 250m should be split into 100m, 100m, 50m -> 3 edges
         assert_eq!(graph.edges.len(), 3, "Should have 3 edges for 250m road");
@@ -146,7 +146,7 @@ mod tests {
         net.add_road(&mut graph, vec![
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
-        ], 1, 1, true, true, &mut zoning, &mut allocator);
+        ], 1, 1, true, true, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator);
         
         assert_eq!(graph.edges.len(), 1);
         let old_edge_id = 0;

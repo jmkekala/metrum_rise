@@ -1,18 +1,18 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use metrum_rise::simulation::economy::agents::AgentSystem;
 use metrum_rise::simulation::network::graph::RegionGraph;
-use metrum_rise::simulation::pathing::hpa::HpaGraph;
+use metrum_rise::simulation::pathing::cch::CchGraph;
 use metrum_rise::simulation::buildings::allocator::BuildingAllocator;
 use godot::prelude::Vector3;
 
-fn setup_benchmark(agent_count: usize) -> (AgentSystem, RegionGraph, HpaGraph, BuildingAllocator) {
+fn setup_benchmark(agent_count: usize) -> (AgentSystem, RegionGraph, CchGraph, BuildingAllocator) {
     let mut graph = RegionGraph::new();
-    let hpa = HpaGraph::new(); // Empty for now, simplified
     let allocator = BuildingAllocator::new();
     let mut agents = AgentSystem::new();
 
     // Add at least one node so agents have a valid current_node
     let _n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), metrum_rise::simulation::network::types::NodeType::Junction);
+    let cch = CchGraph::build(&graph);
 
     // Manually populate agents to avoid needing a complex building setup in this isolated bench
     for _ in 0..agent_count {
@@ -49,7 +49,7 @@ fn setup_benchmark(agent_count: usize) -> (AgentSystem, RegionGraph, HpaGraph, B
         agents.count += 1;
     }
 
-    (agents, graph, hpa, allocator)
+    (agents, graph, cch, allocator)
 }
 
 fn bench_agent_tick(c: &mut Criterion) {
@@ -57,9 +57,9 @@ fn bench_agent_tick(c: &mut Criterion) {
 
     for count in [1_000, 10_000, 100_000, 1_000_000].iter() {
         group.bench_with_input(criterion::BenchmarkId::from_parameter(count), count, |b, &count| {
-            let (mut agents, mut graph, hpa, mut allocator) = setup_benchmark(count);
+            let (mut agents, mut graph, cch, mut allocator) = setup_benchmark(count);
             b.iter(|| {
-                agents.tick(black_box(&mut allocator), black_box(&hpa), black_box(&mut graph), black_box(0.016));
+                agents.tick(black_box(&mut allocator), black_box(&cch), black_box(&mut graph), black_box(0.016));
             });
         });
     }

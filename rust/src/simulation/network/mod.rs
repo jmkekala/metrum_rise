@@ -1,9 +1,9 @@
 //! Road network: graph data, topology operations, rendering, and pathfinding integration.
 //!
 //! The public entry point for road edits is [`TransitNetwork`], which manages the
-//! pre-computed HPA* abstract graph and coordinates updates to the [`graph::RegionGraph`].
+//! pre-computed routing hierarchy and coordinates updates to the [`graph::RegionGraph`].
 //! All structural modifications (add, split, merge, remove) go through `TransitNetwork` methods
-//! so that the HPA* graph is rebuilt atomically after each change.
+//! so that the CCH graph is rebuilt atomically after each change.
 //!
 //! **Never modify [`graph::RegionGraph`] directly from outside this module.**
 
@@ -30,8 +30,8 @@ use crate::simulation::pathing::cch::CchGraph;
 pub struct TransitNetwork {
     /// The Customizable Contraction Hierarchy (CCH) graph for global routing.
     pub cch_graph: CchGraph,
-    /// Chunks (512m) that need topology recalculation. If not empty, triggers CCH Phase 1.
-    pub hpa_dirty_chunks: HashSet<(i32, i32)>,
+    /// Chunks (512m) that need topology recalculation. If not empty, triggers CCH Phase 1 rebuild.
+    pub cch_dirty_chunks: HashSet<(i32, i32)>,
     /// Flags that edge costs have changed, requiring CCH Phase 2 (Metric Customization).
     pub metric_dirty: bool,
     /// Edges that need their zoning obstruction cache recalculated.
@@ -42,7 +42,7 @@ impl TransitNetwork {
     pub fn new() -> Self {
         Self {
             cch_graph: CchGraph::new(0),
-            hpa_dirty_chunks: HashSet::new(),
+            cch_dirty_chunks: HashSet::new(),
             metric_dirty: false,
             zoning_dirty_edges: HashSet::new(),
         }
@@ -50,7 +50,7 @@ impl TransitNetwork {
 
     pub fn clear(&mut self, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
         self.cch_graph = CchGraph::new(0);
-        self.hpa_dirty_chunks.clear();
+        self.cch_dirty_chunks.clear();
         self.metric_dirty = false;
         self.zoning_dirty_edges.clear();
         zoning.clear();
@@ -225,7 +225,7 @@ impl TransitNetwork {
 
         // Mark chunks as dirty
         let chunks = graph.get_edge_chunks(edge_id);
-        self.hpa_dirty_chunks.extend(chunks);
+        self.cch_dirty_chunks.extend(chunks);
     }
 
     pub fn generate_mesh_data(&self, graph: &RegionGraph, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData {
@@ -272,11 +272,11 @@ impl TransitNetwork {
 
     pub fn rebuild_pathing(&mut self, graph: &mut RegionGraph) {
         // Topology changes (Phase 1)
-        if !self.hpa_dirty_chunks.is_empty() {
-            // Run compaction as required by 31c Phase 1
+        if !self.cch_dirty_chunks.is_empty() {
+            // Run compaction as required by Phase 1
             graph.compact_edges();
             self.cch_graph = CchGraph::build(graph);
-            self.hpa_dirty_chunks.clear();
+            self.cch_dirty_chunks.clear();
             self.metric_dirty = false; // Phase 1 includes customize
         } else if self.metric_dirty {
             // Metric-only change (Phase 2)
@@ -287,15 +287,15 @@ impl TransitNetwork {
 
     /// Rebuilds the routing hierarchy if it has been marked dirty.
     pub fn rebuild_pathing_if_dirty(&mut self, graph: &mut RegionGraph) {
-        if !self.hpa_dirty_chunks.is_empty() || self.metric_dirty {
+        if !self.cch_dirty_chunks.is_empty() || self.metric_dirty {
             self.rebuild_pathing(graph);
         }
     }
 
-    /// Marks the chunk containing this world-space point as requiring HPA* update.
+    /// Marks the chunk containing this world-space point as requiring CCH rebuild.
     pub fn mark_point_dirty(&mut self, pos: Vector3) {
         let coords = RegionGraph::get_chunk_coords(pos);
-        self.hpa_dirty_chunks.insert(coords);
+        self.cch_dirty_chunks.insert(coords);
     }
 
     fn cleanup_duplicate_edges(&mut self, graph: &mut RegionGraph) {

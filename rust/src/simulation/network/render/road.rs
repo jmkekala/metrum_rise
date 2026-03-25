@@ -389,12 +389,15 @@ impl TransitRenderer for RoadRenderer {
                     let p0_lt = p0_l + Vector3::UP * rail_h; let p1_lt = p1_l + Vector3::UP * rail_h;
                     let p0_lto = p0_lo + Vector3::UP * rail_h; let p1_lto = p1_lo + Vector3::UP * rail_h;
 
+                    // Inner face
                     concrete_vertices.push(p0_l); concrete_vertices.push(p1_lt); concrete_vertices.push(p0_lt);
                     concrete_vertices.push(p0_l); concrete_vertices.push(p1_l); concrete_vertices.push(p1_lt);
                     for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    // Outer face
                     concrete_vertices.push(p0_lo); concrete_vertices.push(p0_lto); concrete_vertices.push(p1_lto);
                     concrete_vertices.push(p0_lo); concrete_vertices.push(p1_lto); concrete_vertices.push(p1_lo);
                     for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    // Top face
                     concrete_vertices.push(p0_lt); concrete_vertices.push(p1_lt); concrete_vertices.push(p1_lto);
                     concrete_vertices.push(p0_lt); concrete_vertices.push(p1_lto); concrete_vertices.push(p0_lto);
                     for _ in 0..6 { concrete_normals.push(Vector3::UP); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
@@ -404,31 +407,38 @@ impl TransitRenderer for RoadRenderer {
                     let p0_rt = p0_r + Vector3::UP * rail_h; let p1_rt = p1_r + Vector3::UP * rail_h;
                     let p0_rto = p0_ro + Vector3::UP * rail_h; let p1_rto = p1_ro + Vector3::UP * rail_h;
 
+                    // Inner face
                     concrete_vertices.push(p0_r); concrete_vertices.push(p0_rt); concrete_vertices.push(p1_rt);
                     concrete_vertices.push(p0_r); concrete_vertices.push(p1_rt); concrete_vertices.push(p1_r);
                     for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    // Outer face
                     concrete_vertices.push(p0_ro); concrete_vertices.push(p1_rto); concrete_vertices.push(p0_rto);
                     concrete_vertices.push(p0_ro); concrete_vertices.push(p1_ro); concrete_vertices.push(p1_rto);
                     for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    // Top face
                     concrete_vertices.push(p0_rt); concrete_vertices.push(p0_rto); concrete_vertices.push(p1_rto);
                     concrete_vertices.push(p0_rt); concrete_vertices.push(p1_rto); concrete_vertices.push(p1_rt);
                     for _ in 0..6 { concrete_normals.push(Vector3::UP); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
 
                     if clearance <= 5.0 {
+                        // SIDE WALLS down to terrain (with 1m sink to prevent floating)
                         let sink = 1.0;
                         let p0_lg = Vector3::new(p0_l.x, (terrain.get_height_interpolated(p0_l.x + _hw, p0_l.z + _hh) * crate::config::HEIGHT_SCALE) - sink, p0_l.z);
                         let p0_rg = Vector3::new(p0_r.x, (terrain.get_height_interpolated(p0_r.x + _hw, p0_r.z + _hh) * crate::config::HEIGHT_SCALE) - sink, p0_r.z);
                         let p1_lg = Vector3::new(p1_l.x, (terrain.get_height_interpolated(p1_l.x + _hw, p1_l.z + _hh) * crate::config::HEIGHT_SCALE) - sink, p1_l.z);
                         let p1_rg = Vector3::new(p1_r.x, (terrain.get_height_interpolated(p1_r.x + _hw, p1_r.z + _hh) * crate::config::HEIGHT_SCALE) - sink, p1_r.z);
 
+                        // Left Wall
                         concrete_vertices.push(p0_l); concrete_vertices.push(p0_lg); concrete_vertices.push(p1_lg);
                         concrete_vertices.push(p0_l); concrete_vertices.push(p1_lg); concrete_vertices.push(p1_l);
                         for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+
+                        // Right Wall
                         concrete_vertices.push(p0_r); concrete_vertices.push(p1_rg); concrete_vertices.push(p0_rg);
                         concrete_vertices.push(p0_r); concrete_vertices.push(p1_r); concrete_vertices.push(p1_rg);
                         for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
                     } else {
-                        // PILLARS
+                        // PILLARS every 15m
                         let seg_len = (p1 - p0).length();
                         dist_acc_pillars += seg_len;
                         if dist_acc_pillars >= 15.0 || i == 0 {
@@ -574,6 +584,55 @@ impl TransitRenderer for RoadRenderer {
                 for _ in 0..6 {
                     normals.push(Vector3::UP);
                     colors.push(Color::from_rgba(1.0, 1.0, 1.0, alpha));
+                }
+
+                // 2b. Bridge Junction Concrete (B_BRIDGE5 Continuation)
+                if !is_mouth && (p1.class == EdgeClass::Bridge || p2.class == EdgeClass::Bridge) {
+                    // Concrete Floor overlay for the sidewalk corner
+                    concrete_vertices.push(p1.inner); concrete_vertices.push(p2.outer); concrete_vertices.push(p2.inner);
+                    concrete_vertices.push(p1.inner); concrete_vertices.push(p1.outer); concrete_vertices.push(p2.outer);
+                    for _ in 0..6 { concrete_normals.push(Vector3::UP); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+
+                    // Bridge Railing & Sideskirts around the junction rim
+                    let dist = (p2.outer - p1.outer).length();
+                    if dist > 0.01 {
+                        let thickness = 1.0;
+                        let p1_b = p1.outer - Vector3::UP * thickness;
+                        let p2_b = p2.outer - Vector3::UP * thickness;
+                        let p1_ib = p1.inner - Vector3::UP * thickness;
+                        let p2_ib = p2.inner - Vector3::UP * thickness;
+                        let center_b = center - Vector3::UP * thickness;
+
+                        // 1. Vertical Side Skirt (The outer edge of the deck slab)
+                        let rim_dir = (p2.outer - p1.outer).normalized();
+                        let rim_norm = rim_dir.cross(Vector3::DOWN).normalized();
+                        
+                        concrete_vertices.push(p1.outer); concrete_vertices.push(p2_b); concrete_vertices.push(p1_b);
+                        concrete_vertices.push(p1.outer); concrete_vertices.push(p2.outer); concrete_vertices.push(p2_b);
+                        for _ in 0..6 { concrete_normals.push(-rim_norm); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+
+                        // 2. Bottom Slab Face (To avoid see-through from below)
+                        concrete_vertices.push(center_b); concrete_vertices.push(p2_ib); concrete_vertices.push(p1_ib);
+                        concrete_vertices.push(p1_ib); concrete_vertices.push(p2_ib); concrete_vertices.push(p2_b);
+                        concrete_vertices.push(p1_ib); concrete_vertices.push(p2_b); concrete_vertices.push(p1_b);
+                        for _ in 0..9 { concrete_normals.push(Vector3::DOWN); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+
+                        // 3. Bridge Railing (The upper part)
+                        let rail_h = 1.2; let rail_t = 0.1;
+                        let p1_rt = p1.outer + Vector3::UP * rail_h; let p2_rt = p2.outer + Vector3::UP * rail_h;
+                        let p1_rto = p1.outer + rim_norm * rail_t + Vector3::UP * rail_h; let p2_rto = p2.outer + rim_norm * rail_t + Vector3::UP * rail_h;
+                        let p1_ro = p1.outer + rim_norm * rail_t; let p2_ro = p2.outer + rim_norm * rail_t;
+
+                        concrete_vertices.push(p1.outer); concrete_vertices.push(p2_rt); concrete_vertices.push(p1_rt);
+                        concrete_vertices.push(p1.outer); concrete_vertices.push(p2.outer); concrete_vertices.push(p2_rt);
+                        for _ in 0..6 { concrete_normals.push(-rim_norm); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                        concrete_vertices.push(p1_rt); concrete_vertices.push(p2_rt); concrete_vertices.push(p2_rto);
+                        concrete_vertices.push(p1_rt); concrete_vertices.push(p2_rto); concrete_vertices.push(p1_rto);
+                        for _ in 0..6 { concrete_normals.push(Vector3::UP); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                        concrete_vertices.push(p1_ro); concrete_vertices.push(p1_rto); concrete_vertices.push(p2_rto);
+                        concrete_vertices.push(p1_ro); concrete_vertices.push(p2_rto); concrete_vertices.push(p2_ro);
+                        for _ in 0..6 { concrete_normals.push(rim_norm); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    }
                 }
             }
         }
