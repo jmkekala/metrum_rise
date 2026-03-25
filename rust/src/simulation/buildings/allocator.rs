@@ -43,6 +43,8 @@ pub struct Building {
     pub cell_x: usize,
     /// Row index (depth from road) of the building's leading cell; always `0` (first row).
     pub cell_y: usize,
+    /// Number of agents currently living in this building.
+    pub occupancy: u8,
 }
 
 /// Manages the full lifecycle of [`Building`]s: placement, removal, and immigrant spawning.
@@ -53,7 +55,12 @@ pub struct BuildingAllocator {
     pub dirty: bool,
     /// Inverted index: `zone_index[ZoneType as usize]` contains building indices (Bug B16).
     pub zone_index: [Vec<usize>; 6],
-    /// If true, the `zone_index` needs to be recalculated.
+    /// Inverted index: `vacancy_index[ZoneType as usize]` contains indices of buildings with occupancy < 6 (Bug B16a).
+    pub vacancy_index: [Vec<usize>; 6],
+    /// Tracks the position of each building in its respective `vacancy_index` list for O(1) removal.
+    /// Indexed by building ID; `usize::MAX` if not in any vacancy list.
+    pub vacancy_pos: Vec<usize>,
+    /// If true, the indices need to be recalculated.
     pub dirty_index: bool,
 }
 
@@ -81,6 +88,8 @@ impl BuildingAllocator {
             buildings: Vec::new(),
             dirty: false,
             zone_index: [const { Vec::new() }; 6],
+            vacancy_index: [const { Vec::new() }; 6],
+            vacancy_pos: Vec::new(),
             dirty_index: true,
         }
     }
@@ -91,6 +100,10 @@ impl BuildingAllocator {
         for list in &mut self.zone_index {
             list.clear();
         }
+        for list in &mut self.vacancy_index {
+            list.clear();
+        }
+        self.vacancy_pos.clear();
         self.dirty = false;
         self.dirty_index = false;
     }
@@ -131,6 +144,13 @@ impl BuildingAllocator {
                         zoning.set_occupied(b_edge_idx, b_side, b_cell_x + dx, b_cell_y + dy, false);
                     }
                 }
+                let last_idx = self.buildings.len() - 1;
+                if i < last_idx {
+                    let mut mapping = std::collections::HashMap::new();
+                    mapping.insert(last_idx, i);
+                    _agents.remap_building_indices(&mapping);
+                }
+                
                 self.buildings.swap_remove(i);
                 self.dirty_index = true;
             } else {
@@ -263,6 +283,7 @@ impl BuildingAllocator {
                             side,
                             cell_x: b_cell_x,
                             cell_y: 0,
+                            occupancy: 0,
                         };
                         // Mark all 9 cells as occupied
                         for dx in 0..3 {
@@ -294,7 +315,7 @@ impl BuildingAllocator {
         // 3. Immigration Logic
         let total_capacity: usize = self.buildings.iter()
             .filter(|b| b.zone_type == ZoneType::Residential || b.zone_type == ZoneType::Mixed)
-            .count() * 6;
+            .fold(0, |acc, b| acc + (6 - b.occupancy as usize));
             
         if _agents.count < total_capacity {
             let demand_factor = (_demand.residential / 100.0).max(0.0).min(1.0);
@@ -357,18 +378,66 @@ impl BuildingAllocator {
         if dist.length() > 1e-6 { dist.normalized() } else { Vector2::new(1.0, 0.0) }
     }
 
-    /// Repopulates the internal zone index (Bug B16 B-linear scan fix).
+    /// Repopulates the internal zone and vacancy indices (Bug B16/B16a fix).
     pub fn rebuild_zone_index(&mut self) {
         for list in &mut self.zone_index {
             list.clear();
         }
+        for list in &mut self.vacancy_index {
+            list.clear();
+        }
+        self.vacancy_pos.clear();
+        self.vacancy_pos.resize(self.buildings.len(), usize::MAX);
+
         for (idx, b) in self.buildings.iter().enumerate() {
             let zi = b.zone_type as usize;
             if zi < 6 {
                 self.zone_index[zi].push(idx);
+                if b.occupancy < 6 {
+                    let v_idx = self.vacancy_index[zi].len();
+                    self.vacancy_index[zi].push(idx);
+                    self.vacancy_pos[idx] = v_idx;
+                }
             }
         }
         self.dirty_index = false;
+    }
+
+    /// Increments occupancy for a building and updates vacancy index if it becomes full. O(1).
+    pub fn claim_vacancy(&mut self, building_idx: usize) {
+        if building_idx >= self.buildings.len() { return; }
+        let b = &mut self.buildings[building_idx];
+        b.occupancy += 1;
+        
+        // If it was in the vacancy list and is now full, remove it
+        if b.occupancy == 6 {
+            let zi = b.zone_type as usize;
+            let v_pos = self.vacancy_pos[building_idx];
+            if v_pos != usize::MAX {
+                let list = &mut self.vacancy_index[zi];
+                let last_b_idx = *list.last().unwrap();
+                list.swap_remove(v_pos);
+                self.vacancy_pos[last_b_idx] = v_pos;
+                self.vacancy_pos[building_idx] = usize::MAX;
+            }
+        }
+    }
+
+    /// Decrements occupancy for a building and updates vacancy index if it gained space. O(1).
+    pub fn release_vacancy(&mut self, building_idx: usize) {
+        if building_idx >= self.buildings.len() { return; }
+        let b = &mut self.buildings[building_idx];
+        b.occupancy = b.occupancy.saturating_sub(1);
+        
+        // If it was full and now has space, add it back to vacancy index
+        if b.occupancy == 5 {
+            let zi = b.zone_type as usize;
+            if self.vacancy_pos[building_idx] == usize::MAX {
+                let v_idx = self.vacancy_index[zi].len();
+                self.vacancy_index[zi].push(building_idx);
+                self.vacancy_pos[building_idx] = v_idx;
+            }
+        }
     }
 
     /// Pick a random building from a specific zone type. O(1).
@@ -403,6 +472,7 @@ impl BuildingAllocator {
 mod tests {
     use super::*;
     use crate::simulation::grid::zoning::ZoneType;
+    use crate::simulation::economy::agents::AgentSystem;
     use godot::prelude::Vector2;
     use rand::SeedableRng;
 
@@ -427,6 +497,7 @@ mod tests {
                 side: 1,
                 cell_x: i,
                 cell_y: 0,
+                occupancy: 0,
             });
         }
         allocator.dirty_index = true;
@@ -448,5 +519,61 @@ mod tests {
         let pick = allocator.get_random_building_by_zone(ZoneType::Commercial, &mut rng);
         assert!(pick.is_some());
         assert_eq!(allocator.buildings[pick.unwrap()].zone_type, ZoneType::Commercial);
+    }
+
+    #[test]
+    fn test_vacancy_index_consistency() {
+        let mut allocator = BuildingAllocator::new(100, 100);
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+        // 1. Add 5 Residential buildings
+        for i in 0..5 {
+            allocator.buildings.push(Building {
+                center_x: i as f32, center_y: 0.0, width: 30, depth: 30,
+                zone_type: ZoneType::Residential, facing_dir: Vector2::new(0.0, 1.0),
+                frontage_t: 0.5, side_offset: 0.0, abandoned_timer: 0,
+                edge_idx: 0, side: 1, cell_x: i, cell_y: 0, occupancy: 0,
+            });
+        }
+        allocator.rebuild_zone_index();
+
+        assert_eq!(allocator.vacancy_index[ZoneType::Residential as usize].len(), 5);
+
+        // 2. Fill one building to capacity
+        allocator.claim_vacancy(0); // 1
+        allocator.claim_vacancy(0); // 2
+        allocator.claim_vacancy(0); // 3
+        allocator.claim_vacancy(0); // 4
+        allocator.claim_vacancy(0); // 5
+        assert_eq!(allocator.vacancy_index[ZoneType::Residential as usize].len(), 5);
+        allocator.claim_vacancy(0); // 6 (Full)
+        
+        assert_eq!(allocator.vacancy_index[ZoneType::Residential as usize].len(), 4);
+        assert!(!allocator.vacancy_index[ZoneType::Residential as usize].contains(&0));
+
+        // 3. Release one spot
+        allocator.release_vacancy(0); // 5
+        assert_eq!(allocator.vacancy_index[ZoneType::Residential as usize].len(), 5);
+        assert!(allocator.vacancy_index[ZoneType::Residential as usize].contains(&0));
+
+        // 4. Test swap_remove integrity in BuildingAllocator::tick
+        // We'll manually simulate the swap logic in tick:
+        // Remove building at index 1, building 4 moves to index 1.
+        let mut agents = AgentSystem::new();
+        // Setup agents to represent occupancy
+        for _ in 0..5 { agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0); }
+        
+        let last_idx = allocator.buildings.len() - 1; // 4
+        let i = 1;
+        let mut mapping = std::collections::HashMap::new();
+        mapping.insert(last_idx, i);
+        agents.remap_building_indices(&mapping); // Not strictly needed for allocator test but good practice
+        
+        allocator.buildings.swap_remove(i);
+        allocator.rebuild_zone_index(); // Rebuild after swap
+
+        assert_eq!(allocator.buildings.len(), 4);
+        assert_eq!(allocator.zone_index[ZoneType::Residential as usize].len(), 4);
+        assert_eq!(allocator.vacancy_index[ZoneType::Residential as usize].len(), 4);
     }
 }

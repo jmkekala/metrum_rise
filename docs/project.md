@@ -65,14 +65,14 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/grid/noise.rs` — traffic noise diffusion, parallelised.
 - `simulation/grid/desirability.rs` — composite formula: `50 − pollution × 2 − noise × 1.5`, parallelised.
 - All three use `DataGrid<f32>` at 500 × 500 resolution (`ENV_GRID_SIZE`); bilinear upsampled for display.
-- **Known allocation issue**: each tick calls `grid.clone()` to produce the read snapshot, allocating ~1 MB per grid. Fix is double-buffering (pre-allocated swap grid). See Backlog.
+- `PollutionSystem` and `NoiseSystem` use pre-allocated `swap: DataGrid<f32>` fields; each tick calls `std::mem::swap()` instead of `clone()` — hot-path allocation is zero. `DesirabilitySystem` computes derived values from the pollution and noise grids directly and never reads from its own previous state, so no swap buffer is needed there.
 
 ### Buildings
 - Desirability gate enforced (> 50). Spawn throttle active (max 10 buildings per tick).
 - Rendered via MultiMesh instancing: one draw call per zone type.
 - Building deletion via swap-remove, O(1).
 - Save/load via `serde_json` — **not yet wired end-to-end**.
-- **Building Index**: Inverted zone-type index (B16) implemented. Agent job/shop lookup is now O(1) random selection. Prerequisite for parallel tick.
+- **Building Index**: Inverted zone-type index (`zone_index: [Vec<usize>; 6]`) and vacancy index (`vacancy_index: [Vec<usize>; 6]`, `vacancy_pos: Vec<usize>`) implemented in `BuildingAllocator`. `find_available_home()` is O(1) random selection from the vacancy index. `claim_vacancy`/`release_vacancy` maintain the index incrementally in O(1); `kill_agent` calls `release_vacancy` before swap-remove. Building deletion triggers a full `rebuild_zone_index()` via `dirty_index`. Prerequisite for parallel tick.
 
 ### Agents
 - `simulation/economy/agents/` (Submodule) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
@@ -122,13 +122,9 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### v0.01 Goals — strong targets for v0.01 quality
 
-1. [DONE] **Split `graph.rs`** (801 lines) into `graph/data.rs`, `graph/spatial.rs`, `graph/topology.rs`, `graph/rebuild.rs`.
 2. **Complete pathfinding unit tests** — two of three originally listed tests now exist; one is missing, one is deferred:
-   - `test_highway_vs_dirt_road_cost` ✓ exists in `pathing/tests.rs`
    - `test_cost_calculation_slope_penalty` ✓ exists but only checks that a steep edge costs more — it does **not** verify that the router actually bypasses a steep road in favour of a longer flat route. Add a three-node graph test: `A –(steep)→ B` and `A –(long flat)→ C –(flat)→ B`; assert the router chooses the flat detour.
    - Flow field Dijkstra < 5 ms on a 1,000-node graph: **deferred to v0.2** — cannot be written until flow fields are implemented.
-3. [DONE] **`transit_mode: Vec<u8>` migration** — replace `is_driving: Vec<bool>` in `AgentSystem` SoA with `transit_mode: Vec<u8>` using constants `WALK=0, CAR=1, BIKE=2, BUS_PASSENGER=3, TRAIN_PASSENGER=4, TAXI_PASSENGER=5, SHIP_PASSENGER=6`.
-4. [DONE] **`allowed_mask: u8` in pathfinding query** — replaced `pedestrian: bool` with bitmask filtering (FOOT=1, CAR=2).
 5. **`TransitGraph` mutation tests** — the road editing pipeline has no test coverage. Add tests for:
    - `add_road`: resulting adjacency is bidirectional for a bidirectional edge; node count and edge count increase by expected amounts.
    - `split_edge`: produces two edges whose `physical_length` values sum to the original; both edges share the inserted midpoint node; zoning grid is remapped correctly.
@@ -138,7 +134,6 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
    - Desirability gate: when grid value < 50.0, no building is spawned regardless of demand.
    - Demand subtraction: after a residential building spawns, `demand.residential` decreases by the expected amount.
    - Occupancy: after placement, all 9 cells of the 3×3 footprint report `is_occupied == true`; after removal, all 9 report false.
-9. [DONE] **`allowed_mask` pathfinding tests** — migrated existing tests to use `TransitFlags` bitmasks.
 10. **`MapConfig` — replace hardcoded map-size constants**: extract `config.rs` map-size constants into a `MapConfig` struct passed at simulation construction time.
     - Fields: `width_m: f32`, `height_m: f32`, `env_cell_m: f32` (environmental grid cell size, default 40 m), `zone_cell_m: f32` (zoning cell size, default 10 m).
     - All `DataGrid` initialisations and grid-dimension calculations read from `MapConfig` instead of `const`. The benchmark mode passes the default 20 km × 20 km config; players can pass any dimensions.
@@ -151,7 +146,6 @@ Feature completion and correctness fixes. Performance tuning is not the focus he
 
 #### v0.1 Blockers — must complete before tagging v0.1
 
-23. [DONE] **Fix B19 — adjacency Vec migration**: convert `adjacency: HashMap<u32, Vec<usize>>` to `Vec<Vec<usize>>` in `TransitGraph`. Direct indexing removes HashMap overhead.
 31. **CCH / CRP implementation** — supersedes HPA* for all long-distance routing:
     - **RegionGraph design**: `TransitGraph` must not be scoped to a single city. Rename or extend it to `RegionGraph`; it is the single graph for all current and future city tiles. Adding a second city later means adding nodes/edges to this graph and triggering a topology rebuild — not creating a separate graph instance. Do this structural rename before building the CCH data structures on top of it.
     - **Topology phase**: compute contraction order (node importance by edge-difference heuristic); add shortcut edges bypassing contracted nodes. Output: an elimination tree and a contracted graph. This phase runs once on full topology rebuild (when roads are added or removed). O(E log E).
@@ -185,11 +179,9 @@ At ~200k agents three independent performance walls converge: (1) the single-thr
 
 The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) install the two-wire harness. v0.2 validates it by shipping bicycle support — the simplest possible new mode (no VehicleSystem, no WAITING state, no timetables). If bicycles work correctly under load, every subsequent mode (taxi, bus, rail) is an incremental addition, not a structural change.
 
-**Implementation order matters.** Items 20 and 19 are mutually dependent: the zone index (20) must exist before the tick can be parallelised (19), because the parallel tick needs atomic vacancy counters that the index maintains. Do 20 first. Item 22 is independent. Item 18 (flow fields) requires 19 to be done first — flow field queries need to run inside the parallel tick loop. Item 25 (IDM) is independent. Item 30 (bicycle) requires v0.01 goals 3 and 4. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete — the `RegionGraph` rename and CCH query are the foundation the region system builds on.
+**Implementation order matters.** Item 19 (parallel tick) depends on the zone index (B16a fix) existing and providing O(1) vacancy lookup — the parallel tick needs atomic vacancy counters that the index maintains. Item 18 (flow fields) requires item 19 to be done first — flow field queries need to run inside the parallel tick loop. Item 25 (IDM) is independent. Item 30 (bicycle) builds on the `transit_mode` and `allowed_mask` infrastructure already in place. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete — the `RegionGraph` rename and CCH query are the foundation the region system builds on.
 
-20. [DONE] **Fix B16 — inverted zone-type index**: add `zone_index: Vec<Vec<usize>>` to `BuildingAllocator`, maintained on every building add/remove. Replaces O(B) linear scan with O(1) index lookup + O(1) random selection. At 500k agents with 50k buildings and a 1% activation rate: eliminates ~2.5 × 10⁸ comparisons/tick.
 19. **Parallelise `AgentSystem::tick`**: remove `&mut TransitGraph` from tick signature (currently unused as mut); switch to `rayon::par_iter_mut` over agent index ranges. Use `AtomicU32` for building vacancy counters (enabled by item 20's index); batch immigration assignments in a post-parallel sequential phase. Prerequisite for all subsequent agent-scale targets.
-22. [DONE] **Fix B18 — env grid double-buffering**: add a `swap: DataGrid<f32>` field to `PollutionSystem`, `NoiseSystem`, and `DesirabilitySystem`. Replace `self.grid.clone()` with a raw `Vec` pointer swap, reducing hot-path allocation to zero. Eliminates 30 MB/s sustained allocator pressure.
 18. **Flow fields for shared destinations**: one reverse Dijkstra from each active destination zone type produces a next-node map of length V. Agents query O(1) instead of running individual CCH queries. Reduces O(A × CCH_cost) to O(M × (V + E) log V) where M ≈ 10–100 active zone types. Retain CCH for immigration and one-off novel destinations. Requires parallel tick (item 19) to be useful — flow field lookup is the O(1) work that fills each parallel agent slot. Add a timing test on completion: Dijkstra from one destination on a 1,000-node graph must complete in < 5 ms (originally listed in v0.01 goals but deferred here until the system exists).
 25. **Car collision — Intelligent Driver Model (IDM)**:
     - Add `speed: Vec<f32>` to `AgentSystem` SoA. Current model uses a hardcoded fixed speed; IDM requires a dynamic per-agent speed state (~4 MB at 1M agents).

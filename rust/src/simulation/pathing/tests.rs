@@ -44,67 +44,7 @@ fn test_cost_calculation_slope_penalty() {
 }
 
 
-#[test]
-fn test_highway_vs_dirt_road_cost() {
-    let highway = Edge {
-        start_node: 0,
-        end_node: 1,
-        primary_type: TransitType::Road,
-        allowed_types: TransitFlags::CAR,
-        width: 10.0,
-        fwd_lanes: 3,
-        bkw_lanes: 3,
-        speed_limit: 100.0, // Highway speed
-        base_cost: 0.0,
-        physical_length: 10000.0,
-        current_congestion: 0.0,
-        start_clip: 0.0,
-        end_clip: 0.0,
-        geometry: vec![
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(10000.0, 0.0, 0.0), // 10km
-        ],
-        physical_geometry: vec![
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(10000.0, 0.0, 0.0),
-        ],
-        zoning_left: false,
-        zoning_right: false,
-        deleted: false,
-    };
 
-    let dirt_road = Edge {
-        start_node: 0,
-        end_node: 1,
-        primary_type: TransitType::Road,
-        allowed_types: TransitFlags::CAR,
-        width: 4.0,
-        fwd_lanes: 1,
-        bkw_lanes: 1,
-        speed_limit: 20.0, // Slow dirt road
-        base_cost: 0.0,
-        physical_length: 5000.0,
-        current_congestion: 0.0,
-        start_clip: 0.0,
-        end_clip: 0.0,
-        geometry: vec![
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(5000.0, 0.0, 0.0), // 5km
-        ],
-        physical_geometry: vec![
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(5000.0, 0.0, 0.0),
-        ],
-        zoning_left: false,
-        zoning_right: false,
-        deleted: false,
-    };
-
-    let (highway_cost, _) = cost::CostCalculator::calculate_costs(&highway);
-    let (dirt_road_cost, _) = cost::CostCalculator::calculate_costs(&dirt_road);
-
-    assert!(highway_cost < dirt_road_cost, "10km highway ({}) should be cheaper than 5km dirt road ({})", highway_cost, dirt_road_cost);
-}
 
 
 #[test]

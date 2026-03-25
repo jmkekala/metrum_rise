@@ -18,17 +18,14 @@ impl AgentSystem {
     /// 2. Activity state transitions (Home -> Work -> Shop).
     /// 3. Pathfinding and movement along road edges.
     /// 4. Arrival and departure logic for buildings.
-    pub fn tick(&mut self, allocator: &BuildingAllocator, hpa_graph: &HpaGraph, graph: &mut TransitGraph, delta: f32) {
+    pub fn tick(&mut self, allocator: &mut BuildingAllocator, hpa_graph: &HpaGraph, graph: &mut TransitGraph, delta: f32) {
         self.sim_time += delta;
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rngs::ThreadRng::default();
         
-        // 1. Safety Scrub: Building indices are volatile
+        // 1. Safety Scrub: Building indices are now remapped during swap_remove in BuildingAllocator
+        // No longer needs an O(A) scan for building existence unless we want to be paranoid.
         for i in 0..self.count {
             if self.home_building[i] != usize::MAX && self.home_building[i] >= allocator.buildings.len() {
-                let h = self.home_building[i];
-                if h < self.home_occupancy.len() {
-                    self.home_occupancy[h] = self.home_occupancy[h].saturating_sub(1);
-                }
                 self.home_building[i] = usize::MAX;
             }
             if self.work_building[i] != usize::MAX && self.work_building[i] >= allocator.buildings.len() {
@@ -37,12 +34,13 @@ impl AgentSystem {
             if self.current_building[i] != usize::MAX && self.current_building[i] >= allocator.buildings.len() {
                 self.current_building[i] = usize::MAX;
                 self.transit[i] = TRANSIT_ARRIVING; // Dump onto street if interior disappears
+                self.is_visible[i] = true;
             }
             if self.target_building[i] != usize::MAX && self.target_building[i] >= allocator.buildings.len() {
-                self.target_building[i] = usize::MAX;
                 if self.home_building[i] != usize::MAX {
                     self.target_building[i] = self.home_building[i];
                 } else {
+                    self.target_building[i] = usize::MAX;
                     self.transit[i] = TRANSIT_ARRIVING;
                 }
             }
@@ -203,16 +201,12 @@ impl AgentSystem {
                         } else if self.current_node[i] == self.target_node[i] && self.current_edge[i] == usize::MAX {
                             // Immigrating or wandering case (no target building)
                             if self.transit[i] == TRANSIT_IMMIGRATING && self.home_building[i] == usize::MAX {
-                                if let Some(h) = self.find_available_home(allocator) {
-                                    if cfg!(not(test)) {
-                                        godot_print!("Agent {}: Settled in home {}", i, h);
-                                    }
-                                    self.home_building[i] = h;
-                                    if h >= self.home_occupancy.len() {
-                                        self.home_occupancy.resize(h + 1, 0);
-                                    }
-                                    self.home_occupancy[h] += 1;
-                                    self.target_building[i] = h;
+                                    if let Some(h) = self.find_available_home(allocator) {
+                                        if cfg!(not(test)) {
+                                            godot_print!("Agent {}: Settled in home {}", i, h);
+                                        }
+                                        self.home_building[i] = h;
+                                        self.target_building[i] = h;
                                     let b = &allocator.buildings[h];
                                     let edge = &graph.edges[b.edge_idx];
                                     self.target_node[i] = if b.frontage_t < 0.5 { edge.start_node } else { edge.end_node };

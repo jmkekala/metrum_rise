@@ -584,7 +584,7 @@ impl INode3D for SimulationNode {
         
         if self.time.speed_multiplier > 0.0 {
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
-            self.agents.tick(&self.allocator, &self.transit_network.hpa_graph, &mut self.transit_network.graph, dt);
+            self.agents.tick(&mut self.allocator, &self.transit_network.hpa_graph, &mut self.transit_network.graph, dt);
             
             let _sub_steps = 2;
             // ... water process logic ...

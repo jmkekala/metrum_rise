@@ -173,7 +173,7 @@ mod tests {
         // Projected distance: 1.0m (< 2.0m)
         
         let hpa = crate::simulation::pathing::hpa::HpaGraph::build(&net.graph);
-        agents.tick(&allocator, &hpa, &mut net.graph, 0.016);
+        agents.tick(&mut allocator, &hpa, &mut net.graph, 0.016);
         
         assert_eq!(agents.transit[agent_idx], TRANSIT_ARRIVING, 
             "Agent should have arrived via projected distance check");
