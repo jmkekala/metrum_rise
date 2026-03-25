@@ -2,7 +2,7 @@
 mod tests {
     use crate::simulation::economy::agents::{AgentSystem, MODE_WALK};
     use crate::simulation::network::graph::{RegionGraph, Edge};
-    use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
+    use crate::simulation::network::types::{TransitType, TransitFlags, NodeType, EdgeClass};
     use crate::simulation::pathing::cch::CchGraph;
     use crate::simulation::economy::demand::DemandSystem;
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
@@ -27,7 +27,7 @@ mod tests {
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             zoning_left: false,
             zoning_right: false,
-            deleted: false,
+            class: EdgeClass::Standard, deleted: false,
         });
 
         // A-C-B is a Road (2 lanes)
@@ -40,7 +40,7 @@ mod tests {
             physical_geometry: vec![Vector3::ZERO, Vector3::new(5.0, 0.0, 10.0)],
             zoning_left: false,
             zoning_right: false,
-            deleted: false,
+            class: EdgeClass::Standard, deleted: false,
         });
         g.add_edge(Edge {
             start_node: n2, end_node: n1,
@@ -51,7 +51,7 @@ mod tests {
             physical_geometry: vec![Vector3::new(5.0, 0.0, 10.0), Vector3::new(10.0, 0.0, 0.0)],
             zoning_left: false,
             zoning_right: false,
-            deleted: false,
+            class: EdgeClass::Standard, deleted: false,
         });
 
         let cch = CchGraph::build(&g);
@@ -82,7 +82,7 @@ mod tests {
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             zoning_left: false,
             zoning_right: false,
-            deleted: false,
+            class: EdgeClass::Standard, deleted: false,
         });
 
         // A-C-B is a Walkway (loop)
@@ -95,7 +95,7 @@ mod tests {
             physical_geometry: vec![Vector3::ZERO, Vector3::new(5.0, 0.0, 1.0)],
             zoning_left: false,
             zoning_right: false,
-            deleted: false,
+            class: EdgeClass::Standard, deleted: false,
         });
         g.add_edge(Edge {
             start_node: n2, end_node: n1,
@@ -106,7 +106,7 @@ mod tests {
             physical_geometry: vec![Vector3::new(5.0, 0.0, 1.0), Vector3::new(10.0, 0.0, 0.0)],
             zoning_left: false,
             zoning_right: false,
-            deleted: false,
+            class: EdgeClass::Standard, deleted: false,
         });
 
         let cch = CchGraph::build(&g);
@@ -160,7 +160,7 @@ mod tests {
             current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)],
-            zoning_left: true, zoning_right: true, deleted: false,
+            zoning_left: true, zoning_right: true, class: EdgeClass::Standard, deleted: false,
         });
 
         let cch = CchGraph::build(&g);

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::simulation::network::graph::{RegionGraph, Edge};
-    use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
+    use crate::simulation::network::types::{TransitType, TransitFlags, NodeType, EdgeClass};
     use godot::prelude::Vector3;
 
     #[test]
@@ -27,6 +27,7 @@ mod tests {
             physical_geometry: vec![],
             zoning_left: false,
             zoning_right: false,
+            class: EdgeClass::Standard,
             deleted: false,
         });
         // Edge 1: Center to Right (0 to +X) (Horizontal Main Road Part 2)
@@ -42,6 +43,7 @@ mod tests {
             physical_geometry: vec![],
             zoning_left: false,
             zoning_right: false,
+            class: EdgeClass::Standard,
             deleted: false,
         });
         // Edge 2: Bot to Center (+Z to 0) (Vertical Road connecting)
@@ -57,6 +59,7 @@ mod tests {
             physical_geometry: vec![],
             zoning_left: false,
             zoning_right: false,
+            class: EdgeClass::Standard,
             deleted: false,
         });
 

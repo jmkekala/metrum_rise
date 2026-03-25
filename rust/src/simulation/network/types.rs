@@ -21,3 +21,10 @@ impl TransitFlags {
 pub enum NodeType {
     Junction, Station, Harbor, Airport, Transfer,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeClass {
+    Standard,
+    Bridge,
+    Tunnel,
+}

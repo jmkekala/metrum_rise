@@ -19,7 +19,8 @@ use godot::prelude::*;
 use std::collections::HashMap;
 use rayon::prelude::*;
 use crate::simulation::core::config::MapConfig;
-use crate::config::ZONING_DEPTH;
+use crate::config::{ZONING_DEPTH, CLEARANCE_THRESHOLD};
+use crate::simulation::network::types::EdgeClass;
 
 /// Land-use category painted onto a zoning grid cell.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -266,6 +267,14 @@ impl ZoningSystem {
 
         // Batch fetch nearby edges for the entire road segment
         let edge = &graph.edges[edge_idx];
+        if edge.class != EdgeClass::Standard {
+            if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
+                grid.left_blocked.fill(true);
+                grid.right_blocked.fill(true);
+            }
+            return;
+        }
+
         let mut min_x = f32::MAX; let mut max_x = f32::MIN;
         let mut min_z = f32::MAX; let mut max_z = f32::MIN;
         for p in &edge.physical_geometry {
@@ -385,6 +394,7 @@ impl ZoningSystem {
         check_pts_with_t.push((center, t_center));
 
         for (pt, t_us) in check_pts_with_t {
+            let my_y = edge.get_y_at_t(t_us);
             let mut closest_competitor_d_sq = f32::MAX;
             let mut asphalt_collision = false;
 
@@ -452,6 +462,13 @@ impl ZoningSystem {
 
                     let proj = p1_2d + seg_vec * t_proj;
                     let d_sq = pt.distance_squared_to(proj);
+
+                    // --- VERTICAL CLEARANCE CHECK ---
+                    // If the other road is a bridge or tunnel at a different level, ignore it.
+                    let other_y = p1.y + (p2.y - p1.y) * t_proj;
+                    if (other_y - my_y).abs() > CLEARANCE_THRESHOLD {
+                        continue;
+                    }
 
                     // A. Road Footprint Collision: Overlapping other road asphalt or sidewalk
                     let hw_other = (e.width * 0.5) + crate::config::SIDEWALK_WIDTH;

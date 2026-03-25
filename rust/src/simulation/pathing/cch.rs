@@ -585,7 +585,7 @@ mod tests {
             width: 10.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 20.0, base_cost: 30.0,
             physical_length: 600.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
             geometry: Vec::new(), physical_geometry: Vec::new(),
-            zoning_left: false, zoning_right: false, deleted: false
+            zoning_left: false, zoning_right: false, class: EdgeClass::Standard, deleted: false
         };
 
         graph.edges = vec![

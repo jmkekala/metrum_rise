@@ -195,6 +195,7 @@ impl TransitNetwork {
             primary_type: if is_walkway { TransitType::Foot } else { TransitType::Road },
             allowed_types,
             width: ((fwd + bkw) as f32 * config::LANE_WIDTH).max(2.0),
+            class: EdgeClass::Standard,
             fwd_lanes: fwd,
             bkw_lanes: bkw,
             speed_limit: 50.0,

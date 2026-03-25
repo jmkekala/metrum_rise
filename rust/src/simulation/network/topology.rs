@@ -3,7 +3,7 @@ use crate::config;
 use godot::prelude::*;
 use super::TransitNetwork;
 use super::graph::Edge;
-use super::types::NodeType;
+use super::types::{NodeType, EdgeClass};
 use super::interaction;
 
 pub fn process_intersections(network: &mut TransitNetwork, graph: &mut crate::simulation::network::graph::RegionGraph, edge_id: usize, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
@@ -138,6 +138,7 @@ pub fn split_edge(network: &mut TransitNetwork, graph: &mut crate::simulation::n
     let current_congestion = old_edge.current_congestion;
     let zoning_left = old_edge.zoning_left;
     let zoning_right = old_edge.zoning_right;
+    let class = old_edge.class;
 
     let old_end_node = graph.edges[edge_id].end_node;
     graph.edges[edge_id].end_node = junction_node_id;
@@ -172,6 +173,7 @@ pub fn split_edge(network: &mut TransitNetwork, graph: &mut crate::simulation::n
         physical_geometry: part2_geo.clone(),
         zoning_left,
         zoning_right,
+        class,
         deleted: false,
     };
     let (cost_new, length_new) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);

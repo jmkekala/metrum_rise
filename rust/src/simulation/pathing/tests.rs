@@ -1,6 +1,6 @@
 use super::*;
 use crate::simulation::network::graph::{RegionGraph, Edge};
-use crate::simulation::network::types::{TransitType, TransitFlags, NodeType};
+use crate::simulation::network::types::{TransitType, TransitFlags, NodeType, EdgeClass};
 use crate::simulation::pathing::cch::CchGraph;
 use godot::prelude::Vector3;
 
@@ -28,7 +28,7 @@ fn test_slope_cost_calculation() {
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
         ],
-        zoning_left: false, zoning_right: false, deleted: false,
+        zoning_left: false, zoning_right: false, class: EdgeClass::Standard, deleted: false,
     };
 
     let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
@@ -68,7 +68,7 @@ fn test_pathing_avoids_steep_slope() {
             Vector3::new(50.0, 50.0, 0.0), 
             Vector3::new(100.0, 0.0, 0.0)
         ],
-        zoning_left: false, zoning_right: false, deleted: false,
+        zoning_left: false, zoning_right: false, class: EdgeClass::Standard, deleted: false,
     };
     let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);
     edge_ab.base_cost = cost_ab;
@@ -84,7 +84,7 @@ fn test_pathing_avoids_steep_slope() {
         physical_length: 0.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
-        zoning_left: false, zoning_right: false, deleted: false,
+        zoning_left: false, zoning_right: false, class: EdgeClass::Standard, deleted: false,
     };
     let (cost_ac, dist_ac) = cost::CostCalculator::calculate_costs(&edge_ac);
     edge_ac.base_cost = cost_ac;
@@ -99,7 +99,7 @@ fn test_pathing_avoids_steep_slope() {
         physical_length: 0.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
         geometry: vec![Vector3::new(50.0, 0.0, 100.0), Vector3::new(100.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(50.0, 0.0, 100.0), Vector3::new(100.0, 0.0, 0.0)],
-        zoning_left: false, zoning_right: false, deleted: false,
+        zoning_left: false, zoning_right: false, class: EdgeClass::Standard, deleted: false,
     };
     let (cost_cb, dist_cb) = cost::CostCalculator::calculate_costs(&edge_cb);
     edge_cb.base_cost = cost_cb;
@@ -141,6 +141,7 @@ fn test_bidirectional_walkway_pathing() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         zoning_left: false,
         zoning_right: false,
+        class: EdgeClass::Standard,
         deleted: false,
     });
 
@@ -184,6 +185,7 @@ fn test_car_uturn_allowed() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         zoning_left: false,
         zoning_right: false,
+        class: EdgeClass::Standard,
         deleted: false,
     });
 
@@ -215,7 +217,7 @@ fn test_car_avoids_walkway_shortcut() {
         width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 10.0,
         physical_length: 100.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
         geometry: vec![], physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 100.0],
-        zoning_left: false, zoning_right: false, deleted: false,
+        zoning_left: false, zoning_right: false, class: EdgeClass::Standard, deleted: false,
     });
     graph.add_edge(Edge {
         start_node: n1, end_node: n2,
@@ -223,7 +225,7 @@ fn test_car_avoids_walkway_shortcut() {
         width: 6.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 10.0,
         physical_length: 100.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
         geometry: vec![], physical_geometry: vec![Vector3::RIGHT * 100.0, Vector3::RIGHT * 200.0],
-        zoning_left: false, zoning_right: false, deleted: false,
+        zoning_left: false, zoning_right: false, class: EdgeClass::Standard, deleted: false,
     });
     
     // Walkway shortcut n0 -> n2 directly
@@ -233,7 +235,7 @@ fn test_car_avoids_walkway_shortcut() {
         width: 2.0, fwd_lanes: 0, bkw_lanes: 0, speed_limit: 10.0, base_cost: 5.0, // Cheaper than road
         physical_length: 200.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
         geometry: vec![], physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 200.0],
-        zoning_left: false, zoning_right: false, deleted: false,
+        zoning_left: false, zoning_right: false, class: EdgeClass::Standard, deleted: false,
     });
     
     let cch = cch::CchGraph::build(&graph);
