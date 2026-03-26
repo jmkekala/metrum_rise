@@ -94,7 +94,7 @@ impl TerrainSystem {
         
         // Linear search for entry/exit or surface intersection
         let mut t = 0.0;
-        let max_dist = 500.0; // Reasonable world limit
+        let max_dist = 10000.0; // Increased from 500 to support high-altitude camera
         let step = 0.5; // Half-meter steps for safety
         
         let mut prev_diff = local_origin.y - self.get_height_interpolated(local_origin.x, local_origin.z) * 20.0;

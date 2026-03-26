@@ -153,10 +153,12 @@ impl SimulationNode {
         1.0 + t * (0.1 - 1.0)
     }
 
-    /// Returns the PackedFloat32Array of 12-float transforms for all visible agents.
+    /// Returns the 12-float transforms for all visible non-car agents (walkers, cyclists, etc.).
+    /// Car agents are excluded — use `get_car_transforms_internal` for those.
     pub fn get_agent_transforms_internal(&self) -> PackedFloat32Array {
+        use crate::simulation::economy::agents::MODE_CAR;
         let mut buffer = Vec::with_capacity(self.agents.count * 12);
-        
+
         let w = self.heightmap.width as f32;
         let h = self.heightmap.height as f32;
         let hw = (w - 1.0) * 0.5;
@@ -164,51 +166,136 @@ impl SimulationNode {
 
         for i in 0..self.agents.count {
             if !self.agents.is_visible[i] { continue; }
-            
+            if self.agents.transit_mode[i] == MODE_CAR { continue; }
+
             let world_x = self.agents.pos_x[i];
             let world_z = self.agents.pos_y[i];
-            
+
             let map_x = (world_x + hw).clamp(0.0, w - 1.0) as usize;
             let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
-            let world_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 1.0;
+            let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 1.0;
+            let world_y = {
+                let eidx = self.agents.current_edge[i];
+                if eidx != usize::MAX && eidx < self.region_graph.edges.len() {
+                    let e = &self.region_graph.edges[eidx];
+                    let prog = (self.agents.edge_progression[i].max(0) as usize)
+                        .min(e.physical_geometry.len().saturating_sub(1));
+                    if !e.physical_geometry.is_empty() {
+                        e.physical_geometry[prog].y + 1.0
+                    } else {
+                        terrain_y
+                    }
+                } else {
+                    terrain_y
+                }
+            };
 
-            let mut scale_x = 1.0;
-            let mut scale_y = 1.0;
-            let mut scale_z = 1.0;
+            buffer.push(1.0_f32); buffer.push(0.0_f32); buffer.push(0.0_f32); buffer.push(world_x);
+            buffer.push(0.0_f32); buffer.push(1.0_f32); buffer.push(0.0_f32); buffer.push(world_y);
+            buffer.push(0.0_f32); buffer.push(0.0_f32); buffer.push(1.0_f32); buffer.push(world_z);
+        }
+
+        PackedFloat32Array::from_iter(buffer)
+    }
+
+    /// Returns the 12-float transforms for all visible car agents, with road-aligned orientation.
+    /// The car mesh is expected to be pre-sized (no scale applied). Origin sits at road surface + 0.1 m.
+    pub fn get_car_transforms_internal(&self) -> PackedFloat32Array {
+        use crate::simulation::economy::agents::MODE_CAR;
+        let mut buffer = Vec::with_capacity(self.agents.count * 12);
+
+        let w = self.heightmap.width as f32;
+        let h = self.heightmap.height as f32;
+        let hw = (w - 1.0) * 0.5;
+        let hh = (h - 1.0) * 0.5;
+
+        for i in 0..self.agents.count {
+            if !self.agents.is_visible[i] { continue; }
+            if self.agents.transit_mode[i] != MODE_CAR { continue; }
+
+            let world_x = self.agents.pos_x[i];
+            let world_z = self.agents.pos_y[i];
+
+            let map_x = (world_x + hw).clamp(0.0, w - 1.0) as usize;
+            let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
+            let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 0.1;
+            let world_y = {
+                let eidx = self.agents.current_edge[i];
+                if eidx != usize::MAX && eidx < self.region_graph.edges.len() {
+                    let e = &self.region_graph.edges[eidx];
+                    let prog = (self.agents.edge_progression[i].max(0) as usize)
+                        .min(e.physical_geometry.len().saturating_sub(1));
+                    if !e.physical_geometry.is_empty() {
+                        e.physical_geometry[prog].y + 0.15
+                    } else {
+                        terrain_y
+                    }
+                } else {
+                    terrain_y
+                }
+            };
+
             let mut basis_x = Vector3::RIGHT;
             let mut basis_y = Vector3::UP;
             let mut basis_z = Vector3::BACK;
 
-            use crate::simulation::economy::agents::MODE_CAR;
-            if self.agents.transit_mode[i] == MODE_CAR {
-                scale_x = 2.0; 
-                scale_y = 1.5; 
-                scale_z = 3.5; 
-                
-                let edge_idx = self.agents.current_edge[i];
-                if edge_idx != usize::MAX && edge_idx < self.region_graph.edges.len() {
-                    let edge = &self.region_graph.edges[edge_idx];
-                    let prog = self.agents.edge_progression[i] as usize;
-                    if edge.physical_geometry.len() >= 2 {
-                        let p1_idx = prog.min(edge.physical_geometry.len() - 2);
-                        let p1 = edge.physical_geometry[p1_idx];
-                        let p2 = edge.physical_geometry[p1_idx + 1];
-                        let mut tangent = (p2 - p1).normalized();
-                        
-                        if self.agents.current_lane[i] < 0 {
-                            tangent = -tangent;
-                        }
-                        
-                        basis_z = -tangent; 
+            use crate::simulation::economy::agents::{TRANSIT_ARRIVING, TRANSIT_DEPARTING};
+            let transit = self.agents.transit[i];
+            let edge_idx = self.agents.current_edge[i];
+
+            if transit == TRANSIT_ARRIVING && edge_idx != usize::MAX && edge_idx < self.region_graph.edges.len() {
+                // Car is peeling off the road toward a building: face perpendicular to the road edge,
+                // on whichever side the agent's current position is relative to the edge centreline.
+                let edge = &self.region_graph.edges[edge_idx];
+                let prog = (self.agents.edge_progression[i].max(0) as usize)
+                    .min(edge.physical_geometry.len().saturating_sub(2));
+                if edge.physical_geometry.len() >= 2 {
+                    let p1 = edge.physical_geometry[prog];
+                    let p2 = edge.physical_geometry[prog + 1];
+                    let tangent = (p2 - p1).normalized();
+                    // Perpendicular in XZ plane (right-hand normal)
+                    let perp = Vector3::new(-tangent.z, 0.0, tangent.x);
+                    // Determine which side of the centreline the agent is on
+                    let to_agent = Vector3::new(world_x - p1.x, 0.0, world_z - p1.z);
+                    let side = if to_agent.dot(perp) >= 0.0 { 1.0_f32 } else { -1.0_f32 };
+                    let facing = perp * side;
+                    basis_z = -facing;
+                    basis_x = Vector3::UP.cross(basis_z).normalized();
+                    basis_y = basis_z.cross(basis_x).normalized();
+                }
+            } else if transit == TRANSIT_DEPARTING {
+                // Car is leaving a building toward the road: face toward the target node.
+                let node_idx = self.agents.current_node[i] as usize;
+                if node_idx < self.region_graph.nodes.len() {
+                    let npos = self.region_graph.nodes[node_idx].pos;
+                    let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
+                    if dir.length_squared() > 1e-6 {
+                        basis_z = -dir.normalized();
                         basis_x = Vector3::UP.cross(basis_z).normalized();
                         basis_y = basis_z.cross(basis_x).normalized();
                     }
                 }
+            } else if edge_idx != usize::MAX && edge_idx < self.region_graph.edges.len() {
+                // Normal on-road movement: align with road tangent.
+                let edge = &self.region_graph.edges[edge_idx];
+                let prog = self.agents.edge_progression[i] as usize;
+                if edge.physical_geometry.len() >= 2 {
+                    let p1_idx = prog.min(edge.physical_geometry.len() - 2);
+                    let p1 = edge.physical_geometry[p1_idx];
+                    let p2 = edge.physical_geometry[p1_idx + 1];
+                    let mut tangent = (p2 - p1).normalized();
+                    if self.agents.current_lane[i] < 0 {
+                        tangent = -tangent;
+                    }
+                    basis_z = -tangent;
+                    basis_x = Vector3::UP.cross(basis_z).normalized();
+                    basis_y = basis_z.cross(basis_x).normalized();
+                }
             }
 
-            buffer.push(basis_x.x * scale_x); buffer.push(basis_y.x * scale_y); buffer.push(basis_z.x * scale_z); buffer.push(world_x);
-            buffer.push(basis_x.y * scale_x); buffer.push(basis_y.y * scale_y); buffer.push(basis_z.y * scale_z); buffer.push(world_y);
-            buffer.push(basis_x.z * scale_x); buffer.push(basis_y.z * scale_y); buffer.push(basis_z.z * scale_z); buffer.push(world_z);
+            buffer.push(basis_x.x); buffer.push(basis_y.x); buffer.push(basis_z.x); buffer.push(world_x);
+            buffer.push(basis_x.y); buffer.push(basis_y.y); buffer.push(basis_z.y); buffer.push(world_y);
+            buffer.push(basis_x.z); buffer.push(basis_y.z); buffer.push(basis_z.z); buffer.push(world_z);
         }
 
         PackedFloat32Array::from_iter(buffer)

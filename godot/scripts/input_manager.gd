@@ -40,7 +40,38 @@ func _ready():
 	# Removed old continuous sculpting polling
 	pass
 
+func _process(delta):
+	_handle_camera_controls(delta)
+
+func _handle_camera_controls(delta):
+	var camera = get_viewport().get_camera_3d()
+	if not camera: return
+	
+	# WASD Panning
+	var pan_dir = Vector3.ZERO
+	if Input.is_key_pressed(KEY_W): pan_dir.z -= 1.0
+	if Input.is_key_pressed(KEY_S): pan_dir.z += 1.0
+	if Input.is_key_pressed(KEY_A): pan_dir.x -= 1.0
+	if Input.is_key_pressed(KEY_D): pan_dir.x += 1.0
+	
+	if pan_dir.length() > 0.0 and camera.has_method("pan"):
+		camera.pan(pan_dir, 1.0, delta)
+		
+	# MMB Orbit
+	if Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE) and camera.has_method("orbit"):
+		var mouse_vel = Input.get_last_mouse_velocity()
+		if mouse_vel.length() > 0.1:
+			camera.orbit(mouse_vel, delta)
+
 func _unhandled_input(event):
+	if event is InputEventMouseButton and event.pressed:
+		var camera = get_viewport().get_camera_3d()
+		if camera and camera.has_method("zoom"):
+			if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+				camera.zoom(1.0)
+			elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+				camera.zoom(-1.0)
+
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_M: _toggle_tool(Tool.MOVE)
@@ -50,7 +81,7 @@ func _unhandled_input(event):
 			KEY_Y: _toggle_tool(Tool.SCULPT)
 			KEY_K: _toggle_tool(Tool.WATER) # Moved from W to avoid WASD overlap
 			KEY_C: _toggle_tool(Tool.CUL_DE_SAC) # Cul-De-Sac (C = Circle/CulDeSac)
-			KEY_S: _toggle_tool(Tool.SELECT)
+			KEY_V: _toggle_tool(Tool.SELECT) # Moved from S to avoid WASD overlap
 			KEY_Z: 
 				if event.ctrl_pressed:
 					_handle_undo()

@@ -302,10 +302,16 @@ impl SimulationNode {
         self.time.current_day
     }
 
-    /// Returns the packed transforms for all visible agents.
+    /// Returns the packed transforms for all visible non-car agents (walkers, cyclists, etc.).
     #[func]
     pub fn get_agent_transforms(&self) -> PackedFloat32Array {
         self.get_agent_transforms_internal()
+    }
+
+    /// Returns the packed transforms for all visible car agents with road-aligned orientation.
+    #[func]
+    pub fn get_car_transforms(&self) -> PackedFloat32Array {
+        self.get_car_transforms_internal()
     }
 
     /// Returns debug path geometry for active agents.
