@@ -266,7 +266,7 @@ func _extract_mesh(root_node: Node, uv_shift: float = 0.0) -> Mesh:
 				var attr = st.commit_to_arrays()
 				var uvs = attr[Mesh.ARRAY_TEX_UV]
 				for j in range(uvs.size()):
-					uvs[j].x = fmod(uvs[j].x + uv_shift, 1.0)
+					uvs[j] = Vector2(fmod(uvs[j].x + uv_shift, 1.0), uvs[j].y)
 				attr[Mesh.ARRAY_TEX_UV] = uvs
 				
 				# We cannot easily re-inject into SurfaceTool without manual vertex loop,

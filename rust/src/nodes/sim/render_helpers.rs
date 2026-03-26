@@ -292,11 +292,28 @@ impl SimulationNode {
             let mut basis_y = Vector3::UP;
             let mut basis_z = Vector3::BACK;
 
-            use crate::simulation::economy::agents::{TRANSIT_ARRIVING, TRANSIT_DEPARTING};
+            use crate::simulation::economy::agents::{TRANSIT_ARRIVING, TRANSIT_DEPARTING, TRANSIT_INTERSECTION};
             let transit = self.agents.transit[i];
             let edge_idx = self.agents.current_edge[i];
 
-            if transit == TRANSIT_ARRIVING && edge_idx != usize::MAX && edge_idx < self.region_graph.edges.len() {
+            if transit == TRANSIT_INTERSECTION {
+                // Smooth interpolation through junction
+                let p0 = Vector2::new(self.agents.bezier_p0_x[i], self.agents.bezier_p0_y[i]);
+                let p1 = Vector2::new(self.agents.bezier_p1_x[i], self.agents.bezier_p1_y[i]);
+                let p2 = Vector2::new(self.agents.bezier_p2_x[i], self.agents.bezier_p2_y[i]);
+                let p3 = Vector2::new(self.agents.bezier_p3_x[i], self.agents.bezier_p3_y[i]);
+                
+                let t = self.agents.bezier_t[i];
+                // Derivative of cubic bezier: 3(1-t)^2(P1-P0) + 6(1-t)t(P2-P1) + 3t^2(P3-P2)
+                let deriv = (p1 - p0) * 3.0 * (1.0 - t).powi(2) + (p2 - p1) * 6.0 * (1.0 - t) * t + (p3 - p2) * 3.0 * t.powi(2);
+                
+                if deriv.length_squared() > 1e-6 {
+                    let fwd = -Vector3::new(deriv.x, 0.0, deriv.y).normalized();
+                    basis_z = -fwd;
+                    basis_x = Vector3::UP.cross(basis_z).normalized();
+                    basis_y = basis_z.cross(basis_x).normalized();
+                }
+            } else if transit == TRANSIT_ARRIVING && edge_idx != usize::MAX && edge_idx < self.region_graph.edges.len() {
                 // Car is peeling off the road toward a building: face perpendicular to the road edge
                 let edge = &self.region_graph.edges[edge_idx];
                 let prog = (self.agents.edge_progression[i].max(0) as usize)

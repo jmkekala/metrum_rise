@@ -73,9 +73,10 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **R-Tree Spatial Index**: `spatial_edge_rt` replaces the uniform 512m grid for all edge queries. O(log N) insert/delete/query provides tight AABB filtering, zero manual deduplication, and eliminates long-edge false positives.
 
 ### Zoning
-- `simulation/grid/zoning.rs` (470 lines) — edge-aligned zoning cells, 10 m × 10 m.
-- Cells extend up to 10 cells deep (100 m) from the road sidewalk edge, starting 5 m from road centreline.
-- Obstruction check (`is_cell_obstructed`): 5-point sampling (4 corners + centre) per cell with asphalt collision and Voronoi ownership test.
+- `simulation/grid/zoning.rs` — edge-aligned zoning cells, 10 m × 10 m.
+- **Player-painted zones** (item 66): automatic edge-aligned zone generation removed. Players click and drag along road edges in `zoning_tool.gd` to paint cells onto either side of a road. Drag can span multiple connected edges; side is determined by mouse position relative to the road centreline and flips automatically at reversed junctions. Scroll wheel adjusts zone depth (2–12 cells, 20–120 m). Right-click clears all zones on an edge. Zone paint is committed on mouse release via `set_zoning_range(edge_idx, side, t_start, t_end, depth, zone_type)` on the Rust side. A MultiMesh preview (grid + painted + brush overlays) updates every frame during hover and drag.
+- Cells extend up to 12 cells deep (120 m) from the road sidewalk edge, following road curvature.
+- Obstruction check (`is_cell_obstructed`): 5-point sampling (4 corners + centre) per cell with asphalt collision and Voronoi ownership test. Splay check applied only to `y=0` cells (inner row) — applying it to all rows incorrectly rejected entire building footprints on curved roads.
 - Obstruction cache correctly wired: `recalculate_obstructions` is parallelised with Rayon and spatially invalidated on nearby road edits.
 - Zone types: Residential, Commercial, Industrial, Office, Mixed.
 
@@ -122,7 +123,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **Happiness/money**: home +1 happiness/day; commute penalty −commute_time/60 per trip; pollution effect −p × 0.1/day; work +$10/day; shop −$20.
 - **Visual Agents (v0.3 Assets)**: 
     - Combined MultiMesh renderer split into per-mode systems (item 46).
-    - Civilian car agents now use 3D `.glb` models (item 47) with random variety (Sedan, Sports, SUV, Luxury).
+    - Civilian car agents now use 3D `.glb` models (item 47) with random variety (Sedan, Sports, SUV, Luxury). `vehicle_type: Vec<u8>` added to `AgentSystem` SoA (now 30 parallel fields); assigned randomly in `spawn_agent`, swapped/popped in `kill_agent`. `get_car_transforms_internal` returns a `VarDictionary` keyed by `(vehicle_type * 10 + color_variant)` (was `PackedFloat32Array`). In `agents.gd`, four GLB models are loaded at `_ready` via `GLTFDocument`; five color variants are produced per model by shifting UVs via `SurfaceTool`, giving 20 `MultiMeshInstance3D` nodes total. Models sourced from `res://assets/models/vehicles/civilian/`.
 
 ### Economy
 
@@ -237,8 +238,6 @@ The `t > 0` guard handles the T-junction back gap (antiparallel lines, only solu
 ### Infrastructure
 
 59. **`AgentSystem` SoA migration to `soa_derive`**: replace the 29 manually-maintained parallel `Vec<T>` fields in `data.rs` with a `#[derive(SoA)]` schema struct (`Agent`) and a generated `AgentVec`. `spawn_agent` becomes a single `push(Agent { ... })` — the compiler enforces that all fields are initialised; `clear()` becomes one call; adding a new field no longer silently corrupts state. Also fixes B1 (`has_car` missing from `kill_agent`). Implementation: add `soa_derive = "0.3"` to `Cargo.toml`; define `Agent` with all per-agent fields; wrap `AgentVec` in `AgentSystem` via `Deref/DerefMut` so all `agents.field[i]` call sites are unchanged; replace `self.count` with `self.len()` throughout (`tick.rs`, `data.rs` methods, `render_helpers.rs`, `query.rs`, `benchmark.rs`, `allocator.rs`). `sim_time` and `pathfind_count` remain as direct fields on `AgentSystem`, not part of the generated vec.
-
-66. **Manual zoning (SimCity 2013 style)**: remove the automatic edge-aligned zone cell generation. Replace with player-painted zones. Players can start zoning next to the already existing road and then drag with mouse to create a zone. Mouse must be dragged on a direction of the road and it create 1x4 zone cells. Buildings can allocate this cells. For example 3 1x4 cells create a constructing area of 3x4. The zoning must follow the curveture of the road. Cells should not overlap. Instead the outer edge of the cells should follow as well the curveture of the road. No agent or pathfinding changes.
 
 58. **Split `buildings/allocator.rs`** — 689 lines mixing two concerns. Split into `buildings/allocator/lifecycle.rs` (spawn, kill, evict, remap) and `buildings/allocator/index.rs` (zone_index, vacancy_index, claim_vacancy, release_vacancy). Low complexity, no behaviour change. Do when next working in that file.
 

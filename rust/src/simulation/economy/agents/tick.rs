@@ -130,7 +130,7 @@ impl AgentSystem {
                             let edge = &graph.edges[b.edge_idx];
                             let world_pos_on_edge = allocator.get_pos_on_edge(graph, b.edge_idx, b.frontage_t);
                             let tangent = allocator.get_tangent_on_edge(graph, b.edge_idx, b.frontage_t);
-                            let normal = Vector2::new(tangent.y, -tangent.x) * (b.side as f32);
+                            let normal = Vector2::new(-tangent.y, tangent.x) * (b.side as f32);
                             
                             // Target point on the road/sidewalk
                             let mut base_vec = world_pos_on_edge;
@@ -268,14 +268,51 @@ impl AgentSystem {
                                 if let Some(best_e) = graph.get_edge_between_nodes(self.current_node[i], next_node) {
                                     let edge = &graph.edges[best_e];
                                     let is_fwd = edge.start_node == self.current_node[i];
+                                    
+                                    // 1. Calculate Target Lane and Offset
+                                    let next_lane = if is_fwd { 
+                                        if edge.fwd_lanes > 0 { rng.gen_range(0..edge.fwd_lanes) as i8 } else { 0 }
+                                    } else {
+                                        if edge.bkw_lanes > 0 { -(rng.gen_range(0..edge.bkw_lanes) as i8) - 1 } else { -1 }
+                                    };
+                                    
+                                    let p_start = edge.physical_geometry[if is_fwd { 0 } else { edge.physical_geometry.len()-1 }];
+                                    let p_next = edge.physical_geometry[if is_fwd { 1 } else { edge.physical_geometry.len()-2 }];
+                                    let tangent_next = if is_fwd { (p_next - p_start).normalized() } else { (p_start - p_next).normalized() };
+                                    let normal_next = Vector2::new(-tangent_next.z, tangent_next.x); 
+                                    
+                                    let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
+                                    let lane_w = edge.width / total_lanes;
+                                    let lane_idx = if is_fwd { next_lane as f32 } else { (-next_lane - 1) as f32 };
+                                    let hand = if crate::config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+                                    let lane_offset = (total_lanes * 0.5 - lane_idx - 0.5) * lane_w * hand;
+                                    let target_pos = Vector2::new(p_start.x, p_start.z) + normal_next * lane_offset;
+
+                                    // 2. Setup Bezier for Intersection
+                                    self.bezier_p0_x[i] = self.pos_x[i];
+                                    self.bezier_p0_y[i] = self.pos_y[i];
+                                    self.bezier_p3_x[i] = target_pos.x;
+                                    self.bezier_p3_y[i] = target_pos.y;
+                                    
+                                    let dist = (target_pos - Vector2::new(self.pos_x[i], self.pos_y[i])).length().max(2.0);
+                                    
+                                    self.bezier_p1_x[i] = self.pos_x[i]; 
+                                    self.bezier_p1_y[i] = self.pos_y[i];
+                                    self.bezier_p2_x[i] = target_pos.x - tangent_next.x * (dist * 0.4);
+                                    self.bezier_p2_y[i] = target_pos.y - tangent_next.z * (dist * 0.4);
+                                    
+                                    self.bezier_t[i] = 0.0;
+                                    self.transit[i] = TRANSIT_INTERSECTION;
+                                    
+                                    // 3. Finalize Edge State
                                     self.current_edge[i] = best_e;
+                                    self.current_lane[i] = next_lane;
                                     if is_fwd {
                                         self.edge_progression[i] = 0;
-                                        self.current_lane[i] = if edge.fwd_lanes > 0 { rng.gen_range(0..edge.fwd_lanes) as i8 } else { 0 };
                                     } else {
                                         self.edge_progression[i] = edge.physical_geometry.len() as isize - 1;
-                                        self.current_lane[i] = if edge.bkw_lanes > 0 { -(rng.gen_range(0..edge.bkw_lanes) as i8) - 1 } else { -1 };
                                     }
+                                    break;
                                 } else {
                                     self.current_path[i].clear();
                                     break;
@@ -321,18 +358,16 @@ impl AgentSystem {
                                 continue;
                             }
                             let tangent = diff.normalized();
-                            let normal = Vector2::new(tangent.y, -tangent.x);
+                            let normal = Vector2::new(-tangent.y, tangent.x);
                                                         let mut offset_target = Vector2::new(p_target.x, p_target.z);
                              if self.transit_mode[i] == MODE_CAR {
                                   let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
                                   let lane_w = edge.width / total_lanes;
-                                  // Forward: lane 0 = rightmost. Backward: diff is already reversed so
-                                 // normal already points right-of-travel; use same 0-based index so
-                                 // backward cars also sit on the right side of their travel direction.
-                                 let lane_idx = if is_fwd { self.current_lane[i] as f32 } else { (-self.current_lane[i] - 1) as f32 };
-                                 let hand = if crate::config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-                                 let lane_offset = (total_lanes * 0.5 - lane_idx - 0.5) * lane_w * hand;
-                                 offset_target += normal * lane_offset;
+                                  // Forward: lane 0 = rightmost. 
+                                  let lane_idx = if is_fwd { self.current_lane[i] as f32 } else { (-self.current_lane[i] - 1) as f32 };
+                                  let hand = if crate::config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+                                  let lane_offset = (total_lanes * 0.5 - lane_idx - 0.5) * lane_w * hand;
+                                  offset_target += normal * lane_offset;
                              } else {
                                  // Pedestrian: Use side preference (Sidewalk Loyalty)
                                  let side = if self.bezier_t[i].abs() > 0.1 { self.bezier_t[i] } else { 1.0 };
@@ -397,7 +432,24 @@ impl AgentSystem {
                     }
                 }
                 TRANSIT_INTERSECTION => { 
-                     self.transit[i] = TRANSIT_ON_ROAD; 
+                    let step = (if self.transit_mode[i] == MODE_CAR { 15.0 } else { 4.0 }) * delta;
+                    let p0 = Vector2::new(self.bezier_p0_x[i], self.bezier_p0_y[i]);
+                    let p1 = Vector2::new(self.bezier_p1_x[i], self.bezier_p1_y[i]);
+                    let p2 = Vector2::new(self.bezier_p2_x[i], self.bezier_p2_y[i]);
+                    let p3 = Vector2::new(self.bezier_p3_x[i], self.bezier_p3_y[i]);
+                    
+                    let dist = (p3 - p0).length().max(1.0);
+                    self.bezier_t[i] += step / dist;
+                    
+                    if self.bezier_t[i] >= 1.0 {
+                        self.pos_x[i] = p3.x; self.pos_y[i] = p3.y;
+                        self.transit[i] = TRANSIT_ON_ROAD;
+                        self.bezier_t[i] = 0.0;
+                    } else {
+                        let t = self.bezier_t[i];
+                        let pos = p0 * (1.0 - t).powi(3) + p1 * 3.0 * (1.0 - t).powi(2) * t + p2 * 3.0 * (1.0 - t) * t.powi(2) + p3 * t.powi(3);
+                        self.pos_x[i] = pos.x; self.pos_y[i] = pos.y;
+                    }
                 }
                 _ => { self.transit[i] = TRANSIT_IDLE; }
             }
