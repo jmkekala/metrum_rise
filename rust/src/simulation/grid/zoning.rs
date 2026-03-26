@@ -398,20 +398,21 @@ impl ZoningSystem {
             }
         }
 
-        // 0. SPLAY CHECK: On sharp curves, cells fan out or crunch. 
-        if check_pts_with_t.len() >= 4 {
+        // 0. SPLAY CHECK: On sharp curves, cells fan out or crunch.
+        // Only applied to y=0 (frontage row) — deeper rows always have larger distortion
+        // on any curve, which previously caused the entire 3x3 footprint to be rejected
+        // on roads with moderate curvature.
+        if y == 0 && check_pts_with_t.len() >= 4 {
             let p1 = check_pts_with_t[0].0; // Start, Inner
             let p2 = check_pts_with_t[1].0; // Start, Outer
             let p3 = check_pts_with_t[2].0; // End, Inner
             let p4 = check_pts_with_t[3].0; // End, Outer
-            
+
             let inner_width = p1.distance_to(p3);
             let outer_width = p2.distance_to(p4);
-            
-            // Tighten to 1.15x (15% splay threshold) for perfect cohesion.
-            // This ensures only thick, building-capable zones are kept on curves.
+
             if outer_width > inner_width * 1.15 || outer_width < inner_width * 0.85 {
-                return true; 
+                return true;
             }
         }
         
