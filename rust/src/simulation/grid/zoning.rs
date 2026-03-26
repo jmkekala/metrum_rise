@@ -198,6 +198,32 @@ impl ZoningSystem {
         }
     }
 
+    /// Sets a range of cells to a specific zone type with a given depth.
+    pub fn set_zone_range(&mut self, edge_idx: usize, side: i8, start_t: f32, end_t: f32, depth: usize, zone_type: ZoneType) {
+        if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
+            let cells_long = grid.cells_long;
+            let start_x = (start_t * cells_long as f32).floor() as usize;
+            let end_x = (end_t * cells_long as f32).ceil() as usize;
+            
+            let start_x = start_x.min(cells_long);
+            let end_x = end_x.min(cells_long);
+            
+            let (start, end) = if start_x <= end_x { (start_x, end_x) } else { (end_x, start_x) };
+            
+            let cells = if side > 0 { &mut grid.left_side } else { &mut grid.right_side };
+            let depth = depth.min(ZONING_DEPTH);
+
+            for x in start..end {
+                for y in 0..depth {
+                    let idx = x * ZONING_DEPTH + y;
+                    if idx < cells.len() {
+                        cells[idx] = zone_type;
+                    }
+                }
+            }
+        }
+    }
+
     /// Returns the zone type of a specific cell.
     pub fn get_cell(&self, edge_idx: usize, side: i8, x: usize, y: usize) -> ZoneType {
         if let Some(grid) = self.edge_grids.get(&edge_idx) {
@@ -437,6 +463,10 @@ impl ZoningSystem {
                              (e.physical_geometry[e.physical_geometry.len()-2] - e.physical_geometry[e.physical_geometry.len()-1]).normalized()
                         };
                         if t1.dot(t2) < -0.85 { continue; } 
+                    } else {
+                        // User: "Buildings can overlap from now on nodes/junctions"
+                        // If it's a junction (conn_count > 2), we allow overlap (don't flag as asphalt collision here).
+                        continue;
                     }
                 }
                 

@@ -44,6 +44,21 @@ impl SimulationNode {
         self.allocator.dirty = true;
     }
 
+    /// Sets a range of zoning cells with a specific depth.
+    pub fn set_zoning_range_internal(&mut self, edge_idx: i32, side: i8, start_t: f32, end_t: f32, depth: i32, zone_type_int: u8) {
+        self.push_undo_state(false, false, false, true);
+        let zone_type = match zone_type_int {
+            1 => ZoneType::Residential,
+            2 => ZoneType::Commercial,
+            3 => ZoneType::Industrial,
+            4 => ZoneType::Office,
+            5 => ZoneType::Mixed,
+            _ => ZoneType::None,
+        };
+        self.zoning.set_zone_range(edge_idx as usize, side, start_t, end_t, depth as usize, zone_type);
+        self.allocator.dirty = true;
+    }
+
     /// Enables or disables zoning on a specific side of a road edge.
     pub fn set_zoning_enabled_internal(&mut self, edge_idx: i32, side: i32, enabled: bool) {
         if let Some(edge) = self.region_graph.edges.get_mut(edge_idx as usize) {

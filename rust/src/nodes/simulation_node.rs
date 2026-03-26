@@ -222,6 +222,12 @@ impl SimulationNode {
         self.set_zoning_cell_internal(edge_idx, side, x, y, zone_type_int);
     }
 
+    /// Sets a range of zoning cells with a specific depth.
+    #[func]
+    pub fn set_zoning_range(&mut self, edge_idx: i32, side: i8, start_t: f32, end_t: f32, depth: i32, zone_type_int: u8) {
+        self.set_zoning_range_internal(edge_idx, side, start_t, end_t, depth, zone_type_int);
+    }
+
     /// Returns a PackedFloat32Array for rendering the zone grid.
     #[func]
     pub fn get_zoning_grid_data(&self) -> PackedFloat32Array {
@@ -268,8 +274,8 @@ impl SimulationNode {
 
     /// Updates the MultiMesh visualizers for the zoning tool.
     #[func]
-    pub fn update_zoning_visuals(&self, grid_mm: Gd<MultiMesh>, paint_mm: Gd<MultiMesh>, hovered_edge: i32, mode: i32, mouse_pos_3d: Vector3) {
-        self.update_zoning_visuals_internal(grid_mm, paint_mm, hovered_edge, mode, mouse_pos_3d);
+    pub fn update_zoning_visuals(&self, grid_mm: Gd<MultiMesh>, paint_mm: Gd<MultiMesh>, hovered_edges: VariantArray, is_painting: bool, side: i32, t1: f32, t2: f32, depth: i32, zone_type: u8) {
+        self.update_zoning_visuals_internal(grid_mm, paint_mm, hovered_edges, is_painting, side, t1, t2, depth, zone_type);
     }
 
     /// Returns obstacle polygons for zoning tool overlap checks.

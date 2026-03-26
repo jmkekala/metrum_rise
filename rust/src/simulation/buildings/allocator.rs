@@ -190,8 +190,28 @@ impl BuildingAllocator {
 
             for side in [1, -1] {
                 let cells_long = if let Some(g) = zoning.edge_grids.get(&edge_idx) { g.cells_long } else { 0 };
+                if cells_long < 3 { continue; }
+
+                // Node-Proximal Spawning: iterate from both ends towards the middle
+                let mid = cells_long / 2;
+                let mut x_order: Vec<usize> = Vec::with_capacity(cells_long);
                 
-                for x in 0..cells_long.saturating_sub(2) {
+                // Build x_order: [0, max-1, 1, max-2, ...]
+                for i in 0..mid {
+                    x_order.push(i);
+                    x_order.push(cells_long.saturating_sub(3).saturating_sub(i));
+                }
+                if cells_long % 2 != 0 {
+                    x_order.push(mid);
+                }
+                // Filter and deduplicate (saturating_sub might produce duplicates)
+                let mut seen = std::collections::HashSet::new();
+                let x_order: Vec<usize> = x_order.into_iter()
+                    .filter(|&x| x <= cells_long.saturating_sub(3))
+                    .filter(|&x| seen.insert(x))
+                    .collect();
+
+                for x in x_order {
                     if spawned_this_tick >= max_spawns { break; }
                     let z_type = zoning.get_cell(edge_idx, side, x, 0);
                     if z_type == ZoneType::None { continue; }

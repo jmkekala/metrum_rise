@@ -19,8 +19,10 @@ var hovered_edge_idx: int = -1
 
 enum Mode { SINGLE, PAINT, FILL, DELETE }
 var current_mode = Mode.SINGLE
+var current_depth: int = 4 # Default 40m
+var drag_start_t: float = -1.0
 
-const ZONING_DEPTH: int = 10
+const ZONING_DEPTH: int = 12
 const CELL_SIZE: float = 10.0
 
 var grid_mesh: MultiMeshInstance3D
@@ -83,7 +85,9 @@ func _process(delta):
 		return
 
 	_update_visuals()
-	_handle_painting()
+
+var visited_edges: Array = []
+var drag_side: int = 0
 
 func _update_visuals():
 	if not simulation_node: return
@@ -94,110 +98,142 @@ func _update_visuals():
 	var ray_dir = camera.project_ray_normal(mouse_pos)
 	var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
 	var mouse_pos_3d = intersection if intersection != null else Vector3.ZERO
-	var h_edge = simulation_node.get_hovered_edge(mouse_pos_3d.x, mouse_pos_3d.z) if intersection != null else -1
-	hovered_edge_idx = h_edge
 	
-	simulation_node.update_zoning_visuals(grid_mesh.multimesh, paint_mesh.multimesh, h_edge, current_mode, mouse_pos_3d)
+	hovered_edge_idx = simulation_node.get_hovered_edge(mouse_pos_3d.x, mouse_pos_3d.z) if intersection != null else -1
+	
+	var current_t = 0.0
+	var current_side = 0
+	if intersection != null and hovered_edge_idx != -1:
+		var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
+		var proj = _get_projection_data(edge_geom, Vector2(intersection.x, intersection.z))
+		current_t = proj["t"]
+		current_side = proj["side"]
+	
+	_handle_painting(hovered_edge_idx, current_t, current_side)
+	
+	var is_painting = (state == 1)
+	var p_edges: Array = []
+	p_edges.assign(visited_edges)
+	if p_edges.is_empty() and hovered_edge_idx != -1:
+		p_edges = [hovered_edge_idx]
+	
+	var p_t1 = drag_start_t
+	var p_t2 = current_t
+	if p_t1 < 0: p_t1 = current_t
+	
+	# Pass the whole path to Rust for preview
+	var p_side = drag_side if not visited_edges.is_empty() else current_side
+	simulation_node.update_zoning_visuals(grid_mesh.multimesh, paint_mesh.multimesh, p_edges, is_painting, p_side, p_t1, p_t2, current_depth, current_zone_type)
 	
 	grid_mesh.visible = true
 	paint_mesh.visible = true
 
-func _handle_painting():
-	if state == 1 and hovered_edge_idx != -1:
-		var mouse_pos = get_viewport().get_mouse_position()
-		var camera = get_viewport().get_camera_3d()
-		var ray_origin = camera.project_ray_origin(mouse_pos)
-		var ray_dir = camera.project_ray_normal(mouse_pos)
-		var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
-		if intersection == null: return
-		
-		var world_pos = Vector2(intersection.x, intersection.z)
-		
-		# Find which cell we are over
-		var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
-		var edge_width = simulation_node.get_edge_width(hovered_edge_idx)
-		var l = _get_edge_length(edge_geom)
-		if l < 0.1: return
-		
-		# Project world_pos onto edge to find side and T
-		var proj = _get_projection_data(edge_geom, world_pos)
-		var side = proj["side"]
-		var t = proj["t"]
-		var dist_from_edge = proj["dist_from_road"]
-		
-		var cell_x = floor(t * l / CELL_SIZE)
-		var cell_y = floor((dist_from_edge - edge_width * 0.5) / CELL_SIZE)
-		
-		if cell_y >= 0 and cell_y < ZONING_DEPTH:
-			match current_mode:
-				Mode.SINGLE:
-					simulation_node.set_zoning_cell(hovered_edge_idx, side, cell_x, cell_y, current_zone_type)
-				Mode.PAINT:
-					# 3x3 brush
-					for dx in range(-1, 2):
-						for dy in range(-1, 2):
-							var bx = cell_x + dx
-							var by = cell_y + dy
-							if by >= 0 and by < ZONING_DEPTH:
-								simulation_node.set_zoning_cell(hovered_edge_idx, side, bx, by, current_zone_type)
-				Mode.DELETE:
-					# This mode is handled in _handle_click or by setting enabled=false
-					simulation_node.set_zoning_enabled(hovered_edge_idx, side, false)
-					state = 0 # Single click tool
-
+func _handle_painting(h_edge: int, current_t: float, current_side: int):
+	if state == 1: # Mouse Pressed (Dragging)
+		if h_edge != -1:
+			if visited_edges.is_empty():
+				visited_edges.append(h_edge)
+				drag_start_t = current_t
+				drag_side = current_side
+			elif visited_edges[-1] != h_edge:
+				# Add to path if not already there
+				if not h_edge in visited_edges:
+					visited_edges.append(h_edge)
+	
 func _unhandled_input(event):
 	if not active: return
 	
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
-		if event.pressed:
-			if (current_mode == Mode.FILL or current_mode == Mode.DELETE) and hovered_edge_idx != -1:
-				if current_mode == Mode.FILL: _handle_fill()
-				else: _handle_side_delete()
-			else:
+	if event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			if event.pressed:
 				state = 1
-		else:
-			state = 0
+				visited_edges.clear()
+				drag_start_t = -1.0
+			else:
+				if state == 1 and not visited_edges.is_empty():
+					var mouse_pos = get_viewport().get_mouse_position()
+					var camera = get_viewport().get_camera_3d()
+					var ray_origin = camera.project_ray_origin(mouse_pos)
+					var ray_dir = camera.project_ray_normal(mouse_pos)
+					var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
+					
+					var last_edge_id = visited_edges[-1]
+					var last_edge_geom = simulation_node.get_edge_geometry(last_edge_id)
+					var last_proj = _get_projection_data(last_edge_geom, Vector2(intersection.x, intersection.z))
+					var end_t = last_proj["t"]
+					
+					var num_edges = visited_edges.size()
+					var cur_side = drag_side
+					
+					for i in range(num_edges):
+						var e_idx = visited_edges[i]
+						var s_t = 0.0
+						var e_t = 1.0
+						
+						if num_edges == 1:
+							s_t = drag_start_t
+							e_t = end_t
+						elif i == 0:
+							s_t = drag_start_t
+							var conn = _get_connection(visited_edges[0], visited_edges[1])
+							e_t = conn["t_a"]
+						elif i == num_edges - 1:
+							var conn = _get_connection(visited_edges[i - 1], visited_edges[i])
+							s_t = conn["t_b"]
+							e_t = end_t
+						else:
+							var conn_in  = _get_connection(visited_edges[i - 1], visited_edges[i])
+							var conn_out = _get_connection(visited_edges[i],     visited_edges[i + 1])
+							s_t = conn_in["t_b"]
+							e_t = conn_out["t_a"]
+						
+						simulation_node.set_zoning_range(e_idx, cur_side, s_t, e_t, current_depth, current_zone_type)
+						
+						# B7: flip side only if road orientation is genuinely reversed (meet at same endpoint types)
+						if i < num_edges - 1:
+							var conn = _get_connection(visited_edges[i], visited_edges[i + 1])
+							if conn["t_a"] == conn["t_b"]:
+								cur_side = -cur_side
+				
+				state = 0
+				visited_edges.clear()
+				drag_start_t = -1.0
+		
+		elif event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
+			current_depth = clamp(current_depth + 1, 2, 12)
+			_show_brush_feedback() # Visual feedback for depth change
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
+			current_depth = clamp(current_depth - 1, 2, 12)
+			_show_brush_feedback()
 			
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-		# right click to clear
-		var old_type = current_zone_type
-		current_zone_type = 0 # None
-		state = 1
-		await get_tree().create_timer(0.1).timeout
-		state = 0
-		current_zone_type = old_type
+		if hovered_edge_idx != -1:
+			var mouse_pos = get_viewport().get_mouse_position()
+			var camera = get_viewport().get_camera_3d()
+			var ray_origin = camera.project_ray_origin(mouse_pos)
+			var ray_dir = camera.project_ray_normal(mouse_pos)
+			var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
+			if intersection != null:
+				var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
+				var proj = _get_projection_data(edge_geom, Vector2(intersection.x, intersection.z))
+				simulation_node.set_zoning_range(hovered_edge_idx, proj["side"], 0.0, 1.0, ZONING_DEPTH, 0) # Clear all
 
-func _handle_fill():
-	if hovered_edge_idx == -1: return
-	var mouse_pos = get_viewport().get_mouse_position()
-	var camera = get_viewport().get_camera_3d()
-	var ray_origin = camera.project_ray_origin(mouse_pos)
-	var ray_dir = camera.project_ray_normal(mouse_pos)
-	var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
-	if intersection == null: return
-	var world_pos = Vector2(intersection.x, intersection.z)
-	var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
-	var proj = _get_projection_data(edge_geom, world_pos)
-	var side = proj["side"]
-	
-	# Fill all ZONING_DEPTH rows along the whole edge
-	var l = _get_edge_length(edge_geom)
-	var cells_long = floor(l / CELL_SIZE)
-	for x in range(cells_long):
-		for y in range(ZONING_DEPTH):
-			simulation_node.set_zoning_cell(hovered_edge_idx, side, x, y, current_zone_type)
+func _get_connection(edge_a: int, edge_b: int) -> Dictionary:
+	var ga = simulation_node.get_edge_geometry(edge_a)
+	var gb = simulation_node.get_edge_geometry(edge_b)
+	var a0 = ga[0];  var a1 = ga[ga.size() - 1]
+	var b0 = gb[0];  var b1 = gb[gb.size() - 1]
+	var thr = 400.0  # 20 m squared — covers any node radius
+	if a1.distance_squared_to(b0) < thr: return {"t_a": 1.0, "t_b": 0.0}
+	elif a1.distance_squared_to(b1) < thr: return {"t_a": 1.0, "t_b": 1.0}
+	elif a0.distance_squared_to(b0) < thr: return {"t_a": 0.0, "t_b": 0.0}
+	elif a0.distance_squared_to(b1) < thr: return {"t_a": 0.0, "t_b": 1.0}
+	else: return {"t_a": 1.0, "t_b": 0.0}  # fallback: assume forward chain
 
-func _handle_side_delete():
-	var mouse_pos = get_viewport().get_mouse_position()
-	var camera = get_viewport().get_camera_3d()
-	var ray_origin = camera.project_ray_origin(mouse_pos)
-	var ray_dir = camera.project_ray_normal(mouse_pos)
-	var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
-	if intersection == null: return
-	var world_pos = Vector2(intersection.x, intersection.z)
-	var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
-	var proj = _get_projection_data(edge_geom, world_pos)
-	simulation_node.set_zoning_enabled(hovered_edge_idx, proj["side"], false)
+func _show_brush_feedback():
+	# Simple print or UI label could go here. 
+	# For now we just let the visuals show it after the next frame.
+	pass
 
 func _get_zone_color(z_type):
 	match z_type:

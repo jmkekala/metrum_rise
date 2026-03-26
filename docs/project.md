@@ -175,11 +175,63 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
-| B1 | `simulation/economy/agents/data.rs` | `kill_agent` does not `swap_remove` the `has_car` field. Every kill leaves `has_car` one element longer than all other SoA fields, silently corrupting agent state after each kill+spawn cycle. Fix: add `self.has_car.swap_remove(index)` alongside the other 29 fields. The `soa_derive` migration (item 59) fixes this structurally. | [BUG] | [DONE]
-| B2 | `godot/scripts/terrain.gd` | Overlay keys 8/9/0 have no effect. `overlay_mode` shader parameter and overlay texture are only updated inside `update_terrain_visuals()`, which is gated on `is_terrain_dirty()`. Pressing 8/9/0 sets the GDScript variable but the shader never changes unless terrain also happens to be dirty. Fix: in `_process`, compare `overlay_mode` to `cached_overlay_mode` and push the shader parameter + texture upload when they differ, independently of terrain dirty. | [BUG] | [DONE]
-| B3 | `godot/scripts/zoning_tool.gd` | Painted zone colours are always visible regardless of active tool or overlay mode. `_process` hides `grid_mesh` when the tool is inactive but never hides `paint_mesh` — last set `visible = true` inside `_update_visuals()` and never cleared. Zone colours should only show in overlay mode 0 (zoning) or when the zoning tool is active. Fix: add `paint_mesh.visible = false` to the `not active` early-return branch. | [BUG] | [DONE]
-| B4 | `simulation/economy/agents/tick.rs` | ON_ROAD pedestrian sidewalk normal is `Vector2::new(-tangent.y, tangent.x)`, the exact negative of the building placement normal `Vector2::new(tangent.y, -tangent.x)` used in both `allocator.rs` and `TRANSIT_DEPARTING`. Agents correctly exit to their building's sidewalk during DEPARTING, then immediately cross to the opposite sidewalk during ON_ROAD movement and arrive at buildings from the wrong side. Fix: in the pedestrian ON_ROAD branch, replace `Vector2::new(-tangent.y, tangent.x)` with `Vector2::new(tangent.y, -tangent.x)`. | [BUG] | [DONE]
-| B5 | `simulation/network/render/road.rs` | Sidewalk ribbons z-fight on the inner side of junction corners where the angle between two roads exceeds 90°. Each edge generates its sidewalk with a raw perpendicular end at the clipped junction boundary. On acute inner corners the two adjacent sidewalk quads overlap in XZ at the same Y. Root cause: `node_miters` is only computed for 2-edge pass-through nodes (curves); junction nodes (degree ≥ 3) have no miter, so the sidewalk corner vertex is not pulled back to the angle bisector. Fix: for junction nodes, sort connected edges by departure angle, compute the bisector of each consecutive pair of edge normals, store as a per-`(node_id, edge_id)` miter, and apply it to the inner corner vertex of each sidewalk ribbon at its clipped junction endpoint. Clamp miter length to prevent near-parallel roads from producing an infinite spike. Outer corner gaps (convex side) can be filled by a separate junction cap polygon pass. | [BUG]
+| B5 | `simulation/network/render/road.rs` | Sidewalk ribbons z-fight on the inner side of junction corners. `node_miters` is only computed for 2-edge pass-through nodes; junction nodes (degree ≥ 3) get no miter. See **B5 Fix Notes** below. | [BUG]
+
+---
+
+### B5 Fix Notes — Junction sidewalk inner-corner miter
+
+**Root cause.** At junction nodes the sidewalk ribbon for each edge ends with a raw perpendicular cut. Two adjacent edges' inner sidewalk corners overlap in the same XZ region at the same Y, causing z-fighting. The outer corners leave a gap, but that gap is already covered by the road surface (asphalt quad), so outer corners need no fix.
+
+**Why the angle-bisector / `1/cos` approach fails.**
+- Applied to outer corners as well → produces visible "cap" widening on the sidewalk tip.
+- `1 / cos(half_angle)` is unbounded near 180° → near-parallel adjacent roads produce a spike.
+- If accidentally applied to 2-edge pass-through nodes (which already have a working miter) → corrupts curve joints.
+
+**Correct approach: line-line intersection, inner corner only.**
+
+Pre-compute a `HashMap<(edge_id, node_id), [Option<Vector2>; 2]>` (index 0 = positive-side sidewalk, index 1 = negative-side). Only populate for nodes where `connection_count >= 3`. Run this after the existing `node_miters` block.
+
+```
+for each junction node N (connection_count[N] >= 3):
+    edges = node_dirs[N]   // Vec<(edge_id, outward_tangent_2d)>
+    sort by atan2(tangent.y, tangent.x)   // CCW angular order
+
+    for each consecutive pair (A, B) — B is CCW from A, including wrap-around:
+        // Mathematical fact: A's positive side and B's negative side
+        // always face into the angular gap between A and B (proven by
+        // dot(side_A, gap_bisector) = sin((angle_B - angle_A)/2) > 0).
+
+        side_A  = Vector2(-A.tangent.y,  A.tangent.x)
+        side_B  = Vector2(-B.tangent.y,  B.tangent.x)
+        node_xy = Vector2(nodes[N].pos.x, nodes[N].pos.z)
+
+        P_A = node_xy + side_A * (edges[A].width / 2)   // A inner sidewalk edge origin
+        P_B = node_xy - side_B * (edges[B].width / 2)   // B inner sidewalk edge origin
+
+        // 2D line-line intersection via Cramer's rule:
+        // P_A + t_A * A.tangent = P_B + t_B * B.tangent
+        delta = P_B - P_A
+        det   = -(A.tangent.x * B.tangent.y - A.tangent.y * B.tangent.x)
+        if det.abs() < 1e-6: continue          // parallel roads
+
+        t_A = (-B.tangent.y * delta.x + B.tangent.x * delta.y) / det
+        t_B = (-A.tangent.y * delta.x + A.tangent.x * delta.y) / det
+
+        // Guards — these make the 180° open-back gap and near-parallel cases safe:
+        if t_A <= 0.0 || t_B <= 0.0: continue
+        max_reach = (edges[A].width + edges[B].width) * 1.5
+        if t_A > max_reach || t_B > max_reach: continue
+
+        tip_xz = P_A + A.tangent * t_A
+
+        junction_tips[(A.edge_id, N)][0] = Some(tip_xz)   // A positive side
+        junction_tips[(B.edge_id, N)][1] = Some(tip_xz)   // B negative side
+```
+
+In the sidewalk loop, when emitting the junction-end vertices (where `t0 > 0` for the start-node end, or `t1 < 1` for the end-node end): look up `junction_tips[(edge_id, node_id)][side_index]`. If a tip exists, replace **only the inner corner vertex** (`lateral_offset - sw_w*0.5` for positive side, `lateral_offset + sw_w*0.5` for negative side) with `Vector3(tip.x, p_junction.y, tip.y)`. The outer corner vertex is unchanged.
+
+The `t > 0` guard handles the T-junction back gap (antiparallel lines, only solution is `t=0`) and all open-side gaps automatically — no special-casing needed.
 
 ---
 
