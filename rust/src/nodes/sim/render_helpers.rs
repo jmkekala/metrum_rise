@@ -127,7 +127,7 @@ impl SimulationNode {
                         let h = self.heightmap.height as f32;
 
                         let start_m = start_x as f32 * cell_size;
-                        let end_m = end_x as f32 * cell_size;
+                        let end_m = if end_x >= grid.cells_long { edge.physical_length } else { end_x as f32 * cell_size };
 
                         let mut m = start_m;
                         while m < end_m {
