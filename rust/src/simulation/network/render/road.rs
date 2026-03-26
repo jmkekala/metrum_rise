@@ -2,8 +2,21 @@ use godot::prelude::*;
 use crate::config;
 use std::collections::HashMap;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::{TransitType, EdgeClass};
+use crate::simulation::network::types::{TransitType, EdgeClass, NodeType};
 use super::{TransitRenderer, NetworkMeshData};
+
+fn line_line_intersection_xz(p1: Vector3, d1: Vector3, p2: Vector3, d2: Vector3) -> Option<Vector3> {
+    let det = d1.x * (-d2.z) - (-d2.x) * d1.z;
+    if det.abs() < 1e-6 {
+        return None;
+    }
+
+    let dx = p2.x - p1.x;
+    let dz = p2.z - p1.z;
+
+    let t = (dx * (-d2.z) - (-d2.x) * dz) / det;
+    Some(p1 + d1 * t)
+}
 
 pub struct RoadRenderer;
 
@@ -80,6 +93,7 @@ impl TransitRenderer for RoadRenderer {
                 }
             }
         }
+
 
 
         // 1. Generate Schematic Lane Ribbons
@@ -269,70 +283,6 @@ impl TransitRenderer for RoadRenderer {
                 }
             }
 
-            // Sidewalk Ribbons
-            let sw_color = Color::from_rgb(1.0, 1.0, 1.0);
-            let sw_w = config::SIDEWALK_WIDTH;
-            let sw_offsets = [edge.width * 0.5 + sw_w * 0.5, -(edge.width * 0.5 + sw_w * 0.5)];
-
-            for &lateral_offset in &sw_offsets {
-                let mut dist_acc = 0.0;
-                for i in 0..resampled_count - 1 {
-                    let p0_raw = edge.physical_geometry[i];
-                    let p1_raw = edge.physical_geometry[i + 1];
-                    let segment_len = (p1_raw - p0_raw).length();
-                    let segment_start = dist_acc;
-                    let segment_end = dist_acc + segment_len;
-
-                    if segment_end <= start_clip || segment_start >= total_len - end_clip {
-                        dist_acc += segment_len;
-                        continue;
-                    }
-
-                    let mut t0 = 0.0f32;
-                    let mut t1 = 1.0f32;
-                    if segment_start < start_clip { t0 = (start_clip - segment_start) / segment_len; }
-                    if segment_end > total_len - end_clip { t1 = (total_len - end_clip - segment_start) / segment_len; }
-
-                    let mut p0 = p0_raw + (p1_raw - p0_raw) * t0;
-                    let mut p1 = p0_raw + (p1_raw - p0_raw) * t1;
-                    
-                    p0.y += h_offset + 0.001;
-                    p1.y += h_offset + 0.001;
-
-                    let side0 = point_side_dirs[i];
-                    let side1 = point_side_dirs[i+1];
-
-                    let mut v0_l = p0 + side0 * (lateral_offset - sw_w * 0.5);
-                    let mut v0_r = p0 + side0 * (lateral_offset + sw_w * 0.5);
-                    let mut v1_l = p1 + side1 * (lateral_offset - sw_w * 0.5);
-                    let mut v1_r = p1 + side1 * (lateral_offset + sw_w * 0.5);
-
-
-                    // Area check for degenerate ribbon triangles
-                    let area1 = (v1_l - v0_l).cross(v1_r - v0_l).length() * 0.5;
-                    let area2 = (v1_r - v0_l).cross(v0_r - v0_l).length() * 0.5;
-
-                    if area1 >= 0.001 || area2 >= 0.001 {
-                        vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
-                        vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
-
-                        let (uv_y_inner, uv_y_outer) = if lateral_offset > 0.0 { (0.0, 1.0) } else { (1.0, 0.0) };
-                        uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_inner));
-                        uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_outer));
-                        uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_outer));
-                        uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_inner));
-                        uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_outer));
-                        uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_inner));
-
-                        for _ in 0..6 {
-                            normals.push(Vector3::UP);
-                            colors.push(sw_color);
-                        }
-                    }
-                    dist_acc += segment_len;
-                }
-            }
-
             if edge.class == EdgeClass::Bridge {
                 let hw = edge.width * 0.5 + config::SIDEWALK_WIDTH;
                 let thickness = 1.0;
@@ -490,185 +440,164 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
-        // 2. Junction meshes (B_BRIDGE5: skip caps already handled in edge loop)
+        // 2. Junction meshes
         for (n_idx, node) in graph.nodes.iter().enumerate() {
             if graph.get_valid_node(n_idx as u32) != n_idx as u32 { continue; }
             let edges_at_node = &node_to_edges[n_idx];
             if edges_at_node.len() < 2 { continue; }
-            
-            let concrete_color = Color::from_rgba(0.9, 0.9, 0.9, 1.0);
 
-            // If all edges connecting here are tunnels, hide the junction mesh
+            // Skip junction mesh if all edges are tunnels
             if edges_at_node.iter().all(|(_, e)| e.class == EdgeClass::Tunnel) {
                 continue;
             }
 
-            struct JPoint {
-                e_idx: usize,
-                inner: Vector3,
-                outer: Vector3,
+            struct EdgeInfo {
+                clip_pos: Vector3,
+                outward_tangent: Vector3,
+                side_dir: Vector3,
+                road_left: Vector3,
+                road_right: Vector3,
+                sw_left: Option<Vector3>,
+                sw_right: Option<Vector3>,
                 angle: f32,
+                has_foot: bool,
                 class: EdgeClass,
-                tangent: Vector3,
             }
-            let mut j_pts = Vec::new();
 
+            let mut edge_infos = Vec::new();
             for &(e_idx, edge) in edges_at_node {
                 if edge.deleted { continue; }
                 if edge.physical_geometry.len() < 2 { continue; }
-                
+
                 let is_start = edge.start_node == n_idx as u32;
-                let clip = if is_start { edge.start_clip } else { edge.end_clip };
-                
+                // Merge nodes: mainline edges have zero clip
+                let clip = if node.node_type == NodeType::Merge && edge.class != EdgeClass::Ramp {
+                    0.0
+                } else if is_start {
+                    edge.start_clip
+                } else {
+                    edge.end_clip
+                };
+
                 let mut dist_acc = 0.0;
                 let total_l = edge.physical_length;
                 let target_l = if is_start { clip } else { total_l - clip };
-                
-                let mut p = node.pos; 
+
+                let mut clip_pos = node.pos;
                 let mut tangent = Vector3::FORWARD;
                 let geom = &edge.physical_geometry;
                 for i in 0..geom.len() - 1 {
                     let p1 = geom[i];
-                    let p2 = geom[i+1];
+                    let p2 = geom[i + 1];
                     let d = (p2 - p1).length();
                     if dist_acc + d >= target_l || i == geom.len() - 2 {
                         let t = if d > 1e-6 { (target_l - dist_acc) / d } else { 0.0 };
-                        p = p1 + (p2 - p1) * t;
+                        clip_pos = p1 + (p2 - p1) * t;
                         tangent = (p2 - p1).normalized();
                         break;
                     }
                     dist_acc += d;
                 }
 
-                // Ensure tangent points AWAY from this junction node.
-                // The geometry loop always walks from geom[0] toward geom.last(),
-                // so for end-node junctions the tangent must be flipped.
                 let outward_tangent = if is_start { tangent } else { -tangent };
-
-                p.y += config::ROAD_H_OFFSET;
                 let side_dir = Vector3::new(-outward_tangent.z, 0.0, outward_tangent.x);
+                let angle = f32::atan2(outward_tangent.z, outward_tangent.x);
                 let rw = edge.width * 0.5;
-                let sw = rw + config::SIDEWALK_WIDTH;
+                let sww = rw + config::SIDEWALK_WIDTH;
 
-                for side in [1.0, -1.0] {
-                    let pt_inner = p + side_dir * (rw * side);
-                    let pt_outer = p + side_dir * (sw * side);
-                    let da = pt_inner - node.pos;
-                    let angle = f32::atan2(da.z, da.x);
-                    j_pts.push(JPoint { e_idx, inner: pt_inner, outer: pt_outer, angle, class: edge.class, tangent: outward_tangent });
-                }
+                let has_foot = edge.allowed_types & crate::simulation::network::types::TransitFlags::FOOT != 0;
+
+                edge_infos.push(EdgeInfo {
+                    clip_pos,
+                    outward_tangent,
+                    side_dir,
+                    road_left: clip_pos - side_dir * rw,
+                    road_right: clip_pos + side_dir * rw,
+                    sw_left: if has_foot { Some(clip_pos - side_dir * sww) } else { None },
+                    sw_right: if has_foot { Some(clip_pos + side_dir * sww) } else { None },
+                    angle,
+                    has_foot,
+                    class: edge.class,
+                });
             }
 
-            if j_pts.len() < 3 { continue; }
-            j_pts.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap());
+            if edge_infos.len() < 2 { continue; }
+            edge_infos.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap());
 
-            // Use the centroid of the inner ring points as the fan center.
-            // For symmetric junctions (T, 4-way) this is close to node.pos.
-            // For acute merges it shifts the apex into the merge zone, avoiding a pinch.
             let center = {
-                let sum = j_pts.iter().fold(Vector3::ZERO, |acc, p| acc + p.inner);
-                let mut c = sum / j_pts.len() as f32;
-                c.y = node.pos.y + config::ROAD_H_OFFSET;
+                let mut sum = Vector3::ZERO;
+                for info in &edge_infos {
+                    sum += info.road_left;
+                    sum += info.road_right;
+                }
+                let mut c = sum / (edge_infos.len() as f32 * 2.0);
+                c.y = node.pos.y;
                 c
             };
 
-            for i in 0..j_pts.len() {
-                let p1 = &j_pts[i];
-                let p2 = &j_pts[(i + 1) % j_pts.len()];
+            // CS-style junction fill: build a polygon ring from outer sidewalk/road edges,
+            // then fan-triangulate from center. Each edge contributes three ring vertices:
+            // outer_left, outer_right, and the clamped intersection corner with the next edge.
+            let mut ring: Vec<Vector3> = Vec::with_capacity(edge_infos.len() * 3);
+            for i in 0..edge_infos.len() {
+                let a = &edge_infos[i];
+                let b = &edge_infos[(i + 1) % edge_infos.len()];
 
-                // 1. Asphalt Inner Triangle (Center Fan)
-                let area = (p1.inner - center).cross(p2.inner - center).length() * 0.5;
-                if area >= 0.001 {
-                    vertices.push(center);
-                    vertices.push(p1.inner);
-                    vertices.push(p2.inner);
+                let outer_left   = a.road_left;
+                let outer_right  = a.road_right;
+                let b_outer_left = b.road_left;
+
+                ring.push(outer_left);
+                ring.push(outer_right);
+
+                // Corner: intersection of A's outer-right line with B's outer-left line.
+                let a_ow = (outer_right - a.clip_pos).length();
+                let b_ow = (b_outer_left - b.clip_pos).length();
+                let clip_sep = {
+                    let dx = a.clip_pos.x - b.clip_pos.x;
+                    let dz = a.clip_pos.z - b.clip_pos.z;
+                    (dx * dx + dz * dz).sqrt()
+                };
+                let max_ext = a_ow.max(b_ow) * 3.0 + clip_sep + 1.0;
+
+                let mut corner = line_line_intersection_xz(
+                    outer_right,   a.outward_tangent,
+                    b_outer_left,  b.outward_tangent,
+                ).unwrap_or_else(|| outer_right.lerp(b_outer_left, 0.5));
+
+                let d_a = (corner - a.clip_pos).dot(a.outward_tangent);
+                let d_b = (corner - b.clip_pos).dot(b.outward_tangent);
+                let dist_from_center = {
+                    let dx = corner.x - center.x;
+                    let dz = corner.z - center.z;
+                    (dx * dx + dz * dz).sqrt()
+                };
+                // d > 0 means corner is behind the clip plane (outward spike) — clamp it.
+                if d_a > 0.0 || d_b > 0.0 || dist_from_center > max_ext {
+                    corner = outer_right.lerp(b_outer_left, 0.5);
+                }
+                ring.push(corner);
+            }
+
+            // Fan-triangulate ring from center.
+            let road_color = Color::from_rgba(1.0, 1.0, 1.0, 0.5);
+            let mut c = center;
+            c.y += config::ROAD_H_OFFSET;
+            for j in 0..ring.len() {
+                let mut p1 = ring[j];
+                p1.y += config::ROAD_H_OFFSET;
+                let mut p2 = ring[(j + 1) % ring.len()];
+                p2.y += config::ROAD_H_OFFSET;
+                let cross = (p1.x - c.x) * (p2.z - c.z) - (p1.z - c.z) * (p2.x - c.x);
+                if cross.abs() * 0.5 > 0.001 {
+                    let (ta, tb) = if cross >= 0.0 { (p1, p2) } else { (p2, p1) };
+                    vertices.push(c);
+                    vertices.push(ta);
+                    vertices.push(tb);
                     for _ in 0..3 {
                         normals.push(Vector3::UP);
-                        colors.push(Color::from_rgba(1.0, 1.0, 1.0, 0.5)); // Asphalt
-                        uvs.push(Vector2::new(center.x, center.z));
-                    }
-                }
-
-                // 2. Outer Quad (Between inner and outer points)
-                let is_mouth = p1.e_idx == p2.e_idx;
-
-                // For non-mouth pairs, suppress the sidewalk corner when the two edges
-                // point in nearly the same direction (dot > 0.5, i.e. < 60° apart).
-                // Those gaps are acute merge zones (road space), not exterior corners.
-                // Both tangents are guaranteed to point outward from this node.
-                let edges_nearly_parallel = p1.tangent.dot(p2.tangent) > 0.5;
-                let draw_outer = is_mouth || !edges_nearly_parallel;
-
-                let area_quad1 = (p2.outer - p1.inner).cross(p2.inner - p1.inner).length() * 0.5;
-                let area_quad2 = (p1.outer - p1.inner).cross(p2.outer - p1.inner).length() * 0.5;
-
-                if draw_outer && (area_quad1 >= 0.001 || area_quad2 >= 0.001) {
-                    let alpha = if is_mouth { 0.5 } else { 1.0 };
-
-                    // Use consistent UV mapping
-                    let uv1_i = Vector2::new(p1.inner.x * 2.0, 0.0);
-                    let uv1_o = Vector2::new(p1.outer.x * 2.0, 1.0);
-                    let uv2_i = Vector2::new(p2.inner.x * 2.0, 0.0);
-                    let uv2_o = Vector2::new(p2.outer.x * 2.0, 1.0);
-
-                    // Quad Winding: p1_i -> p2_o -> p2_inner and p1_i -> p1_o -> p2_o
-                    vertices.push(p1.inner); vertices.push(p2.outer); vertices.push(p2.inner);
-                    uvs.push(uv1_i); uvs.push(uv2_o); uvs.push(uv2_i);
-                    vertices.push(p1.inner); vertices.push(p1.outer); vertices.push(p2.outer);
-                    uvs.push(uv1_i); uvs.push(uv1_o); uvs.push(uv2_o);
-
-                    for _ in 0..6 {
-                        normals.push(Vector3::UP);
-                        colors.push(Color::from_rgba(1.0, 1.0, 1.0, alpha));
-                    }
-                }
-
-                // 2b. Bridge Junction Concrete (B_BRIDGE5 Continuation)
-                if draw_outer && !is_mouth && (p1.class == EdgeClass::Bridge || p2.class == EdgeClass::Bridge) {
-                    // Concrete Floor overlay for the sidewalk corner
-                    concrete_vertices.push(p1.inner); concrete_vertices.push(p2.outer); concrete_vertices.push(p2.inner);
-                    concrete_vertices.push(p1.inner); concrete_vertices.push(p1.outer); concrete_vertices.push(p2.outer);
-                    for _ in 0..6 { concrete_normals.push(Vector3::UP); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
-
-                    // Bridge Railing & Sideskirts around the junction rim
-                    let dist = (p2.outer - p1.outer).length();
-                    if dist > 0.01 {
-                        let thickness = 1.0;
-                        let p1_b = p1.outer - Vector3::UP * thickness;
-                        let p2_b = p2.outer - Vector3::UP * thickness;
-                        let p1_ib = p1.inner - Vector3::UP * thickness;
-                        let p2_ib = p2.inner - Vector3::UP * thickness;
-                        let center_b = center - Vector3::UP * thickness;
-
-                        // 1. Vertical Side Skirt (The outer edge of the deck slab)
-                        let rim_dir = (p2.outer - p1.outer).normalized();
-                        let rim_norm = rim_dir.cross(Vector3::DOWN).normalized();
-                        
-                        concrete_vertices.push(p1.outer); concrete_vertices.push(p2_b); concrete_vertices.push(p1_b);
-                        concrete_vertices.push(p1.outer); concrete_vertices.push(p2.outer); concrete_vertices.push(p2_b);
-                        for _ in 0..6 { concrete_normals.push(-rim_norm); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
-
-                        // 2. Bottom Slab Face (To avoid see-through from below)
-                        concrete_vertices.push(center_b); concrete_vertices.push(p2_ib); concrete_vertices.push(p1_ib);
-                        concrete_vertices.push(p1_ib); concrete_vertices.push(p2_ib); concrete_vertices.push(p2_b);
-                        concrete_vertices.push(p1_ib); concrete_vertices.push(p2_b); concrete_vertices.push(p1_b);
-                        for _ in 0..9 { concrete_normals.push(Vector3::DOWN); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
-
-                        // 3. Bridge Railing (The upper part)
-                        let rail_h = 1.2; let rail_t = 0.1;
-                        let p1_rt = p1.outer + Vector3::UP * rail_h; let p2_rt = p2.outer + Vector3::UP * rail_h;
-                        let p1_rto = p1.outer + rim_norm * rail_t + Vector3::UP * rail_h; let p2_rto = p2.outer + rim_norm * rail_t + Vector3::UP * rail_h;
-                        let p1_ro = p1.outer + rim_norm * rail_t; let p2_ro = p2.outer + rim_norm * rail_t;
-
-                        concrete_vertices.push(p1.outer); concrete_vertices.push(p2_rt); concrete_vertices.push(p1_rt);
-                        concrete_vertices.push(p1.outer); concrete_vertices.push(p2.outer); concrete_vertices.push(p2_rt);
-                        for _ in 0..6 { concrete_normals.push(-rim_norm); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
-                        concrete_vertices.push(p1_rt); concrete_vertices.push(p2_rt); concrete_vertices.push(p2_rto);
-                        concrete_vertices.push(p1_rt); concrete_vertices.push(p2_rto); concrete_vertices.push(p1_rto);
-                        for _ in 0..6 { concrete_normals.push(Vector3::UP); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
-                        concrete_vertices.push(p1_ro); concrete_vertices.push(p1_rto); concrete_vertices.push(p2_rto);
-                        concrete_vertices.push(p1_ro); concrete_vertices.push(p2_rto); concrete_vertices.push(p2_ro);
-                        for _ in 0..6 { concrete_normals.push(rim_norm); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                        colors.push(road_color);
+                        uvs.push(Vector2::new(c.x, c.z));
                     }
                 }
             }

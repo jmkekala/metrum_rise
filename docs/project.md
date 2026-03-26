@@ -70,6 +70,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Lane types and one-way rules in `network/types.rs`.
 - Edge geometry is 3D (`Vec<Vector3>`) — grade-separated roads are natively representable as elevated or depressed polylines. Node snapping uses 3D Euclidean distance, so bridge abutments and underpass nodes with ≥ 2 m vertical separation will not snap together.
 - **`EdgeClass` data model complete**: `Standard | Bridge | Tunnel` enum in `types.rs`; `class: EdgeClass` field on `Edge`; new edges default to `Standard`; `split_edge` copies `class` to the new half-edge.
+- **Junction Rendering (Item 70)**: Replaced the radial-fan filler with a robust line-line intersection algorithm. Intersection corners are calculated geometrically for road surfaces and sidewalks, ensuring seamless alignment at any angle. Handles `NodeType::Merge` (highway ramps) naturally via zero-clip mainline segments, eliminating the need for special-case taper strips.
 - **R-Tree Spatial Index**: `spatial_edge_rt` replaces the uniform 512m grid for all edge queries. O(log N) insert/delete/query provides tight AABB filtering, zero manual deduplication, and eliminates long-edge false positives.
 
 ### Zoning
@@ -188,6 +189,10 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 59. **`AgentSystem` SoA migration to `soa_derive`**: replace the 29 manually-maintained parallel `Vec<T>` fields in `data.rs` with a `#[derive(SoA)]` schema struct (`Agent`) and a generated `AgentVec`. `spawn_agent` becomes a single `push(Agent { ... })` — the compiler enforces that all fields are initialised; `clear()` becomes one call; adding a new field no longer silently corrupts state. Also fixes B1 (`has_car` missing from `kill_agent`). Implementation: add `soa_derive = "0.3"` to `Cargo.toml`; define `Agent` with all per-agent fields; wrap `AgentVec` in `AgentSystem` via `Deref/DerefMut` so all `agents.field[i]` call sites are unchanged; replace `self.count` with `self.len()` throughout (`tick.rs`, `data.rs` methods, `render_helpers.rs`, `query.rs`, `benchmark.rs`, `allocator.rs`). `sim_time` and `pathfind_count` remain as direct fields on `AgentSystem`, not part of the generated vec.
 
 58. **Split `buildings/allocator.rs`** — 689 lines mixing two concerns. Split into `buildings/allocator/lifecycle.rs` (spawn, kill, evict, remap) and `buildings/allocator/index.rs` (zone_index, vacancy_index, claim_vacancy, release_vacancy). Low complexity, no behaviour change. Do when next working in that file.
+
+72. **Thin kerb line ribbon** — a 0.1 m-wide ribbon placed exactly at the outer road edge (offset = `edge.width * 0.5`), rendered as a distinct colour (light grey / concrete). Uses the same clipped-ribbon loop already in the lane renderer — no new clipping logic needed. Sits on top of item 71's UV coloring to give a crisp physical boundary. Zero sidewalk geometry; no junction alignment issues since the ribbon ends at the clip point and the junction polygon covers the gap.
+
+71. **Kerb strip via UV-based road edge coloring** — blend the outer ~1.5 m of each road ribbon from asphalt to a lighter kerb colour using the ribbon's existing UV.y channel (0 = road centre edge, 1 = outer road edge). Zero extra geometry; no junction alignment issues. Requires a shader parameter `kerb_width_uv` (fraction of road half-width that transitions to kerb colour) and a `kerb_color` uniform. Works on top of the current sidewalk-free rendering (item 1 already shipped). Prerequisite: agree on a shader pipeline for the road material.
 
 67. **Crosswalk system** — data model, rendering, toggle tool, and (deferred) pedestrian crossing constraint.
 

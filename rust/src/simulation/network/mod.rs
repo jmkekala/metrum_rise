@@ -185,7 +185,10 @@ impl TransitNetwork {
         if fwd > 0 || bkw > 0 {
             allowed_types |= TransitFlags::CAR;
         }
-        if is_walkway || fwd > 0 || bkw > 0 { // If it's a walkway, or a road, pedestrians can use it
+        // Pedestrians (and therefore sidewalks) only on walkways and local streets.
+        // Multi-lane roads in either direction are highways/arterials — no footpath.
+        let is_local_street = fwd <= 1 && bkw <= 1;
+        if is_walkway || is_local_street {
             allowed_types |= TransitFlags::FOOT;
         }
 
