@@ -31,18 +31,8 @@ var walkway_btn: Button
 # Road options
 var straight_btn: Button
 var spline_btn: Button
-var zoning_options_menu: VBoxContainer
-var zoning_single_btn: Button
-var zoning_paint_btn: Button
-var zoning_delete_btn: Button
-var zoning_marquee_btn: Button
-var zoning_fill_btn: Button
 var zoning_combined_hbox: HBoxContainer
 var zoning_sub_menu: HBoxContainer
-
-# Road zoning options
-var road_zoning_left_btn: Button
-var road_zoning_right_btn: Button
 var select_main_btn: Button
 var road_properties_panel: PanelContainer
 
@@ -126,21 +116,6 @@ func _build_ui():
 	spline_btn.text = "Spline"
 	spline_btn.toggle_mode = true
 	road_options_menu.add_child(spline_btn)
-	
-	var road_sep = HSeparator.new()
-	road_options_menu.add_child(road_sep)
-	
-	road_zoning_left_btn = Button.new()
-	road_zoning_left_btn.text = "Zone L"
-	road_zoning_left_btn.toggle_mode = true
-	road_zoning_left_btn.button_pressed = true
-	road_options_menu.add_child(road_zoning_left_btn)
-	
-	road_zoning_right_btn = Button.new()
-	road_zoning_right_btn.text = "Zone R"
-	road_zoning_right_btn.toggle_mode = true
-	road_zoning_right_btn.button_pressed = true
-	road_options_menu.add_child(road_zoning_right_btn)
 	
 	road_combined_hbox.add_child(options_panel)
 	# Initially hide the options panel until a tool is actually selected? 
@@ -234,56 +209,7 @@ func _build_ui():
 	vbox.add_child(zoning_combined_hbox)
 	vbox.move_child(zoning_combined_hbox, vbox.get_child_count() - 2)
 
-	# 1. Zoning Options Panel
-	var z_options_panel = PanelContainer.new()
-	var z_op_style = StyleBoxFlat.new()
-	z_op_style.bg_color = Color(0.15, 0.15, 0.15, 0.7)
-	z_op_style.set_corner_radius_all(10)
-	z_options_panel.add_theme_stylebox_override("panel", z_op_style)
-	
-	var z_options_padding = MarginContainer.new()
-	z_options_padding.add_theme_constant_override("margin_left", 8)
-	z_options_padding.add_theme_constant_override("margin_right", 8)
-	z_options_padding.add_theme_constant_override("margin_top", 5)
-	z_options_padding.add_theme_constant_override("margin_bottom", 5)
-	z_options_panel.add_child(z_options_padding)
-	
-	zoning_options_menu = VBoxContainer.new()
-	z_options_padding.add_child(zoning_options_menu)
-	
-	zoning_single_btn = Button.new()
-	zoning_single_btn.text = "Single"
-	zoning_single_btn.toggle_mode = true
-	zoning_single_btn.button_pressed = true 
-	zoning_options_menu.add_child(zoning_single_btn)
-
-	zoning_paint_btn = Button.new()
-	zoning_paint_btn.text = "Paint"
-	zoning_paint_btn.toggle_mode = true
-	zoning_options_menu.add_child(zoning_paint_btn)
-	
-	zoning_fill_btn = Button.new()
-	zoning_fill_btn.text = "Fill"
-	zoning_fill_btn.toggle_mode = true
-	zoning_options_menu.add_child(zoning_fill_btn)
-
-	zoning_delete_btn = Button.new()
-	zoning_delete_btn.text = "Delete road zones"
-	zoning_delete_btn.toggle_mode = true
-	zoning_options_menu.add_child(zoning_delete_btn)
-	
-	zoning_combined_hbox.add_child(z_options_panel)
-
-	var z_modes = [zoning_single_btn, zoning_paint_btn, zoning_fill_btn, zoning_delete_btn]
-	for btn in z_modes:
-		btn.pressed.connect(func():
-			for b in z_modes: b.set_pressed_no_signal(false)
-			btn.set_pressed_no_signal(true)
-			if input_manager.zoning_tool:
-				input_manager.zoning_tool.current_mode = z_modes.find(btn)
-		)
-
-	# 2. Zoning Types Panel
+	# Zoning Types Panel
 	var zoning_sub_panel = PanelContainer.new()
 	var z_sub_style = StyleBoxFlat.new()
 	z_sub_style.bg_color = Color(0.1, 0.1, 0.1, 0.8)
@@ -323,13 +249,6 @@ func _build_ui():
 		b.add_theme_stylebox_override("normal", bs)
 		b.pressed.connect(func():
 			input_manager._handle_zoning_selection(KEY_0 + zi.type)
-			if input_manager.zoning_tool:
-				# If we are in DELETE mode, switch back to SINGLE mode when selecting a type
-				if input_manager.zoning_tool.current_mode == 3: # DELETE is 3
-					input_manager.zoning_tool.current_mode = 0 # SINGLE is 0
-					# Update UI buttons
-					for btn in z_modes: btn.set_pressed_no_signal(false)
-					zoning_single_btn.set_pressed_no_signal(true)
 		)
 		zoning_sub_menu.add_child(b)
 	

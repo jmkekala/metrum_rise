@@ -220,10 +220,7 @@ func _commit_segment(end_pos):
 	
 	var points = _get_processed_points()
 	if points.size() > 1:
-		var main_ui = get_node("../MainUI")
-		var z_left = main_ui.road_zoning_left_btn.button_pressed
-		var z_right = main_ui.road_zoning_right_btn.button_pressed
-		simulation_node.add_road(points, fwd_lanes, bkw_lanes, z_left, z_right)
+		simulation_node.add_road(points, fwd_lanes, bkw_lanes, true, true)
 		simulation_node.flatten_terrain_for_roads()
 		update_main_mesh()
 		terrain_node.update_terrain_visuals()
