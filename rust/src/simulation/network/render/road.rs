@@ -63,25 +63,71 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
-        // Calculate miters for 2-edge joints
+        // 0b. Junction Tip calculation (B5/B1 fixed)
+        let mut junction_tips: HashMap<(usize, u32), [Option<Vector3>; 2]> = HashMap::new();
         let mut node_miters: HashMap<u32, Vector2> = HashMap::new();
-        for (node_id, dirs) in &node_dirs {
+        
+        for (&node_id, dirs) in &node_dirs {
+            if dirs.len() < 2 { continue; }
+            
+            // 1. Calculate traditional 2-edge miters for walkways
             if dirs.len() == 2 {
                 let d1 = dirs[0].1;
                 let d2 = dirs[1].1;
-                
                 let s1 = Vector2::new(-d1.y, d1.x);
                 let s2 = Vector2::new(-d2.y, d2.x);
-                
-                // Miter direction is the average of the two side directions
-                // Note: we need to handle the case where they are nearly opposite (sharp turn)
                 let d_diff = s1 - s2;
                 if d_diff.length_squared() > 1e-6 {
                     let miter = d_diff.normalized();
-                    // Scale miter length: len = 1.0 / cos(half_angle)
                     let cos_half = s1.dot(miter).abs();
                     if cos_half > 0.1 {
-                        node_miters.insert(*node_id, miter / cos_half);
+                        node_miters.insert(node_id, miter / cos_half);
+                    }
+                }
+            }
+
+            // 2. Calculate junction tips for road edge intersection (B5/B1)
+            let mut sorted_dirs = dirs.clone();
+            sorted_dirs.sort_by(|a, b| f32::atan2(a.1.y, a.1.x).partial_cmp(&f32::atan2(b.1.y, b.1.x)).unwrap());
+
+            for j in 0..sorted_dirs.len() {
+                let a = &sorted_dirs[j];
+                let b = &sorted_dirs[(j + 1) % sorted_dirs.len()];
+                
+                let edge_a = &graph.edges[a.0];
+                let edge_b = &graph.edges[b.0];
+                if edge_a.primary_type != TransitType::Road || edge_b.primary_type != TransitType::Road { continue; }
+                
+                let node_pos = graph.nodes[node_id as usize].pos;
+                let node_xy = Vector2::new(node_pos.x, node_pos.z);
+                
+                let side_a = Vector2::new(-a.1.y, a.1.x); // positive side of A
+                let side_b = Vector2::new(-b.1.y, b.1.x); // positive side of B, so negative is -side_b
+                
+                let rw_a = edge_a.width * 0.5;
+                let rw_b = edge_b.width * 0.5;
+                
+                let p_a = node_xy + side_a * rw_a;
+                let p_b = node_xy - side_b * rw_b;
+                
+                // 2D line-line intersection
+                let det = a.1.x * (-b.1.y) - (-b.1.x) * a.1.y;
+                if det.abs() > 1e-4 {
+                    let delta = p_b - p_a;
+                    let t_a = (delta.x * (-b.1.y) - (-b.1.x) * delta.y) / det;
+                    let t_b = (a.1.x * delta.y - delta.x * a.1.y) / det;
+                    
+                    if t_a > 0.0 && t_b > 0.0 {
+                        // Strict capping to avoid ribbon flipping on short edges (B1)
+                        let max_a = (edge_a.width * 1.5).min(edge_a.physical_length * 0.4);
+                        let max_b = (edge_b.width * 1.5).min(edge_b.physical_length * 0.4);
+                        
+                        if t_a < max_a && t_b < max_b {
+                            let tip_xy = p_a + a.1 * t_a;
+                            let tip = Vector3::new(tip_xy.x, node_pos.y, tip_xy.y);
+                            junction_tips.entry((a.0, node_id)).or_insert([None; 2])[0] = Some(tip); // A pos
+                            junction_tips.entry((b.0, node_id)).or_insert([None; 2])[1] = Some(tip); // B neg
+                        }
                     }
                 }
             }
@@ -241,28 +287,54 @@ impl TransitRenderer for RoadRenderer {
                     p0.y += h_offset;
                     p1.y += h_offset;
 
-                    let v0_l = p0 + side0 * (lateral_offset - lane_w * 0.5);
-                    let v0_r = p0 + side0 * (lateral_offset + lane_w * 0.5);
-                    let v1_l = p1 + side1 * (lateral_offset - lane_w * 0.5);
-                    let v1_r = p1 + side1 * (lateral_offset + lane_w * 0.5);
+                    let mut v0_l = p0 + side0 * (lateral_offset - lane_w * 0.5);
+                    let mut v0_r = p0 + side0 * (lateral_offset + lane_w * 0.5);
+                    let mut v1_l = p1 + side1 * (lateral_offset - lane_w * 0.5);
+                    let mut v1_r = p1 + side1 * (lateral_offset + lane_w * 0.5);
 
-                    vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
-                    vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
-                    
-                    let uv_y0_l = 0.0; let uv_y0_r = 1.0;
-                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
-                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_l));
-                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
-                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
-                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
-                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_r));
+                    // Apply Junction Tips to Road Lanes (outermost edge of asphalt meets sidewalk tips)
+                    if t0 == 0.0 {
+                        if let Some(tips) = junction_tips.get(&(edge_id, edge.start_node)) {
+                            if lateral_offset > 0.0 && (lateral_offset + lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
+                                if let Some(tip) = tips[0] { v0_r = tip; v0_r.y += h_offset; }
+                            } else if lateral_offset < 0.0 && (lateral_offset - lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
+                                if let Some(tip) = tips[1] { v0_l = tip; v0_l.y += h_offset; }
+                            }
+                        }
+                    }
+                    if t1 == 1.0 {
+                        if let Some(tips) = junction_tips.get(&(edge_id, edge.end_node)) {
+                            if lateral_offset > 0.0 && (lateral_offset + lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
+                                if let Some(tip) = tips[0] { v1_r = tip; v1_r.y += h_offset; }
+                            } else if lateral_offset < 0.0 && (lateral_offset - lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
+                                if let Some(tip) = tips[1] { v1_l = tip; v1_l.y += h_offset; }
+                            }
+                        }
+                    }
 
-                    let is_lane_boundary = if l_idx > 0 { 1.0 } else { 0.0 };
-                    let is_center_boundary = if l_idx == edge.fwd_lanes as usize && edge.fwd_lanes > 0 && edge.bkw_lanes > 0 { 1.0 } else { 0.0 };
+                    // Area check for degenerate ribbon triangles
+                    let area1 = (v1_l - v0_l).cross(v1_r - v0_l).length() * 0.5;
+                    let area2 = (v1_r - v0_l).cross(v0_r - v0_l).length() * 0.5;
 
-                    for _ in 0..6 {
-                        normals.push(Vector3::UP);
-                        colors.push(Color::from_rgba(1.0, is_lane_boundary, is_center_boundary, 0.0));
+                    if area1 >= 0.001 || area2 >= 0.001 {
+                        vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
+                        vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
+                        
+                        let uv_y0_l = 0.0; let uv_y0_r = 1.0;
+                        uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
+                        uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_l));
+                        uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
+                        uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_l));
+                        uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y0_r));
+                        uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y0_r));
+
+                        let is_lane_boundary = if l_idx > 0 { 1.0 } else { 0.0 };
+                        let is_center_boundary = if l_idx == edge.fwd_lanes as usize && edge.fwd_lanes > 0 && edge.bkw_lanes > 0 { 1.0 } else { 0.0 };
+
+                        for _ in 0..6 {
+                            normals.push(Vector3::UP);
+                            colors.push(Color::from_rgba(1.0, is_lane_boundary, is_center_boundary, 0.0));
+                        }
                     }
                     dist_acc += segment_len;
                 }
@@ -301,25 +373,53 @@ impl TransitRenderer for RoadRenderer {
                     let side0 = point_side_dirs[i];
                     let side1 = point_side_dirs[i+1];
 
-                    let v0_l = p0 + side0 * (lateral_offset - sw_w * 0.5);
-                    let v0_r = p0 + side0 * (lateral_offset + sw_w * 0.5);
-                    let v1_l = p1 + side1 * (lateral_offset - sw_w * 0.5);
-                    let v1_r = p1 + side1 * (lateral_offset + sw_w * 0.5);
+                    let mut v0_l = p0 + side0 * (lateral_offset - sw_w * 0.5);
+                    let mut v0_r = p0 + side0 * (lateral_offset + sw_w * 0.5);
+                    let mut v1_l = p1 + side1 * (lateral_offset - sw_w * 0.5);
+                    let mut v1_r = p1 + side1 * (lateral_offset + sw_w * 0.5);
 
-                    vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
-                    vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
+                    // Apply Junction Tips to Sidewalks (B5 fixed)
+                    if t0 == 0.0 {
+                        let node_id = edge.start_node;
+                        if let Some(tips) = junction_tips.get(&(edge_id, node_id)) {
+                            if lateral_offset > 0.0 { // Left sidewalk, inner edge
+                                if let Option::Some(tip) = tips[0] { v0_l = tip; v0_l.y += h_offset + 0.001; }
+                            } else { // Right sidewalk, inner edge
+                                if let Option::Some(tip) = tips[1] { v0_r = tip; v0_r.y += h_offset + 0.001; }
+                            }
+                        }
+                    }
+                    if t1 == 1.0 {
+                        let node_id = edge.end_node;
+                        if let Some(tips) = junction_tips.get(&(edge_id, node_id)) {
+                            if lateral_offset > 0.0 {
+                                if let Option::Some(tip) = tips[0] { v1_l = tip; v1_l.y += h_offset + 0.001; }
+                            } else {
+                                if let Option::Some(tip) = tips[1] { v1_r = tip; v1_r.y += h_offset + 0.001; }
+                            }
+                        }
+                    }
 
-                    let (uv_y_inner, uv_y_outer) = if lateral_offset > 0.0 { (0.0, 1.0) } else { (1.0, 0.0) };
-                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_inner));
-                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_outer));
-                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_outer));
-                    uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_inner));
-                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_outer));
-                    uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_inner));
+                    // Area check for degenerate ribbon triangles
+                    let area1 = (v1_l - v0_l).cross(v1_r - v0_l).length() * 0.5;
+                    let area2 = (v1_r - v0_l).cross(v0_r - v0_l).length() * 0.5;
 
-                    for _ in 0..6 {
-                        normals.push(Vector3::UP);
-                        colors.push(sw_color);
+                    if area1 >= 0.001 || area2 >= 0.001 {
+                        vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
+                        vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
+
+                        let (uv_y_inner, uv_y_outer) = if lateral_offset > 0.0 { (0.0, 1.0) } else { (1.0, 0.0) };
+                        uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_inner));
+                        uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_outer));
+                        uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_outer));
+                        uvs.push(Vector2::new(segment_start + t0 * segment_len, uv_y_inner));
+                        uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_outer));
+                        uvs.push(Vector2::new(segment_start + t1 * segment_len, uv_y_inner));
+
+                        for _ in 0..6 {
+                            normals.push(Vector3::UP);
+                            colors.push(sw_color);
+                        }
                     }
                     dist_acc += segment_len;
                 }
@@ -557,34 +657,42 @@ impl TransitRenderer for RoadRenderer {
                 let p2 = &j_pts[(i + 1) % j_pts.len()];
 
                 // 1. Asphalt Inner Triangle (Center Fan)
-                vertices.push(center);
-                vertices.push(p1.inner);
-                vertices.push(p2.inner);
-                for _ in 0..3 {
-                    normals.push(Vector3::UP);
-                    colors.push(Color::from_rgba(1.0, 1.0, 1.0, 0.5)); // Asphalt
-                    uvs.push(Vector2::new(center.x, center.z));
+                let area = (p1.inner - center).cross(p2.inner - center).length() * 0.5;
+                if area >= 0.001 {
+                    vertices.push(center);
+                    vertices.push(p1.inner);
+                    vertices.push(p2.inner);
+                    for _ in 0..3 {
+                        normals.push(Vector3::UP);
+                        colors.push(Color::from_rgba(1.0, 1.0, 1.0, 0.5)); // Asphalt
+                        uvs.push(Vector2::new(center.x, center.z));
+                    }
                 }
 
                 // 2. Outer Quad (Between inner and outer points)
                 let is_mouth = p1.e_idx == p2.e_idx;
-                let alpha = if is_mouth { 0.5 } else { 1.0 };
-                
-                // Use consistent UV mapping
-                let uv1_i = Vector2::new(p1.inner.x * 2.0, 0.0);
-                let uv1_o = Vector2::new(p1.outer.x * 2.0, 1.0);
-                let uv2_i = Vector2::new(p2.inner.x * 2.0, 0.0);
-                let uv2_o = Vector2::new(p2.outer.x * 2.0, 1.0);
+                let area_quad1 = (p2.outer - p1.inner).cross(p2.inner - p1.inner).length() * 0.5;
+                let area_quad2 = (p1.outer - p1.inner).cross(p2.outer - p1.inner).length() * 0.5;
 
-                // Quad Winding: p1_i -> p2_o -> p2_inner and p1_i -> p1_o -> p2_o
-                vertices.push(p1.inner); vertices.push(p2.outer); vertices.push(p2.inner);
-                uvs.push(uv1_i); uvs.push(uv2_o); uvs.push(uv2_i);
-                vertices.push(p1.inner); vertices.push(p1.outer); vertices.push(p2.outer);
-                uvs.push(uv1_i); uvs.push(uv1_o); uvs.push(uv2_o);
+                if area_quad1 >= 0.001 || area_quad2 >= 0.001 {
+                    let alpha = if is_mouth { 0.5 } else { 1.0 };
+                    
+                    // Use consistent UV mapping
+                    let uv1_i = Vector2::new(p1.inner.x * 2.0, 0.0);
+                    let uv1_o = Vector2::new(p1.outer.x * 2.0, 1.0);
+                    let uv2_i = Vector2::new(p2.inner.x * 2.0, 0.0);
+                    let uv2_o = Vector2::new(p2.outer.x * 2.0, 1.0);
 
-                for _ in 0..6 {
-                    normals.push(Vector3::UP);
-                    colors.push(Color::from_rgba(1.0, 1.0, 1.0, alpha));
+                    // Quad Winding: p1_i -> p2_o -> p2_inner and p1_i -> p1_o -> p2_o
+                    vertices.push(p1.inner); vertices.push(p2.outer); vertices.push(p2.inner);
+                    uvs.push(uv1_i); uvs.push(uv2_o); uvs.push(uv2_i);
+                    vertices.push(p1.inner); vertices.push(p1.outer); vertices.push(p2.outer);
+                    uvs.push(uv1_i); uvs.push(uv1_o); uvs.push(uv2_o);
+
+                    for _ in 0..6 {
+                        normals.push(Vector3::UP);
+                        colors.push(Color::from_rgba(1.0, 1.0, 1.0, alpha));
+                    }
                 }
 
                 // 2b. Bridge Junction Concrete (B_BRIDGE5 Continuation)

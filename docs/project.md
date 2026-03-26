@@ -179,59 +179,7 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
-**Root cause.** At junction nodes the sidewalk ribbon for each edge ends with a raw perpendicular cut. Two adjacent edges' inner sidewalk corners overlap in the same XZ region at the same Y, causing z-fighting. The outer corners leave a gap, but that gap is already covered by the road surface (asphalt quad), so outer corners need no fix.
 
-**Why the angle-bisector / `1/cos` approach fails.**
-- Applied to outer corners as well → produces visible "cap" widening on the sidewalk tip.
-- `1 / cos(half_angle)` is unbounded near 180° → near-parallel adjacent roads produce a spike.
-- If accidentally applied to 2-edge pass-through nodes (which already have a working miter) → corrupts curve joints.
-
-**Correct approach: line-line intersection, inner corner only.**
-
-Pre-compute a `HashMap<(edge_id, node_id), [Option<Vector2>; 2]>` (index 0 = positive-side sidewalk, index 1 = negative-side). Only populate for nodes where `connection_count >= 3`. Run this after the existing `node_miters` block.
-
-```
-for each junction node N (connection_count[N] >= 3):
-    edges = node_dirs[N]   // Vec<(edge_id, outward_tangent_2d)>
-    sort by atan2(tangent.y, tangent.x)   // CCW angular order
-
-    for each consecutive pair (A, B) — B is CCW from A, including wrap-around:
-        // Mathematical fact: A's positive side and B's negative side
-        // always face into the angular gap between A and B (proven by
-        // dot(side_A, gap_bisector) = sin((angle_B - angle_A)/2) > 0).
-
-        side_A  = Vector2(-A.tangent.y,  A.tangent.x)
-        side_B  = Vector2(-B.tangent.y,  B.tangent.x)
-        node_xy = Vector2(nodes[N].pos.x, nodes[N].pos.z)
-
-        P_A = node_xy + side_A * (edges[A].width / 2)   // A inner sidewalk edge origin
-        P_B = node_xy - side_B * (edges[B].width / 2)   // B inner sidewalk edge origin
-
-        // 2D line-line intersection via Cramer's rule:
-        // P_A + t_A * A.tangent = P_B + t_B * B.tangent
-        delta = P_B - P_A
-        det   = -(A.tangent.x * B.tangent.y - A.tangent.y * B.tangent.x)
-        if det.abs() < 1e-6: continue          // parallel roads
-
-        t_A = (-B.tangent.y * delta.x + B.tangent.x * delta.y) / det
-        t_B = (-A.tangent.y * delta.x + A.tangent.x * delta.y) / det
-
-        // Guards — these make the 180° open-back gap and near-parallel cases safe:
-        if t_A <= 0.0 || t_B <= 0.0: continue
-        max_reach = (edges[A].width + edges[B].width) * 1.5
-        if t_A > max_reach || t_B > max_reach: continue
-
-        tip_xz = P_A + A.tangent * t_A
-
-        junction_tips[(A.edge_id, N)][0] = Some(tip_xz)   // A positive side
-        junction_tips[(B.edge_id, N)][1] = Some(tip_xz)   // B negative side
-```
-
-In the sidewalk loop, when emitting the junction-end vertices (where `t0 > 0` for the start-node end, or `t1 < 1` for the end-node end): look up `junction_tips[(edge_id, node_id)][side_index]`. If a tip exists, replace **only the inner corner vertex** (`lateral_offset - sw_w*0.5` for positive side, `lateral_offset + sw_w*0.5` for negative side) with `Vector3(tip.x, p_junction.y, tip.y)`. The outer corner vertex is unchanged.
-
-The `t > 0` guard handles the T-junction back gap (antiparallel lines, only solution is `t=0`) and all open-side gaps automatically — no special-casing needed.
-
----
 
 ## Backlog
 
