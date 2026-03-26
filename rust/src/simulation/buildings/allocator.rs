@@ -235,9 +235,11 @@ impl BuildingAllocator {
                         let world_size_y = config.height_m;
                         let gx = (((center_2d.x / world_size_x) + 0.5) * desirability.grid.width as f32).round() as usize;
                         let gy = (((center_2d.y / world_size_y) + 0.5) * desirability.grid.height as f32).round() as usize;
+                        let gx = gx.min(desirability.grid.width.saturating_sub(1));
+                        let gy = gy.min(desirability.grid.height.saturating_sub(1));
 
-                        let val = *desirability.grid.get(gx, gy).unwrap_or(&0.0);
-                        if val < 50.0 {
+                        let val = *desirability.grid.get(gx, gy).unwrap_or(&50.0);
+                        if val < 20.0 {
                             can_build = false;
                         }
                     }
@@ -633,7 +635,7 @@ mod tests {
         let mut zoning = ZoningSystem::new(&map_cfg);
         let mut desirability = DesirabilitySystem::new(&map_cfg);
         let (env_w, env_h) = map_cfg.get_env_grid_size();
-        for x in 0..env_w { for y in 0..env_h { desirability.grid.set(x, y, 20.0); } } // Low desirability
+        for x in 0..env_w { for y in 0..env_h { desirability.grid.set(x, y, 10.0); } } // Below gate threshold (< 20.0)
         
         let mut noise = NoiseSystem::new(&map_cfg);
         let mut agents = AgentSystem::new();
@@ -646,7 +648,7 @@ mod tests {
 
         allocator.tick(&mut demand, &mut zoning, &desirability, &noise, &mut agents, &mut network, &mut graph, &map_cfg);
         
-        assert_eq!(allocator.buildings.len(), 0, "No building should spawn when desirability is below 50.0");
+        assert_eq!(allocator.buildings.len(), 0, "No building should spawn when desirability is below 20.0");
     }
 
     #[test]
