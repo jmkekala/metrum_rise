@@ -314,9 +314,9 @@ impl SimulationNode {
         self.get_agent_transforms_internal()
     }
 
-    /// Returns the packed transforms for all visible car agents with road-aligned orientation.
+    /// Returns a Dictionary of packed transforms for visible car agents, keyed by vehicle type.
     #[func]
-    pub fn get_car_transforms(&self) -> PackedFloat32Array {
+    pub fn get_car_transforms(&self) -> VarDictionary {
         self.get_car_transforms_internal()
     }
 

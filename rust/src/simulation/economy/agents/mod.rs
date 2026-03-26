@@ -34,3 +34,13 @@ pub const MODE_TRAIN_PASSENGER: u8 = 4;
 pub const MODE_TAXI_PASSENGER: u8 = 5;
 /// Agent is a passenger on a ship/ferry.
 pub const MODE_SHIP_PASSENGER: u8 = 6;
+
+// Vehicle Types (Civilians)
+/// Default civilian sedan.
+pub const VEHICLE_SEDAN: u8 = 0;
+/// Faster/Sportier civilian sedan.
+pub const VEHICLE_SPORTS: u8 = 1;
+/// Basic civilian SUV.
+pub const VEHICLE_SUV: u8 = 2;
+/// Premium civilian SUV.
+pub const VEHICLE_LUXURY: u8 = 3;

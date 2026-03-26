@@ -9,7 +9,8 @@ extends Node3D
 @onready var simulation_node = $"../SimulationNode"
 
 var walker_mmi: MultiMeshInstance3D
-var car_mmi: MultiMeshInstance3D
+# Key: vehicle_type (int), Value: MultiMeshInstance3D
+var car_mmis: Dictionary = {}
 
 var debug_mesh_instance: MeshInstance3D
 var debug_mesh: ImmediateMesh
@@ -40,16 +41,49 @@ func _ready():
 	walker_mmi.multimesh = wmm
 	add_child(walker_mmi)
 
-	# --- Car MultiMesh ---
-	car_mmi = MultiMeshInstance3D.new()
-	var cmm = MultiMesh.new()
-	cmm.transform_format = MultiMesh.TRANSFORM_3D
-	cmm.use_colors = false
-	cmm.use_custom_data = false
-	cmm.instance_count = 0
-	cmm.mesh = _build_car_mesh()
-	car_mmi.multimesh = cmm
-	add_child(car_mmi)
+	# --- Car MultiMeshes (Civilians) ---
+	var car_models = {
+		0: "res://assets/models/vehicles/civilian/sedan.glb",
+		1: "res://assets/models/vehicles/civilian/sedan-sports.glb",
+		2: "res://assets/models/vehicles/civilian/suv.glb",
+		3: "res://assets/models/vehicles/civilian/suv-luxury.glb"
+	}
+
+	# We'll create 5 color variations for each model by shifting UVs
+	# Each variation will have its own MMI node
+	# Keys in car_mmis will be: (vehicle_type * 10) + color_variant
+	var color_offsets = [0.0, 0.1, 0.2, 0.3, 0.4] # Horizontal UV shifts
+
+	for v_type in car_models:
+		var model_path = car_models[v_type]
+		var gltf_doc := GLTFDocument.new()
+		var gltf_state := GLTFState.new()
+		var err := gltf_doc.append_from_file(model_path, gltf_state)
+		
+		if err == OK:
+			var node := gltf_doc.generate_scene(gltf_state)
+			if node:
+				for variant_id in range(color_offsets.size()):
+					var uv_shift = color_offsets[variant_id]
+					var mesh = _extract_mesh(node, uv_shift)
+					if not mesh: continue
+					
+					var mmi = MultiMeshInstance3D.new()
+					var mm = MultiMesh.new()
+					mm.transform_format = MultiMesh.TRANSFORM_3D
+					mm.use_colors = false
+					mm.use_custom_data = false
+					mm.instance_count = 0
+					mm.mesh = mesh
+					mmi.multimesh = mm
+					add_child(mmi)
+					
+					var key = (v_type * 10) + variant_id
+					car_mmis[key] = mmi
+					
+				node.free()
+		else:
+			push_error("Failed to load car model: " + model_path)
 
 	debug_mesh_instance = MeshInstance3D.new()
 	debug_mesh = ImmediateMesh.new()
@@ -128,14 +162,19 @@ func update_swarm():
 	if wcount > 0:
 		wmm.buffer = wbuf
 
-	# Cars
-	var cbuf = simulation_node.get_car_transforms()
-	var cmm = car_mmi.multimesh
-	var ccount = cbuf.size() / 12
-	if ccount != cmm.instance_count:
-		cmm.instance_count = ccount
-	if ccount > 0:
-		cmm.buffer = cbuf
+	# Cars (Now grouped by vehicle type and color variant)
+	var car_data = simulation_node.get_car_transforms()
+	
+	# Clear types that are no longer present in the simulation (optional, but clean)
+	for type_key in car_mmis:
+		var mmi = car_mmis[type_key]
+		var buffer = car_data.get(type_key, PackedFloat32Array())
+		var count = buffer.size() / 12
+		
+		if count != mmi.multimesh.instance_count:
+			mmi.multimesh.instance_count = count
+		if count > 0:
+			mmi.multimesh.buffer = buffer
 
 	if show_paths:
 		var paths = simulation_node.get_agent_paths_debug()
@@ -184,6 +223,76 @@ func _build_car_mesh() -> ArrayMesh:
 	mesh.surface_set_material(0, mat)
 
 	return mesh
+
+# Extracts and merges all surfaces from a Node hierarchy into an ArrayMesh.
+# Automatically rotates 180 degrees and normalizes height so the bottom is at Y=0.
+# Applies uv_shift to randomize colors from the palette.
+func _extract_mesh(root_node: Node, uv_shift: float = 0.0) -> Mesh:
+	var mesh_instances = []
+	_find_mesh_instances(root_node, Transform3D.IDENTITY, mesh_instances)
+	
+	if mesh_instances.size() == 0:
+		return null
+		
+	# 1. Calculate the bounding box of the entire merged model to find the bottom.
+	var aabb = AABB()
+	var first = true
+	for item in mesh_instances:
+		var mi = item.node
+		var tf = item.transform
+		var mi_aabb = tf * mi.mesh.get_aabb()
+		if first:
+			aabb = mi_aabb
+			first = false
+		else:
+			aabb = aabb.merge(mi_aabb)
+			
+	# 2. Define our "normalization" transform: 
+	var normalization = Transform3D().rotated(Vector3.UP, PI)
+	normalization.origin.y = -aabb.position.y
+	
+	var final_mesh := ArrayMesh.new()
+	for item in mesh_instances:
+		var mi = item.node
+		var tf = normalization * item.transform
+		
+		for i in range(mi.mesh.get_surface_count()):
+			var st = SurfaceTool.new()
+			st.begin(Mesh.PRIMITIVE_TRIANGLES)
+			st.append_from(mi.mesh, i, tf)
+			
+			# Apply UV shift for randomization
+			if uv_shift != 0.0:
+				var attr = st.commit_to_arrays()
+				var uvs = attr[Mesh.ARRAY_TEX_UV]
+				for j in range(uvs.size()):
+					uvs[j].x = fmod(uvs[j].x + uv_shift, 1.0)
+				attr[Mesh.ARRAY_TEX_UV] = uvs
+				
+				# We cannot easily re-inject into SurfaceTool without manual vertex loop,
+				# so we'll just add the array directly to ArrayMesh.
+				var mat = mi.get_active_material(i)
+				final_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, attr)
+				if mat:
+					final_mesh.surface_set_material(final_mesh.get_surface_count() - 1, mat)
+			else:
+				var mat = mi.get_active_material(i)
+				if mat:
+					st.set_material(mat)
+				st.commit(final_mesh)
+			
+	return final_mesh
+
+func _find_mesh_instances(node: Node, parent_transform: Transform3D, out_list: Array) -> void:
+	var current_transform = parent_transform
+	if node is Node3D:
+		current_transform = parent_transform * node.transform
+		
+	if node is MeshInstance3D and node.mesh:
+		out_list.append({"node": node, "transform": current_transform})
+
+	for child in node.get_children():
+		_find_mesh_instances(child, current_transform, out_list)
 
 # Adds all 6 faces of an AABB to verts/norms with correct CCW winding.
 # Arrays must be plain Array (reference type), not PackedVector3Array.

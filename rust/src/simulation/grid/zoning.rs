@@ -818,6 +818,97 @@ mod tests {
         }
     }
 
+    // ── splay regression tests ──────────────────────────────────────────────────
+    //
+    // Verify that `is_cell_obstructed` applies the splay check only to y=0 cells.
+    // Before the fix the check ran for every y, which caused the entire 3×3 building
+    // footprint to be rejected on any road with moderate curvature (y=2 always exceeds
+    // the 1.15 threshold on curves even when y=0 is fine).
+
+    fn make_edge_graph(pts: Vec<godot::prelude::Vector3>, width: f32) -> (crate::simulation::network::graph::RegionGraph, ZoningSystem) {
+        use crate::simulation::network::graph::{RegionGraph, Edge};
+        use crate::simulation::network::types::{TransitType, TransitFlags, EdgeClass, NodeType};
+
+        let mut graph = RegionGraph::new();
+        let n0 = graph.add_node(*pts.first().unwrap(), NodeType::Junction);
+        let n1 = graph.add_node(*pts.last().unwrap(),  NodeType::Junction);
+
+        let mut length = 0.0f32;
+        for i in 0..pts.len() - 1 {
+            length += (pts[i + 1] - pts[i]).length();
+        }
+
+        graph.add_edge(Edge {
+            start_node: n0, end_node: n1,
+            primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
+            width, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 50.0, base_cost: 0.0,
+            physical_length: length, current_congestion: 0.0,
+            start_clip: 0.0, end_clip: 0.0,
+            geometry: pts.clone(), physical_geometry: pts,
+            zoning_left: true, zoning_right: true,
+            class: EdgeClass::Standard, deleted: false,
+        });
+        graph.rebuild_adjacency_list();
+
+        let mut zoning = ZoningSystem::new(&MapConfig::default());
+        zoning.update_edge_grid_size(0, length);
+        (graph, zoning)
+    }
+
+    /// 9 points along a 90° arc of the given radius. Center at (radius, 0, 0),
+    /// sweeping from (0,0,0) to (radius,0,radius). Arc length ≈ radius * π/2.
+    fn arc_pts(radius: f32) -> Vec<godot::prelude::Vector3> {
+        (0..=8).map(|k| {
+            let theta = std::f32::consts::PI
+                - (k as f32 / 8.0) * std::f32::consts::FRAC_PI_2;
+            godot::prelude::Vector3::new(
+                radius + radius * theta.cos(),
+                0.0,
+                radius * theta.sin(),
+            )
+        })
+        .collect()
+    }
+
+    #[test]
+    fn splay_y0_not_blocked_on_straight_road() {
+        use godot::prelude::Vector3;
+        let pts = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)];
+        let (graph, zoning) = make_edge_graph(pts, 7.0);
+        // Straight road: inner/outer widths are equal, ratio = 1.0 — must not be blocked.
+        assert!(!zoning.is_cell_obstructed(0, -1, 1, 0, &graph, Some(&[])));
+    }
+
+    #[test]
+    fn splay_y0_blocked_on_tight_curve() {
+        // 20 m radius → splay ratio ≈ 1.4 at y=0 outer side. Must block.
+        let (graph, zoning) = make_edge_graph(arc_pts(20.0), 7.0);
+        assert!(
+            zoning.is_cell_obstructed(0, -1, 1, 0, &graph, Some(&[])),
+            "y=0 on tight curve must be splay-blocked"
+        );
+    }
+
+    #[test]
+    fn splay_y1_not_blocked_on_tight_curve() {
+        // Regression guard: after the fix splay is only checked for y=0, so y=1
+        // on the same curve must pass (no asphalt/Voronoi competitors present).
+        let (graph, zoning) = make_edge_graph(arc_pts(20.0), 7.0);
+        assert!(
+            !zoning.is_cell_obstructed(0, -1, 1, 1, &graph, Some(&[])),
+            "y=1 on tight curve must NOT be splay-blocked (regression guard)"
+        );
+    }
+
+    #[test]
+    fn splay_y2_not_blocked_on_tight_curve() {
+        let (graph, zoning) = make_edge_graph(arc_pts(20.0), 7.0);
+        assert!(
+            !zoning.is_cell_obstructed(0, -1, 1, 2, &graph, Some(&[])),
+            "y=2 on tight curve must NOT be splay-blocked"
+        );
+    }
+
     // ── split → merge round-trip ────────────────────────────────────────────────
 
     #[test]

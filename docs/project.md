@@ -120,6 +120,9 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **Housing search**: immigrants drive toward city centre and claim the first residential building with free capacity (6 agents per plot, hard-coded).
 - **Daily cycle**: Home (rest/happiness recovery) → Work (Industrial or Commercial, earn money) → Shop (Commercial, spend money) → Home.
 - **Happiness/money**: home +1 happiness/day; commute penalty −commute_time/60 per trip; pollution effect −p × 0.1/day; work +$10/day; shop −$20.
+- **Visual Agents (v0.3 Assets)**: 
+    - Combined MultiMesh renderer split into per-mode systems (item 46).
+    - Civilian car agents now use 3D `.glb` models (item 47) with random variety (Sedan, Sports, SUV, Luxury).
 
 ### Economy
 
@@ -175,12 +178,6 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
-| B5 | `simulation/network/render/road.rs` | Sidewalk ribbons z-fight on the inner side of junction corners. `node_miters` is only computed for 2-edge pass-through nodes; junction nodes (degree ≥ 3) get no miter. See **B5 Fix Notes** below. | [BUG]
-
----
-
-### B5 Fix Notes — Junction sidewalk inner-corner miter
-
 **Root cause.** At junction nodes the sidewalk ribbon for each edge ends with a raw perpendicular cut. Two adjacent edges' inner sidewalk corners overlap in the same XZ region at the same Y, causing z-fighting. The outer corners leave a gap, but that gap is already covered by the road surface (asphalt quad), so outer corners need no fix.
 
 **Why the angle-bisector / `1/cos` approach fails.**
@@ -364,14 +361,7 @@ Target: same agent scale as v0.2. No simulation changes. All work is in `render_
 
 **Hard architectural constraint**: Godot's `MultiMesh` does not support per-instance skeletal animation. Bone-animated pedestrians require individual `Node3D` nodes, which does not scale past a few thousand agents. The approach for v0.3 is to use static 3D models (a mid-stride static pose for pedestrians, a static car mesh). GPU vertex animation (baked walk cycle sampled via a custom shader using a per-instance phase offset) is noted as a follow-on and can be added without any simulation or API changes once the static models are in place.
 
-46. **Split agent MultiMesh by transit mode** — prerequisite for all other agent visual work:
-    - In `render_helpers.rs`, split `get_agent_transforms_internal` into `get_car_transforms()` and `get_pedestrian_transforms()`. Both return `PackedFloat32Array` of 12-float transforms; the existing road-tangent rotation logic moves into `get_car_transforms`.
-    - In `agents.gd`, replace the single `MultiMeshInstance3D` with two nodes: `CarMesh` and `PedestrianMesh`, each updated independently.
-    - No change to simulation, pathfinding, or SoA layout.
-47. **Car 3D model**:
-    - Load a `.glb` car model and assign it to the `CarMesh` MultiMesh node. No code changes beyond the assignment.
-    - The existing road-tangent basis vectors already produce correct car orientation on roads.
-    - When `transit_mode` migration (v0.01 goal 3) is complete, this MultiMesh extends naturally to buses (`transit_mode=BUS`), taxis, etc. by filtering the transform array by mode.
+- When `transit_mode` migration (v0.01 goal 3) is complete, this MultiMesh extends naturally to buses (`transit_mode=BUS`), taxis, etc. by filtering the transform array by mode. (DONE)
 48. **Pedestrian SDF billboard shader** — recommended over loading a 3D model for this scale:
     - Replace the `CapsuleMesh` on the `PedestrianMesh` MultiMesh with a `QuadMesh` (2 triangles). The quad is billboard-oriented in the vertex shader to always face the camera.
     - A custom `gdshader` fragment shader reconstructs the human silhouette from sphere and capsule SDF primitives (head, torso, two legs). SDF edges are anti-aliased via `smoothstep` — pedestrians stay crisp at 3 px or 30 px without a texture. Animation is driven by `sin(phase * TAU)` on the leg offsets — a walking cycle at zero model-file cost.

@@ -73,15 +73,15 @@ mod tests {
                 );
             }
 
-            // 3. Winding order: cross(d1, d2) in XZ must be <= 0 (CCW when viewed from above
-            //    in Godot Y-up). A positive cross means a CW / back-facing triangle that
-            //    renders black.
+            // 3. Winding order: cross(d1, d2) in XZ must be >= 0 (CW when viewed from above).
+            //    Godot+Vulkan treats CW (positive XZ cross) as front-facing.
+            //    A negative cross means CCW / back-facing, which renders black.
             let d1 = v1 - v0;
             let d2 = v2 - v0;
             let cross = d1.x * d2.z - d1.z * d2.x;
             assert!(
-                cross <= 0.001, // small positive tolerance for numerical edge cases
-                "tri {tri_idx}: CW (back-facing) winding detected (cross={cross:.4}). \
+                cross >= -0.001, // small negative tolerance for numerical edge cases
+                "tri {tri_idx}: CCW (back-facing) winding detected (cross={cross:.4}). \
                  Verts: {v0:?}, {v1:?}, {v2:?}"
             );
 

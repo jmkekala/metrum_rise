@@ -9,20 +9,20 @@ pub struct RoadRenderer;
 
 impl TransitRenderer for RoadRenderer {
     fn generate_mesh_data(&self, graph: &RegionGraph, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData {
-        let mut vertices = PackedVector3Array::new();
-        let mut normals = PackedVector3Array::new();
-        let mut uvs = PackedVector2Array::new();
-        let mut colors = PackedColorArray::new();
+        let mut vertices = Vec::new();
+        let mut normals = Vec::new();
+        let mut uvs = Vec::new();
+        let mut colors = Vec::new();
         
-        let mut marking_vertices = PackedVector3Array::new();
-        let mut marking_normals = PackedVector3Array::new();
-        let mut marking_uvs = PackedVector2Array::new();
-        let mut marking_colors = PackedColorArray::new();
+        let mut marking_vertices = Vec::new();
+        let mut marking_normals = Vec::new();
+        let mut marking_uvs = Vec::new();
+        let mut marking_colors = Vec::new();
 
-        let mut concrete_vertices = PackedVector3Array::new();
-        let mut concrete_normals = PackedVector3Array::new();
-        let mut concrete_uvs = PackedVector2Array::new();
-        let mut concrete_colors = PackedColorArray::new();
+        let mut concrete_vertices = Vec::new();
+        let mut concrete_normals = Vec::new();
+        let mut concrete_uvs = Vec::new();
+        let mut concrete_colors = Vec::new();
 
         let _hw = (terrain.width as f32 - 1.0) * 0.5;
         let _hh = (terrain.height as f32 - 1.0) * 0.5;

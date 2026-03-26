@@ -245,11 +245,11 @@ impl SimulationNode {
         PackedFloat32Array::from_iter(buffer)
     }
 
-    /// Returns the 12-float transforms for all visible car agents, with road-aligned orientation.
-    /// The car mesh is expected to be pre-sized (no scale applied). Origin sits at road surface + 0.1 m.
-    pub fn get_car_transforms_internal(&self) -> PackedFloat32Array {
+    /// Returns a Dictionary where keys are vehicle type IDs (u8) and values are PackedFloat32Array
+    /// containing the 12-float transforms for all visible car agents of that type.
+    pub fn get_car_transforms_internal(&self) -> VarDictionary {
         use crate::simulation::economy::agents::MODE_CAR;
-        let mut buffer = Vec::with_capacity(self.agents.count * 12);
+        let mut type_buffers: std::collections::HashMap<u8, Vec<f32>> = std::collections::HashMap::new();
 
         let w = self.heightmap.width as f32;
         let h = self.heightmap.height as f32;
@@ -260,12 +260,18 @@ impl SimulationNode {
             if !self.agents.is_visible[i] { continue; }
             if self.agents.transit_mode[i] != MODE_CAR { continue; }
 
+            let v_type = self.agents.vehicle_type[i];
+            let variant_id = (i % 5) as u8; // 5 color variants per model
+            let model_key = (v_type * 10) + variant_id;
+            
+            let buffer = type_buffers.entry(model_key).or_insert_with(Vec::new);
+
             let world_x = self.agents.pos_x[i];
             let world_z = self.agents.pos_y[i];
 
             let map_x = (world_x + hw).clamp(0.0, w - 1.0) as usize;
             let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
-            let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 0.1;
+            let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 0.02;
             let world_y = {
                 let eidx = self.agents.current_edge[i];
                 if eidx != usize::MAX && eidx < self.region_graph.edges.len() {
@@ -273,7 +279,7 @@ impl SimulationNode {
                     let prog = (self.agents.edge_progression[i].max(0) as usize)
                         .min(e.physical_geometry.len().saturating_sub(1));
                     if !e.physical_geometry.is_empty() {
-                        e.physical_geometry[prog].y + 0.15
+                        e.physical_geometry[prog].y + 0.02
                     } else {
                         terrain_y
                     }
@@ -291,8 +297,7 @@ impl SimulationNode {
             let edge_idx = self.agents.current_edge[i];
 
             if transit == TRANSIT_ARRIVING && edge_idx != usize::MAX && edge_idx < self.region_graph.edges.len() {
-                // Car is peeling off the road toward a building: face perpendicular to the road edge,
-                // on whichever side the agent's current position is relative to the edge centreline.
+                // Car is peeling off the road toward a building: face perpendicular to the road edge
                 let edge = &self.region_graph.edges[edge_idx];
                 let prog = (self.agents.edge_progression[i].max(0) as usize)
                     .min(edge.physical_geometry.len().saturating_sub(2));
@@ -300,9 +305,7 @@ impl SimulationNode {
                     let p1 = edge.physical_geometry[prog];
                     let p2 = edge.physical_geometry[prog + 1];
                     let tangent = (p2 - p1).normalized();
-                    // Perpendicular in XZ plane (right-hand normal)
                     let perp = Vector3::new(-tangent.z, 0.0, tangent.x);
-                    // Determine which side of the centreline the agent is on
                     let to_agent = Vector3::new(world_x - p1.x, 0.0, world_z - p1.z);
                     let side = if to_agent.dot(perp) >= 0.0 { 1.0_f32 } else { -1.0_f32 };
                     let facing = perp * side;
@@ -345,7 +348,11 @@ impl SimulationNode {
             buffer.push(basis_x.z); buffer.push(basis_y.z); buffer.push(basis_z.z); buffer.push(world_z);
         }
 
-        PackedFloat32Array::from_iter(buffer)
+        let mut dict = VarDictionary::new();
+        for (v_type, buffer) in type_buffers {
+            dict.set(v_type as i32, PackedFloat32Array::from_iter(buffer));
+        }
+        dict
     }
 
     /// Returns debug path geometry for active agents.
@@ -453,20 +460,20 @@ impl SimulationNode {
     pub fn get_road_mesh_data_internal(&self) -> VarDictionary {
         let mesh_data = self.transit_network.generate_mesh_data(&self.region_graph, &self.heightmap);
         let mut dict = VarDictionary::new();
-        dict.set("vertices", mesh_data.vertices);
-        dict.set("normals", mesh_data.normals);
-        dict.set("uvs", mesh_data.uvs);
-        dict.set("colors", mesh_data.colors);
+        dict.set("vertices", PackedVector3Array::from_iter(mesh_data.vertices));
+        dict.set("normals", PackedVector3Array::from_iter(mesh_data.normals));
+        dict.set("uvs", PackedVector2Array::from_iter(mesh_data.uvs));
+        dict.set("colors", PackedColorArray::from_iter(mesh_data.colors));
         
-        dict.set("marking_vertices", mesh_data.marking_vertices);
-        dict.set("marking_normals", mesh_data.marking_normals);
-        dict.set("marking_uvs", mesh_data.marking_uvs);
-        dict.set("marking_colors", mesh_data.marking_colors);
+        dict.set("marking_vertices", PackedVector3Array::from_iter(mesh_data.marking_vertices));
+        dict.set("marking_normals", PackedVector3Array::from_iter(mesh_data.marking_normals));
+        dict.set("marking_uvs", PackedVector2Array::from_iter(mesh_data.marking_uvs));
+        dict.set("marking_colors", PackedColorArray::from_iter(mesh_data.marking_colors));
         
-        dict.set("concrete_vertices", mesh_data.concrete_vertices);
-        dict.set("concrete_normals", mesh_data.concrete_normals);
-        dict.set("concrete_uvs", mesh_data.concrete_uvs);
-        dict.set("concrete_colors", mesh_data.concrete_colors);
+        dict.set("concrete_vertices", PackedVector3Array::from_iter(mesh_data.concrete_vertices));
+        dict.set("concrete_normals", PackedVector3Array::from_iter(mesh_data.concrete_normals));
+        dict.set("concrete_uvs", PackedVector2Array::from_iter(mesh_data.concrete_uvs));
+        dict.set("concrete_colors", PackedColorArray::from_iter(mesh_data.concrete_colors));
         dict
     }
 

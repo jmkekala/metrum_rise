@@ -102,6 +102,8 @@ pub struct AgentSystem {
 
     /// `true` if the agent owns a car and drove to their current location.
     pub has_car: Vec<bool>,
+    /// Type of vehicle the agent uses (if driving). One of the `VEHICLE_*` constants.
+    pub vehicle_type: Vec<u8>,
     /// Running count of pathfinding calls this session, used for benchmark logging.
     pub pathfind_count: u32,
 }
@@ -140,6 +142,7 @@ impl AgentSystem {
             current_path: Vec::new(),
             current_path_index: Vec::new(),
             has_car: Vec::new(),
+            vehicle_type: Vec::new(),
             journey_start_time: Vec::new(),
             sim_time: 0.0,
             pathfind_count: 0,
@@ -180,6 +183,8 @@ impl AgentSystem {
         self.current_path_index.push(0);
         
         self.has_car.push(true); // Immigrants arrive with a car!
+        let mut rng = rand::thread_rng();
+        self.vehicle_type.push(rng.gen_range(0..4) as u8); // Random civilian vehicle
         self.count += 1;
         
         self.count - 1
@@ -200,7 +205,8 @@ impl AgentSystem {
             let start_node = rng.gen_range(0..node_count) as u32;
             let start_pos = graph.nodes[start_node as usize].pos;
 
-            self.spawn_agent(home_idx, home_node, 0.0, 0.0, start_node, start_pos.x, start_pos.z);
+            let i = self.spawn_agent(home_idx, home_node, 0.0, 0.0, start_node, start_pos.x, start_pos.z);
+            self.vehicle_type[i] = rng.gen_range(0..4) as u8;
         }
     }
 
@@ -235,6 +241,7 @@ impl AgentSystem {
         self.current_path.clear();
         self.current_path_index.clear();
         self.has_car.clear();
+        self.vehicle_type.clear();
         self.journey_start_time.clear();
         self.sim_time = 0.0;
         self.count = 0;
@@ -298,6 +305,7 @@ impl AgentSystem {
         self.current_path_index.swap(index, last_idx);
         self.journey_start_time.swap(index, last_idx);
         self.has_car.swap(index, last_idx);
+        self.vehicle_type.swap(index, last_idx);
 
         self.home_building.pop();
         self.work_building.pop();
@@ -329,6 +337,7 @@ impl AgentSystem {
         self.current_path_index.pop();
         self.journey_start_time.pop();
         self.has_car.pop();
+        self.vehicle_type.pop();
         
         self.count -= 1;
     }

@@ -220,4 +220,26 @@ mod tests {
 
         assert!(transitioned, "At least one agent should have started a journey during 1000 ticks");
     }
+
+    #[test]
+    fn test_vehicle_type_persistence() {
+        let mut agents = AgentSystem::new();
+        
+        // Spawn 3 agents
+        let i0 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        let i1 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        let i2 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        
+        let type0 = agents.vehicle_type[i0];
+        let type1 = agents.vehicle_type[i1];
+        let type2 = agents.vehicle_type[i2];
+        
+        // Kill middle agent (i1). i2 should swap into index 1.
+        let mut allocator = BuildingAllocator::new();
+        agents.kill_agent(1, &mut allocator);
+        
+        assert_eq!(agents.count, 2);
+        assert_eq!(agents.vehicle_type[0], type0);
+        assert_eq!(agents.vehicle_type[1], type2);
+    }
 }
