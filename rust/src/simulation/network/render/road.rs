@@ -562,8 +562,15 @@ impl TransitRenderer for RoadRenderer {
             if j_pts.len() < 3 { continue; }
             j_pts.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap());
 
-            let mut center = node.pos;
-            center.y += config::ROAD_H_OFFSET;
+            // Use the centroid of the inner ring points as the fan center.
+            // For symmetric junctions (T, 4-way) this is close to node.pos.
+            // For acute merges it shifts the apex into the merge zone, avoiding a pinch.
+            let center = {
+                let sum = j_pts.iter().fold(Vector3::ZERO, |acc, p| acc + p.inner);
+                let mut c = sum / j_pts.len() as f32;
+                c.y = node.pos.y + config::ROAD_H_OFFSET;
+                c
+            };
 
             for i in 0..j_pts.len() {
                 let p1 = &j_pts[i];
