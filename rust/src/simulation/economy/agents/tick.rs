@@ -320,7 +320,7 @@ impl AgentSystem {
                                 continue;
                             }
                             let tangent = diff.normalized();
-                            let normal = Vector2::new(-tangent.y, tangent.x);
+                            let normal = Vector2::new(tangent.y, -tangent.x);
                                                         let mut offset_target = Vector2::new(p_target.x, p_target.z);
                              if self.transit_mode[i] == MODE_CAR {
                                   let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;

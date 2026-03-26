@@ -62,6 +62,11 @@ func _process(delta):
 		update_terrain_visuals()
 		simulation_node.clear_terrain_dirty()
 	
+	# Bug Fix B2: Update overlay even if terrain is not dirty
+	if overlay_mode != cached_overlay_mode:
+		update_terrain_visuals()
+		cached_overlay_mode = overlay_mode
+	
 	var input_manager = get_node("../InputManager")
 	if input_manager and input_manager.current_tool == input_manager.Tool.SCULPT:
 		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):

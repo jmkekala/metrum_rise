@@ -157,7 +157,7 @@ func update_swarm():
 # Builds a car-shaped ArrayMesh from two boxes (body + cabin). No mesh files required.
 # Car faces along local -Z (Godot forward). Origin at bottom-centre of body.
 # Body: 1.8 m wide × 0.55 m tall × 4.2 m long
-# Cabin: 1.4 m wide × 0.65 m tall × 2.2 m long, centred and sitting on the body
+# Cabin: 1.8 m wide × 1.2 m tall × 2.2 m long, full-height to seal the body opening at z=±1.1
 func _build_car_mesh() -> ArrayMesh:
 	# Use plain Array (reference type) so helpers can append to the caller's arrays.
 	# Converted to PackedVector3Array only when passing to add_surface_from_arrays.
@@ -165,8 +165,9 @@ func _build_car_mesh() -> ArrayMesh:
 	var norms: Array = []
 
 	_add_box(verts, norms, Vector3(-0.9, 0.0, -2.1), Vector3(0.9, 0.55, 2.1))
-	# Cabin starts at 0.56 (not 0.55) to avoid z-fighting with the body top face
-	_add_box(verts, norms, Vector3(-0.9, 0.56, -1.1), Vector3(0.9, 1.2, 1.1))
+	# Cabin starts at y=0 so its front/back faces seal the gap at z=±1.1 all the way to ground,
+	# preventing the hollow body interior from being visible through the junction edges.
+	_add_box(verts, norms, Vector3(-0.9, 0.0, -1.1), Vector3(0.9, 1.2, 1.1))
 
 	var arrays := []
 	arrays.resize(Mesh.ARRAY_MAX)

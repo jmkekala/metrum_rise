@@ -297,6 +297,7 @@ impl AgentSystem {
         self.current_path.swap(index, last_idx);
         self.current_path_index.swap(index, last_idx);
         self.journey_start_time.swap(index, last_idx);
+        self.has_car.swap(index, last_idx);
 
         self.home_building.pop();
         self.work_building.pop();
@@ -327,6 +328,7 @@ impl AgentSystem {
         self.current_path.pop();
         self.current_path_index.pop();
         self.journey_start_time.pop();
+        self.has_car.pop();
         
         self.count -= 1;
     }

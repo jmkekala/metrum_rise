@@ -78,6 +78,8 @@ func _ready():
 func _process(delta):
 	if not active:
 		grid_mesh.visible = false
+		paint_mesh.visible = false
+		brush_mesh.visible = false
 		return
 
 	_update_visuals()
