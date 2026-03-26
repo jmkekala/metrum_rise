@@ -63,51 +63,27 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
-        // Calculate miters for all junctions (degree >= 2)
-        #[derive(Clone, Copy)]
-        struct NodeMiter {
-            left: Vector2,
-            right: Vector2,
-        }
-        let mut node_miters: HashMap<(u32, usize), NodeMiter> = HashMap::new();
+        // Calculate miters for 2-edge joints
+        let mut node_miters: HashMap<u32, Vector2> = HashMap::new();
         for (node_id, dirs) in &node_dirs {
-            if dirs.len() < 2 { continue; }
-            
-            // Sort edges CCW by departure angle
-            let mut sorted_dirs = dirs.clone();
-            sorted_dirs.sort_by(|a, b| {
-                let angle_a = f32::atan2(a.1.y, a.1.x);
-                let angle_b = f32::atan2(b.1.y, b.1.x);
-                angle_a.partial_cmp(&angle_b).unwrap_or(std::cmp::Ordering::Equal)
-            });
-
-            let k = sorted_dirs.len();
-            for i in 0..k {
-                let (e_idx_curr, t_curr) = sorted_dirs[i];
-                let (e_idx_next, t_next) = sorted_dirs[(i + 1) % k];
-
-                // Gap between edge i (Left side) and edge i+1 (Right side)
-                // Left normal of curr
-                let n_left = Vector2::new(t_curr.y, -t_curr.x);
-                // Right normal of next
-                let n_right = Vector2::new(-t_next.y, t_next.x);
-
-                // Bisector
-                let mut bisector = (n_left + n_right).normalized();
-                if (n_left + n_right).length_squared() < 1e-6 {
-                    // Parallel/opposite case
-                    bisector = Vector2::new(-t_curr.x, -t_curr.y);
+            if dirs.len() == 2 {
+                let d1 = dirs[0].1;
+                let d2 = dirs[1].1;
+                
+                let s1 = Vector2::new(-d1.y, d1.x);
+                let s2 = Vector2::new(-d2.y, d2.x);
+                
+                // Miter direction is the average of the two side directions
+                // Note: we need to handle the case where they are nearly opposite (sharp turn)
+                let d_diff = s1 - s2;
+                if d_diff.length_squared() > 1e-6 {
+                    let miter = d_diff.normalized();
+                    // Scale miter length: len = 1.0 / cos(half_angle)
+                    let cos_half = s1.dot(miter).abs();
+                    if cos_half > 0.1 {
+                        node_miters.insert(*node_id, miter / cos_half);
+                    }
                 }
-
-                let mut dot = n_left.dot(bisector);
-                if dot.abs() < 0.1 { dot = 0.1 * dot.signum(); }
-                let mut scale = 1.0 / dot;
-                scale = scale.clamp(-5.0, 5.0);
-                let miter = bisector * scale;
-
-                // Assign to edges
-                node_miters.entry((*node_id, e_idx_curr)).or_insert(NodeMiter { left: n_left, right: Vector2::new(-t_curr.y, t_curr.x) }).left = miter;
-                node_miters.entry((*node_id, e_idx_next)).or_insert(NodeMiter { left: Vector2::new(t_next.y, -t_next.x), right: n_right }).right = miter;
             }
         }
 
@@ -125,56 +101,47 @@ impl TransitRenderer for RoadRenderer {
                 let lane_w = 1.0;
                 
                 // Pre-calculate side directions for miter joins
-                let mut point_left_dirs = Vec::with_capacity(resampled_count);
-                let mut point_right_dirs = Vec::with_capacity(resampled_count);
+                let mut point_side_dirs = Vec::with_capacity(resampled_count);
                 for i in 0..resampled_count {
-                    let d = if i == 0 {
-                        edge.physical_geometry[1] - edge.physical_geometry[0]
-                    } else if i == resampled_count - 1 {
-                        edge.physical_geometry[i] - edge.physical_geometry[i-1]
-                    } else {
-                        edge.physical_geometry[i+1] - edge.physical_geometry[i-1]
-                    };
-                    let tangent = if d.length_squared() > 1e-6 { d.normalized() } else { Vector3::FORWARD };
-                    let l_norm = Vector3::new(tangent.z, 0.0, -tangent.x);
-                    let r_norm = Vector3::new(-tangent.z, 0.0, tangent.x);
-
                     if i == 0 {
-                        if let Some(miter) = node_miters.get(&(edge.start_node, edge_id)) {
-                            point_left_dirs.push(Vector3::new(miter.left.x, 0.0, miter.left.y));
-                            point_right_dirs.push(Vector3::new(miter.right.x, 0.0, miter.right.y));
+                        if let Some(miter) = node_miters.get(&edge.start_node) {
+                            point_side_dirs.push(Vector3::new(miter.x, 0.0, miter.y));
                         } else {
-                            point_left_dirs.push(l_norm);
-                            point_right_dirs.push(r_norm);
+                            let d = edge.physical_geometry[1] - edge.physical_geometry[0];
+                            let tangent = if d.length_squared() > 1e-6 { d.normalized() } else { Vector3::FORWARD };
+                            point_side_dirs.push(Vector3::new(-tangent.z, 0.0, tangent.x));
                         }
                     } else if i == resampled_count - 1 {
-                        if let Some(miter) = node_miters.get(&(edge.end_node, edge_id)) {
-                            point_left_dirs.push(Vector3::new(miter.left.x, 0.0, miter.left.y));
-                            point_right_dirs.push(Vector3::new(miter.right.x, 0.0, miter.right.y));
+                        if let Some(miter) = node_miters.get(&edge.end_node) {
+                            point_side_dirs.push(Vector3::new(-miter.x, 0.0, -miter.y));
                         } else {
-                            point_left_dirs.push(l_norm);
-                            point_right_dirs.push(r_norm);
+                            let d = edge.physical_geometry[i] - edge.physical_geometry[i-1];
+                            let tangent = if d.length_squared() > 1e-6 { d.normalized() } else { Vector3::FORWARD };
+                            point_side_dirs.push(Vector3::new(-tangent.z, 0.0, tangent.x));
                         }
                     } else {
-                        point_left_dirs.push(l_norm);
-                        point_right_dirs.push(r_norm);
+                        let d = edge.physical_geometry[i+1] - edge.physical_geometry[i-1];
+                        let tangent = if d.length_squared() > 1e-6 { d.normalized() } else { Vector3::FORWARD };
+                        point_side_dirs.push(Vector3::new(-tangent.z, 0.0, tangent.x));
                     }
                 }
 
                 for i in 0..resampled_count - 1 {
                     let mut p0 = edge.physical_geometry[i];
                     let mut p1 = edge.physical_geometry[i + 1];
-                    
+                    let side0 = point_side_dirs[i];
+                    let side1 = point_side_dirs[i+1];
+
                     let dist = (p1 - p0).length();
                     if dist < 0.01 { continue; }
 
                     p0.y += h_offset + z_bias;
                     p1.y += h_offset + z_bias;
 
-                    let v0_l = p0 + point_left_dirs[i] * (lane_w * 0.5);
-                    let v0_r = p0 + point_right_dirs[i] * (lane_w * 0.5);
-                    let v1_l = p1 + point_left_dirs[i+1] * (lane_w * 0.5);
-                    let v1_r = p1 + point_right_dirs[i+1] * (lane_w * 0.5);
+                    let v0_l = p0 - side0 * (lane_w * 0.5);
+                    let v0_r = p0 + side0 * (lane_w * 0.5);
+                    let v1_l = p1 - side1 * (lane_w * 0.5);
+                    let v1_r = p1 + side1 * (lane_w * 0.5);
 
                     vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
                     vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
@@ -216,8 +183,7 @@ impl TransitRenderer for RoadRenderer {
             let lane_w = edge.width / total_lanes;
 
             // Pre-calculate side directions for miter joins
-            let mut point_left_dirs = Vec::with_capacity(resampled_count);
-            let mut point_right_dirs = Vec::with_capacity(resampled_count);
+            let mut point_side_dirs = Vec::with_capacity(resampled_count);
             for i in 0..resampled_count {
                 let d = if i == 0 {
                     edge.physical_geometry[1] - edge.physical_geometry[0]
@@ -227,29 +193,8 @@ impl TransitRenderer for RoadRenderer {
                     edge.physical_geometry[i+1] - edge.physical_geometry[i-1]
                 };
                 let tangent = if d.length_squared() > 1e-6 { d.normalized() } else { Vector3::FORWARD };
-                let l_norm = Vector3::new(tangent.z, 0.0, -tangent.x);
-                let r_norm = Vector3::new(-tangent.z, 0.0, tangent.x);
-
-                if i == 0 {
-                    if let Some(miter) = node_miters.get(&(edge.start_node, edge_id)) {
-                        point_left_dirs.push(Vector3::new(miter.left.x, 0.0, miter.left.y));
-                        point_right_dirs.push(Vector3::new(miter.right.x, 0.0, miter.right.y));
-                    } else {
-                        point_left_dirs.push(l_norm);
-                        point_right_dirs.push(r_norm);
-                    }
-                } else if i == resampled_count - 1 {
-                    if let Some(miter) = node_miters.get(&(edge.end_node, edge_id)) {
-                        point_left_dirs.push(Vector3::new(miter.left.x, 0.0, miter.left.y));
-                        point_right_dirs.push(Vector3::new(miter.right.x, 0.0, miter.right.y));
-                    } else {
-                        point_left_dirs.push(l_norm);
-                        point_right_dirs.push(r_norm);
-                    }
-                } else {
-                    point_left_dirs.push(l_norm);
-                    point_right_dirs.push(r_norm);
-                }
+                let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
+                point_side_dirs.push(side_dir);
             }
 
             // Lane Ribbons
@@ -289,15 +234,16 @@ impl TransitRenderer for RoadRenderer {
 
                     let mut p0 = p0_raw + (p1_raw - p0_raw) * t0;
                     let mut p1 = p0_raw + (p1_raw - p0_raw) * t1;
+                    let side0 = point_side_dirs[i];
+                    let side1 = point_side_dirs[i+1];
 
                     p0.y += h_offset;
                     p1.y += h_offset;
 
-                    // Apply offset to left or right based on lateral_offset sign
-                    let v0_l = p0 + (if lateral_offset - lane_w * 0.5 > 0.0 { point_right_dirs[i] } else { point_left_dirs[i] }) * (lateral_offset - lane_w * 0.5).abs();
-                    let v0_r = p0 + (if lateral_offset + lane_w * 0.5 > 0.0 { point_right_dirs[i] } else { point_left_dirs[i] }) * (lateral_offset + lane_w * 0.5).abs();
-                    let v1_l = p1 + (if lateral_offset - lane_w * 0.5 > 0.0 { point_right_dirs[i+1] } else { point_left_dirs[i+1] }) * (lateral_offset - lane_w * 0.5).abs();
-                    let v1_r = p1 + (if lateral_offset + lane_w * 0.5 > 0.0 { point_right_dirs[i+1] } else { point_left_dirs[i+1] }) * (lateral_offset + lane_w * 0.5).abs();
+                    let v0_l = p0 + side0 * (lateral_offset - lane_w * 0.5);
+                    let v0_r = p0 + side0 * (lateral_offset + lane_w * 0.5);
+                    let v1_l = p1 + side1 * (lateral_offset - lane_w * 0.5);
+                    let v1_r = p1 + side1 * (lateral_offset + lane_w * 0.5);
 
                     vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
                     vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
@@ -351,10 +297,13 @@ impl TransitRenderer for RoadRenderer {
                     p0.y += h_offset + 0.001;
                     p1.y += h_offset + 0.001;
 
-                    let v0_l = p0 + (if lateral_offset - sw_w * 0.5 > 0.0 { point_right_dirs[i] } else { point_left_dirs[i] }) * (lateral_offset - sw_w * 0.5).abs();
-                    let v0_r = p0 + (if lateral_offset + sw_w * 0.5 > 0.0 { point_right_dirs[i] } else { point_left_dirs[i] }) * (lateral_offset + sw_w * 0.5).abs();
-                    let v1_l = p1 + (if lateral_offset - sw_w * 0.5 > 0.0 { point_right_dirs[i+1] } else { point_left_dirs[i+1] }) * (lateral_offset - sw_w * 0.5).abs();
-                    let v1_r = p1 + (if lateral_offset + sw_w * 0.5 > 0.0 { point_right_dirs[i+1] } else { point_left_dirs[i+1] }) * (lateral_offset + sw_w * 0.5).abs();
+                    let side0 = point_side_dirs[i];
+                    let side1 = point_side_dirs[i+1];
+
+                    let v0_l = p0 + side0 * (lateral_offset - sw_w * 0.5);
+                    let v0_r = p0 + side0 * (lateral_offset + sw_w * 0.5);
+                    let v1_l = p1 + side1 * (lateral_offset - sw_w * 0.5);
+                    let v1_r = p1 + side1 * (lateral_offset + sw_w * 0.5);
 
                     vertices.push(v0_l); vertices.push(v1_l); vertices.push(v1_r);
                     vertices.push(v0_l); vertices.push(v1_r); vertices.push(v0_r);
@@ -406,13 +355,11 @@ impl TransitRenderer for RoadRenderer {
                     let p0 = p0_raw + (p1_raw - p0_raw) * t0;
                     let p1 = p0_raw + (p1_raw - p0_raw) * t1;
                     
-                    let p0 = p0_raw + (p1_raw - p0_raw) * t0;
-                    let p1 = p0_raw + (p1_raw - p0_raw) * t1;
-                    
-                    let p0_l = p0 + point_left_dirs[i] * hw; 
-                    let p0_r = p0 + point_right_dirs[i] * hw;
-                    let p1_l = p1 + point_left_dirs[i+1] * hw; 
-                    let p1_r = p1 + point_right_dirs[i+1] * hw;
+                    let side0 = point_side_dirs[i];
+                    let side1 = point_side_dirs[i+1];
+
+                    let p0_l = p0 - side0 * hw; let p0_r = p0 + side0 * hw;
+                    let p1_l = p1 - side1 * hw; let p1_r = p1 + side1 * hw;
 
                     let p0_lb = p0_l - Vector3::UP * thickness; let p0_rb = p0_r - Vector3::UP * thickness;
                     let p1_lb = p1_l - Vector3::UP * thickness; let p1_rb = p1_r - Vector3::UP * thickness;
@@ -420,11 +367,11 @@ impl TransitRenderer for RoadRenderer {
                     // 1. Sidewalk/Deck structure (Clipped)
                     vertices.push(p0_l); vertices.push(p1_lb); vertices.push(p0_lb);
                     vertices.push(p0_l); vertices.push(p1_l); vertices.push(p1_lb);
-                    for _ in 0..6 { normals.push(point_left_dirs[i]); colors.push(deck_color); uvs.push(Vector2::ZERO); }
+                    for _ in 0..6 { normals.push(-side0); colors.push(deck_color); uvs.push(Vector2::ZERO); }
 
                     vertices.push(p0_r); vertices.push(p0_rb); vertices.push(p1_rb);
                     vertices.push(p0_r); vertices.push(p1_rb); vertices.push(p1_r);
-                    for _ in 0..6 { normals.push(point_right_dirs[i]); colors.push(deck_color); uvs.push(Vector2::ZERO); }
+                    for _ in 0..6 { normals.push(side0); colors.push(deck_color); uvs.push(Vector2::ZERO); }
 
                     vertices.push(p0_lb); vertices.push(p1_rb); vertices.push(p1_lb);
                     vertices.push(p0_lb); vertices.push(p0_rb); vertices.push(p1_rb);
@@ -438,35 +385,36 @@ impl TransitRenderer for RoadRenderer {
 
                     // RAILINGS (1.2m tall, 10cm thick)
                     let rail_h = 1.2; let rail_t = 0.1;
-                    let p0_lo = p0_l + point_right_dirs[i] * rail_t; let p1_lo = p1_l + point_right_dirs[i+1] * rail_t; 
+                    let p0_lo = p0_l + side0 * rail_t; let p1_lo = p1_l + side0 * rail_t; 
                     let p0_lt = p0_l + Vector3::UP * rail_h; let p1_lt = p1_l + Vector3::UP * rail_h;
                     let p0_lto = p0_lo + Vector3::UP * rail_h; let p1_lto = p1_lo + Vector3::UP * rail_h;
 
                     // Inner face
                     concrete_vertices.push(p0_l); concrete_vertices.push(p1_lt); concrete_vertices.push(p0_lt);
                     concrete_vertices.push(p0_l); concrete_vertices.push(p1_l); concrete_vertices.push(p1_lt);
-                    for _ in 0..6 { concrete_normals.push(point_right_dirs[i]); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
                     // Outer face
                     concrete_vertices.push(p0_lo); concrete_vertices.push(p0_lto); concrete_vertices.push(p1_lto);
                     concrete_vertices.push(p0_lo); concrete_vertices.push(p1_lto); concrete_vertices.push(p1_lo);
-                    for _ in 0..6 { concrete_normals.push(point_left_dirs[i]); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
                     // Top face
                     concrete_vertices.push(p0_lt); concrete_vertices.push(p1_lt); concrete_vertices.push(p1_lto);
                     concrete_vertices.push(p0_lt); concrete_vertices.push(p1_lto); concrete_vertices.push(p0_lto);
                     for _ in 0..6 { concrete_normals.push(Vector3::UP); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
 
-                    let p0_ro = p0_r + point_left_dirs[i] * rail_t; let p1_ro = p1_r + point_left_dirs[i+1] * rail_t;
+                    let rail_dir_r = -side0;
+                    let p0_ro = p0_r + rail_dir_r * rail_t; let p1_ro = p1_r + rail_dir_r * rail_t;
                     let p0_rt = p0_r + Vector3::UP * rail_h; let p1_rt = p1_r + Vector3::UP * rail_h;
                     let p0_rto = p0_ro + Vector3::UP * rail_h; let p1_rto = p1_ro + Vector3::UP * rail_h;
 
                     // Inner face
                     concrete_vertices.push(p0_r); concrete_vertices.push(p0_rt); concrete_vertices.push(p1_rt);
                     concrete_vertices.push(p0_r); concrete_vertices.push(p1_rt); concrete_vertices.push(p1_r);
-                    for _ in 0..6 { concrete_normals.push(point_left_dirs[i]); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
                     // Outer face
                     concrete_vertices.push(p0_ro); concrete_vertices.push(p1_rto); concrete_vertices.push(p0_rto);
                     concrete_vertices.push(p0_ro); concrete_vertices.push(p1_ro); concrete_vertices.push(p1_rto);
-                    for _ in 0..6 { concrete_normals.push(point_right_dirs[i]); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                    for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
                     // Top face
                     concrete_vertices.push(p0_rt); concrete_vertices.push(p0_rto); concrete_vertices.push(p1_rto);
                     concrete_vertices.push(p0_rt); concrete_vertices.push(p1_rto); concrete_vertices.push(p1_rt);
@@ -483,12 +431,12 @@ impl TransitRenderer for RoadRenderer {
                         // Left Wall
                         concrete_vertices.push(p0_l); concrete_vertices.push(p0_lg); concrete_vertices.push(p1_lg);
                         concrete_vertices.push(p0_l); concrete_vertices.push(p1_lg); concrete_vertices.push(p1_l);
-                        for _ in 0..6 { concrete_normals.push(point_left_dirs[i]); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                        for _ in 0..6 { concrete_normals.push(-side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
 
                         // Right Wall
                         concrete_vertices.push(p0_r); concrete_vertices.push(p1_rg); concrete_vertices.push(p0_rg);
                         concrete_vertices.push(p0_r); concrete_vertices.push(p1_r); concrete_vertices.push(p1_rg);
-                        for _ in 0..6 { concrete_normals.push(point_right_dirs[i]); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
+                        for _ in 0..6 { concrete_normals.push(side0); concrete_colors.push(concrete_color); concrete_uvs.push(Vector2::ZERO); }
                     } else {
                         // PILLARS every 15m
                         let seg_len = (p1 - p0).length();
@@ -497,9 +445,7 @@ impl TransitRenderer for RoadRenderer {
                             if i > 0 { dist_acc_pillars = 0.0; }
                             let p_w = edge.width * 0.3; let p_h_top = p_mid.y - thickness; let p_h_bot = terrain_y;
                             let fwd = (p1 - p0).normalized();
-                            // Use right-side miter for pillar width direction
-                            let side_dir = point_right_dirs[i];
-                            let c_p0 = p_mid - side_dir * (p_w * 0.5); let c_p1 = p_mid + side_dir * (p_w * 0.5);
+                            let c_p0 = p_mid - side0 * (p_w * 0.5); let c_p1 = p_mid + side0 * (p_w * 0.5);
                             let c_p2 = c_p1 + fwd * p_w; let c_p3 = c_p0 + fwd * p_w;
                             let verts = [c_p0, c_p1, c_p2, c_p3];
                             for j in 0..4 {
