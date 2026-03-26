@@ -98,7 +98,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **NoiseSystem Unit Tests (Item 28b)**: Verified road-edge emission (high-speed roads emit 4x more noise), diffusion, decay, and stability.
 
 ### Buildings
-- Desirability gate enforced (> 50). Spawn throttle active (max 10 buildings per tick).
+- Desirability gate enforced (≥ 20). Spawn throttle active (max 10 buildings per tick).
 - Rendered via MultiMesh instancing: one draw call per zone type.
 - Building deletion via swap-remove, O(1).
 - Save/load via `serde_json` — **not yet wired end-to-end**.
@@ -120,6 +120,26 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **Housing search**: immigrants drive toward city centre and claim the first residential building with free capacity (6 agents per plot, hard-coded).
 - **Daily cycle**: Home (rest/happiness recovery) → Work (Industrial or Commercial, earn money) → Shop (Commercial, spend money) → Home.
 - **Happiness/money**: home +1 happiness/day; commute penalty −commute_time/60 per trip; pollution effect −p × 0.1/day; work +$10/day; shop −$20.
+
+### Economy
+
+Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activity selection) and `simulation/economy/agents/decisions.rs` (transit mode). The economic loop is partial — income and spending exist but the decision model is probabilistic and the transit mode selection is a hardcoded distance threshold.
+
+**Activity cycle** (`TRANSIT_IDLE` branch in `tick.rs`):
+- Each idle agent has a **5% chance per second** of triggering an activity decision.
+- If `activity == 0` (at home): 40% chance to shop (if `money ≥ 20`), otherwise go to work.
+- If `activity != 0` (at work or shop): always return home.
+- Work building assigned lazily on first work trip — random Industrial or Commercial building; persists until destroyed.
+
+**Economic state per agent** (SoA fields):
+- `money`: starts at $100 for immigrants; `+$10/day` while idle at work; `−$20` on shop arrival.
+- `happiness`: starts at 50; `+1/day` while idle at home; `−commute_time / 60` per trip; `−pollution × 0.1` per day. Clamped `[0, 100]`.
+
+**Transit mode selection** (`decisions.rs`):
+- If pedestrian CCH distance > 500 m and agent has a car, attempt car path; otherwise walk.
+- `MODE_WALK`, `MODE_CAR`, `MODE_BIKE`, `MODE_BUS_PASSENGER`, `MODE_TRAIN_PASSENGER`, `MODE_TAXI_PASSENGER`, `MODE_SHIP_PASSENGER` constants are declared in `mod.rs`; only WALK and CAR are exercised.
+
+**Planned** (see Backlog, v0.1 Economy): utility-based decision model, Maslow-inspired need hierarchy (physiological → safety → social → esteem), living standard as a derived aggregate, per-agent needs, supply chain, building economic actors.
 
 ### Pathfinding
 - `simulation/pathing/astar.rs` — binary-heap A* with `(node, incoming_edge)` state key (mandatory for correct turn-restriction enforcement at `Node::lane_connections`).
@@ -155,6 +175,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 | ID | File | Description | Severity |
 |----|------|-------------|----------|
+| B1 | `simulation/economy/agents/data.rs` | `kill_agent` does not `swap_remove` the `has_car` field. Every kill leaves `has_car` one element longer than all other SoA fields, silently corrupting agent state after each kill+spawn cycle. Fix: add `self.has_car.swap_remove(index)` alongside the other 29 fields. The `soa_derive` migration (item 59) fixes this structurally. | [BUG] |
 
 ---
 
@@ -162,7 +183,39 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### Infrastructure
 
+59. **`AgentSystem` SoA migration to `soa_derive`**: replace the 29 manually-maintained parallel `Vec<T>` fields in `data.rs` with a `#[derive(SoA)]` schema struct (`Agent`) and a generated `AgentVec`. `spawn_agent` becomes a single `push(Agent { ... })` — the compiler enforces that all fields are initialised; `clear()` becomes one call; adding a new field no longer silently corrupts state. Also fixes B1 (`has_car` missing from `kill_agent`). Implementation: add `soa_derive = "0.3"` to `Cargo.toml`; define `Agent` with all per-agent fields; wrap `AgentVec` in `AgentSystem` via `Deref/DerefMut` so all `agents.field[i]` call sites are unchanged; replace `self.count` with `self.len()` throughout (`tick.rs`, `data.rs` methods, `render_helpers.rs`, `query.rs`, `benchmark.rs`, `allocator.rs`). `sim_time` and `pathfind_count` remain as direct fields on `AgentSystem`, not part of the generated vec.
+
+66. **Manual zoning (SimCity 4 style)**: remove the automatic edge-aligned zone cell generation. Replace with player-painted zones of arbitrary size and shape. No restrictions on zone dimensions — player draws the zone boundary, the system fills it. Requires a new zoning input tool and rework of `ZoningSystem` cell allocation. No agent or pathfinding changes.
+
 58. **Split `buildings/allocator.rs`** — 689 lines mixing two concerns. Split into `buildings/allocator/lifecycle.rs` (spawn, kill, evict, remap) and `buildings/allocator/index.rs` (zone_index, vacancy_index, claim_vacancy, release_vacancy). Low complexity, no behaviour change. Do when next working in that file.
+
+### v0.1 — Economy Foundation
+
+Target: a closed, utility-driven economic loop at 100k agents. Activity decisions are driven by agent state via a Maslow-inspired need hierarchy. Transit mode is chosen by utility scoring over all available modes. Living standard is a derived read-only metric — an aggregate of per-level need satisfaction — used for immigration and city rating.
+
+**Maslow mapping**:
+| Level | Needs | Simulation drivers |
+|---|---|---|
+| 1 — Physiological | Food, shelter, rest | `hunger`, home building, rest recovery |
+| 2 — Safety | Income, health, security | `money`, employment, hospital/police coverage |
+| 3 — Social | Community, belonging | entertainment, parks |
+| 4 — Esteem | Status, quality of life | neighbourhood desirability, housing quality |
+
+Lower levels dominate via soft priority weighting (not hard gating): `urgency(need) = base_weight(level) × (1 − satisfaction) × (1 + w_priority × unmet_lower_needs)`. Higher needs never fully drop to zero — agents occasionally visit the park when slightly hungry — they just do so far less. Level 5 (self-actualisation) is too abstract for simulation and is omitted.
+
+**Implementation order**: item 59 (soa_derive) first. Then 60 (utility decisions) + 61 (need levels) as a unit. Then 62 (multi-modal utility) once bicycle infrastructure (item 30) is live. Items 63–65 (needs, supply chain, services) follow in dependency order.
+
+60. **Utility-based agent decision system**: replace the hardcoded 5%/40% activity selection in `TRANSIT_IDLE` with explicit utility scores driven by need-level satisfaction. Each activity scores against the relevant level: `score(work) = w_safety × (1 − safety_sat[i]) + w_income × (1 − money/cap)`, `score(shop_food) = w_physio × hunger[i]`, `score(stay) = w_rest × (1 − happiness[i]) + w_esteem × esteem_sat[i]`. Agent picks the highest-scoring activity. All weights live in a shared `AgentConfig` struct. Evaluation cost: ~12 multiplies per activation (~5% agents per second), negligible at any scale. Prerequisite: item 59.
+
+61. **Need-level satisfaction fields and living standard**: add four per-agent satisfaction scalars to the SoA — `physio_sat`, `safety_sat`, `social_sat`, `esteem_sat` — each in `[0, 1]`. Updated every N seconds (not per tick) via `par_iter`. Formulas: `physio_sat` = `f(hunger, has_home)`; `safety_sat` = `f(money, employment, safety_grid[home_pos])`; `social_sat` = `f(entertainment_grid[home_pos])`; `esteem_sat` = `f(desirability_grid[home_pos], housing_quality)`. `living_standard[i]` is derived as a weighted sum across all four levels — a read-only output used for immigration gates, city rating, and the Implemented Systems description. DataGrid lookups are O(1); periodic update keeps per-tick cost zero.
+
+62. **Multi-modal utility transit selection**: replace the 500 m car threshold in `decide_transit_mode` with utility scoring over all available modes (walk, bike, car, bus, train). Score per mode: `−w_time × estimated_time − w_cost × trip_cost + w_pref × personal_preference[i]`. Pre-screen with straight-line distance; CCH pathfind only the winning mode — keeps max 1–2 CCH calls per activation (same as today). New SoA fields: `has_bike: Vec<bool>`, `eco_preference: Vec<f32>`. Bus and train scores require `bus_access_grid` and `train_access_grid` (DataGrid lookups written when stops are placed); both default to 0 until infrastructure exists. Prerequisite: item 30 (bicycle), item 59.
+
+63. **Agent needs — physiological level**: `hunger: Vec<f32>` decays passively each tick; shop visits targeting food buildings restore it. Fulfils `physio_sat` (item 61). Shop trips become need-driven — `score(shop_food) += w_hunger × hunger[i]`. New building field: `product: ProductType` enum (Food, Goods, …). When a food shop has no stock, `hunger` cannot be restored; `physio_sat` drops; safety and higher levels are suppressed via soft priority. Prerequisite: items 60, 61.
+
+64. **Supply chain and building economic actors**: buildings gain `stock: f32`, `revenue: f32`. Farms/factories accumulate stock proportional to employment fill rate. Shops deplete stock on agent purchase; zero stock means the shop cannot restore the relevant need (natural demand signal). Buildings make utility-based decisions each N seconds (hire, adjust production) driven by revenue and vacancy — same utility pattern as agents, negligible cost since building count << agent count. Supply transport: goods flow along road graph connections at a rate proportional to road connectivity (no individual truck agents). Prerequisite: items 60–63.
+
+65. **Service buildings — static coverage model**: police stations, hospitals, and fire departments emit influence onto `safety_grid` and `health_grid` (same `DataGrid<f32>` architecture as pollution/noise). These grids feed directly into `safety_sat` (item 61 — level 2). No event simulation, no dispatch — static coverage is the correct first model at city scale. Building-level utility decisions (resource allocation) follow the same pattern as item 64 when that ships.
 
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 
@@ -296,123 +349,4 @@ Instead of one CCH hierarchy with inner-path expansion, build a separate contrac
 
 ---
 
-## Architecture Reference
-
-### Grid Specifications
-
-| Parameter | Value | Notes |
-|-----------|-------|-------|
-| City tile size | Player-configurable | Default 20 km × 20 km; no hardcoded upper limit. Set via `MapConfig` at construction. |
-| Zoning cell | 10 m × 10 m (`zone_cell_m`) | Configurable via `MapConfig`. |
-| Building footprint | 3 × 3 cells (30 m × 30 m) | Fixed relative to zoning cell size. |
-| Road width (2-lane) | 10 m (7 m asphalt + 1.5 m sidewalk each side) | Fixed. |
-| Zoning offset from centreline | 5 m | Fixed. |
-| Zoning depth | 10 cells (100 m) | Fixed relative to zoning cell size. |
-| Road spatial chunk | 512 m | Fixed; scales correctly to any map size. |
-| Environmental grid cell | 40 m (`env_cell_m`) | Configurable via `MapConfig`. Grid dimensions = map size / cell size. |
-| Environmental grid (default 20 km map) | 500 × 500 | Scales with map size: 60 km map → 1500 × 1500. |
-
-### Movement Speeds
-
-| Mode | Speed | Status | Notes |
-|------|-------|--------|-------|
-| Walking | 4.0 m/s (14.4 km/h) | Implemented | ~3× real life; 10 m road takes 2.5 s |
-| Driving (car) | 20.0 m/s (72 km/h) | Implemented | Standard suburban |
-| Bicycle | 5.5 m/s (20 km/h) | Planned (item 30) | Shares sidewalk / dedicated cycle edges |
-| Bus | 10–15 m/s (36–54 km/h) | Planned (item 42) | Slower than car due to stop dwell time |
-| Train / Metro | 20–40 m/s (72–144 km/h) | Planned (item 43) | Higher value for intercity; metro ≈ 25 m/s |
-| Ship / Ferry | 5–10 m/s (18–36 km/h) | Planned (item 44) | Slow; used for harbor-to-harbor routes |
-| Airplane | ~200 m/s (720 km/h) | Planned (item 45) | Near-teleport at city scale |
-
-### Key Design Patterns
-
-- **DataGrid\<T\>**: flat `Vec<T>` with stride `width`. Row-wise parallel iteration with `rayon::par_chunks_mut`. All spatial grids (terrain, pollution, noise, desirability) use this type. The planned congestion heatmap (`DataGrid<f32>`, written from per-edge average speed) will also use it.
-- **Per-lane occupancy lists (planned)**: transient `Vec<Vec<u32>>` built each tick from the SoA, indexed by `edge_idx * MAX_LANES + lane_idx`, sorted by `edge_progression`. Provides O(1) car-ahead lookup for IDM without any persistent spatial structure. Thrown away after each tick.
-- **SoA (Structure-of-Arrays)**: `AgentSystem` stores all fields as parallel `Vec<T>` indexed by agent ID. Cache-friendly for bulk iteration.
-- **512 m spatial chunks**: road edge AABB registered in all overlapping chunks. Used for editor queries (radius ≈ 120 m → typically 1 chunk) and spatial snapping. CCH manages its own contraction hierarchy independently of this grid.
-- **`(node, incoming_edge)` pathfinding state**: required for turn restriction correctness at `Node::lane_connections`. Must be preserved in any pathfinding replacement.
-
-### Multi-modal Transport Vocabulary
-
-The type vocabulary for all planned transport modes already exists in `network/types.rs`:
-
-| Type | Declared values |
-|------|----------------|
-| `TransitType` | `Road, Rail, Ship, Air, Foot` |
-| `TransitFlags` | `FOOT=1<<0, CAR=1<<1, RAIL=1<<2, SHIP=1<<3, AIR=1<<4` (bit 5+ free for `BIKE`) |
-| `NodeType` | `Junction, Station, Harbor, Airport, Transfer, Frontage` |
-
-The gap is entirely in the agent system: `transit_mode: Vec<u8>` migration is complete. The pathfinding query uses `allowed_mask: u8` — CCH implements this as a query-time filter. These two changes are the shared prerequisites for all multi-modal work.
-
-### Memory Budget (20 km map)
-
-| Resource | Size |
-|----------|------|
-| Terrain heightmap (2000²) | 16 MB |
-| Terrain source copy | 16 MB |
-| 3 environmental grids at 500² | 3 MB |
-| Road edges (50k × ~512 B) | 25 MB |
-| Road nodes (100k × ~128 B) | 12 MB |
-| Agent SoA (1M × ~120 B) | 120 MB |
-| Agent speed field (1M × 4 B, added by IDM) | 4 MB |
-| CCH contracted graph (shortcuts + elimination tree) | ~20–30 MB |
-| Road mesh VRAM (50k edges) | ~144 MB VRAM |
-
-**Bandwidth note**: 3 environmental grids at 500² = 3 MB of memory traffic per diffusion pass. At 10 ticks/s this is well within DDR4 bandwidth. The remaining allocation concern is the per-tick `grid.clone()` (~1 MB each); see B18.
-
----
-
-## Godot Layer
-
-The Godot side is a thin bridge: no simulation logic lives here. All GDScript scripts call into `SimulationNode` (the Rust GDExtension) and pass results to rendering nodes.
-
-### Scene Tree (`godot/scenes/Main.tscn`)
-
-| Node | Type | Script | Role |
-|------|------|--------|------|
-| Main | Node3D | — | Root |
-| SimulationNode | (Rust native) | — | Owns all simulation state; exposes `#[func]` methods |
-| Terrain | MeshInstance3D | `terrain.gd` | Heightmap mesh, overlay textures, sculpt input |
-| Water | MeshInstance3D | `water.gd` | Shallow-water surface renderer |
-| RoadTool | Node3D | `road_tool.gd` | Road drawing (straight + spline), extends NetworkTool |
-| ZoningTool | Node3D | `zoning_tool.gd` | Zone paint/fill/delete tool |
-| Buildings | Node3D | `buildings.gd` | MultiMesh renderer for placed buildings |
-| Agents | Node3D | `agents.gd` | MultiMesh renderer for live agents |
-| LaneTool | Node3D | `lane_tool.gd` | Visual turn-restriction editor |
-| MoveTool | Node3D | `move_tool.gd` | Road node drag-to-reposition, extends NetworkTool |
-| InputManager | Node | `input_manager.gd` | Global keyboard/mouse routing, tool switching |
-| CameraNode | CameraNode | — | Rust camera node |
-| MainUI | CanvasLayer | `main_ui.gd` | All HUD panels and buttons, procedurally built |
-
-### Script → Rust Method Inventory
-
-| Script | SimulationNode methods called |
-|--------|-------------------------------|
-| `input_manager.gd` | `undo_action()`, `set_simulation_speed()` (via MainUI signals) |
-| `main_ui.gd` | `get_city_demographics()`, `set_simulation_speed()`, `undo_action()` |
-| `terrain.gd` | `get_heightmap_size()`, `get_heightmap_data()`, `sculpt_terrain()`, `flatten_terrain_for_roads()`, `load_heightmap_data()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
-| `water.gd` | `get_water_data()`, `get_water_velocity_data()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
-| `agents.gd` | `get_agent_transforms()`, `get_agent_paths_debug()`, `get_city_demographics()` |
-| `buildings.gd` | `get_building_transforms(zone_id)` |
-| `network_tool.gd` | `add_road()`, `get_closest_network_point()`, `get_closest_node()`, `get_road_mesh_data()`, `get_network_nodes()`, `get_node_pos()`, `get_height_at()` |
-| `road_tool.gd` | (inherits NetworkTool) |
-| `move_tool.gd` | `get_closest_node()`, `get_node_pos()`, `move_network_node()` |
-| `cul_de_sac_tool.gd` | `get_closest_node()`, `has_cul_de_sac()`, `set_node_cul_de_sac()` |
-| `lane_tool.gd` | `get_node_lanes()`, `get_lane_connections_array()`, `set_lane_connection()`, `clear_lane_source()`, `clear_lane_connections()`, `get_node_pos()`, `get_closest_node()`, `get_edge_geometry()`, `get_edge_width()`, `get_lane_width()` |
-| `zoning_tool.gd` | `update_zoning_visuals()`, `get_hovered_edge()`, `set_zoning_cell()`, `set_zoning_enabled()`, `get_closest_network_point()` |
-
-### Data Format Reference
-
-| Buffer | Type | Layout |
-|--------|------|--------|
-| Heightmap | `PackedFloat32Array` | Flat row-major, `width × height` f32 values (metres) |
-| Water depth | `PackedFloat32Array` | Same layout as heightmap |
-| Water velocity | `PackedFloat32Array` | Same layout, scalar magnitude per cell |
-| Agent transforms | `PackedFloat32Array` | 12 floats per agent: `[basis.x(3), basis.y(3), basis.z(3), origin(3)]` — matches `Transform3D` |
-| Building transforms | `PackedFloat32Array` | Same 12-float layout as agent transforms |
-| Pollution / Noise / Desirability | `PackedByteArray` | RGBA8, one pixel per grid cell; uploaded to a shader `ImageTexture` |
-
-# Future changes
-
-## Zoning
-- Add SimCity 4 style zoning (remove automatic zoning, use manual, no restictions on the size of the zone)
+See [`docs/reference.md`](reference.md) for grid specs, movement speeds, memory budget, design patterns, transport vocabulary, Godot scene tree, script→Rust method inventory, and data buffer formats.
