@@ -1,8 +1,14 @@
+//! Road mesh generation: lane ribbons, junction fill polygons, bridge decks, and walkway strips.
+//!
+//! [`RoadRenderer`] implements [`TransitRenderer`] and is the sole entry point for converting
+//! a [`RegionGraph`] into renderable geometry. All output is flat-shaded triangle soup uploaded
+//! to Godot via [`NetworkMeshData`].
+
 use godot::prelude::*;
 use crate::config;
 use std::collections::HashMap;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::{TransitType, EdgeClass, NodeType};
+use crate::simulation::network::types::{TransitType, EdgeClass};
 use super::{TransitRenderer, NetworkMeshData};
 
 fn line_line_intersection_xz(p1: Vector3, d1: Vector3, p2: Vector3, d2: Vector3) -> Option<Vector3> {
@@ -18,6 +24,7 @@ fn line_line_intersection_xz(p1: Vector3, d1: Vector3, p2: Vector3, d2: Vector3)
     Some(p1 + d1 * t)
 }
 
+/// Generates road, junction, bridge, and walkway mesh data from the road graph.
 pub struct RoadRenderer;
 
 impl TransitRenderer for RoadRenderer {
@@ -40,7 +47,7 @@ impl TransitRenderer for RoadRenderer {
         let _hw = (terrain.width as f32 - 1.0) * 0.5;
         let _hh = (terrain.height as f32 - 1.0) * 0.5;
 
-        // 0. Transition Graph Adjacency (B_BRIDGE5)
+        // 1. Build node-to-edge adjacency
         let mut node_to_edges = vec![Vec::new(); graph.nodes.len()];
         for (e_idx, edge) in graph.edges.iter().enumerate() {
             if edge.deleted || (edge.primary_type != TransitType::Road && edge.primary_type != TransitType::Foot) { continue; }
@@ -48,7 +55,7 @@ impl TransitRenderer for RoadRenderer {
             node_to_edges[graph.get_valid_node(edge.end_node) as usize].push((e_idx, edge));
         }
 
-        // 0. Connection mapping and Miter calculation
+        // 2. Compute connection counts and miter directions
         let mut connection_counts = HashMap::new();
         let mut node_dirs: HashMap<u32, Vec<(usize, Vector2)>> = HashMap::new();
         for (edge_id, edge) in graph.edges.iter().enumerate() {
@@ -96,7 +103,7 @@ impl TransitRenderer for RoadRenderer {
 
 
 
-        // 1. Generate Schematic Lane Ribbons
+        // 3. Lane ribbons
         for (edge_id, edge) in graph.edges.iter().enumerate() {
             let resampled_count = edge.physical_geometry.len();
             if resampled_count < 2 { continue; }
@@ -206,7 +213,6 @@ impl TransitRenderer for RoadRenderer {
                 point_side_dirs.push(side_dir);
             }
 
-            // Lane Ribbons
             // Road Ribbons (Lanes)
             let lane_count = (edge.fwd_lanes + edge.bkw_lanes) as usize;
             let start_clip = edge.start_clip;
@@ -299,7 +305,7 @@ impl TransitRenderer for RoadRenderer {
                     let segment_start = dist_acc;
                     let segment_end = dist_acc + segment_len;
 
-                    // Skip if entirely clipped (B_BRIDGE5)
+                    // Skip if entirely clipped
                     if segment_end <= start_clip || segment_start >= total_len - end_clip {
                         dist_acc += segment_len;
                         continue;
@@ -440,7 +446,7 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
-        // 2. Junction meshes
+        // 4. Junction fill polygons
         for (n_idx, node) in graph.nodes.iter().enumerate() {
             if graph.get_valid_node(n_idx as u32) != n_idx as u32 { continue; }
             let edges_at_node = &node_to_edges[n_idx];
@@ -457,11 +463,7 @@ impl TransitRenderer for RoadRenderer {
                 side_dir: Vector3,
                 road_left: Vector3,
                 road_right: Vector3,
-                sw_left: Option<Vector3>,
-                sw_right: Option<Vector3>,
                 angle: f32,
-                has_foot: bool,
-                class: EdgeClass,
             }
 
             let mut edge_infos = Vec::new();
@@ -470,14 +472,7 @@ impl TransitRenderer for RoadRenderer {
                 if edge.physical_geometry.len() < 2 { continue; }
 
                 let is_start = edge.start_node == n_idx as u32;
-                // Merge nodes: mainline edges have zero clip
-                let clip = if node.node_type == NodeType::Merge && edge.class != EdgeClass::Ramp {
-                    0.0
-                } else if is_start {
-                    edge.start_clip
-                } else {
-                    edge.end_clip
-                };
+                let clip = if is_start { edge.start_clip } else { edge.end_clip };
 
                 let mut dist_acc = 0.0;
                 let total_l = edge.physical_length;
@@ -503,9 +498,6 @@ impl TransitRenderer for RoadRenderer {
                 let side_dir = Vector3::new(-outward_tangent.z, 0.0, outward_tangent.x);
                 let angle = f32::atan2(outward_tangent.z, outward_tangent.x);
                 let rw = edge.width * 0.5;
-                let sww = rw + config::SIDEWALK_WIDTH;
-
-                let has_foot = edge.allowed_types & crate::simulation::network::types::TransitFlags::FOOT != 0;
 
                 edge_infos.push(EdgeInfo {
                     clip_pos,
@@ -513,11 +505,7 @@ impl TransitRenderer for RoadRenderer {
                     side_dir,
                     road_left: clip_pos - side_dir * rw,
                     road_right: clip_pos + side_dir * rw,
-                    sw_left: if has_foot { Some(clip_pos - side_dir * sww) } else { None },
-                    sw_right: if has_foot { Some(clip_pos + side_dir * sww) } else { None },
                     angle,
-                    has_foot,
-                    class: edge.class,
                 });
             }
 
