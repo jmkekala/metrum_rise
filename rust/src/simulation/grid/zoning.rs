@@ -639,3 +639,211 @@ impl ZoningSystem {
         PackedFloat32Array::from_iter(data)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::core::config::MapConfig;
+
+    /// Build a ZoningSystem with one edge grid of the given length (zone_cell_m = 10.0).
+    fn make_zoning(edge_idx: usize, length: f32) -> ZoningSystem {
+        let cfg = MapConfig::default(); // zone_cell_m = 10.0
+        let mut z = ZoningSystem::new(&cfg);
+        z.update_edge_grid_size(edge_idx, length);
+        z
+    }
+
+    // ── set_zone_range ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn zone_range_full_zones_all_columns() {
+        // 100 m / 10 m = 10 columns
+        let mut z = make_zoning(0, 100.0);
+        z.set_zone_range(0, 1, 0.0, 1.0, 4, ZoneType::Residential);
+        for x in 0..10 {
+            for y in 0..4 {
+                assert_eq!(z.get_cell(0, 1, x, y), ZoneType::Residential, "col={x} row={y}");
+            }
+            // Depth clamped: row 4 should remain None
+            assert_eq!(z.get_cell(0, 1, x, 4), ZoneType::None, "col={x} row=4 should be empty");
+        }
+    }
+
+    #[test]
+    fn zone_range_partial_zones_correct_columns() {
+        // t=0.3..0.7 on 10 cols → floor(3.0)=3 .. ceil(7.0)=7 → cols 3,4,5,6
+        let mut z = make_zoning(0, 100.0);
+        z.set_zone_range(0, 1, 0.3, 0.7, ZONING_DEPTH, ZoneType::Commercial);
+        for x in 0..3 {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::None, "col {x} should be empty");
+        }
+        for x in 3..7 {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Commercial, "col {x} should be zoned");
+        }
+        for x in 7..10 {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::None, "col {x} should be empty");
+        }
+    }
+
+    #[test]
+    fn zone_range_sides_are_independent() {
+        let mut z = make_zoning(0, 100.0);
+        z.set_zone_range(0,  1, 0.0, 1.0, 1, ZoneType::Residential);
+        z.set_zone_range(0, -1, 0.0, 1.0, 1, ZoneType::Commercial);
+        assert_eq!(z.get_cell(0,  1, 0, 0), ZoneType::Residential);
+        assert_eq!(z.get_cell(0, -1, 0, 0), ZoneType::Commercial);
+    }
+
+    #[test]
+    fn zone_range_reversed_t_still_zones_range() {
+        // The function must swap start/end when end_t < start_t (B6 regression guard)
+        let mut z = make_zoning(0, 100.0);
+        z.set_zone_range(0, 1, 0.7, 0.3, 1, ZoneType::Industrial);
+        for x in 3..7 {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Industrial, "col {x}");
+        }
+        for x in [0, 1, 2, 7, 8, 9] {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::None, "col {x} should be empty");
+        }
+    }
+
+    #[test]
+    fn zone_range_clear_with_none() {
+        let mut z = make_zoning(0, 100.0);
+        z.set_zone_range(0, 1, 0.0, 1.0, 1, ZoneType::Residential);
+        z.set_zone_range(0, 1, 0.0, 0.5, 1, ZoneType::None);
+        for x in 0..5 {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::None, "col {x} should be cleared");
+        }
+        for x in 5..10 {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Residential, "col {x} should remain");
+        }
+    }
+
+    // ── boundary conditions ─────────────────────────────────────────────────────
+
+    #[test]
+    fn get_cell_out_of_bounds_returns_none() {
+        let z = make_zoning(0, 100.0);
+        assert_eq!(z.get_cell(0, 1, 10, 0), ZoneType::None, "x beyond cells_long");
+        assert_eq!(z.get_cell(99, 1, 0, 0), ZoneType::None, "missing edge grid");
+    }
+
+    #[test]
+    fn is_occupied_out_of_bounds_returns_true() {
+        // Conservative: missing/OOB cell treated as occupied to block building placement
+        let z = make_zoning(0, 100.0);
+        assert!(z.is_occupied(0, 1, 100, 0), "x beyond cells_long");
+        assert!(z.is_occupied(99, 1, 0, 0), "missing edge grid");
+    }
+
+    // ── split_edge_grid ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn split_produces_correct_column_counts() {
+        // 100 m → 10 cols. Split at 4 → old=4, new=6
+        let mut z = make_zoning(0, 100.0);
+        z.split_edge_grid(0, 1, 4);
+        assert_eq!(z.edge_grids[&0].cells_long, 4);
+        assert_eq!(z.edge_grids[&1].cells_long, 6);
+    }
+
+    #[test]
+    fn split_assigns_zone_data_to_correct_half() {
+        let mut z = make_zoning(0, 100.0);
+        // Cols 0..4 Residential, cols 4..10 Commercial
+        z.set_zone_range(0, 1, 0.0, 0.4, 1, ZoneType::Residential);
+        z.set_zone_range(0, 1, 0.4, 1.0, 1, ZoneType::Commercial);
+        z.split_edge_grid(0, 1, 4);
+
+        for x in 0..4 {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Residential, "old col {x}");
+        }
+        // New edge re-indexes from 0; originally cols 4..10
+        for x in 0..6 {
+            assert_eq!(z.get_cell(1, 1, x, 0), ZoneType::Commercial, "new col {x}");
+        }
+    }
+
+    #[test]
+    fn split_at_zero_produces_empty_old_full_new() {
+        let mut z = make_zoning(0, 100.0);
+        z.split_edge_grid(0, 1, 0);
+        assert_eq!(z.edge_grids[&0].cells_long, 0);
+        assert_eq!(z.edge_grids[&1].cells_long, 10);
+    }
+
+    #[test]
+    fn split_at_end_produces_full_old_empty_new() {
+        let mut z = make_zoning(0, 100.0);
+        z.split_edge_grid(0, 1, 10);
+        assert_eq!(z.edge_grids[&0].cells_long, 10);
+        assert_eq!(z.edge_grids[&1].cells_long, 0);
+    }
+
+    #[test]
+    fn split_copies_occupancy_to_new_half() {
+        let mut z = make_zoning(0, 100.0);
+        z.set_occupied(0, 1, 7, 0, true);
+        z.split_edge_grid(0, 1, 4);
+        // Col 7 maps to col 3 in the new edge (7 - 4 = 3)
+        assert!(z.is_occupied(1, 1, 3, 0), "occupied flag should transfer to new edge");
+        assert!(!z.is_occupied(0, 1, 3, 0), "old edge col 3 should not be marked occupied");
+    }
+
+    // ── merge_edge_grids ────────────────────────────────────────────────────────
+
+    #[test]
+    fn merge_combines_column_counts_and_removes_second() {
+        let mut z = make_zoning(0, 40.0); // 4 cols
+        z.update_edge_grid_size(1, 60.0); // 6 cols
+        z.merge_edge_grids(0, 1);
+        assert_eq!(z.edge_grids[&0].cells_long, 10);
+        assert!(!z.edge_grids.contains_key(&1), "second grid should be removed");
+    }
+
+    #[test]
+    fn merge_preserves_zone_data_order() {
+        let mut z = make_zoning(0, 40.0);
+        z.update_edge_grid_size(1, 60.0);
+        z.set_zone_range(0, 1, 0.0, 1.0, 1, ZoneType::Residential); // cols 0..4 of edge 0
+        z.set_zone_range(1, 1, 0.0, 1.0, 1, ZoneType::Commercial);  // cols 0..6 of edge 1
+        z.merge_edge_grids(0, 1);
+
+        for x in 0..4 {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Residential, "merged col {x}");
+        }
+        for x in 4..10 {
+            assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Commercial, "merged col {x}");
+        }
+    }
+
+    // ── split → merge round-trip ────────────────────────────────────────────────
+
+    #[test]
+    fn split_then_merge_round_trips_all_data() {
+        let mut z = make_zoning(0, 100.0);
+        // Paint first half Residential, second half Commercial, 3 rows deep
+        for x in 0..5 {
+            for y in 0..3 { z.set_cell(0, 1, x, y, ZoneType::Residential); }
+        }
+        for x in 5..10 {
+            for y in 0..3 { z.set_cell(0, 1, x, y, ZoneType::Commercial); }
+        }
+
+        z.split_edge_grid(0, 1, 5);
+        z.merge_edge_grids(0, 1);
+
+        assert_eq!(z.edge_grids[&0].cells_long, 10);
+        for x in 0..5 {
+            for y in 0..3 {
+                assert_eq!(z.get_cell(0, 1, x, y), ZoneType::Residential, "col={x} row={y}");
+            }
+        }
+        for x in 5..10 {
+            for y in 0..3 {
+                assert_eq!(z.get_cell(0, 1, x, y), ZoneType::Commercial, "col={x} row={y}");
+            }
+        }
+    }
+}
