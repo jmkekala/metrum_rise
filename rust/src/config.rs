@@ -26,5 +26,7 @@ pub const Z_FIGHT_BIAS: f32 = 0.001;
 // Zoning Simulation Parameters
 
 pub const ZONING_DEPTH: usize = 12;
+/// Whether traffic drives on the left side of the road (`true` = UK/Japan style, `false` = continental/US style).
+pub const DRIVE_ON_LEFT: bool = false;
 /// Minimum vertical separation (metres) for a bridge/tunnel to NOT obstruct other systems.
 pub const CLEARANCE_THRESHOLD: f32 = 5.0;

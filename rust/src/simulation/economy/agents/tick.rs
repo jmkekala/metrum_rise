@@ -138,8 +138,9 @@ impl AgentSystem {
                                 let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
                                 let lane_w = edge.width / total_lanes;
                                 // For departure, we'll just target the first lane for now
-                                let lane_offset = (total_lanes * 0.5 - 0.5) * lane_w;
-                                base_vec += normal * (lane_offset);
+                                let hand = if crate::config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+                                let lane_offset = (total_lanes * 0.5 - 0.5) * lane_w * hand;
+                                base_vec += normal * lane_offset;
                             } else {
                                 let sw_w = crate::config::SIDEWALK_WIDTH;
                                 let offset_amt = edge.width * 0.5 + sw_w * 0.5;
@@ -325,8 +326,12 @@ impl AgentSystem {
                              if self.transit_mode[i] == MODE_CAR {
                                   let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
                                   let lane_w = edge.width / total_lanes;
-                                  let lane_idx = if is_fwd { self.current_lane[i] as f32 } else { (edge.fwd_lanes as i8 + (-self.current_lane[i] - 1)) as f32 };
-                                 let lane_offset = (total_lanes * 0.5 - lane_idx - 0.5) * lane_w;
+                                  // Forward: lane 0 = rightmost. Backward: diff is already reversed so
+                                 // normal already points right-of-travel; use same 0-based index so
+                                 // backward cars also sit on the right side of their travel direction.
+                                 let lane_idx = if is_fwd { self.current_lane[i] as f32 } else { (-self.current_lane[i] - 1) as f32 };
+                                 let hand = if crate::config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+                                 let lane_offset = (total_lanes * 0.5 - lane_idx - 0.5) * lane_w * hand;
                                  offset_target += normal * lane_offset;
                              } else {
                                  // Pedestrian: Use side preference (Sidewalk Loyalty)
