@@ -63,70 +63,20 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
-        // 0b. Junction Tip calculation (B5/B1 fixed)
-        let mut inner_tips: HashMap<(usize, u32), [Option<Vector3>; 2]> = HashMap::new();
         let mut node_miters: HashMap<u32, Vector2> = HashMap::new();
-        
+
         for (&node_id, dirs) in &node_dirs {
-            if dirs.len() < 2 { continue; }
-            
-            // 1. Calculate traditional 2-edge miters for walkways
-            if dirs.len() == 2 {
-                let d1 = dirs[0].1;
-                let d2 = dirs[1].1;
-                let s1 = Vector2::new(-d1.y, d1.x);
-                let s2 = Vector2::new(-d2.y, d2.x);
-                let d_diff = s1 - s2;
-                if d_diff.length_squared() > 1e-6 {
-                    let miter = d_diff.normalized();
-                    let cos_half = s1.dot(miter).abs();
-                    if cos_half > 0.1 {
-                        node_miters.insert(node_id, miter / cos_half);
-                    }
-                }
-            }
-
-            // 2. Calculate junction tips for road edge intersection (B5/B1)
-            let mut sorted_dirs = dirs.clone();
-            sorted_dirs.sort_by(|a, b| f32::atan2(a.1.y, a.1.x).partial_cmp(&f32::atan2(b.1.y, b.1.x)).unwrap());
-
-            for j in 0..sorted_dirs.len() {
-                let a = &sorted_dirs[j];
-                let b = &sorted_dirs[(j + 1) % sorted_dirs.len()];
-                
-                let edge_a = &graph.edges[a.0];
-                let edge_b = &graph.edges[b.0];
-                if edge_a.primary_type != TransitType::Road || edge_b.primary_type != TransitType::Road { continue; }
-                
-                let node_pos = graph.nodes[node_id as usize].pos;
-                let node_xy = Vector2::new(node_pos.x, node_pos.z);
-                
-                let side_a = Vector2::new(-a.1.y, a.1.x); // positive side of A
-                let side_b = Vector2::new(-b.1.y, b.1.x); // positive side of B, so negative is -side_b
-                
-                let det = a.1.x * (-b.1.y) - (-b.1.x) * a.1.y;
-                if det.abs() > 1e-4 {
-                    // Calculate Inner Tips (Road Edge)
-                    let rw_a = edge_a.width * 0.5;
-                    let rw_b = edge_b.width * 0.5;
-                    let p_ia = node_xy + side_a * rw_a;
-                    let p_ib = node_xy - side_b * rw_b;
-                    let delta_i = p_ib - p_ia;
-                    let t_ia = (delta_i.x * (-b.1.y) - (-b.1.x) * delta_i.y) / det;
-                    let t_ib = (a.1.x * delta_i.y - delta_i.x * a.1.y) / det;
-                    
-                    if t_ia > 0.0 && t_ib > 0.0 {
-                        let max_a = (edge_a.width * 1.5).min(edge_a.physical_length * 0.4);
-                        let max_b = (edge_b.width * 1.5).min(edge_b.physical_length * 0.4);
-                        if t_ia < max_a && t_ib < max_b {
-                            let tip_xy = p_ia + a.1 * t_ia;
-                            let tip = Vector3::new(tip_xy.x, node_pos.y, tip_xy.y);
-                            inner_tips.entry((a.0, node_id)).or_insert([None; 2])[0] = Some(tip); 
-                            inner_tips.entry((b.0, node_id)).or_insert([None; 2])[1] = Some(tip); 
-                        }
-                    }
-
-
+            if dirs.len() != 2 { continue; }
+            let d1 = dirs[0].1;
+            let d2 = dirs[1].1;
+            let s1 = Vector2::new(-d1.y, d1.x);
+            let s2 = Vector2::new(-d2.y, d2.x);
+            let d_diff = s1 - s2;
+            if d_diff.length_squared() > 1e-6 {
+                let miter = d_diff.normalized();
+                let cos_half = s1.dot(miter).abs();
+                if cos_half > 0.1 {
+                    node_miters.insert(node_id, miter / cos_half);
                 }
             }
         }
@@ -290,25 +240,6 @@ impl TransitRenderer for RoadRenderer {
                     let mut v1_l = p1 + side1 * (lateral_offset - lane_w * 0.5);
                     let mut v1_r = p1 + side1 * (lateral_offset + lane_w * 0.5);
 
-                    // Apply Junction Tips to Road Lanes (outermost edge of asphalt meets sidewalk tips)
-                    if i == 0 && t0 == 0.0 {
-                        if let Some(tips) = inner_tips.get(&(edge_id, edge.start_node)) {
-                            if lateral_offset > 0.0 && (lateral_offset + lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
-                                if let Some(tip) = tips[0] { v0_r = tip; v0_r.y += h_offset; }
-                            } else if lateral_offset < 0.0 && (lateral_offset - lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
-                                if let Some(tip) = tips[1] { v0_l = tip; v0_l.y += h_offset; }
-                            }
-                        }
-                    }
-                    if i == resampled_count - 2 && t1 == 1.0 {
-                        if let Some(tips) = inner_tips.get(&(edge_id, edge.end_node)) {
-                            if lateral_offset > 0.0 && (lateral_offset + lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
-                                if let Some(tip) = tips[0] { v1_r = tip; v1_r.y += h_offset; }
-                            } else if lateral_offset < 0.0 && (lateral_offset - lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
-                                if let Some(tip) = tips[1] { v1_l = tip; v1_l.y += h_offset; }
-                            }
-                        }
-                    }
 
                     // Area check for degenerate ribbon triangles
                     let area1 = (v1_l - v0_l).cross(v1_r - v0_l).length() * 0.5;
@@ -376,21 +307,6 @@ impl TransitRenderer for RoadRenderer {
                     let mut v1_l = p1 + side1 * (lateral_offset - sw_w * 0.5);
                     let mut v1_r = p1 + side1 * (lateral_offset + sw_w * 0.5);
 
-                    // Apply inner junction tips to sidewalks at clip boundary
-                    if i == 0 && t0 == 0.0 {
-                        let node_id = edge.start_node;
-                        if let Some(i_tips) = inner_tips.get(&(edge_id, node_id)) {
-                            if lateral_offset > 0.0 { if let Some(tip) = i_tips[0] { v0_l = tip; v0_l.y += h_offset + 0.001; } }
-                            else { if let Some(tip) = i_tips[1] { v0_r = tip; v0_r.y += h_offset + 0.001; } }
-                        }
-                    }
-                    if i == resampled_count - 2 && t1 == 1.0 {
-                        let node_id = edge.end_node;
-                        if let Some(i_tips) = inner_tips.get(&(edge_id, node_id)) {
-                            if lateral_offset > 0.0 { if let Some(tip) = i_tips[0] { v1_l = tip; v1_l.y += h_offset + 0.001; } }
-                            else { if let Some(tip) = i_tips[1] { v1_r = tip; v1_r.y += h_offset + 0.001; } }
-                        }
-                    }
 
                     // Area check for degenerate ribbon triangles
                     let area1 = (v1_l - v0_l).cross(v1_r - v0_l).length() * 0.5;
