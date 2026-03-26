@@ -540,17 +540,22 @@ impl TransitRenderer for RoadRenderer {
                     dist_acc += d;
                 }
 
+                // Ensure tangent points AWAY from this junction node.
+                // The geometry loop always walks from geom[0] toward geom.last(),
+                // so for end-node junctions the tangent must be flipped.
+                let outward_tangent = if is_start { tangent } else { -tangent };
+
                 p.y += config::ROAD_H_OFFSET;
-                let side_dir = Vector3::new(-tangent.z, 0.0, tangent.x);
+                let side_dir = Vector3::new(-outward_tangent.z, 0.0, outward_tangent.x);
                 let rw = edge.width * 0.5;
                 let sw = rw + config::SIDEWALK_WIDTH;
-                
+
                 for side in [1.0, -1.0] {
                     let pt_inner = p + side_dir * (rw * side);
                     let pt_outer = p + side_dir * (sw * side);
                     let da = pt_inner - node.pos;
                     let angle = f32::atan2(da.z, da.x);
-                    j_pts.push(JPoint { e_idx, inner: pt_inner, outer: pt_outer, angle, class: edge.class, tangent });
+                    j_pts.push(JPoint { e_idx, inner: pt_inner, outer: pt_outer, angle, class: edge.class, tangent: outward_tangent });
                 }
             }
 
@@ -579,12 +584,20 @@ impl TransitRenderer for RoadRenderer {
 
                 // 2. Outer Quad (Between inner and outer points)
                 let is_mouth = p1.e_idx == p2.e_idx;
+
+                // For non-mouth pairs, suppress the sidewalk corner when the two edges
+                // point in nearly the same direction (dot > 0.5, i.e. < 60° apart).
+                // Those gaps are acute merge zones (road space), not exterior corners.
+                // Both tangents are guaranteed to point outward from this node.
+                let edges_nearly_parallel = p1.tangent.dot(p2.tangent) > 0.5;
+                let draw_outer = is_mouth || !edges_nearly_parallel;
+
                 let area_quad1 = (p2.outer - p1.inner).cross(p2.inner - p1.inner).length() * 0.5;
                 let area_quad2 = (p1.outer - p1.inner).cross(p2.outer - p1.inner).length() * 0.5;
 
-                if area_quad1 >= 0.001 || area_quad2 >= 0.001 {
+                if draw_outer && (area_quad1 >= 0.001 || area_quad2 >= 0.001) {
                     let alpha = if is_mouth { 0.5 } else { 1.0 };
-                    
+
                     // Use consistent UV mapping
                     let uv1_i = Vector2::new(p1.inner.x * 2.0, 0.0);
                     let uv1_o = Vector2::new(p1.outer.x * 2.0, 1.0);
@@ -604,7 +617,7 @@ impl TransitRenderer for RoadRenderer {
                 }
 
                 // 2b. Bridge Junction Concrete (B_BRIDGE5 Continuation)
-                if !is_mouth && (p1.class == EdgeClass::Bridge || p2.class == EdgeClass::Bridge) {
+                if draw_outer && !is_mouth && (p1.class == EdgeClass::Bridge || p2.class == EdgeClass::Bridge) {
                     // Concrete Floor overlay for the sidewalk corner
                     concrete_vertices.push(p1.inner); concrete_vertices.push(p2.outer); concrete_vertices.push(p2.inner);
                     concrete_vertices.push(p1.inner); concrete_vertices.push(p1.outer); concrete_vertices.push(p2.outer);
