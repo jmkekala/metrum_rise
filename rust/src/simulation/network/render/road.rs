@@ -64,7 +64,8 @@ impl TransitRenderer for RoadRenderer {
         }
 
         // 0b. Junction Tip calculation (B5/B1 fixed)
-        let mut junction_tips: HashMap<(usize, u32), [Option<Vector3>; 2]> = HashMap::new();
+        let mut inner_tips: HashMap<(usize, u32), [Option<Vector3>; 2]> = HashMap::new();
+        let mut outer_tips: HashMap<(usize, u32), [Option<Vector3>; 2]> = HashMap::new();
         let mut node_miters: HashMap<u32, Vector2> = HashMap::new();
         
         for (&node_id, dirs) in &node_dirs {
@@ -104,29 +105,45 @@ impl TransitRenderer for RoadRenderer {
                 let side_a = Vector2::new(-a.1.y, a.1.x); // positive side of A
                 let side_b = Vector2::new(-b.1.y, b.1.x); // positive side of B, so negative is -side_b
                 
-                let rw_a = edge_a.width * 0.5;
-                let rw_b = edge_b.width * 0.5;
-                
-                let p_a = node_xy + side_a * rw_a;
-                let p_b = node_xy - side_b * rw_b;
-                
-                // 2D line-line intersection
                 let det = a.1.x * (-b.1.y) - (-b.1.x) * a.1.y;
                 if det.abs() > 1e-4 {
-                    let delta = p_b - p_a;
-                    let t_a = (delta.x * (-b.1.y) - (-b.1.x) * delta.y) / det;
-                    let t_b = (a.1.x * delta.y - delta.x * a.1.y) / det;
+                    // Calculate Inner Tips (Road Edge)
+                    let rw_a = edge_a.width * 0.5;
+                    let rw_b = edge_b.width * 0.5;
+                    let p_ia = node_xy + side_a * rw_a;
+                    let p_ib = node_xy - side_b * rw_b;
+                    let delta_i = p_ib - p_ia;
+                    let t_ia = (delta_i.x * (-b.1.y) - (-b.1.x) * delta_i.y) / det;
+                    let t_ib = (a.1.x * delta_i.y - delta_i.x * a.1.y) / det;
                     
-                    if t_a > 0.0 && t_b > 0.0 {
-                        // Strict capping to avoid ribbon flipping on short edges (B1)
+                    if t_ia > 0.0 && t_ib > 0.0 {
                         let max_a = (edge_a.width * 1.5).min(edge_a.physical_length * 0.4);
                         let max_b = (edge_b.width * 1.5).min(edge_b.physical_length * 0.4);
-                        
-                        if t_a < max_a && t_b < max_b {
-                            let tip_xy = p_a + a.1 * t_a;
+                        if t_ia < max_a && t_ib < max_b {
+                            let tip_xy = p_ia + a.1 * t_ia;
                             let tip = Vector3::new(tip_xy.x, node_pos.y, tip_xy.y);
-                            junction_tips.entry((a.0, node_id)).or_insert([None; 2])[0] = Some(tip); // A pos
-                            junction_tips.entry((b.0, node_id)).or_insert([None; 2])[1] = Some(tip); // B neg
+                            inner_tips.entry((a.0, node_id)).or_insert([None; 2])[0] = Some(tip); 
+                            inner_tips.entry((b.0, node_id)).or_insert([None; 2])[1] = Some(tip); 
+                        }
+                    }
+
+                    // Calculate Outer Tips (Sidewalk Edge)
+                    let sw_a = edge_a.width * 0.5 + config::SIDEWALK_WIDTH;
+                    let sw_b = edge_b.width * 0.5 + config::SIDEWALK_WIDTH;
+                    let p_oa = node_xy + side_a * sw_a;
+                    let p_ob = node_xy - side_b * sw_b;
+                    let delta_o = p_ob - p_oa;
+                    let t_oa = (delta_o.x * (-b.1.y) - (-b.1.x) * delta_o.y) / det;
+                    let t_ob = (a.1.x * delta_o.y - delta_o.x * a.1.y) / det;
+
+                    if t_oa > 0.0 && t_ob > 0.0 {
+                        let max_a = (edge_a.width * 1.5 + config::SIDEWALK_WIDTH * 2.0).min(edge_a.physical_length * 0.4);
+                        let max_b = (edge_b.width * 1.5 + config::SIDEWALK_WIDTH * 2.0).min(edge_b.physical_length * 0.4);
+                        if t_oa < max_a && t_ob < max_b {
+                            let tip_xy = p_oa + a.1 * t_oa;
+                            let tip = Vector3::new(tip_xy.x, node_pos.y, tip_xy.y);
+                            outer_tips.entry((a.0, node_id)).or_insert([None; 2])[0] = Some(tip); 
+                            outer_tips.entry((b.0, node_id)).or_insert([None; 2])[1] = Some(tip); 
                         }
                     }
                 }
@@ -293,8 +310,8 @@ impl TransitRenderer for RoadRenderer {
                     let mut v1_r = p1 + side1 * (lateral_offset + lane_w * 0.5);
 
                     // Apply Junction Tips to Road Lanes (outermost edge of asphalt meets sidewalk tips)
-                    if t0 == 0.0 {
-                        if let Some(tips) = junction_tips.get(&(edge_id, edge.start_node)) {
+                    if i == 0 && t0 == 0.0 {
+                        if let Some(tips) = inner_tips.get(&(edge_id, edge.start_node)) {
                             if lateral_offset > 0.0 && (lateral_offset + lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
                                 if let Some(tip) = tips[0] { v0_r = tip; v0_r.y += h_offset; }
                             } else if lateral_offset < 0.0 && (lateral_offset - lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
@@ -302,8 +319,8 @@ impl TransitRenderer for RoadRenderer {
                             }
                         }
                     }
-                    if t1 == 1.0 {
-                        if let Some(tips) = junction_tips.get(&(edge_id, edge.end_node)) {
+                    if i == resampled_count - 2 && t1 == 1.0 {
+                        if let Some(tips) = inner_tips.get(&(edge_id, edge.end_node)) {
                             if lateral_offset > 0.0 && (lateral_offset + lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
                                 if let Some(tip) = tips[0] { v1_r = tip; v1_r.y += h_offset; }
                             } else if lateral_offset < 0.0 && (lateral_offset - lane_w * 0.5).abs() > edge.width * 0.5 - 0.01 {
@@ -379,24 +396,26 @@ impl TransitRenderer for RoadRenderer {
                     let mut v1_r = p1 + side1 * (lateral_offset + sw_w * 0.5);
 
                     // Apply Junction Tips to Sidewalks (B5 fixed)
-                    if t0 == 0.0 {
+                    if i == 0 && t0 == 0.0 {
                         let node_id = edge.start_node;
-                        if let Some(tips) = junction_tips.get(&(edge_id, node_id)) {
-                            if lateral_offset > 0.0 { // Left sidewalk, inner edge
-                                if let Option::Some(tip) = tips[0] { v0_l = tip; v0_l.y += h_offset + 0.001; }
-                            } else { // Right sidewalk, inner edge
-                                if let Option::Some(tip) = tips[1] { v0_r = tip; v0_r.y += h_offset + 0.001; }
-                            }
+                        if let Some(i_tips) = inner_tips.get(&(edge_id, node_id)) {
+                            if lateral_offset > 0.0 { if let Some(tip) = i_tips[0] { v0_l = tip; v0_l.y += h_offset + 0.001; } }
+                            else { if let Some(tip) = i_tips[1] { v0_r = tip; v0_r.y += h_offset + 0.001; } }
+                        }
+                        if let Some(o_tips) = outer_tips.get(&(edge_id, node_id)) {
+                            if lateral_offset > 0.0 { if let Some(tip) = o_tips[0] { v0_r = tip; v0_r.y += h_offset + 0.001; } }
+                            else { if let Some(tip) = o_tips[1] { v0_l = tip; v0_l.y += h_offset + 0.001; } }
                         }
                     }
-                    if t1 == 1.0 {
+                    if i == resampled_count - 2 && t1 == 1.0 {
                         let node_id = edge.end_node;
-                        if let Some(tips) = junction_tips.get(&(edge_id, node_id)) {
-                            if lateral_offset > 0.0 {
-                                if let Option::Some(tip) = tips[0] { v1_l = tip; v1_l.y += h_offset + 0.001; }
-                            } else {
-                                if let Option::Some(tip) = tips[1] { v1_r = tip; v1_r.y += h_offset + 0.001; }
-                            }
+                        if let Some(i_tips) = inner_tips.get(&(edge_id, node_id)) {
+                            if lateral_offset > 0.0 { if let Some(tip) = i_tips[0] { v1_l = tip; v1_l.y += h_offset + 0.001; } }
+                            else { if let Some(tip) = i_tips[1] { v1_r = tip; v1_r.y += h_offset + 0.001; } }
+                        }
+                        if let Some(o_tips) = outer_tips.get(&(edge_id, node_id)) {
+                            if lateral_offset > 0.0 { if let Some(tip) = o_tips[0] { v1_r = tip; v1_r.y += h_offset + 0.001; } }
+                            else { if let Some(tip) = o_tips[1] { v1_l = tip; v1_l.y += h_offset + 0.001; } }
                         }
                     }
 
