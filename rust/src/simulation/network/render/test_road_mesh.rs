@@ -114,7 +114,7 @@ mod tests {
             .collect()
     }
 
-    fn asphalt_patch_vertices(
+    fn junction_asphalt_vertices(
         mesh_data: &crate::simulation::network::render::NetworkMeshData,
     ) -> Vec<Vector3> {
         mesh_data
@@ -131,7 +131,7 @@ mod tests {
             .collect()
     }
 
-    fn asphalt_patch_triangles(
+    fn junction_asphalt_triangles(
         mesh_data: &crate::simulation::network::render::NetworkMeshData,
     ) -> Vec<[Vector3; 3]> {
         mesh_data
@@ -163,13 +163,6 @@ mod tests {
                 }
             })
             .collect()
-    }
-
-    fn has_patch_vertex_near(vertices: &[Vector3], target: Vector2, tolerance: f32) -> bool {
-        vertices.iter().any(|vertex| {
-            let delta = Vector2::new(vertex.x - target.x, vertex.z - target.y);
-            delta.length() <= tolerance
-        })
     }
 
     fn triangle_contains_point_xz(triangle: [Vector3; 3], point: Vector2) -> bool {
@@ -264,77 +257,6 @@ mod tests {
         let terrain = TerrainSystem::new(256, 256);
         let mesh_data = network.generate_mesh_data(&graph, &terrain);
         (graph, mesh_data, terrain)
-    }
-
-    #[test]
-    #[ignore]
-    fn debug_editor_path_diagonal_merge_dump() {
-        let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
-        let branch = [Vector3::new(-18.0, 0.0, 18.0), Vector3::new(0.0, 0.0, 0.0)];
-        let (graph, mesh_data, _terrain) = generate_editor_mesh(&[&main, &branch]);
-
-        for (idx, node) in graph.nodes.iter().enumerate() {
-            eprintln!("node {idx}: pos={:?} type={:?}", node.pos, node.node_type);
-        }
-
-        for (idx, edge) in graph.edges.iter().enumerate() {
-            eprintln!(
-                "edge {idx}: deleted={} start={} end={} len={:.3} width={:.3} clips=({:.3}, {:.3}) geom={:?}",
-                edge.deleted,
-                edge.start_node,
-                edge.end_node,
-                edge.physical_length,
-                edge.width,
-                edge.start_clip,
-                edge.end_clip,
-                edge.physical_geometry
-            );
-        }
-
-        let asphalt = asphalt_surface_triangles(&mesh_data);
-        let sidewalk = sidewalk_triangles(&mesh_data);
-        eprintln!(
-            "coverage core: asphalt={:.3} sidewalk={:.3}",
-            region_coverage_ratio(
-                &asphalt,
-                Vector2::new(-4.0, -3.5),
-                Vector2::new(4.0, 3.5),
-                0.25,
-            ),
-            region_coverage_ratio(
-                &sidewalk,
-                Vector2::new(-4.0, -3.5),
-                Vector2::new(4.0, 3.5),
-                0.25,
-            )
-        );
-        eprintln!(
-            "coverage throat: sidewalk={:.3}",
-            region_coverage_ratio(
-                &sidewalk,
-                Vector2::new(-6.0, 1.0),
-                Vector2::new(-1.0, 6.0),
-                0.25,
-            )
-        );
-
-        for (idx, triangle) in sidewalk.iter().enumerate() {
-            let min_x = triangle.iter().map(|v| v.x).fold(f32::INFINITY, f32::min);
-            let max_x = triangle
-                .iter()
-                .map(|v| v.x)
-                .fold(f32::NEG_INFINITY, f32::max);
-            let min_z = triangle.iter().map(|v| v.z).fold(f32::INFINITY, f32::min);
-            let max_z = triangle
-                .iter()
-                .map(|v| v.z)
-                .fold(f32::NEG_INFINITY, f32::max);
-            let overlaps_core = max_x >= -4.0 && min_x <= 4.0 && max_z >= -3.5 && min_z <= 3.5;
-            let overlaps_throat = max_x >= -6.0 && min_x <= -1.0 && max_z >= 1.0 && min_z <= 6.0;
-            if overlaps_core || overlaps_throat {
-                eprintln!("sidewalk tri {idx}: {:?}", triangle);
-            }
-        }
     }
 
     #[test]
@@ -463,8 +385,8 @@ mod tests {
             "degree-1 road endpoints should keep asphalt all the way to the terminal node"
         );
         assert!(
-            asphalt_patch_vertices(&mesh_data).is_empty(),
-            "a single road should not emit any junction asphalt patch"
+            junction_asphalt_vertices(&mesh_data).is_empty(),
+            "a single road should not emit any node-owned junction asphalt"
         );
     }
 
@@ -488,16 +410,17 @@ mod tests {
             Vector2::new(20.0, 4.0),
             0.25,
         );
+        // add_road(1,1) → width=7m, road_half=3.5, sidewalk outer=5.0; check within [3.5, 5.0]
         let left_sidewalk = region_coverage_ratio(
             &sidewalk,
-            Vector2::new(-20.0, 5.25),
-            Vector2::new(-18.5, 6.75),
+            Vector2::new(-20.0, 3.6),
+            Vector2::new(-18.5, 4.9),
             0.25,
         );
         let right_sidewalk = region_coverage_ratio(
             &sidewalk,
-            Vector2::new(18.5, 5.25),
-            Vector2::new(20.0, 6.75),
+            Vector2::new(18.5, 3.6),
+            Vector2::new(20.0, 4.9),
             0.25,
         );
 
@@ -510,8 +433,8 @@ mod tests {
             "editor-path straight roads must keep terminal sidewalk caps; left={left_sidewalk:.3}, right={right_sidewalk:.3}"
         );
         assert!(
-            asphalt_patch_vertices(&mesh_data).is_empty(),
-            "a single editor-path road should not create a node-owned junction patch"
+            junction_asphalt_vertices(&mesh_data).is_empty(),
+            "a single editor-path road should not create any node-owned junction asphalt"
         );
     }
 
@@ -562,8 +485,8 @@ mod tests {
             max_y - min_y
         );
         assert!(
-            asphalt_patch_vertices(&mesh_data).is_empty(),
-            "straight pass-through splits should not emit a junction asphalt island"
+            junction_asphalt_vertices(&mesh_data).is_empty(),
+            "straight pass-through splits should not emit a node-owned asphalt island"
         );
     }
 
@@ -617,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn test_unclipped_two_way_bend_emits_local_patch() {
+    fn test_unclipped_two_way_bend_emits_local_junction_asphalt() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(100, 100);
         let mut graph = RegionGraph::new();
@@ -657,7 +580,7 @@ mod tests {
                 .colors
                 .iter()
                 .any(|color| color.a > 0.1 && color.a < 0.9),
-            "multi-road nodes should emit an asphalt patch in the area-based renderer"
+            "multi-road nodes should emit node-owned asphalt in the area-based renderer"
         );
         assert!(
             !sidewalk_vertices(&mesh_data).is_empty(),
@@ -665,19 +588,20 @@ mod tests {
         );
     }
 
+    /// Regression guard for sidewalk ownership leaking into a bend handoff face.
+    ///
+    /// The bend throat should remain asphalt-owned all the way through the handoff face. This
+    /// checks that node-owned sidewalk coverage stays out of that interior zone.
     #[test]
-    fn test_two_way_bend_patch_does_not_collapse_to_node() {
+    fn test_two_way_bend_has_no_sidewalk_in_road_interior() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(100, 100);
         let mut graph = RegionGraph::new();
-        let bend_rad = (60.0f32).to_radians();
 
+        // 90° bend: arm0 → +x, arm1 → +z.  width=10.0 → road_half=5.0, outer_half=6.5.
         let n0 = graph.add_node(Vector3::ZERO, NodeType::Junction);
         let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
-        let n2 = graph.add_node(
-            Vector3::new(bend_rad.cos() * 20.0, 0.0, bend_rad.sin() * 20.0),
-            NodeType::Junction,
-        );
+        let n2 = graph.add_node(Vector3::new(0.0, 0.0, 20.0), NodeType::Junction);
 
         graph.add_edge(create_test_edge(
             n0,
@@ -691,7 +615,7 @@ mod tests {
             n0,
             n2,
             Vector3::ZERO,
-            Vector3::new(bend_rad.cos() * 20.0, 0.0, bend_rad.sin() * 20.0),
+            Vector3::new(0.0, 0.0, 20.0),
             10.0,
             0.0,
         ));
@@ -699,23 +623,77 @@ mod tests {
         graph.rebuild_adjacency_list();
         graph.rebuild_intersection_clips();
         let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
-        validate_mesh(&graph, &mesh_data, 60.0);
 
-        let patch_vertices = asphalt_patch_vertices(&mesh_data);
-        assert!(
-            !patch_vertices.is_empty(),
-            "angled 2-way bends should emit an asphalt patch"
+        let sidewalk = sidewalk_triangles(&mesh_data);
+
+        // The handoff face for the +x corridor is x ∈ [road_handoff=5, outer_handoff=6.5],
+        // z ∈ [0, road_half=5]. It must stay sidewalk-free.
+        let handoff_face_coverage = region_coverage_ratio(
+            &sidewalk,
+            Vector2::new(5.0, 0.5),
+            Vector2::new(6.4, 4.5),
+            0.25,
         );
         assert!(
-            patch_vertices
-                .iter()
-                .all(|vertex| Vector2::new(vertex.x, vertex.z).length() >= 4.0),
-            "angled 2-way bends should stitch between trimmed caps instead of collapsing back to the node center"
+            handoff_face_coverage < 0.05,
+            "sidewalk must not appear inside the handoff face of a 2-arm bend; coverage={handoff_face_coverage:.3}"
+        );
+    }
+
+    /// Regression guard for missing outer sidewalk coverage at a bend handoff.
+    ///
+    /// The exposed outside shoulder between the road handoff and the outer handoff must stay
+    /// sidewalk-owned for a 2-arm bend.
+    #[test]
+    fn test_two_way_bend_sidewalk_covers_arm_connection_edges() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(100, 100);
+        let mut graph = RegionGraph::new();
+
+        // Same 90° bend geometry as the handoff-face test above.
+        let n0 = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(0.0, 0.0, 20.0), NodeType::Junction);
+
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::ZERO,
+            Vector3::new(20.0, 0.0, 0.0),
+            10.0,
+            0.0,
+        ));
+        graph.add_edge(create_test_edge(
+            n0,
+            n2,
+            Vector3::ZERO,
+            Vector3::new(0.0, 0.0, 20.0),
+            10.0,
+            0.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+        let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
+
+        let sidewalk = sidewalk_triangles(&mesh_data);
+
+        // The exposed outside band for the +x corridor's -z side occupies
+        // x ∈ [road_handoff=5, outer_handoff=6.5], z ∈ [-outer_half=-6.5, -road_half=-5].
+        let outer_band_coverage = region_coverage_ratio(
+            &sidewalk,
+            Vector2::new(5.0, -6.5),
+            Vector2::new(6.5, -5.0),
+            0.25,
+        );
+        assert!(
+            outer_band_coverage > 0.4,
+            "the exposed outside band must keep sidewalk ownership at a 2-arm bend; coverage={outer_band_coverage:.3}"
         );
     }
 
     #[test]
-    fn test_shallow_merge_emits_area_patch() {
+    fn test_shallow_merge_emits_junction_footprint() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(100, 100);
         let mut graph = RegionGraph::new();
@@ -764,16 +742,16 @@ mod tests {
                 .colors
                 .iter()
                 .any(|color| color.a > 0.1 && color.a < 0.9),
-            "shallow merges should be resolved by a local asphalt patch, not edge-only stitching"
+            "shallow merges should be resolved by node-owned asphalt, not edge-only stitching"
         );
 
-        let patch_triangles = asphalt_patch_triangles(&mesh_data);
+        let footprint_triangles = junction_asphalt_triangles(&mesh_data);
         assert!(
-            patch_triangles
+            footprint_triangles
                 .iter()
                 .copied()
                 .any(|triangle| triangle_contains_point_xz(triangle, Vector2::ZERO)),
-            "shallow merge node patches should cover the junction center instead of leaving a hole between trimmed ribbons"
+            "shallow merge junction footprints should cover the junction center instead of leaving a hole between trimmed ribbons"
         );
 
         let sidewalk_triangles = sidewalk_triangles(&mesh_data);
@@ -890,8 +868,10 @@ mod tests {
         validate_mesh(&graph, &mesh_data, 80.0);
 
         let sidewalk = sidewalk_triangles(&mesh_data);
-        let throat_min = Vector2::new(-6.0, 1.0);
-        let throat_max = Vector2::new(-1.0, 6.0);
+        // Only sample the inner acute throat under the diagonal branch. The previous
+        // broader box also included the branch's exposed outer sidewalk, which is valid.
+        let throat_min = Vector2::new(-4.5, 0.75);
+        let throat_max = Vector2::new(-1.5, 2.25);
         let sidewalk_throat = region_coverage_ratio(&sidewalk, throat_min, throat_max, 0.25);
 
         assert!(
@@ -919,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn test_clustered_multi_arm_patch_covers_junction_center() {
+    fn test_clustered_multi_arm_footprint_covers_junction_center() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(100, 100);
         let mut graph = RegionGraph::new();
@@ -968,18 +948,18 @@ mod tests {
         let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
         validate_mesh(&graph, &mesh_data, 80.0);
 
-        let patch_triangles = asphalt_patch_triangles(&mesh_data);
+        let footprint_triangles = junction_asphalt_triangles(&mesh_data);
         assert!(
-            patch_triangles
+            footprint_triangles
                 .iter()
                 .copied()
                 .any(|triangle| triangle_contains_point_xz(triangle, Vector2::ZERO)),
-            "clustered multi-arm junctions should keep a continuous asphalt patch at the node center"
+            "clustered multi-arm junctions should keep continuous node-owned asphalt at the center"
         );
     }
 
     #[test]
-    fn test_four_way_patch_stays_out_of_diagonal_corners() {
+    fn test_four_way_footprint_stays_out_of_diagonal_corners() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(100, 100);
         let mut graph = RegionGraph::new();
@@ -1028,23 +1008,23 @@ mod tests {
         let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
         validate_mesh(&graph, &mesh_data, 80.0);
 
-        let patch_vertices = asphalt_patch_vertices(&mesh_data);
+        let footprint_vertices = junction_asphalt_vertices(&mesh_data);
         assert!(
-            !patch_vertices.is_empty(),
-            "four-way nodes should still emit an asphalt patch"
+            !footprint_vertices.is_empty(),
+            "four-way nodes should still emit node-owned asphalt"
         );
 
         let road_half = 5.0 + 0.35;
         assert!(
-            patch_vertices
+            footprint_vertices
                 .iter()
                 .all(|vertex| vertex.x.abs() <= road_half || vertex.z.abs() <= road_half),
-            "four-way asphalt patches should stay in the road cross, not inflate into diagonal lobes"
+            "four-way junction footprints should stay in the road cross, not inflate into diagonal lobes"
         );
     }
 
     #[test]
-    fn test_four_way_patch_hits_trimmed_cap_endpoints() {
+    fn test_four_way_footprint_reaches_all_handoff_faces() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(100, 100);
         let mut graph = RegionGraph::new();
@@ -1094,25 +1074,36 @@ mod tests {
         let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
         validate_mesh(&graph, &mesh_data, 80.0);
 
-        let patch_vertices = asphalt_patch_vertices(&mesh_data);
-        let tolerance = 0.2;
-        let expected = [
-            Vector2::new(trim, -5.0),
-            Vector2::new(trim, 5.0),
-            Vector2::new(5.0, trim),
-            Vector2::new(-5.0, trim),
-            Vector2::new(-trim, 5.0),
-            Vector2::new(-trim, -5.0),
-            Vector2::new(-5.0, -trim),
-            Vector2::new(5.0, -trim),
+        let footprint_triangles = junction_asphalt_triangles(&mesh_data);
+        let road_trim = trim - config::SIDEWALK_WIDTH;
+        let expected_faces = [
+            (
+                Vector2::new(road_trim - 0.35, -1.0),
+                Vector2::new(road_trim + 0.2, 1.0),
+            ),
+            (
+                Vector2::new(-1.0, road_trim - 0.35),
+                Vector2::new(1.0, road_trim + 0.2),
+            ),
+            (
+                Vector2::new(-road_trim - 0.2, -1.0),
+                Vector2::new(-road_trim + 0.35, 1.0),
+            ),
+            (
+                Vector2::new(-1.0, -road_trim - 0.2),
+                Vector2::new(1.0, -road_trim + 0.35),
+            ),
         ];
 
-        for point in expected {
+        for (min, max) in expected_faces {
+            let coverage = region_coverage_ratio(&footprint_triangles, min, max, 0.1);
             assert!(
-                has_patch_vertex_near(&patch_vertices, point, tolerance),
-                "expected junction patch to include trimmed cap point near ({:.2}, {:.2})",
-                point.x,
-                point.y
+                coverage >= 0.35,
+                "expected junction footprint to reach handoff face region ({:.2}, {:.2}) - ({:.2}, {:.2}); coverage={coverage:.3}",
+                min.x,
+                min.y,
+                max.x,
+                max.y
             );
         }
     }
