@@ -227,6 +227,43 @@ mod tests {
         }
     }
 
+    fn oriented_region_coverage_ratio(
+        triangles: &[[Vector3; 3]],
+        origin: Vector2,
+        axis_u: Vector2,
+        min: Vector2,
+        max: Vector2,
+        step: f32,
+    ) -> f32 {
+        let axis_u = axis_u.normalized();
+        let axis_v = Vector2::new(-axis_u.y, axis_u.x);
+        let mut covered = 0usize;
+        let mut total = 0usize;
+        let mut v = min.y;
+        while v <= max.y {
+            let mut u = min.x;
+            while u <= max.x {
+                total += 1;
+                let point = origin + axis_u * u + axis_v * v;
+                if triangles
+                    .iter()
+                    .copied()
+                    .any(|triangle| triangle_contains_point_xz(triangle, point))
+                {
+                    covered += 1;
+                }
+                u += step;
+            }
+            v += step;
+        }
+
+        if total == 0 {
+            0.0
+        } else {
+            covered as f32 / total as f32
+        }
+    }
+
     fn generate_editor_mesh(
         roads: &[&[Vector3]],
     ) -> (
@@ -693,6 +730,106 @@ mod tests {
     }
 
     #[test]
+    fn test_obtuse_two_way_bend_keeps_sidewalk_out_of_junction_throat() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(100, 100);
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(-14.0, 0.0, 14.0), NodeType::Junction);
+
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::ZERO,
+            Vector3::new(20.0, 0.0, 0.0),
+            10.0,
+            0.0,
+        ));
+        graph.add_edge(create_test_edge(
+            n0,
+            n2,
+            Vector3::ZERO,
+            Vector3::new(-14.0, 0.0, 14.0),
+            10.0,
+            0.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+        let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
+        validate_mesh(&graph, &mesh_data, 60.0);
+
+        let sidewalk = sidewalk_triangles(&mesh_data);
+        let throat_coverage = region_coverage_ratio(
+            &sidewalk,
+            Vector2::new(0.5, 1.5),
+            Vector2::new(2.0, 4.0),
+            0.25,
+        );
+        assert!(
+            throat_coverage < 0.05,
+            "obtuse two-way bends must keep the interior throat asphalt-owned; sidewalk coverage={throat_coverage:.3}"
+        );
+    }
+
+    #[test]
+    fn test_rotated_bend_keeps_asphalt_connected_to_both_arm_faces() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(100, 100);
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let west = Vector3::new(-20.0, 0.0, 0.0);
+        let southwest = Vector3::new(-10.0, 0.0, -20.0);
+        let n1 = graph.add_node(west, NodeType::Junction);
+        let n2 = graph.add_node(southwest, NodeType::Junction);
+
+        graph.add_edge(create_test_edge(n0, n1, Vector3::ZERO, west, 10.0, 0.0));
+        graph.add_edge(create_test_edge(
+            n0,
+            n2,
+            Vector3::ZERO,
+            southwest,
+            10.0,
+            0.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+        let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
+        validate_mesh(&graph, &mesh_data, 60.0);
+
+        let asphalt = asphalt_surface_triangles(&mesh_data);
+        let west_face = oriented_region_coverage_ratio(
+            &asphalt,
+            Vector2::ZERO,
+            Vector2::LEFT,
+            Vector2::new(4.8, -4.5),
+            Vector2::new(6.2, 4.5),
+            0.2,
+        );
+        let southwest_face = oriented_region_coverage_ratio(
+            &asphalt,
+            Vector2::ZERO,
+            Vector2::new(southwest.x, southwest.z).normalized(),
+            Vector2::new(4.8, -4.5),
+            Vector2::new(6.2, 4.5),
+            0.2,
+        );
+
+        assert!(
+            west_face >= 0.9,
+            "rotated bends must keep asphalt connected through the west arm handoff face; coverage={west_face:.3}"
+        );
+        assert!(
+            southwest_face >= 0.9,
+            "rotated bends must keep asphalt connected through the southwest arm handoff face; coverage={southwest_face:.3}"
+        );
+    }
+
+    #[test]
     fn test_shallow_merge_emits_junction_footprint() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(100, 100);
@@ -877,6 +1014,30 @@ mod tests {
         assert!(
             sidewalk_throat <= 0.05,
             "editor-path diagonal branch sidewalks should be cut before the junction throat; sidewalk coverage={sidewalk_throat:.3}"
+        );
+    }
+
+    #[test]
+    fn test_editor_path_diagonal_merge_keeps_bottom_mainline_interior_asphalt_only() {
+        let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
+        let branch = [Vector3::new(-18.0, 0.0, 18.0), Vector3::new(0.0, 0.0, 0.0)];
+        let (graph, mesh_data, _terrain) = generate_editor_mesh(&[&main, &branch]);
+        validate_mesh(&graph, &mesh_data, 80.0);
+
+        let asphalt = asphalt_surface_triangles(&mesh_data);
+        let sidewalk = sidewalk_triangles(&mesh_data);
+        let interior_min = Vector2::new(-6.0, -3.0);
+        let interior_max = Vector2::new(-1.5, -0.5);
+        let asphalt_coverage = region_coverage_ratio(&asphalt, interior_min, interior_max, 0.25);
+        let sidewalk_coverage = region_coverage_ratio(&sidewalk, interior_min, interior_max, 0.25);
+
+        assert!(
+            asphalt_coverage >= 0.9,
+            "editor-path diagonal merges must keep the lower mainline throat asphalt-owned; asphalt coverage={asphalt_coverage:.3}"
+        );
+        assert!(
+            sidewalk_coverage <= 0.02,
+            "editor-path diagonal merges must not leak sidewalk into the lower mainline throat; sidewalk coverage={sidewalk_coverage:.3}"
         );
     }
 

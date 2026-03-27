@@ -15,9 +15,6 @@ use super::{NetworkMeshData, TransitRenderer};
 
 const JUNCTION_SIDEWALK_BIAS: f32 = 0.0005;
 const JUNCTION_ROAD_BIAS: f32 = 0.001;
-const JUNCTION_MASK_CELL_SIZE: f32 = 0.125;
-const JUNCTION_MASK_MARGIN: f32 = 0.5;
-const JUNCTION_MASK_OVERLAP: f32 = JUNCTION_MASK_CELL_SIZE;
 const MIN_EDGE_REMAINDER: f32 = 0.5;
 const MIN_JUNCTION_RADIUS: f32 = 0.5;
 
@@ -34,6 +31,13 @@ struct SegmentSample {
 }
 
 #[derive(Clone, Copy)]
+struct EndpointFrame2d {
+    node_xz: Vector2,
+    outward: Vector2,
+    side: Vector2,
+}
+
+#[derive(Clone, Copy)]
 struct JunctionCorridor {
     handoff_dist: f32,
     tangent_xz: Vector2,
@@ -43,145 +47,31 @@ struct JunctionCorridor {
 
 struct JunctionFootprint {
     road_triangles: Vec<[Vector3; 3]>,
-    sidewalk_quads: Vec<[Vector3; 4]>,
+    sidewalk_triangles: Vec<TexturedTriangle>,
     road_loops: Vec<Vec<Vector3>>,
     outer_loops: Vec<Vec<Vector3>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct GridPoint {
-    x: i32,
-    z: i32,
+struct TexturedTriangle {
+    vertices: [Vector3; 3],
+    uvs: [Vector2; 3],
 }
 
-struct JunctionMaskContext {
-    min_local: Vector2,
-    width: usize,
-    height: usize,
+fn normalize_angle(angle: f32) -> f32 {
+    angle.rem_euclid(std::f32::consts::TAU)
 }
 
-fn point_in_strip(local_point: Vector2, tangent: Vector2, length: f32, half_width: f32) -> bool {
-    let normal = Vector2::new(-tangent.y, tangent.x);
-    let forward = local_point.dot(tangent);
-    let lateral = local_point.dot(normal).abs();
-    forward >= -JUNCTION_MASK_CELL_SIZE
-        && forward <= length + JUNCTION_MASK_OVERLAP
-        && lateral <= half_width
-}
-
-fn build_junction_mask_context(corridors: &[JunctionCorridor]) -> Option<JunctionMaskContext> {
-    let extent = corridors
-        .iter()
-        .map(|corridor| {
-            (corridor.outer_handoff_dist + corridor.outer_half)
-                .max(corridor.road_handoff_dist + corridor.road_half)
-        })
-        .fold(0.0f32, f32::max)
-        + JUNCTION_MASK_MARGIN
-        + JUNCTION_MASK_OVERLAP;
-    if extent < MIN_JUNCTION_RADIUS {
-        return None;
+fn polygon_signed_area_2d(boundary: &[Vector2]) -> f32 {
+    let mut area = 0.0f32;
+    for i in 0..boundary.len() {
+        let a = boundary[i];
+        let b = boundary[(i + 1) % boundary.len()];
+        area += a.x * b.y - a.y * b.x;
     }
-
-    let min_local = Vector2::new(
-        -extent - JUNCTION_MASK_CELL_SIZE,
-        -extent - JUNCTION_MASK_CELL_SIZE,
-    );
-    let span = (extent + JUNCTION_MASK_CELL_SIZE) * 2.0;
-    let width = ((span / JUNCTION_MASK_CELL_SIZE).ceil() as usize).max(1);
-    let height = width;
-    Some(JunctionMaskContext {
-        min_local,
-        width,
-        height,
-    })
+    area * 0.5
 }
 
-fn rasterize_corridor_mask(
-    ctx: &JunctionMaskContext,
-    corridors: &[JunctionCorridor],
-    outer: bool,
-) -> Vec<bool> {
-    let mut mask = vec![false; ctx.width * ctx.height];
-
-    for z in 0..ctx.height {
-        for x in 0..ctx.width {
-            let local_point = ctx.min_local
-                + Vector2::new(
-                    (x as f32 + 0.5) * JUNCTION_MASK_CELL_SIZE,
-                    (z as f32 + 0.5) * JUNCTION_MASK_CELL_SIZE,
-                );
-            let strip_occupied = |use_outer: bool| {
-                corridors.iter().any(|corridor| {
-                    let (length, half_width) = if use_outer {
-                        (corridor.outer_handoff_dist, corridor.outer_half)
-                    } else {
-                        (corridor.road_handoff_dist, corridor.road_half)
-                    };
-                    point_in_strip(local_point, corridor.tangent_xz, length, half_width)
-                })
-            };
-
-            mask[z * ctx.width + x] = strip_occupied(outer);
-        }
-    }
-
-    mask
-}
-
-fn erode_mask(ctx: &JunctionMaskContext, mask: &[bool], steps: usize) -> Vec<bool> {
-    let mut current = mask.to_vec();
-    for _ in 0..steps {
-        let mut next = current.clone();
-        for z in 0..ctx.height {
-            for x in 0..ctx.width {
-                let index = z * ctx.width + x;
-                if !current[index] {
-                    next[index] = false;
-                    continue;
-                }
-
-                let mut survives = true;
-                'neighbors: for dz in -1isize..=1 {
-                    for dx in -1isize..=1 {
-                        if dx == 0 && dz == 0 {
-                            continue;
-                        }
-                        let nx = x as isize + dx;
-                        let nz = z as isize + dz;
-                        if nx < 0
-                            || nz < 0
-                            || nx >= ctx.width as isize
-                            || nz >= ctx.height as isize
-                            || !current[nz as usize * ctx.width + nx as usize]
-                        {
-                            survives = false;
-                            break 'neighbors;
-                        }
-                    }
-                }
-                next[index] = survives;
-            }
-        }
-        current = next;
-    }
-    current
-}
-
-fn point_in_handoff_face(local_point: Vector2, corridor: &JunctionCorridor) -> bool {
-    if !matches!(corridor.edge_class, EdgeClass::Standard | EdgeClass::Ramp) {
-        return false;
-    }
-
-    let normal = Vector2::new(-corridor.tangent_xz.y, corridor.tangent_xz.x);
-    let forward = local_point.dot(corridor.tangent_xz);
-    let lateral = local_point.dot(normal).abs();
-    forward >= corridor.road_handoff_dist - JUNCTION_MASK_CELL_SIZE
-        && forward <= corridor.outer_handoff_dist + JUNCTION_MASK_CELL_SIZE
-        && lateral <= corridor.road_half + JUNCTION_MASK_CELL_SIZE
-}
-
-fn remove_collinear_boundary(boundary: &mut Vec<Vector3>) {
+fn remove_collinear_loop2(boundary: &mut Vec<Vector2>) {
     loop {
         if boundary.len() < 3 {
             return;
@@ -192,7 +82,9 @@ fn remove_collinear_boundary(boundary: &mut Vec<Vector3>) {
             let prev = boundary[(i + boundary.len() - 1) % boundary.len()];
             let current = boundary[i];
             let next = boundary[(i + 1) % boundary.len()];
-            if triangle_cross_xz(prev, current, next).abs() <= 0.0001 {
+            let cross = (current.x - prev.x) * (next.y - current.y)
+                - (current.y - prev.y) * (next.x - current.x);
+            if cross.abs() <= 0.0001 {
                 boundary.remove(i);
                 removed_any = true;
                 break;
@@ -205,413 +97,413 @@ fn remove_collinear_boundary(boundary: &mut Vec<Vector3>) {
     }
 }
 
-fn extract_positive_loops_from_mask(
-    ctx: &JunctionMaskContext,
-    mask: &[bool],
-    node_pos: Vector3,
-    y: f32,
-) -> Vec<Vec<Vector3>> {
-    let mut next_by_start: HashMap<GridPoint, Vec<GridPoint>> = HashMap::new();
-    let is_occupied = |x: isize, z: isize| -> bool {
-        if x < 0 || z < 0 || x >= ctx.width as isize || z >= ctx.height as isize {
-            return false;
-        }
-        mask[z as usize * ctx.width + x as usize]
-    };
-
-    let mut add_segment = |start: GridPoint, end: GridPoint| {
-        next_by_start.entry(start).or_default().push(end);
-    };
-
-    for z in 0..ctx.height as isize {
-        for x in 0..ctx.width as isize {
-            if !is_occupied(x, z) {
-                continue;
-            }
-
-            if !is_occupied(x, z - 1) {
-                add_segment(
-                    GridPoint {
-                        x: x as i32,
-                        z: z as i32,
-                    },
-                    GridPoint {
-                        x: x as i32 + 1,
-                        z: z as i32,
-                    },
-                );
-            }
-            if !is_occupied(x + 1, z) {
-                add_segment(
-                    GridPoint {
-                        x: x as i32 + 1,
-                        z: z as i32,
-                    },
-                    GridPoint {
-                        x: x as i32 + 1,
-                        z: z as i32 + 1,
-                    },
-                );
-            }
-            if !is_occupied(x, z + 1) {
-                add_segment(
-                    GridPoint {
-                        x: x as i32 + 1,
-                        z: z as i32 + 1,
-                    },
-                    GridPoint {
-                        x: x as i32,
-                        z: z as i32 + 1,
-                    },
-                );
-            }
-            if !is_occupied(x - 1, z) {
-                add_segment(
-                    GridPoint {
-                        x: x as i32,
-                        z: z as i32 + 1,
-                    },
-                    GridPoint {
-                        x: x as i32,
-                        z: z as i32,
-                    },
-                );
-            }
-        }
-    }
-
-    let mut loops = Vec::new();
-    loop {
-        let Some(start) = next_by_start
-            .iter()
-            .find_map(|(point, edges)| (!edges.is_empty()).then_some(*point))
-        else {
-            break;
-        };
-
-        let mut current = start;
-        let mut loop_points = Vec::new();
-        let mut guard = 0usize;
-        let max_steps = next_by_start.len().saturating_mul(4).max(16);
-
-        loop {
-            loop_points.push(current);
-            let Some(edges) = next_by_start.get_mut(&current) else {
-                loop_points.clear();
-                break;
-            };
-            let Some(next) = edges.pop() else {
-                loop_points.clear();
-                break;
-            };
-            current = next;
-            guard += 1;
-            if current == start {
-                break;
-            }
-            if guard > max_steps {
-                loop_points.clear();
-                break;
-            }
-        }
-
-        if loop_points.len() < 3 {
-            continue;
-        }
-
-        let mut boundary: Vec<Vector3> = loop_points
-            .into_iter()
-            .map(|point| {
-                let local = ctx.min_local
-                    + Vector2::new(
-                        point.x as f32 * JUNCTION_MASK_CELL_SIZE,
-                        point.z as f32 * JUNCTION_MASK_CELL_SIZE,
-                    );
-                Vector3::new(node_pos.x + local.x, y, node_pos.z + local.y)
-            })
-            .collect();
-        remove_collinear_boundary(&mut boundary);
-        if boundary.len() < 3 {
-            continue;
-        }
-        if polygon_signed_area_xz(&boundary) <= 0.001 {
-            continue;
-        }
-        loops.push(boundary);
-    }
-
-    loops
-}
-
-fn greedy_mesh_mask(
-    ctx: &JunctionMaskContext,
-    mask: &[bool],
-    node_pos: Vector3,
-    y: f32,
-) -> Vec<[Vector3; 4]> {
-    let mut visited = vec![false; mask.len()];
-    let mut quads = Vec::new();
-
-    for z in 0..ctx.height {
-        for x in 0..ctx.width {
-            let index = z * ctx.width + x;
-            if !mask[index] || visited[index] {
-                continue;
-            }
-
-            let mut rect_width = 1usize;
-            while x + rect_width < ctx.width {
-                let next_index = z * ctx.width + x + rect_width;
-                if !mask[next_index] || visited[next_index] {
-                    break;
-                }
-                rect_width += 1;
-            }
-
-            let mut rect_height = 1usize;
-            'height_search: loop {
-                if z + rect_height >= ctx.height {
-                    break;
-                }
-                for dx in 0..rect_width {
-                    let next_index = (z + rect_height) * ctx.width + x + dx;
-                    if !mask[next_index] || visited[next_index] {
-                        break 'height_search;
-                    }
-                }
-                rect_height += 1;
-            }
-
-            for dz in 0..rect_height {
-                for dx in 0..rect_width {
-                    visited[(z + dz) * ctx.width + x + dx] = true;
-                }
-            }
-
-            let local_min = ctx.min_local
-                + Vector2::new(
-                    x as f32 * JUNCTION_MASK_CELL_SIZE,
-                    z as f32 * JUNCTION_MASK_CELL_SIZE,
-                );
-            let local_max = local_min
-                + Vector2::new(
-                    rect_width as f32 * JUNCTION_MASK_CELL_SIZE,
-                    rect_height as f32 * JUNCTION_MASK_CELL_SIZE,
-                );
-            quads.push([
-                Vector3::new(node_pos.x + local_min.x, y, node_pos.z + local_min.y),
-                Vector3::new(node_pos.x + local_max.x, y, node_pos.z + local_min.y),
-                Vector3::new(node_pos.x + local_max.x, y, node_pos.z + local_max.y),
-                Vector3::new(node_pos.x + local_min.x, y, node_pos.z + local_max.y),
-            ]);
-        }
-    }
-
-    quads
-}
-
-fn triangulate_loops(loops: &[Vec<Vector3>]) -> Vec<[Vector3; 3]> {
-    let mut triangles = Vec::new();
-    for boundary in loops {
-        for [a_idx, b_idx, c_idx] in triangulate_boundary_xz(boundary) {
-            triangles.push([boundary[a_idx], boundary[b_idx], boundary[c_idx]]);
-        }
-    }
-    triangles
-}
-
-fn quads_to_triangles(quads: &[[Vector3; 4]]) -> Vec<[Vector3; 3]> {
-    let mut triangles = Vec::with_capacity(quads.len() * 2);
-    for [a, b, c, d] in quads {
-        if triangle_cross_xz(*a, *b, *c).abs() >= 0.001 {
-            triangles.push([*a, *b, *c]);
-        }
-        if triangle_cross_xz(*a, *c, *d).abs() >= 0.001 {
-            triangles.push([*a, *c, *d]);
-        }
-    }
-    triangles
-}
-
-fn normalize_angle(angle: f32) -> f32 {
-    angle.rem_euclid(std::f32::consts::TAU)
-}
-
-fn angle_delta_ccw(start: f32, end: f32) -> f32 {
-    (end - start).rem_euclid(std::f32::consts::TAU)
-}
-
-fn angle_in_interval(angle: f32, start: f32, end: f32) -> bool {
-    angle_delta_ccw(start, angle) <= angle_delta_ccw(start, end) + 0.0001
-}
-
-fn build_outer_fill_sectors(corridors: &[JunctionCorridor]) -> Vec<(f32, f32)> {
-    let mut corridor_angles: Vec<f32> = corridors
-        .iter()
-        .map(|corridor| normalize_angle(corridor.tangent_xz.y.atan2(corridor.tangent_xz.x)))
-        .collect();
-    corridor_angles.sort_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap_or(std::cmp::Ordering::Equal));
-
-    let mut sectors = Vec::new();
-    for i in 0..corridor_angles.len() {
-        let start = corridor_angles[i];
-        let end = corridor_angles[(i + 1) % corridor_angles.len()];
-        let gap = angle_delta_ccw(start, end);
-        if gap < std::f32::consts::PI - 0.05 {
-            sectors.push((start, end));
-        }
-    }
-
-    sectors
-}
-
-fn corridor_extent_on_ray(
-    corridor: &JunctionCorridor,
-    ray_dir: Vector2,
-    outer: bool,
-) -> Option<f32> {
-    let (handoff_dist, half_width) = if outer {
-        match corridor.edge_class {
-            EdgeClass::Standard | EdgeClass::Ramp => {
-                (corridor.outer_handoff_dist, corridor.outer_half)
-            }
-            EdgeClass::Bridge => (corridor.road_handoff_dist, corridor.road_half),
-            EdgeClass::Tunnel => return None,
-        }
-    } else {
-        (corridor.road_handoff_dist, corridor.road_half)
-    };
-    let forward = ray_dir.dot(corridor.tangent_xz);
-    if forward <= 1e-6 {
+fn segment_intersection_parameters(
+    a0: Vector2,
+    a1: Vector2,
+    b0: Vector2,
+    b1: Vector2,
+) -> Option<(f32, f32)> {
+    let da = a1 - a0;
+    let db = b1 - b0;
+    let denom = da.x * db.y - da.y * db.x;
+    if denom.abs() <= 1e-6 {
         return None;
     }
 
-    let normal = Vector2::new(-corridor.tangent_xz.y, corridor.tangent_xz.x);
-    let lateral = ray_dir.dot(normal).abs();
-    let cap_t = handoff_dist / forward;
-    let side_t = if lateral > 1e-6 {
-        half_width / lateral
+    let rel = b0 - a0;
+    let ta = (rel.x * db.y - rel.y * db.x) / denom;
+    let tb = (rel.x * da.y - rel.y * da.x) / denom;
+    if (-0.0001..=1.0001).contains(&ta) && (-0.0001..=1.0001).contains(&tb) {
+        Some((ta.clamp(0.0, 1.0), tb.clamp(0.0, 1.0)))
     } else {
-        f32::INFINITY
-    };
-    let extent = cap_t.min(side_t);
-    (extent > 0.0001).then_some(extent)
+        None
+    }
 }
 
-fn rasterize_outer_footprint(
-    ctx: &JunctionMaskContext,
-    corridors: &[JunctionCorridor],
-) -> Vec<bool> {
-    let mut outer_mask = rasterize_corridor_mask(ctx, corridors, true);
-    let fill_sectors = build_outer_fill_sectors(corridors);
-    if fill_sectors.is_empty() {
-        return outer_mask;
+fn dedup_sorted_scalars(values: &mut Vec<f32>) {
+    values.sort_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap_or(std::cmp::Ordering::Equal));
+    values.dedup_by(|lhs, rhs| (*lhs - *rhs).abs() <= 0.0001);
+}
+
+fn corridor_polygon(corridor: &JunctionCorridor, outer: bool) -> Vec<Vector2> {
+    let tangent = corridor.tangent_xz;
+    let normal = Vector2::new(-tangent.y, tangent.x);
+    let half_width = if outer {
+        corridor.outer_half
+    } else {
+        corridor.road_half
+    };
+    let end = tangent * corridor.handoff_dist;
+    vec![
+        -normal * half_width,
+        end - normal * half_width,
+        end + normal * half_width,
+        normal * half_width,
+    ]
+}
+
+fn loop_to_world_xz(loop_points: &[Vector2], node_pos: Vector3, y: f32) -> Vec<Vector3> {
+    loop_points
+        .iter()
+        .map(|point| Vector3::new(node_pos.x + point.x, y, node_pos.z + point.y))
+        .collect()
+}
+
+fn segment_intersection_point(
+    a0: Vector2,
+    a1: Vector2,
+    b0: Vector2,
+    b1: Vector2,
+) -> Option<Vector2> {
+    segment_intersection_parameters(a0, a1, b0, b1).map(|(ta, _)| a0 + (a1 - a0) * ta)
+}
+
+fn remove_duplicate_adjacent_points(boundary: &mut Vec<Vector2>) {
+    loop {
+        if boundary.len() < 2 {
+            return;
+        }
+
+        let mut removed_any = false;
+        for i in 0..boundary.len() {
+            let next = (i + 1) % boundary.len();
+            if boundary[i].distance_to(boundary[next]) <= 0.0001 {
+                boundary.remove(next);
+                removed_any = true;
+                break;
+            }
+        }
+
+        if !removed_any {
+            return;
+        }
+    }
+}
+
+fn radial_extent_on_polygon(polygon: &[Vector2], angle: f32) -> Option<f32> {
+    let ray_dir = Vector2::new(angle.cos(), angle.sin());
+    let mut max_t = None;
+    for i in 0..polygon.len() {
+        let a = polygon[i];
+        let b = polygon[(i + 1) % polygon.len()];
+        let Some(t) = ray_segment_intersection_distance_vec2(Vector2::ZERO, ray_dir, a, b) else {
+            continue;
+        };
+        max_t = Some(max_t.map_or(t, |current: f32| current.max(t)));
+    }
+    max_t.filter(|t| *t > 0.0001)
+}
+
+fn build_union_boundary_from_polygons(polygons: &[Vec<Vector2>]) -> Option<Vec<Vector2>> {
+    let mut angles = Vec::new();
+    for polygon in polygons {
+        if polygon.len() < 3 {
+            continue;
+        }
+        for &point in polygon {
+            if point.length_squared() > 1e-6 {
+                angles.push(normalize_angle(point.y.atan2(point.x)));
+            }
+        }
     }
 
-    for z in 0..ctx.height {
-        for x in 0..ctx.width {
-            let index = z * ctx.width + x;
-            if outer_mask[index] {
+    for i in 0..polygons.len() {
+        let polygon_a = &polygons[i];
+        if polygon_a.len() < 3 {
+            continue;
+        }
+        for j in (i + 1)..polygons.len() {
+            let polygon_b = &polygons[j];
+            if polygon_b.len() < 3 {
                 continue;
             }
 
-            let local_point = ctx.min_local
-                + Vector2::new(
-                    (x as f32 + 0.5) * JUNCTION_MASK_CELL_SIZE,
-                    (z as f32 + 0.5) * JUNCTION_MASK_CELL_SIZE,
-                );
-            if local_point.length_squared() <= 1e-6 {
-                continue;
-            }
-
-            let angle = normalize_angle(local_point.y.atan2(local_point.x));
-            if !fill_sectors
-                .iter()
-                .any(|&(start, end)| angle_in_interval(angle, start, end))
-            {
-                continue;
-            }
-
-            let ray_dir = local_point.normalized();
-            let radius = local_point.length();
-            if let Some(outer_extent) = corridors
-                .iter()
-                .filter_map(|corridor| corridor_extent_on_ray(corridor, ray_dir, true))
-                .max_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap_or(std::cmp::Ordering::Equal))
-            {
-                if radius <= outer_extent + JUNCTION_MASK_CELL_SIZE {
-                    outer_mask[index] = true;
+            for edge_a in 0..polygon_a.len() {
+                let a0 = polygon_a[edge_a];
+                let a1 = polygon_a[(edge_a + 1) % polygon_a.len()];
+                for edge_b in 0..polygon_b.len() {
+                    let b0 = polygon_b[edge_b];
+                    let b1 = polygon_b[(edge_b + 1) % polygon_b.len()];
+                    let Some(point) = segment_intersection_point(a0, a1, b0, b1) else {
+                        continue;
+                    };
+                    if point.length_squared() > 1e-6 {
+                        angles.push(normalize_angle(point.y.atan2(point.x)));
+                    }
                 }
             }
         }
     }
 
-    outer_mask
+    dedup_sorted_scalars(&mut angles);
+    if angles.len() < 3 {
+        return None;
+    }
+
+    let mut boundary = Vec::with_capacity(angles.len());
+    for angle in angles {
+        let extent = polygons
+            .iter()
+            .filter_map(|polygon| radial_extent_on_polygon(polygon, angle))
+            .max_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap_or(std::cmp::Ordering::Equal))?;
+        let ray_dir = Vector2::new(angle.cos(), angle.sin());
+        boundary.push(ray_dir * extent);
+    }
+
+    remove_duplicate_adjacent_points(&mut boundary);
+    remove_collinear_loop2(&mut boundary);
+    if boundary.len() < 3 {
+        return None;
+    }
+
+    let area = polygon_signed_area_2d(&boundary);
+    if area.abs() <= 0.001 {
+        return None;
+    }
+    if area < 0.0 {
+        boundary.reverse();
+    }
+    Some(boundary)
+}
+
+fn ray_segment_intersection_distance_vec2(
+    origin: Vector2,
+    ray_dir: Vector2,
+    a: Vector2,
+    b: Vector2,
+) -> Option<f32> {
+    let edge = b - a;
+    let rel_a = a - origin;
+    let denom = ray_dir.x * edge.y - ray_dir.y * edge.x;
+    if denom.abs() <= 1e-6 {
+        return None;
+    }
+
+    let t = (rel_a.x * edge.y - rel_a.y * edge.x) / denom;
+    let u = (rel_a.x * ray_dir.y - rel_a.y * ray_dir.x) / denom;
+    if t >= -0.0001 && (-0.0001..=1.0001).contains(&u) {
+        Some(t.max(0.0))
+    } else {
+        None
+    }
+}
+
+fn max_outward_extent_in_band(
+    boundaries: &[Vec<Vector3>],
+    frame: EndpointFrame2d,
+    band_min: f32,
+    band_max: f32,
+) -> Option<f32> {
+    let (band_min, band_max) = if band_min <= band_max {
+        (band_min, band_max)
+    } else {
+        (band_max, band_min)
+    };
+    let epsilon = 0.0001;
+    let mut max_u = None;
+
+    for boundary in boundaries {
+        if boundary.len() < 2 {
+            continue;
+        }
+
+        for i in 0..boundary.len() {
+            let a = boundary[i];
+            let b = boundary[(i + 1) % boundary.len()];
+            let a_local = Vector2::new(a.x - frame.node_xz.x, a.z - frame.node_xz.y);
+            let b_local = Vector2::new(b.x - frame.node_xz.x, b.z - frame.node_xz.y);
+            let u0 = a_local.dot(frame.outward);
+            let u1 = b_local.dot(frame.outward);
+            let v0 = a_local.dot(frame.side);
+            let v1 = b_local.dot(frame.side);
+
+            let mut consider = |u: f32| {
+                if u <= epsilon {
+                    return;
+                }
+                max_u = Some(max_u.map_or(u, |current: f32| current.max(u)));
+            };
+
+            if (band_min - epsilon..=band_max + epsilon).contains(&v0) {
+                consider(u0);
+            }
+            if (band_min - epsilon..=band_max + epsilon).contains(&v1) {
+                consider(u1);
+            }
+
+            if (v1 - v0).abs() <= epsilon {
+                continue;
+            }
+
+            for target_v in [band_min, band_max] {
+                let min_v = v0.min(v1) - epsilon;
+                let max_v = v0.max(v1) + epsilon;
+                if !(min_v..=max_v).contains(&target_v) {
+                    continue;
+                }
+
+                let t = (target_v - v0) / (v1 - v0);
+                if !(-epsilon..=1.0 + epsilon).contains(&t) {
+                    continue;
+                }
+
+                let u = u0 + (u1 - u0) * t.clamp(0.0, 1.0);
+                consider(u);
+            }
+        }
+    }
+
+    max_u
+}
+
+fn collect_loop_angles(loop_points: &[Vector2], angles: &mut Vec<f32>) {
+    for &point in loop_points {
+        if point.length_squared() > 1e-6 {
+            angles.push(normalize_angle(point.y.atan2(point.x)));
+        }
+    }
+}
+
+fn point_on_polygon_at_angle(polygon: &[Vector2], angle: f32) -> Option<Vector2> {
+    let extent = radial_extent_on_polygon(polygon, angle)?;
+    let ray_dir = Vector2::new(angle.cos(), angle.sin());
+    Some(ray_dir * extent)
+}
+
+fn triangulate_sidewalk_difference(
+    outer_loop: &[Vector2],
+    road_loop: &[Vector2],
+    node_pos: Vector3,
+    y: f32,
+) -> Option<Vec<TexturedTriangle>> {
+    if outer_loop.len() < 3 || road_loop.len() < 3 {
+        return None;
+    }
+
+    let mut angles = Vec::with_capacity(outer_loop.len() + road_loop.len());
+    collect_loop_angles(outer_loop, &mut angles);
+    collect_loop_angles(road_loop, &mut angles);
+    dedup_sorted_scalars(&mut angles);
+    if angles.len() < 2 {
+        return None;
+    }
+
+    let mut triangles = Vec::new();
+    let mut u_acc = 0.0f32;
+
+    for idx in 0..angles.len() {
+        let angle_a = angles[idx];
+        let mut angle_b = angles[(idx + 1) % angles.len()];
+        if idx + 1 == angles.len() {
+            angle_b += std::f32::consts::TAU;
+        }
+        if (angle_b - angle_a).abs() <= 0.0001 {
+            continue;
+        }
+
+        let outer_a = point_on_polygon_at_angle(outer_loop, angle_a)?;
+        let outer_b = point_on_polygon_at_angle(outer_loop, angle_b)?;
+        let road_a = point_on_polygon_at_angle(road_loop, angle_a)?;
+        let road_b = point_on_polygon_at_angle(road_loop, angle_b)?;
+
+        let outer_len = outer_a.distance_to(outer_b);
+        let road_len = road_a.distance_to(road_b);
+        let u_next = u_acc + outer_len.max(road_len);
+
+        let outer_a_world = Vector3::new(node_pos.x + outer_a.x, y, node_pos.z + outer_a.y);
+        let outer_b_world = Vector3::new(node_pos.x + outer_b.x, y, node_pos.z + outer_b.y);
+        let road_a_world = Vector3::new(node_pos.x + road_a.x, y, node_pos.z + road_a.y);
+        let road_b_world = Vector3::new(node_pos.x + road_b.x, y, node_pos.z + road_b.y);
+
+        let tri0_cross = triangle_cross_xz(road_a_world, road_b_world, outer_b_world);
+        if tri0_cross.abs() > 0.001 {
+            triangles.push(TexturedTriangle {
+                vertices: [road_a_world, road_b_world, outer_b_world],
+                uvs: [
+                    Vector2::new(u_acc, 0.0),
+                    Vector2::new(u_next, 0.0),
+                    Vector2::new(u_next, 1.0),
+                ],
+            });
+        }
+
+        let tri1_cross = triangle_cross_xz(road_a_world, outer_b_world, outer_a_world);
+        if tri1_cross.abs() > 0.001 {
+            triangles.push(TexturedTriangle {
+                vertices: [road_a_world, outer_b_world, outer_a_world],
+                uvs: [
+                    Vector2::new(u_acc, 0.0),
+                    Vector2::new(u_next, 1.0),
+                    Vector2::new(u_acc, 1.0),
+                ],
+            });
+        }
+
+        u_acc = u_next;
+    }
+
+    if triangles.is_empty() {
+        None
+    } else {
+        Some(triangles)
+    }
 }
 
 fn build_junction_footprint(
     node_pos: Vector3,
     corridors: &[JunctionCorridor],
 ) -> Option<JunctionFootprint> {
-    let ctx = build_junction_mask_context(corridors)?;
-    let corridor_mask = rasterize_corridor_mask(&ctx, corridors, false);
-    let outer_mask = rasterize_outer_footprint(&ctx, corridors);
-    let shell_steps = (config::SIDEWALK_WIDTH / JUNCTION_MASK_CELL_SIZE).ceil() as usize;
-    let eroded_outer = erode_mask(&ctx, &outer_mask, shell_steps);
-    let road_mask: Vec<bool> = outer_mask
+    let road_polygons: Vec<Vec<Vector2>> = corridors
         .iter()
-        .zip(corridor_mask.iter())
-        .zip(eroded_outer.iter())
-        .map(|((outer, corridor), core)| *outer && (*corridor || *core))
+        .map(|corridor| corridor_polygon(corridor, false))
         .collect();
-    let mut sidewalk_mask: Vec<bool> = outer_mask
+    let outer_polygons: Vec<Vec<Vector2>> = corridors
         .iter()
-        .zip(road_mask.iter())
-        .map(|(outer, road)| *outer && !*road)
+        .map(|corridor| corridor_polygon(corridor, true))
         .collect();
-    let mut road_mask = road_mask;
 
-    for z in 0..ctx.height {
-        for x in 0..ctx.width {
-            let index = z * ctx.width + x;
-            if !sidewalk_mask[index] {
-                continue;
-            }
+    let road_loop = build_union_boundary_from_polygons(&road_polygons)?;
+    let outer_loop = build_union_boundary_from_polygons(&outer_polygons)?;
+    let road_world_loop = loop_to_world_xz(
+        &road_loop,
+        node_pos,
+        node_pos.y + config::ROAD_H_OFFSET + JUNCTION_ROAD_BIAS,
+    );
+    let outer_world_loop = loop_to_world_xz(
+        &outer_loop,
+        node_pos,
+        node_pos.y + config::ROAD_H_OFFSET + JUNCTION_SIDEWALK_BIAS,
+    );
 
-            let local_point = ctx.min_local
-                + Vector2::new(
-                    (x as f32 + 0.5) * JUNCTION_MASK_CELL_SIZE,
-                    (z as f32 + 0.5) * JUNCTION_MASK_CELL_SIZE,
-                );
-            if corridors
-                .iter()
-                .any(|corridor| point_in_handoff_face(local_point, corridor))
-            {
-                sidewalk_mask[index] = false;
-                road_mask[index] = true;
-            }
-        }
-    }
-
-    let road_y = node_pos.y + config::ROAD_H_OFFSET + JUNCTION_ROAD_BIAS;
-    let sidewalk_y = node_pos.y + config::ROAD_H_OFFSET + JUNCTION_SIDEWALK_BIAS;
-    let road_loops = extract_positive_loops_from_mask(&ctx, &road_mask, node_pos, road_y);
-    let outer_loops = extract_positive_loops_from_mask(&ctx, &outer_mask, node_pos, sidewalk_y);
-    let mut road_triangles = triangulate_loops(&road_loops);
-    if road_triangles.is_empty() {
-        road_triangles = quads_to_triangles(&greedy_mesh_mask(&ctx, &road_mask, node_pos, road_y));
-    }
-    let sidewalk_quads = greedy_mesh_mask(&ctx, &sidewalk_mask, node_pos, sidewalk_y);
-
-    if road_triangles.is_empty() {
+    let road_indices = triangulate_boundary_xz(&road_world_loop);
+    if road_indices.is_empty() {
         return None;
     }
 
+    let road_triangles = road_indices
+        .iter()
+        .map(|[a, b, c]| {
+            [
+                road_world_loop[*a],
+                road_world_loop[*b],
+                road_world_loop[*c],
+            ]
+        })
+        .collect();
+
+    let sidewalk_triangles = triangulate_sidewalk_difference(
+        &outer_loop,
+        &road_loop,
+        node_pos,
+        node_pos.y + config::ROAD_H_OFFSET + JUNCTION_SIDEWALK_BIAS,
+    )
+    .unwrap_or_default();
+
     Some(JunctionFootprint {
         road_triangles,
-        sidewalk_quads,
-        road_loops,
-        outer_loops,
+        sidewalk_triangles,
+        road_loops: vec![road_world_loop],
+        outer_loops: vec![outer_world_loop],
     })
 }
 
@@ -734,6 +626,12 @@ fn point_in_triangle_xz(point: Vector3, a: Vector3, b: Vector3, c: Vector3) -> b
     !(has_neg && has_pos)
 }
 
+fn same_point_xz(a: Vector3, b: Vector3) -> bool {
+    let dx = a.x - b.x;
+    let dz = a.z - b.z;
+    dx * dx + dz * dz <= 0.0001 * 0.0001
+}
+
 fn triangulate_boundary_xz(boundary: &[Vector3]) -> Vec<[usize; 3]> {
     if boundary.len() < 3 {
         return Vec::new();
@@ -771,10 +669,17 @@ fn triangulate_boundary_xz(boundary: &[Vector3]) -> Vec<[usize; 3]> {
             }
 
             let contains_vertex = remaining.iter().copied().any(|candidate_idx| {
-                candidate_idx != prev_idx
-                    && candidate_idx != curr_idx
-                    && candidate_idx != next_idx
-                    && point_in_triangle_xz(boundary[candidate_idx], prev, curr, next)
+                if candidate_idx == prev_idx
+                    || candidate_idx == curr_idx
+                    || candidate_idx == next_idx
+                {
+                    return false;
+                }
+                let candidate = boundary[candidate_idx];
+                !same_point_xz(candidate, prev)
+                    && !same_point_xz(candidate, curr)
+                    && !same_point_xz(candidate, next)
+                    && point_in_triangle_xz(candidate, prev, curr, next)
             });
             if contains_vertex {
                 continue;
@@ -822,92 +727,6 @@ fn triangulate_boundary_xz(boundary: &[Vector3]) -> Vec<[usize; 3]> {
     triangles
 }
 
-fn point_in_polygon_xz(boundary: &[Vector3], point: Vector2) -> bool {
-    if boundary.len() < 3 {
-        return false;
-    }
-
-    let mut inside = false;
-    for i in 0..boundary.len() {
-        let a = boundary[i];
-        let b = boundary[(i + 1) % boundary.len()];
-        let crosses = (a.z > point.y) != (b.z > point.y);
-        if !crosses {
-            continue;
-        }
-
-        let dz = b.z - a.z;
-        if dz.abs() <= 1e-6 {
-            continue;
-        }
-
-        let x_at_scanline = a.x + (b.x - a.x) * (point.y - a.z) / dz;
-        if point.x <= x_at_scanline + 0.0001 {
-            inside = !inside;
-        }
-    }
-
-    inside
-}
-
-fn ray_segment_intersection_distance(
-    origin: Vector2,
-    ray_dir: Vector2,
-    a: Vector2,
-    b: Vector2,
-) -> Option<f32> {
-    let edge = b - a;
-    let rel_a = a - origin;
-    let denom = ray_dir.x * edge.y - ray_dir.y * edge.x;
-    if denom.abs() <= 1e-6 {
-        return None;
-    }
-
-    let t = (rel_a.x * edge.y - rel_a.y * edge.x) / denom;
-    let u = (rel_a.x * ray_dir.y - rel_a.y * ray_dir.x) / denom;
-    if t >= -0.0001 && (-0.0001..=1.0001).contains(&u) {
-        Some(t.max(0.0))
-    } else {
-        None
-    }
-}
-
-fn exit_distance_from_boundary(
-    boundary: &[Vector3],
-    origin: Vector2,
-    ray_dir: Vector2,
-) -> Option<f32> {
-    if !point_in_polygon_xz(boundary, origin) {
-        return None;
-    }
-
-    let mut max_t = None;
-    for i in 0..boundary.len() {
-        let a = Vector2::new(boundary[i].x, boundary[i].z);
-        let b = Vector2::new(
-            boundary[(i + 1) % boundary.len()].x,
-            boundary[(i + 1) % boundary.len()].z,
-        );
-        let Some(t) = ray_segment_intersection_distance(origin, ray_dir, a, b) else {
-            continue;
-        };
-        max_t = Some(max_t.map_or(t, |current: f32| current.max(t)));
-    }
-
-    max_t.filter(|t| *t > 0.0001)
-}
-
-fn exit_distance_from_boundaries(
-    boundaries: &[Vec<Vector3>],
-    origin: Vector2,
-    ray_dir: Vector2,
-) -> Option<f32> {
-    boundaries
-        .iter()
-        .filter_map(|boundary| exit_distance_from_boundary(boundary, origin, ray_dir))
-        .max_by(|lhs, rhs| lhs.partial_cmp(rhs).unwrap_or(std::cmp::Ordering::Equal))
-}
-
 #[cfg(test)]
 mod triangulation_tests {
     use super::*;
@@ -944,6 +763,90 @@ mod triangulation_tests {
             triangles_area
         );
     }
+
+    #[test]
+    fn radial_extent_on_polygon_reaches_full_corridor_distance() {
+        let polygon = vec![
+            Vector2::new(0.0, -5.0),
+            Vector2::new(6.0, -5.0),
+            Vector2::new(6.0, 5.0),
+            Vector2::new(0.0, 5.0),
+        ];
+
+        let extent = radial_extent_on_polygon(&polygon, 0.0)
+            .expect("a forward corridor ray should intersect the corridor boundary");
+        assert!(
+            (extent - 6.0).abs() <= 0.001,
+            "the exact corridor contour must preserve the full handoff distance; expected 6.0, got {extent:.3}"
+        );
+    }
+
+    #[test]
+    fn band_extent_clips_full_ribbon_width_against_polygon() {
+        let boundary = vec![
+            Vector3::new(0.0, 0.0, -5.0),
+            Vector3::new(6.0, 0.0, -5.0),
+            Vector3::new(6.0, 0.0, 5.0),
+            Vector3::new(0.0, 0.0, 5.0),
+        ];
+        let frame = EndpointFrame2d {
+            node_xz: Vector2::ZERO,
+            outward: Vector2::RIGHT,
+            side: Vector2::DOWN,
+        };
+
+        let extent = max_outward_extent_in_band(&[boundary], frame, -2.0, 2.0)
+            .expect("a ribbon band overlapping the polygon should produce an exit distance");
+        assert!(
+            (extent - 6.0).abs() <= 0.001,
+            "the ribbon clip should respect the farthest outward polygon extent across the full band; expected 6.0, got {extent:.3}"
+        );
+    }
+
+    #[test]
+    fn triangulate_sidewalk_difference_handles_ring_with_uv_contract() {
+        let outer_loop = vec![
+            Vector2::new(-6.0, -4.0),
+            Vector2::new(6.0, -4.0),
+            Vector2::new(6.0, 4.0),
+            Vector2::new(-6.0, 4.0),
+        ];
+        let road_loop = vec![
+            Vector2::new(-2.0, -1.5),
+            Vector2::new(2.0, -1.5),
+            Vector2::new(2.0, 1.5),
+            Vector2::new(-2.0, 1.5),
+        ];
+
+        let band_triangles =
+            triangulate_sidewalk_difference(&outer_loop, &road_loop, Vector3::ZERO, 0.0)
+                .expect("a valid outer-minus-road ring should triangulate");
+
+        let outer_area = polygon_signed_area_2d(&outer_loop).abs();
+        let road_area = polygon_signed_area_2d(&road_loop).abs();
+        let expected_area = outer_area - road_area;
+        let triangles_area: f32 = band_triangles
+            .iter()
+            .map(|triangle| {
+                let [a, b, c] = triangle.vertices;
+                triangle_cross_xz(a, b, c).abs() * 0.5
+            })
+            .sum();
+
+        assert!(
+            (triangles_area - expected_area).abs() <= 0.001,
+            "outer-minus-road triangulation should cover the exact ring area; expected {:.3}, got {:.3}",
+            expected_area,
+            triangles_area
+        );
+        assert!(
+            band_triangles.iter().all(|triangle| triangle
+                .uvs
+                .iter()
+                .all(|uv| (uv.y - 0.0).abs() <= 0.001 || (uv.y - 1.0).abs() <= 0.001)),
+            "node sidewalk UVs must match the ribbon contract: UV.y is 0 at the road edge and 1 at the outer edge"
+        );
+    }
 }
 
 fn build_junction_corridor(
@@ -951,23 +854,14 @@ fn build_junction_corridor(
     edge: &Edge,
     node_id: u32,
     is_start: bool,
-    road_endpoint_distance: f32,
-    outer_endpoint_distance: f32,
+    handoff_distance: f32,
 ) -> Option<JunctionCorridor> {
-    let road_target = if is_start {
-        road_endpoint_distance
+    let target = if is_start {
+        handoff_distance
     } else {
-        edge.physical_length - road_endpoint_distance
+        edge.physical_length - handoff_distance
     };
-    let outer_target = if is_start {
-        outer_endpoint_distance
-    } else {
-        edge.physical_length - outer_endpoint_distance
-    };
-    let direction_target = road_target.max(outer_target);
-    let direction_sample = sample_edge_at_distance(edge, direction_target)?;
-    let road_sample = sample_edge_at_distance(edge, road_target)?;
-    let outer_sample = sample_edge_at_distance(edge, outer_target)?;
+    let direction_sample = sample_edge_at_distance(edge, target)?;
 
     let outward_tangent = if is_start {
         direction_sample.tangent
@@ -976,15 +870,10 @@ fn build_junction_corridor(
     };
 
     let node_pos = graph.nodes[node_id as usize].pos;
-    let mut road_handoff_pos = road_sample.point;
-    if road_handoff_pos.distance_to(node_pos) < 0.05 {
-        road_handoff_pos = node_pos + outward_tangent * 0.05;
-        road_handoff_pos.y = road_sample.point.y;
-    }
-    let mut outer_handoff_pos = outer_sample.point;
-    if outer_handoff_pos.distance_to(node_pos) < 0.05 {
-        outer_handoff_pos = node_pos + outward_tangent * 0.05;
-        outer_handoff_pos.y = outer_sample.point.y;
+    let mut handoff_pos = direction_sample.point;
+    if handoff_pos.distance_to(node_pos) < 0.05 {
+        handoff_pos = node_pos + outward_tangent * 0.05;
+        handoff_pos.y = direction_sample.point.y;
     }
     let delta_xz = Vector2::new(
         direction_sample.point.x - node_pos.x,
@@ -994,14 +883,7 @@ fn build_junction_corridor(
     if length_xz <= 1e-6 {
         return None;
     }
-    let road_delta_xz = Vector2::new(
-        road_handoff_pos.x - node_pos.x,
-        road_handoff_pos.z - node_pos.z,
-    );
-    let outer_delta_xz = Vector2::new(
-        outer_handoff_pos.x - node_pos.x,
-        outer_handoff_pos.z - node_pos.z,
-    );
+    let handoff_delta_xz = Vector2::new(handoff_pos.x - node_pos.x, handoff_pos.z - node_pos.z);
 
     // Bias the road extent slightly outward so the extracted ownership loops do not sit exactly
     // on the road surface sampling line. That keeps the node-owned sidewalk shell from claiming
@@ -1013,12 +895,10 @@ fn build_junction_corridor(
         EdgeClass::Tunnel => road_half,
     };
     Some(JunctionCorridor {
-        road_handoff_dist: road_delta_xz.length().max(0.05),
-        outer_handoff_dist: outer_delta_xz.length().max(0.05),
+        handoff_dist: handoff_delta_xz.length().max(0.05),
         tangent_xz: delta_xz / length_xz,
         road_half,
         outer_half,
-        edge_class: edge.class,
     })
 }
 
@@ -1056,22 +936,17 @@ fn build_junction_footprints(
                 continue;
             };
 
-            let road_trim = if is_start {
-                endpoint_trims[edge_id].road_start
+            let handoff_trim = if is_start {
+                endpoint_trims[edge_id].start_handoff
             } else {
-                endpoint_trims[edge_id].road_end
+                endpoint_trims[edge_id].end_handoff
             };
-            let outer_trim = if is_start {
-                endpoint_trims[edge_id].outer_start
-            } else {
-                endpoint_trims[edge_id].outer_end
-            };
-            if road_trim < MIN_JUNCTION_RADIUS {
+            if handoff_trim < MIN_JUNCTION_RADIUS {
                 continue;
             }
 
             if let Some(corridor) =
-                build_junction_corridor(graph, edge, node_id, is_start, road_trim, outer_trim)
+                build_junction_corridor(graph, edge, node_id, is_start, handoff_trim)
             {
                 corridors.push(corridor);
             }
@@ -1094,7 +969,7 @@ fn build_junction_footprints(
     footprints
 }
 
-fn edge_endpoint_axes_xz(edge: &Edge, is_start: bool) -> Option<(Vector2, Vector2)> {
+fn endpoint_frame_xz(graph: &RegionGraph, edge: &Edge, is_start: bool) -> Option<EndpointFrame2d> {
     let offset = edge.physical_length.min(0.1);
     let sample = if is_start {
         sample_edge_at_distance(edge, offset)?
@@ -1108,9 +983,18 @@ fn edge_endpoint_axes_xz(edge: &Edge, is_start: bool) -> Option<(Vector2, Vector
     }
 
     let forward = forward.normalized();
-    let outward = if is_start { forward } else { -forward };
-    let side = Vector2::new(-forward.y, forward.x);
-    Some((outward, side))
+    let node_id = if is_start {
+        graph.get_valid_node(edge.start_node)
+    } else {
+        graph.get_valid_node(edge.end_node)
+    };
+    let node_pos = graph.nodes[node_id as usize].pos;
+
+    Some(EndpointFrame2d {
+        node_xz: Vector2::new(node_pos.x, node_pos.z),
+        outward: if is_start { forward } else { -forward },
+        side: Vector2::new(-forward.y, forward.x),
+    })
 }
 
 fn incident_direction_xz(graph: &RegionGraph, edge: &Edge, node_id: u32) -> Option<Vector2> {
@@ -1282,45 +1166,19 @@ impl TransitRenderer for RoadRenderer {
 
             let start_node = graph.get_valid_node(edge.start_node) as usize;
             let end_node = graph.get_valid_node(edge.end_node) as usize;
-            let road_handoff = edge.width * 0.5;
             let outer_handoff = match edge.class {
-                EdgeClass::Standard | EdgeClass::Ramp => road_handoff + config::SIDEWALK_WIDTH,
-                EdgeClass::Bridge => road_handoff,
+                EdgeClass::Standard | EdgeClass::Ramp => edge.width * 0.5 + config::SIDEWALK_WIDTH,
+                EdgeClass::Bridge => edge.width * 0.5,
                 EdgeClass::Tunnel => edge.width * 0.5,
             };
-            let clipped_road_start = if matches!(edge.class, EdgeClass::Standard | EdgeClass::Ramp)
-            {
-                (edge.start_clip - config::SIDEWALK_WIDTH).max(road_handoff)
-            } else {
-                edge.start_clip.max(road_handoff)
-            };
-            let clipped_road_end = if matches!(edge.class, EdgeClass::Standard | EdgeClass::Ramp) {
-                (edge.end_clip - config::SIDEWALK_WIDTH).max(road_handoff)
-            } else {
-                edge.end_clip.max(road_handoff)
-            };
-            let raw_road_start = if edge.class == EdgeClass::Tunnel {
-                edge.start_clip
-            } else if junction_nodes[start_node] {
-                clipped_road_start
-            } else {
-                edge.start_clip
-            };
-            let raw_road_end = if edge.class == EdgeClass::Tunnel {
-                edge.end_clip
-            } else if junction_nodes[end_node] {
-                clipped_road_end
-            } else {
-                edge.end_clip
-            };
-            let mut outer_start = if edge.class == EdgeClass::Tunnel {
+            let mut start_handoff = if edge.class == EdgeClass::Tunnel {
                 edge.start_clip
             } else if junction_nodes[start_node] {
                 edge.start_clip.max(outer_handoff)
             } else {
                 edge.start_clip
             };
-            let mut outer_end = if edge.class == EdgeClass::Tunnel {
+            let mut end_handoff = if edge.class == EdgeClass::Tunnel {
                 edge.end_clip
             } else if junction_nodes[end_node] {
                 edge.end_clip.max(outer_handoff)
@@ -1329,156 +1187,20 @@ impl TransitRenderer for RoadRenderer {
             };
 
             let max_total = (edge.physical_length - MIN_EDGE_REMAINDER).max(0.0);
-            if outer_start + outer_end > max_total && outer_start + outer_end > 1e-6 {
-                let scale = max_total / (outer_start + outer_end);
-                outer_start *= scale;
-                outer_end *= scale;
+            if start_handoff + end_handoff > max_total && start_handoff + end_handoff > 1e-6 {
+                let scale = max_total / (start_handoff + end_handoff);
+                start_handoff *= scale;
+                end_handoff *= scale;
             }
-            let road_scale = if raw_road_start + raw_road_end > 1e-6 {
-                (max_total / (raw_road_start + raw_road_end)).min(1.0)
-            } else {
-                1.0
-            };
-            let road_start = (raw_road_start * road_scale).min(outer_start);
-            let road_end = (raw_road_end * road_scale).min(outer_end);
 
             endpoint_trims[edge_id] = EndpointTrim {
-                road_start,
-                road_end,
-                outer_start,
-                outer_end,
-                outer_start_neg: outer_start,
-                outer_start_pos: outer_start,
-                outer_end_neg: outer_end,
-                outer_end_pos: outer_end,
+                start_handoff,
+                end_handoff,
             };
         }
 
         let junction_footprints =
             build_junction_footprints(graph, &node_to_edges, &endpoint_trims, &junction_nodes);
-        for (edge_id, edge) in graph.edges.iter().enumerate() {
-            if edge.deleted || edge.primary_type != TransitType::Road {
-                continue;
-            }
-
-            let start_node = graph.get_valid_node(edge.start_node);
-            let end_node = graph.get_valid_node(edge.end_node);
-
-            if junction_nodes[start_node as usize] {
-                if let Some(junction) = junction_footprints.get(&start_node) {
-                    if let Some((outward, side)) = edge_endpoint_axes_xz(edge, true) {
-                        let node_pos = graph.nodes[start_node as usize].pos;
-                        let node_xz = Vector2::new(node_pos.x, node_pos.z);
-                        if let Some(exit) =
-                            exit_distance_from_boundaries(&junction.road_loops, node_xz, outward)
-                        {
-                            endpoint_trims[edge_id].road_start =
-                                endpoint_trims[edge_id].road_start.max(exit);
-                        }
-
-                        if matches!(edge.class, EdgeClass::Standard | EdgeClass::Ramp) {
-                            let probe_offset = edge.width * 0.5 + config::SIDEWALK_WIDTH * 0.5;
-                            if let Some(exit) = exit_distance_from_boundaries(
-                                &junction.outer_loops,
-                                node_xz - side * probe_offset,
-                                outward,
-                            ) {
-                                endpoint_trims[edge_id].outer_start_neg =
-                                    endpoint_trims[edge_id].outer_start_neg.max(exit);
-                            }
-                            if let Some(exit) = exit_distance_from_boundaries(
-                                &junction.outer_loops,
-                                node_xz + side * probe_offset,
-                                outward,
-                            ) {
-                                endpoint_trims[edge_id].outer_start_pos =
-                                    endpoint_trims[edge_id].outer_start_pos.max(exit);
-                            }
-                        }
-                    }
-                }
-            }
-
-            if junction_nodes[end_node as usize] {
-                if let Some(junction) = junction_footprints.get(&end_node) {
-                    if let Some((outward, side)) = edge_endpoint_axes_xz(edge, false) {
-                        let node_pos = graph.nodes[end_node as usize].pos;
-                        let node_xz = Vector2::new(node_pos.x, node_pos.z);
-                        if let Some(exit) =
-                            exit_distance_from_boundaries(&junction.road_loops, node_xz, outward)
-                        {
-                            endpoint_trims[edge_id].road_end =
-                                endpoint_trims[edge_id].road_end.max(exit);
-                        }
-
-                        if matches!(edge.class, EdgeClass::Standard | EdgeClass::Ramp) {
-                            let probe_offset = edge.width * 0.5 + config::SIDEWALK_WIDTH * 0.5;
-                            if let Some(exit) = exit_distance_from_boundaries(
-                                &junction.outer_loops,
-                                node_xz - side * probe_offset,
-                                outward,
-                            ) {
-                                endpoint_trims[edge_id].outer_end_neg =
-                                    endpoint_trims[edge_id].outer_end_neg.max(exit);
-                            }
-                            if let Some(exit) = exit_distance_from_boundaries(
-                                &junction.outer_loops,
-                                node_xz + side * probe_offset,
-                                outward,
-                            ) {
-                                endpoint_trims[edge_id].outer_end_pos =
-                                    endpoint_trims[edge_id].outer_end_pos.max(exit);
-                            }
-                        }
-                    }
-                }
-            }
-
-            let max_total = (edge.physical_length - MIN_EDGE_REMAINDER).max(0.0);
-            if endpoint_trims[edge_id].road_start + endpoint_trims[edge_id].road_end > max_total
-                && endpoint_trims[edge_id].road_start + endpoint_trims[edge_id].road_end > 1e-6
-            {
-                let scale = max_total
-                    / (endpoint_trims[edge_id].road_start + endpoint_trims[edge_id].road_end);
-                endpoint_trims[edge_id].road_start *= scale;
-                endpoint_trims[edge_id].road_end *= scale;
-            }
-
-            {
-                let trims = &mut endpoint_trims[edge_id];
-                if trims.outer_start_neg + trims.outer_end_neg > max_total
-                    && trims.outer_start_neg + trims.outer_end_neg > 1e-6
-                {
-                    let scale = max_total / (trims.outer_start_neg + trims.outer_end_neg);
-                    trims.outer_start_neg *= scale;
-                    trims.outer_end_neg *= scale;
-                }
-                if trims.outer_start_pos + trims.outer_end_pos > max_total
-                    && trims.outer_start_pos + trims.outer_end_pos > 1e-6
-                {
-                    let scale = max_total / (trims.outer_start_pos + trims.outer_end_pos);
-                    trims.outer_start_pos *= scale;
-                    trims.outer_end_pos *= scale;
-                }
-            }
-
-            endpoint_trims[edge_id].outer_start = endpoint_trims[edge_id]
-                .outer_start_neg
-                .max(endpoint_trims[edge_id].outer_start_pos);
-            endpoint_trims[edge_id].outer_end = endpoint_trims[edge_id]
-                .outer_end_neg
-                .max(endpoint_trims[edge_id].outer_end_pos);
-
-            let start_road_limit = endpoint_trims[edge_id]
-                .outer_start_neg
-                .min(endpoint_trims[edge_id].outer_start_pos);
-            let end_road_limit = endpoint_trims[edge_id]
-                .outer_end_neg
-                .min(endpoint_trims[edge_id].outer_end_pos);
-            endpoint_trims[edge_id].road_start =
-                endpoint_trims[edge_id].road_start.min(start_road_limit);
-            endpoint_trims[edge_id].road_end = endpoint_trims[edge_id].road_end.min(end_road_limit);
-        }
         let node_miters = build_node_miters(graph);
 
         for (edge_id, edge) in graph.edges.iter().enumerate() {
@@ -1611,13 +1333,11 @@ impl TransitRenderer for RoadRenderer {
                 continue;
             }
 
+            let start_node = graph.get_valid_node(edge.start_node);
+            let end_node = graph.get_valid_node(edge.end_node);
             let trims = endpoint_trims[edge_id];
-            let road_start_trim = trims.road_start;
-            let road_end_trim = trims.road_end;
-            let sidewalk_start_neg = trims.outer_start_neg;
-            let sidewalk_start_pos = trims.outer_start_pos;
-            let sidewalk_end_neg = trims.outer_end_neg;
-            let sidewalk_end_pos = trims.outer_end_pos;
+            let base_start_handoff = trims.start_handoff;
+            let base_end_handoff = trims.end_handoff;
             let total_len = edge.physical_length;
             let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
             if total_lanes <= 0.0 {
@@ -1626,6 +1346,45 @@ impl TransitRenderer for RoadRenderer {
 
             let lane_w = edge.width / total_lanes;
             let road_outer = edge.width * 0.5;
+            let start_junction = junction_footprints.get(&start_node);
+            let end_junction = junction_footprints.get(&end_node);
+            let start_frame = if junction_nodes[start_node as usize] {
+                endpoint_frame_xz(graph, edge, true)
+            } else {
+                None
+            };
+            let end_frame = if junction_nodes[end_node as usize] {
+                endpoint_frame_xz(graph, edge, false)
+            } else {
+                None
+            };
+            let clamp_handoffs = |start: f32, end: f32| {
+                let max_total = (total_len - MIN_EDGE_REMAINDER).max(0.0);
+                if start + end > max_total && start + end > 1e-6 {
+                    let scale = max_total / (start + end);
+                    (start * scale, end * scale)
+                } else {
+                    (start, end)
+                }
+            };
+            let band_handoff = |junction: Option<&JunctionFootprint>,
+                                frame: Option<EndpointFrame2d>,
+                                use_outer: bool,
+                                band_min: f32,
+                                band_max: f32| {
+                match (junction, frame) {
+                    (Some(junction), Some(frame)) => {
+                        let boundaries = if use_outer {
+                            &junction.outer_loops
+                        } else {
+                            &junction.road_loops
+                        };
+                        max_outward_extent_in_band(boundaries, frame, band_min, band_max)
+                            .unwrap_or(0.0)
+                    }
+                    _ => 0.0,
+                }
+            };
 
             let mut point_side_dirs = Vec::with_capacity(resampled_count);
             for i in 0..resampled_count {
@@ -1647,6 +1406,24 @@ impl TransitRenderer for RoadRenderer {
             let lane_count = (edge.fwd_lanes + edge.bkw_lanes) as usize;
             for l_idx in 0..lane_count {
                 let lateral_offset = (total_lanes * 0.5 - l_idx as f32 - 0.5) * lane_w;
+                let lane_band_min = lateral_offset - lane_w * 0.5;
+                let lane_band_max = lateral_offset + lane_w * 0.5;
+                let (lane_start_handoff, lane_end_handoff) = clamp_handoffs(
+                    base_start_handoff.max(band_handoff(
+                        start_junction,
+                        start_frame,
+                        false,
+                        lane_band_min,
+                        lane_band_max,
+                    )),
+                    base_end_handoff.max(band_handoff(
+                        end_junction,
+                        end_frame,
+                        false,
+                        lane_band_min,
+                        lane_band_max,
+                    )),
+                );
                 let mut dist_acc = 0.0f32;
 
                 for i in 0..resampled_count - 1 {
@@ -1659,7 +1436,8 @@ impl TransitRenderer for RoadRenderer {
 
                     let segment_start = dist_acc;
                     let segment_end = dist_acc + segment_len;
-                    if segment_end <= road_start_trim || segment_start >= total_len - road_end_trim
+                    if segment_end <= lane_start_handoff
+                        || segment_start >= total_len - lane_end_handoff
                     {
                         dist_acc += segment_len;
                         continue;
@@ -1667,11 +1445,11 @@ impl TransitRenderer for RoadRenderer {
 
                     let mut t0 = 0.0f32;
                     let mut t1 = 1.0f32;
-                    if segment_start < road_start_trim {
-                        t0 = (road_start_trim - segment_start) / segment_len;
+                    if segment_start < lane_start_handoff {
+                        t0 = (lane_start_handoff - segment_start) / segment_len;
                     }
-                    if segment_end > total_len - road_end_trim {
-                        t1 = (total_len - road_end_trim - segment_start) / segment_len;
+                    if segment_end > total_len - lane_end_handoff {
+                        t1 = (total_len - lane_end_handoff - segment_start) / segment_len;
                     }
                     if t1 - t0 <= 1e-4 {
                         dist_acc += segment_len;
@@ -1750,21 +1528,38 @@ impl TransitRenderer for RoadRenderer {
                     let side0 = point_side_dirs[i];
                     let side1 = point_side_dirs[i + 1];
 
-                    for (sign, start_trim, end_trim) in [
-                        (-1.0f32, sidewalk_start_neg, sidewalk_end_neg),
-                        (1.0f32, sidewalk_start_pos, sidewalk_end_pos),
-                    ] {
-                        if segment_end <= start_trim || segment_start >= total_len - end_trim {
+                    for sign in [-1.0f32, 1.0f32] {
+                        let sidewalk_band_min = road_outer * sign;
+                        let sidewalk_band_max = shoulder_outer * sign;
+                        let (sidewalk_start_handoff, sidewalk_end_handoff) = clamp_handoffs(
+                            base_start_handoff.max(band_handoff(
+                                start_junction,
+                                start_frame,
+                                true,
+                                sidewalk_band_min,
+                                sidewalk_band_max,
+                            )),
+                            base_end_handoff.max(band_handoff(
+                                end_junction,
+                                end_frame,
+                                true,
+                                sidewalk_band_min,
+                                sidewalk_band_max,
+                            )),
+                        );
+                        if segment_end <= sidewalk_start_handoff
+                            || segment_start >= total_len - sidewalk_end_handoff
+                        {
                             continue;
                         }
 
                         let mut t0 = 0.0f32;
                         let mut t1 = 1.0f32;
-                        if segment_start < start_trim {
-                            t0 = (start_trim - segment_start) / segment_len;
+                        if segment_start < sidewalk_start_handoff {
+                            t0 = (sidewalk_start_handoff - segment_start) / segment_len;
                         }
-                        if segment_end > total_len - end_trim {
-                            t1 = (total_len - end_trim - segment_start) / segment_len;
+                        if segment_end > total_len - sidewalk_end_handoff {
+                            t1 = (total_len - sidewalk_end_handoff - segment_start) / segment_len;
                         }
                         if t1 - t0 <= 1e-4 {
                             continue;
@@ -1812,6 +1607,22 @@ impl TransitRenderer for RoadRenderer {
 
                 let start_node = graph.get_valid_node(edge.start_node);
                 let end_node = graph.get_valid_node(edge.end_node);
+                let (bridge_start_handoff, bridge_end_handoff) = clamp_handoffs(
+                    base_start_handoff.max(band_handoff(
+                        start_junction,
+                        start_frame,
+                        false,
+                        -road_outer,
+                        road_outer,
+                    )),
+                    base_end_handoff.max(band_handoff(
+                        end_junction,
+                        end_frame,
+                        false,
+                        -road_outer,
+                        road_outer,
+                    )),
+                );
                 let mut dist_acc = 0.0f32;
                 let mut dist_acc_pillars = 0.0f32;
 
@@ -1825,7 +1636,8 @@ impl TransitRenderer for RoadRenderer {
 
                     let segment_start = dist_acc;
                     let segment_end = dist_acc + segment_len;
-                    if segment_end <= road_start_trim || segment_start >= total_len - road_end_trim
+                    if segment_end <= bridge_start_handoff
+                        || segment_start >= total_len - bridge_end_handoff
                     {
                         dist_acc += segment_len;
                         continue;
@@ -1833,11 +1645,11 @@ impl TransitRenderer for RoadRenderer {
 
                     let mut t0 = 0.0f32;
                     let mut t1 = 1.0f32;
-                    if segment_start < road_start_trim {
-                        t0 = (road_start_trim - segment_start) / segment_len;
+                    if segment_start < bridge_start_handoff {
+                        t0 = (bridge_start_handoff - segment_start) / segment_len;
                     }
-                    if segment_end > total_len - road_end_trim {
-                        t1 = (total_len - road_end_trim - segment_start) / segment_len;
+                    if segment_end > total_len - bridge_end_handoff {
+                        t1 = (total_len - bridge_end_handoff - segment_start) / segment_len;
                     }
                     if t1 - t0 <= 1e-4 {
                         dist_acc += segment_len;
@@ -2114,20 +1926,20 @@ impl TransitRenderer for RoadRenderer {
         }
 
         for footprint in junction_footprints.values() {
-            for [a, b, c, d] in &footprint.sidewalk_quads {
-                push_quad(
+            for triangle in &footprint.sidewalk_triangles {
+                let [a, b, c] = triangle.vertices;
+                let [uv_a, uv_b, uv_c] = triangle.uvs;
+                push_triangle(
                     &mut mesh.vertices,
                     &mut mesh.normals,
                     &mut mesh.uvs,
                     &mut mesh.colors,
-                    *a,
-                    *b,
-                    *c,
-                    *d,
-                    Vector2::new(0.0, 1.0),
-                    Vector2::new(1.0, 1.0),
-                    Vector2::new(1.0, 1.0),
-                    Vector2::new(0.0, 1.0),
+                    a,
+                    b,
+                    c,
+                    uv_a,
+                    uv_b,
+                    uv_c,
                     Color::from_rgba(1.0, 1.0, 1.0, 1.0),
                 );
             }
