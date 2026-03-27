@@ -74,7 +74,7 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 
 `docs/project.md` is the **single source of truth** for the current state of the codebase. It must be kept accurate at all times. Update it whenever:
 
-- **A bug is fixed** — remove the entry from the Known Bugs table entirely. Do not leave it in with a "fixed" note.
+- **A bug is fixed** — mark the entry from the Known Bugs table to [DONE]. Notify that bug can be validated that the fix is implemented correctly.
 - **A backlog item is implemented** — move it from the Backlog section into Implemented Systems with an accurate description of what was built.
 - **A system's behaviour changes** — update the relevant Implemented Systems entry. Stale descriptions are as harmful as missing ones.
 - **A new bug is discovered** — add it to Known Bugs with a severity tag and the exact file/function where the root cause lives.
@@ -86,7 +86,7 @@ Do not introduce workarounds that mask known bugs. Fix the root cause and remove
 
 ## Documentation Practices
 
-- **`docs/project.md`** — single source of truth for what is implemented, what is broken, and what is planned. Update it as described above. It must reflect the actual state of the code, not an aspirational state.
+- **`docs/project.md`** — up-to-date source of truth for what is implemented, what is broken, and what is planned. Update it as described above. It must reflect the actual state of the code, not an aspirational state. But you should be critical about the current truth. If current methods and implementation are wrong and there are better way to solve the issue then recommend them!
 - **`docs/analysis.md`** — contains the detailed algorithmic and data-structure analysis: which technologies were selected, why, what alternatives exist, and how each system scales toward 1M agents. It also documents the multi-modal transport compatibility analysis (bicycles, buses, taxis, trains, ships, airplanes). **Update `docs/analysis.md` only when explicitly requested** — it is a reference document, not a living log. When updated, it should be re-exported to `docs/analysis.pdf` via `pandoc docs/analysis.md -o docs/analysis.pdf --pdf-engine=xelatex`.
 - **Do not create additional `*.md` files in `docs/`** unless they are truly standalone references that `project.md` links to. Default is to edit `project.md`.
 - **Do not create standalone `*.md` files outside `docs/`** (except `CLAUDE.md` and `README`).
