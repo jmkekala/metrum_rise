@@ -1,12 +1,12 @@
 #[cfg(test)]
 mod tests {
-    use godot::prelude::*;
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::economy::agents::AgentSystem;
+    use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::economy::agents::AgentSystem;
-    use crate::simulation::buildings::allocator::BuildingAllocator;
-    use crate::simulation::grid::zoning::{ZoningSystem, ZoneType};
-    use crate::simulation::core::config::MapConfig;
+    use godot::prelude::*;
 
     #[test]
     fn test_edge_compaction_remapping() {
@@ -21,14 +21,26 @@ mod tests {
         network.add_road(
             &mut graph,
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            2, 2, true, true, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator
+            2,
+            2,
+            true,
+            true,
+            crate::simulation::network::types::EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
         );
 
         // 2. Add Road B (Index 1)
         network.add_road(
             &mut graph,
             vec![Vector3::new(0.0, 0.0, 50.0), Vector3::new(100.0, 0.0, 50.0)],
-            2, 2, true, true, crate::simulation::network::types::EdgeClass::Standard, &mut zoning, &mut allocator
+            2,
+            2,
+            true,
+            true,
+            crate::simulation::network::types::EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
         );
 
         assert_eq!(graph.edges.len(), 2);
@@ -37,22 +49,24 @@ mod tests {
         graph.edges[0].deleted = true;
 
         // 4. Place a building on Road B (Index 1)
-        allocator.buildings.push(crate::simulation::buildings::allocator::Building {
-            center_x: 50.0,
-            center_y: 50.0,
-            width: 30,
-            depth: 30,
-            zone_type: ZoneType::Residential,
-            facing_dir: Vector2::new(0.0, 1.0),
-            frontage_t: 0.5,
-            side_offset: 5.0,
-            abandoned_timer: 0,
-            edge_idx: 1, // Points to Road B
-            side: 1,
-            cell_x: 5,
-            cell_y: 0,
-            occupancy: 0,
-        });
+        allocator
+            .buildings
+            .push(crate::simulation::buildings::allocator::Building {
+                center_x: 50.0,
+                center_y: 50.0,
+                width: 30,
+                depth: 30,
+                zone_type: ZoneType::Residential,
+                facing_dir: Vector2::new(0.0, 1.0),
+                frontage_t: 0.5,
+                side_offset: 5.0,
+                abandoned_timer: 0,
+                edge_idx: 1, // Points to Road B
+                side: 1,
+                cell_x: 5,
+                cell_y: 0,
+                occupancy: 0,
+            });
 
         // 5. Spawn an agent on Road B (Index 1)
         agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
@@ -69,8 +83,18 @@ mod tests {
         zoning.update_edge_indices(&mapping);
 
         // 8. Verification
-        assert_eq!(graph.edges.len(), 1, "Graph should have only 1 edge after compaction");
-        assert_eq!(allocator.buildings[0].edge_idx, 0, "Building should now point to Road B at index 0");
-        assert_eq!(agents.current_edge[0], 0, "Agent should now point to Road B at index 0");
+        assert_eq!(
+            graph.edges.len(),
+            1,
+            "Graph should have only 1 edge after compaction"
+        );
+        assert_eq!(
+            allocator.buildings[0].edge_idx, 0,
+            "Building should now point to Road B at index 0"
+        );
+        assert_eq!(
+            agents.current_edge[0], 0,
+            "Agent should now point to Road B at index 0"
+        );
     }
 }

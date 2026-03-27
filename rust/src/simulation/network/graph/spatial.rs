@@ -1,5 +1,5 @@
+use super::data::{EdgeEntry, RegionGraph};
 use godot::prelude::*;
-use super::data::{RegionGraph, EdgeEntry};
 use rstar::AABB;
 
 impl RegionGraph {
@@ -7,11 +7,17 @@ impl RegionGraph {
     pub const NODE_CHUNK_SIZE: f32 = 16.0;
 
     pub fn get_chunk_coords(pos: godot::prelude::Vector3) -> (i32, i32) {
-        ((pos.x / Self::CHUNK_SIZE).floor() as i32, (pos.z / Self::CHUNK_SIZE).floor() as i32)
+        (
+            (pos.x / Self::CHUNK_SIZE).floor() as i32,
+            (pos.z / Self::CHUNK_SIZE).floor() as i32,
+        )
     }
 
     pub fn get_node_chunk_coords(pos: godot::prelude::Vector3) -> (i32, i32) {
-        ((pos.x / Self::NODE_CHUNK_SIZE).floor() as i32, (pos.z / Self::NODE_CHUNK_SIZE).floor() as i32)
+        (
+            (pos.x / Self::NODE_CHUNK_SIZE).floor() as i32,
+            (pos.z / Self::NODE_CHUNK_SIZE).floor() as i32,
+        )
     }
 
     pub fn get_node_chunk(&self, node_id: u32) -> (i32, i32) {
@@ -20,17 +26,23 @@ impl RegionGraph {
 
     pub fn add_to_spatial_index(&mut self, edge_idx: usize) {
         let edge = &self.edges[edge_idx];
-        if edge.deleted { return; }
-        
-        // Find the bounding box for this edge
-        let mut min_x = f32::MAX; let mut max_x = f32::MIN;
-        let mut min_z = f32::MAX; let mut max_z = f32::MIN;
-        
-        for p in &edge.physical_geometry {
-            min_x = min_x.min(p.x); max_x = max_x.max(p.x);
-            min_z = min_z.min(p.z); max_z = max_z.max(p.z);
+        if edge.deleted {
+            return;
         }
-        
+
+        // Find the bounding box for this edge
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
+
+        for p in &edge.physical_geometry {
+            min_x = min_x.min(p.x);
+            max_x = max_x.max(p.x);
+            min_z = min_z.min(p.z);
+            max_z = max_z.max(p.z);
+        }
+
         self.spatial_edge_rt.insert(EdgeEntry {
             edge_idx,
             envelope: AABB::from_corners([min_x, min_z], [max_x, max_z]),
@@ -41,19 +53,23 @@ impl RegionGraph {
         // Recompute AABB to find the entry in the R-Tree.
         // Assumes this is called while the edge still has its original geometry.
         let edge = &self.edges[edge_idx];
-        let mut min_x = f32::MAX; let mut max_x = f32::MIN;
-        let mut min_z = f32::MAX; let mut max_z = f32::MIN;
-        
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
+
         for p in &edge.physical_geometry {
-            min_x = min_x.min(p.x); max_x = max_x.max(p.x);
-            min_z = min_z.min(p.z); max_z = max_z.max(p.z);
+            min_x = min_x.min(p.x);
+            max_x = max_x.max(p.x);
+            min_z = min_z.min(p.z);
+            max_z = max_z.max(p.z);
         }
 
         let entry = EdgeEntry {
             edge_idx,
             envelope: AABB::from_corners([min_x, min_z], [max_x, max_z]),
         };
-        
+
         self.spatial_edge_rt.remove(&entry);
     }
 
@@ -79,7 +95,11 @@ impl RegionGraph {
         self.get_edges_near_aabb(min, max)
     }
 
-    pub fn get_edges_near_aabb(&self, min: godot::prelude::Vector3, max: godot::prelude::Vector3) -> Vec<usize> {
+    pub fn get_edges_near_aabb(
+        &self,
+        min: godot::prelude::Vector3,
+        max: godot::prelude::Vector3,
+    ) -> Vec<usize> {
         let envelope = AABB::from_corners([min.x, min.z], [max.x, max.z]);
         self.spatial_edge_rt
             .locate_in_envelope_intersecting(&envelope)
@@ -90,20 +110,28 @@ impl RegionGraph {
     /// Returns the coordinates of all chunks (512m) that an edge's AABB overlaps.
     pub fn get_edge_chunks(&self, edge_idx: usize) -> Vec<(i32, i32)> {
         let mut result = Vec::new();
-        if edge_idx >= self.edges.len() { return result; }
-        let edge = &self.edges[edge_idx];
-        if edge.deleted { return result; }
-        
-        let mut min_x = f32::MAX; let mut max_x = f32::MIN;
-        let mut min_z = f32::MAX; let mut max_z = f32::MIN;
-        for p in &edge.physical_geometry {
-            min_x = min_x.min(p.x); max_x = max_x.max(p.x);
-            min_z = min_z.min(p.z); max_z = max_z.max(p.z);
+        if edge_idx >= self.edges.len() {
+            return result;
         }
-        
+        let edge = &self.edges[edge_idx];
+        if edge.deleted {
+            return result;
+        }
+
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
+        for p in &edge.physical_geometry {
+            min_x = min_x.min(p.x);
+            max_x = max_x.max(p.x);
+            min_z = min_z.min(p.z);
+            max_z = max_z.max(p.z);
+        }
+
         let min_c = Self::get_chunk_coords(godot::prelude::Vector3::new(min_x, 0.0, min_z));
         let max_c = Self::get_chunk_coords(godot::prelude::Vector3::new(max_x, 0.0, max_z));
-        
+
         for cx in min_c.0..=max_c.0 {
             for cz in min_c.1..=max_c.1 {
                 result.push((cx, cz));

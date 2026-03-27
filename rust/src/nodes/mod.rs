@@ -6,6 +6,6 @@
 //! **Do not add simulation logic here.** All game-state decisions belong in `simulation/`.
 //! This module is thin glue: marshal data in, call into Rust, marshal results out.
 
-pub mod simulation_node;
 pub mod camera_node;
 pub mod sim;
+pub mod simulation_node;

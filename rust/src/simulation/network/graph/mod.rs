@@ -1,6 +1,6 @@
 pub mod data;
+pub mod rebuild;
 pub mod spatial;
 pub mod topology;
-pub mod rebuild;
 
-pub use data::{Node, Edge, JunctionMesh, RegionGraph, verify_intersection_geometry};
+pub use data::{Edge, JunctionMesh, Node, RegionGraph, verify_intersection_geometry};

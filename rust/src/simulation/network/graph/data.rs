@@ -1,7 +1,7 @@
-use godot::prelude::*;
 use super::super::types::*;
+use godot::prelude::*;
+use rstar::{AABB, PointDistance, RTree, RTreeObject};
 use std::collections::HashMap;
-use rstar::{RTree, AABB, RTreeObject, PointDistance};
 
 /// A spatial index entry for a road edge.
 #[derive(Clone, Copy, Debug)]
@@ -97,19 +97,27 @@ pub struct Edge {
 impl Edge {
     /// Returns the interpolated world-space Y (height) at a given T-coordinate [0, 1].
     pub fn get_y_at_t(&self, t: f32) -> f32 {
-        if self.physical_geometry.is_empty() { return 0.0; }
-        if self.physical_geometry.len() == 1 { return self.physical_geometry[0].y; }
-        
+        if self.physical_geometry.is_empty() {
+            return 0.0;
+        }
+        if self.physical_geometry.len() == 1 {
+            return self.physical_geometry[0].y;
+        }
+
         let t_clamped = t.clamp(0.0, 1.0);
         let target_dist = t_clamped * self.physical_length;
         let mut curr_dist = 0.0;
-        
+
         for i in 0..self.physical_geometry.len() - 1 {
             let p1 = self.physical_geometry[i];
-            let p2 = self.physical_geometry[i+1];
+            let p2 = self.physical_geometry[i + 1];
             let d = (Vector2::new(p2.x, p2.z) - Vector2::new(p1.x, p1.z)).length();
             if curr_dist + d >= target_dist {
-                let local_t = if d > 1e-6 { (target_dist - curr_dist) / d } else { 0.0 };
+                let local_t = if d > 1e-6 {
+                    (target_dist - curr_dist) / d
+                } else {
+                    0.0
+                };
                 return p1.y + (p2.y - p1.y) * local_t;
             }
             curr_dist += d;
@@ -179,9 +187,9 @@ pub fn verify_intersection_geometry(_center: Vector3, triangles: &[Vector3]) -> 
     }
 
     for i in (0..triangles.len()).step_by(3) {
-        let p0 = triangles[i];   // Center
-        let p1 = triangles[i+1]; // Right Corner
-        let p2 = triangles[i+2]; // Left Corner
+        let p0 = triangles[i]; // Center
+        let p1 = triangles[i + 1]; // Right Corner
+        let p2 = triangles[i + 2]; // Left Corner
 
         // 2. Calculate the Normal using the Cross Product
         let edge1 = p1 - p0;

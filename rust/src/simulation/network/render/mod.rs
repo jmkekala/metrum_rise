@@ -1,7 +1,7 @@
 pub mod road;
 pub mod test_road_mesh;
-use godot::prelude::*;
 use super::graph::RegionGraph;
+use godot::prelude::*;
 
 pub struct NetworkMeshData {
     pub vertices: Vec<Vector3>,
@@ -21,13 +21,26 @@ pub struct NetworkMeshData {
 impl NetworkMeshData {
     pub fn new() -> Self {
         Self {
-            vertices: Vec::new(), normals: Vec::new(), uvs: Vec::new(), colors: Vec::new(),
-            marking_vertices: Vec::new(), marking_normals: Vec::new(), marking_uvs: Vec::new(), marking_colors: Vec::new(),
-            concrete_vertices: Vec::new(), concrete_normals: Vec::new(), concrete_uvs: Vec::new(), concrete_colors: Vec::new(),
+            vertices: Vec::new(),
+            normals: Vec::new(),
+            uvs: Vec::new(),
+            colors: Vec::new(),
+            marking_vertices: Vec::new(),
+            marking_normals: Vec::new(),
+            marking_uvs: Vec::new(),
+            marking_colors: Vec::new(),
+            concrete_vertices: Vec::new(),
+            concrete_normals: Vec::new(),
+            concrete_uvs: Vec::new(),
+            concrete_colors: Vec::new(),
         }
     }
 }
 
 pub trait TransitRenderer {
-    fn generate_mesh_data(&self, graph: &RegionGraph, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData;
+    fn generate_mesh_data(
+        &self,
+        graph: &RegionGraph,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+    ) -> NetworkMeshData;
 }

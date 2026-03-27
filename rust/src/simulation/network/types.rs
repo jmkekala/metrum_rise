@@ -1,7 +1,11 @@
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitType {
-    Road, Rail, Ship, Air, Foot,
+    Road,
+    Rail,
+    Ship,
+    Air,
+    Foot,
 }
 
 #[allow(dead_code)]
@@ -19,7 +23,11 @@ impl TransitFlags {
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeType {
-    Junction, Station, Harbor, Airport, Transfer,
+    Junction,
+    Station,
+    Harbor,
+    Airport,
+    Transfer,
     /// Merge or diverge point: one mainline pair (roughly anti-parallel) plus
     /// one or more ramp edges. The mainline is not clipped here; only ramp
     /// edges are clipped and rendered with a taper strip.

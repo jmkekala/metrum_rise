@@ -1,7 +1,7 @@
 //! Global map configuration and grid dimension calculations.
 
 /// Configuration for the simulation's spatial dimensions and grid resolutions.
-/// 
+///
 /// This struct replaces hardcoded constants from `config.rs` with runtime values,
 /// allowing for different map sizes (e.g. standard 10km vs huge 20km).
 #[derive(Clone, Copy, Debug)]
@@ -64,7 +64,7 @@ impl Default for MapConfig {
         Self {
             width_m: 20000.0,
             height_m: 20000.0,
-            env_cell_m: 40.0, 
+            env_cell_m: 40.0,
             zone_cell_m: 10.0,
         }
     }

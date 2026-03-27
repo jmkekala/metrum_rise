@@ -1,25 +1,25 @@
 //! Main GDExtension node for the Metrum Rise simulation.
-//! 
-//! This node acts as the central hub for all simulation systems, bridging 
+//!
+//! This node acts as the central hub for all simulation systems, bridging
 //! the Rust simulation backend with the Godot engine frontend.
 
+use godot::classes::{INode3D, MultiMesh, Node3D};
 use godot::prelude::*;
-use godot::classes::{Node3D, INode3D, MultiMesh};
 use std::collections::VecDeque;
 
-use crate::simulation::terrain::TerrainSystem;
-use crate::simulation::water::WaterSystem;
-use crate::simulation::network::TransitNetwork;
-use crate::simulation::grid::zoning::{ZoningSystem};
-use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::noise::NoiseSystem;
-use crate::simulation::grid::desirability::DesirabilitySystem;
+use crate::config;
+use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
-use crate::simulation::economy::demand::DemandSystem;
-use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::config;
+use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::grid::desirability::DesirabilitySystem;
+use crate::simulation::grid::noise::NoiseSystem;
+use crate::simulation::grid::pollution::PollutionSystem;
+use crate::simulation::grid::zoning::ZoningSystem;
+use crate::simulation::network::TransitNetwork;
+use crate::simulation::terrain::TerrainSystem;
+use crate::simulation::water::WaterSystem;
 
 // Removed sim mod; now in nodes/mod.rs
 
@@ -65,27 +65,38 @@ impl SimulationNode {
     /// Executes a single simulation tick.
     pub fn simulate_tick(&mut self) {
         godot_print!("Tick! Day {}", self.time.current_day);
-        
+
         // 1. Environmental Spread
         let tick_start = std::time::Instant::now();
-        
+
         // ECONOMY: Demand update
         self.demand.tick();
-        
+
         // ZONING: Growth & Immigration
-        self.allocator.tick(&mut self.demand, &mut self.zoning, &self.desirability, &self.noise, &mut self.agents, &mut self.transit_network, &mut self.region_graph, &self.config);
-        
+        self.allocator.tick(
+            &mut self.demand,
+            &mut self.zoning,
+            &self.desirability,
+            &self.noise,
+            &mut self.agents,
+            &mut self.transit_network,
+            &mut self.region_graph,
+            &self.config,
+        );
+
         // POLLUTION & NOISE: Dissipation
         self.pollution.tick(&self.allocator, &self.config);
-        self.noise.tick(&self.allocator, &self.region_graph, &self.config);
-        self.desirability.tick(&self.zoning, &self.pollution, &self.noise);
+        self.noise
+            .tick(&self.allocator, &self.region_graph, &self.config);
+        self.desirability
+            .tick(&self.zoning, &self.pollution, &self.noise);
 
         // AGENTS: Daily update (happiness, money, pollution)
         self.agents.daily_update(&self.pollution, &self.config);
 
         self.agents.pathfind_count = 0;
         self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
-        
+
         if self.benchmark_mode {
             self.log_benchmark_to_csv();
         }
@@ -93,12 +104,16 @@ impl SimulationNode {
 
     /// Recalculates zoning for a local area around an edge.
     pub fn recalculate_zoning_local(&mut self, edge_idx: usize) {
-        if edge_idx >= self.region_graph.edges.len() { return; }
-        
+        if edge_idx >= self.region_graph.edges.len() {
+            return;
+        }
+
         // Use the batched invalidation and parallelized flush
         self.transit_network.zoning_dirty_edges.insert(edge_idx);
-        self.transit_network.invalidate_zoning_near_edge(edge_idx, &self.region_graph);
-        self.transit_network.flush_zoning_updates(&mut self.zoning, &self.region_graph);
+        self.transit_network
+            .invalidate_zoning_near_edge(edge_idx, &self.region_graph);
+        self.transit_network
+            .flush_zoning_updates(&mut self.zoning, &self.region_graph);
     }
 
     /// Returns the dimensions of the heightmap.
@@ -109,26 +124,37 @@ impl SimulationNode {
     /// Performs a full edge compaction, removing deleted edges and remapping all internal indices.
     pub fn perform_edge_compaction_internal(&mut self) {
         let deleted_count = self.region_graph.edges.iter().filter(|e| e.deleted).count();
-        if deleted_count == 0 { return; }
-        
-        godot_print!("SimulationNode: Compacting road network (removing {} deleted edges)...", deleted_count);
-        
+        if deleted_count == 0 {
+            return;
+        }
+
+        godot_print!(
+            "SimulationNode: Compacting road network (removing {} deleted edges)...",
+            deleted_count
+        );
+
         let mapping = self.region_graph.compact_edges();
-        if mapping.is_empty() { return; }
-        
+        if mapping.is_empty() {
+            return;
+        }
+
         // 1. Update Agents
         self.agents.update_edge_indices(&mapping);
-        
+
         // 2. Update Zoning
         self.zoning.update_edge_indices(&mapping);
 
         // 3. Update Buildings
         self.allocator.update_edge_indices(&mapping);
-        
+
         // 4. Rebuild CCH Graph (as its internal cached indices are now invalid)
-        self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
-        
-        godot_print!("SimulationNode: Compaction complete. Edge count: {}", self.region_graph.edges.len());
+        self.transit_network.cch_graph =
+            crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+
+        godot_print!(
+            "SimulationNode: Compaction complete. Edge count: {}",
+            self.region_graph.edges.len()
+        );
     }
 }
 
@@ -137,19 +163,43 @@ impl SimulationNode {
     /// Returns the pollution image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_pollution_image_data(&self) -> PackedByteArray {
-        Self::grid_to_image_data_internal(&self.pollution.grid, self.heightmap.width, self.heightmap.height, 255, 50, 50, 100.0)
+        Self::grid_to_image_data_internal(
+            &self.pollution.grid,
+            self.heightmap.width,
+            self.heightmap.height,
+            255,
+            50,
+            50,
+            100.0,
+        )
     }
 
     /// Returns the noise image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_noise_image_data(&self) -> PackedByteArray {
-        Self::grid_to_image_data_internal(&self.noise.grid, self.heightmap.width, self.heightmap.height, 200, 200, 200, 100.0)
+        Self::grid_to_image_data_internal(
+            &self.noise.grid,
+            self.heightmap.width,
+            self.heightmap.height,
+            200,
+            200,
+            200,
+            100.0,
+        )
     }
 
     /// Returns the desirability image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_desirability_image_data(&self) -> PackedByteArray {
-        Self::grid_to_image_data_internal(&self.desirability.grid, self.heightmap.width, self.heightmap.height, 50, 255, 50, 100.0)
+        Self::grid_to_image_data_internal(
+            &self.desirability.grid,
+            self.heightmap.width,
+            self.heightmap.height,
+            50,
+            255,
+            50,
+            100.0,
+        )
     }
 
     /// Undoes the last action. Returns true if successful.
@@ -178,19 +228,27 @@ impl SimulationNode {
 
     /// Returns whether the terrain mesh needs rebuilding.
     #[func]
-    pub fn is_terrain_dirty(&self) -> bool { self.terrain_dirty }
-    
+    pub fn is_terrain_dirty(&self) -> bool {
+        self.terrain_dirty
+    }
+
     /// Returns whether the water mesh needs rebuilding.
     #[func]
-    pub fn is_water_dirty(&self) -> bool { self.water_dirty }
+    pub fn is_water_dirty(&self) -> bool {
+        self.water_dirty
+    }
 
     /// Clears the terrain dirty flag.
     #[func]
-    pub fn clear_terrain_dirty(&mut self) { self.terrain_dirty = false; }
-    
+    pub fn clear_terrain_dirty(&mut self) {
+        self.terrain_dirty = false;
+    }
+
     /// Clears the water dirty flag.
     #[func]
-    pub fn clear_water_dirty(&mut self) { self.water_dirty = false; }
+    pub fn clear_water_dirty(&mut self) {
+        self.water_dirty = false;
+    }
 
     /// Returns the raw heightmap data.
     #[func]
@@ -224,7 +282,15 @@ impl SimulationNode {
 
     /// Sets a range of zoning cells with a specific depth.
     #[func]
-    pub fn set_zoning_range(&mut self, edge_idx: i32, side: i8, start_t: f32, end_t: f32, depth: i32, zone_type_int: u8) {
+    pub fn set_zoning_range(
+        &mut self,
+        edge_idx: i32,
+        side: i8,
+        start_t: f32,
+        end_t: f32,
+        depth: i32,
+        zone_type_int: u8,
+    ) {
         self.set_zoning_range_internal(edge_idx, side, start_t, end_t, depth, zone_type_int);
     }
 
@@ -241,8 +307,14 @@ impl SimulationNode {
         if let Some(grid) = self.zoning.edge_grids.get(&(edge_idx as usize)) {
             dict.set("cells_long", grid.cells_long as i32);
             dict.set("cell_size", self.config.zone_cell_m);
-            dict.set("left_side", PackedByteArray::from_iter(grid.left_side.iter().map(|&z| z as u8)));
-            dict.set("right_side", PackedByteArray::from_iter(grid.right_side.iter().map(|&z| z as u8)));
+            dict.set(
+                "left_side",
+                PackedByteArray::from_iter(grid.left_side.iter().map(|&z| z as u8)),
+            );
+            dict.set(
+                "right_side",
+                PackedByteArray::from_iter(grid.right_side.iter().map(|&z| z as u8)),
+            );
         }
         dict
     }
@@ -256,7 +328,14 @@ impl SimulationNode {
                 return true;
             }
         }
-        self.zoning.is_cell_obstructed(edge_idx as usize, side as i8, x as usize, y as usize, graph, None)
+        self.zoning.is_cell_obstructed(
+            edge_idx as usize,
+            side as i8,
+            x as usize,
+            y as usize,
+            graph,
+            None,
+        )
     }
 
     /// Enables or disables zoning for a specific side of a road edge.
@@ -268,19 +347,50 @@ impl SimulationNode {
     /// Returns the world-space center position of a specific zoning cell.
     #[func]
     pub fn get_zoning_cell_center(&self, edge_idx: i32, side: i8, x: i32, y: i32) -> Vector2 {
-        let v2 = self.zoning.get_cell_center(edge_idx as usize, side, x as usize, y as usize, &self.region_graph);
+        let v2 = self.zoning.get_cell_center(
+            edge_idx as usize,
+            side,
+            x as usize,
+            y as usize,
+            &self.region_graph,
+        );
         Vector2::new(v2.x, v2.y)
     }
 
     /// Updates the MultiMesh visualizers for the zoning tool.
     #[func]
-    pub fn update_zoning_visuals(&self, grid_mm: Gd<MultiMesh>, paint_mm: Gd<MultiMesh>, hovered_edges: VariantArray, is_painting: bool, side: i32, t1: f32, t2: f32, depth: i32, zone_type: u8) {
-        self.update_zoning_visuals_internal(grid_mm, paint_mm, hovered_edges, is_painting, side, t1, t2, depth, zone_type);
+    pub fn update_zoning_visuals(
+        &self,
+        grid_mm: Gd<MultiMesh>,
+        paint_mm: Gd<MultiMesh>,
+        hovered_edges: VariantArray,
+        is_painting: bool,
+        side: i32,
+        t1: f32,
+        t2: f32,
+        depth: i32,
+        zone_type: u8,
+    ) {
+        self.update_zoning_visuals_internal(
+            grid_mm,
+            paint_mm,
+            hovered_edges,
+            is_painting,
+            side,
+            t1,
+            t2,
+            depth,
+            zone_type,
+        );
     }
 
     /// Returns obstacle polygons for zoning tool overlap checks.
     #[func]
-    pub fn get_obstacle_polygons_float_array(&self, ignore_poly_id: i32, ignore_edge_idx: i32) -> PackedFloat32Array {
+    pub fn get_obstacle_polygons_float_array(
+        &self,
+        ignore_poly_id: i32,
+        ignore_edge_idx: i32,
+    ) -> PackedFloat32Array {
         self.get_obstacle_polygons_internal(ignore_poly_id, ignore_edge_idx)
     }
 
@@ -292,7 +402,14 @@ impl SimulationNode {
 
     /// Returns the raycast depth against the road network.
     #[func]
-    pub fn get_max_polygon_depth(&self, origin_x: f32, origin_z: f32, dir_x: f32, dir_z: f32, max_search: f32) -> f32 {
+    pub fn get_max_polygon_depth(
+        &self,
+        origin_x: f32,
+        origin_z: f32,
+        dir_x: f32,
+        dir_z: f32,
+        max_search: f32,
+    ) -> f32 {
         self.get_max_polygon_depth_internal(origin_x, origin_z, dir_x, dir_z, max_search)
     }
 
@@ -363,19 +480,33 @@ impl SimulationNode {
     /// Returns the width of a specific road edge.
     #[func]
     pub fn get_edge_width(&self, edge_idx: i32) -> f32 {
-        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() { return 6.0; }
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() {
+            return 6.0;
+        }
         self.region_graph.edges[edge_idx as usize].width
     }
 
     /// Returns a curved frontage between two points on an edge.
     #[func]
-    pub fn get_curved_frontage(&self, edge_idx: i32, start_p: Vector2, end_p: Vector2) -> PackedVector2Array {
+    pub fn get_curved_frontage(
+        &self,
+        edge_idx: i32,
+        start_p: Vector2,
+        end_p: Vector2,
+    ) -> PackedVector2Array {
         self.get_curved_frontage_internal(edge_idx, start_p, end_p)
     }
 
     /// Adds a new road segment to the network.
     #[func]
-    pub fn add_road(&mut self, points: PackedVector3Array, fwd_lanes: i32, bkw_lanes: i32, zoning_left: bool, zoning_right: bool) {
+    pub fn add_road(
+        &mut self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+        zoning_left: bool,
+        zoning_right: bool,
+    ) {
         self.add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
     }
 
@@ -408,11 +539,13 @@ impl SimulationNode {
 
     /// Placeholder for cul-de-sac tools.
     #[func]
-    pub fn set_node_cul_de_sac(&mut self, _node_id: i32, _enabled: bool, _radius: f32) { }
+    pub fn set_node_cul_de_sac(&mut self, _node_id: i32, _enabled: bool, _radius: f32) {}
 
     /// Placeholder for cul-de-sac tools.
     #[func]
-    pub fn has_cul_de_sac(&self, _node_id: i32) -> bool { false }
+    pub fn has_cul_de_sac(&self, _node_id: i32) -> bool {
+        false
+    }
 
     /// Returns the number of road connections for a node.
     #[func]
@@ -434,7 +567,14 @@ impl SimulationNode {
 
     /// Configures a lane connection rule at a junction.
     #[func]
-    pub fn set_lane_connection(&mut self, node_id: u32, from_edge: i32, from_lane: i32, to_edge: i32, to_lane: i32) {
+    pub fn set_lane_connection(
+        &mut self,
+        node_id: u32,
+        from_edge: i32,
+        from_lane: i32,
+        to_edge: i32,
+        to_lane: i32,
+    ) {
         self.set_lane_connection_internal(node_id, from_edge, from_lane, to_edge, to_lane);
     }
 
@@ -520,7 +660,15 @@ impl SimulationNode {
     }
 
     /// Helper to convert a DataGrid<f32> to an upsampled PackedByteArray for Godot ImageTexture.
-    pub fn grid_to_image_data_internal(grid: &crate::simulation::grid::data_grid::DataGrid<f32>, target_w: usize, target_h: usize, r: u8, g: u8, b: u8, max_val: f32) -> PackedByteArray {
+    pub fn grid_to_image_data_internal(
+        grid: &crate::simulation::grid::data_grid::DataGrid<f32>,
+        target_w: usize,
+        target_h: usize,
+        r: u8,
+        g: u8,
+        b: u8,
+        max_val: f32,
+    ) -> PackedByteArray {
         let mut pixels = Vec::with_capacity(target_w * target_h * 4);
         let scale_x = grid.width as f32 / target_w as f32;
         let scale_y = grid.height as f32 / target_h as f32;
@@ -544,7 +692,7 @@ impl SimulationNode {
 impl INode3D for SimulationNode {
     fn init(base: Base<Node3D>) -> Self {
         godot_print!("Simulation Engine Initialized (Modular)");
-        
+
         let args = godot::classes::Os::singleton().get_cmdline_user_args();
         let mut is_huge = false;
         for arg in args.as_slice() {
@@ -562,11 +710,11 @@ impl INode3D for SimulationNode {
             config.width_m = 10000.0;
             config.height_m = 10000.0;
         }
-        
+
         let w = config.zone_grid_width();
         let h = config.zone_grid_height();
 
-        let mut sim = Self { 
+        let mut sim = Self {
             base,
             time: TimeSystem::new(),
             time_passed: 0.0,
@@ -616,15 +764,20 @@ impl INode3D for SimulationNode {
 
     fn process(&mut self, delta: f64) {
         self.time_passed += delta;
-        
+
         if self.time.process_delta(delta) {
             self.simulate_tick();
         }
-        
+
         if self.time.speed_multiplier > 0.0 {
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
-            self.agents.tick(&mut self.allocator, &self.transit_network.cch_graph, &mut self.region_graph, dt);
-            
+            self.agents.tick(
+                &mut self.allocator,
+                &self.transit_network.cch_graph,
+                &mut self.region_graph,
+                dt,
+            );
+
             let _sub_steps = 2;
             // ... water process logic ...
         }

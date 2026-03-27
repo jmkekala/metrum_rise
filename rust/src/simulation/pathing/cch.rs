@@ -3,7 +3,7 @@
 //! Provides fast queries and O(E) metric customization for dynamic traffic.
 //! Replaces HPA* as the primary routing engine for agents.
 
-use crate::simulation::network::graph::{RegionGraph, Edge};
+use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{TransitFlags, TransitType};
 macro_rules! godot_print {
     ($($arg:tt)*) => {
@@ -13,8 +13,8 @@ macro_rules! godot_print {
         println!($($arg)*);
     }
 }
-use std::collections::{HashMap, BinaryHeap, HashSet};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// A shortcut edge in the contracted graph.
 #[derive(Clone, Debug)]
@@ -74,12 +74,14 @@ impl CchGraph {
     /// Builds a new CCH from the provided road network.
     pub fn build(graph: &RegionGraph) -> Self {
         let n = graph.nodes.len();
-        if n == 0 { return Self::new(0); }
-        
+        if n == 0 {
+            return Self::new(0);
+        }
+
         // Ensure graph is compacted and adjacency is fresh as per 31c requirements.
-        // Note: compact_edges() should be called by the caller (TransitNetwork) 
+        // Note: compact_edges() should be called by the caller (TransitNetwork)
         // prior to this call to avoid mutating the graph here.
-        
+
         let mut cch = Self::new(n);
         cch.compute_node_order(graph);
         cch.contract(graph);
@@ -92,7 +94,9 @@ impl CchGraph {
         let n = graph.nodes.len();
         let mut adj: Vec<HashSet<u32>> = vec![HashSet::new(); n];
         for edge in &graph.edges {
-            if edge.deleted { continue; }
+            if edge.deleted {
+                continue;
+            }
             adj[edge.start_node as usize].insert(edge.end_node);
             adj[edge.end_node as usize].insert(edge.start_node);
         }
@@ -102,7 +106,10 @@ impl CchGraph {
         for i in 0..n {
             let p = self.calculate_importance(i as u32, &adj);
             priorities[i] = p;
-            heap.push(NodePriority { node: i as u32, importance: p });
+            heap.push(NodePriority {
+                node: i as u32,
+                importance: p,
+            });
         }
 
         let mut rank = 0;
@@ -110,11 +117,16 @@ impl CchGraph {
 
         while let Some(NodePriority { node, importance }) = heap.pop() {
             let u = node as usize;
-            if contracted[u] { continue; }
+            if contracted[u] {
+                continue;
+            }
             if importance > priorities[u] {
                 let real_p = self.calculate_importance(node, &adj);
                 priorities[u] = real_p;
-                heap.push(NodePriority { node, importance: real_p });
+                heap.push(NodePriority {
+                    node,
+                    importance: real_p,
+                });
                 continue;
             }
 
@@ -125,18 +137,25 @@ impl CchGraph {
 
             let neighbors: Vec<u32> = adj[u].iter().cloned().collect();
             for &v in &neighbors {
-                if contracted[v as usize] { continue; }
-                
+                if contracted[v as usize] {
+                    continue;
+                }
+
                 for &w in &neighbors {
-                    if v == w || contracted[w as usize] { continue; }
+                    if v == w || contracted[w as usize] {
+                        continue;
+                    }
                     adj[v as usize].insert(w);
                     adj[w as usize].insert(v);
                 }
-                
+
                 adj[v as usize].remove(&node);
                 let real_p = self.calculate_importance(v, &adj);
                 priorities[v as usize] = real_p;
-                heap.push(NodePriority { node: v, importance: real_p });
+                heap.push(NodePriority {
+                    node: v,
+                    importance: real_p,
+                });
             }
         }
     }
@@ -160,17 +179,25 @@ impl CchGraph {
 
     fn contract(&mut self, graph: &RegionGraph) {
         let n = graph.nodes.len();
-        
+
         // 1. Initial shortcuts from base edges
         for (edge_idx, edge) in graph.edges.iter().enumerate() {
-            if edge.deleted { continue; }
-            
+            if edge.deleted {
+                continue;
+            }
+
             // Forward edge (start -> end)
-            if edge.fwd_lanes > 0 || (edge.primary_type == TransitType::Foot && (edge.allowed_types & TransitFlags::FOOT != 0)) {
+            if edge.fwd_lanes > 0
+                || (edge.primary_type == TransitType::Foot
+                    && (edge.allowed_types & TransitFlags::FOOT != 0))
+            {
                 self.add_direct_shortcut(edge.start_node, edge.end_node, edge_idx, edge, true);
             }
             // Backward edge (end -> start)
-            if edge.bkw_lanes > 0 || (edge.primary_type == TransitType::Foot && (edge.allowed_types & TransitFlags::FOOT != 0)) {
+            if edge.bkw_lanes > 0
+                || (edge.primary_type == TransitType::Foot
+                    && (edge.allowed_types & TransitFlags::FOOT != 0))
+            {
                 self.add_direct_shortcut(edge.end_node, edge.start_node, edge_idx, edge, false);
             }
         }
@@ -178,34 +205,52 @@ impl CchGraph {
         // 2. Triangle insertion following node rank
         for rank in 0..n {
             let u = self.node_order[rank];
-            
+
             // Find neighbors in hierarchy (rank > u)
             // Incoming to u: v -> u where rank(v) > rank(u). But also we need v -> u where rank(v) is anything
             // for the contraction phase. Wait, CCH contraction: for every pair of neighbors.
-            
+
             // Collect all current shortcuts connected to u
             let mut neighbors_in = Vec::new(); // Shortcuts S -> u
             let mut neighbors_out = Vec::new(); // Shortcuts u -> T
-            
+
             for (idx, s) in self.shortcuts.iter().enumerate() {
-                if s.target_node == u { neighbors_in.push(idx); }
-                if s.start_node == u { neighbors_out.push(idx); }
+                if s.target_node == u {
+                    neighbors_in.push(idx);
+                }
+                if s.start_node == u {
+                    neighbors_out.push(idx);
+                }
             }
 
             for &idx_in in &neighbors_in {
                 let (s_in_start, s_in_last, s_in_inner, s_in_first, s_in_mask) = {
                     let s = &self.shortcuts[idx_in];
-                    (s.start_node, s.last_edge, s.inner_edges.clone(), s.first_edge, s.allowed_types)
+                    (
+                        s.start_node,
+                        s.last_edge,
+                        s.inner_edges.clone(),
+                        s.first_edge,
+                        s.allowed_types,
+                    )
                 };
-                
+
                 for &idx_out in &neighbors_out {
                     let (s_out_target, s_out_first, s_out_inner, s_out_last, s_out_mask) = {
                         let s = &self.shortcuts[idx_out];
-                        (s.target_node, s.first_edge, s.inner_edges.clone(), s.last_edge, s.allowed_types)
+                        (
+                            s.target_node,
+                            s.first_edge,
+                            s.inner_edges.clone(),
+                            s.last_edge,
+                            s.allowed_types,
+                        )
                     };
-                    
-                    if s_in_start == s_out_target { continue; }
-                    
+
+                    if s_in_start == s_out_target {
+                        continue;
+                    }
+
                     // Check turn restrictions at u
                     if !graph.nodes[u as usize].lane_connections.is_empty() {
                         let conn = &graph.nodes[u as usize].lane_connections;
@@ -218,20 +263,22 @@ impl CchGraph {
                                 }
                             }
                         }
-                        if !allowed { continue; }
+                        if !allowed {
+                            continue;
+                        }
                     }
 
                     // Form shortcut v -> w
                     let mut inner = s_in_inner.clone();
                     inner.extend(&s_out_inner);
-                    
+
                     self.add_shortcut(
-                        s_in_start, 
-                        s_out_target, 
-                        inner, 
-                        s_in_first, 
-                        s_out_last, 
-                        s_in_mask & s_out_mask
+                        s_in_start,
+                        s_out_target,
+                        inner,
+                        s_in_first,
+                        s_out_last,
+                        s_in_mask & s_out_mask,
                     );
                 }
             }
@@ -254,7 +301,14 @@ impl CchGraph {
         }
     }
 
-    fn add_direct_shortcut(&mut self, start: u32, end: u32, edge_idx: usize, edge: &crate::simulation::network::graph::Edge, _is_fwd: bool) {
+    fn add_direct_shortcut(
+        &mut self,
+        start: u32,
+        end: u32,
+        edge_idx: usize,
+        edge: &crate::simulation::network::graph::Edge,
+        _is_fwd: bool,
+    ) {
         self.shortcuts.push(CchShortcut {
             start_node: start,
             target_node: end,
@@ -267,7 +321,15 @@ impl CchGraph {
         });
     }
 
-    fn add_shortcut(&mut self, start: u32, end: u32, inner: Vec<usize>, first: usize, last: usize, mask: u8) {
+    fn add_shortcut(
+        &mut self,
+        start: u32,
+        end: u32,
+        inner: Vec<usize>,
+        first: usize,
+        last: usize,
+        mask: u8,
+    ) {
         self.shortcuts.push(CchShortcut {
             start_node: start,
             target_node: end,
@@ -298,7 +360,7 @@ impl CchGraph {
         // 2. Prune fwd_up and bwd_up following elimination tree order
         for rank in 0..graph.nodes.len() {
             let u = self.node_order[rank] as usize;
-            
+
             // Deduplicate fwd_up[u]: best shortcut per (target, first_edge, last_edge)
             let mut best_fwd: HashMap<(u32, usize, usize), (usize, f32)> = HashMap::new();
             for &idx in &self.fwd_up[u] {
@@ -337,33 +399,61 @@ impl CchGraph {
     }
 
     /// Finds a path from `start` to `end` using bidirectional upward search.
-    pub fn find_path(&self, start: u32, end: u32, start_edge: usize, graph: &RegionGraph, allowed_mask: u8) -> Option<(f32, f32, Vec<u32>)> {
-        if start == end { return Some((0.0, 0.0, vec![start])); }
-        
+    pub fn find_path(
+        &self,
+        start: u32,
+        end: u32,
+        start_edge: usize,
+        graph: &RegionGraph,
+        allowed_mask: u8,
+    ) -> Option<(f32, f32, Vec<u32>)> {
+        if start == end {
+            return Some((0.0, 0.0, vec![start]));
+        }
+
         let mut fwd_heap = BinaryHeap::new();
         let mut bwd_heap = BinaryHeap::new();
-        
-        let mut fwd_data: HashMap<(u32, usize), (f32, f32, Option<usize>, (u32, usize))> = HashMap::new();
-        let mut bwd_data: HashMap<(u32, usize), (f32, f32, Option<usize>, (u32, usize))> = HashMap::new();
 
-        fwd_data.insert((start, start_edge), (0.0, 0.0, None, (u32::MAX, usize::MAX)));
-        fwd_heap.push(CchState { priority: 0.0, cost: 0.0, node: start, incoming_edge: start_edge });
+        let mut fwd_data: HashMap<(u32, usize), (f32, f32, Option<usize>, (u32, usize))> =
+            HashMap::new();
+        let mut bwd_data: HashMap<(u32, usize), (f32, f32, Option<usize>, (u32, usize))> =
+            HashMap::new();
+
+        fwd_data.insert(
+            (start, start_edge),
+            (0.0, 0.0, None, (u32::MAX, usize::MAX)),
+        );
+        fwd_heap.push(CchState {
+            priority: 0.0,
+            cost: 0.0,
+            node: start,
+            incoming_edge: start_edge,
+        });
 
         bwd_data.insert((end, usize::MAX), (0.0, 0.0, None, (u32::MAX, usize::MAX)));
-        bwd_heap.push(CchState { priority: 0.0, cost: 0.0, node: end, incoming_edge: usize::MAX });
+        bwd_heap.push(CchState {
+            priority: 0.0,
+            cost: 0.0,
+            node: end,
+            incoming_edge: usize::MAX,
+        });
         let mut min_total_cost = f32::MAX;
         let mut meeting_node = u32::MAX;
         let mut meeting_f_edge = usize::MAX;
         let mut meeting_b_edge = usize::MAX;
-        
+
         while !fwd_heap.is_empty() || !bwd_heap.is_empty() {
             // Forward expansion
             if let Some(state) = fwd_heap.pop() {
-                if state.cost >= min_total_cost { break; }
+                if state.cost >= min_total_cost {
+                    break;
+                }
                 let (cost, node, l_edge) = (state.cost, state.node, state.incoming_edge);
                 if let Some(&(best_cost, _, _, _)) = fwd_data.get(&(node, l_edge)) {
-                    if cost > best_cost { continue; }
-                    
+                    if cost > best_cost {
+                        continue;
+                    }
+
                     for (&(b_node, b_out_edge), &(b_cost, _, _, _)) in &bwd_data {
                         if b_node == node && self.is_turn_allowed(node, l_edge, b_out_edge, graph) {
                             if cost + b_cost < min_total_cost {
@@ -378,31 +468,48 @@ impl CchGraph {
                     // Upward expansion
                     for &s_idx in &self.fwd_up[node as usize] {
                         let shortcut = &self.shortcuts[s_idx];
-                        if (shortcut.allowed_types & allowed_mask) == 0 { continue; }
-                        
+                        if (shortcut.allowed_types & allowed_mask) == 0 {
+                            continue;
+                        }
+
                         if self.is_turn_allowed(node, l_edge, shortcut.first_edge, graph) {
                             let next_cost = cost + shortcut.cost;
                             let state_key = (shortcut.target_node, shortcut.last_edge);
-                            if next_cost < fwd_data.get(&state_key).map(|d| d.0).unwrap_or(f32::MAX) {
+                            if next_cost < fwd_data.get(&state_key).map(|d| d.0).unwrap_or(f32::MAX)
+                            {
                                 let dist = fwd_data.get(&(node, l_edge)).unwrap().1 + shortcut.dist;
-                                fwd_data.insert(state_key, (next_cost, dist, Some(s_idx), (node, l_edge)));
-                                fwd_heap.push(CchState { priority: next_cost, cost: next_cost, node: shortcut.target_node, incoming_edge: shortcut.last_edge });
+                                fwd_data.insert(
+                                    state_key,
+                                    (next_cost, dist, Some(s_idx), (node, l_edge)),
+                                );
+                                fwd_heap.push(CchState {
+                                    priority: next_cost,
+                                    cost: next_cost,
+                                    node: shortcut.target_node,
+                                    incoming_edge: shortcut.last_edge,
+                                });
                             }
                         }
                     }
                 }
             }
-            
+
             // Backward expansion
             if let Some(state) = bwd_heap.pop() {
-                if state.cost >= min_total_cost { break; }
+                if state.cost >= min_total_cost {
+                    break;
+                }
                 let (cost, node, outgoing_edge) = (state.cost, state.node, state.incoming_edge);
                 if let Some(&(best_cost, _, _, _)) = bwd_data.get(&(node, outgoing_edge)) {
-                    if cost > best_cost { continue; }
-                    
+                    if cost > best_cost {
+                        continue;
+                    }
+
                     // Check for meeting point against fwd_data
                     for (&(f_node, f_in_edge), &(f_cost, _, _, _)) in &fwd_data {
-                        if f_node == node && self.is_turn_allowed(node, f_in_edge, outgoing_edge, graph) {
+                        if f_node == node
+                            && self.is_turn_allowed(node, f_in_edge, outgoing_edge, graph)
+                        {
                             if cost + f_cost < min_total_cost {
                                 min_total_cost = cost + f_cost;
                                 meeting_node = node;
@@ -415,26 +522,40 @@ impl CchGraph {
                     // Upward expansion (backwards)
                     for &s_idx in &self.bwd_up[node as usize] {
                         let shortcut = &self.shortcuts[s_idx];
-                        if (shortcut.allowed_types & allowed_mask) == 0 { continue; }
-                        
+                        if (shortcut.allowed_types & allowed_mask) == 0 {
+                            continue;
+                        }
+
                         if self.is_turn_allowed(node, shortcut.last_edge, outgoing_edge, graph) {
                             let next_cost = cost + shortcut.cost;
                             let state_key = (shortcut.start_node, shortcut.first_edge);
-                            if next_cost < bwd_data.get(&state_key).map(|d| d.0).unwrap_or(f32::MAX) {
-                                let dist = bwd_data.get(&(node, outgoing_edge)).unwrap().1 + shortcut.dist;
-                                bwd_data.insert(state_key, (next_cost, dist, Some(s_idx), (node, outgoing_edge)));
-                                bwd_heap.push(CchState { priority: next_cost, cost: next_cost, node: shortcut.start_node, incoming_edge: shortcut.first_edge });
+                            if next_cost < bwd_data.get(&state_key).map(|d| d.0).unwrap_or(f32::MAX)
+                            {
+                                let dist =
+                                    bwd_data.get(&(node, outgoing_edge)).unwrap().1 + shortcut.dist;
+                                bwd_data.insert(
+                                    state_key,
+                                    (next_cost, dist, Some(s_idx), (node, outgoing_edge)),
+                                );
+                                bwd_heap.push(CchState {
+                                    priority: next_cost,
+                                    cost: next_cost,
+                                    node: shortcut.start_node,
+                                    incoming_edge: shortcut.first_edge,
+                                });
                             }
                         }
                     }
                 }
             }
         }
-        
-        if meeting_node == u32::MAX { return None; }
-        
+
+        if meeting_node == u32::MAX {
+            return None;
+        }
+
         let mut full_edges: Vec<usize> = Vec::new();
-        
+
         // Forward part: MEETING -> START (reconstruct backwards)
         let mut curr_key = (meeting_node, meeting_f_edge);
         let mut fwd_indices = Vec::new();
@@ -461,28 +582,44 @@ impl CchGraph {
                 break;
             }
         }
-        
-        if full_edges.is_empty() { return None; }
+
+        if full_edges.is_empty() {
+            return None;
+        }
 
         let mut nodes = vec![start];
         let mut curr_n = start;
         for &e_idx in &full_edges {
             let edge = &graph.edges[e_idx];
-            curr_n = if edge.start_node == curr_n { edge.end_node } else { edge.start_node };
+            curr_n = if edge.start_node == curr_n {
+                edge.end_node
+            } else {
+                edge.start_node
+            };
             nodes.push(curr_n);
         }
-        
+
         let f_dist = fwd_data.get(&(meeting_node, meeting_f_edge)).unwrap().1;
         let b_dist = bwd_data.get(&(meeting_node, meeting_b_edge)).unwrap().1;
 
         Some((min_total_cost, f_dist + b_dist, nodes))
     }
 
-    fn is_turn_allowed(&self, node: u32, in_edge: usize, out_edge: usize, graph: &RegionGraph) -> bool {
-        if in_edge == usize::MAX || out_edge == usize::MAX { return true; }
+    fn is_turn_allowed(
+        &self,
+        node: u32,
+        in_edge: usize,
+        out_edge: usize,
+        graph: &RegionGraph,
+    ) -> bool {
+        if in_edge == usize::MAX || out_edge == usize::MAX {
+            return true;
+        }
         let node_data = &graph.nodes[node as usize];
-        if node_data.lane_connections.is_empty() { return true; }
-        
+        if node_data.lane_connections.is_empty() {
+            return true;
+        }
+
         // Check if any lane from in_edge can turn to any lane in out_edge
         for (&(e_from, _), targets) in &node_data.lane_connections {
             if e_from == in_edge {
@@ -494,7 +631,14 @@ impl CchGraph {
         false
     }
 
-    fn find_first_from_last(&self, u: u32, e_in: usize, v: u32, e_out: usize, graph: &RegionGraph) -> usize {
+    fn find_first_from_last(
+        &self,
+        u: u32,
+        e_in: usize,
+        v: u32,
+        e_out: usize,
+        graph: &RegionGraph,
+    ) -> usize {
         // Find which shortcut starts at u, ends at v, and ends with e_out, and follows e_in
         for &idx in &self.fwd_up[u as usize] {
             let s = &self.shortcuts[idx];
@@ -507,7 +651,14 @@ impl CchGraph {
         e_out // Fallback
     }
 
-    fn find_last_from_first(&self, u: u32, e_in: usize, v: u32, e_out: usize, graph: &RegionGraph) -> usize {
+    fn find_last_from_first(
+        &self,
+        u: u32,
+        e_in: usize,
+        v: u32,
+        e_out: usize,
+        graph: &RegionGraph,
+    ) -> usize {
         for &idx in &self.fwd_up[u as usize] {
             let s = &self.shortcuts[idx];
             if s.target_node == v && s.first_edge == e_in {
@@ -530,7 +681,9 @@ impl Eq for NodePriority {}
 
 impl Ord for NodePriority {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.importance.cmp(&self.importance)
+        other
+            .importance
+            .cmp(&self.importance)
             .then_with(|| other.node.cmp(&self.node))
     }
 }
@@ -553,7 +706,10 @@ impl Eq for CchState {}
 
 impl Ord for CchState {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.priority.partial_cmp(&self.priority).unwrap_or(Ordering::Equal)
+        other
+            .priority
+            .partial_cmp(&self.priority)
+            .unwrap_or(Ordering::Equal)
     }
 }
 
@@ -566,33 +722,85 @@ impl PartialOrd for CchState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::network::graph::{RegionGraph, Edge, Node};
-    use crate::simulation::network::types::{TransitType, NodeType, TransitFlags, EdgeClass};
+    use crate::simulation::network::graph::{Edge, Node, RegionGraph};
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
     use std::collections::HashMap;
 
     fn setup_test_graph() -> RegionGraph {
         let mut graph = RegionGraph::new();
         graph.nodes = vec![
-            Node { pos: Vector3::new(0.0, 0.0, 0.0), node_type: NodeType::Junction, lane_connections: HashMap::new() },
-            Node { pos: Vector3::new(600.0, 0.0, 0.0), node_type: NodeType::Junction, lane_connections: HashMap::new() },
-            Node { pos: Vector3::new(1200.0, 0.0, 0.0), node_type: NodeType::Junction, lane_connections: HashMap::new() },
-            Node { pos: Vector3::new(600.0, 0.0, 600.0), node_type: NodeType::Junction, lane_connections: HashMap::new() },
+            Node {
+                pos: Vector3::new(0.0, 0.0, 0.0),
+                node_type: NodeType::Junction,
+                lane_connections: HashMap::new(),
+            },
+            Node {
+                pos: Vector3::new(600.0, 0.0, 0.0),
+                node_type: NodeType::Junction,
+                lane_connections: HashMap::new(),
+            },
+            Node {
+                pos: Vector3::new(1200.0, 0.0, 0.0),
+                node_type: NodeType::Junction,
+                lane_connections: HashMap::new(),
+            },
+            Node {
+                pos: Vector3::new(600.0, 0.0, 600.0),
+                node_type: NodeType::Junction,
+                lane_connections: HashMap::new(),
+            },
         ];
 
         let edge_defaults = Edge {
-            start_node: 0, end_node: 0, primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
-            width: 10.0, fwd_lanes: 1, bkw_lanes: 1, speed_limit: 20.0, base_cost: 30.0,
-            physical_length: 600.0, current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
-            geometry: Vec::new(), physical_geometry: Vec::new(),
-            zoning_left: false, zoning_right: false, class: EdgeClass::Standard, deleted: false
+            start_node: 0,
+            end_node: 0,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            width: 10.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 20.0,
+            base_cost: 30.0,
+            physical_length: 600.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: Vec::new(),
+            physical_geometry: Vec::new(),
+            zoning_left: false,
+            zoning_right: false,
+            class: EdgeClass::Standard,
+            deleted: false,
         };
 
         graph.edges = vec![
-            Edge { start_node: 0, end_node: 1, physical_length: 600.0, ..edge_defaults.clone() }, // 0
-            Edge { start_node: 1, end_node: 2, physical_length: 600.0, ..edge_defaults.clone() }, // 1
-            Edge { start_node: 0, end_node: 3, physical_length: 600.0, base_cost: 10.0, ..edge_defaults.clone() }, // 2
-            Edge { start_node: 3, end_node: 2, physical_length: 600.0, base_cost: 10.0, ..edge_defaults.clone() }, // 3
+            Edge {
+                start_node: 0,
+                end_node: 1,
+                physical_length: 600.0,
+                ..edge_defaults.clone()
+            }, // 0
+            Edge {
+                start_node: 1,
+                end_node: 2,
+                physical_length: 600.0,
+                ..edge_defaults.clone()
+            }, // 1
+            Edge {
+                start_node: 0,
+                end_node: 3,
+                physical_length: 600.0,
+                base_cost: 10.0,
+                ..edge_defaults.clone()
+            }, // 2
+            Edge {
+                start_node: 3,
+                end_node: 2,
+                physical_length: 600.0,
+                base_cost: 10.0,
+                ..edge_defaults.clone()
+            }, // 3
         ];
 
         graph.rebuild_adjacency_list();

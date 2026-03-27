@@ -46,7 +46,9 @@ impl DataGrid<f32> {
     /// `x` and `y` are in grid coordinates [0, width) and [0, height).
     pub fn sample_bilinear(&self, x: f32, y: f32) -> f32 {
         if self.width < 2 || self.height < 2 {
-            return *self.get(x.round() as usize, y.round() as usize).unwrap_or(&0.0);
+            return *self
+                .get(x.round() as usize, y.round() as usize)
+                .unwrap_or(&0.0);
         }
 
         let x0 = (x as usize).min(self.width - 2);
@@ -77,15 +79,15 @@ mod tests {
     fn test_grid_get_set() {
         let mut grid = DataGrid::new(10, 10, 0);
         assert_eq!(*grid.get(5, 5).unwrap(), 0);
-        
+
         grid.set(5, 5, 42);
         assert_eq!(*grid.get(5, 5).unwrap(), 42);
-        
+
         // Out of bounds
         assert!(grid.get(10, 10).is_none());
         assert!(grid.get(5, 10).is_none());
         assert!(grid.get(10, 5).is_none());
-        
+
         // set should silenty ignore if out of bounds (current behavior)
         grid.set(10, 10, 100);
         assert!(grid.get(10, 10).is_none());

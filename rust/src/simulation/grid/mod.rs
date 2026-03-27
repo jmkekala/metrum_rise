@@ -7,7 +7,7 @@
 //! Desirability reads from pollution and noise, so it must run last.
 
 pub mod data_grid;
-pub mod zoning;
-pub mod pollution;
-pub mod noise;
 pub mod desirability;
+pub mod noise;
+pub mod pollution;
+pub mod zoning;

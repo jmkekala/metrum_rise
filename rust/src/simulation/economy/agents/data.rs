@@ -6,11 +6,11 @@
 //! `Vec<T>` indexed by agent ID. This enables cache-friendly bulk iteration and is a
 //! prerequisite for future `rayon::par_iter_mut` parallelisation.
 
+use super::{MODE_CAR, TRANSIT_IDLE, TRANSIT_IMMIGRATING};
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::grid::pollution::PollutionSystem;
-use super::{TRANSIT_IMMIGRATING, TRANSIT_IDLE, MODE_CAR};
 // No Godot imports needed here
 use rand::Rng;
 use std::collections::HashMap;
@@ -25,14 +25,12 @@ pub struct AgentSystem {
     pub count: usize,
 
     // Core Identity
-
     /// Index into `BuildingAllocator::buildings` for the agent's home. `usize::MAX` = homeless (immigrating).
     pub home_building: Vec<usize>,
     /// Index into `BuildingAllocator::buildings` for the agent's workplace. `usize::MAX` = unemployed.
     pub work_building: Vec<usize>,
 
     // Physics / Rendering
-
     /// World-space X position (metres).
     pub pos_x: Vec<f32>,
     /// World-space Z position (metres, Godot forward axis).
@@ -54,7 +52,6 @@ pub struct AgentSystem {
     pub sim_time: f32,
 
     // Routing Geometry
-
     /// Building the agent is currently inside. `usize::MAX` = on the road.
     pub current_building: Vec<usize>,
     /// Building the agent is travelling toward. `usize::MAX` = no active destination.
@@ -65,7 +62,6 @@ pub struct AgentSystem {
     pub target_node: Vec<u32>,
 
     // Spline Geometry
-
     /// Index into `RegionGraph::edges` for the edge the agent is currently traversing.
     pub current_edge: Vec<usize>,
     /// Progress along `current_edge` as a signed segment index. Positive = forward, negative = reverse.
@@ -76,7 +72,6 @@ pub struct AgentSystem {
     pub transit_mode: Vec<u8>,
 
     // Traffic Lane Manager — Bezier Intersection Pathing
-
     /// Bezier control point 0 (start), world-space X/Z.
     pub bezier_p0_x: Vec<f32>,
     /// Bezier control point 0, world-space Z.
@@ -150,18 +145,27 @@ impl AgentSystem {
     }
 
     /// Spawns a single agent arriving at the city as an immigrant.
-    pub fn spawn_agent(&mut self, home: usize, home_node: u32, _target_x: f32, _target_y: f32, highway_node: u32, init_x: f32, init_y: f32) -> usize {
+    pub fn spawn_agent(
+        &mut self,
+        home: usize,
+        home_node: u32,
+        _target_x: f32,
+        _target_y: f32,
+        highway_node: u32,
+        init_x: f32,
+        init_y: f32,
+    ) -> usize {
         self.home_building.push(home);
         self.work_building.push(usize::MAX);
         self.pos_x.push(init_x);
         self.pos_y.push(init_y);
         self.is_visible.push(true);
         self.activity.push(0); // Heading Home
-        self.transit.push(TRANSIT_IMMIGRATING); 
+        self.transit.push(TRANSIT_IMMIGRATING);
         self.happiness.push(50.0);
         self.money.push(100.0); // Immigrants bring $100
         self.journey_start_time.push(self.sim_time);
-        
+
         self.current_building.push(usize::MAX);
         self.target_building.push(home);
         self.current_node.push(highway_node);
@@ -181,31 +185,50 @@ impl AgentSystem {
         self.bezier_t.push(0.0);
         self.current_path.push(Vec::new());
         self.current_path_index.push(0);
-        
+
         self.has_car.push(true); // Immigrants arrive with a car!
         let mut rng = rand::thread_rng();
         self.vehicle_type.push(rng.gen_range(0..4) as u8); // Random civilian vehicle
         self.count += 1;
-        
+
         self.count - 1
     }
 
     /// Efficiency helper to spawn a large number of agents at once for testing or benchmarks.
-    pub fn spawn_random_agents(&mut self, count: usize, graph: &RegionGraph, allocator: &BuildingAllocator) {
+    pub fn spawn_random_agents(
+        &mut self,
+        count: usize,
+        graph: &RegionGraph,
+        allocator: &BuildingAllocator,
+    ) {
         let mut rng = rand::thread_rng();
         let node_count = graph.nodes.len();
         let bldg_count = allocator.buildings.len();
-        if node_count == 0 || bldg_count == 0 { return; }
+        if node_count == 0 || bldg_count == 0 {
+            return;
+        }
 
         for _ in 0..count {
             let home_idx = rng.gen_range(0..bldg_count);
             let b = &allocator.buildings[home_idx];
             let edge = &graph.edges[b.edge_idx];
-            let home_node = if b.frontage_t < 0.5 { edge.start_node } else { edge.end_node };
+            let home_node = if b.frontage_t < 0.5 {
+                edge.start_node
+            } else {
+                edge.end_node
+            };
             let start_node = rng.gen_range(0..node_count) as u32;
             let start_pos = graph.nodes[start_node as usize].pos;
 
-            let i = self.spawn_agent(home_idx, home_node, 0.0, 0.0, start_node, start_pos.x, start_pos.z);
+            let i = self.spawn_agent(
+                home_idx,
+                home_node,
+                0.0,
+                0.0,
+                start_node,
+                start_pos.x,
+                start_pos.z,
+            );
             self.vehicle_type[i] = rng.gen_range(0..4) as u8;
         }
     }
@@ -262,11 +285,13 @@ impl AgentSystem {
             }
         }
     }
-    
+
     /// Permanently removes an agent from the simulation using O(1) swap-remove.
     pub fn kill_agent(&mut self, index: usize, allocator: &mut BuildingAllocator) {
-        if index >= self.count { return; }
-        
+        if index >= self.count {
+            return;
+        }
+
         // Release vacancy if they had a home
         let home = self.home_building[index];
         if home != usize::MAX {
@@ -274,7 +299,7 @@ impl AgentSystem {
         }
 
         let last_idx = self.count - 1;
-        
+
         self.home_building.swap(index, last_idx);
         self.work_building.swap(index, last_idx);
         self.pos_x.swap(index, last_idx);
@@ -338,13 +363,15 @@ impl AgentSystem {
         self.journey_start_time.pop();
         self.has_car.pop();
         self.vehicle_type.pop();
-        
+
         self.count -= 1;
     }
 
     /// Remaps building indices after a `swap_remove` in `BuildingAllocator`. O(A).
     pub fn remap_building_indices(&mut self, mapping: &HashMap<usize, usize>) {
-        if mapping.is_empty() { return; }
+        if mapping.is_empty() {
+            return;
+        }
         for i in 0..self.count {
             if let Some(&new_id) = mapping.get(&self.home_building[i]) {
                 self.home_building[i] = new_id;
@@ -370,7 +397,8 @@ impl AgentSystem {
             if self.home_building[i] == building_id {
                 self.home_building[i] = usize::MAX; // Become Homeless
             }
-            if self.current_building[i] == building_id { // Building collapsed while they were inside!
+            if self.current_building[i] == building_id {
+                // Building collapsed while they were inside!
                 self.current_building[i] = usize::MAX;
                 self.target_building[i] = usize::MAX;
                 self.transit[i] = 3; // Dump them physically onto the sidewalk/rubble
@@ -389,25 +417,27 @@ impl AgentSystem {
             }
         }
     }
-    
+
     /// Finds a residential or mixed-use building with available vacancy.
     /// Uses the allocator's `vacancy_index` for O(1) random selection.
     pub fn find_available_home(&mut self, allocator: &mut BuildingAllocator) -> Option<usize> {
         let mut rng = rand::thread_rng();
         let target_zones = [ZoneType::Residential, ZoneType::Mixed];
-        
+
         // Sum total vacancy across residential and mixed
         let mut total_vacant = 0;
         for &z in &target_zones {
             total_vacant += allocator.vacancy_index[z as usize].len();
         }
-        
-        if total_vacant == 0 { return None; }
-        
+
+        if total_vacant == 0 {
+            return None;
+        }
+
         // Pick random building index from the combined vacancy lists
         let mut pick = rng.gen_range(0..total_vacant);
         let mut building_idx = usize::MAX;
-        
+
         for &z in &target_zones {
             let list = &allocator.vacancy_index[z as usize];
             if pick < list.len() {
@@ -416,7 +446,7 @@ impl AgentSystem {
             }
             pick -= list.len();
         }
-        
+
         if building_idx != usize::MAX {
             allocator.claim_vacancy(building_idx);
             return Some(building_idx);
@@ -426,7 +456,11 @@ impl AgentSystem {
 
     /// Update per-day agent state: home/work bonuses and pollution penalties.
     /// Update per-day agent state: home/work bonuses and pollution penalties.
-    pub fn daily_update(&mut self, pollution: &PollutionSystem, config: &crate::simulation::core::config::MapConfig) {
+    pub fn daily_update(
+        &mut self,
+        pollution: &PollutionSystem,
+        config: &crate::simulation::core::config::MapConfig,
+    ) {
         let w = pollution.grid.width as f32;
         let h = pollution.grid.height as f32;
         let world_size_x = config.width_m;
@@ -435,9 +469,11 @@ impl AgentSystem {
         for i in 0..self.count {
             // 1. Snapshot-based Activity Rewards
             if self.transit[i] == TRANSIT_IDLE {
-                if self.activity[i] == 0 { // Home
+                if self.activity[i] == 0 {
+                    // Home
                     self.happiness[i] += 1.0;
-                } else if self.activity[i] == 1 { // Work
+                } else if self.activity[i] == 1 {
+                    // Work
                     self.money[i] += 10.0;
                 }
             }

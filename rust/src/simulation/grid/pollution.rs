@@ -1,6 +1,6 @@
 use super::data_grid::DataGrid;
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::grid::zoning::ZoneType;
 
 pub struct PollutionSystem {
     pub grid: DataGrid<f32>,
@@ -18,12 +18,16 @@ impl PollutionSystem {
         }
     }
 
-    pub fn tick(&mut self, allocator: &BuildingAllocator, config: &crate::simulation::core::config::MapConfig) {
-        // Swap buffers: current grid moves to swap (source), 
+    pub fn tick(
+        &mut self,
+        allocator: &BuildingAllocator,
+        config: &crate::simulation::core::config::MapConfig,
+    ) {
+        // Swap buffers: current grid moves to swap (source),
         // swap (old data) moves to grid (target for this tick)
         std::mem::swap(&mut self.grid, &mut self.swap);
         self.grid.data.fill(0.0);
-        
+
         let w = self.grid.width;
         let h = self.grid.height;
         let world_size_x = config.width_m;
@@ -34,7 +38,7 @@ impl PollutionSystem {
             if b.zone_type == ZoneType::Industrial {
                 let gx = ((b.center_x / world_size_x) + 0.5) * w as f32;
                 let gy = ((b.center_y / world_size_y) + 0.5) * h as f32;
-                
+
                 if let Some(val) = self.grid.get_mut(gx.round() as usize, gy.round() as usize) {
                     *val += 5.0;
                 }
@@ -43,37 +47,57 @@ impl PollutionSystem {
 
         // 2. Diffusion & 3. Decay (Parallelized)
         let old_grid = &self.swap;
-        
-        self.grid.data.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
-            for x in 0..w {
-                let current = *old_grid.get(x, y).unwrap_or(&0.0);
-                
-                let mut neighbor_sum = 0.0;
-                let mut count = 0.0;
-                
-                // Neighborhood Sampling
-                if x > 0 { neighbor_sum += *old_grid.get(x - 1, y).unwrap_or(&0.0); count += 1.0; }
-                if x < w - 1 { neighbor_sum += *old_grid.get(x + 1, y).unwrap_or(&0.0); count += 1.0; }
-                if y > 0 { neighbor_sum += *old_grid.get(x, y - 1).unwrap_or(&0.0); count += 1.0; }
-                if y < h - 1 { neighbor_sum += *old_grid.get(x, y + 1).unwrap_or(&0.0); count += 1.0; }
-                
-                let avg = if count > 0.0 { neighbor_sum / count } else { 0.0 };
-                
-                // Diffuse: keep 60% of own, take 40% of avg neighbor. Decay: 99.5% retention.
-                let propagated = (current * 0.60 + avg * 0.40) * 0.995; 
-                
-                // Combine emission (already in row[x]) + diffused state
-                row[x] = (row[x] + propagated).min(100.0).max(0.0); 
-            }
-        });
+
+        self.grid
+            .data
+            .par_chunks_mut(w)
+            .enumerate()
+            .for_each(|(y, row)| {
+                for x in 0..w {
+                    let current = *old_grid.get(x, y).unwrap_or(&0.0);
+
+                    let mut neighbor_sum = 0.0;
+                    let mut count = 0.0;
+
+                    // Neighborhood Sampling
+                    if x > 0 {
+                        neighbor_sum += *old_grid.get(x - 1, y).unwrap_or(&0.0);
+                        count += 1.0;
+                    }
+                    if x < w - 1 {
+                        neighbor_sum += *old_grid.get(x + 1, y).unwrap_or(&0.0);
+                        count += 1.0;
+                    }
+                    if y > 0 {
+                        neighbor_sum += *old_grid.get(x, y - 1).unwrap_or(&0.0);
+                        count += 1.0;
+                    }
+                    if y < h - 1 {
+                        neighbor_sum += *old_grid.get(x, y + 1).unwrap_or(&0.0);
+                        count += 1.0;
+                    }
+
+                    let avg = if count > 0.0 {
+                        neighbor_sum / count
+                    } else {
+                        0.0
+                    };
+
+                    // Diffuse: keep 60% of own, take 40% of avg neighbor. Decay: 99.5% retention.
+                    let propagated = (current * 0.60 + avg * 0.40) * 0.995;
+
+                    // Combine emission (already in row[x]) + diffused state
+                    row[x] = (row[x] + propagated).min(100.0).max(0.0);
+                }
+            });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::core::config::MapConfig;
-    use crate::simulation::buildings::allocator::{BuildingAllocator, Building};
     use crate::simulation::grid::zoning::ZoneType;
     use godot::prelude::Vector2;
 
@@ -82,7 +106,7 @@ mod tests {
         let config = MapConfig::default();
         let mut system = PollutionSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
-        
+
         // 1. Add one industrial source at world (0,0)
         // Default MapConfig is 20km x 20km, so (0,0) is at the center of the grid.
         let source_building = Building {
@@ -114,24 +138,40 @@ mod tests {
 
         // 3. Assertions
         let source_val = *system.grid.get(source_gx, source_gy).unwrap();
-        assert!(source_val > 0.0, "Source cell should have positive pollution. Got: {}", source_val);
-        
+        assert!(
+            source_val > 0.0,
+            "Source cell should have positive pollution. Got: {}",
+            source_val
+        );
+
         let diffused_val = *system.grid.get(source_gx + 5, source_gy).unwrap();
-        assert!(diffused_val > 0.0, "Cell 5 steps away should have nonzero diffused pollution. Got: {}", diffused_val);
+        assert!(
+            diffused_val > 0.0,
+            "Cell 5 steps away should have nonzero diffused pollution. Got: {}",
+            diffused_val
+        );
 
         // Check for NaN/Inf
         for y in 0..gh {
             for x in 0..gw {
                 let val = *system.grid.get(x, y).unwrap();
-                assert!(val.is_finite(), "Pollution value at ({}, {}) is not finite: {}", x, y, val);
+                assert!(
+                    val.is_finite(),
+                    "Pollution value at ({}, {}) is not finite: {}",
+                    x,
+                    y,
+                    val
+                );
             }
         }
 
         // 4. Test Decay: Remove source and track average
         allocator.buildings.clear();
-        
+
         let mut avg_before = 0.0;
-        for &val in &system.grid.data { avg_before += val; }
+        for &val in &system.grid.data {
+            avg_before += val;
+        }
         avg_before /= system.grid.data.len() as f32;
 
         // Tick 50 times more
@@ -140,9 +180,16 @@ mod tests {
         }
 
         let mut avg_after = 0.0;
-        for &val in &system.grid.data { avg_after += val; }
+        for &val in &system.grid.data {
+            avg_after += val;
+        }
         avg_after /= system.grid.data.len() as f32;
 
-        assert!(avg_after < avg_before, "Average pollution should decay after source removal. Before: {}, After: {}", avg_before, avg_after);
+        assert!(
+            avg_after < avg_before,
+            "Average pollution should decay after source removal. Before: {}, After: {}",
+            avg_before,
+            avg_after
+        );
     }
 }

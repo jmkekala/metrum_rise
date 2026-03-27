@@ -2,11 +2,10 @@
 //!
 //! Provides orbit, pan, and zoom functionality tailored for city simulation.
 
-
-use godot::prelude::*;
-use godot::classes::{Camera3D, ICamera3D, Input, InputEvent, InputEventMouseButton};
 use godot::classes::camera_3d::ProjectionType;
+use godot::classes::{Camera3D, ICamera3D, Input, InputEvent, InputEventMouseButton};
 use godot::global::{Key, MouseButton};
+use godot::prelude::*;
 
 /// A third-person orbit camera controlled via WASD, MMB, and Scroll Wheel.
 #[derive(GodotClass)]
@@ -24,7 +23,7 @@ pub struct CameraNode {
     /// Whether to use orthographic projection for a classic "flat" look.
     #[export]
     orthogonal: bool,
-    
+
     /// The focal point the camera is looking at.
     pivot: Vector3,
     /// Horizontal rotation in radians.
@@ -33,20 +32,20 @@ pub struct CameraNode {
     pitch: f32,
     /// Distance from the pivot point.
     distance: f32,
-    
+
     base: Base<Camera3D>,
 }
 
 #[godot_api]
 impl ICamera3D for CameraNode {
     fn init(base: Base<Camera3D>) -> Self {
-        Self { 
+        Self {
             base,
             speed: 240.0,
             sensitivity: 0.003,
             zoom_speed: 1.2,
             pivot: Vector3::new(0.0, 0.0, 0.0),
-            yaw: -0.785, // -45 degrees
+            yaw: -0.785,   // -45 degrees
             pitch: -0.785, // -45 degrees
             distance: 400.0,
             orthogonal: false,
@@ -82,7 +81,8 @@ impl CameraNode {
             let yaw_rot = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, self.yaw, 0.0));
             // Scale pan speed by zoom distance: faster when zoomed out, slower when close
             let zoom_factor = (self.distance / 400.0).max(0.1);
-            let move_vec = (yaw_rot * direction.normalized()) * self.speed * speed_mult * zoom_factor * delta;
+            let move_vec =
+                (yaw_rot * direction.normalized()) * self.speed * speed_mult * zoom_factor * delta;
             self.pivot += move_vec;
             self.update_camera_transform();
         }
@@ -95,7 +95,7 @@ impl CameraNode {
             let delta_v = mouse_delta * delta * self.sensitivity;
             self.yaw -= delta_v.x;
             self.pitch -= delta_v.y;
-            self.pitch = self.pitch.clamp(-1.5, -0.1); 
+            self.pitch = self.pitch.clamp(-1.5, -0.1);
             self.update_camera_transform();
         }
     }
@@ -110,7 +110,7 @@ impl CameraNode {
                 self.distance *= self.zoom_speed;
             }
             self.distance = self.distance.clamp(10.0, 1000.0);
-            
+
             if self.orthogonal {
                 let distance = self.distance;
                 self.base_mut().set_size(distance * 0.5);
@@ -123,7 +123,7 @@ impl CameraNode {
         let yaw_basis = Basis::from_euler(EulerOrder::YXZ, Vector3::new(0.0, self.yaw, 0.0));
         let pitch_basis = Basis::from_euler(EulerOrder::YXZ, Vector3::new(self.pitch, 0.0, 0.0));
         let rotation = yaw_basis * pitch_basis;
-        
+
         let offset = rotation * Vector3::new(0.0, 0.0, self.distance);
         let pivot = self.pivot;
         let new_pos = pivot + offset;
@@ -131,4 +131,3 @@ impl CameraNode {
         self.base_mut().look_at(pivot);
     }
 }
-

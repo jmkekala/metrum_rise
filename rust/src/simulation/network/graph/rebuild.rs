@@ -1,6 +1,6 @@
-use godot::prelude::Vector3;
-use super::data::RegionGraph;
 use super::super::types::*;
+use super::data::RegionGraph;
+use godot::prelude::Vector3;
 use std::collections::HashMap;
 
 impl RegionGraph {
@@ -8,7 +8,9 @@ impl RegionGraph {
         self.adjacency.clear();
         self.adjacency.resize(self.nodes.len(), Vec::new());
         for (i, e) in self.edges.iter().enumerate() {
-            if e.deleted { continue; }
+            if e.deleted {
+                continue;
+            }
             self.adjacency[e.start_node as usize].push(i);
             self.adjacency[e.end_node as usize].push(i);
         }
@@ -71,17 +73,21 @@ impl RegionGraph {
 
     /// Returns the number of disconnected components (islands) in the network
     pub fn get_island_count(&self) -> usize {
-        if self.nodes.is_empty() { return 0; }
-        
+        if self.nodes.is_empty() {
+            return 0;
+        }
+
         // Disjoint Set Union (DSU)
         let mut parent: Vec<usize> = (0..self.nodes.len()).collect();
-        
+
         fn find(i: usize, parent: &mut Vec<usize>) -> usize {
-            if parent[i] == i { return i; }
+            if parent[i] == i {
+                return i;
+            }
             parent[i] = find(parent[i], parent);
             parent[i]
         }
-        
+
         fn unite(i: usize, j: usize, parent: &mut Vec<usize>) {
             let root_i = find(i, parent);
             let root_j = find(j, parent);
@@ -89,37 +95,47 @@ impl RegionGraph {
                 parent[root_i] = root_j;
             }
         }
-        
+
         // Unite nodes connected by edges
         for edge in &self.edges {
-            if edge.deleted { continue; }
-            unite(edge.start_node as usize, edge.end_node as usize, &mut parent);
+            if edge.deleted {
+                continue;
+            }
+            unite(
+                edge.start_node as usize,
+                edge.end_node as usize,
+                &mut parent,
+            );
         }
-        
+
         // Count unique roots (only for nodes that are part of an edge to avoid counting "floating" preview nodes)
         let mut active_nodes = std::collections::HashSet::new();
         for edge in &self.edges {
-            if edge.deleted { continue; }
+            if edge.deleted {
+                continue;
+            }
             active_nodes.insert(edge.start_node as usize);
             active_nodes.insert(edge.end_node as usize);
         }
-        
+
         let mut roots = std::collections::HashSet::new();
         for &node_idx in &active_nodes {
             roots.insert(find(node_idx, &mut parent));
         }
-        
+
         roots.len()
     }
 
     pub fn sync_to_terrain(&mut self, terrain: &crate::simulation::terrain::TerrainSystem) {
         let hw = (terrain.width as f32 - 1.0) * 0.5;
         let hh = (terrain.height as f32 - 1.0) * 0.5;
-        
+
         // 0. Pre-calculate which nodes are snappable (Standard only)
         let mut node_snappable = vec![true; self.nodes.len()];
         for edge in &self.edges {
-            if edge.deleted { continue; }
+            if edge.deleted {
+                continue;
+            }
             if edge.class != EdgeClass::Standard {
                 node_snappable[edge.start_node as usize] = false;
                 node_snappable[edge.end_node as usize] = false;
@@ -128,30 +144,39 @@ impl RegionGraph {
 
         // 1. Sync Nodes Only if snappable
         for (i, node) in self.nodes.iter_mut().enumerate() {
-            if !node_snappable[i] { continue; }
+            if !node_snappable[i] {
+                continue;
+            }
             let gx = node.pos.x + hw;
             let gz = node.pos.z + hh;
             node.pos.y = terrain.get_height_interpolated(gx, gz) * crate::config::HEIGHT_SCALE;
         }
-        
+
         // 2. Re-interpolate Edge Geometry (Smooth Grades)
         for edge in &mut self.edges {
-            if edge.deleted { continue; }
-            if edge.class != EdgeClass::Standard { continue; }
-            
+            if edge.deleted {
+                continue;
+            }
+            if edge.class != EdgeClass::Standard {
+                continue;
+            }
+
             let count = edge.geometry.len();
-            if count < 2 { continue; }
-            
+            if count < 2 {
+                continue;
+            }
+
             // Snap endpoints to nodes
             edge.geometry[0] = self.nodes[edge.start_node as usize].pos;
             edge.geometry[count - 1] = self.nodes[edge.end_node as usize].pos;
-            
+
             // HARMONIC CONFORMANCE (Laplacian Smoothing)
             // 1. Re-sample raw terrain for all intermediate points so road follows new hills
-            for j in 1..count-1 {
+            for j in 1..count - 1 {
                 let gx = edge.geometry[j].x + hw;
                 let gz = edge.geometry[j].z + hh;
-                edge.geometry[j].y = terrain.get_height_interpolated(gx, gz) * crate::config::HEIGHT_SCALE;
+                edge.geometry[j].y =
+                    terrain.get_height_interpolated(gx, gz) * crate::config::HEIGHT_SCALE;
             }
 
             // 2. Taubin Smoothing to iron out bumps without volume shrinkage
@@ -162,19 +187,21 @@ impl RegionGraph {
                 let mu = -0.53;
                 for _ in 0..iters {
                     // Positive Pass (Shrink/Smooth)
-                    for j in 1..count-1 {
-                        let laplacian = 0.5 * (edge.geometry[j-1].y + edge.geometry[j+1].y) - edge.geometry[j].y;
+                    for j in 1..count - 1 {
+                        let laplacian = 0.5 * (edge.geometry[j - 1].y + edge.geometry[j + 1].y)
+                            - edge.geometry[j].y;
                         temp_h[j] = edge.geometry[j].y + lambda * laplacian;
                     }
-                    for j in 1..count-1 {
+                    for j in 1..count - 1 {
                         edge.geometry[j].y = temp_h[j];
                     }
                     // Negative Pass (Inflate/Restore Volume)
-                    for j in 1..count-1 {
-                        let laplacian = 0.5 * (edge.geometry[j-1].y + edge.geometry[j+1].y) - edge.geometry[j].y;
+                    for j in 1..count - 1 {
+                        let laplacian = 0.5 * (edge.geometry[j - 1].y + edge.geometry[j + 1].y)
+                            - edge.geometry[j].y;
                         temp_h[j] = edge.geometry[j].y + mu * laplacian;
                     }
-                    for j in 1..count-1 {
+                    for j in 1..count - 1 {
                         edge.geometry[j].y = temp_h[j];
                     }
                 }
@@ -186,38 +213,57 @@ impl RegionGraph {
     pub fn rebuild_intersection_clips(&mut self) {
         let mut connection_counts = HashMap::new();
         for edge in &self.edges {
-            if edge.deleted || edge.primary_type != TransitType::Road { continue; }
-            *connection_counts.entry(self.get_valid_node(edge.start_node)).or_insert(0) += 1;
-            *connection_counts.entry(self.get_valid_node(edge.end_node)).or_insert(0) += 1;
+            if edge.deleted || edge.primary_type != TransitType::Road {
+                continue;
+            }
+            *connection_counts
+                .entry(self.get_valid_node(edge.start_node))
+                .or_insert(0) += 1;
+            *connection_counts
+                .entry(self.get_valid_node(edge.end_node))
+                .or_insert(0) += 1;
         }
 
         // Calculate maximum road width and width difference for junction detection
         let mut node_max_width = HashMap::new();
         let mut node_min_width = HashMap::new();
         for edge in &self.edges {
-            if edge.deleted || edge.primary_type != TransitType::Road { continue; }
+            if edge.deleted || edge.primary_type != TransitType::Road {
+                continue;
+            }
             let w = edge.width;
-            
+
             let s_node = self.get_valid_node(edge.start_node);
             let s_max = node_max_width.entry(s_node).or_insert(0.0);
-            if w > *s_max { *s_max = w; }
+            if w > *s_max {
+                *s_max = w;
+            }
             let s_min = node_min_width.entry(s_node).or_insert(f32::MAX);
-            if w < *s_min { *s_min = w; }
+            if w < *s_min {
+                *s_min = w;
+            }
 
             let e_node = self.get_valid_node(edge.end_node);
             let e_max = node_max_width.entry(e_node).or_insert(0.0);
-            if w > *e_max { *e_max = w; }
+            if w > *e_max {
+                *e_max = w;
+            }
             let e_min = node_min_width.entry(e_node).or_insert(f32::MAX);
-            if w < *e_min { *e_min = w; }
+            if w < *e_min {
+                *e_min = w;
+            }
         }
 
-
-        let valid_node_ids: Vec<u32> = (0..self.nodes.len()).map(|i| self.get_valid_node(i as u32)).collect();
+        let valid_node_ids: Vec<u32> = (0..self.nodes.len())
+            .map(|i| self.get_valid_node(i as u32))
+            .collect();
 
         self.junction_polygons.clear(); // Removing procedural intersection meshes
 
         for (_edge_id, edge) in self.edges.iter_mut().enumerate() {
-            if edge.deleted || edge.primary_type != TransitType::Road { continue; }
+            if edge.deleted || edge.primary_type != TransitType::Road {
+                continue;
+            }
 
             // Dynamic clipping: Ensure the junction covers at least the width of the road
             let s_valid = valid_node_ids[edge.start_node as usize];
@@ -261,10 +307,10 @@ impl RegionGraph {
                     let p1 = edge.geometry[i + 1];
                     total_length += (p1 - p0).length();
                 }
-                
+
                 let num_segments = f32::max(1.0, f32::ceil(total_length / 2.0)) as usize;
                 let mut resampled = Vec::new();
-                
+
                 for i in 0..=num_segments {
                     let dist = (i as f32 / num_segments as f32) * total_length;
                     let mut curr = 0.0;
@@ -282,7 +328,7 @@ impl RegionGraph {
                         curr += d;
                     }
                     if !found && !edge.geometry.is_empty() {
-                         resampled.push(edge.geometry[count - 1]);
+                        resampled.push(edge.geometry[count - 1]);
                     }
                 }
                 if !resampled.is_empty() {
@@ -305,20 +351,26 @@ impl RegionGraph {
         {
             let mut tangent_at: HashMap<(usize, u32), Vector3> = HashMap::new();
             for (eid, edge) in self.edges.iter().enumerate() {
-                if edge.deleted || edge.primary_type != TransitType::Road { continue; }
+                if edge.deleted || edge.primary_type != TransitType::Road {
+                    continue;
+                }
                 let geom = &edge.physical_geometry;
-                if geom.len() < 2 { continue; }
+                if geom.len() < 2 {
+                    continue;
+                }
                 let sn = valid_node_ids[edge.start_node as usize];
                 let en = valid_node_ids[edge.end_node as usize];
                 let t_start = (geom[1] - geom[0]).normalized();
-                let t_end   = (geom[geom.len()-2] - geom[geom.len()-1]).normalized();
+                let t_end = (geom[geom.len() - 2] - geom[geom.len() - 1]).normalized();
                 tangent_at.insert((eid, sn), t_start);
                 tangent_at.insert((eid, en), t_end);
             }
 
             let mut node_edges: HashMap<u32, Vec<usize>> = HashMap::new();
             for (eid, edge) in self.edges.iter().enumerate() {
-                if edge.deleted || edge.primary_type != TransitType::Road { continue; }
+                if edge.deleted || edge.primary_type != TransitType::Road {
+                    continue;
+                }
                 let sn = valid_node_ids[edge.start_node as usize];
                 let en = valid_node_ids[edge.end_node as usize];
                 node_edges.entry(sn).or_default().push(eid);
@@ -331,7 +383,9 @@ impl RegionGraph {
             let mut merge_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
 
             for (&nid, eids) in &node_edges {
-                if eids.len() < 3 { continue; }
+                if eids.len() < 3 {
+                    continue;
+                }
                 let n = eids.len();
                 // Find the one anti-parallel pair that forms the mainline.
                 // A Merge node must have exactly one such pair; if there are two or more
@@ -339,27 +393,47 @@ impl RegionGraph {
                 let mut mainline_pair: Option<(usize, usize)> = None;
                 let mut pair_count = 0;
                 'find: for i in 0..n {
-                    for j in (i+1)..n {
+                    for j in (i + 1)..n {
                         let ta = tangent_at.get(&(eids[i], nid));
                         let tb = tangent_at.get(&(eids[j], nid));
                         if let (Some(&ta), Some(&tb)) = (ta, tb) {
                             if ta.dot(tb) < -0.7 {
                                 pair_count += 1;
-                                if pair_count > 1 { mainline_pair = None; break 'find; }
+                                if pair_count > 1 {
+                                    mainline_pair = None;
+                                    break 'find;
+                                }
                                 mainline_pair = Some((i, j));
                             }
                         }
                     }
                 }
-                let (mi, mj) = match mainline_pair { Some(p) => p, None => continue };
-                let ta = match tangent_at.get(&(eids[mi], nid)) { Some(&t) => t, None => continue };
-                let tb = match tangent_at.get(&(eids[mj], nid)) { Some(&t) => t, None => continue };
+                let (mi, mj) = match mainline_pair {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let ta = match tangent_at.get(&(eids[mi], nid)) {
+                    Some(&t) => t,
+                    None => continue,
+                };
+                let tb = match tangent_at.get(&(eids[mj], nid)) {
+                    Some(&t) => t,
+                    None => continue,
+                };
                 // All non-mainline edges must point in the general direction of one mainline leg.
                 let mut all_valid = true;
                 let mut found_ramp = false;
                 for k in 0..n {
-                    if k == mi || k == mj { continue; }
-                    let tr = match tangent_at.get(&(eids[k], nid)) { Some(&t) => t, None => { all_valid = false; break; } };
+                    if k == mi || k == mj {
+                        continue;
+                    }
+                    let tr = match tangent_at.get(&(eids[k], nid)) {
+                        Some(&t) => t,
+                        None => {
+                            all_valid = false;
+                            break;
+                        }
+                    };
                     // Ramp must share the general direction with at least one mainline leg (acute angle).
                     if tr.dot(ta) > 0.2 || tr.dot(tb) > 0.2 {
                         found_ramp = true;
@@ -394,7 +468,9 @@ impl RegionGraph {
             // Second pass: zero out clips on mainline edges at Merge nodes.
             // The first clip pass above treated these nodes as Junction (Merge wasn't set yet).
             for (eid, edge) in self.edges.iter_mut().enumerate() {
-                if edge.deleted || edge.class == EdgeClass::Ramp { continue; }
+                if edge.deleted || edge.class == EdgeClass::Ramp {
+                    continue;
+                }
                 let sn = valid_node_ids[edge.start_node as usize];
                 let en = valid_node_ids[edge.end_node as usize];
                 if merge_nodes.contains(&sn) {

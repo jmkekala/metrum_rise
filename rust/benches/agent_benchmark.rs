@@ -1,10 +1,10 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use metrum_rise::simulation::economy::agents::AgentSystem;
-use metrum_rise::simulation::network::graph::{RegionGraph, Edge};
-use metrum_rise::simulation::pathing::cch::CchGraph;
-use metrum_rise::simulation::buildings::allocator::BuildingAllocator;
-use metrum_rise::simulation::network::types::{NodeType, TransitType, TransitFlags, EdgeClass};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::*;
+use metrum_rise::simulation::buildings::allocator::BuildingAllocator;
+use metrum_rise::simulation::economy::agents::AgentSystem;
+use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
+use metrum_rise::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+use metrum_rise::simulation::pathing::cch::CchGraph;
 use std::time::Duration;
 
 struct SharedSetup {
@@ -55,17 +55,25 @@ fn build_shared() -> SharedSetup {
     graph.rebuild_adjacency_list();
 
     let cch = CchGraph::build(&graph);
-    SharedSetup { graph, cch, node_a, node_b, edge_ab }
+    SharedSetup {
+        graph,
+        cch,
+        node_a,
+        node_b,
+        edge_ab,
+    }
 }
 
 fn push_idle_agent(agents: &mut AgentSystem, shared: &SharedSetup) {
-    agents.home_building.push(0);   // zeroed by safety scrub (empty allocator → 0 >= 0)
+    agents.home_building.push(0); // zeroed by safety scrub (empty allocator → 0 >= 0)
     agents.work_building.push(0);
     agents.pos_x.push(0.0);
     agents.pos_y.push(0.0);
     agents.is_visible.push(true);
     agents.activity.push(0);
-    agents.transit.push(metrum_rise::simulation::economy::agents::TRANSIT_IDLE);
+    agents
+        .transit
+        .push(metrum_rise::simulation::economy::agents::TRANSIT_IDLE);
     agents.happiness.push(50.0);
     agents.money.push(100.0);
     agents.journey_start_time.push(0.0);
@@ -76,7 +84,9 @@ fn push_idle_agent(agents: &mut AgentSystem, shared: &SharedSetup) {
     agents.current_edge.push(usize::MAX);
     agents.edge_progression.push(0);
     agents.current_lane.push(0);
-    agents.transit_mode.push(metrum_rise::simulation::economy::agents::MODE_CAR);
+    agents
+        .transit_mode
+        .push(metrum_rise::simulation::economy::agents::MODE_CAR);
     agents.bezier_p0_x.push(0.0);
     agents.bezier_p0_y.push(0.0);
     agents.bezier_p1_x.push(0.0);
@@ -113,7 +123,9 @@ fn push_on_road_agent(
     agents.pos_y.push(0.0);
     agents.is_visible.push(true);
     agents.activity.push(0);
-    agents.transit.push(metrum_rise::simulation::economy::agents::TRANSIT_ON_ROAD);
+    agents
+        .transit
+        .push(metrum_rise::simulation::economy::agents::TRANSIT_ON_ROAD);
     agents.happiness.push(50.0);
     agents.money.push(100.0);
     agents.journey_start_time.push(0.0);
@@ -124,7 +136,9 @@ fn push_on_road_agent(
     agents.current_edge.push(shared.edge_ab);
     agents.edge_progression.push(progression);
     agents.current_lane.push(0);
-    agents.transit_mode.push(metrum_rise::simulation::economy::agents::MODE_CAR);
+    agents
+        .transit_mode
+        .push(metrum_rise::simulation::economy::agents::MODE_CAR);
     agents.bezier_p0_x.push(0.0);
     agents.bezier_p0_y.push(0.0);
     agents.bezier_p1_x.push(0.0);
@@ -152,7 +166,13 @@ fn bench_agent_tick(c: &mut Criterion) {
     // 200-entry bounce path, empty allocator → CCH never called, no arena bloat.
     // Memory: 200 × 4 bytes × 100k agents = 80 MB peak.
     let bounce_path: Vec<u32> = (0..200)
-        .map(|i| if i % 2 == 0 { shared.node_a } else { shared.node_b })
+        .map(|i| {
+            if i % 2 == 0 {
+                shared.node_a
+            } else {
+                shared.node_b
+            }
+        })
         .collect();
 
     for &count in &[1_000usize, 10_000, 100_000] {

@@ -24,14 +24,15 @@ impl CostCalculator {
 
         for i in 0..points.len() - 1 {
             let p1 = points[i];
-            let p2 = points[i+1];
-            
+            let p2 = points[i + 1];
+
             let dist = p1.distance_to(p2);
             total_distance += dist;
-            
+
             if dist > 0.01 {
                 let d_y = (p2.y - p1.y).abs();
-                let d_xz = (Vector3::new(p1.x, 0.0, p1.z)).distance_to(Vector3::new(p2.x, 0.0, p2.z));
+                let d_xz =
+                    (Vector3::new(p1.x, 0.0, p1.z)).distance_to(Vector3::new(p2.x, 0.0, p2.z));
                 if d_xz > 0.001 {
                     let slope = d_y / d_xz;
                     if slope > max_slope {

@@ -8,21 +8,21 @@
 //! **Never modify [`graph::RegionGraph`] directly from outside this module.**
 
 use godot::prelude::*;
-pub mod types;
 pub mod graph;
 pub mod render;
+pub mod types;
 pub use render::NetworkMeshData;
-pub mod terrain;
 pub mod interaction;
+pub mod terrain;
 pub mod topology;
 use crate::config;
 use std::collections::HashSet;
 
-use types::*;
+use crate::simulation::pathing::cch::CchGraph;
 use graph::*;
 use render::TransitRenderer;
 use render::road::RoadRenderer;
-use crate::simulation::pathing::cch::CchGraph;
+use types::*;
 
 /// Top-level road network manager for pathfinding integration and coordinate conversion.
 ///
@@ -48,7 +48,11 @@ impl TransitNetwork {
         }
     }
 
-    pub fn clear(&mut self, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
+    pub fn clear(
+        &mut self,
+        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
         self.cch_graph = CchGraph::new(0);
         self.cch_dirty_chunks.clear();
         self.metric_dirty = false;
@@ -57,7 +61,18 @@ impl TransitNetwork {
         allocator.clear();
     }
 
-    pub fn add_road(&mut self, graph: &mut RegionGraph, points: Vec<Vector3>, fwd_lanes: u8, bkw_lanes: u8, zoning_left: bool, zoning_right: bool, class: EdgeClass, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
+    pub fn add_road(
+        &mut self,
+        graph: &mut RegionGraph,
+        points: Vec<Vector3>,
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+        zoning_left: bool,
+        zoning_right: bool,
+        class: EdgeClass,
+        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
         // 1. Simplify points
         let mut simplified_points = Vec::with_capacity(points.len());
         if !points.is_empty() {
@@ -67,18 +82,30 @@ impl TransitNetwork {
                     simplified_points.push(points[i]);
                 }
             }
-            if simplified_points.len() > 1 && simplified_points.last().unwrap() != &points[points.len()-1] {
+            if simplified_points.len() > 1
+                && simplified_points.last().unwrap() != &points[points.len() - 1]
+            {
                 simplified_points.pop();
-                simplified_points.push(points[points.len()-1]);
+                simplified_points.push(points[points.len() - 1]);
             }
         }
-        
+
         let count = simplified_points.len();
-        if count < 2 { return; }
+        if count < 2 {
+            return;
+        }
 
         // Robust Snapping
-        let start_id = graph.find_or_add_node(simplified_points[0], config::SNAP_TOLERANCE, NodeType::Junction);
-        let end_id = graph.find_or_add_node(simplified_points[count - 1], config::SNAP_TOLERANCE, NodeType::Junction);
+        let start_id = graph.find_or_add_node(
+            simplified_points[0],
+            config::SNAP_TOLERANCE,
+            NodeType::Junction,
+        );
+        let end_id = graph.find_or_add_node(
+            simplified_points[count - 1],
+            config::SNAP_TOLERANCE,
+            NodeType::Junction,
+        );
 
         // Snap geometry to nodes
         simplified_points[0] = graph.nodes[start_id as usize].pos;
@@ -93,19 +120,21 @@ impl TransitNetwork {
             let mu = -0.53;
             for _ in 0..iters {
                 // Positive Pass (Shrink/Smooth)
-                for j in 1..count-1 {
-                    let laplacian = 0.5 * (simplified_points[j-1].y + simplified_points[j+1].y) - simplified_points[j].y;
+                for j in 1..count - 1 {
+                    let laplacian = 0.5 * (simplified_points[j - 1].y + simplified_points[j + 1].y)
+                        - simplified_points[j].y;
                     temp_h[j] = simplified_points[j].y + lambda * laplacian;
                 }
-                for j in 1..count-1 {
+                for j in 1..count - 1 {
                     simplified_points[j].y = temp_h[j];
                 }
                 // Negative Pass (Inflate/Restore Volume)
-                for j in 1..count-1 {
-                    let laplacian = 0.5 * (simplified_points[j-1].y + simplified_points[j+1].y) - simplified_points[j].y;
+                for j in 1..count - 1 {
+                    let laplacian = 0.5 * (simplified_points[j - 1].y + simplified_points[j + 1].y)
+                        - simplified_points[j].y;
                     temp_h[j] = simplified_points[j].y + mu * laplacian;
                 }
-                for j in 1..count-1 {
+                for j in 1..count - 1 {
                     simplified_points[j].y = temp_h[j];
                 }
             }
@@ -115,32 +144,44 @@ impl TransitNetwork {
         let mut current_start_id = start_id;
         let mut active_segment = vec![simplified_points[0]];
         let mut accumulated_dist = 0.0;
-        
+
         for i in 0..count - 1 {
             let p0 = simplified_points[i];
-            let p1 = simplified_points[i+1];
+            let p1 = simplified_points[i + 1];
             let d = p0.distance_to(p1);
-            
+
             if accumulated_dist + d > 100.0 {
                 // Determine how many splits we need in this segment
                 let remaining_in_segment = 100.0 - accumulated_dist;
                 let mut t = remaining_in_segment / d;
-                
+
                 while t <= 1.0 {
                     let split_pos = p0.lerp(p1, t);
                     active_segment.push(split_pos);
-                    
+
                     // Create intermediate node
                     let mid_id = graph.find_or_add_node(split_pos, 0.1, NodeType::Junction);
-                    
+
                     // Add this edge
-                    self.create_edge_internal(graph, current_start_id, mid_id, active_segment.clone(), fwd_lanes, bkw_lanes, zoning_left, zoning_right, class, zoning, allocator);
-                    
+                    self.create_edge_internal(
+                        graph,
+                        current_start_id,
+                        mid_id,
+                        active_segment.clone(),
+                        fwd_lanes,
+                        bkw_lanes,
+                        zoning_left,
+                        zoning_right,
+                        class,
+                        zoning,
+                        allocator,
+                    );
+
                     // Reset for next segment
                     current_start_id = mid_id;
                     active_segment = vec![split_pos];
                     accumulated_dist = 0.0;
-                    
+
                     // Move to next 100m increment
                     let next_dist_target = 100.0;
                     let remaining_after_split = (1.0 - t) * d;
@@ -151,11 +192,10 @@ impl TransitNetwork {
                         break;
                     }
                 }
-                
-                if accumulated_dist > 0.0 {
-                   active_segment.push(p1);
-                }
 
+                if accumulated_dist > 0.0 {
+                    active_segment.push(p1);
+                }
             } else {
                 active_segment.push(p1);
                 accumulated_dist += d;
@@ -167,18 +207,47 @@ impl TransitNetwork {
             // Replace last point with snapped end_id pos
             let last_idx = active_segment.len() - 1;
             active_segment[last_idx] = graph.nodes[end_id as usize].pos;
-            self.create_edge_internal(graph, current_start_id, end_id, active_segment, fwd_lanes, bkw_lanes, zoning_left, zoning_right, class, zoning, allocator);
+            self.create_edge_internal(
+                graph,
+                current_start_id,
+                end_id,
+                active_segment,
+                fwd_lanes,
+                bkw_lanes,
+                zoning_left,
+                zoning_right,
+                class,
+                zoning,
+                allocator,
+            );
         }
 
         self.flush_zoning_updates(zoning, graph);
     }
 
     /// Helper to consistently add a road edge and handle its side effects
-    fn create_edge_internal(&mut self, graph: &mut RegionGraph, start: u32, end: u32, points: Vec<Vector3>, fwd: u8, bkw: u8, zoning_left: bool, zoning_right: bool, class: EdgeClass, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator) {
-        if start == end { return; }
-        
+    fn create_edge_internal(
+        &mut self,
+        graph: &mut RegionGraph,
+        start: u32,
+        end: u32,
+        points: Vec<Vector3>,
+        fwd: u8,
+        bkw: u8,
+        zoning_left: bool,
+        zoning_right: bool,
+        class: EdgeClass,
+        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
+        if start == end {
+            return;
+        }
+
         // Final sanity check on points
-        if points.len() < 2 { return; }
+        if points.len() < 2 {
+            return;
+        }
 
         let is_walkway = fwd == 0 && bkw == 0;
         let mut allowed_types = TransitFlags::NONE;
@@ -195,7 +264,11 @@ impl TransitNetwork {
         let edge_id = graph.add_edge(graph::Edge {
             start_node: start,
             end_node: end,
-            primary_type: if is_walkway { TransitType::Foot } else { TransitType::Road },
+            primary_type: if is_walkway {
+                TransitType::Foot
+            } else {
+                TransitType::Road
+            },
             allowed_types,
             width: ((fwd + bkw) as f32 * config::LANE_WIDTH).max(2.0),
             class,
@@ -214,10 +287,12 @@ impl TransitNetwork {
             deleted: false,
         });
 
-        let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(&graph.edges[edge_id]);
+        let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(
+            &graph.edges[edge_id],
+        );
         graph.edges[edge_id].base_cost = cost;
         graph.edges[edge_id].physical_length = length;
-        
+
         zoning.update_edge_grid_size(edge_id, length);
         self.zoning_dirty_edges.insert(edge_id);
         self.invalidate_zoning_near_edge(edge_id, graph);
@@ -231,47 +306,70 @@ impl TransitNetwork {
         self.cch_dirty_chunks.extend(chunks);
     }
 
-    pub fn generate_mesh_data(&self, graph: &RegionGraph, terrain: &crate::simulation::terrain::TerrainSystem) -> NetworkMeshData {
-        let renderer = RoadRenderer; 
+    pub fn generate_mesh_data(
+        &self,
+        graph: &RegionGraph,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+    ) -> NetworkMeshData {
+        let renderer = RoadRenderer;
         renderer.generate_mesh_data(graph, terrain)
     }
 
     pub fn invalidate_zoning_near_edge(&mut self, edge_id: usize, graph: &RegionGraph) {
-        if edge_id >= graph.edges.len() { return; }
+        if edge_id >= graph.edges.len() {
+            return;
+        }
         let edge = &graph.edges[edge_id];
-        let mut min_x = f32::MAX; let mut max_x = f32::MIN;
-        let mut min_z = f32::MAX; let mut max_z = f32::MIN;
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
         for p in &edge.physical_geometry {
-            min_x = min_x.min(p.x); max_x = max_x.max(p.x);
-            min_z = min_z.min(p.z); max_z = max_z.max(p.z);
+            min_x = min_x.min(p.x);
+            max_x = max_x.max(p.x);
+            min_z = min_z.min(p.z);
+            max_z = max_z.max(p.z);
         }
         let padding = 125.0; // Zoning depth is 100m, so 125m is safe
         let nearby = graph.get_edges_near_aabb(
             Vector3::new(min_x - padding, 0.0, min_z - padding),
-            Vector3::new(max_x + padding, 0.0, max_z + padding)
+            Vector3::new(max_x + padding, 0.0, max_z + padding),
         );
         for &e_idx in &nearby {
             self.zoning_dirty_edges.insert(e_idx);
         }
     }
 
-    pub fn flush_zoning_updates(&mut self, zoning: &mut crate::simulation::grid::zoning::ZoningSystem, graph: &RegionGraph) {
+    pub fn flush_zoning_updates(
+        &mut self,
+        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        graph: &RegionGraph,
+    ) {
         let dirty: Vec<usize> = self.zoning_dirty_edges.drain().collect();
         for &edge_idx in &dirty {
-             if edge_idx < graph.edges.len() && !graph.edges[edge_idx].deleted {
+            if edge_idx < graph.edges.len() && !graph.edges[edge_idx].deleted {
                 zoning.recalculate_obstructions(edge_idx, graph);
             }
         }
     }
 
-    pub fn flatten_terrain(&self, graph: &RegionGraph, terrain: &crate::simulation::terrain::TerrainSystem, output_heightmap: &mut [f32], map_size: Vector2) {
+    pub fn flatten_terrain(
+        &self,
+        graph: &RegionGraph,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+        output_heightmap: &mut [f32],
+        map_size: Vector2,
+    ) {
         terrain::flatten_terrain_for_network(graph, terrain, output_heightmap, map_size);
     }
 
-    pub fn sync_to_terrain(&mut self, graph: &mut RegionGraph, terrain: &crate::simulation::terrain::TerrainSystem) {
+    pub fn sync_to_terrain(
+        &mut self,
+        graph: &mut RegionGraph,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+    ) {
         graph.sync_to_terrain(terrain);
     }
-
 
     pub fn rebuild_pathing(&mut self, graph: &mut RegionGraph) {
         // Topology changes (Phase 1)
@@ -326,6 +424,6 @@ impl TransitNetwork {
 }
 
 pub mod test_clips;
+pub mod test_compaction;
 pub mod test_topology;
 pub mod test_verify;
-pub mod test_compaction;

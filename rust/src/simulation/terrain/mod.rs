@@ -47,24 +47,24 @@ impl TerrainSystem {
     pub fn get_height_interpolated(&self, x: f32, z: f32) -> f32 {
         let x_clamped = x.clamp(0.0, (self.width - 1) as f32);
         let z_clamped = z.clamp(0.0, (self.height - 1) as f32);
-        
+
         let x0 = x_clamped.floor() as usize;
         let z0 = z_clamped.floor() as usize;
         let x1 = (x0 + 1).min(self.width - 1);
         let z1 = (z0 + 1).min(self.height - 1);
-        
+
         let fx = x_clamped.fract();
         let fz = z_clamped.fract();
-        
+
         // Sample from SOURCE data for all interpolation
         let h00 = self.source_data[z0 * self.width + x0];
         let h10 = self.source_data[z0 * self.width + x1];
         let h01 = self.source_data[z1 * self.width + x0];
         let h11 = self.source_data[z1 * self.width + x1];
-        
+
         let h0 = h00 * (1.0 - fx) + h10 * fx;
         let h1 = h01 * (1.0 - fx) + h11 * fx;
-        
+
         h0 * (1.0 - fz) + h1 * fz
     }
 
@@ -78,7 +78,7 @@ impl TerrainSystem {
         let dx = (h_x1 - h_x0) / (2.0 * eps);
         let dz = (h_z1 - h_z0) / (2.0 * eps);
 
-        // This is the gradient in "unit" height units. 
+        // This is the gradient in "unit" height units.
         // We need to scale it by our world height scale (20.0) for accurate slope.
         Vector3::new(-dx * 20.0, 1.0, -dz * 20.0).normalized()
     }
@@ -88,30 +88,33 @@ impl TerrainSystem {
         // Symmetric Centering: (W-1)*0.5 maps world 0 to grid center (127.5 for 256)
         let hw = (self.width as f32 - 1.0) * 0.5;
         let hh = (self.height as f32 - 1.0) * 0.5;
-        
+
         let local_origin = Vector3::new(ray_origin.x + hw, ray_origin.y, ray_origin.z + hh);
         let local_dir = ray_dir; // Direction stays the same
-        
+
         // Linear search for entry/exit or surface intersection
         let mut t = 0.0;
         let max_dist = 10000.0; // Increased from 500 to support high-altitude camera
         let step = 0.5; // Half-meter steps for safety
-        
-        let mut prev_diff = local_origin.y - self.get_height_interpolated(local_origin.x, local_origin.z) * 20.0;
-        
+
+        let mut prev_diff =
+            local_origin.y - self.get_height_interpolated(local_origin.x, local_origin.z) * 20.0;
+
         while t < max_dist {
             t += step;
             let p = local_origin + local_dir * t;
-            
+
             // Bounds check
             if p.x < 0.0 || p.x >= self.width as f32 || p.z < 0.0 || p.z >= self.height as f32 {
-                if t > 0.0 && p.y < -10.0 { break; } // Went under map
+                if t > 0.0 && p.y < -10.0 {
+                    break;
+                } // Went under map
                 continue;
             }
-            
+
             let h = self.get_height_interpolated(p.x, p.z) * 20.0;
             let diff = p.y - h;
-            
+
             // Intersection detected (crossed the surface)
             if diff.signum() != prev_diff.signum() {
                 // Binary search refinement for precision
@@ -127,14 +130,14 @@ impl TerrainSystem {
                         t_high = t_mid;
                     }
                 }
-                
+
                 let final_p = local_origin + local_dir * ((t_low + t_high) * 0.5);
                 return Some(Vector3::new(final_p.x - hw, final_p.y, final_p.z - hh));
             }
-            
+
             prev_diff = diff;
         }
-        
+
         None
     }
 
@@ -157,11 +160,11 @@ impl TerrainSystem {
                     let dist = dist_sq.sqrt();
                     let normalized_dist = dist / radius;
                     let falloff = (1.0 + (normalized_dist * std::f32::consts::PI).cos()) * 0.5;
-                    
+
                     let idx = (y as usize) * self.width + (x as usize);
                     let current_h = self.source_data[idx];
                     let next_h = current_h + strength * falloff;
-                    
+
                     self.source_data[idx] = next_h;
                     self.data[idx] = next_h;
                 }

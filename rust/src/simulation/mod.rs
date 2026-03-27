@@ -4,11 +4,11 @@
 //! there is no shared global state. The canonical tick order is:
 //! time → terrain (passive) → water → network (road edits) → pathing → grid (env) → buildings → agents.
 
-pub mod terrain;
-pub mod water;
-pub mod network;
-pub mod pathing;
-pub mod grid;
+pub mod buildings;
 pub mod core;
 pub mod economy;
-pub mod buildings;
+pub mod grid;
+pub mod network;
+pub mod pathing;
+pub mod terrain;
+pub mod water;
