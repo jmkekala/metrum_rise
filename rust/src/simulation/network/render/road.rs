@@ -73,6 +73,7 @@ impl TransitRenderer for RoadRenderer {
         let node_states = build_node_render_states(graph);
         let mut mesh = NetworkMeshData::new();
 
+        // Pass 1: draw the widened sidewalk-colored base for every visible surface corridor.
         for edge in &graph.edges {
             if edge.deleted {
                 continue;
@@ -115,6 +116,8 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
+        // Pass 1b: widen true junctions and terminals with the same outer disk primitive so the
+        // sidewalk base stays continuous through arbitrary-angle connections.
         for (node_id, state) in &node_states {
             if state.kind == NodeRenderKind::None || state.kind == NodeRenderKind::PassThrough {
                 continue;
@@ -131,6 +134,7 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
+        // Pass 2: asphalt overdraw. This is the visible ownership rule for the top surface.
         for edge in &graph.edges {
             if edge.deleted {
                 continue;
@@ -150,6 +154,7 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
+        // Pass 2b: road disks sit above the widened sidewalk disks for terminals and junctions.
         for (node_id, state) in &node_states {
             if state.kind == NodeRenderKind::None || state.kind == NodeRenderKind::PassThrough {
                 continue;
@@ -166,6 +171,7 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
+        // Pass 3: lane markings are a separate overlay mesh trimmed only by true junction disks.
         for edge in &graph.edges {
             if edge.deleted
                 || edge.primary_type != TransitType::Road
@@ -225,6 +231,8 @@ fn build_node_render_states(graph: &RegionGraph) -> HashMap<u32, NodeRenderState
             0 => NodeRenderKind::None,
             1 => NodeRenderKind::Terminal,
             2 if info.directions.len() >= 2 => {
+                // Keep straight width-matched splits disk-free so long roads do not grow a bubble
+                // at every topology split created by the editor.
                 let same_width = (info.road_radius - info.road_radius_min).abs() <= 0.1;
                 if same_width && info.directions[0].dot(info.directions[1]) <= PASS_THROUGH_DOT {
                     NodeRenderKind::PassThrough
@@ -349,6 +357,8 @@ fn emit_segment_quad(
     let a_right = lifted_offset(start, -side, y_offset);
     let b_left = lifted_offset(end, side, y_offset);
     let b_right = lifted_offset(end, -side, y_offset);
+    // Sidewalk geometry no longer uses UV.y to encode "road edge vs outer edge". Keeping it at 1
+    // disables the old curb-gap shading assumption and makes node disks and edge strips match.
     let uvs = if color.a > 0.9 {
         [
             Vector2::new(0.0, 1.0),
@@ -383,6 +393,8 @@ fn emit_disk(
     let center = Vector3::new(center.x, center.y + y_offset, center.z);
     let sectors = circle_segments(radius);
     let mut previous = circle_point(center, radius, 0.0);
+    // Match the sidewalk-strip UV contract above so circular fills shade the same as widened
+    // edge strips.
     let center_uv = if color.a > 0.9 {
         Vector2::new(0.0, 1.0)
     } else {
@@ -459,6 +471,8 @@ fn junction_trim(
 ) -> f32 {
     let node_id = graph.get_valid_node(node_id);
     match node_states.get(&node_id).copied().unwrap_or_default().kind {
+        // Only true junction disks suppress markings. Terminals and pass-through splits keep the
+        // stripe all the way to the visible road end.
         NodeRenderKind::Junction => node_states
             .get(&node_id)
             .map(|state| state.road_radius)

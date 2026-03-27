@@ -366,4 +366,4 @@ Instead of one CCH hierarchy with inner-path expansion, build a separate contrac
 
 ---
 
-See [`docs/reference.md`](reference.md) for grid specs, movement speeds, memory budget, design patterns, transport vocabulary, Godot scene tree, script→Rust method inventory, and data buffer formats.
+See [`docs/reference.md`](reference.md) for grid specs, movement speeds, memory budget, design patterns, transport vocabulary, Godot scene tree, script→Rust method inventory, and data buffer formats. See [`docs/improved_roads.md`](improved_roads.md) for the current road-renderer architecture notes.

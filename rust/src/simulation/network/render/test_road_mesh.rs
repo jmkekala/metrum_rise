@@ -1,3 +1,8 @@
+//! Black-box renderer tests for the graph-dilation road mesher.
+//!
+//! These tests validate the visible road/sidewalk contract of the replacement renderer rather
+//! than any specific internal junction contour implementation.
+
 #[cfg(test)]
 mod tests {
     use crate::config;
