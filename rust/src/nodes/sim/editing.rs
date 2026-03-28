@@ -190,15 +190,6 @@ impl SimulationNode {
                 self.recalculate_zoning_local(edge_idx);
             }
         }
-
-        // AUTO-COMPACT if technical debt (deleted edges) grows too large
-        let total_edges = self.region_graph.edges.len();
-        let deleted_edges = self.region_graph.edges.iter().filter(|e| e.deleted).count();
-        if deleted_edges > 50
-            || (total_edges > 0 && deleted_edges as f32 / total_edges as f32 > 0.2)
-        {
-            self.perform_edge_compaction_internal();
-        }
     }
 
     /// Repositions a network node in world space.

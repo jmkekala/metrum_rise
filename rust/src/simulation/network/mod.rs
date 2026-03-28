@@ -374,8 +374,6 @@ impl TransitNetwork {
     pub fn rebuild_pathing(&mut self, graph: &mut RegionGraph) {
         // Topology changes (Phase 1)
         if !self.cch_dirty_chunks.is_empty() {
-            // Run compaction as required by Phase 1
-            graph.compact_edges();
             self.cch_graph = CchGraph::build(graph);
             self.cch_dirty_chunks.clear();
             self.metric_dirty = false; // Phase 1 includes customize

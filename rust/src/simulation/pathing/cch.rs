@@ -78,9 +78,8 @@ impl CchGraph {
             return Self::new(0);
         }
 
-        // Ensure graph is compacted and adjacency is fresh as per 31c requirements.
-        // Note: compact_edges() should be called by the caller (TransitNetwork)
-        // prior to this call to avoid mutating the graph here.
+        // Deleted edges are skipped directly during contraction/customization/query.
+        // Callers do not need to compact the graph before building the hierarchy.
 
         let mut cch = Self::new(n);
         cch.compute_node_order(graph);

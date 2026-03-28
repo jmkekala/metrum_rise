@@ -74,7 +74,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **Canonical node queries**: editor node exports, nearest-node queries, and `get_closest_network_point()` node snaps now ignore alias nodes left behind by `unite_nodes()`. The holographic node overlay, green snap cursor, and node-based tools therefore operate on one live canonical node per junction instead of showing or selecting merged ghost duplicates.
 - **Sidewalk access matches routing flags**: the renderer no longer infers sidewalks from `EdgeClass`. Surface roads only get sidewalk strips and sidewalk node fills when `allowed_types & FOOT != 0`, and explicit `TransitType::Foot` walkways now participate in that same sidewalk pass instead of rendering as isolated strips. Simple branch cases use a sidewalk pass-through classification so the road-side sidewalks stay intact instead of being replaced by a shared sidewalk node disk. Duplicate-angle sidewalk boundary rays also collapse to the outermost point for the remaining polygon-fill cases. Straight road + footpath pass-through joins now emit a dedicated curb-apron sidewalk patch from the trimmed footpath mouth to the selected shoulder curb line, so centered and angled walkway connections no longer carve triangular holes out of the road shoulders.
 - **Old junction mesh cache removed**: `RegionGraph` no longer carries the unused `JunctionMesh` / `junction_polygons` state from the retired contour-based junction renderer.
-- Soft deletion with compaction: edges marked `deleted = true`; `compact_edges()` removes them and remaps all indices (agents, zoning, routing graph).
+- **Soft-deleted edges stay live-safe during play**: road edits now leave deleted edge slots in place during interactive editing and routine CCH rebuilds. Rendering, snapping, zoning invalidation, and CCH pathfinding all skip `deleted` edges directly, so road editing no longer stalls on a synchronous remap/rebuild pass. Runtime compaction entry points have been removed from `SimulationNode`; `compact_edges()` now remains only as a low-level graph canonicalization helper for tests and future save/load serialization work.
 - Lane types and one-way rules in `network/types.rs`.
 - Edge geometry is 3D (`Vec<Vector3>`) — grade-separated roads are natively representable as elevated or depressed polylines. Node snapping uses 3D Euclidean distance, so bridge abutments and underpass nodes with ≥ 2 m vertical separation will not snap together.
 - **`EdgeClass` data model complete**: `Standard | Bridge | Tunnel` enum in `types.rs`; `class: EdgeClass` field on `Edge`; new edges default to `Standard`; `split_edge` copies `class` to the new half-edge.
@@ -111,7 +111,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Desirability gate enforced (≥ 20). Spawn throttle active (max 10 buildings per tick).
 - Rendered via MultiMesh instancing: one draw call per zone type.
 - Building deletion via swap-remove, O(1).
-- Save/load via `serde_json` — **not yet wired end-to-end**.
+- Save/load — **not yet wired end-to-end**. Planned implementation is a single-file SQLite snapshot; schema and load order are tracked in backlog items 74 and 75.
 - **Building Index**: Inverted zone-type index (`zone_index: [Vec<usize>; 6]`) and vacancy index (`vacancy_index: [Vec<usize>; 6]`, `vacancy_pos: Vec<usize>`) implemented in `BuildingAllocator`. `find_available_home()` is O(1) random selection from the vacancy index. `claim_vacancy`/`release_vacancy` maintain the index incrementally in O(1); `kill_agent` calls `release_vacancy` before swap-remove. Building deletion triggers a full `rebuild_zone_index()` via `dirty_index`. Prerequisite for parallel tick.
 - **Unit tests** (`buildings/allocator.rs`): desirability gate (no spawn when grid value < 50.0), demand subtraction (residential demand decreases on spawn), occupancy clearing (3×3 zoning cells cleared on building removal).
 
@@ -186,12 +186,46 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 ## Known Bugs
 
-No tracked bugs at the moment.
+- None currently logged.
 
 
 ## Backlog
 
 ### Infrastructure
+
+74. **Single-file SQLite savegame (`savegame.sqlite`)**: implement save/load as one SQLite database written in a single transaction. Current-game schema example:
+    - `save_meta(version, saved_at_unix, game_build)`
+    - `map_config(width_m, height_m, env_cell_m, zone_cell_m)`
+    - `time_state(time_elapsed, speed_multiplier, current_day, seconds_per_day, agent_sim_time)`
+    - `terrain_state(width, height, height_blob_f32_le)`
+    - `water_state(width, height, depth_blob_f32_le, velocity_blob_f32_le, flux_blob_f32x4_le)`
+    - `water_sources(grid_x, grid_y, rate_m_per_tick)`
+    - `network_nodes(node_id, x, y, z, node_type)`
+    - `network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, zoning_left, zoning_right)`
+    - `network_edge_geometry(edge_id, point_index, x, y, z, physical)`
+    - `lane_connections(node_id, from_edge, from_lane, to_edge, to_lane)`
+    - `zoning_grids(edge_id, cells_long, left_zone_blob_u8, right_zone_blob_u8)`
+    - `buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth)`
+    - `agents(agent_id, home_building, work_building, current_building, target_building, current_node, target_node, current_edge, edge_progression, current_lane, pos_x, pos_y, is_visible, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, bezier_p0_x, bezier_p0_y, bezier_p1_x, bezier_p1_y, bezier_p2_x, bezier_p2_y, bezier_p3_x, bezier_p3_y, bezier_t, current_path_index)`
+    - `agent_path_nodes(agent_id, step_index, node_id)`
+    - `agent_ped_steps(agent_id, step_index, edge_id, forward, side)`
+  Save only live (`!deleted`) edges. Build old→saved remaps for nodes, edges, and buildings during save and apply them to lane connections, zoning, buildings, and agents before writing rows. Do not mutate the live sim graph when saving; canonicalization happens only in the SQLite snapshot.
+
+75. **SQLite load/hydrate path and derived-state rebuild**: load authoritative state only, then rebuild runtime caches. Authoritative persisted state for the current game is: map config, time, terrain, water, water sources, compact road graph, lane connections, zoning intent (`left_zone` / `right_zone`), placed buildings, and live agents including their current travel state and route buffers. Rebuild on load instead of storing: `node_aliases`, adjacency, spatial indices, deleted-edge tombstones, zoning `occupied` / `blocked`, `BuildingAllocator::zone_index`, `vacancy_index`, `vacancy_pos`, and `AgentSystem::pathfind_count`. Load order:
+    - read map/time/terrain/water
+    - hydrate compact graph, then rebuild adjacency/intersection clips/spatial indices
+    - hydrate zoning intent
+    - hydrate buildings, then repaint zoning occupancy from building footprints and rebuild building indices
+    - hydrate agents
+    - rebuild CCH from the compact graph
+    - validate each saved `current_path`, `current_ped_path`, `current_edge`, and building reference; if any reference is invalid, clear that route/reference and let the agent replan on the next tick
+  This keeps the save file exact enough to resume agents mid-journey without persisting runtime-only caches.
+
+77. **Decide the v1 in-flight route restore contract**: lock whether save/load must preserve exact in-progress travel state (`current_path`, `current_ped_path`, `current_path_index`, `current_edge`, `edge_progression`, `current_lane`, Bezier intersection state) or whether v1 may clear some of that state and force replanning on load. Current recommendation: persist exact state when references remain valid, but define the fallback behavior explicitly before implementation.
+
+78. **Decide whether building transforms are authoritative or derived**: buildings currently store `center_x`, `center_y`, and `facing_dir` in addition to frontage attachment data (`edge_idx`, `frontage_t`, `side`, `cell_x`, `cell_y`). Before implementing save/load, choose one contract and document it in code: either persist those world-space values as authoritative, or treat frontage attachment as authoritative and recompute building centers/facing vectors after loading the compact road graph. Current recommendation: frontage attachment authoritative, transform derived.
+
+79. **Lock the minimal v1 authoritative-state boundary before implementation**: before writing any SQLite code, freeze exactly which current systems are authoritative saved state and which are rebuilt caches. Current recommendation: authoritative = map config, time, terrain, water, water sources, compact graph, lane connections, zoning intent, placed buildings, live agents. Derived on load = adjacency, spatial indices, node aliases, deleted-edge tombstones, zoning occupancy/blocked caches, building zone/vacancy indices, CCH, and agent instrumentation counters.
 
 59. **`AgentSystem` SoA migration to `soa_derive`**: replace the 29 manually-maintained parallel `Vec<T>` fields in `data.rs` with a `#[derive(SoA)]` schema struct (`Agent`) and a generated `AgentVec`. `spawn_agent` becomes a single `push(Agent { ... })` — the compiler enforces that all fields are initialised; `clear()` becomes one call; adding a new field no longer silently corrupts state. Also fixes B1 (`has_car` missing from `kill_agent`). Implementation: add `soa_derive = "0.3"` to `Cargo.toml`; define `Agent` with all per-agent fields; wrap `AgentVec` in `AgentSystem` via `Deref/DerefMut` so all `agents.field[i]` call sites are unchanged; replace `self.count` with `self.len()` throughout (`tick.rs`, `data.rs` methods, `render_helpers.rs`, `query.rs`, `benchmark.rs`, `allocator.rs`). `sim_time` and `pathfind_count` remain as direct fields on `AgentSystem`, not part of the generated vec.
 

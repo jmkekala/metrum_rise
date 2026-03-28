@@ -15,7 +15,10 @@ impl RegionGraph {
         }
     }
 
-    /// Removes all edges marked as `deleted` and remaps all internal indices.
+    /// Removes all edges marked as `deleted` and remaps graph-local edge references.
+    ///
+    /// This is a low-level canonicalization helper for tests and future persistence code.
+    /// Live gameplay/editor code keeps soft-deleted edge slots in place and skips them.
     /// Returns a mapping from [Old Edge Index] -> [New Edge Index].
     pub fn compact_edges(&mut self) -> HashMap<usize, usize> {
         let mut old_to_new = HashMap::new();

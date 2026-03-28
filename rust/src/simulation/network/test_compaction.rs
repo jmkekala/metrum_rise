@@ -6,7 +6,10 @@ mod tests {
     use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::graph::{Edge, Node};
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::*;
+    use std::collections::HashMap;
 
     #[test]
     fn test_edge_compaction_remapping() {
@@ -96,5 +99,79 @@ mod tests {
             agents.current_edge[0], 0,
             "Agent should now point to Road B at index 0"
         );
+    }
+
+    #[test]
+    fn test_rebuild_pathing_skips_deleted_edges_without_compacting() {
+        let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+
+        graph.nodes = vec![
+            Node {
+                pos: Vector3::new(0.0, 0.0, 0.0),
+                node_type: NodeType::Junction,
+                lane_connections: HashMap::new(),
+            },
+            Node {
+                pos: Vector3::new(100.0, 0.0, 0.0),
+                node_type: NodeType::Junction,
+                lane_connections: HashMap::new(),
+            },
+        ];
+
+        let edge_template = Edge {
+            start_node: 0,
+            end_node: 1,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            class: EdgeClass::Standard,
+            width: 8.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 20.0,
+            base_cost: 0.0,
+            physical_length: 100.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: Vec::new(),
+            physical_geometry: Vec::new(),
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
+        };
+
+        graph.edges = vec![
+            Edge {
+                base_cost: 1.0,
+                deleted: true,
+                ..edge_template.clone()
+            },
+            Edge {
+                base_cost: 7.0,
+                ..edge_template
+            },
+        ];
+        graph.rebuild_adjacency_list();
+
+        network.cch_dirty_chunks.insert((0, 0));
+        network.rebuild_pathing(&mut graph);
+
+        assert_eq!(
+            graph.edges.len(),
+            2,
+            "Pathing rebuild should not compact the soft-deleted edge array"
+        );
+        assert!(
+            graph.edges[0].deleted,
+            "Deleted edge slot should remain in place"
+        );
+
+        let (cost, _dist, nodes) = network
+            .cch_graph
+            .find_path(0, 1, usize::MAX, &graph, TransitFlags::CAR)
+            .expect("live edge should still be routable after rebuild");
+        assert_eq!(cost, 7.0, "CCH should ignore the deleted lower-cost edge");
+        assert_eq!(nodes, vec![0, 1]);
     }
 }
