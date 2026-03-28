@@ -2,8 +2,30 @@
 
 use crate::config::{HEIGHT_SCALE, ZONING_DEPTH};
 use crate::nodes::simulation_node::SimulationNode;
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction;
 use godot::prelude::*;
+
+fn is_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
+    graph.get_valid_node(node_id) == node_id
+}
+
+fn get_closest_canonical_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) -> i32 {
+    let mut best_id = -1;
+    let mut min_d = max_dist;
+    for (i, node) in graph.nodes.iter().enumerate() {
+        let node_id = i as u32;
+        if !is_canonical_node(graph, node_id) {
+            continue;
+        }
+        let d = node.pos.distance_to(world_pos);
+        if d < min_d {
+            min_d = d;
+            best_id = node_id as i32;
+        }
+    }
+    best_id
+}
 
 impl SimulationNode {
     /// Projects a world position onto a road edge.
@@ -573,16 +595,7 @@ impl SimulationNode {
 
     /// Returns the ID of the closest network node.
     pub fn get_closest_node_internal(&self, world_pos: Vector3, max_dist: f32) -> i32 {
-        let mut best_id = -1;
-        let mut min_d = max_dist;
-        for (i, n) in self.region_graph.nodes.iter().enumerate() {
-            let d = n.pos.distance_to(world_pos);
-            if d < min_d {
-                min_d = d;
-                best_id = i as i32;
-            }
-        }
-        best_id
+        get_closest_canonical_node(&self.region_graph, world_pos, max_dist)
     }
 
     /// Returns the number of road connections for a node.
@@ -596,8 +609,10 @@ impl SimulationNode {
     /// Returns all junction node positions.
     pub fn get_network_nodes_internal(&self) -> PackedVector3Array {
         let mut arr = PackedVector3Array::new();
-        for node in &self.region_graph.nodes {
-            arr.push(node.pos);
+        for (i, node) in self.region_graph.nodes.iter().enumerate() {
+            if is_canonical_node(&self.region_graph, i as u32) {
+                arr.push(node.pos);
+            }
         }
         arr
     }
@@ -824,5 +839,28 @@ impl SimulationNode {
             }
         }
         arr
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{get_closest_canonical_node, is_canonical_node};
+    use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::types::NodeType;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn merged_alias_nodes_are_not_treated_as_live_query_nodes() {
+        let mut graph = RegionGraph::new();
+        let keep = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+        let remove = graph.add_node(Vector3::new(10.2, 0.0, 0.0), NodeType::Junction);
+        graph.unite_nodes(keep, remove);
+
+        assert!(is_canonical_node(&graph, keep));
+        assert!(!is_canonical_node(&graph, remove));
+        assert_eq!(
+            get_closest_canonical_node(&graph, Vector3::new(10.1, 0.0, 0.0), 2.0),
+            keep as i32
+        );
     }
 }
