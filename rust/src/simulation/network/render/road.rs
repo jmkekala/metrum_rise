@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::f32::consts::TAU;
 
 const PASS_THROUGH_DOT: f32 = -0.985;
-const POLYLINE_JOIN_DISK_DOT: f32 = 0.995;
 const MIN_SEGMENT_LEN: f32 = 0.01;
 const SIDEWALK_LAYER_Y: f32 = ROAD_H_OFFSET;
 const ROAD_LAYER_Y: f32 = ROAD_H_OFFSET + 0.02;
@@ -326,32 +325,111 @@ fn emit_polyline_fill(
         return;
     }
 
-    for segment in points.windows(2) {
-        emit_segment_quad(
-            mesh, layer, segment[0], segment[1], half_width, y_offset, color,
-        );
+    let sections = build_polyline_sections(points, half_width, y_offset);
+    if sections.len() < 2 {
+        return;
     }
 
-    for idx in 1..points.len().saturating_sub(1) {
-        if should_emit_join_disk(points[idx - 1], points[idx], points[idx + 1]) {
-            emit_disk(mesh, layer, points[idx], half_width, y_offset, color);
+    let mut travelled = 0.0_f32;
+    for idx in 0..sections.len() - 1 {
+        let delta = Vector2::new(
+            points[idx + 1].x - points[idx].x,
+            points[idx + 1].z - points[idx].z,
+        );
+        let length = delta.length();
+        if length < MIN_SEGMENT_LEN {
+            continue;
         }
+
+        let uvs = if color.a > 0.9 {
+            [
+                Vector2::new(travelled, 1.0),
+                Vector2::new(travelled, 1.0),
+                Vector2::new(travelled + length, 1.0),
+                Vector2::new(travelled + length, 1.0),
+            ]
+        } else {
+            [
+                Vector2::new(travelled, 0.0),
+                Vector2::new(travelled, 1.0),
+                Vector2::new(travelled + length, 1.0),
+                Vector2::new(travelled + length, 0.0),
+            ]
+        };
+
+        push_quad(
+            mesh,
+            layer,
+            [
+                sections[idx].0,
+                sections[idx].1,
+                sections[idx + 1].1,
+                sections[idx + 1].0,
+            ],
+            uvs,
+            color,
+        );
+        travelled += length;
     }
 }
 
-fn should_emit_join_disk(previous: Vector3, center: Vector3, next: Vector3) -> bool {
-    let incoming = Vector2::new(center.x - previous.x, center.z - previous.z);
-    let outgoing = Vector2::new(next.x - center.x, next.z - center.z);
+fn build_polyline_sections(
+    points: &[Vector3],
+    half_width: f32,
+    y_offset: f32,
+) -> Vec<(Vector3, Vector3)> {
+    let mut sections = Vec::with_capacity(points.len());
 
-    let incoming_len = incoming.length();
-    let outgoing_len = outgoing.length();
-    if incoming_len < MIN_SEGMENT_LEN || outgoing_len < MIN_SEGMENT_LEN {
-        return false;
+    for idx in 0..points.len() {
+        let side = polyline_side_at(points, idx) * half_width;
+        sections.push((
+            lifted_offset(points[idx], side, y_offset),
+            lifted_offset(points[idx], -side, y_offset),
+        ));
     }
 
-    let incoming_dir = incoming / incoming_len;
-    let outgoing_dir = outgoing / outgoing_len;
-    incoming_dir.dot(outgoing_dir) < POLYLINE_JOIN_DISK_DOT
+    sections
+}
+
+fn polyline_side_at(points: &[Vector3], idx: usize) -> Vector2 {
+    let prev_dir = if idx > 0 {
+        direction_xz(points[idx] - points[idx - 1])
+    } else {
+        None
+    };
+    let next_dir = if idx + 1 < points.len() {
+        direction_xz(points[idx + 1] - points[idx])
+    } else {
+        None
+    };
+
+    match (prev_dir, next_dir) {
+        (Some(prev), Some(next)) => {
+            let prev_normal = Vector2::new(-prev.y, prev.x);
+            let next_normal = Vector2::new(-next.y, next.x);
+            let miter = prev_normal + next_normal;
+            if miter.length_squared() < MIN_SEGMENT_LEN * MIN_SEGMENT_LEN {
+                next_normal
+            } else {
+                let miter_dir = miter.normalized();
+                let denom = miter_dir.dot(next_normal).abs().max(0.25);
+                miter_dir * (1.0 / denom).min(2.0)
+            }
+        }
+        (Some(prev), None) => Vector2::new(-prev.y, prev.x),
+        (None, Some(next)) => Vector2::new(-next.y, next.x),
+        (None, None) => Vector2::ZERO,
+    }
+}
+
+fn direction_xz(delta: Vector3) -> Option<Vector2> {
+    let flat = Vector2::new(delta.x, delta.z);
+    let length = flat.length();
+    if length < MIN_SEGMENT_LEN {
+        None
+    } else {
+        Some(flat / length)
+    }
 }
 
 fn emit_segment_quad(
@@ -726,24 +804,29 @@ fn marking_dash_color() -> Color {
 
 #[cfg(test)]
 mod tests {
-    use super::should_emit_join_disk;
+    use super::polyline_side_at;
     use godot::prelude::Vector3;
 
     #[test]
-    fn collinear_grade_change_does_not_emit_join_disk() {
-        assert!(!should_emit_join_disk(
+    fn collinear_grade_change_keeps_constant_side_vector() {
+        let points = [
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(10.0, 5.0, 0.0),
             Vector3::new(20.0, 10.0, 0.0),
-        ));
+        ];
+        let side = polyline_side_at(&points, 1);
+        assert!((side.x - 0.0).abs() < 0.001);
+        assert!((side.y - 1.0).abs() < 0.001);
     }
 
     #[test]
-    fn horizontal_bend_emits_join_disk() {
-        assert!(should_emit_join_disk(
+    fn horizontal_bend_expands_outer_join() {
+        let points = [
             Vector3::new(0.0, 0.0, 0.0),
             Vector3::new(10.0, 0.0, 0.0),
             Vector3::new(10.0, 5.0, 10.0),
-        ));
+        ];
+        let side = polyline_side_at(&points, 1);
+        assert!(side.length() > 1.3);
     }
 }
