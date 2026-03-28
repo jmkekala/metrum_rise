@@ -3,6 +3,10 @@ use godot::prelude::*;
 
 const EDGE_SNAP_ENDPOINT_MARGIN_M: f32 = 0.25;
 
+fn is_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
+    graph.get_valid_node(node_id) == node_id
+}
+
 pub struct ProjectionData {
     pub t: f32,
     pub side: i8,
@@ -21,7 +25,10 @@ pub fn get_closest_point(
     let node_snap_dist = max_dist * 2.5;
     let mut closest_node_dist = f32::MAX;
 
-    for node in &graph.nodes {
+    for (i, node) in graph.nodes.iter().enumerate() {
+        if !is_canonical_node(graph, i as u32) {
+            continue;
+        }
         let d = node.pos.distance_to(world_pos);
         if d < node_snap_dist {
             let score = d * 0.4; // Nodes are 2.5x more "attractive" than segments
@@ -109,6 +116,9 @@ pub fn get_closest_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) 
     let mut min_dist_sq = max_dist * max_dist;
 
     for (i, node) in graph.nodes.iter().enumerate() {
+        if !is_canonical_node(graph, i as u32) {
+            continue;
+        }
         let d_sq = node.pos.distance_squared_to(world_pos);
         if d_sq < min_dist_sq {
             min_dist_sq = d_sq;
@@ -177,7 +187,9 @@ pub fn find_intersection_2d(
 
 #[cfg(test)]
 mod tests {
-    use super::get_edge_snap_point;
+    use super::{get_closest_point, get_edge_snap_point};
+    use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::types::NodeType;
     use godot::prelude::Vector3;
 
     #[test]
@@ -191,5 +203,16 @@ mod tests {
 
         assert!((snapped.x - 3.7).abs() < 0.001);
         assert!(snapped.z.abs() < 0.001);
+    }
+
+    #[test]
+    fn closest_point_ignores_aliased_merged_nodes() {
+        let mut graph = RegionGraph::new();
+        let keep = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let remove = graph.add_node(Vector3::new(1.0, 0.0, 0.0), NodeType::Junction);
+        graph.unite_nodes(keep, remove);
+
+        let snapped = get_closest_point(&graph, Vector3::new(0.8, 0.0, 0.0), 5.0).unwrap();
+        assert!(snapped.distance_to(Vector3::ZERO) <= 0.001);
     }
 }
