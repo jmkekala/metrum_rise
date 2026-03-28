@@ -469,4 +469,31 @@ mod tests {
         );
         assert!(center_road >= 0.9);
     }
+
+    #[test]
+    fn test_mixed_width_t_junction_does_not_grow_round_bubble() {
+        let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
+        let branch = [Vector3::new(0.0, 0.0, -24.0), Vector3::ZERO];
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&main, 1, 1), (&branch, 3, 3)]);
+        validate_mesh(&mesh_data, 80.0);
+
+        let junction_core = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-3.0, -3.0),
+            Vector2::new(3.0, 3.0),
+            0.25,
+            VisibleSurface::Road,
+        );
+        let bubble_zone = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-4.0, 4.5),
+            Vector2::new(4.0, 8.0),
+            0.25,
+            VisibleSurface::Road,
+        );
+
+        assert!(junction_core >= 0.75);
+        assert!(bubble_zone <= 0.15);
+    }
 }
