@@ -87,7 +87,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **Player-painted zones** (item 66): automatic edge-aligned zone generation removed. Players click and drag along road edges in `zoning_tool.gd` to paint cells onto either side of a road. Drag can span multiple connected edges; side is determined by mouse position relative to the road centreline and flips automatically at reversed junctions. Scroll wheel adjusts zone depth (2–12 cells, 20–120 m). Right-click clears all zones on an edge. Zone paint is committed on mouse release via `set_zoning_range(edge_idx, side, t_start, t_end, depth, zone_type)` on the Rust side. A MultiMesh preview (grid + painted + brush overlays) updates every frame during hover and drag.
 - Cells extend up to 12 cells deep (120 m) from the road sidewalk edge, following road curvature.
 - Obstruction check (`is_cell_obstructed`): 5-point sampling (4 corners + centre) per cell with asphalt collision and Voronoi ownership test. Splay check applied only to `y=0` cells (inner row) — applying it to all rows incorrectly rejected entire building footprints on curved roads.
-- Obstruction cache correctly wired: `recalculate_obstructions` is parallelised with Rayon and spatially invalidated on nearby road edits.
+- Obstruction cache correctly wired: `recalculate_obstructions` is parallelised with Rayon and spatially invalidated on nearby road edits. `BuildingAllocator::tick()` reads the precomputed `is_blocked()` cache (O(1) per cell) instead of rerunning `is_cell_obstructed()` (O(geometry² × nearby_edges)) on every tick — the per-tick 1–2 s freeze was caused by the latter pattern.
 - Zone types: Residential, Commercial, Industrial, Office, Mixed.
 
 ### Configuration

@@ -13,7 +13,8 @@
 //! [`ZoningSystem::is_cell_obstructed`] tests 5 sample points per cell using asphalt
 //! collision and Voronoi ownership against nearby edges. This is O(K × L) per cell
 //! where K = nearby edges and L = polyline segments. Results should be cached in
-//! `left_blocked`/`right_blocked` (cache currently not wired — bug in `docs/project.md`).
+//! `left_blocked`/`right_blocked` cache is populated by `recalculate_obstructions()` on road
+//! edits and read by `BuildingAllocator::tick()` via `is_blocked()` for O(1) placement checks.
 
 use crate::config::{CLEARANCE_THRESHOLD, ZONING_DEPTH};
 use crate::simulation::core::config::MapConfig;

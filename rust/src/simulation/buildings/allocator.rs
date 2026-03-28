@@ -198,24 +198,6 @@ impl BuildingAllocator {
                 continue;
             }
 
-            // Batch fetch nearby edges for the entire edge to optimize obstruction checks
-            let padding = 120.0;
-            let edge = &graph.edges[edge_idx];
-            let mut min_x = f32::MAX;
-            let mut max_x = f32::MIN;
-            let mut min_z = f32::MAX;
-            let mut max_z = f32::MIN;
-            for p in &edge.physical_geometry {
-                min_x = min_x.min(p.x);
-                max_x = max_x.max(p.x);
-                min_z = min_z.min(p.z);
-                max_z = max_z.max(p.z);
-            }
-            let nearby_edges = graph.get_edges_near_aabb(
-                godot::prelude::Vector3::new(min_x - padding, 0.0, min_z - padding),
-                godot::prelude::Vector3::new(max_x + padding, 0.0, max_z + padding),
-            );
-
             for side in [1, -1] {
                 let cells_long = if let Some(g) = zoning.edge_grids.get(&edge_idx) {
                     g.cells_long
@@ -269,19 +251,15 @@ impl BuildingAllocator {
                     }
 
                     let mut can_build = true;
-                    // Check 3x3 footprint for zone type and occupancy
+                    // Check 3x3 footprint for zone type, occupancy, and cached obstruction.
+                    // is_blocked() reads the precomputed left_blocked/right_blocked cache
+                    // (populated by recalculate_obstructions on road edits) instead of
+                    // rerunning the expensive O(geometry²) check on every tick.
                     for dx in 0..3 {
                         for dy in 0..3 {
                             if zoning.get_cell(edge_idx, side, x + dx, dy) != z_type
                                 || zoning.is_occupied(edge_idx, side, x + dx, dy)
-                                || zoning.is_cell_obstructed(
-                                    edge_idx,
-                                    side,
-                                    x + dx,
-                                    dy,
-                                    &graph,
-                                    Some(&nearby_edges),
-                                )
+                                || zoning.is_blocked(edge_idx, side, x + dx, dy)
                             {
                                 can_build = false;
                                 break;
