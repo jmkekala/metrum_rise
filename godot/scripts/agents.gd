@@ -25,6 +25,9 @@ var wealth_label: Label
 var res_bar: ProgressBar
 var com_bar: ProgressBar
 var ind_bar: ProgressBar
+var res_val: Label
+var com_val: Label
+var ind_val: Label
 
 func _ready():
 	# --- Walker MultiMesh (pedestrians, future cyclists, etc.) ---
@@ -166,20 +169,34 @@ func _ready():
 		lbl.text = entry[0]
 		row.add_child(lbl)
 
+		var hbox = HBoxContainer.new()
+		hbox.add_theme_constant_override("separation", 6)
+		row.add_child(hbox)
+
 		var bar = ProgressBar.new()
 		bar.min_value = -100.0
 		bar.max_value = 100.0
 		bar.value = 0.0
 		bar.custom_minimum_size = Vector2(200, 16)
 		bar.show_percentage = false
-		row.add_child(bar)
+		bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		hbox.add_child(bar)
+
+		var val_lbl = Label.new()
+		val_lbl.text = "0"
+		val_lbl.custom_minimum_size = Vector2(40, 0)
+		val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		hbox.add_child(val_lbl)
 
 		if entry[1] == "res_bar":
 			res_bar = bar
+			res_val = val_lbl
 		elif entry[1] == "com_bar":
 			com_bar = bar
+			com_val = val_lbl
 		else:
 			ind_bar = bar
+			ind_val = val_lbl
 
 
 func _process(delta):
@@ -229,9 +246,12 @@ func update_swarm():
 		wealth_label.text = "Avg Wealth: $ %.1f" % stats.get("average_wealth", 0.0)
 
 		var demand = simulation_node.get_demand_stats()
-		res_bar.value = demand.get("residential", 0.0)
-		com_bar.value = demand.get("commercial", 0.0)
-		ind_bar.value = demand.get("industrial", 0.0)
+		var r = demand.get("residential", 0.0)
+		var c = demand.get("commercial", 0.0)
+		var i = demand.get("industrial", 0.0)
+		res_bar.value = r; res_val.text = "%d" % r
+		com_bar.value = c; com_val.text = "%d" % c
+		ind_bar.value = i; ind_val.text = "%d" % i
 
 # Builds a car-shaped ArrayMesh from two boxes (body + cabin). No mesh files required.
 # Car faces along local -Z (Godot forward). Origin at bottom-centre of body.
