@@ -26,6 +26,9 @@ var cached_overlay_state: bool = false
 var cached_overlay_mode: int = -1
 
 func _ready():
+	rebuild_from_simulation_state()
+
+func rebuild_from_simulation_state():
 	var size = simulation_node.get_heightmap_size()
 	var w = int(size.x)
 	var h = int(size.y)
@@ -56,6 +59,7 @@ func _ready():
 	material.set_shader_parameter("height_scale", 20.0)
 	material.set_shader_parameter("mesh_size", size)
 	self.material_override = material
+	update_terrain_visuals()
 
 func _process(delta):
 	if simulation_node.is_terrain_dirty():

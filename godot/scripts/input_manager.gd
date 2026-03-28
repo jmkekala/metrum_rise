@@ -1,12 +1,13 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
-## Does not call SimulationNode directly. Routes input events to the active tool node
-## (RoadTool, ZoningTool, MoveTool, LaneTool, CulDeSacTool) and handles global shortcuts
-## (Undo, Save/Load, simulation speed, overlay toggles).
+## Routes input events to the active tool node (RoadTool, ZoningTool, MoveTool, LaneTool,
+## CulDeSacTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
+## and refreshes the thin Godot render nodes after world mutations.
 extends Node
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
+@onready var water_node = $"../Water"
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_tool = $"../ZoningTool"
 @onready var move_tool = $"../MoveTool"
@@ -14,6 +15,7 @@ extends Node
 var cul_de_sac_tool: Node3D
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
+@onready var buildings_node = $"../Buildings"
 var select_tool: Node3D
 
 enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, LANE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
@@ -87,10 +89,17 @@ func _unhandled_input(event):
 					_handle_undo()
 				else:
 					if main_ui: main_ui._on_zoning_main_pressed()
+			KEY_S:
+				if event.ctrl_pressed:
+					_handle_save_game()
 			KEY_P: _toggle_agent_paths()
 			KEY_SPACE: _toggle_pause()
 			KEY_ENTER: _handle_export()
-			KEY_L: _handle_import()
+			KEY_L:
+				if event.ctrl_pressed:
+					_handle_load_game()
+				else:
+					_handle_import()
 			
 			# Lane Adjustments (Forward)
 			KEY_BRACKETRIGHT, KEY_UP: _handle_lane_adjust(1, 0)
@@ -192,6 +201,42 @@ func _handle_undo():
 		print("Undo Executed Globally")
 		if terrain_node: terrain_node.update_terrain_visuals()
 		if road_tool: road_tool.update_main_mesh()
+
+func _savegame_path() -> String:
+	return ProjectSettings.globalize_path("user://savegame.sqlite")
+
+func _refresh_after_world_load():
+	if road_tool and road_tool.current_state != 0:
+		road_tool.cancel_road()
+	if move_tool and move_tool.current_state != 0:
+		move_tool.cancel_move()
+	_cancel_active_tool()
+	if terrain_node:
+		terrain_node.rebuild_from_simulation_state()
+	if water_node:
+		water_node.rebuild_from_simulation_state()
+	if road_tool:
+		road_tool.update_main_mesh()
+	if buildings_node:
+		for zone_id in [1, 2, 3, 4]:
+			buildings_node.update_buildings(zone_id)
+	if agents_node:
+		agents_node.update_swarm()
+
+func _handle_save_game():
+	var path = _savegame_path()
+	if simulation_node.save_game(path):
+		print("Saved game to: ", path)
+	else:
+		push_error("Save failed: " + path)
+
+func _handle_load_game():
+	var path = _savegame_path()
+	if simulation_node.load_game(path):
+		_refresh_after_world_load()
+		print("Loaded game from: ", path)
+	else:
+		push_error("Load failed: " + path)
 
 func _toggle_pause():
 	var speed = 0.0 if terrain_node.sim_speed > 0.0 else 1.0

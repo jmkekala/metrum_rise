@@ -14,6 +14,9 @@ var velocity_image: Image
 var height_texture: ImageTexture
 
 func _ready():
+	rebuild_from_simulation_state()
+
+func rebuild_from_simulation_state():
 	var size = simulation_node.get_heightmap_size()
 	var w = int(size.x)
 	var h = int(size.y)
@@ -44,6 +47,7 @@ func _ready():
 	material.set_shader_parameter("velocity_map", velocity_texture)
 	material.set_shader_parameter("height_scale", 20.0)
 	self.material_override = material
+	update_water_visuals()
 
 func _process(delta):
 	if simulation_node.is_water_dirty():

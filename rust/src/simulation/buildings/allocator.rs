@@ -434,6 +434,10 @@ impl BuildingAllocator {
     }
 
     pub fn get_pos_on_edge(&self, graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
+        Self::sample_pos_on_edge(graph, edge_idx, t)
+    }
+
+    fn sample_pos_on_edge(graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
         let edge = &graph.edges[edge_idx];
         let geo = &edge.physical_geometry;
         if geo.is_empty() {
@@ -457,6 +461,10 @@ impl BuildingAllocator {
     }
 
     pub fn get_tangent_on_edge(&self, graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
+        Self::sample_tangent_on_edge(graph, edge_idx, t)
+    }
+
+    fn sample_tangent_on_edge(graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
         let edge = &graph.edges[edge_idx];
         let geo = &edge.physical_geometry;
         if geo.len() < 2 {
@@ -487,6 +495,55 @@ impl BuildingAllocator {
         } else {
             Vector2::new(1.0, 0.0)
         }
+    }
+
+    /// Recomputes world-space building transforms from saved frontage attachment data.
+    pub(crate) fn recompute_derived_transforms(
+        &mut self,
+        graph: &RegionGraph,
+        zoning: &ZoningSystem,
+    ) -> Result<(), String> {
+        for building in &mut self.buildings {
+            if building.edge_idx >= graph.edges.len() {
+                return Err(format!(
+                    "building edge {} out of bounds for {} edges",
+                    building.edge_idx,
+                    graph.edges.len()
+                ));
+            }
+
+            let edge = &graph.edges[building.edge_idx];
+            if edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
+                return Err(format!(
+                    "building edge {} has insufficient geometry for transform rebuild",
+                    building.edge_idx
+                ));
+            }
+
+            let zone_cell_m = zoning.config.zone_cell_m;
+            let width_cells = (building.width as f32 / zone_cell_m).max(1.0);
+            let depth_cells = (building.depth as f32 / zone_cell_m).max(1.0);
+            let along_offset = width_cells * 0.5 * zone_cell_m;
+            let depth_offset = crate::config::SIDEWALK_WIDTH
+                + (building.cell_y as f32 + depth_cells * 0.5) * zone_cell_m;
+            let edge_t =
+                (building.cell_x as f32 * zone_cell_m / edge.physical_length).clamp(0.0, 1.0);
+
+            let world_pos_on_edge = Self::sample_pos_on_edge(graph, building.edge_idx, edge_t);
+            let tangent = Self::sample_tangent_on_edge(graph, building.edge_idx, edge_t);
+            let normal = Vector2::new(tangent.y, -tangent.x) * building.side as f32;
+            let center_2d = world_pos_on_edge
+                + normal * (edge.width * 0.5 + depth_offset)
+                + tangent * along_offset;
+
+            building.center_x = center_2d.x;
+            building.center_y = center_2d.y;
+            building.facing_dir = -normal;
+            building.side_offset = building.side as f32;
+        }
+
+        self.dirty = true;
+        Ok(())
     }
 
     /// Repopulates the internal zone and vacancy indices (Bug B16/B16a fix).

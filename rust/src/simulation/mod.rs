@@ -10,5 +10,6 @@ pub mod economy;
 pub mod grid;
 pub mod network;
 pub mod pathing;
+pub(crate) mod save;
 pub mod terrain;
 pub mod water;

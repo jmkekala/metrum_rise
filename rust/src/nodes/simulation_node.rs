@@ -605,6 +605,30 @@ impl SimulationNode {
         self.load_heightmap_data_internal(data);
     }
 
+    /// Saves the current simulation into a single SQLite snapshot file.
+    #[func]
+    pub fn save_game(&self, path: GString) -> bool {
+        match self.save_game_internal(&path.to_string()) {
+            Ok(()) => true,
+            Err(err) => {
+                godot_print!("Save failed: {}", err);
+                false
+            }
+        }
+    }
+
+    /// Loads a SQLite save snapshot and replaces the live simulation state.
+    #[func]
+    pub fn load_game(&mut self, path: GString) -> bool {
+        match self.load_game_internal(&path.to_string()) {
+            Ok(()) => true,
+            Err(err) => {
+                godot_print!("Load failed: {}", err);
+                false
+            }
+        }
+    }
+
     /// Returns global lane width.
     #[func]
     pub fn get_lane_width(&self) -> f32 {
