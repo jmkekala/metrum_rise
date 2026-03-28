@@ -30,3 +30,11 @@ pub const ZONING_DEPTH: usize = 12;
 pub const DRIVE_ON_LEFT: bool = false;
 /// Minimum vertical separation (metres) for a bridge/tunnel to NOT obstruct other systems.
 pub const CLEARANCE_THRESHOLD: f32 = 5.0;
+
+/// Maximum distance (metres) from the map edge within which a road endpoint is offered as
+/// a candidate for an external border connection.
+///
+/// This should be small — the road tool snaps endpoints to exactly the map boundary, so a
+/// node created there will be within [`SNAP_TOLERANCE`] of the edge. 3 m gives comfortable
+/// headroom without triggering for roads that merely pass near the border.
+pub const BORDER_DETECTION_THRESHOLD: f32 = 3.0;

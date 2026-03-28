@@ -1702,6 +1702,7 @@ fn node_type_to_i64(value: NodeType) -> i64 {
         NodeType::Harbor => 2,
         NodeType::Airport => 3,
         NodeType::Transfer => 4,
+        NodeType::Border => 5,
     }
 }
 
@@ -1712,6 +1713,7 @@ fn node_type_from_i64(value: i64) -> SaveLoadResult<NodeType> {
         2 => Ok(NodeType::Harbor),
         3 => Ok(NodeType::Airport),
         4 => Ok(NodeType::Transfer),
+        5 => Ok(NodeType::Border),
         _ => Err(SaveLoadError::custom(format!(
             "unknown NodeType value {}",
             value

@@ -1,6 +1,7 @@
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
-## Rust methods called: get_agent_transforms(), get_agent_paths_debug(), get_city_demographics()
+## Rust methods called: get_agent_transforms(), get_agent_paths_debug(), get_city_demographics(),
+##   get_demand_stats()
 ## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
 ##   [basis.x(3), basis.y(3), basis.z(3), origin(3)] — matches Godot's Transform3D memory layout.
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
@@ -21,6 +22,9 @@ var pop_label: Label
 var emp_label: Label
 var hap_label: Label
 var wealth_label: Label
+var res_bar: ProgressBar
+var com_bar: ProgressBar
+var ind_bar: ProgressBar
 
 func _ready():
 	# --- Walker MultiMesh (pedestrians, future cyclists, etc.) ---
@@ -145,6 +149,37 @@ func _ready():
 	wealth_label.text = "Avg Wealth: $ 0.0"
 	vbox.add_child(wealth_label)
 
+	var sep2 = HSeparator.new()
+	vbox.add_child(sep2)
+
+	var demand_title = Label.new()
+	demand_title.text = "Demand"
+	demand_title.add_theme_font_size_override("font_size", 16)
+	vbox.add_child(demand_title)
+
+	for entry in [["Residential", "res_bar"], ["Commercial", "com_bar"], ["Industrial", "ind_bar"]]:
+		var row = VBoxContainer.new()
+		row.add_theme_constant_override("separation", 2)
+		vbox.add_child(row)
+
+		var lbl = Label.new()
+		lbl.text = entry[0]
+		row.add_child(lbl)
+
+		var bar = ProgressBar.new()
+		bar.min_value = -100.0
+		bar.max_value = 100.0
+		bar.value = 0.0
+		bar.custom_minimum_size = Vector2(200, 16)
+		bar.show_percentage = false
+		row.add_child(bar)
+
+		if entry[1] == "res_bar":
+			res_bar = bar
+		elif entry[1] == "com_bar":
+			com_bar = bar
+		else:
+			ind_bar = bar
 
 
 func _process(delta):
@@ -192,6 +227,11 @@ func update_swarm():
 		emp_label.text = "Employment: %.1f %%" % stats.get("employment_rate", 0.0)
 		hap_label.text = "Avg Happiness: %.1f" % stats.get("average_happiness", 100.0)
 		wealth_label.text = "Avg Wealth: $ %.1f" % stats.get("average_wealth", 0.0)
+
+		var demand = simulation_node.get_demand_stats()
+		res_bar.value = demand.get("residential", 0.0)
+		com_bar.value = demand.get("commercial", 0.0)
+		ind_bar.value = demand.get("industrial", 0.0)
 
 # Builds a car-shaped ArrayMesh from two boxes (body + cabin). No mesh files required.
 # Car faces along local -Z (Godot forward). Origin at bottom-centre of body.

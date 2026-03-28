@@ -413,6 +413,12 @@ impl SimulationNode {
         self.get_city_demographics_internal()
     }
 
+    /// Returns current residential, commercial, and industrial demand values (-100 to 100).
+    #[func]
+    pub fn get_demand_stats(&self) -> VarDictionary {
+        self.get_demand_stats_internal()
+    }
+
     /// Returns the packed transforms for buildings of a specific zone type.
     #[func]
     pub fn get_building_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
@@ -472,6 +478,32 @@ impl SimulationNode {
         zoning_right: bool,
     ) {
         self.add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
+    }
+
+    /// Returns the node ID of the nearest graph node to `pos` if it lies within the
+    /// border-detection zone (within [`config::BORDER_DETECTION_THRESHOLD`] m of any map edge),
+    /// or `-1` if `pos` is not near the border or no node is found.
+    ///
+    /// Call this after [`add_road`] with the road's start and end positions to decide
+    /// whether to present the "Create external connection?" dialog.
+    #[func]
+    pub fn check_border_candidate(&self, pos: Vector3) -> i64 {
+        self.check_border_candidate_internal(pos)
+    }
+
+    /// Marks the node at `node_id` as an external border connection.
+    ///
+    /// The node's type becomes `Border` and it becomes an active immigrant spawn point.
+    #[func]
+    pub fn set_border_connection(&mut self, node_id: i32) {
+        self.set_border_connection_internal(node_id);
+    }
+
+    /// Returns the world-space positions of all active border nodes as a flat
+    /// `PackedFloat32Array` of `[x, y, z, x, y, z, …]` triples.
+    #[func]
+    pub fn get_border_nodes(&self) -> PackedFloat32Array {
+        self.get_border_nodes_internal()
     }
 
     /// Sets the classification of an edge (Standard, Bridge, Tunnel).

@@ -217,13 +217,21 @@ func _draw_blueprint():
 
 func _commit_segment(end_pos):
 	if not is_valid: return
-	
+
 	var points = _get_processed_points()
 	if points.size() > 1:
 		simulation_node.add_road(points, fwd_lanes, bkw_lanes, true, true)
 		simulation_node.flatten_terrain_for_roads()
 		update_main_mesh()
 		terrain_node.update_terrain_visuals()
+
+		# Check whether either endpoint landed in the border zone.
+		# check_border_candidate() returns the snapped node ID or -1.
+		var candidate: int = simulation_node.check_border_candidate(start_pos)
+		if candidate < 0:
+			candidate = simulation_node.check_border_candidate(end_pos)
+		if candidate >= 0:
+			_prompt_border_connection(candidate)
 	
 	var dist = start_pos.distance_to(end_pos)
 	
@@ -248,44 +256,123 @@ func cancel_road():
 		current_path.queue_free()
 	current_path = null
 
+## Shows a dialog asking whether to make this road endpoint an external connection.
+## On confirmation, the node is promoted to Border and becomes an immigrant spawn point.
+func _prompt_border_connection(node_id: int) -> void:
+	var dialog := ConfirmationDialog.new()
+	dialog.title = "External Connection"
+	dialog.dialog_text = (
+		"This road reaches the map boundary.\n" +
+		"Create an external connection here?\n\n" +
+		"Immigrants will enter and leave the city through this point.\n" +
+		"Immigration only flows while the road remains connected."
+	)
+	dialog.ok_button_text = "Create Connection"
+	dialog.cancel_button_text = "No Thanks"
+	add_child(dialog)
+	dialog.confirmed.connect(func() -> void:
+		simulation_node.set_border_connection(node_id)
+		update_main_mesh()
+		dialog.queue_free()
+	)
+	dialog.canceled.connect(func() -> void: dialog.queue_free())
+	dialog.popup_centered()
 
-# Override to add Self-Snapping and Angle Snapping
+
+# Override to add Self-Snapping, Angle Snapping, and Map-Border Snapping.
+# When the cursor moves beyond the terrain edge the terrain raycast returns null.
+# In that case we project the camera ray onto a flat plane and clamp to the map boundary
+# so the endpoint snaps cleanly to the border instead of showing an invalid (red) preview.
 func get_world_mouse_pos() -> Vector3:
+	var hmap_size: Vector2 = simulation_node.get_heightmap_size()
+	var half_w: float = (hmap_size.x - 1.0) * 0.5
+	var half_h: float = (hmap_size.y - 1.0) * 0.5
+	# How close to the edge (in metres) before snapping to it.
+	var border_snap_dist: float = minf(half_w, half_h) * 0.08  # ~8% of half-extent
+
 	var pos_variant = get_terrain_interaction()
-	if pos_variant == null: 
-		is_valid = false
-		return Vector3.ZERO
-	
+
+	if pos_variant == null:
+		# Cursor is off the terrain — project ray onto a flat plane and snap to map border.
+		var mouse_screen := get_viewport().get_mouse_position()
+		var camera := get_viewport().get_camera_3d()
+		if camera == null:
+			is_valid = false
+			return Vector3.ZERO
+		var ray_origin := camera.project_ray_origin(mouse_screen)
+		var ray_dir    := camera.project_ray_normal(mouse_screen)
+		if ray_dir.y >= -0.001:
+			# Ray points upward — cannot hit the ground plane.
+			is_valid = false
+			return Vector3.ZERO
+		var t_plane: float = -ray_origin.y / ray_dir.y
+		var hit := ray_origin + ray_dir * t_plane
+		# Clamp to map bounds, then snap to the nearest edge.
+		hit.x = clampf(hit.x, -half_w, half_w)
+		hit.z = clampf(hit.z, -half_h, half_h)
+		hit = _snap_to_map_border(hit, half_w, half_h)
+		hit.y = simulation_node.get_height_at(Vector2(hit.x, hit.z))
+		is_valid = true
+		return hit
+
 	var pos: Vector3 = pos_variant
-	
-	# 1. Snap to existing network (High priority)
+
+	# 1. Snap to existing network node/edge (highest priority).
 	var snapped_pos = simulation_node.get_closest_network_point(pos, 5.0)
 	if snapped_pos != null:
 		is_valid = true
 		return snapped_pos
-	
-	# 2. Apply altitude offset if not snapped
+
+	# 2. Snap to map border when cursor is within border_snap_dist of any edge.
+	if _is_near_border(pos, half_w, half_h, border_snap_dist):
+		pos = _snap_to_map_border(pos, half_w, half_h)
+		pos.y = simulation_node.get_height_at(Vector2(pos.x, pos.z))
+		is_valid = true
+		return pos
+
+	# 3. Apply altitude offset (bridges / tunnels).
 	pos.y += altitude_offset
-	
+
 	if active and Input.is_key_pressed(KEY_SHIFT):
-		var ref_pos = start_pos if current_state == State.SETTING_CONTROL else control_pos
-		var dir = pos - ref_pos
-		var length = dir.length()
+		var ref_pos: Vector3 = start_pos if current_state == State.SETTING_CONTROL else control_pos
+		var dir: Vector3 = pos - ref_pos
+		var length: float = dir.length()
 		if length > 0.1:
-			var angle = atan2(dir.z, dir.x)
-			var snap_rad = PI / 12.0 # 15 degrees
+			var angle := atan2(dir.z, dir.x)
+			var snap_rad := PI / 12.0  # 15-degree increments
 			angle = round(angle / snap_rad) * snap_rad
-			pos = ref_pos + Vector3(cos(angle), 0, sin(angle)) * length
-	
-	# Self-snapping (to Start or Control points)
+			pos = ref_pos + Vector3(cos(angle), 0.0, sin(angle)) * length
+
+	# 4. Self-snapping (to start or control point).
 	if active:
 		if pos.distance_to(start_pos) < 2.5:
 			return start_pos
-		
 		if current_state == State.SETTING_END:
 			if pos.distance_to(control_pos) < 2.5:
 				return control_pos
-				
+
+	return pos
+
+## Returns true when pos is within threshold metres of any map edge.
+func _is_near_border(pos: Vector3, half_w: float, half_h: float, threshold: float) -> bool:
+	return (pos.x < -half_w + threshold or pos.x > half_w - threshold or
+			pos.z < -half_h + threshold or pos.z > half_h - threshold)
+
+## Snaps pos to the nearest map edge by clamping whichever axis is closest to its limit.
+func _snap_to_map_border(pos: Vector3, half_w: float, half_h: float) -> Vector3:
+	var d_left  := pos.x + half_w   # distance from left  edge (X = -half_w)
+	var d_right := half_w - pos.x   # distance from right edge (X = +half_w)
+	var d_top   := pos.z + half_h   # distance from top   edge (Z = -half_h)
+	var d_bot   := half_h - pos.z   # distance from bot   edge (Z = +half_h)
+	var min_d   := minf(d_left, minf(d_right, minf(d_top, d_bot)))
+	if min_d == d_left:
+		pos.x = -half_w
+	elif min_d == d_right:
+		pos.x = half_w
+	elif min_d == d_top:
+		pos.z = -half_h
+	else:
+		pos.z = half_h
 	return pos
 
 func _get_processed_points() -> PackedVector3Array:

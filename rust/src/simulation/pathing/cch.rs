@@ -17,6 +17,11 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// A shortcut edge in the contracted graph.
+///
+/// Each shortcut is either a *direct* shortcut (wrapping a single base edge) or a *compound*
+/// shortcut (combining two child shortcuts via a middle node).  Storing only the child indices
+/// keeps each shortcut at O(1) memory regardless of path length, which eliminates the O(N⁴)
+/// memory explosion that occurs when `inner_edges` accumulates path segments during contraction.
 #[derive(Clone, Debug)]
 pub struct CchShortcut {
     /// The start node of this shortcut.
@@ -27,8 +32,15 @@ pub struct CchShortcut {
     pub cost: f32,
     /// The physical distance (metres).
     pub dist: f32,
-    /// Sequence of concrete edge indices forming the path.
-    pub inner_edges: Vec<usize>,
+    /// Index of the base edge in `RegionGraph::edges` for *direct* shortcuts.
+    /// `usize::MAX` for compound shortcuts.
+    pub base_edge: usize,
+    /// Index into `CchGraph::shortcuts` of the left (incoming) child shortcut.
+    /// `usize::MAX` for direct shortcuts.
+    pub mid_l: usize,
+    /// Index into `CchGraph::shortcuts` of the right (outgoing) child shortcut.
+    /// `usize::MAX` for direct shortcuts.
+    pub mid_r: usize,
     /// The first concrete edge of the shortcut (for turn restrictions).
     pub first_edge: usize,
     /// The last concrete edge of the shortcut (for turn restrictions).
@@ -190,60 +202,56 @@ impl CchGraph {
                 || (edge.primary_type == TransitType::Foot
                     && (edge.allowed_types & TransitFlags::FOOT != 0))
             {
-                self.add_direct_shortcut(edge.start_node, edge.end_node, edge_idx, edge, true);
+                self.add_direct_shortcut(edge.start_node, edge.end_node, edge_idx, edge);
             }
             // Backward edge (end -> start)
             if edge.bkw_lanes > 0
                 || (edge.primary_type == TransitType::Foot
                     && (edge.allowed_types & TransitFlags::FOOT != 0))
             {
-                self.add_direct_shortcut(edge.end_node, edge.start_node, edge_idx, edge, false);
+                self.add_direct_shortcut(edge.end_node, edge.start_node, edge_idx, edge);
             }
         }
 
-        // 2. Triangle insertion following node rank
+        // 2. Triangle insertion following node rank.
+        //
+        // For each contracted node u, find all shortcuts v→u (neighbors_in) and u→w
+        // (neighbors_out) and insert a compound shortcut v→w that stores *only* the child
+        // shortcut indices.  This keeps each shortcut at O(1) memory regardless of path
+        // length, preventing the O(N⁴) allocation that occurred when inner_edges were
+        // concatenated and cloned here.
+        //
+        // Rank filter: only collect shortcuts whose other endpoint has a *higher* rank than u
+        // (i.e., it is not yet contracted).  Without this filter, already-contracted low-rank
+        // nodes accumulate as spurious "neighbors," causing O(N³) shortcuts on cyclic networks.
+        // With the filter, each contraction touches only the local uncontracted neighborhood,
+        // giving O(N·D²) total shortcuts for road networks with bounded degree D.
         for rank in 0..n {
             let u = self.node_order[rank];
+            let u_rank = self.node_rank[u as usize];
 
-            // Find neighbors in hierarchy (rank > u)
-            // Incoming to u: v -> u where rank(v) > rank(u). But also we need v -> u where rank(v) is anything
-            // for the contraction phase. Wait, CCH contraction: for every pair of neighbors.
-
-            // Collect all current shortcuts connected to u
-            let mut neighbors_in = Vec::new(); // Shortcuts S -> u
-            let mut neighbors_out = Vec::new(); // Shortcuts u -> T
+            let mut neighbors_in = Vec::new(); // shortcut indices S -> u
+            let mut neighbors_out = Vec::new(); // shortcut indices u -> T
 
             for (idx, s) in self.shortcuts.iter().enumerate() {
-                if s.target_node == u {
+                if s.target_node == u && self.node_rank[s.start_node as usize] > u_rank {
                     neighbors_in.push(idx);
                 }
-                if s.start_node == u {
+                if s.start_node == u && self.node_rank[s.target_node as usize] > u_rank {
                     neighbors_out.push(idx);
                 }
             }
 
             for &idx_in in &neighbors_in {
-                let (s_in_start, s_in_last, s_in_inner, s_in_first, s_in_mask) = {
+                let (s_in_start, s_in_last, s_in_first, s_in_mask) = {
                     let s = &self.shortcuts[idx_in];
-                    (
-                        s.start_node,
-                        s.last_edge,
-                        s.inner_edges.clone(),
-                        s.first_edge,
-                        s.allowed_types,
-                    )
+                    (s.start_node, s.last_edge, s.first_edge, s.allowed_types)
                 };
 
                 for &idx_out in &neighbors_out {
-                    let (s_out_target, s_out_first, s_out_inner, s_out_last, s_out_mask) = {
+                    let (s_out_target, s_out_first, s_out_last, s_out_mask) = {
                         let s = &self.shortcuts[idx_out];
-                        (
-                            s.target_node,
-                            s.first_edge,
-                            s.inner_edges.clone(),
-                            s.last_edge,
-                            s.allowed_types,
-                        )
+                        (s.target_node, s.first_edge, s.last_edge, s.allowed_types)
                     };
 
                     if s_in_start == s_out_target {
@@ -267,14 +275,12 @@ impl CchGraph {
                         }
                     }
 
-                    // Form shortcut v -> w
-                    let mut inner = s_in_inner.clone();
-                    inner.extend(&s_out_inner);
-
-                    self.add_shortcut(
+                    // Store compound shortcut referencing child indices — no path copying.
+                    self.add_compound_shortcut(
                         s_in_start,
                         s_out_target,
-                        inner,
+                        idx_in,
+                        idx_out,
                         s_in_first,
                         s_out_last,
                         s_in_mask & s_out_mask,
@@ -306,25 +312,27 @@ impl CchGraph {
         end: u32,
         edge_idx: usize,
         edge: &crate::simulation::network::graph::Edge,
-        _is_fwd: bool,
     ) {
         self.shortcuts.push(CchShortcut {
             start_node: start,
             target_node: end,
             cost: 0.0, // Updated in customize
             dist: edge.physical_length,
-            inner_edges: vec![edge_idx],
+            base_edge: edge_idx,
+            mid_l: usize::MAX,
+            mid_r: usize::MAX,
             first_edge: edge_idx,
             last_edge: edge_idx,
             allowed_types: edge.allowed_types,
         });
     }
 
-    fn add_shortcut(
+    fn add_compound_shortcut(
         &mut self,
         start: u32,
         end: u32,
-        inner: Vec<usize>,
+        l_idx: usize,
+        r_idx: usize,
         first: usize,
         last: usize,
         mask: u8,
@@ -334,14 +342,39 @@ impl CchGraph {
             target_node: end,
             cost: 0.0,
             dist: 0.0,
-            inner_edges: inner,
+            base_edge: usize::MAX,
+            mid_l: l_idx,
+            mid_r: r_idx,
             first_edge: first,
             last_edge: last,
             allowed_types: mask,
         });
     }
 
+    /// Expands a shortcut into its sequence of concrete base-edge indices.
+    ///
+    /// Uses an iterative stack to avoid recursion depth issues on long paths.
+    fn collect_base_edges(&self, idx: usize) -> Vec<usize> {
+        let mut result = Vec::new();
+        let mut stack = vec![idx];
+        while let Some(i) = stack.pop() {
+            let s = &self.shortcuts[i];
+            if s.mid_l == usize::MAX {
+                // Direct shortcut — emit the base edge.
+                result.push(s.base_edge);
+            } else {
+                // Compound shortcut — push right then left so left is processed first.
+                stack.push(s.mid_r);
+                stack.push(s.mid_l);
+            }
+        }
+        result
+    }
+
     /// Updates shortcut costs based on current dynamic edge costs.
+    ///
+    /// Shortcuts are created in order (children before parents), so a single forward pass
+    /// correctly propagates costs bottom-up without needing to traverse `inner_edges`.
     pub fn customize(&mut self, graph: &RegionGraph) {
         let mut max_speed = 1.0_f32;
         for edge in &graph.edges {
@@ -351,12 +384,30 @@ impl CchGraph {
         }
         self.max_v = max_speed;
 
-        // 1. Update all shortcut costs in one pass
+        // Bottom-up cost propagation: direct shortcuts first, compound shortcuts after.
+        // Children always have lower indices than the compound shortcuts that reference them
+        // because shortcuts are appended in contraction order.
         for idx in 0..self.shortcuts.len() {
-            self.update_shortcut_cost(idx, graph);
+            if self.shortcuts[idx].mid_l == usize::MAX {
+                // Direct shortcut: cost comes from the base edge.
+                let e_idx = self.shortcuts[idx].base_edge;
+                let edge = &graph.edges[e_idx];
+                let cost = edge.base_cost * (1.0 + edge.current_congestion);
+                let dist = edge.physical_length;
+                self.shortcuts[idx].cost = cost;
+                self.shortcuts[idx].dist = dist;
+            } else {
+                // Compound shortcut: cost is the sum of the two children.
+                let l = self.shortcuts[idx].mid_l;
+                let r = self.shortcuts[idx].mid_r;
+                let cost = self.shortcuts[l].cost + self.shortcuts[r].cost;
+                let dist = self.shortcuts[l].dist + self.shortcuts[r].dist;
+                self.shortcuts[idx].cost = cost;
+                self.shortcuts[idx].dist = dist;
+            }
         }
 
-        // 2. Prune fwd_up and bwd_up following elimination tree order
+        // Prune fwd_up and bwd_up following elimination tree order
         for rank in 0..graph.nodes.len() {
             let u = self.node_order[rank] as usize;
 
@@ -382,19 +433,6 @@ impl CchGraph {
             }
             self.bwd_up[u] = best_bwd.values().map(|(idx, _)| *idx).collect();
         }
-    }
-
-    fn update_shortcut_cost(&mut self, idx: usize, graph: &RegionGraph) {
-        let shortcut = &mut self.shortcuts[idx];
-        let mut total_cost = 0.0;
-        let mut total_dist = 0.0;
-        for &e_idx in &shortcut.inner_edges {
-            let edge = &graph.edges[e_idx];
-            total_cost += edge.base_cost * (1.0 + edge.current_congestion);
-            total_dist += edge.physical_length;
-        }
-        shortcut.cost = total_cost;
-        shortcut.dist = total_dist;
     }
 
     /// Finds a path from `start` to `end` using bidirectional upward search.
@@ -568,14 +606,14 @@ impl CchGraph {
         }
         fwd_indices.reverse();
         for idx in fwd_indices {
-            full_edges.extend(&self.shortcuts[idx].inner_edges);
+            full_edges.extend(self.collect_base_edges(idx));
         }
 
         // Backward part: MEETING -> TARGET
         let mut curr_key = (meeting_node, meeting_b_edge);
         while let Some(&(_, _, s_opt, next_key)) = bwd_data.get(&curr_key) {
             if let Some(s_idx) = s_opt {
-                full_edges.extend(&self.shortcuts[s_idx].inner_edges);
+                full_edges.extend(self.collect_base_edges(s_idx));
                 curr_key = next_key;
             } else {
                 break;

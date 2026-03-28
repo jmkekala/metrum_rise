@@ -12,6 +12,7 @@
 
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
 
 /// A placed building occupying a 3 × 3 cell (30 m × 30 m) footprint on a zoning grid.
@@ -396,6 +397,10 @@ impl BuildingAllocator {
         }
 
         // 3. Immigration Logic
+        //
+        // Agents only spawn if the player has built at least one road to the map boundary and
+        // confirmed it as an external connection (NodeType::Border). A border node with no
+        // connected edges (i.e. its road was later deleted) is skipped.
         let total_capacity: usize = self
             .buildings
             .iter()
@@ -407,27 +412,42 @@ impl BuildingAllocator {
             let gap = total_capacity - _agents.count;
             let num_to_spawn = ((gap as f32 * 0.2 * demand_factor) as usize).max(1).min(10);
 
-            for _ in 0..num_to_spawn {
-                let highway_pos = godot::prelude::Vector3::new(0.0, 0.0, -127.0);
-                if let Some(highway_node) =
-                    crate::simulation::network::interaction::get_closest_node(
-                        graph,
-                        highway_pos,
-                        1000.0,
-                    )
-                {
-                    let highway_world_pos = graph.nodes[highway_node as usize].pos;
+            // Collect all connected Border nodes as valid spawn points.
+            let border_nodes: Vec<u32> = graph
+                .nodes
+                .iter()
+                .enumerate()
+                .filter_map(|(i, node)| {
+                    if node.node_type != NodeType::Border {
+                        return None;
+                    }
+                    // Only spawn from nodes that still have at least one live incident edge.
+                    let connected = graph
+                        .adjacency
+                        .get(i)
+                        .map_or(false, |adj| adj.iter().any(|&e| !graph.edges[e].deleted));
+                    if connected { Some(i as u32) } else { None }
+                })
+                .collect();
+
+            if !border_nodes.is_empty() {
+                let mut rng = rand::thread_rng();
+                for _ in 0..num_to_spawn {
+                    let spawn_node =
+                        border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
+                    let spawn_pos = graph.nodes[spawn_node as usize].pos;
                     _agents.spawn_agent(
                         usize::MAX,
-                        highway_node,
+                        spawn_node,
                         0.0,
                         0.0,
-                        highway_node,
-                        highway_world_pos.x,
-                        highway_world_pos.z,
+                        spawn_node,
+                        spawn_pos.x,
+                        spawn_pos.z,
                     );
                 }
             }
+            // No border nodes → immigration is blocked until the player builds an external connection.
         }
 
         self.dirty = false;

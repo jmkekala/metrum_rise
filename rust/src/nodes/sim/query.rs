@@ -584,6 +584,15 @@ impl SimulationNode {
         dict
     }
 
+    /// Returns current residential, commercial, and industrial demand values (-100 to 100).
+    pub fn get_demand_stats_internal(&self) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("residential", self.demand.residential);
+        dict.set("commercial", self.demand.commercial);
+        dict.set("industrial", self.demand.industrial);
+        dict
+    }
+
     /// Returns the closest network point (node/edge) within range.
     pub fn get_closest_network_point_internal(
         &self,
@@ -837,6 +846,27 @@ impl SimulationNode {
                     arr.push(&dict.to_variant());
                 }
             }
+        }
+        arr
+    }
+
+    /// Returns the world-space positions of all active border (external connection) nodes.
+    ///
+    /// Each border node is returned as a flat `[x, y, z]` triple packed into a
+    /// `PackedFloat32Array`. Use this to render external-connection icons in Godot.
+    /// Only canonical (non-alias) nodes with `NodeType::Border` are included.
+    pub fn get_border_nodes_internal(&self) -> PackedFloat32Array {
+        let mut arr = PackedFloat32Array::new();
+        for (i, node) in self.region_graph.nodes.iter().enumerate() {
+            if node.node_type != crate::simulation::network::types::NodeType::Border {
+                continue;
+            }
+            if !is_canonical_node(&self.region_graph, i as u32) {
+                continue;
+            }
+            arr.push(node.pos.x);
+            arr.push(node.pos.y);
+            arr.push(node.pos.z);
         }
         arr
     }

@@ -300,4 +300,49 @@ impl SimulationNode {
             self.terrain_dirty = true;
         }
     }
+
+    /// Returns the ID of the nearest node to `pos` if `pos` is within
+    /// [`config::BORDER_DETECTION_THRESHOLD`] metres of any map edge, or `-1` if not.
+    ///
+    /// Call this after [`add_road_internal`] with the road's start or end position to find
+    /// out whether a border-connection dialog should be presented to the player.
+    pub fn check_border_candidate_internal(&self, pos: Vector3) -> i64 {
+        // The actual world-space boundary is derived from the heightmap dimensions, not
+        // config.width_m (which is a logical grid size, not the terrain world extent).
+        let half_w = (self.heightmap.width as f32 - 1.0) * 0.5;
+        let half_h = (self.heightmap.height as f32 - 1.0) * 0.5;
+        let t = config::BORDER_DETECTION_THRESHOLD;
+
+        let near_border = pos.x < -half_w + t
+            || pos.x > half_w - t
+            || pos.z < -half_h + t
+            || pos.z > half_h - t;
+
+        if !near_border {
+            return -1;
+        }
+
+        // Use a generous tolerance: the node was snapped during add_road so it should be
+        // very close, but terrain raycast imprecision may add a few metres of offset.
+        match crate::simulation::network::interaction::get_closest_node(
+            &self.region_graph,
+            pos,
+            config::SNAP_TOLERANCE * 5.0,
+        ) {
+            Some(id) => id as i64,
+            None => -1,
+        }
+    }
+
+    /// Designates the node at `node_id` as an external border connection.
+    ///
+    /// After this call the node's type becomes [`NodeType::Border`] and it will be used as an
+    /// immigrant spawn point by [`BuildingAllocator::tick`] as long as the road remains connected.
+    pub fn set_border_connection_internal(&mut self, node_id: i32) {
+        if node_id < 0 || (node_id as usize) >= self.region_graph.nodes.len() {
+            return;
+        }
+        self.region_graph.nodes[node_id as usize].node_type =
+            crate::simulation::network::types::NodeType::Border;
+    }
 }
