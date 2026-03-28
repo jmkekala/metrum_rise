@@ -84,25 +84,26 @@ mod tests {
             }
         }
 
-        validate_triangles(&mesh_data.vertices, max_dist, "main");
+        validate_triangles(&mesh_data.sidewalk_vertices, max_dist, "sidewalk");
+        validate_triangles(&mesh_data.road_vertices, max_dist, "road");
         validate_triangles(&mesh_data.marking_vertices, max_dist, "marking");
         validate_triangles(&mesh_data.concrete_vertices, max_dist, "concrete");
     }
 
-    fn main_triangles_by_alpha(mesh_data: &NetworkMeshData, sidewalk: bool) -> Vec<[Vector3; 3]> {
-        mesh_data
-            .vertices
-            .chunks_exact(3)
-            .zip(mesh_data.colors.chunks_exact(3))
-            .filter_map(|(triangle, colors)| {
-                let is_sidewalk = colors[0].a > 0.9;
-                if is_sidewalk == sidewalk {
-                    Some([triangle[0], triangle[1], triangle[2]])
-                } else {
-                    None
-                }
-            })
-            .collect()
+    fn main_triangles(mesh_data: &NetworkMeshData, surface: VisibleSurface) -> Vec<[Vector3; 3]> {
+        match surface {
+            VisibleSurface::Road => mesh_data
+                .road_vertices
+                .chunks_exact(3)
+                .map(|triangle| [triangle[0], triangle[1], triangle[2]])
+                .collect(),
+            VisibleSurface::Sidewalk => mesh_data
+                .sidewalk_vertices
+                .chunks_exact(3)
+                .map(|triangle| [triangle[0], triangle[1], triangle[2]])
+                .collect(),
+            VisibleSurface::None => Vec::new(),
+        }
     }
 
     fn triangle_contains_point_xz(triangle: [Vector3; 3], point: Vector2) -> bool {
@@ -146,8 +147,8 @@ mod tests {
         step: f32,
         target: VisibleSurface,
     ) -> f32 {
-        let road_triangles = main_triangles_by_alpha(mesh_data, false);
-        let sidewalk_triangles = main_triangles_by_alpha(mesh_data, true);
+        let road_triangles = main_triangles(mesh_data, VisibleSurface::Road);
+        let sidewalk_triangles = main_triangles(mesh_data, VisibleSurface::Sidewalk);
         let mut covered = 0usize;
         let mut total = 0usize;
         let mut z = min.y;

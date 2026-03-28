@@ -8,7 +8,7 @@
 //! - keep lane markings as a separate overlay mesh trimmed out of true junctions
 
 use super::{NetworkMeshData, TransitRenderer};
-use crate::config::{LANE_WIDTH, ROAD_H_OFFSET, SIDEWALK_WIDTH, Z_FIGHT_BIAS};
+use crate::config::{LANE_WIDTH, ROAD_H_OFFSET, SIDEWALK_WIDTH};
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
@@ -17,10 +17,11 @@ use std::collections::HashMap;
 use std::f32::consts::TAU;
 
 const PASS_THROUGH_DOT: f32 = -0.985;
+const POLYLINE_JOIN_DISK_DOT: f32 = 0.995;
 const MIN_SEGMENT_LEN: f32 = 0.01;
 const SIDEWALK_LAYER_Y: f32 = ROAD_H_OFFSET;
-const ROAD_LAYER_Y: f32 = ROAD_H_OFFSET + Z_FIGHT_BIAS;
-const MARKING_LAYER_Y: f32 = ROAD_H_OFFSET + Z_FIGHT_BIAS * 2.0;
+const ROAD_LAYER_Y: f32 = ROAD_H_OFFSET + 0.02;
+const MARKING_LAYER_Y: f32 = ROAD_H_OFFSET + 0.04;
 const BRIDGE_CONCRETE_Y: f32 = ROAD_H_OFFSET - 0.05;
 const MARKING_WIDTH: f32 = 0.16;
 
@@ -60,7 +61,8 @@ struct NodeAccum {
 
 #[derive(Clone, Copy)]
 enum MeshLayer {
-    Main,
+    Sidewalk,
+    Road,
     Marking,
     Concrete,
 }
@@ -84,7 +86,7 @@ impl TransitRenderer for RoadRenderer {
                     if has_sidewalk(edge) {
                         emit_polyline_fill(
                             &mut mesh,
-                            MeshLayer::Main,
+                            MeshLayer::Sidewalk,
                             edge_points(edge),
                             outer_half_width(edge),
                             SIDEWALK_LAYER_Y,
@@ -105,7 +107,7 @@ impl TransitRenderer for RoadRenderer {
                 TransitType::Foot => {
                     emit_polyline_fill(
                         &mut mesh,
-                        MeshLayer::Main,
+                        MeshLayer::Sidewalk,
                         edge_points(edge),
                         (edge.width.max(2.0) * 0.5) + 0.4,
                         SIDEWALK_LAYER_Y,
@@ -125,7 +127,7 @@ impl TransitRenderer for RoadRenderer {
             if state.outer_radius > 0.0 {
                 emit_disk(
                     &mut mesh,
-                    MeshLayer::Main,
+                    MeshLayer::Sidewalk,
                     graph.nodes[*node_id as usize].pos,
                     state.outer_radius,
                     SIDEWALK_LAYER_Y,
@@ -143,7 +145,7 @@ impl TransitRenderer for RoadRenderer {
             match edge.primary_type {
                 TransitType::Road => emit_polyline_fill(
                     &mut mesh,
-                    MeshLayer::Main,
+                    MeshLayer::Road,
                     edge_points(edge),
                     road_half_width(edge),
                     ROAD_LAYER_Y,
@@ -162,7 +164,7 @@ impl TransitRenderer for RoadRenderer {
             if state.road_radius > 0.0 {
                 emit_disk(
                     &mut mesh,
-                    MeshLayer::Main,
+                    MeshLayer::Road,
                     graph.nodes[*node_id as usize].pos,
                     state.road_radius,
                     ROAD_LAYER_Y,
@@ -330,9 +332,26 @@ fn emit_polyline_fill(
         );
     }
 
-    for point in points.iter().skip(1).take(points.len().saturating_sub(2)) {
-        emit_disk(mesh, layer, *point, half_width, y_offset, color);
+    for idx in 1..points.len().saturating_sub(1) {
+        if should_emit_join_disk(points[idx - 1], points[idx], points[idx + 1]) {
+            emit_disk(mesh, layer, points[idx], half_width, y_offset, color);
+        }
     }
+}
+
+fn should_emit_join_disk(previous: Vector3, center: Vector3, next: Vector3) -> bool {
+    let incoming = Vector2::new(center.x - previous.x, center.z - previous.z);
+    let outgoing = Vector2::new(next.x - center.x, next.z - center.z);
+
+    let incoming_len = incoming.length();
+    let outgoing_len = outgoing.length();
+    if incoming_len < MIN_SEGMENT_LEN || outgoing_len < MIN_SEGMENT_LEN {
+        return false;
+    }
+
+    let incoming_dir = incoming / incoming_len;
+    let outgoing_dir = outgoing / outgoing_len;
+    incoming_dir.dot(outgoing_dir) < POLYLINE_JOIN_DISK_DOT
 }
 
 fn emit_segment_quad(
@@ -651,11 +670,17 @@ fn push_triangle(
     color: Color,
 ) {
     let target = match layer {
-        MeshLayer::Main => (
-            &mut mesh.vertices,
-            &mut mesh.normals,
-            &mut mesh.uvs,
-            &mut mesh.colors,
+        MeshLayer::Sidewalk => (
+            &mut mesh.sidewalk_vertices,
+            &mut mesh.sidewalk_normals,
+            &mut mesh.sidewalk_uvs,
+            &mut mesh.sidewalk_colors,
+        ),
+        MeshLayer::Road => (
+            &mut mesh.road_vertices,
+            &mut mesh.road_normals,
+            &mut mesh.road_uvs,
+            &mut mesh.road_colors,
         ),
         MeshLayer::Marking => (
             &mut mesh.marking_vertices,
@@ -697,4 +722,28 @@ fn marking_center_color() -> Color {
 
 fn marking_dash_color() -> Color {
     Color::from_rgba(0.0, 1.0, 0.0, 0.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_emit_join_disk;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn collinear_grade_change_does_not_emit_join_disk() {
+        assert!(!should_emit_join_disk(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 5.0, 0.0),
+            Vector3::new(20.0, 10.0, 0.0),
+        ));
+    }
+
+    #[test]
+    fn horizontal_bend_emits_join_disk() {
+        assert!(should_emit_join_disk(
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+            Vector3::new(10.0, 5.0, 10.0),
+        ));
+    }
 }

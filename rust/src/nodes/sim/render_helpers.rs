@@ -628,12 +628,25 @@ impl SimulationNode {
             .generate_mesh_data(&self.region_graph, &self.heightmap);
         let mut dict = VarDictionary::new();
         dict.set(
-            "vertices",
-            PackedVector3Array::from_iter(mesh_data.vertices),
+            "sidewalk_vertices",
+            PackedVector3Array::from_iter(mesh_data.sidewalk_vertices),
         );
-        dict.set("normals", PackedVector3Array::from_iter(mesh_data.normals));
-        dict.set("uvs", PackedVector2Array::from_iter(mesh_data.uvs));
-        dict.set("colors", PackedColorArray::from_iter(mesh_data.colors));
+        dict.set(
+            "sidewalk_normals",
+            PackedVector3Array::from_iter(mesh_data.sidewalk_normals),
+        );
+        dict.set(
+            "sidewalk_uvs",
+            PackedVector2Array::from_iter(mesh_data.sidewalk_uvs),
+        );
+        dict.set(
+            "sidewalk_colors",
+            PackedColorArray::from_iter(mesh_data.sidewalk_colors),
+        );
+        dict.set("road_vertices", PackedVector3Array::from_iter(mesh_data.road_vertices));
+        dict.set("road_normals", PackedVector3Array::from_iter(mesh_data.road_normals));
+        dict.set("road_uvs", PackedVector2Array::from_iter(mesh_data.road_uvs));
+        dict.set("road_colors", PackedColorArray::from_iter(mesh_data.road_colors));
 
         dict.set(
             "marking_vertices",

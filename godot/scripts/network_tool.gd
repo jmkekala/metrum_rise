@@ -208,18 +208,29 @@ func update_main_mesh():
 	var arr_mesh = ArrayMesh.new()
 	var surface_map = [] # To keep track of which material goes to which surface
 	
-	# Surface 0: Asphalt & Junctions
-	if data.vertices.size() > 0:
+	# Surface 0: Sidewalk base
+	if data.has("sidewalk_vertices") and data.sidewalk_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
-		arrays[Mesh.ARRAY_VERTEX] = data.vertices
-		arrays[Mesh.ARRAY_NORMAL] = data.normals
-		arrays[Mesh.ARRAY_COLOR] = data.colors
-		arrays[Mesh.ARRAY_TEX_UV] = data.uvs
+		arrays[Mesh.ARRAY_VERTEX] = data.sidewalk_vertices
+		arrays[Mesh.ARRAY_NORMAL] = data.sidewalk_normals
+		arrays[Mesh.ARRAY_COLOR] = data.sidewalk_colors
+		arrays[Mesh.ARRAY_TEX_UV] = data.sidewalk_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_road_mat)
 
-	# Surface 1: Markings
+	# Surface 1: Asphalt & Junctions
+	if data.has("road_vertices") and data.road_vertices.size() > 0:
+		var arrays = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = data.road_vertices
+		arrays[Mesh.ARRAY_NORMAL] = data.road_normals
+		arrays[Mesh.ARRAY_COLOR] = data.road_colors
+		arrays[Mesh.ARRAY_TEX_UV] = data.road_uvs
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		surface_map.push_back(_road_mat)
+
+	# Surface 2: Markings
 	if data.has("marking_vertices") and data.marking_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -230,7 +241,7 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_road_mat)
 
-	# Surface 2: Concrete
+	# Surface 3: Concrete
 	if data.has("concrete_vertices") and data.concrete_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
