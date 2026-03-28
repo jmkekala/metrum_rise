@@ -9,12 +9,12 @@ mod tests {
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::grid::zoning::ZoningSystem;
-    use crate::simulation::network::graph::data::Edge;
+    use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::graph::data::Edge;
     use crate::simulation::network::render::road::RoadRenderer;
     use crate::simulation::network::render::{NetworkMeshData, TransitRenderer};
-    use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
-    use crate::simulation::network::TransitNetwork;
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use crate::simulation::terrain::TerrainSystem;
     use godot::prelude::*;
 
@@ -30,7 +30,7 @@ mod tests {
             start_node: n1,
             end_node: n2,
             primary_type: TransitType::Road,
-            allowed_types: 1 | 2,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width,
             fwd_lanes: ((width / config::LANE_WIDTH).round() as u8).max(1),
@@ -281,6 +281,102 @@ mod tests {
     }
 
     #[test]
+    fn test_car_only_surface_road_has_no_sidewalk_band() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+
+        let mut edge = create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-20.0, 0.0, 0.0),
+            Vector3::new(20.0, 0.0, 0.0),
+            10.0,
+        );
+        edge.allowed_types = TransitFlags::CAR;
+        graph.add_edge(edge);
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
+        validate_mesh(&mesh_data, 60.0);
+
+        let center_road = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-5.0, -4.5),
+            Vector2::new(5.0, 4.5),
+            0.25,
+            VisibleSurface::Road,
+        );
+        let outer_sidewalk = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-5.0, 5.5),
+            Vector2::new(5.0, 6.5),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+
+        assert!(center_road >= 0.95);
+        assert!(outer_sidewalk <= 0.05);
+    }
+
+    #[test]
+    fn test_walkway_connection_keeps_road_core_owned_by_asphalt() {
+        let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
+        let walkway = [Vector3::new(-12.0, 0.0, -12.0), Vector3::ZERO];
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&main, 1, 1), (&walkway, 0, 0)]);
+        validate_mesh(&mesh_data, 80.0);
+
+        let road_core = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-2.5, -2.0),
+            Vector2::new(2.5, 2.0),
+            0.25,
+            VisibleSurface::Road,
+        );
+        let sidewalk_throat = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-5.5, -5.5),
+            Vector2::new(-3.0, -3.0),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+
+        assert!(road_core >= 0.85);
+        assert!(sidewalk_throat >= 0.15);
+    }
+
+    #[test]
+    fn test_walkway_connection_keeps_sidewalk_shoulders_filled() {
+        let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
+        let walkway = [Vector3::new(0.0, 0.0, -12.0), Vector3::ZERO];
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&main, 1, 1), (&walkway, 0, 0)]);
+        validate_mesh(&mesh_data, 80.0);
+
+        let left_shoulder = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-4.75, -4.75),
+            Vector2::new(-1.75, -3.5),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+        let right_shoulder = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(1.75, -4.75),
+            Vector2::new(4.75, -3.5),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+
+        assert!(left_shoulder >= 0.8);
+        assert!(right_shoulder >= 0.8);
+    }
+
+    #[test]
     fn test_straight_split_stays_connected() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
@@ -406,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn test_editor_path_diagonal_merge_keeps_core_road_and_exterior_sidewalk() {
+    fn test_editor_path_diagonal_branch_keeps_core_road_and_exterior_sidewalk() {
         let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
         let branch = [Vector3::new(-18.0, 0.0, 18.0), Vector3::new(0.0, 0.0, 0.0)];
         let (_graph, mesh_data, _terrain) = generate_editor_mesh(&[(&main, 1, 1), (&branch, 1, 1)]);
@@ -474,8 +570,7 @@ mod tests {
     fn test_mixed_width_t_junction_does_not_grow_round_bubble() {
         let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
         let branch = [Vector3::new(0.0, 0.0, -24.0), Vector3::ZERO];
-        let (_graph, mesh_data, _terrain) =
-            generate_editor_mesh(&[(&main, 1, 1), (&branch, 3, 3)]);
+        let (_graph, mesh_data, _terrain) = generate_editor_mesh(&[(&main, 1, 1), (&branch, 3, 3)]);
         validate_mesh(&mesh_data, 80.0);
 
         let junction_core = visible_coverage_ratio(
@@ -495,5 +590,29 @@ mod tests {
 
         assert!(junction_core >= 0.75);
         assert!(bubble_zone <= 0.15);
+    }
+
+    #[test]
+    fn test_two_way_diagonal_width_change_stays_regular_junction() {
+        let main = [Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)];
+        let branch = [Vector3::new(-18.0, 0.0, 18.0), Vector3::ZERO];
+        let (graph, mesh_data, _terrain) = generate_editor_mesh(&[(&main, 3, 3), (&branch, 1, 1)]);
+        validate_mesh(&mesh_data, 90.0);
+
+        let junction_node = graph
+            .nodes
+            .iter()
+            .position(|node| node.pos.distance_to(Vector3::ZERO) < 0.01)
+            .expect("expected a junction node at the branch connection");
+        assert_eq!(graph.nodes[junction_node].node_type, NodeType::Junction);
+
+        let branch_throat = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-4.0, 1.0),
+            Vector2::new(-0.5, 5.5),
+            0.25,
+            VisibleSurface::Road,
+        );
+        assert!(branch_throat >= 0.7);
     }
 }

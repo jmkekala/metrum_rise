@@ -426,7 +426,7 @@ impl SimulationNode {
             let mut best_t = 0.0;
             let mut best_side = godot::prelude::Vector2::new(0.0, 0.0);
             let mut best_normal = godot::prelude::Vector2::new(0.0, 0.0);
-            
+
             let pts: Vec<godot::prelude::Vector2> = if edge.physical_geometry.is_empty() {
                 vec![
                     godot::prelude::Vector2::new(self.region_graph.nodes[edge.start_node as usize].pos.x, self.region_graph.nodes[edge.start_node as usize].pos.z),
@@ -446,7 +446,7 @@ impl SimulationNode {
                 let normal = godot::prelude::Vector2::new(-tangent.y, tangent.x);
                 let p1 = proj + normal * hw;
                 let p2 = proj - normal * hw;
-                
+
                 let (e_proj, side_normal) = if (p - p1).length_squared() < (p - p2).length_squared() { (p1, normal) } else { (p2, -normal) };
                 let dist = (e_proj - p).length_squared();
                 if dist < best_dist {

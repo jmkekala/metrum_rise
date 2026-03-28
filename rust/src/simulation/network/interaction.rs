@@ -1,6 +1,8 @@
 use super::graph::RegionGraph;
 use godot::prelude::*;
 
+const EDGE_SNAP_ENDPOINT_MARGIN_M: f32 = 0.25;
+
 pub struct ProjectionData {
     pub t: f32,
     pub side: i8,
@@ -58,25 +60,16 @@ pub fn get_closest_point(
             let p0 = edge.geometry[i];
             let p1 = edge.geometry[i + 1];
 
-            let pos = get_closest_point_on_segment(world_pos, p0, p1);
+            let Some(pos) = get_edge_snap_point(world_pos, p0, p1) else {
+                continue;
+            };
             let d_perp = pos.distance_to(world_pos);
 
             if d_perp < edge_snap_dist {
-                // QUANTIZATION: Snap to discrete points along the segment (e.g. every 2.0m) to prevent jitter
-                let seg_vec = p1 - p0;
-                let seg_len = seg_vec.length();
-                if seg_len > 0.001 {
-                    let dist_along = p0.distance_to(pos);
-                    let snap_step = 2.0;
-                    let snapped_dist = (dist_along / snap_step).round() * snap_step;
-                    let t = (snapped_dist / seg_len).clamp(0.01, 0.99); // Stay away from nodes to let node-snapping take over
-                    let snapped_pos = p0 + seg_vec * t;
-
-                    let score = d_perp;
-                    if score < min_score {
-                        min_score = score;
-                        closest_pos = Some(snapped_pos);
-                    }
+                let score = d_perp;
+                if score < min_score {
+                    min_score = score;
+                    closest_pos = Some(pos);
                 }
             }
         }
@@ -137,6 +130,19 @@ pub fn get_closest_point_on_segment(p: Vector3, a: Vector3, b: Vector3) -> Vecto
     a + ab * t
 }
 
+fn get_edge_snap_point(p: Vector3, a: Vector3, b: Vector3) -> Option<Vector3> {
+    let ab = b - a;
+    let length_sq = ab.length_squared();
+    if length_sq <= 0.000001 {
+        return None;
+    }
+
+    let seg_len = length_sq.sqrt();
+    let end_margin = (EDGE_SNAP_ENDPOINT_MARGIN_M / seg_len).min(0.49);
+    let t = ((p - a).dot(ab) / length_sq).clamp(end_margin, 1.0 - end_margin);
+    Some(a + ab * t)
+}
+
 /// Finds the intersection point of two 2D segments (XZ plane)
 /// Returns (t_a, t_b) if they intersect, where t is the factor along the segment [0, 1]
 pub fn find_intersection_2d(
@@ -166,5 +172,24 @@ pub fn find_intersection_2d(
         Some((t, u))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_edge_snap_point;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn edge_snap_uses_exact_projection_instead_of_quantized_steps() {
+        let snapped = get_edge_snap_point(
+            Vector3::new(3.7, 0.0, 1.0),
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(10.0, 0.0, 0.0),
+        )
+        .unwrap();
+
+        assert!((snapped.x - 3.7).abs() < 0.001);
+        assert!(snapped.z.abs() < 0.001);
     }
 }

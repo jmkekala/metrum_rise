@@ -643,10 +643,22 @@ impl SimulationNode {
             "sidewalk_colors",
             PackedColorArray::from_iter(mesh_data.sidewalk_colors),
         );
-        dict.set("road_vertices", PackedVector3Array::from_iter(mesh_data.road_vertices));
-        dict.set("road_normals", PackedVector3Array::from_iter(mesh_data.road_normals));
-        dict.set("road_uvs", PackedVector2Array::from_iter(mesh_data.road_uvs));
-        dict.set("road_colors", PackedColorArray::from_iter(mesh_data.road_colors));
+        dict.set(
+            "road_vertices",
+            PackedVector3Array::from_iter(mesh_data.road_vertices),
+        );
+        dict.set(
+            "road_normals",
+            PackedVector3Array::from_iter(mesh_data.road_normals),
+        );
+        dict.set(
+            "road_uvs",
+            PackedVector2Array::from_iter(mesh_data.road_uvs),
+        );
+        dict.set(
+            "road_colors",
+            PackedColorArray::from_iter(mesh_data.road_colors),
+        );
 
         dict.set(
             "marking_vertices",

@@ -15,7 +15,7 @@ The renderer must guarantee:
 - no sidewalk triangles inside junction asphalt
 - no edge-vs-node seam logic based on inferred polygon ownership
 - no special-case dependence on 90-degree intersections
-- clean dead-ends, bends, T-junctions, merges, and 4-way junctions
+- clean dead-ends, bends, T-junctions, width transitions, acute joins, and 4-way junctions
 
 ### Core Idea
 
@@ -32,7 +32,7 @@ Instead, treat the visible road as a dilation of the road graph skeleton:
 
 - each road edge contributes a thick road strip
 - each junction node contributes a filled road disk
-- sidewalks are the same construction at a wider radius
+- sidewalks use the same construction at a wider radius, but only on road edges that permit `FOOT`; explicit footpaths join that same sidewalk surface at shared pedestrian nodes
 
 This is the exact `graph-road-renderer` concept adapted to this codebase.
 
@@ -62,7 +62,7 @@ For a road edge:
 
 #### Edge Sidewalk Base
 
-For a standard, ramp, or bridge road:
+For a surface road edge whose `allowed_types` includes `FOOT`:
 
 - `outer_half = road_half + SIDEWALK_WIDTH`
 - emit one **wider sidewalk-colored strip** for each centerline segment
@@ -70,6 +70,12 @@ For a standard, ramp, or bridge road:
 - do not try to clip the sidewalk base around the junction throat
 
 The visible sidewalk comes from drawing the asphalt surface on top of this wider base.
+
+For an explicit footpath edge:
+
+- use its own sidewalk strip width
+- feed it through the same sidewalk node-fill / clipping pass as sidewalk-capable roads
+- do not let it render as a standalone ribbon through a shared pedestrian junction
 
 #### Junction Node Road Fill
 
@@ -81,16 +87,29 @@ For a junction node:
 
 #### Junction Node Sidewalk Fill
 
-For a junction node with at least one surface road:
+For a junction node with at least one sidewalk-capable surface road:
 
-- `outer_radius = max(edge.width * 0.5 + sidewalk_width)` across standard/ramp/bridge edges
+- `outer_radius = max(edge.width * 0.5 + sidewalk_width)` across those sidewalk-capable surface roads
 - emit a tessellated **outer disk** in sidewalk color
 - emit the road disk on top afterward
+- if multiple sidewalk incidents land on the same ray from the node center, keep only the outermost boundary point before fan tessellation
+
+For a straight sidewalk-carrying road corridor with only footpath branches:
+
+- keep the road-side sidewalk bands as a pass-through, not a sidewalk junction fill
+- trim each footpath back to the road sidewalk edge
+- do not let the footpath rewrite or carve the road-side sidewalk shoulders
+
+Current limitation:
+
+- this is only sufficient for simple branch visuals
+- when a centered or across-road footpath meets the road corridor, the current centerline-road / implicit-sidewalk model still lacks the curb-apron patch that should bridge the trimmed footpath into the road-side shoulder
+- fully correct pedestrian joins also need side-aware sidewalk connectivity and crosswalk semantics rather than a single road-center node
 
 This guarantees the visible contract:
 
 - asphalt is one continuous filled area through the junction center
-- sidewalk is only **visibly** outside the asphalt radius
+- sidewalk is only **visibly** outside the asphalt radius on roads that actually allow pedestrians
 - there is no contour clipping or node/edge ownership math at the junction throat
 
 ### Node Classification
@@ -116,7 +135,7 @@ This avoids the circular bubble on a straight split road.
 
 - any node with 2+ incident roads that is not a pass-through split
 - emit node road disk
-- emit node outer sidewalk disk underneath it
+- emit node outer sidewalk disk underneath it only if at least one incident road has `FOOT`
 - edge strips continue through the node; overdraw resolves the visible ownership
 
 ### Overdraw Rule
@@ -125,7 +144,7 @@ The new renderer does **not** use edge-vs-node trims for the visible top surface
 
 Instead:
 
-- sidewalk-colored geometry is emitted first as the wider base
+- sidewalk-colored geometry is emitted first as the wider base where the road permits `FOOT`
 - road-colored geometry is emitted second on a slightly higher layer
 - lane markings are emitted third on a separate overlay layer
 
@@ -183,7 +202,7 @@ Bridge and tunnel support remain, but with the same primitive model:
 - bridge deck top surface uses the same widened-base plus asphalt-overdraw model
 - bridges also emit a separate concrete strip mesh for the deck/body
 - tunnel road top surfaces are skipped in this renderer path
-- foot edges render as simple sidewalk-colored strips
+- foot edges render as sidewalk-colored strips and share the sidewalk node-fill / trim path where they meet roads or other footpaths
 
 ### Tests
 
@@ -197,7 +216,8 @@ Must cover:
 - obtuse bend keeps asphalt connected and sidewalk outside
 - T-junction center is asphalt-owned
 - 4-way junction center is asphalt-owned
-- editor-path diagonal merge has no sidewalk inside the junction core
+- editor-path diagonal branch / acute join has no sidewalk inside the junction core
+- car-only surface road renders asphalt without the widened sidewalk band
 
 Tests that depend on the old exact contour shape should be removed or rewritten.
 
@@ -218,6 +238,7 @@ The current active road junction contour builder in `road.rs` is not to be patch
 The replacement renderer should:
 
 - remove the inferred contour / boundary / band ownership code from the active path
+- remove the dead cached junction polygon state from `RegionGraph`
 - build the visible top surface from widened strips, road strips, and node disks
 - rely on overdraw and layer ordering instead of edge-to-node clipping
 - keep only low-level mesh emission helpers and minimal bridge/tunnel handling

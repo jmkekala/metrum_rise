@@ -2,7 +2,7 @@
 //!
 //! This replaces the old junction contour solver with the same core idea used in the
 //! `graph-road-renderer` proof of concept:
-//! - draw a wider sidewalk base from the road graph skeleton
+//! - draw a wider sidewalk base only where the road graph allows pedestrian access
 //! - draw the asphalt surface on top from the same skeleton
 //! - add circular node fills only where the node is a true junction or terminal
 //! - keep lane markings as a separate overlay mesh trimmed out of true junctions
@@ -10,7 +10,7 @@
 use super::{NetworkMeshData, TransitRenderer};
 use crate::config::{LANE_WIDTH, ROAD_H_OFFSET, SIDEWALK_WIDTH};
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::types::{EdgeClass, TransitType};
+use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::*;
 use std::collections::HashMap;
@@ -84,11 +84,14 @@ pub struct RoadRenderer;
 
 impl TransitRenderer for RoadRenderer {
     fn generate_mesh_data(&self, graph: &RegionGraph, _terrain: &TerrainSystem) -> NetworkMeshData {
-        let node_states = build_node_render_states(graph);
-        let node_incidents = build_surface_node_incidents(graph);
+        let road_node_states = build_node_render_states(graph);
+        let road_node_incidents = build_surface_node_incidents(graph);
+        let sidewalk_node_incidents = build_sidewalk_node_incidents(graph);
+        let sidewalk_node_states =
+            build_sidewalk_node_render_states(graph, &sidewalk_node_incidents);
         let mut mesh = NetworkMeshData::new();
 
-        // Pass 1: draw the widened sidewalk-colored base for every visible surface corridor.
+        // Pass 1: draw the widened sidewalk-colored base only for surface roads that allow FOOT.
         for edge in &graph.edges {
             if edge.deleted {
                 continue;
@@ -96,12 +99,12 @@ impl TransitRenderer for RoadRenderer {
 
             match edge.primary_type {
                 TransitType::Road => {
-                    if has_sidewalk(edge) {
+                    if road_supports_sidewalk(edge) {
                         let half_width = outer_half_width(edge);
                         let (points, start_half_width, end_half_width) = edge_render_geometry(
                             graph,
-                            &node_states,
-                            &node_incidents,
+                            &sidewalk_node_states,
+                            &sidewalk_node_incidents,
                             edge,
                             half_width,
                             true,
@@ -123,16 +126,16 @@ impl TransitRenderer for RoadRenderer {
                             edge_points(edge),
                             edge_endpoint_trim_distance(
                                 graph,
-                                &node_states,
-                                &node_incidents,
+                                &road_node_states,
+                                &road_node_incidents,
                                 edge,
                                 true,
                                 half_width,
                             ),
                             edge_endpoint_trim_distance(
                                 graph,
-                                &node_states,
-                                &node_incidents,
+                                &road_node_states,
+                                &road_node_incidents,
                                 edge,
                                 false,
                                 half_width,
@@ -151,14 +154,22 @@ impl TransitRenderer for RoadRenderer {
                     }
                 }
                 TransitType::Foot => {
-                    let half_width = (edge.width.max(2.0) * 0.5) + 0.4;
+                    let half_width = sidewalk_surface_half_width(edge);
+                    let (points, start_half_width, end_half_width) = edge_render_geometry(
+                        graph,
+                        &sidewalk_node_states,
+                        &sidewalk_node_incidents,
+                        edge,
+                        half_width,
+                        true,
+                    );
                     emit_polyline_fill(
                         &mut mesh,
                         MeshLayer::Sidewalk,
-                        edge_points(edge),
+                        &points,
                         half_width,
-                        half_width,
-                        half_width,
+                        start_half_width,
+                        end_half_width,
                         SIDEWALK_LAYER_Y,
                         sidewalk_color(),
                     );
@@ -168,7 +179,7 @@ impl TransitRenderer for RoadRenderer {
         }
 
         // Pass 1b: render terminal caps and angle-aware junction fills for the sidewalk base.
-        for (node_id, state) in &node_states {
+        for (node_id, state) in &sidewalk_node_states {
             match state.kind {
                 NodeRenderKind::Terminal if state.outer_radius > 0.0 => {
                     emit_disk(
@@ -181,14 +192,19 @@ impl TransitRenderer for RoadRenderer {
                     );
                 }
                 NodeRenderKind::Junction => {
-                    if node_uses_polygon_fill(graph, &node_states, &node_incidents, *node_id) {
+                    if node_uses_polygon_fill(
+                        graph,
+                        &sidewalk_node_states,
+                        &sidewalk_node_incidents,
+                        *node_id,
+                    ) {
                         emit_node_fill_polygon(
                             &mut mesh,
                             MeshLayer::Sidewalk,
                             graph,
                             *node_id,
-                            &node_states,
-                            &node_incidents,
+                            &sidewalk_node_states,
+                            &sidewalk_node_incidents,
                             true,
                             SIDEWALK_LAYER_Y,
                             sidewalk_color(),
@@ -219,8 +235,8 @@ impl TransitRenderer for RoadRenderer {
                     let half_width = road_half_width(edge);
                     let (points, start_half_width, end_half_width) = edge_render_geometry(
                         graph,
-                        &node_states,
-                        &node_incidents,
+                        &road_node_states,
+                        &road_node_incidents,
                         edge,
                         half_width,
                         false,
@@ -242,7 +258,7 @@ impl TransitRenderer for RoadRenderer {
         }
 
         // Pass 2b: road caps and junction fills sit above the sidewalk base.
-        for (node_id, state) in &node_states {
+        for (node_id, state) in &road_node_states {
             match state.kind {
                 NodeRenderKind::Terminal if state.road_radius > 0.0 => {
                     emit_disk(
@@ -255,14 +271,19 @@ impl TransitRenderer for RoadRenderer {
                     );
                 }
                 NodeRenderKind::Junction => {
-                    if node_uses_polygon_fill(graph, &node_states, &node_incidents, *node_id) {
+                    if node_uses_polygon_fill(
+                        graph,
+                        &road_node_states,
+                        &road_node_incidents,
+                        *node_id,
+                    ) {
                         emit_node_fill_polygon(
                             &mut mesh,
                             MeshLayer::Road,
                             graph,
                             *node_id,
-                            &node_states,
-                            &node_incidents,
+                            &road_node_states,
+                            &road_node_incidents,
                             false,
                             ROAD_LAYER_Y,
                             road_color(),
@@ -290,7 +311,13 @@ impl TransitRenderer for RoadRenderer {
             {
                 continue;
             }
-            emit_lane_markings(&mut mesh, graph, edge, &node_states, &node_incidents);
+            emit_lane_markings(
+                &mut mesh,
+                graph,
+                edge,
+                &road_node_states,
+                &road_node_incidents,
+            );
         }
 
         mesh
@@ -298,15 +325,47 @@ impl TransitRenderer for RoadRenderer {
 }
 
 fn build_node_render_states(graph: &RegionGraph) -> HashMap<u32, NodeRenderState> {
+    build_node_render_states_for_edges(
+        graph,
+        visible_surface_road,
+        road_half_width,
+        outer_half_width,
+    )
+}
+
+fn build_sidewalk_node_render_states(
+    graph: &RegionGraph,
+    node_incidents: &HashMap<u32, Vec<IncidentEdgeEndpoint>>,
+) -> HashMap<u32, NodeRenderState> {
+    let mut states = build_node_render_states_for_edges(
+        graph,
+        visible_sidewalk_surface,
+        sidewalk_surface_half_width,
+        sidewalk_surface_half_width,
+    );
+    for (&node_id, state) in states.iter_mut() {
+        if is_sidewalk_pass_through_node(graph, node_incidents, node_id) {
+            state.kind = NodeRenderKind::PassThrough;
+        }
+    }
+    states
+}
+
+fn build_node_render_states_for_edges(
+    graph: &RegionGraph,
+    include: fn(&Edge) -> bool,
+    road_radius_for_edge: fn(&Edge) -> f32,
+    outer_radius_for_edge: fn(&Edge) -> f32,
+) -> HashMap<u32, NodeRenderState> {
     let mut accum: HashMap<u32, NodeAccum> = HashMap::new();
 
     for edge in &graph.edges {
-        if edge.deleted || edge.primary_type != TransitType::Road || !is_surface_road(edge) {
+        if edge.deleted || !include(edge) {
             continue;
         }
 
-        let road_radius = road_half_width(edge);
-        let outer_radius = outer_half_width(edge);
+        let road_radius = road_radius_for_edge(edge);
+        let outer_radius = outer_radius_for_edge(edge);
 
         let start_node = graph.get_valid_node(edge.start_node);
         let end_node = graph.get_valid_node(edge.end_node);
@@ -372,10 +431,21 @@ fn build_node_render_states(graph: &RegionGraph) -> HashMap<u32, NodeRenderState
 }
 
 fn build_surface_node_incidents(graph: &RegionGraph) -> HashMap<u32, Vec<IncidentEdgeEndpoint>> {
+    build_node_incidents_for_edges(graph, visible_surface_road)
+}
+
+fn build_sidewalk_node_incidents(graph: &RegionGraph) -> HashMap<u32, Vec<IncidentEdgeEndpoint>> {
+    build_node_incidents_for_edges(graph, visible_sidewalk_surface)
+}
+
+fn build_node_incidents_for_edges(
+    graph: &RegionGraph,
+    include: fn(&Edge) -> bool,
+) -> HashMap<u32, Vec<IncidentEdgeEndpoint>> {
     let mut incidents = HashMap::new();
 
     for (edge_idx, edge) in graph.edges.iter().enumerate() {
-        if edge.deleted || edge.primary_type != TransitType::Road || !is_surface_road(edge) {
+        if edge.deleted || !include(edge) {
             continue;
         }
 
@@ -411,18 +481,19 @@ fn edge_points(edge: &Edge) -> &[Vector3] {
     }
 }
 
-fn is_surface_road(edge: &Edge) -> bool {
-    matches!(
-        edge.class,
-        EdgeClass::Standard | EdgeClass::Bridge | EdgeClass::Ramp
-    )
+fn visible_surface_road(edge: &Edge) -> bool {
+    edge.primary_type == TransitType::Road
+        && matches!(edge.class, EdgeClass::Standard | EdgeClass::Bridge)
 }
 
-fn has_sidewalk(edge: &Edge) -> bool {
-    matches!(
-        edge.class,
-        EdgeClass::Standard | EdgeClass::Bridge | EdgeClass::Ramp
-    )
+fn visible_sidewalk_surface(edge: &Edge) -> bool {
+    road_supports_sidewalk(edge)
+        || (edge.primary_type == TransitType::Foot
+            && (edge.allowed_types & TransitFlags::FOOT != 0))
+}
+
+fn road_supports_sidewalk(edge: &Edge) -> bool {
+    visible_surface_road(edge) && (edge.allowed_types & TransitFlags::FOOT != 0)
 }
 
 fn road_half_width(edge: &Edge) -> f32 {
@@ -431,6 +502,14 @@ fn road_half_width(edge: &Edge) -> f32 {
 
 fn outer_half_width(edge: &Edge) -> f32 {
     road_half_width(edge) + SIDEWALK_WIDTH
+}
+
+fn sidewalk_surface_half_width(edge: &Edge) -> f32 {
+    if edge.primary_type == TransitType::Foot {
+        (edge.width.max(2.0) * 0.5) + 0.4
+    } else {
+        outer_half_width(edge)
+    }
 }
 
 fn direction_at_endpoint(points: &[Vector3], at_start: bool) -> Option<Vector2> {
@@ -493,9 +572,28 @@ fn edge_endpoint_trim_distance(
     at_start: bool,
     half_width: f32,
 ) -> f32 {
-    let node_id = graph.get_valid_node(if at_start { edge.start_node } else { edge.end_node });
+    let node_id = graph.get_valid_node(if at_start {
+        edge.start_node
+    } else {
+        edge.end_node
+    });
+    if node_states.get(&node_id).copied().unwrap_or_default().kind == NodeRenderKind::PassThrough
+        && is_sidewalk_pass_through_node(graph, node_incidents, node_id)
+    {
+        if edge.primary_type == TransitType::Foot {
+            return node_states
+                .get(&node_id)
+                .copied()
+                .unwrap_or_default()
+                .outer_radius
+                .max(half_width);
+        }
+        return 0.0;
+    }
     match node_states.get(&node_id).copied().unwrap_or_default().kind {
-        NodeRenderKind::Junction if node_uses_polygon_fill(graph, node_states, node_incidents, node_id) => {
+        NodeRenderKind::Junction
+            if node_uses_polygon_fill(graph, node_states, node_incidents, node_id) =>
+        {
             let clip = if at_start {
                 edge.start_clip
             } else {
@@ -514,13 +612,7 @@ fn node_uses_polygon_fill(
     node_id: u32,
 ) -> bool {
     let node_id = graph.get_valid_node(node_id);
-    if node_states
-        .get(&node_id)
-        .copied()
-        .unwrap_or_default()
-        .kind
-        != NodeRenderKind::Junction
-    {
+    if node_states.get(&node_id).copied().unwrap_or_default().kind != NodeRenderKind::Junction {
         return false;
     }
 
@@ -543,6 +635,59 @@ fn node_uses_polygon_fill(
     }
 
     (max_width - min_width).abs() > 0.1
+}
+
+fn is_sidewalk_pass_through_node(
+    graph: &RegionGraph,
+    node_incidents: &HashMap<u32, Vec<IncidentEdgeEndpoint>>,
+    node_id: u32,
+) -> bool {
+    let node_id = graph.get_valid_node(node_id);
+    let Some(incidents) = node_incidents.get(&node_id) else {
+        return false;
+    };
+    if incidents.len() < 3 {
+        return false;
+    }
+
+    let mut road_incidents = Vec::new();
+    let mut has_foot_branch = false;
+
+    for incident in incidents {
+        let edge = &graph.edges[incident.edge_idx];
+        if road_supports_sidewalk(edge) {
+            road_incidents.push(*incident);
+        } else if edge.primary_type == TransitType::Foot
+            && (edge.allowed_types & TransitFlags::FOOT != 0)
+        {
+            has_foot_branch = true;
+        } else {
+            return false;
+        }
+    }
+
+    if !has_foot_branch || road_incidents.len() != 2 {
+        return false;
+    }
+
+    let first_edge = &graph.edges[road_incidents[0].edge_idx];
+    let second_edge = &graph.edges[road_incidents[1].edge_idx];
+    if (road_half_width(first_edge) - road_half_width(second_edge)).abs() > 0.1 {
+        return false;
+    }
+
+    let Some(first_dir) =
+        direction_at_endpoint(edge_points(first_edge), road_incidents[0].at_start)
+    else {
+        return false;
+    };
+    let Some(second_dir) =
+        direction_at_endpoint(edge_points(second_edge), road_incidents[1].at_start)
+    else {
+        return false;
+    };
+
+    first_dir.dot(second_dir) <= PASS_THROUGH_DOT
 }
 
 fn trimmed_polyline(points: &[Vector3], start_trim: f32, end_trim: f32) -> Vec<Vector3> {
@@ -618,7 +763,13 @@ fn emit_polyline_fill(
         return;
     }
 
-    let sections = build_polyline_sections(points, half_width, start_half_width, end_half_width, y_offset);
+    let sections = build_polyline_sections(
+        points,
+        half_width,
+        start_half_width,
+        end_half_width,
+        y_offset,
+    );
     if sections.len() < 2 {
         return;
     }
@@ -816,7 +967,7 @@ fn junction_boundary_points(
     for incident in incidents {
         let edge = &graph.edges[incident.edge_idx];
         let half_width = if outer {
-            outer_half_width(edge)
+            sidewalk_surface_half_width(edge)
         } else {
             road_half_width(edge)
         };
@@ -828,7 +979,9 @@ fn junction_boundary_points(
             incident.at_start,
             half_width,
         );
-        let Some((section_center, direction)) = endpoint_section(edge_points(edge), incident.at_start, trim) else {
+        let Some((section_center, direction)) =
+            endpoint_section(edge_points(edge), incident.at_start, trim)
+        else {
             continue;
         };
         let side = Vector2::new(-direction.y, direction.x) * half_width;
@@ -844,7 +997,14 @@ fn junction_boundary_points(
         });
     }
 
-    boundary.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap_or(std::cmp::Ordering::Equal));
+    boundary.sort_by(|a, b| {
+        a.angle
+            .partial_cmp(&b.angle)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if outer {
+        collapse_boundary_rays(&mut boundary, center);
+    }
     boundary.dedup_by(|a, b| (a.point - b.point).length_squared() < 0.0001);
     if boundary.len() >= 2
         && (boundary[0].point - boundary[boundary.len() - 1].point).length_squared() < 0.0001
@@ -857,6 +1017,44 @@ fn junction_boundary_points(
     }
 
     boundary
+}
+
+fn collapse_boundary_rays(boundary: &mut Vec<BoundaryPoint>, center: Vector3) {
+    const ANGLE_EPSILON: f32 = 0.001;
+
+    if boundary.len() < 2 {
+        return;
+    }
+
+    let mut collapsed: Vec<BoundaryPoint> = Vec::with_capacity(boundary.len());
+    for point in boundary.iter().copied() {
+        if let Some(last) = collapsed.last_mut() {
+            if (point.angle - last.angle).abs() <= ANGLE_EPSILON {
+                if boundary_distance_sq(point, center) > boundary_distance_sq(*last, center) {
+                    *last = point;
+                }
+                continue;
+            }
+        }
+        collapsed.push(point);
+    }
+
+    if collapsed.len() >= 2 {
+        let wrap_delta = (collapsed[0].angle + TAU - collapsed[collapsed.len() - 1].angle)
+            .min(collapsed[collapsed.len() - 1].angle + TAU - collapsed[0].angle);
+        if wrap_delta <= ANGLE_EPSILON {
+            let last = collapsed.pop().unwrap();
+            if boundary_distance_sq(last, center) > boundary_distance_sq(collapsed[0], center) {
+                collapsed[0] = last;
+            }
+        }
+    }
+
+    *boundary = collapsed;
+}
+
+fn boundary_distance_sq(point: BoundaryPoint, center: Vector3) -> f32 {
+    (point.point - center).length_squared()
 }
 
 fn polygon_signed_area_xz(points: &[BoundaryPoint]) -> f32 {
@@ -1220,10 +1418,14 @@ fn marking_dash_color() -> Color {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_node_render_states, polyline_side_at, NodeRenderKind};
-    use crate::simulation::network::graph::data::Edge;
+    use super::{
+        BoundaryPoint, NodeRenderKind, build_node_render_states, build_sidewalk_node_incidents,
+        build_sidewalk_node_render_states, collapse_boundary_rays, edge_endpoint_trim_distance,
+        node_uses_polygon_fill, polyline_side_at, sidewalk_surface_half_width,
+    };
     use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
+    use crate::simulation::network::graph::data::Edge;
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
 
     fn create_test_edge(n1: u32, n2: u32, p1: Vector3, p2: Vector3, width: f32) -> Edge {
@@ -1231,7 +1433,7 @@ mod tests {
             start_node: n1,
             end_node: n2,
             primary_type: TransitType::Road,
-            allowed_types: 1 | 2,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
             width,
             fwd_lanes: 1,
@@ -1246,6 +1448,30 @@ mod tests {
             physical_geometry: vec![p1, p2],
             zoning_left: true,
             zoning_right: true,
+            deleted: false,
+        }
+    }
+
+    fn create_test_walkway(n1: u32, n2: u32, p1: Vector3, p2: Vector3) -> Edge {
+        Edge {
+            start_node: n1,
+            end_node: n2,
+            primary_type: TransitType::Foot,
+            allowed_types: TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 2.0,
+            fwd_lanes: 0,
+            bkw_lanes: 0,
+            speed_limit: 1.5,
+            base_cost: 0.0,
+            physical_length: (p2 - p1).length(),
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![p1, p2],
+            physical_geometry: vec![p1, p2],
+            zoning_left: false,
+            zoning_right: false,
             deleted: false,
         }
     }
@@ -1300,6 +1526,153 @@ mod tests {
         assert_eq!(
             node_states.get(&n1).map(|state| state.kind),
             Some(NodeRenderKind::WidthTransition)
+        );
+    }
+
+    #[test]
+    fn road_walkway_connection_keeps_sidewalk_pass_through() {
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-25.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
+        let n3 = graph.add_node(Vector3::new(-10.0, 0.0, -10.0), NodeType::Junction);
+
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-25.0, 0.0, 0.0),
+            Vector3::ZERO,
+            7.0,
+        ));
+        graph.add_edge(create_test_edge(
+            n1,
+            n2,
+            Vector3::ZERO,
+            Vector3::new(25.0, 0.0, 0.0),
+            7.0,
+        ));
+        graph.add_edge(create_test_walkway(
+            n3,
+            n1,
+            Vector3::new(-10.0, 0.0, -10.0),
+            Vector3::ZERO,
+        ));
+
+        let sidewalk_node_incidents = build_sidewalk_node_incidents(&graph);
+        let road_node_states = build_node_render_states(&graph);
+        let sidewalk_node_states =
+            build_sidewalk_node_render_states(&graph, &sidewalk_node_incidents);
+
+        assert_eq!(
+            road_node_states.get(&n1).map(|state| state.kind),
+            Some(NodeRenderKind::PassThrough)
+        );
+        assert_eq!(
+            sidewalk_node_states.get(&n1).map(|state| state.kind),
+            Some(NodeRenderKind::PassThrough)
+        );
+        assert!(!node_uses_polygon_fill(
+            &graph,
+            &sidewalk_node_states,
+            &sidewalk_node_incidents,
+            n1,
+        ));
+    }
+
+    #[test]
+    fn sidewalk_boundary_collapse_prefers_outer_points_on_shared_rays() {
+        let center = Vector3::ZERO;
+        let mut boundary = vec![
+            BoundaryPoint {
+                angle: -2.3561945,
+                point: Vector3::new(-5.0, 0.0, -5.0),
+            },
+            BoundaryPoint {
+                angle: -2.3561945,
+                point: Vector3::new(-1.4, 0.0, -1.4),
+            },
+            BoundaryPoint {
+                angle: -0.7853982,
+                point: Vector3::new(1.4, 0.0, -1.4),
+            },
+            BoundaryPoint {
+                angle: -0.7853982,
+                point: Vector3::new(5.0, 0.0, -5.0),
+            },
+        ];
+
+        collapse_boundary_rays(&mut boundary, center);
+
+        assert_eq!(boundary.len(), 2);
+        assert!(boundary.iter().any(|point| {
+            point
+                .point
+                .distance_squared_to(Vector3::new(-5.0, 0.0, -5.0))
+                < 0.001
+        }));
+        assert!(boundary.iter().any(|point| {
+            point
+                .point
+                .distance_squared_to(Vector3::new(5.0, 0.0, -5.0))
+                < 0.001
+        }));
+    }
+
+    #[test]
+    fn sidewalk_pass_through_node_trims_walkway_but_not_road_shoulders() {
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-25.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
+        let n3 = graph.add_node(Vector3::new(0.0, 0.0, -12.0), NodeType::Junction);
+
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-25.0, 0.0, 0.0),
+            Vector3::ZERO,
+            7.0,
+        ));
+        graph.add_edge(create_test_edge(
+            n1,
+            n2,
+            Vector3::ZERO,
+            Vector3::new(25.0, 0.0, 0.0),
+            7.0,
+        ));
+        graph.add_edge(create_test_walkway(
+            n3,
+            n1,
+            Vector3::new(0.0, 0.0, -12.0),
+            Vector3::ZERO,
+        ));
+
+        let sidewalk_node_incidents = build_sidewalk_node_incidents(&graph);
+        let sidewalk_node_states =
+            build_sidewalk_node_render_states(&graph, &sidewalk_node_incidents);
+
+        assert_eq!(
+            edge_endpoint_trim_distance(
+                &graph,
+                &sidewalk_node_states,
+                &sidewalk_node_incidents,
+                &graph.edges[0],
+                false,
+                sidewalk_surface_half_width(&graph.edges[0]),
+            ),
+            0.0
+        );
+        assert!(
+            edge_endpoint_trim_distance(
+                &graph,
+                &sidewalk_node_states,
+                &sidewalk_node_incidents,
+                &graph.edges[2],
+                false,
+                sidewalk_surface_half_width(&graph.edges[2]),
+            ) >= 4.9
         );
     }
 }

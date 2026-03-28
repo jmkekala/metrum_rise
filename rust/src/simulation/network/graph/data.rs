@@ -126,17 +126,6 @@ impl Edge {
     }
 }
 
-/// Pre-computed mesh data for a road junction polygon, passed to Godot for rendering.
-#[derive(Clone)]
-pub struct JunctionMesh {
-    /// Vertex positions of the junction polygon in world space.
-    pub vertices: Vec<Vector3>,
-    /// UV texture coordinates, parallel to `vertices`.
-    pub uvs: Vec<Vector2>,
-    /// Vertex colours used for road marking overlays, parallel to `vertices`.
-    pub colors: Vec<Color>,
-}
-
 /// A unified directed graph representing the road and transit network of the entire region.
 ///
 /// High-performance road network graph using a Structure-of-Arrays (SoA) layout.
@@ -150,8 +139,6 @@ pub struct RegionGraph {
     pub nodes: Vec<Node>,
     /// All road edges (segments). Indexed by edge ID (`usize`). Includes soft-deleted entries.
     pub edges: Vec<Edge>,
-    /// Pre-computed junction mesh polygons keyed by the central node ID.
-    pub junction_polygons: HashMap<u32, JunctionMesh>,
     /// Node alias map for the union-find structure used during node merging.
     /// Maps a node ID to its canonical representative after `unite_nodes`.
     pub node_aliases: HashMap<u32, u32>,
@@ -169,7 +156,6 @@ impl RegionGraph {
         Self {
             nodes: Vec::new(),
             edges: Vec::new(),
-            junction_polygons: std::collections::HashMap::new(),
             node_aliases: std::collections::HashMap::new(),
             spatial_edge_rt: RTree::new(),
             adjacency: Vec::new(),

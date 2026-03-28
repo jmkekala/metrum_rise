@@ -1,6 +1,5 @@
 use super::super::types::*;
 use super::data::RegionGraph;
-use godot::prelude::Vector3;
 use std::collections::HashMap;
 
 impl RegionGraph {
@@ -258,8 +257,6 @@ impl RegionGraph {
             .map(|i| self.get_valid_node(i as u32))
             .collect();
 
-        self.junction_polygons.clear(); // Removing procedural intersection meshes
-
         for (_edge_id, edge) in self.edges.iter_mut().enumerate() {
             if edge.deleted || edge.primary_type != TransitType::Road {
                 continue;
@@ -286,7 +283,6 @@ impl RegionGraph {
             let s_node_type = self.nodes[s_valid as usize].node_type;
             let e_node_type = self.nodes[e_valid as usize].node_type;
 
-            // Merge clip fixup is done in a second pass after merge detection below.
             edge.start_clip = if (s_conn >= 3 || s_different) && s_node_type == NodeType::Junction {
                 s_clip
             } else {
@@ -343,142 +339,6 @@ impl RegionGraph {
             } else {
                 edge.physical_geometry = edge.geometry.clone();
                 edge.physical_length = 0.0;
-            }
-        }
-
-        // Post-resampling: detect Merge nodes and mark ramp edges using accurate physical_geometry.
-        // Running this after resampling ensures curved ramps are detected correctly.
-        {
-            let mut tangent_at: HashMap<(usize, u32), Vector3> = HashMap::new();
-            for (eid, edge) in self.edges.iter().enumerate() {
-                if edge.deleted || edge.primary_type != TransitType::Road {
-                    continue;
-                }
-                let geom = &edge.physical_geometry;
-                if geom.len() < 2 {
-                    continue;
-                }
-                let sn = valid_node_ids[edge.start_node as usize];
-                let en = valid_node_ids[edge.end_node as usize];
-                let t_start = (geom[1] - geom[0]).normalized();
-                let t_end = (geom[geom.len() - 2] - geom[geom.len() - 1]).normalized();
-                tangent_at.insert((eid, sn), t_start);
-                tangent_at.insert((eid, en), t_end);
-            }
-
-            let mut node_edges: HashMap<u32, Vec<usize>> = HashMap::new();
-            for (eid, edge) in self.edges.iter().enumerate() {
-                if edge.deleted || edge.primary_type != TransitType::Road {
-                    continue;
-                }
-                let sn = valid_node_ids[edge.start_node as usize];
-                let en = valid_node_ids[edge.end_node as usize];
-                node_edges.entry(sn).or_default().push(eid);
-                if en != sn {
-                    node_edges.entry(en).or_default().push(eid);
-                }
-            }
-
-            let mut ramp_edges: std::collections::HashSet<usize> = std::collections::HashSet::new();
-            let mut merge_nodes: std::collections::HashSet<u32> = std::collections::HashSet::new();
-
-            for (&nid, eids) in &node_edges {
-                if eids.len() < 3 {
-                    continue;
-                }
-                let n = eids.len();
-                // Find the one anti-parallel pair that forms the mainline.
-                // A Merge node must have exactly one such pair; if there are two or more
-                // (e.g. a normal 4-way cross) we do not classify it as a Merge.
-                let mut mainline_pair: Option<(usize, usize)> = None;
-                let mut pair_count = 0;
-                'find: for i in 0..n {
-                    for j in (i + 1)..n {
-                        let ta = tangent_at.get(&(eids[i], nid));
-                        let tb = tangent_at.get(&(eids[j], nid));
-                        if let (Some(&ta), Some(&tb)) = (ta, tb) {
-                            if ta.dot(tb) < -0.7 {
-                                pair_count += 1;
-                                if pair_count > 1 {
-                                    mainline_pair = None;
-                                    break 'find;
-                                }
-                                mainline_pair = Some((i, j));
-                            }
-                        }
-                    }
-                }
-                let (mi, mj) = match mainline_pair {
-                    Some(p) => p,
-                    None => continue,
-                };
-                let ta = match tangent_at.get(&(eids[mi], nid)) {
-                    Some(&t) => t,
-                    None => continue,
-                };
-                let tb = match tangent_at.get(&(eids[mj], nid)) {
-                    Some(&t) => t,
-                    None => continue,
-                };
-                // All non-mainline edges must point in the general direction of one mainline leg.
-                let mut all_valid = true;
-                let mut found_ramp = false;
-                for k in 0..n {
-                    if k == mi || k == mj {
-                        continue;
-                    }
-                    let tr = match tangent_at.get(&(eids[k], nid)) {
-                        Some(&t) => t,
-                        None => {
-                            all_valid = false;
-                            break;
-                        }
-                    };
-                    // Ramp must share the general direction with at least one mainline leg (acute angle).
-                    if tr.dot(ta) > 0.2 || tr.dot(tb) > 0.2 {
-                        found_ramp = true;
-                    } else {
-                        all_valid = false;
-                        break;
-                    }
-                }
-                if all_valid && found_ramp {
-                    for k in 0..n {
-                        if k != mi && k != mj {
-                            ramp_edges.insert(eids[k]);
-                        }
-                    }
-                    merge_nodes.insert(nid);
-                }
-            }
-
-            for nid in &merge_nodes {
-                let n = &mut self.nodes[*nid as usize];
-                if n.node_type == NodeType::Junction {
-                    n.node_type = NodeType::Merge;
-                }
-            }
-            for eid in &ramp_edges {
-                let e = &mut self.edges[*eid];
-                if e.class == EdgeClass::Standard {
-                    e.class = EdgeClass::Ramp;
-                }
-            }
-
-            // Second pass: zero out clips on mainline edges at Merge nodes.
-            // The first clip pass above treated these nodes as Junction (Merge wasn't set yet).
-            for (eid, edge) in self.edges.iter_mut().enumerate() {
-                if edge.deleted || edge.class == EdgeClass::Ramp {
-                    continue;
-                }
-                let sn = valid_node_ids[edge.start_node as usize];
-                let en = valid_node_ids[edge.end_node as usize];
-                if merge_nodes.contains(&sn) {
-                    edge.start_clip = 0.0;
-                }
-                if merge_nodes.contains(&en) {
-                    edge.end_clip = 0.0;
-                }
             }
         }
 

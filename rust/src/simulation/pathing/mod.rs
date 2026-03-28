@@ -7,6 +7,7 @@
 pub mod astar;
 pub mod cch;
 pub mod cost;
+pub mod pedestrian;
 
 #[cfg(test)]
 mod tests;

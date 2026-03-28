@@ -11,6 +11,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::pathing::pedestrian::PedestrianPathStep;
 // No Godot imports needed here
 use rand::Rng;
 use std::collections::HashMap;
@@ -70,6 +71,8 @@ pub struct AgentSystem {
     pub current_lane: Vec<i8>,
     /// Current transit mode. One of the `MODE_*` constants.
     pub transit_mode: Vec<u8>,
+    /// Recorded pedestrian shoulder while walking: `+1` left, `-1` right, `0` centered footpath.
+    pub pedestrian_side: Vec<i8>,
 
     // Traffic Lane Manager — Bezier Intersection Pathing
     /// Bezier control point 0 (start), world-space X/Z.
@@ -92,7 +95,9 @@ pub struct AgentSystem {
     pub bezier_t: Vec<f32>,
     /// Sequence of node IDs forming the planned route. Each inner `Vec` is one path segment.
     pub current_path: Vec<Vec<u32>>,
-    /// Index into `current_path` of the node the agent is currently heading toward.
+    /// Sequence of edge traversals forming the planned side-aware pedestrian route.
+    pub current_ped_path: Vec<Vec<PedestrianPathStep>>,
+    /// Index into the active route buffer: `current_path` for cars or `current_ped_path` for walkers.
     pub current_path_index: Vec<usize>,
 
     /// `true` if the agent owns a car and drove to their current location.
@@ -125,6 +130,7 @@ impl AgentSystem {
             edge_progression: Vec::new(),
             current_lane: Vec::new(),
             transit_mode: Vec::new(),
+            pedestrian_side: Vec::new(),
             bezier_p0_x: Vec::new(),
             bezier_p0_y: Vec::new(),
             bezier_p1_x: Vec::new(),
@@ -135,6 +141,7 @@ impl AgentSystem {
             bezier_p3_y: Vec::new(),
             bezier_t: Vec::new(),
             current_path: Vec::new(),
+            current_ped_path: Vec::new(),
             current_path_index: Vec::new(),
             has_car: Vec::new(),
             vehicle_type: Vec::new(),
@@ -174,6 +181,7 @@ impl AgentSystem {
         self.edge_progression.push(0);
         self.current_lane.push(0);
         self.transit_mode.push(MODE_CAR); // Immigrants always arrive in cars!
+        self.pedestrian_side.push(0);
         self.bezier_p0_x.push(0.0);
         self.bezier_p0_y.push(0.0);
         self.bezier_p1_x.push(0.0);
@@ -184,6 +192,7 @@ impl AgentSystem {
         self.bezier_p3_y.push(0.0);
         self.bezier_t.push(0.0);
         self.current_path.push(Vec::new());
+        self.current_ped_path.push(Vec::new());
         self.current_path_index.push(0);
 
         self.has_car.push(true); // Immigrants arrive with a car!
@@ -252,6 +261,7 @@ impl AgentSystem {
         self.edge_progression.clear();
         self.current_lane.clear();
         self.transit_mode.clear();
+        self.pedestrian_side.clear();
         self.bezier_p0_x.clear();
         self.bezier_p0_y.clear();
         self.bezier_p1_x.clear();
@@ -262,6 +272,7 @@ impl AgentSystem {
         self.bezier_p3_y.clear();
         self.bezier_t.clear();
         self.current_path.clear();
+        self.current_ped_path.clear();
         self.current_path_index.clear();
         self.has_car.clear();
         self.vehicle_type.clear();
@@ -281,6 +292,16 @@ impl AgentSystem {
                 } else {
                     self.current_edge[i] = usize::MAX;
                     self.current_path[i].clear();
+                    self.current_ped_path[i].clear();
+                }
+            }
+            for step in &mut self.current_ped_path[i] {
+                if let Some(&new_id) = mapping.get(&step.edge_idx) {
+                    step.edge_idx = new_id;
+                } else {
+                    self.current_ped_path[i].clear();
+                    self.current_path_index[i] = 0;
+                    break;
                 }
             }
         }
@@ -317,6 +338,7 @@ impl AgentSystem {
         self.edge_progression.swap(index, last_idx);
         self.current_lane.swap(index, last_idx);
         self.transit_mode.swap(index, last_idx);
+        self.pedestrian_side.swap(index, last_idx);
         self.bezier_p0_x.swap(index, last_idx);
         self.bezier_p0_y.swap(index, last_idx);
         self.bezier_p1_x.swap(index, last_idx);
@@ -327,6 +349,7 @@ impl AgentSystem {
         self.bezier_p3_y.swap(index, last_idx);
         self.bezier_t.swap(index, last_idx);
         self.current_path.swap(index, last_idx);
+        self.current_ped_path.swap(index, last_idx);
         self.current_path_index.swap(index, last_idx);
         self.journey_start_time.swap(index, last_idx);
         self.has_car.swap(index, last_idx);
@@ -349,6 +372,7 @@ impl AgentSystem {
         self.edge_progression.pop();
         self.current_lane.pop();
         self.transit_mode.pop();
+        self.pedestrian_side.pop();
         self.bezier_p0_x.pop();
         self.bezier_p0_y.pop();
         self.bezier_p1_x.pop();
@@ -359,6 +383,7 @@ impl AgentSystem {
         self.bezier_p3_y.pop();
         self.bezier_t.pop();
         self.current_path.pop();
+        self.current_ped_path.pop();
         self.current_path_index.pop();
         self.journey_start_time.pop();
         self.has_car.pop();
