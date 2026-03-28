@@ -1,10 +1,42 @@
 use super::TransitNetwork;
 use super::graph::Edge;
 use super::interaction;
-use super::types::{EdgeClass, NodeType};
+use super::types::NodeType;
 use crate::config;
 use godot::prelude::*;
 use std::collections::HashMap;
+
+const INTERSECTION_NODE_CAPTURE_EPSILON: f32 = 0.05;
+
+fn find_or_add_intersection_node(
+    graph: &mut crate::simulation::network::graph::RegionGraph,
+    pos: Vector3,
+) -> u32 {
+    graph.find_or_add_node(pos, INTERSECTION_NODE_CAPTURE_EPSILON, NodeType::Junction)
+}
+
+fn snap_new_edge_endpoint_to_intersection(
+    graph: &mut crate::simulation::network::graph::RegionGraph,
+    edge_id: usize,
+    at_start: bool,
+    pos: Vector3,
+) -> u32 {
+    let node_id = graph.get_valid_node(if at_start {
+        graph.edges[edge_id].start_node
+    } else {
+        graph.edges[edge_id].end_node
+    });
+    let active_degree = graph.adjacency[node_id as usize]
+        .iter()
+        .filter(|&&incident_edge| !graph.edges[incident_edge].deleted)
+        .count();
+    if active_degree == 1 {
+        graph.move_node(node_id, pos);
+        node_id
+    } else {
+        find_or_add_intersection_node(graph, pos)
+    }
+}
 
 pub fn process_intersections(
     network: &mut TransitNetwork,
@@ -75,11 +107,7 @@ pub fn process_intersections(
                     let pos = p1; // or p2, they are 2D identical and vertically close
 
                     // Unified Node Capture
-                    let junction_id = graph.find_or_add_node(
-                        pos,
-                        config::INTERSECTION_TOLERANCE,
-                        NodeType::Junction,
-                    );
+                    let junction_id = find_or_add_intersection_node(graph, pos);
 
                     all_splits
                         .entry(edge_id)
@@ -119,11 +147,8 @@ pub fn process_intersections(
                         + (closest2d - Vector2::new(p1.x, p1.z)).length()
                             / Vector2::new(p2.x - p1.x, p2.z - p1.z).length().max(0.001);
 
-                    let junction_id = graph.find_or_add_node(
-                        closest,
-                        config::INTERSECTION_TOLERANCE,
-                        NodeType::Junction,
-                    );
+                    let junction_id =
+                        snap_new_edge_endpoint_to_intersection(graph, edge_id, idx == 0, closest);
                     all_splits
                         .entry(edge_id)
                         .or_default()
@@ -324,16 +349,5 @@ mod tests {
             &mut zoning,
             &mut allocator,
         );
-
-        println!("Graph has {} edges", graph.edges.len());
-        for (i, edge) in graph.edges.iter().enumerate() {
-            println!(
-                "Edge {}: start node {}, end node {}, geometry len {}",
-                i,
-                edge.start_node,
-                edge.end_node,
-                edge.geometry.len()
-            );
-        }
     }
 }

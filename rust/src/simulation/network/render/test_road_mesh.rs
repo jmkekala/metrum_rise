@@ -371,9 +371,103 @@ mod tests {
             0.25,
             VisibleSurface::Sidewalk,
         );
+        let left_apron = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-3.0, -4.9),
+            Vector2::new(-1.0, -3.6),
+            0.2,
+            VisibleSurface::Sidewalk,
+        );
+        let right_apron = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(1.0, -4.9),
+            Vector2::new(3.0, -3.6),
+            0.2,
+            VisibleSurface::Sidewalk,
+        );
+        let opposite_shoulder = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-2.0, 3.6),
+            Vector2::new(2.0, 4.9),
+            0.2,
+            VisibleSurface::Sidewalk,
+        );
+        let split_core = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-0.5, -1.0),
+            Vector2::new(0.5, 1.0),
+            0.1,
+            VisibleSurface::Road,
+        );
 
         assert!(left_shoulder >= 0.8);
         assert!(right_shoulder >= 0.8);
+        assert!(left_apron >= 0.9);
+        assert!(right_apron >= 0.9);
+        assert!(opposite_shoulder >= 0.9);
+        assert!(split_core >= 0.9);
+    }
+
+    #[test]
+    fn test_walkway_connection_on_dense_baked_road_keeps_sidewalks_filled() {
+        let mut main = Vec::new();
+        for step in 0..=30 {
+            let x = -30.0 + step as f32 * 2.0;
+            let z = if x.abs() < 4.0 { x * 0.08 } else { x * 0.02 };
+            main.push(Vector3::new(x, 0.0, z));
+        }
+        let walkway = [Vector3::new(0.0, 0.0, -12.0), Vector3::new(0.0, 0.0, -0.2)];
+        let (graph, mesh_data, _terrain) = generate_editor_mesh(&[(&main, 1, 1), (&walkway, 0, 0)]);
+        validate_mesh(&mesh_data, 90.0);
+        let road_core = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-0.8, -1.0),
+            Vector2::new(0.8, 1.0),
+            0.1,
+            VisibleSurface::Road,
+        );
+        assert!(road_core >= 0.85);
+
+        let foot_edge = graph
+            .edges
+            .iter()
+            .find(|edge| !edge.deleted && edge.primary_type == TransitType::Foot)
+            .unwrap();
+        let split_node = foot_edge.end_node;
+        let split_pos = graph.nodes[split_node as usize].pos;
+        assert!(split_pos.distance_to(Vector3::ZERO) <= 0.01);
+
+        let connected_road_edges: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                !edge.deleted
+                    && edge.primary_type == TransitType::Road
+                    && (edge.start_node == split_node || edge.end_node == split_node)
+            })
+            .collect();
+        assert_eq!(connected_road_edges.len(), 2);
+        for road_edge in connected_road_edges {
+            let endpoint = if road_edge.start_node == split_node {
+                road_edge.geometry[0]
+            } else {
+                *road_edge.geometry.last().unwrap()
+            };
+            assert!(endpoint.distance_to(split_pos) <= 0.01);
+        }
+    }
+
+    #[test]
+    fn test_dense_baked_road_without_walkway_stays_valid() {
+        let mut main = Vec::new();
+        for step in 0..=30 {
+            let x = -30.0 + step as f32 * 2.0;
+            let z = if x.abs() < 4.0 { x * 0.08 } else { x * 0.02 };
+            main.push(Vector3::new(x, 0.0, z));
+        }
+
+        let (_graph, mesh_data, _terrain) = generate_editor_mesh(&[(&main, 1, 1)]);
+        validate_mesh(&mesh_data, 90.0);
     }
 
     #[test]

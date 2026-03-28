@@ -101,7 +101,13 @@ impl TransitRenderer for RoadRenderer {
                 TransitType::Road => {
                     if road_supports_sidewalk(edge) {
                         let half_width = outer_half_width(edge);
-                        let (points, start_half_width, end_half_width) = edge_render_geometry(
+                        let (
+                            points,
+                            start_half_width,
+                            end_half_width,
+                            start_side_override,
+                            end_side_override,
+                        ) = edge_render_geometry(
                             graph,
                             &sidewalk_node_states,
                             &sidewalk_node_incidents,
@@ -116,6 +122,8 @@ impl TransitRenderer for RoadRenderer {
                             half_width,
                             start_half_width,
                             end_half_width,
+                            start_side_override,
+                            end_side_override,
                             SIDEWALK_LAYER_Y,
                             sidewalk_color(),
                         );
@@ -148,6 +156,8 @@ impl TransitRenderer for RoadRenderer {
                             half_width,
                             half_width,
                             half_width,
+                            None,
+                            None,
                             BRIDGE_CONCRETE_Y,
                             concrete_color(),
                         );
@@ -155,7 +165,13 @@ impl TransitRenderer for RoadRenderer {
                 }
                 TransitType::Foot => {
                     let half_width = sidewalk_surface_half_width(edge);
-                    let (points, start_half_width, end_half_width) = edge_render_geometry(
+                    let (
+                        points,
+                        start_half_width,
+                        end_half_width,
+                        start_side_override,
+                        end_side_override,
+                    ) = edge_render_geometry(
                         graph,
                         &sidewalk_node_states,
                         &sidewalk_node_incidents,
@@ -170,6 +186,8 @@ impl TransitRenderer for RoadRenderer {
                         half_width,
                         start_half_width,
                         end_half_width,
+                        start_side_override,
+                        end_side_override,
                         SIDEWALK_LAYER_Y,
                         sidewalk_color(),
                     );
@@ -224,6 +242,16 @@ impl TransitRenderer for RoadRenderer {
             }
         }
 
+        // Pass 1c: pass-through road + walkway joins need an explicit curb-apron patch on the
+        // sidewalk layer. Trimming the walkway to the sidewalk edge avoids overlap but leaves a
+        // visible wedge unless we bridge the footpath mouth to the selected shoulder curb line.
+        emit_sidewalk_pass_through_aprons(
+            &mut mesh,
+            graph,
+            &sidewalk_node_states,
+            &sidewalk_node_incidents,
+        );
+
         // Pass 2: asphalt overdraw. This is the visible ownership rule for the top surface.
         for edge in &graph.edges {
             if edge.deleted {
@@ -233,7 +261,13 @@ impl TransitRenderer for RoadRenderer {
             match edge.primary_type {
                 TransitType::Road => {
                     let half_width = road_half_width(edge);
-                    let (points, start_half_width, end_half_width) = edge_render_geometry(
+                    let (
+                        points,
+                        start_half_width,
+                        end_half_width,
+                        start_side_override,
+                        end_side_override,
+                    ) = edge_render_geometry(
                         graph,
                         &road_node_states,
                         &road_node_incidents,
@@ -248,6 +282,8 @@ impl TransitRenderer for RoadRenderer {
                         half_width,
                         start_half_width,
                         end_half_width,
+                        start_side_override,
+                        end_side_override,
                         ROAD_LAYER_Y,
                         road_color(),
                     )
@@ -545,7 +581,7 @@ fn edge_render_geometry(
     edge: &Edge,
     half_width: f32,
     outer: bool,
-) -> (Vec<Vector3>, f32, f32) {
+) -> (Vec<Vector3>, f32, f32, Option<Vector2>, Option<Vector2>) {
     let start_trim =
         edge_endpoint_trim_distance(graph, node_states, node_incidents, edge, true, half_width);
     let end_trim =
@@ -561,7 +597,23 @@ fn edge_render_geometry(
     } else {
         node_endpoint_half_width(graph, node_states, edge.end_node, half_width, outer)
     };
-    (points, start_half_width, end_half_width)
+    let start_side_override = if start_trim > 0.0 {
+        None
+    } else {
+        pass_through_endpoint_side_override(graph, node_states, node_incidents, edge, true)
+    };
+    let end_side_override = if end_trim > 0.0 {
+        None
+    } else {
+        pass_through_endpoint_side_override(graph, node_states, node_incidents, edge, false)
+    };
+    (
+        points,
+        start_half_width,
+        end_half_width,
+        start_side_override,
+        end_side_override,
+    )
 }
 
 fn edge_endpoint_trim_distance(
@@ -690,6 +742,195 @@ fn is_sidewalk_pass_through_node(
     first_dir.dot(second_dir) <= PASS_THROUGH_DOT
 }
 
+fn emit_sidewalk_pass_through_aprons(
+    mesh: &mut NetworkMeshData,
+    graph: &RegionGraph,
+    node_states: &HashMap<u32, NodeRenderState>,
+    node_incidents: &HashMap<u32, Vec<IncidentEdgeEndpoint>>,
+) {
+    for (&node_id, state) in node_states {
+        if state.kind != NodeRenderKind::PassThrough {
+            continue;
+        }
+
+        let Some(incidents) = node_incidents.get(&node_id) else {
+            continue;
+        };
+        let Some((road_incidents, foot_incidents)) =
+            sidewalk_pass_through_components(graph, incidents)
+        else {
+            continue;
+        };
+
+        for foot_incident in foot_incidents {
+            if let Some(polygon) =
+                sidewalk_apron_polygon(graph, node_id, &road_incidents, foot_incident, *state)
+            {
+                emit_polygon_fill(
+                    mesh,
+                    MeshLayer::Sidewalk,
+                    &polygon,
+                    SIDEWALK_LAYER_Y,
+                    sidewalk_color(),
+                );
+            }
+        }
+    }
+}
+
+fn sidewalk_pass_through_components(
+    graph: &RegionGraph,
+    incidents: &[IncidentEdgeEndpoint],
+) -> Option<([IncidentEdgeEndpoint; 2], Vec<IncidentEdgeEndpoint>)> {
+    let mut road_incidents = Vec::new();
+    let mut foot_incidents = Vec::new();
+
+    for incident in incidents {
+        let edge = &graph.edges[incident.edge_idx];
+        if road_supports_sidewalk(edge) {
+            road_incidents.push(*incident);
+        } else if edge.primary_type == TransitType::Foot
+            && (edge.allowed_types & TransitFlags::FOOT != 0)
+        {
+            foot_incidents.push(*incident);
+        } else {
+            return None;
+        }
+    }
+
+    if road_incidents.len() != 2 || foot_incidents.is_empty() {
+        return None;
+    }
+
+    Some(([road_incidents[0], road_incidents[1]], foot_incidents))
+}
+
+fn sidewalk_apron_polygon(
+    graph: &RegionGraph,
+    node_id: u32,
+    road_incidents: &[IncidentEdgeEndpoint; 2],
+    foot_incident: IncidentEdgeEndpoint,
+    node_state: NodeRenderState,
+) -> Option<[Vector3; 4]> {
+    let node_id = graph.get_valid_node(node_id);
+    let center = graph.nodes[node_id as usize].pos;
+
+    let first_road = &graph.edges[road_incidents[0].edge_idx];
+    let road_half = road_half_width(first_road);
+    let apron_len = node_state.outer_radius.max(road_half);
+    if apron_len <= 0.0 {
+        return None;
+    }
+
+    let road_axis =
+        direction_at_endpoint(edge_points(first_road), road_incidents[0].at_start)?.normalized();
+    let road_normal = Vector2::new(-road_axis.y, road_axis.x);
+
+    let foot_edge = &graph.edges[foot_incident.edge_idx];
+    let foot_half = sidewalk_surface_half_width(foot_edge);
+    let trim = node_state.outer_radius.max(foot_half);
+    let (foot_center, foot_direction) =
+        endpoint_section(edge_points(foot_edge), foot_incident.at_start, trim)?;
+    let side_sign = if foot_direction.dot(road_normal) >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let selected_normal = road_normal * side_sign;
+    let foot_side = Vector2::new(-foot_direction.y, foot_direction.x) * foot_half;
+    let mut foot_points = [
+        lifted_offset(foot_center, foot_side, 0.0),
+        lifted_offset(foot_center, -foot_side, 0.0),
+    ];
+    sort_pair_by_axis(&mut foot_points, center, road_axis);
+
+    let mut curb_points = [Vector3::ZERO; 2];
+    for (idx, incident) in road_incidents.iter().enumerate() {
+        let direction = direction_at_endpoint(
+            edge_points(&graph.edges[incident.edge_idx]),
+            incident.at_start,
+        )?;
+        let anchor_center =
+            center + Vector3::new(direction.x * apron_len, 0.0, direction.y * apron_len);
+        curb_points[idx] = lifted_offset(anchor_center, selected_normal * road_half, 0.0);
+    }
+    sort_pair_by_axis(&mut curb_points, center, road_axis);
+
+    Some([
+        curb_points[0],
+        curb_points[1],
+        foot_points[1],
+        foot_points[0],
+    ])
+}
+
+fn sort_pair_by_axis(points: &mut [Vector3; 2], origin: Vector3, axis: Vector2) {
+    if projected_distance_xz(points[0], origin, axis)
+        > projected_distance_xz(points[1], origin, axis)
+    {
+        points.swap(0, 1);
+    }
+}
+
+fn projected_distance_xz(point: Vector3, origin: Vector3, axis: Vector2) -> f32 {
+    Vector2::new(point.x - origin.x, point.z - origin.z).dot(axis)
+}
+
+fn pass_through_endpoint_side_override(
+    graph: &RegionGraph,
+    node_states: &HashMap<u32, NodeRenderState>,
+    node_incidents: &HashMap<u32, Vec<IncidentEdgeEndpoint>>,
+    edge: &Edge,
+    at_start: bool,
+) -> Option<Vector2> {
+    if edge.primary_type != TransitType::Road {
+        return None;
+    }
+
+    let node_id = graph.get_valid_node(if at_start {
+        edge.start_node
+    } else {
+        edge.end_node
+    });
+    if node_states.get(&node_id).copied().unwrap_or_default().kind != NodeRenderKind::PassThrough {
+        return None;
+    }
+
+    let incidents = node_incidents.get(&node_id)?;
+    let self_edge_idx = incidents.iter().find_map(|incident| {
+        if incident.at_start == at_start {
+            let candidate = &graph.edges[incident.edge_idx];
+            if std::ptr::eq(candidate, edge) {
+                return Some(incident.edge_idx);
+            }
+        }
+        None
+    })?;
+    let other_incident = incidents.iter().copied().find(|incident| {
+        incident.edge_idx != self_edge_idx
+            && graph.edges[incident.edge_idx].primary_type == TransitType::Road
+    })?;
+
+    let points = edge_points(edge);
+    let self_side = polyline_side_at(points, if at_start { 0 } else { points.len() - 1 });
+    let self_dir = direction_at_endpoint(points, at_start)?;
+    let other_dir = direction_at_endpoint(
+        edge_points(&graph.edges[other_incident.edge_idx]),
+        other_incident.at_start,
+    )?;
+
+    let (prev_dir, next_dir) = if at_start {
+        (-other_dir, self_dir)
+    } else {
+        (-self_dir, other_dir)
+    };
+    let mut shared_side = miter_side_for_dirs(prev_dir, next_dir);
+    if shared_side.dot(self_side) < 0.0 {
+        shared_side = -shared_side;
+    }
+    Some(shared_side)
+}
+
 fn trimmed_polyline(points: &[Vector3], start_trim: f32, end_trim: f32) -> Vec<Vector3> {
     if points.len() < 2 {
         return points.to_vec();
@@ -756,6 +997,8 @@ fn emit_polyline_fill(
     half_width: f32,
     start_half_width: f32,
     end_half_width: f32,
+    start_side_override: Option<Vector2>,
+    end_side_override: Option<Vector2>,
     y_offset: f32,
     color: Color,
 ) {
@@ -768,6 +1011,8 @@ fn emit_polyline_fill(
         half_width,
         start_half_width,
         end_half_width,
+        start_side_override,
+        end_side_override,
         y_offset,
     );
     if sections.len() < 2 {
@@ -822,6 +1067,8 @@ fn build_polyline_sections(
     half_width: f32,
     start_half_width: f32,
     end_half_width: f32,
+    start_side_override: Option<Vector2>,
+    end_side_override: Option<Vector2>,
     y_offset: f32,
 ) -> Vec<(Vector3, Vector3)> {
     let mut sections = Vec::with_capacity(points.len());
@@ -834,7 +1081,13 @@ fn build_polyline_sections(
         } else {
             half_width
         };
-        let side = polyline_side_at(points, idx) * point_half_width;
+        let side = if idx == 0 {
+            start_side_override.unwrap_or_else(|| polyline_side_at(points, idx))
+        } else if idx == points.len() - 1 {
+            end_side_override.unwrap_or_else(|| polyline_side_at(points, idx))
+        } else {
+            polyline_side_at(points, idx)
+        } * point_half_width;
         sections.push((
             lifted_offset(points[idx], side, y_offset),
             lifted_offset(points[idx], -side, y_offset),
@@ -857,21 +1110,23 @@ fn polyline_side_at(points: &[Vector3], idx: usize) -> Vector2 {
     };
 
     match (prev_dir, next_dir) {
-        (Some(prev), Some(next)) => {
-            let prev_normal = Vector2::new(-prev.y, prev.x);
-            let next_normal = Vector2::new(-next.y, next.x);
-            let miter = prev_normal + next_normal;
-            if miter.length_squared() < MIN_SEGMENT_LEN * MIN_SEGMENT_LEN {
-                next_normal
-            } else {
-                let miter_dir = miter.normalized();
-                let denom = miter_dir.dot(next_normal).abs().max(0.25);
-                miter_dir * (1.0 / denom).min(2.0)
-            }
-        }
+        (Some(prev), Some(next)) => miter_side_for_dirs(prev, next),
         (Some(prev), None) => Vector2::new(-prev.y, prev.x),
         (None, Some(next)) => Vector2::new(-next.y, next.x),
         (None, None) => Vector2::ZERO,
+    }
+}
+
+fn miter_side_for_dirs(prev: Vector2, next: Vector2) -> Vector2 {
+    let prev_normal = Vector2::new(-prev.y, prev.x);
+    let next_normal = Vector2::new(-next.y, next.x);
+    let miter = prev_normal + next_normal;
+    if miter.length_squared() < MIN_SEGMENT_LEN * MIN_SEGMENT_LEN {
+        next_normal
+    } else {
+        let miter_dir = miter.normalized();
+        let denom = miter_dir.dot(next_normal).abs().max(0.25);
+        miter_dir * (1.0 / denom).min(2.0)
     }
 }
 
@@ -939,6 +1194,74 @@ fn emit_node_fill_polygon(
         let next = boundary[(idx + 1) % boundary.len()].point;
         let current = Vector3::new(current.x, current.y + y_offset, current.z);
         let next = Vector3::new(next.x, next.y + y_offset, next.z);
+        push_triangle(
+            mesh,
+            layer,
+            [center, current, next],
+            [center_uv, rim_uv, rim_uv],
+            color,
+        );
+    }
+}
+
+fn emit_polygon_fill(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    points: &[Vector3],
+    y_offset: f32,
+    color: Color,
+) {
+    if points.len() < 3 {
+        return;
+    }
+
+    let mut boundary = points.to_vec();
+    boundary.dedup_by(|a, b| (*a - *b).length_squared() < 0.0001);
+    if boundary.len() < 3 {
+        return;
+    }
+
+    let mut center = Vector3::ZERO;
+    for point in &boundary {
+        center += *point;
+    }
+    center /= boundary.len() as f32;
+
+    boundary.sort_by(|a, b| {
+        let angle_a = (a.z - center.z).atan2(a.x - center.x);
+        let angle_b = (b.z - center.z).atan2(b.x - center.x);
+        angle_a
+            .partial_cmp(&angle_b)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    boundary.dedup_by(|a, b| (*a - *b).length_squared() < 0.0001);
+    if boundary.len() < 3 {
+        return;
+    }
+
+    if polygon_signed_area_points_xz(&boundary) < 0.0 {
+        boundary.reverse();
+    }
+
+    let center = Vector3::new(center.x, center.y + y_offset, center.z);
+    let center_uv = if color.a > 0.9 {
+        Vector2::new(0.0, 1.0)
+    } else {
+        Vector2::ZERO
+    };
+    let rim_uv = if color.a > 0.9 {
+        Vector2::new(1.0, 1.0)
+    } else {
+        Vector2::ZERO
+    };
+
+    for idx in 0..boundary.len() {
+        let current = Vector3::new(boundary[idx].x, boundary[idx].y + y_offset, boundary[idx].z);
+        let next = Vector3::new(
+            boundary[(idx + 1) % boundary.len()].x,
+            boundary[(idx + 1) % boundary.len()].y + y_offset,
+            boundary[(idx + 1) % boundary.len()].z,
+        );
         push_triangle(
             mesh,
             layer,
@@ -1066,6 +1389,20 @@ fn polygon_signed_area_xz(points: &[BoundaryPoint]) -> f32 {
     for idx in 0..points.len() {
         let current = points[idx].point;
         let next = points[(idx + 1) % points.len()].point;
+        area += current.x * next.z - current.z * next.x;
+    }
+    area * 0.5
+}
+
+fn polygon_signed_area_points_xz(points: &[Vector3]) -> f32 {
+    if points.len() < 3 {
+        return 0.0;
+    }
+
+    let mut area = 0.0_f32;
+    for idx in 0..points.len() {
+        let current = points[idx];
+        let next = points[(idx + 1) % points.len()];
         area += current.x * next.z - current.z * next.x;
     }
     area * 0.5
@@ -1421,7 +1758,8 @@ mod tests {
     use super::{
         BoundaryPoint, NodeRenderKind, build_node_render_states, build_sidewalk_node_incidents,
         build_sidewalk_node_render_states, collapse_boundary_rays, edge_endpoint_trim_distance,
-        node_uses_polygon_fill, polyline_side_at, sidewalk_surface_half_width,
+        node_uses_polygon_fill, polyline_side_at, sidewalk_apron_polygon,
+        sidewalk_pass_through_components, sidewalk_surface_half_width,
     };
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::graph::data::Edge;
@@ -1674,5 +2012,65 @@ mod tests {
                 sidewalk_surface_half_width(&graph.edges[2]),
             ) >= 4.9
         );
+    }
+
+    #[test]
+    fn sidewalk_pass_through_node_builds_apron_polygon_for_centered_walkway() {
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-25.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
+        let n3 = graph.add_node(Vector3::new(0.0, 0.0, -12.0), NodeType::Junction);
+
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-25.0, 0.0, 0.0),
+            Vector3::ZERO,
+            7.0,
+        ));
+        graph.add_edge(create_test_edge(
+            n1,
+            n2,
+            Vector3::ZERO,
+            Vector3::new(25.0, 0.0, 0.0),
+            7.0,
+        ));
+        graph.add_edge(create_test_walkway(
+            n3,
+            n1,
+            Vector3::new(0.0, 0.0, -12.0),
+            Vector3::ZERO,
+        ));
+
+        let sidewalk_node_incidents = build_sidewalk_node_incidents(&graph);
+        let sidewalk_node_states =
+            build_sidewalk_node_render_states(&graph, &sidewalk_node_incidents);
+        let incidents = sidewalk_node_incidents.get(&n1).unwrap();
+        let (road_incidents, foot_incidents) =
+            sidewalk_pass_through_components(&graph, incidents).unwrap();
+
+        let polygon = sidewalk_apron_polygon(
+            &graph,
+            n1,
+            &road_incidents,
+            foot_incidents[0],
+            *sidewalk_node_states.get(&n1).unwrap(),
+        )
+        .unwrap();
+
+        for expected in [
+            Vector3::new(-5.0, 0.0, -3.5),
+            Vector3::new(5.0, 0.0, -3.5),
+            Vector3::new(-1.4, 0.0, -5.0),
+            Vector3::new(1.4, 0.0, -5.0),
+        ] {
+            assert!(
+                polygon
+                    .iter()
+                    .any(|point| point.distance_squared_to(expected) < 0.05)
+            );
+        }
     }
 }
