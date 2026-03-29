@@ -208,6 +208,7 @@ mod tests {
     fn test_angle_sweep_produces_valid_meshes() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
 
         for angle_deg in (10..180).step_by(20) {
             let mut graph = RegionGraph::new();
@@ -236,7 +237,7 @@ mod tests {
             ));
 
             graph.rebuild_adjacency_list();
-            let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
+            let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
             validate_mesh(&mesh_data, 80.0);
         }
     }
@@ -299,8 +300,9 @@ mod tests {
         edge.allowed_types = TransitFlags::CAR;
         graph.add_edge(edge);
 
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
         graph.rebuild_adjacency_list();
-        let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
         validate_mesh(&mesh_data, 60.0);
 
         let center_road = visible_coverage_ratio(
@@ -495,8 +497,9 @@ mod tests {
             10.0,
         ));
 
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
         graph.rebuild_adjacency_list();
-        let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
         validate_mesh(&mesh_data, 80.0);
 
         let center_road = visible_coverage_ratio(
@@ -534,8 +537,9 @@ mod tests {
             10.0,
         ));
 
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
         graph.rebuild_adjacency_list();
-        let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
         validate_mesh(&mesh_data, 80.0);
 
         let throat_is_road = visible_coverage_ratio(
@@ -646,8 +650,9 @@ mod tests {
             14.0,
         ));
 
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
         graph.rebuild_adjacency_list();
-        let mesh_data = renderer.generate_mesh_data(&graph, &terrain);
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
         validate_mesh(&mesh_data, 80.0);
 
         let center_road = visible_coverage_ratio(
@@ -708,5 +713,55 @@ mod tests {
             VisibleSurface::Road,
         );
         assert!(branch_throat >= 0.7);
+    }
+
+    #[test]
+    fn test_junction_crosswalk_markings_generated() {
+        let north = [Vector3::new(0.0, 0.0, -20.0), Vector3::new(0.0, 0.0, 0.0)];
+        let east = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
+        let west = [Vector3::new(-20.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)];
+
+        // T-junction with sidewalks
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&north, 1, 1), (&east, 1, 1), (&west, 1, 1)]);
+
+        validate_mesh(&mesh_data, 60.0);
+
+        // Marking vertices should include both road dividers and crosswalks.
+        // A T-junction has 3 road arms and at least 2 crosswalks.
+        // Each zebra bar is 6 vertices. 10m crossing = ~12 bars = 72 vertices per crosswalk.
+        assert!(
+            mesh_data.marking_vertices.len() >= 150,
+            "Expected significant marking vertices for crosswalks, got {}",
+            mesh_data.marking_vertices.len()
+        );
+    }
+
+    #[test]
+    fn test_two_way_node_only_one_crosswalk() {
+        let north = [Vector3::new(0.0, 0.0, -20.0), Vector3::new(0.0, 0.0, 0.0)];
+        let east = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
+
+        // Bend (2 arms)
+        let (graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&north, 1, 1), (&east, 1, 1)]);
+
+        validate_mesh(&mesh_data, 40.0);
+        
+        println!("Marking vertices: {}", mesh_data.marking_vertices.len());
+        // ...
+
+        // A 2-way junction should have:
+        // - Dash markings on the 2 road arms
+        // - exactly ONE crosswalk (zebra stripes)
+        // A single crosswalk (zebra) might take ~72 vertices.
+        // Dash markings for 2 arms (~10m each) might take ~48 vertices.
+        // Total should be around 444 for 2 arms of 20m + 1 crosswalk.
+        // If it had TWO crosswalks, it would be around 588.
+        assert!(
+            mesh_data.marking_vertices.len() > 350 && mesh_data.marking_vertices.len() < 500,
+            "Expected one crosswalk's worth of marking vertices (plus road dashings) for 2-way node, got {}",
+            mesh_data.marking_vertices.len()
+        );
     }
 }

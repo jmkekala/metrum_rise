@@ -428,4 +428,71 @@ mod tests {
         println!("Pos X after 1 tick: {}", agents.pos_x[agent_idx]);
         assert!(agents.pos_x[agent_idx] < 100.0, "Agent should have moved towards city");
     }
+
+    #[test]
+    fn test_pedestrian_crosses_junction() {
+        use crate::simulation::economy::agents::{TRANSIT_DEPARTING, TRANSIT_ARRIVING, TRANSIT_IDLE};
+
+        let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
+
+        // n0 ---- n1 (Junction) ---- n2
+        let n0 = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+
+        // Edge 0: n0-n1. Edge 1: n1-n2.
+        network.add_road(&mut graph, vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)], 1, 1, false, false, EdgeClass::Standard, &mut zoning, &mut allocator);
+        network.add_road(&mut graph, vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)], 1, 1, false, false, EdgeClass::Standard, &mut zoning, &mut allocator);
+
+        network.lane_system.rebuild(&mut graph);
+        network.cch_graph = CchGraph::build(&graph);
+
+        // Building on Road 0, Left side (side 1)
+        allocator.buildings.push(Building {
+            center_x: -50.0, center_y: 10.0, width: 10, depth: 10, zone_type: ZoneType::Residential,
+            facing_dir: godot::prelude::Vector2::new(0.0, 1.0), frontage_t: 0.5, side_offset: 5.0, abandoned_timer: 0,
+            edge_idx: 0, side: 1, cell_x: 0, cell_y: 0, occupancy: 0,
+        });
+        // Building on Road 1, Right side (side -1)
+        allocator.buildings.push(Building {
+            center_x: 50.0, center_y: -10.0, width: 10, depth: 10, zone_type: ZoneType::Commercial,
+            facing_dir: godot::prelude::Vector2::new(0.0, -1.0), frontage_t: 0.5, side_offset: 5.0, abandoned_timer: 0,
+            edge_idx: 1, side: -1, cell_x: 5, cell_y: 0, occupancy: 0,
+        });
+
+        let mut agents = AgentSystem::new();
+        // Spawn at building 0 (home), heading to node n2 (so they pass through n1 and onto Edge 1)
+        let i = agents.spawn_agent(0, n2, 0.0, 0.0, n0, -50.0, 10.0);
+        agents.home_building[i] = 0;
+        agents.target_building[i] = 1;
+        agents.transit_mode[i] = MODE_WALK;
+        agents.transit[i] = 0; // IDLE
+        agents.current_building[i] = 0;
+
+        // Force a journey
+        agents.transit[i] = TRANSIT_DEPARTING;
+
+        // Tick several times to complete the journey
+        let mut reached_n1 = false;
+        let mut crossed_to_edge_1 = false;
+        let mut arrived = false;
+        
+        for _ in 0..5000 {
+            agents.tick(&mut allocator, &network, &mut graph, 0.1);
+            if agents.current_node[i] == n1 { reached_n1 = true; }
+            if agents.current_edge[i] == 1 { crossed_to_edge_1 = true; }
+            if agents.transit[i] == TRANSIT_ARRIVING || agents.transit[i] == TRANSIT_IDLE {
+                arrived = true;
+                break;
+            }
+        }
+
+        assert!(reached_n1, "Pedestrian should reach junction n1");
+        assert!(crossed_to_edge_1, "Pedestrian should cross to edge 1");
+        assert!(arrived, "Pedestrian should arrive at target building");
+    }
 }

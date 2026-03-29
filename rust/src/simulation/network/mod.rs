@@ -318,7 +318,7 @@ impl TransitNetwork {
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData {
         let renderer = RoadRenderer;
-        renderer.generate_mesh_data(graph, terrain)
+        renderer.generate_mesh_data(graph, &self.lane_system, terrain)
     }
 
     pub fn invalidate_zoning_near_edge(&mut self, edge_id: usize, graph: &RegionGraph) {

@@ -414,7 +414,23 @@ impl BuildingAllocator {
                     if let Some(home_idx) = _agents.find_available_home(self) {
                         let spawn_node =
                             border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
-                        let spawn_pos = graph.nodes[spawn_node as usize].pos;
+                        let mut spawn_pos = graph.nodes[spawn_node as usize].pos;
+                        
+                        // Offset the spawn position to the correct lane center (RHT/LHT)
+                        if let Some(edge_idx) = graph.adjacency[spawn_node as usize].get(0) {
+                            let edge = &graph.edges[*edge_idx];
+                            if edge.physical_geometry.len() >= 2 {
+                                let dir = if edge.start_node == spawn_node {
+                                    (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
+                                } else {
+                                    (edge.physical_geometry[edge.physical_geometry.len()-2] - edge.physical_geometry[edge.physical_geometry.len()-1]).normalized()
+                                };
+                                let side_mul = if crate::config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+                                let normal = godot::prelude::Vector3::new(-dir.z, 0.0, dir.x);
+                                spawn_pos += normal * (crate::config::LANE_WIDTH * 0.5 * side_mul);
+                            }
+                        }
+
                         let home_bldg = &self.buildings[home_idx];
                         let home_node = graph.edges[home_bldg.edge_idx].end_node;
 

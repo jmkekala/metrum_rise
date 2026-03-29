@@ -10,9 +10,6 @@ use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::simulation::network::TransitNetwork;
-use crate::simulation::pathing::pedestrian::{
-    find_path as find_pedestrian_path, PedestrianEndpoint,
-};
 use godot::prelude::*;
 use rand::Rng;
 
@@ -66,11 +63,26 @@ impl AgentSystem {
                     let b = &allocator.buildings[curr];
                     let edge = &graph.edges[b.edge_idx];
                     $self.transit[$i] = TRANSIT_DEPARTING;
-                    $self.current_node[$i] = if b.frontage_t < 0.5 {
-                        edge.start_node
+                    $self.transit[$i] = TRANSIT_DEPARTING;
+                    let n_start = edge.start_node;
+                    let n_end = edge.end_node;
+                    
+                    // Pick the node that is closer to the final destination, 
+                    // but respect one-way constraints for cars.
+                    let can_go_fwd = $self.transit_mode[$i] != MODE_CAR || edge.fwd_lanes > 0;
+                    let can_go_bkw = $self.transit_mode[$i] != MODE_CAR || edge.bkw_lanes > 0;
+
+                    let target_pos = graph.nodes[$self.target_node[$i] as usize].pos;
+                    let d_start = graph.nodes[n_start as usize].pos.distance_to(target_pos);
+                    let d_end = graph.nodes[n_end as usize].pos.distance_to(target_pos);
+                    
+                    if can_go_fwd && can_go_bkw {
+                        $self.current_node[$i] = if d_start < d_end { n_start } else { n_end };
+                    } else if can_go_fwd {
+                        $self.current_node[$i] = n_end;
                     } else {
-                        edge.end_node
-                    };
+                        $self.current_node[$i] = n_start;
+                    }
                     $self.is_visible[$i] = true;
                 } else {
                     $self.transit[$i] = TRANSIT_ARRIVING;
@@ -130,37 +142,8 @@ impl AgentSystem {
                             } else {
                                 target_edge.end_node
                             };
-                            let start_ped = if self.current_building[i] != usize::MAX
-                                && self.current_building[i] < allocator.buildings.len()
-                            {
-                                let curr_b = &allocator.buildings[self.current_building[i]];
-                                let curr_edge = &graph.edges[curr_b.edge_idx];
-                                let curr_node = if curr_b.frontage_t < 0.5 {
-                                    curr_edge.start_node
-                                } else {
-                                    curr_edge.end_node
-                                };
-                                PedestrianEndpoint {
-                                    node: curr_node,
-                                    edge_idx: Some(curr_b.edge_idx),
-                                    side: curr_b.side,
-                                }
-                            } else {
-                                PedestrianEndpoint {
-                                    node: self.current_node[i],
-                                    edge_idx: None,
-                                    side: 0,
-                                }
-                            };
-                            let target_ped = PedestrianEndpoint {
-                                node: target_node,
-                                edge_idx: Some(b.edge_idx),
-                                side: b.side,
-                            };
-                            let (_final_target, mode) = self.decide_transit_mode_with_endpoints(
+                            let (_final_target, mode) = self.decide_transit_mode(
                                 i,
-                                start_ped,
-                                target_ped,
                                 target_node,
                                 graph,
                                 &transit_network.cch_graph,
@@ -168,25 +151,9 @@ impl AgentSystem {
                             self.target_node[i] = target_node;
                             self.transit_mode[i] = mode;
                             self.current_path[i].clear();
-                            self.current_ped_path[i].clear();
                             self.current_path_index[i] = 0;
                             self.current_lane_id[i] = usize::MAX;
                             self.lane_distance[i] = 0.0;
-
-                            if mode == MODE_WALK {
-                                if let Some((_, _, path)) =
-                                    find_pedestrian_path(graph, start_ped, target_ped)
-                                {
-                                    self.current_ped_path[i] = path;
-                                }
-                                self.pedestrian_side[i] = if start_ped.side != 0 {
-                                    start_ped.side
-                                } else {
-                                    target_ped.side
-                                };
-                            } else {
-                                self.pedestrian_side[i] = 0;
-                            }
                             initiate_journey!(self, i);
                         }
                     }
@@ -204,7 +171,7 @@ impl AgentSystem {
                         continue;
                     }
 
-                    if self.transit_mode[i] == MODE_CAR && self.current_lane_id[i] == usize::MAX {
+                    if self.current_lane_id[i] == usize::MAX {
                         let b = &allocator.buildings[b_id];
                         let edge = &graph.edges[b.edge_idx];
                         let is_fwd = node_idx == edge.end_node;
@@ -212,14 +179,29 @@ impl AgentSystem {
                         if let Some(edge_lanes) = transit_network.lane_system.edge_lanes.get(&b.edge_idx) {
                             let mut valid_lanes = Vec::new();
                             for &l_id in edge_lanes {
-                                if transit_network.lane_system.lanes[l_id].is_fwd == is_fwd {
-                                    valid_lanes.push(l_id);
+                                let lane = &transit_network.lane_system.lanes[l_id];
+                                if lane.is_fwd == is_fwd {
+                                    if self.transit_mode[i] == MODE_WALK {
+                                        let target_idx = b.side as i8 * 100;
+                                        if lane.lane_type == crate::simulation::network::lanes::LaneType::Foot && (lane.lane_idx == target_idx || lane.lane_idx == 0) {
+                                            valid_lanes.push(l_id);
+                                        }
+                                    } else if lane.lane_type == crate::simulation::network::lanes::LaneType::Vehicle {
+                                        valid_lanes.push(l_id);
+                                    }
                                 }
                             }
                             if !valid_lanes.is_empty() {
-                                let l_id = valid_lanes[rng.gen_range(0..valid_lanes.len())];
-                                self.current_lane_id[i] = l_id;
-                                let lane = &transit_network.lane_system.lanes[l_id];
+                                // For cars, pick the outermost lane (highest absolute index) to avoid crossing traffic immediately
+                                let chosen = if self.transit_mode[i] == MODE_CAR {
+                                    valid_lanes.iter().max_by_key(|&&id| {
+                                        transit_network.lane_system.lanes[id].lane_idx.abs()
+                                    }).copied().unwrap()
+                                } else {
+                                    valid_lanes[rng.gen_range(0..valid_lanes.len())]
+                                };
+                                self.current_lane_id[i] = chosen;
+                                let lane = &transit_network.lane_system.lanes[chosen];
                                 self.lane_distance[i] = if is_fwd { b.frontage_t * lane.length } else { (1.0 - b.frontage_t) * lane.length };
                             } else {
                                 self.transit[i] = TRANSIT_ON_ROAD;
@@ -232,39 +214,24 @@ impl AgentSystem {
                     }
 
                     let target_vec = {
-                        let b = &allocator.buildings[b_id];
-                        let edge = &graph.edges[b.edge_idx];
-                        if self.transit_mode[i] == MODE_WALK {
-                            let world_pos_on_edge =
-                                allocator.get_pos_on_edge(graph, b.edge_idx, b.frontage_t);
-                            let tangent =
-                                allocator.get_tangent_on_edge(graph, b.edge_idx, b.frontage_t);
-                            let normal = Vector2::new(-tangent.y, tangent.x) * (b.side as f32);
-                            
-                            let sw_w = crate::config::SIDEWALK_WIDTH;
-                            let offset_amt = edge.width * 0.5 + sw_w * 0.5;
-                            self.pedestrian_side[i] = b.side;
-                            world_pos_on_edge + normal * offset_amt
-                        } else {
-                            let mut out_pos = graph.nodes[node_idx as usize].pos;
-                            if self.current_lane_id[i] != usize::MAX && self.current_lane_id[i] < transit_network.lane_system.lanes.len() {
-                                let lane = &transit_network.lane_system.lanes[self.current_lane_id[i]];
-                                let dist = self.lane_distance[i];
-                                let mut curr = 0.0;
-                                for j in 0..lane.geometry.len() - 1 {
-                                    let p0 = lane.geometry[j];
-                                    let p1 = lane.geometry[j+1];
-                                    let d = p0.distance_to(p1);
-                                    if curr + d >= dist || j == lane.geometry.len() - 2 {
-                                        let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
-                                        out_pos = p0.lerp(p1, t.clamp(0.0, 1.0));
-                                        break;
-                                    }
-                                    curr += d;
+                        let mut out_pos = graph.nodes[node_idx as usize].pos;
+                        if self.current_lane_id[i] != usize::MAX && self.current_lane_id[i] < transit_network.lane_system.lanes.len() {
+                            let lane = &transit_network.lane_system.lanes[self.current_lane_id[i]];
+                            let dist = self.lane_distance[i];
+                            let mut curr = 0.0;
+                            for j in 0..lane.geometry.len() - 1 {
+                                let p0 = lane.geometry[j];
+                                let p1 = lane.geometry[j+1];
+                                let d = p0.distance_to(p1);
+                                if curr + d >= dist || j == lane.geometry.len() - 2 {
+                                    let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
+                                    out_pos = p0.lerp(p1, t.clamp(0.0, 1.0));
+                                    break;
                                 }
+                                curr += d;
                             }
-                            Vector2::new(out_pos.x, out_pos.z)
                         }
+                        Vector2::new(out_pos.x, out_pos.z)
                     };
 
                     let dir = target_vec - Vector2::new(self.pos_x[i], self.pos_y[i]);
@@ -317,25 +284,26 @@ impl AgentSystem {
                     };
                     let mut remaining_dist = speed * delta;
 
-                    // PEDESTRIAN LOGIC DOES NOT USE LANESYSTEM YET.
-                    if self.transit_mode[i] == MODE_WALK {
-                        self.tick_pedestrian(i, &mut remaining_dist, allocator, graph);
-                        continue;
-                    }
-
-                    // === LANE GRAPH LOGIC (CARS) ===
+                    // === UNIFIED LANE GRAPH LOGIC ===
                     while remaining_dist > 0.0 {
                         
                         // 1. Initialise Path if missing
                         if self.current_path[i].is_empty() {
                             self.pathfind_count += 1;
                             let mut path_found = false;
+                            
+                            let search_flags = if self.transit_mode[i] == MODE_WALK {
+                                TransitFlags::FOOT
+                            } else {
+                                TransitFlags::CAR
+                            };
+
                             if let Some((_, _, path)) = transit_network.cch_graph.find_path(
                                 self.current_node[i],
                                 self.target_node[i],
                                 usize::MAX,
                                 graph,
-                                TransitFlags::CAR,
+                                search_flags,
                             ) {
                                 if path.len() > 1 {
                                     self.current_path[i] = path;
@@ -370,8 +338,15 @@ impl AgentSystem {
                                     if let Some(edge_lanes) = transit_network.lane_system.edge_lanes.get(&best_e) {
                                         let mut valid_lanes = Vec::new();
                                         for &l_id in edge_lanes {
-                                            if transit_network.lane_system.lanes[l_id].is_fwd == is_fwd {
-                                                valid_lanes.push(l_id);
+                                            let lane = &transit_network.lane_system.lanes[l_id];
+                                            if lane.is_fwd == is_fwd {
+                                                if self.transit_mode[i] == MODE_WALK {
+                                                    if lane.lane_type == crate::simulation::network::lanes::LaneType::Foot {
+                                                        valid_lanes.push(l_id);
+                                                    }
+                                                } else if lane.lane_type == crate::simulation::network::lanes::LaneType::Vehicle {
+                                                    valid_lanes.push(l_id);
+                                                }
                                             }
                                         }
                                         
@@ -539,7 +514,15 @@ impl AgentSystem {
                                 let d = p0.distance_to(p1);
                                 if curr + d >= dist {
                                     let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
-                                    let out = p0.lerp(p1, t.clamp(0.0, 1.0));
+                                    let mut out = p0.lerp(p1, t.clamp(0.0, 1.0));
+                                    
+                                    if self.transit_mode[i] == MODE_WALK && d > 1e-5 {
+                                        let tangent = (p1 - p0) / d;
+                                        let normal = Vector3::new(-tangent.z, 0.0, tangent.x);
+                                        let jitter = (f32::sin(i as f32 * 4.0) + f32::cos(i as f32 * 7.0)) * 0.7;
+                                        out += normal * jitter;
+                                    }
+                                    
                                     self.pos_x[i] = out.x;
                                     self.pos_y[i] = out.z;
                                     found = true;
@@ -587,9 +570,7 @@ impl AgentSystem {
                         self.current_lane_id[i] = usize::MAX;
                         self.lane_distance[i] = 0.0;
                         self.current_path[i].clear();
-                        self.current_ped_path[i].clear();
                         self.current_path_index[i] = 0;
-                        self.pedestrian_side[i] = 0;
 
                         let commute_time = self.sim_time - self.journey_start_time[i];
                         self.happiness[i] =
@@ -608,96 +589,5 @@ impl AgentSystem {
                 }
             }
         }
-    }
-    
-    // Extracted pedestrian fallback logic
-    fn tick_pedestrian(&mut self, i: usize, remaining_dist: &mut f32, allocator: &BuildingAllocator, graph: &RegionGraph) {
-        // Pedestrians use simple snapping & lines until proper sidewalks are baked into LaneSystem.
-        let mut rd = *remaining_dist;
-        while rd > 0.0 {
-            if self.current_ped_path[i].is_empty() {
-                self.pathfind_count += 1;
-                let t_bldg_idx = self.target_building[i];
-                if t_bldg_idx != usize::MAX && t_bldg_idx < allocator.buildings.len() {
-                    if let Some((_, _, path)) = find_pedestrian_path(
-                        graph,
-                        PedestrianEndpoint { node: self.current_node[i], edge_idx: None, side: 0 },
-                        PedestrianEndpoint { 
-                            node: self.target_node[i], 
-                            edge_idx: Some(allocator.buildings[t_bldg_idx].edge_idx), 
-                            side: allocator.buildings[t_bldg_idx].side 
-                        },
-                    ) {
-                        self.current_ped_path[i] = path;
-                        self.current_path_index[i] = 0;
-                    }
-                } else {
-                    self.current_ped_path[i].clear();
-                    break;
-                }
-            }
-            
-            if self.current_path_index[i] < self.current_ped_path[i].len() {
-                let step = self.current_ped_path[i][self.current_path_index[i]];
-                if step.edge_idx >= graph.edges.len() || graph.edges[step.edge_idx].deleted {
-                    self.current_ped_path[i].clear();
-                    break; 
-                }
-                
-                let edge = &graph.edges[step.edge_idx];
-                let is_fwd = step.forward;
-                if edge.physical_geometry.len() < 2 {
-                    self.current_ped_path[i].clear();
-                    break;
-                }
-                                
-                let tgt_idx = if is_fwd { edge.physical_geometry.len() - 1 } else { 0 };
-                let p = edge.physical_geometry[tgt_idx];
-                let tangent = if is_fwd { 
-                    (edge.physical_geometry[tgt_idx] - edge.physical_geometry[tgt_idx-1]).normalized() 
-                } else { 
-                    (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized() 
-                };
-                let mut target_pos = Vector2::new(p.x, p.z);
-                if step.side != 0 {
-                    let normal = Vector2::new(-tangent.z, tangent.x);
-                    let offset_amt = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH * 0.5;
-                    target_pos += normal * offset_amt * (step.side as f32);
-                }
-                
-                // Arrival Check
-                let t_bldg_idx = self.target_building[i];
-                if t_bldg_idx != usize::MAX && t_bldg_idx < allocator.buildings.len() {
-                    let b = &allocator.buildings[t_bldg_idx];
-                    if step.edge_idx == b.edge_idx {
-                        let fp = allocator.get_pos_on_edge(graph, b.edge_idx, b.frontage_t);
-                        let to_agent = Vector2::new(self.pos_x[i], self.pos_y[i]) - fp;
-                        if to_agent.length_squared() < 4.0 {
-                            self.transit[i] = TRANSIT_ARRIVING;
-                            rd = 0.0;
-                            break;
-                        }
-                    }
-                }
-                
-                let d = (target_pos - Vector2::new(self.pos_x[i], self.pos_y[i])).length();
-                if d < rd {
-                    self.pos_x[i] = target_pos.x;
-                    self.pos_y[i] = target_pos.y;
-                    self.current_path_index[i] += 1;
-                    self.pedestrian_side[i] = step.side;
-                    rd -= d;
-                } else {
-                    let mv = (target_pos - Vector2::new(self.pos_x[i], self.pos_y[i])).normalized() * rd;
-                    self.pos_x[i] += mv.x;
-                    self.pos_y[i] += mv.y;
-                    rd = 0.0;
-                }
-            } else {
-                self.current_ped_path[i].clear();
-                break;
-            }
-        }
-        *remaining_dist = rd;
     }
 }

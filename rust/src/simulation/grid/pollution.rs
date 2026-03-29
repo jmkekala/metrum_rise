@@ -30,8 +30,7 @@ impl PollutionSystem {
 
         let w = self.grid.width;
         let h = self.grid.height;
-        let world_size_x = config.width_m;
-        let world_size_y = config.height_m;
+
 
         // 1. Emission (Sequential as building count is small compared to grid)
         for b in &allocator.buildings {

@@ -49,6 +49,7 @@ pub trait TransitRenderer {
     fn generate_mesh_data(
         &self,
         graph: &RegionGraph,
+        lane_system: &crate::simulation::network::lanes::LaneSystem,
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData;
 }

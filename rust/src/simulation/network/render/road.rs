@@ -18,6 +18,9 @@ use std::f32::consts::TAU;
 
 const PASS_THROUGH_DOT: f32 = -0.985;
 const MIN_SEGMENT_LEN: f32 = 0.01;
+const CROSSWALK_STRIPE_WIDTH: f32 = 0.5;
+const CROSSWALK_STRIPE_LEN: f32 = 2.0;
+const CROSSWALK_STRIPE_GAP: f32 = 0.4;
 const SIDEWALK_LAYER_Y: f32 = ROAD_H_OFFSET;
 const ROAD_LAYER_Y: f32 = ROAD_H_OFFSET + 0.02;
 const MARKING_LAYER_Y: f32 = ROAD_H_OFFSET + 0.04;
@@ -83,13 +86,21 @@ enum MeshLayer {
 pub struct RoadRenderer;
 
 impl TransitRenderer for RoadRenderer {
-    fn generate_mesh_data(&self, graph: &RegionGraph, _terrain: &TerrainSystem) -> NetworkMeshData {
+    fn generate_mesh_data(
+        &self,
+        graph: &RegionGraph,
+        lane_system: &crate::simulation::network::lanes::LaneSystem,
+        terrain: &crate::simulation::terrain::TerrainSystem,
+    ) -> NetworkMeshData {
         let road_node_states = build_node_render_states(graph);
         let road_node_incidents = build_surface_node_incidents(graph);
         let sidewalk_node_incidents = build_sidewalk_node_incidents(graph);
         let sidewalk_node_states =
             build_sidewalk_node_render_states(graph, &sidewalk_node_incidents);
         let mut mesh = NetworkMeshData::new();
+
+        // 0. CROSSWALKS (NEW)
+        emit_crosswalk_markings(&mut mesh, lane_system);
 
         // Pass 1: draw the widened sidewalk-colored base only for surface roads that allow FOOT.
         for edge in &graph.edges {
@@ -1636,6 +1647,87 @@ fn emit_marking_segment(
         ],
         color,
     );
+}
+
+
+fn emit_crosswalk_markings(
+    mesh: &mut NetworkMeshData,
+    lane_system: &crate::simulation::network::lanes::LaneSystem,
+) {
+    use crate::simulation::network::lanes::LaneType;
+    for lane in &lane_system.lanes {
+        // Crosswalks are junction connections (edge_id == MAX) for pedestrians.
+        if lane.edge_id == usize::MAX && lane.lane_type == LaneType::Foot && lane.is_crosswalk {
+            if lane.geometry.len() >= 2 {
+                emit_zebra_stripes(mesh, lane);
+            }
+        }
+    }
+}
+
+fn emit_zebra_stripes(mesh: &mut NetworkMeshData, lane: &crate::simulation::network::lanes::Lane) {
+    let color = Color::from_rgb(1.0, 1.0, 1.0); // White
+    let step = CROSSWALK_STRIPE_WIDTH + CROSSWALK_STRIPE_GAP;
+    
+    let mut travelled = 0.0;
+    while travelled + CROSSWALK_STRIPE_WIDTH <= lane.length {
+        let t_param = (travelled + CROSSWALK_STRIPE_WIDTH * 0.5) / lane.length;
+        
+        // Sample position and tangent from the lane spline
+        let (p, tangent) = sample_polyline_pos_tangent(&lane.geometry, t_param);
+        let normal = Vector3::new(-tangent.z, 0.0, tangent.x).normalized();
+        
+        let half_w = CROSSWALK_STRIPE_WIDTH * 0.5;
+        let half_l = CROSSWALK_STRIPE_LEN * 0.5;
+        
+        let v0 = p - tangent * half_w - normal * half_l;
+        let v1 = p + tangent * half_w - normal * half_l;
+        let v2 = p + tangent * half_w + normal * half_l;
+        let v3 = p - tangent * half_w + normal * half_l;
+        
+        push_quad(
+            mesh,
+            MeshLayer::Marking,
+            [v0 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0), 
+             v1 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0), 
+             v2 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0), 
+             v3 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0)],
+            [
+                Vector2::new(0.0, 0.0),
+                Vector2::new(1.0, 0.0),
+                Vector2::new(1.0, 1.0),
+                Vector2::new(0.0, 1.0),
+            ],
+            color,
+        );
+        
+        travelled += step;
+    }
+}
+
+fn sample_polyline_pos_tangent(points: &[Vector3], t: f32) -> (Vector3, Vector3) {
+    if points.is_empty() { return (Vector3::ZERO, Vector3::ZERO); }
+    if points.len() == 1 { return (points[0], Vector3::FORWARD); }
+    
+    let t = t.clamp(0.0, 1.0);
+    let mut total_len = 0.0;
+    for i in 0..points.len()-1 {
+        total_len += points[i].distance_to(points[i+1]);
+    }
+    
+    let target_len = t * total_len;
+    let mut current = 0.0;
+    for i in 0..points.len()-1 {
+        let segment_len = points[i].distance_to(points[i+1]);
+        if current + segment_len >= target_len || i == points.len() -2 {
+            let local_t = (target_len - current) / segment_len;
+            let pos = points[i].lerp(points[i+1], local_t.clamp(0.0, 1.0));
+            let tangent = (points[i+1] - points[i]).normalized();
+            return (pos, tangent);
+        }
+        current += segment_len;
+    }
+    (points[points.len()-1], (points[points.len()-1] - points[points.len()-2]).normalized())
 }
 
 fn circle_segments(radius: f32) -> usize {

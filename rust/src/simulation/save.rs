@@ -22,7 +22,7 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
 use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::pathing::cost::CostCalculator;
-use crate::simulation::pathing::pedestrian::PedestrianPathStep;
+
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use chrono::Utc;
@@ -585,10 +585,6 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
         let mut car_path_stmt = tx.prepare(
             "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
         )?;
-        let mut ped_path_stmt = tx.prepare(
-            "INSERT INTO agent_ped_steps(agent_id, step_index, edge_id, forward, side)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-        )?;
 
         for agent_id in 0..view.agents.count {
             let current_node =
@@ -628,7 +624,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
                 i64::from(view.agents.activity[agent_id]),
                 i64::from(view.agents.transit[agent_id]),
                 i64::from(view.agents.transit_mode[agent_id]),
-                i64::from(view.agents.pedestrian_side[agent_id]),
+                0_i64, // Deprecated pedestrian_side
                 view.agents.happiness[agent_id],
                 view.agents.money[agent_id],
                 view.agents.journey_start_time[agent_id],
@@ -651,22 +647,6 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
                 ])?;
             }
 
-            for (step_index, step) in view.agents.current_ped_path[agent_id].iter().enumerate() {
-                let saved_edge_id = maps
-                    .edge_old_to_new
-                    .get(&step.edge_idx)
-                    .copied()
-                    .ok_or_else(|| {
-                        SaveLoadError::custom("missing saved pedestrian edge mapping")
-                    })?;
-                ped_path_stmt.execute(params![
-                    usize_to_i64(agent_id)?,
-                    usize_to_i64(step_index)?,
-                    usize_to_i64(saved_edge_id)?,
-                    step.forward,
-                    i64::from(step.side)
-                ])?;
-            }
         }
     }
 
@@ -1130,27 +1110,6 @@ fn load_agents(conn: &Connection, agent_sim_time: f32) -> SaveLoadResult<AgentSy
         }
     }
 
-    let mut ped_paths: HashMap<usize, Vec<PedestrianPathStep>> = HashMap::new();
-    {
-        let mut stmt = conn.prepare(
-            "SELECT agent_id, step_index, edge_id, forward, side
-             FROM agent_ped_steps
-             ORDER BY agent_id, step_index",
-        )?;
-        let mut rows = stmt.query([])?;
-        while let Some(row) = rows.next()? {
-            let agent_id = i64_to_usize(row.get(0)?)?;
-            let _step_index = i64_to_usize(row.get(1)?)?;
-            ped_paths
-                .entry(agent_id)
-                .or_default()
-                .push(PedestrianPathStep {
-                    edge_idx: i64_to_usize(row.get(2)?)?,
-                    forward: row.get(3)?,
-                    side: i64_to_i8(row.get(4)?)?,
-                });
-        }
-    }
 
     let mut agents = AgentSystem::new();
     agents.sim_time = agent_sim_time;
@@ -1192,7 +1151,6 @@ fn load_agents(conn: &Connection, agent_sim_time: f32) -> SaveLoadResult<AgentSy
                 activity: i64_to_u8(row.get(13)?)?,
                 transit: i64_to_u8(row.get(14)?)?,
                 transit_mode: i64_to_u8(row.get(15)?)?,
-                pedestrian_side: i64_to_i8(row.get(16)?)?,
                 happiness: row.get(17)?,
                 money: row.get(18)?,
                 journey_start_time: row.get(19)?,
@@ -1200,12 +1158,11 @@ fn load_agents(conn: &Connection, agent_sim_time: f32) -> SaveLoadResult<AgentSy
                 vehicle_type: i64_to_u8(row.get(21)?)?,
                 current_path_index: i64_to_usize(row.get(22)?)?,
                 current_path: car_paths.remove(&agent_id).unwrap_or_default(),
-                current_ped_path: ped_paths.remove(&agent_id).unwrap_or_default(),
             },
         );
     }
 
-    if !car_paths.is_empty() || !ped_paths.is_empty() {
+    if !car_paths.is_empty() {
         return Err(SaveLoadError::custom(
             "found path rows for agent ids that were not present in agents table",
         ));
@@ -1348,26 +1305,14 @@ fn validate_loaded_agents(
             clear_travel = true;
         }
 
-        if agents.current_path_index[i]
-            > agents.current_path[i]
-                .len()
-                .max(agents.current_ped_path[i].len())
-        {
+
+        if agents.current_path_index[i] > agents.current_path[i].len() {
             clear_travel = true;
         }
         if agents.current_path[i]
             .iter()
             .any(|&node_id| (node_id as usize) >= graph.nodes.len())
         {
-            clear_travel = true;
-        }
-        if agents.current_ped_path[i]
-            .iter()
-            .any(|step| step.edge_idx >= graph.edges.len() || graph.edges[step.edge_idx].deleted)
-        {
-            clear_travel = true;
-        }
-        if agents.pedestrian_side[i] < -1 || agents.pedestrian_side[i] > 1 {
             clear_travel = true;
         }
         if agents.lane_distance[i] < 0.0 || !agents.lane_distance[i].is_finite() {
@@ -1401,12 +1346,10 @@ fn validate_loaded_agents(
 
 fn clear_agent_travel_state(agents: &mut AgentSystem, agent_id: usize) {
     agents.current_path[agent_id].clear();
-    agents.current_ped_path[agent_id].clear();
     agents.current_path_index[agent_id] = 0;
     agents.current_edge[agent_id] = usize::MAX;
     agents.current_lane_id[agent_id] = usize::MAX;
     agents.lane_distance[agent_id] = 0.0;
-    agents.pedestrian_side[agent_id] = 0;
 
     if agents.transit[agent_id] == TRANSIT_INTERSECTION {
         agents.transit[agent_id] = TRANSIT_ON_ROAD;
@@ -1737,7 +1680,6 @@ struct LoadedAgentRecord {
     activity: u8,
     transit: u8,
     transit_mode: u8,
-    pedestrian_side: i8,
     happiness: f32,
     money: f32,
     journey_start_time: f32,
@@ -1745,7 +1687,6 @@ struct LoadedAgentRecord {
     vehicle_type: u8,
     current_path_index: usize,
     current_path: Vec<u32>,
-    current_ped_path: Vec<PedestrianPathStep>,
 }
 
 fn push_loaded_agent(agents: &mut AgentSystem, agent: LoadedAgentRecord) {
@@ -1767,12 +1708,12 @@ fn push_loaded_agent(agents: &mut AgentSystem, agent: LoadedAgentRecord) {
     agents.current_lane_id.push(agent.current_lane_id);
     agents.lane_distance.push(agent.lane_distance);
     agents.transit_mode.push(agent.transit_mode);
-    agents.pedestrian_side.push(agent.pedestrian_side);
-    agents.current_path.push(agent.current_path);
-    agents.current_ped_path.push(agent.current_ped_path);
+
     agents.current_path_index.push(agent.current_path_index);
     agents.has_car.push(agent.has_car);
     agents.vehicle_type.push(agent.vehicle_type);
+    agents.current_path.push(agent.current_path);
+
     agents.count += 1;
 }
 
@@ -1896,7 +1837,6 @@ mod tests {
                 activity: 1,
                 transit: TRANSIT_ON_ROAD,
                 transit_mode: MODE_CAR,
-                pedestrian_side: 0,
                 happiness: 88.0,
                 money: 123.0,
                 journey_start_time: 12.5,
@@ -1904,7 +1844,6 @@ mod tests {
                 vehicle_type: 0,
                 current_path_index: 1,
                 current_path: vec![n0, n1],
-                current_ped_path: Vec::new(),
             },
         );
         push_loaded_agent(
@@ -1925,7 +1864,6 @@ mod tests {
                 activity: 0,
                 transit: TRANSIT_ON_ROAD,
                 transit_mode: MODE_WALK,
-                pedestrian_side: 1,
                 happiness: 77.0,
                 money: 55.0,
                 journey_start_time: 6.0,
@@ -1933,11 +1871,6 @@ mod tests {
                 vehicle_type: 0,
                 current_path_index: 0,
                 current_path: Vec::new(),
-                current_ped_path: vec![PedestrianPathStep {
-                    edge_idx: edge_id,
-                    forward: false,
-                    side: 1,
-                }],
             },
         );
 
@@ -1979,7 +1912,7 @@ mod tests {
         assert_eq!(loaded.allocator.buildings.len(), 1);
         assert_eq!(loaded.agents.count, 2);
         assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
-        assert_eq!(loaded.agents.current_ped_path[1][0].edge_idx, 0);
+
         assert_eq!(loaded.agents.sim_time, agents.sim_time);
         assert!(loaded.allocator.buildings[0].center_x.is_finite());
         assert!(!loaded.zoning.edge_grids[&0].left_occupied.is_empty());
