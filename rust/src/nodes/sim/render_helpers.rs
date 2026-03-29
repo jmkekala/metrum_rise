@@ -1,9 +1,8 @@
 //! Rendering and visual helper logic for Godot interaction.
 
-use crate::config::{self, ZONING_DEPTH};
+use crate::config::ZONING_DEPTH;
 use crate::nodes::simulation_node::SimulationNode;
 use crate::simulation::grid::zoning::ZoneType;
-use crate::simulation::network::types::TransitFlags;
 use godot::classes::MultiMesh;
 use godot::prelude::*;
 
@@ -13,7 +12,7 @@ impl SimulationNode {
         &self,
         mut grid_mm: Gd<MultiMesh>,
         mut paint_mm: Gd<MultiMesh>,
-        hovered_edges: VariantArray,
+        hovered_edges: VarArray,
         is_painting: bool,
         side: i32,
         t1: f32,
@@ -758,6 +757,7 @@ impl SimulationNode {
         dict
     }
 
+    /// Calculates the normalized T-coordinates of the connection between two edges.
     pub fn get_connection_rust(&self, edge_a: usize, edge_b: usize) -> (f32, f32) {
         let (p_a0, _) = self.get_edge_pos_and_tangent(edge_a, 0.0);
         let (p_a1, _) = self.get_edge_pos_and_tangent(edge_a, 1.0);

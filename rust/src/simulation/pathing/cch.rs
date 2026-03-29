@@ -3,25 +3,16 @@
 //! Provides fast queries and O(E) metric customization for dynamic traffic.
 //! Replaces HPA* as the primary routing engine for agents.
 
-use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{TransitFlags, TransitType};
-macro_rules! godot_print {
-    ($($arg:tt)*) => {
-        #[cfg(not(test))]
-        godot::prelude::godot_print!($($arg)*);
-        #[cfg(test)]
-        println!($($arg)*);
-    }
-}
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
 /// A shortcut edge in the contracted graph.
 ///
 /// Each shortcut is either a *direct* shortcut (wrapping a single base edge) or a *compound*
-/// shortcut (combining two child shortcuts via a middle node).  Storing only the child indices
-/// keeps each shortcut at O(1) memory regardless of path length, which eliminates the O(N⁴)
-/// memory explosion that occurs when `inner_edges` accumulates path segments during contraction.
+/// shortcut (combining two child shortcuts via a middle node). Storing only the child indices
+/// keeps each shortcut at O(1) memory regardless of path length.
 #[derive(Clone, Debug)]
 pub struct CchShortcut {
     /// The start node of this shortcut.
@@ -89,9 +80,6 @@ impl CchGraph {
         if n == 0 {
             return Self::new(0);
         }
-
-        // Deleted edges are skipped directly during contraction/customization/query.
-        // Callers do not need to compact the graph before building the hierarchy.
 
         let mut cch = Self::new(n);
         cch.compute_node_order(graph);
@@ -184,27 +172,23 @@ impl CchGraph {
                 }
             }
         }
-        // Heuristic: shortcuts added - edges removed.
         shortcuts_needed as i32 - neighbors.len() as i32
     }
 
     fn contract(&mut self, graph: &RegionGraph) {
         let n = graph.nodes.len();
 
-        // 1. Initial shortcuts from base edges
         for (edge_idx, edge) in graph.edges.iter().enumerate() {
             if edge.deleted {
                 continue;
             }
 
-            // Forward edge (start -> end)
             if edge.fwd_lanes > 0
                 || (edge.primary_type == TransitType::Foot
                     && (edge.allowed_types & TransitFlags::FOOT != 0))
             {
                 self.add_direct_shortcut(edge.start_node, edge.end_node, edge_idx, edge);
             }
-            // Backward edge (end -> start)
             if edge.bkw_lanes > 0
                 || (edge.primary_type == TransitType::Foot
                     && (edge.allowed_types & TransitFlags::FOOT != 0))
@@ -213,25 +197,12 @@ impl CchGraph {
             }
         }
 
-        // 2. Triangle insertion following node rank.
-        //
-        // For each contracted node u, find all shortcuts v→u (neighbors_in) and u→w
-        // (neighbors_out) and insert a compound shortcut v→w that stores *only* the child
-        // shortcut indices.  This keeps each shortcut at O(1) memory regardless of path
-        // length, preventing the O(N⁴) allocation that occurred when inner_edges were
-        // concatenated and cloned here.
-        //
-        // Rank filter: only collect shortcuts whose other endpoint has a *higher* rank than u
-        // (i.e., it is not yet contracted).  Without this filter, already-contracted low-rank
-        // nodes accumulate as spurious "neighbors," causing O(N³) shortcuts on cyclic networks.
-        // With the filter, each contraction touches only the local uncontracted neighborhood,
-        // giving O(N·D²) total shortcuts for road networks with bounded degree D.
         for rank in 0..n {
             let u = self.node_order[rank];
             let u_rank = self.node_rank[u as usize];
 
-            let mut neighbors_in = Vec::new(); // shortcut indices S -> u
-            let mut neighbors_out = Vec::new(); // shortcut indices u -> T
+            let mut neighbors_in = Vec::new();
+            let mut neighbors_out = Vec::new();
 
             for (idx, s) in self.shortcuts.iter().enumerate() {
                 if s.target_node == u && self.node_rank[s.start_node as usize] > u_rank {
@@ -258,7 +229,6 @@ impl CchGraph {
                         continue;
                     }
 
-                    // Check turn restrictions at u
                     if !graph.nodes[u as usize].lane_connections.is_empty() {
                         let conn = &graph.nodes[u as usize].lane_connections;
                         let mut allowed = false;
@@ -275,7 +245,6 @@ impl CchGraph {
                         }
                     }
 
-                    // Store compound shortcut referencing child indices — no path copying.
                     self.add_compound_shortcut(
                         s_in_start,
                         s_out_target,
@@ -671,45 +640,6 @@ impl CchGraph {
             }
         }
         false
-    }
-
-    fn find_first_from_last(
-        &self,
-        u: u32,
-        e_in: usize,
-        v: u32,
-        e_out: usize,
-        graph: &RegionGraph,
-    ) -> usize {
-        // Find which shortcut starts at u, ends at v, and ends with e_out, and follows e_in
-        for &idx in &self.fwd_up[u as usize] {
-            let s = &self.shortcuts[idx];
-            if s.target_node == v && s.last_edge == e_out {
-                if self.is_turn_allowed(u, e_in, s.first_edge, graph) {
-                    return s.first_edge;
-                }
-            }
-        }
-        e_out // Fallback
-    }
-
-    fn find_last_from_first(
-        &self,
-        u: u32,
-        e_in: usize,
-        v: u32,
-        e_out: usize,
-        graph: &RegionGraph,
-    ) -> usize {
-        for &idx in &self.fwd_up[u as usize] {
-            let s = &self.shortcuts[idx];
-            if s.target_node == v && s.first_edge == e_in {
-                if self.is_turn_allowed(v, s.last_edge, e_out, graph) {
-                    return s.last_edge;
-                }
-            }
-        }
-        e_in
     }
 }
 

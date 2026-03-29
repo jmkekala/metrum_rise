@@ -1,32 +1,49 @@
-#[allow(dead_code)]
+//! Common types and enumerations for the transportation network.
+
+/// The mode of transport for an edge or lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransitType {
+    /// Standard road for vehicles and pedestrians.
     Road,
+    /// Rail-based transport.
     Rail,
+    /// Water-based transport.
     Ship,
+    /// Air-based transport.
     Air,
+    /// Dedicated pedestrian-only paths.
     Foot,
 }
 
-#[allow(dead_code)]
+/// Bit-flags used to filter edges and lanes by allowed transport modes.
 pub struct TransitFlags;
-#[allow(dead_code)]
 impl TransitFlags {
+    /// No transport allowed.
     pub const NONE: u8 = 0;
+    /// Pedestrians allowed.
     pub const FOOT: u8 = 1 << 0;
+    /// Road vehicles (cars, buses, trucks) allowed.
     pub const CAR: u8 = 1 << 1;
+    /// Trains and trams allowed.
     pub const RAIL: u8 = 1 << 2;
+    /// Ships allowed.
     pub const SHIP: u8 = 1 << 3;
+    /// Aircraft allowed.
     pub const AIR: u8 = 1 << 4;
 }
 
-#[allow(dead_code)]
+/// The functional role of a network node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeType {
+    /// Standard road intersection or endpoint.
     Junction,
+    /// Public transport stop or station.
     Station,
+    /// Port or harbor facility.
     Harbor,
+    /// Airport facility.
     Airport,
+    /// Multi-modal transfer point.
     Transfer,
     /// A road endpoint that has been designated as an external connection to the region.
     ///
@@ -38,9 +55,13 @@ pub enum NodeType {
     Frontage,
 }
 
+/// Architectural classification of a road edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeClass {
+    /// Standard surface-level road.
     Standard,
+    /// Elevated road with structural components (deck, walls, pillars).
     Bridge,
+    /// Underground or covered road.
     Tunnel,
 }

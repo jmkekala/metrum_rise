@@ -1,15 +1,23 @@
+//! Industrial pollution emission and diffusion system.
+
 use super::data_grid::DataGrid;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
+use rayon::prelude::*;
 
+/// A grid-based system that simulates industrial pollution.
+///
+/// Pollution is emitted by industrial buildings, then diffuses and decays
+/// across the environment grid using a finite-difference method.
 pub struct PollutionSystem {
+    /// The current pollution level grid (0-100).
     pub grid: DataGrid<f32>,
+    /// Intermediate swap buffer used for parallel diffusion calculations.
     pub swap: DataGrid<f32>,
 }
 
-use rayon::prelude::*;
-
 impl PollutionSystem {
+    /// Creates a new pollution system derived from the world map configuration.
     pub fn new(config: &crate::simulation::core::config::MapConfig) -> Self {
         let (w, h) = config.get_env_grid_size();
         Self {
@@ -18,6 +26,7 @@ impl PollutionSystem {
         }
     }
 
+    /// Advances the pollution simulation: swaps buffers, emits from industrial sources, and diffuses.
     pub fn tick(
         &mut self,
         allocator: &BuildingAllocator,

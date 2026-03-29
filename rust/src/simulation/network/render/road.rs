@@ -11,7 +11,6 @@ use super::{NetworkMeshData, TransitRenderer};
 use crate::config::{LANE_WIDTH, ROAD_H_OFFSET, SIDEWALK_WIDTH};
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
-use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::*;
 use std::collections::HashMap;
 use std::f32::consts::TAU;
@@ -90,7 +89,7 @@ impl TransitRenderer for RoadRenderer {
         &self,
         graph: &RegionGraph,
         lane_system: &crate::simulation::network::lanes::LaneSystem,
-        terrain: &crate::simulation::terrain::TerrainSystem,
+        _terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData {
         let road_node_states = build_node_render_states(graph);
         let road_node_incidents = build_surface_node_incidents(graph);

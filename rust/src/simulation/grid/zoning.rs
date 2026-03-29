@@ -677,40 +677,6 @@ impl ZoningSystem {
         false
     }
 
-    fn get_t_nearest(
-        &self,
-        edge_idx: usize,
-        pt: Vector2,
-        graph: &crate::simulation::network::graph::RegionGraph,
-    ) -> f32 {
-        let edge = &graph.edges[edge_idx];
-        let mut min_d_sq = f32::MAX;
-        let mut best_t = 0.0;
-        let pts = &edge.physical_geometry;
-
-        for j in 0..pts.len() - 1 {
-            let p1 = pts[j];
-            let p2 = pts[j + 1];
-            let p1_2d = Vector2::new(p1.x, p1.z);
-            let p2_2d = Vector2::new(p2.x, p2.z);
-            let seg_vec = p2_2d - p1_2d;
-            let l2 = seg_vec.length_squared();
-            if l2 == 0.0 {
-                continue;
-            }
-
-            let mut t_val = ((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2;
-            t_val = t_val.clamp(0.0, 1.0);
-            let d_sq = (pt - (p1_2d + seg_vec * t_val)).length_squared();
-
-            if d_sq < min_d_sq {
-                min_d_sq = d_sq;
-                let seg_relative_t = (j as f32 + t_val) / (pts.len() - 1) as f32;
-                best_t = seg_relative_t;
-            }
-        }
-        best_t
-    }
 
     fn get_distance_to_edge_sq(
         &self,

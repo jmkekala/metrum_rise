@@ -25,6 +25,7 @@ pub const Z_FIGHT_BIAS: f32 = 0.001;
 
 // Zoning Simulation Parameters
 
+/// The depth (number of cells) of the zoning grid, defining how far buildings can extend from the road.
 pub const ZONING_DEPTH: usize = 12;
 /// Whether traffic drives on the left side of the road (`true` = UK/Japan style, `false` = continental/US style).
 pub const DRIVE_ON_LEFT: bool = false;

@@ -20,6 +20,7 @@ pub struct TerrainSystem {
 }
 
 impl TerrainSystem {
+    /// Creates a new, flat terrain system of the given dimensions.
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             width,
@@ -29,6 +30,9 @@ impl TerrainSystem {
         }
     }
 
+    /// Sets the height at a specific grid coordinate.
+    ///
+    /// Updates both source and visual buffers.
     pub fn set_height(&mut self, x: usize, y: usize, value: f32) {
         if x < self.width && y < self.height {
             self.source_data[y * self.width + x] = value;
@@ -36,6 +40,7 @@ impl TerrainSystem {
         }
     }
 
+    /// Gets the raw source height at a grid coordinate.
     pub fn get_height(&self, x: usize, y: usize) -> f32 {
         if x < self.width && y < self.height {
             self.source_data[y * self.width + x]
@@ -44,6 +49,7 @@ impl TerrainSystem {
         }
     }
 
+    /// Bilinearly interpolates the source height at any fractional world coordinate.
     pub fn get_height_interpolated(&self, x: f32, z: f32) -> f32 {
         let x_clamped = x.clamp(0.0, (self.width - 1) as f32);
         let z_clamped = z.clamp(0.0, (self.height - 1) as f32);
@@ -68,6 +74,7 @@ impl TerrainSystem {
         h0 * (1.0 - fz) + h1 * fz
     }
 
+    /// Calculates the surface normal at a fractional coordinate using gradient sampling.
     pub fn get_normal_interpolated(&self, x: f32, z: f32) -> Vector3 {
         let eps = 0.1;
         let h_x1 = self.get_height_interpolated(x + eps, z);
@@ -83,6 +90,7 @@ impl TerrainSystem {
         Vector3::new(-dx * 20.0, 1.0, -dz * 20.0).normalized()
     }
 
+    /// Casts a ray against the terrain surface and returns the intersection point.
     pub fn raycast_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Option<Vector3> {
         // Transform ray to local heightmap coordinates (0 to width/height)
         // Symmetric Centering: (W-1)*0.5 maps world 0 to grid center (127.5 for 256)
@@ -141,6 +149,7 @@ impl TerrainSystem {
         None
     }
 
+    /// Modifies terrain height in a circular area with smooth falloff.
     pub fn sculpt(&mut self, center_x: f32, center_y: f32, radius: f32, strength: f32) {
         let r_int = radius.ceil() as i32;
         let cx_int = center_x as i32;
@@ -172,6 +181,7 @@ impl TerrainSystem {
         }
     }
 
+    /// Synchronizes the visual data buffer with the source data.
     pub fn reset_visuals_from_source(&mut self) {
         self.data.copy_from_slice(&self.source_data);
     }

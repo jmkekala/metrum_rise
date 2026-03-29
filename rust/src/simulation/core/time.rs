@@ -1,11 +1,19 @@
+//! Day-clock and simulation speed control.
+
+/// Manages the progression of simulation time and day cycles.
 pub struct TimeSystem {
+    /// Total real-world seconds elapsed since the start of the simulation, scaled by speed.
     pub time_elapsed: f64,
-    pub speed_multiplier: f32, // 0.0 = Paused, 1.0 = Normal, 2.0 = Fast
+    /// Simulation speed multiplier. 0.0 is paused, 1.0 is normal, 2.0 is fast.
+    pub speed_multiplier: f32,
+    /// The current simulation day (1-indexed).
     pub current_day: u32,
+    /// The number of real-world seconds required to advance one simulation day at 1.0 speed.
     pub seconds_per_day: f64,
 }
 
 impl TimeSystem {
+    /// Creates a new time system, starting at day 1 and initially paused.
     pub fn new() -> Self {
         Self {
             time_elapsed: 0.0,

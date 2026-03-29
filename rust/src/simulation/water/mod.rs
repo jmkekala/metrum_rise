@@ -23,6 +23,7 @@ pub struct WaterSystem {
 use rayon::prelude::*;
 
 impl WaterSystem {
+    /// Creates a new, dry water system of the given dimensions.
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             width,
@@ -34,6 +35,12 @@ impl WaterSystem {
         }
     }
 
+    /// Advances the water simulation by `dt` seconds.
+    ///
+    /// Performs three parallel passes:
+    /// 1. Flux calculation (Saint-Venant momentum)
+    /// 2. Depth update (Saint-Venant mass conservation)
+    /// 3. Velocity magnitude calculation for rendering
     pub fn tick(&mut self, terrain: &[f32], dt: f32) {
         // 0. Inject water from sources (Sequential but small count)
         for &(x, y, rate) in &self.sources {
@@ -182,12 +189,14 @@ impl WaterSystem {
             });
     }
 
+    /// Adds a discrete amount of water depth to a specific grid cell.
     pub fn add_water(&mut self, x: usize, y: usize, amount: f32) {
         if x < self.width && y < self.height {
             self.depth[y * self.width + x] += amount;
         }
     }
 
+    /// Updates or adds a water source at a specific grid cell.
     pub fn update_source(&mut self, x: usize, y: usize, rate_add: f32) {
         if x >= self.width || y >= self.height {
             return;

@@ -1,3 +1,8 @@
+//! Spatial interaction and querying utilities for the road network.
+//!
+//! Provides functions for snapping world positions to nodes and edges,
+//! finding the closest entities, and geometrical intersections.
+
 use super::graph::RegionGraph;
 use godot::prelude::*;
 
@@ -7,12 +12,20 @@ fn is_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
     graph.get_valid_node(node_id) == node_id
 }
 
+/// Stores the result of a point projection onto a road segment.
 pub struct ProjectionData {
+    /// Normalized distance along the segment `[0, 1]`.
     pub t: f32,
+    /// Which side of the road the point is on: `1` = Left, `-1` = Right.
     pub side: i8,
+    /// Perpendicular distance from the road centerline.
     pub dist_from_road: f32,
 }
 
+/// Finds the world-space position on the network closest to `world_pos`.
+///
+/// Snaps to nodes with higher priority than segments. Returns `None` if
+/// no part of the network is within `max_dist`.
 pub fn get_closest_point(
     graph: &RegionGraph,
     world_pos: Vector3,
@@ -84,6 +97,9 @@ pub fn get_closest_point(
     closest_pos
 }
 
+/// Finds the index of the edge closest to a given world position.
+///
+/// Returns the `(edge_index, distance)` if found within `max_dist`.
 pub fn find_closest_edge(graph: &RegionGraph, pos: Vector3, max_dist: f32) -> Option<(usize, f32)> {
     let mut closest_edge_idx = None;
     let mut min_dist_sq = max_dist * max_dist;
@@ -111,6 +127,7 @@ pub fn find_closest_edge(graph: &RegionGraph, pos: Vector3, max_dist: f32) -> Op
     closest_edge_idx.map(|idx| (idx, min_dist_sq.sqrt()))
 }
 
+/// Finds the index of the graph node closest to `world_pos`.
 pub fn get_closest_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) -> Option<u32> {
     let mut closest_node = None;
     let mut min_dist_sq = max_dist * max_dist;
@@ -128,6 +145,7 @@ pub fn get_closest_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) 
     closest_node
 }
 
+/// Projects a 3D point onto a line segment defined by two points.
 pub fn get_closest_point_on_segment(p: Vector3, a: Vector3, b: Vector3) -> Vector3 {
     let ab = b - a;
     let t = (p - a).dot(ab) / ab.length_squared();
@@ -155,6 +173,9 @@ fn get_edge_snap_point(p: Vector3, a: Vector3, b: Vector3) -> Option<Vector3> {
 
 /// Finds the intersection point of two 2D segments (XZ plane)
 /// Returns (t_a, t_b) if they intersect, where t is the factor along the segment [0, 1]
+/// Finds the intersection point of two 2D segments in the XZ plane.
+///
+/// Returns `Some((t_a, t_b))` if they intersect, where `t` is the distance along the segment in `[0, 1]`.
 pub fn find_intersection_2d(
     p1: Vector3,
     p2: Vector3,

@@ -1,15 +1,15 @@
+#![allow(missing_docs)]
 //! Godot camera node for RTS-style controls.
 //!
 //! Provides orbit, pan, and zoom functionality tailored for city simulation.
 
 use godot::classes::camera_3d::ProjectionType;
-use godot::classes::{Camera3D, ICamera3D, Input, InputEvent, InputEventMouseButton};
-use godot::global::{Key, MouseButton};
+use godot::classes::{Camera3D, ICamera3D, InputEvent};
 use godot::prelude::*;
 
-/// A third-person orbit camera controlled via WASD, MMB, and Scroll Wheel.
 #[derive(GodotClass)]
 #[class(base=Camera3D)]
+/// A third-person orbit camera controlled via WASD, MMB, and Scroll Wheel.
 pub struct CameraNode {
     /// Panning speed in meters per second.
     #[export]

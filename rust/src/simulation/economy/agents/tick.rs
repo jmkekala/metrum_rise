@@ -386,7 +386,7 @@ impl AgentSystem {
                                         self.transit[i] = TRANSIT_ARRIVING;
                                         self.transit_mode[i] = MODE_WALK;
                                     }
-                                    remaining_dist = 0.0;
+                                    // remaining_dist = 0.0;
                                     break;
                                 }
 

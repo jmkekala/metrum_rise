@@ -327,7 +327,7 @@ impl SimulationNode {
         &self,
         grid_mm: Gd<MultiMesh>,
         paint_mm: Gd<MultiMesh>,
-        hovered_edges: VariantArray,
+        hovered_edges: VarArray,
         is_painting: bool,
         side: i32,
         t1: f32,

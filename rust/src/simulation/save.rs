@@ -1544,10 +1544,6 @@ fn usize_to_i64(value: usize) -> SaveLoadResult<i64> {
     i64::try_from(value).map_err(|_| SaveLoadError::custom("usize value does not fit i64"))
 }
 
-fn isize_to_i64(value: isize) -> SaveLoadResult<i64> {
-    i64::try_from(value).map_err(|_| SaveLoadError::custom("isize value does not fit i64"))
-}
-
 fn u32_to_i64(value: u32) -> SaveLoadResult<i64> {
     i64::try_from(value).map_err(|_| SaveLoadError::custom("u32 value does not fit i64"))
 }
@@ -1571,11 +1567,6 @@ fn i64_to_u8(value: i64) -> SaveLoadResult<u8> {
 
 fn i64_to_i8(value: i64) -> SaveLoadResult<i8> {
     i8::try_from(value).map_err(|_| SaveLoadError::custom(format!("{} does not fit i8", value)))
-}
-
-fn i64_to_isize(value: i64) -> SaveLoadResult<isize> {
-    isize::try_from(value)
-        .map_err(|_| SaveLoadError::custom(format!("{} does not fit isize", value)))
 }
 
 fn transit_type_to_i64(value: TransitType) -> i64 {

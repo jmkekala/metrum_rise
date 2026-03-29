@@ -1,7 +1,16 @@
+//! Terrain adjustment utilities for the road network.
+//!
+//! Provides functions to modify the heightmap to ensure roads, rails,
+//! and paths sit correctly on the terrain without clipping.
+
 use super::graph::RegionGraph;
 use super::types::TransitType;
 use godot::prelude::*;
 
+/// Modifies the `output_heightmap` to create flat "beds" for the road network.
+///
+/// Uses Voronoi-style blending to resolve overlapping road segments and
+/// ensures smooth transitions between the road and the surrounding terrain.
 pub fn flatten_terrain_for_network(
     graph: &RegionGraph,
     terrain: &crate::simulation::terrain::TerrainSystem,

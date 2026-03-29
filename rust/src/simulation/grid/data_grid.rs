@@ -1,11 +1,20 @@
+//! Generic 2D data grid primitive.
+
+/// A flat memory-efficient 2D grid storage.
+///
+/// Uses row-major indexing: `index = y * width + x`.
 #[derive(Clone)]
 pub struct DataGrid<T: Clone> {
+    /// Grid width (number of columns).
     pub width: usize,
+    /// Grid height (number of rows).
     pub height: usize,
+    /// Raw soul of the grid: a flat vector of data.
     pub data: Vec<T>,
 }
 
 impl<T: Clone> DataGrid<T> {
+    /// Creates a new grid of the given dimensions, pre-filled with `default_val`.
     pub fn new(width: usize, height: usize, default_val: T) -> Self {
         Self {
             width,
@@ -14,6 +23,7 @@ impl<T: Clone> DataGrid<T> {
         }
     }
 
+    /// Gets a reference to the value at `(x, y)`, or `None` if out of bounds.
     pub fn get(&self, x: usize, y: usize) -> Option<&T> {
         if x < self.width && y < self.height {
             Some(&self.data[y * self.width + x])
@@ -22,6 +32,7 @@ impl<T: Clone> DataGrid<T> {
         }
     }
 
+    /// Gets a mutable reference to the value at `(x, y)`, or `None` if out of bounds.
     pub fn get_mut(&mut self, x: usize, y: usize) -> Option<&mut T> {
         if x < self.width && y < self.height {
             Some(&mut self.data[y * self.width + x])
@@ -30,12 +41,14 @@ impl<T: Clone> DataGrid<T> {
         }
     }
 
+    /// Sets the value at `(x, y)`. Silently ignores out-of-bounds coordinates.
     pub fn set(&mut self, x: usize, y: usize, val: T) {
         if x < self.width && y < self.height {
             self.data[y * self.width + x] = val;
         }
     }
 
+    /// Returns `true` if `(x, y)` is within the grid dimensions.
     pub fn in_bounds(&self, x: usize, y: usize) -> bool {
         x < self.width && y < self.height
     }

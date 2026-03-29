@@ -6,8 +6,13 @@
 //! Tick order within the grid module: pollution → noise → desirability.
 //! Desirability reads from pollution and noise, so it must run last.
 
+/// Generic 2D data grid primitive.
 pub mod data_grid;
+/// Land value and desirability calculation.
 pub mod desirability;
+/// Traffic and industrial noise simulation.
 pub mod noise;
+/// Industrial pollution simulation.
 pub mod pollution;
+/// Zoning grid and building obstruction tracking.
 pub mod zoning;

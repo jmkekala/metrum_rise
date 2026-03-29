@@ -15,6 +15,7 @@ pub use render::NetworkMeshData;
 pub mod interaction;
 pub mod terrain;
 pub mod topology;
+/// Physical lane geometry and connectivity system.
 pub mod lanes;
 use crate::config;
 use std::collections::HashSet;
@@ -42,6 +43,7 @@ pub struct TransitNetwork {
 }
 
 impl TransitNetwork {
+    /// Creates a new, empty transit network.
     pub fn new() -> Self {
         Self {
             cch_graph: CchGraph::new(0),
@@ -52,6 +54,7 @@ impl TransitNetwork {
         }
     }
 
+    /// Clears the entire network, including zoning and building allocations.
     pub fn clear(
         &mut self,
         zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
@@ -66,6 +69,7 @@ impl TransitNetwork {
         allocator.clear();
     }
 
+    /// Adds a new road segment to the network, handling snapping, smoothing, and subdivision.
     pub fn add_road(
         &mut self,
         graph: &mut RegionGraph,
@@ -312,6 +316,7 @@ impl TransitNetwork {
         self.cch_dirty_chunks.extend(chunks);
     }
 
+    /// Generates visual mesh data for the entire road network.
     pub fn generate_mesh_data(
         &self,
         graph: &RegionGraph,
@@ -321,6 +326,7 @@ impl TransitNetwork {
         renderer.generate_mesh_data(graph, &self.lane_system, terrain)
     }
 
+    /// Marks all edges within a radius of `edge_id` as needing a zoning recalculation.
     pub fn invalidate_zoning_near_edge(&mut self, edge_id: usize, graph: &RegionGraph) {
         if edge_id >= graph.edges.len() {
             return;
@@ -346,6 +352,7 @@ impl TransitNetwork {
         }
     }
 
+    /// Processes all pending zoning updates (dirty edges).
     pub fn flush_zoning_updates(
         &mut self,
         zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
@@ -359,6 +366,7 @@ impl TransitNetwork {
         }
     }
 
+    /// Flattens the terrain surface underneath the road network.
     pub fn flatten_terrain(
         &self,
         graph: &RegionGraph,
@@ -369,6 +377,7 @@ impl TransitNetwork {
         terrain::flatten_terrain_for_network(graph, terrain, output_heightmap, map_size);
     }
 
+    /// Synchronizes road elevations with the terrain heightmap.
     pub fn sync_to_terrain(
         &mut self,
         graph: &mut RegionGraph,
@@ -378,6 +387,7 @@ impl TransitNetwork {
         self.lane_system.rebuild(graph);
     }
 
+    /// Rebuilds the routing CCH hierarchy from scratch or perform incremental customization.
     pub fn rebuild_pathing(&mut self, graph: &mut RegionGraph) {
         // Topology changes (Phase 1)
         if !self.cch_dirty_chunks.is_empty() {
@@ -450,7 +460,7 @@ impl TransitNetwork {
         // Recompute frontage_node for all existing buildings on either half-edge.
         for b in &mut allocator.buildings {
             if b.edge_idx == edge_idx || b.edge_idx == new_edge_id {
-                let half_cells = b.width_cells as f32 * 0.5;
+                let _half_cells = b.width_cells as f32 * 0.5;
                 b.frontage_node = if b.frontage_t < 0.5 {
                     graph.edges[b.edge_idx].start_node
                 } else {
@@ -550,10 +560,17 @@ impl TransitNetwork {
     }
 }
 
+/// Automated tests for intersection clipping.
 pub mod test_clips;
+/// Automated tests for graph edge compaction.
 pub mod test_compaction;
+/// Automated tests for topology operations (add/split/merge).
 pub mod test_topology;
+/// Automated tests for graph verification and structural integrity.
 pub mod test_verify;
+/// Automated tests for building frontage crossing logic.
 pub mod test_frontage_crossing;
+/// Automated tests for vehicle U-turn constraints.
 pub mod test_uturn;
+/// Automated tests for pedestrian movement through junctions.
 pub mod test_ped_junction;

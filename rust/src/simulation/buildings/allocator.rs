@@ -471,6 +471,7 @@ impl BuildingAllocator {
         self.dirty = false;
     }
 
+    /// Returns the world-space (X, Z) position at fractional distance `t` along an edge.
     pub fn get_pos_on_edge(&self, graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
         Self::sample_pos_on_edge(graph, edge_idx, t)
     }
@@ -498,6 +499,7 @@ impl BuildingAllocator {
         Vector2::new(geo.last().unwrap().x, geo.last().unwrap().z)
     }
 
+    /// Returns the tangent vector (X, Z) at fractional distance `t` along an edge.
     pub fn get_tangent_on_edge(&self, graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
         Self::sample_tangent_on_edge(graph, edge_idx, t)
     }

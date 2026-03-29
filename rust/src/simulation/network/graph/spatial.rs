@@ -1,11 +1,16 @@
+//! Spatial indexing for nodes and edges using R-Trees and chunked grids.
+
 use super::data::{EdgeEntry, RegionGraph};
 use godot::prelude::*;
 use rstar::AABB;
 
 impl RegionGraph {
+    /// Dimension of a single routing chunk (512m). Used for CCH hierarchy partitioning.
     pub const CHUNK_SIZE: f32 = 512.0;
+    /// Dimension of a single node lookup chunk (16m). Used for fast proximity searches.
     pub const NODE_CHUNK_SIZE: f32 = 16.0;
 
+    /// Returns the routing chunk coordinates for a given world-space position.
     pub fn get_chunk_coords(pos: godot::prelude::Vector3) -> (i32, i32) {
         (
             (pos.x / Self::CHUNK_SIZE).floor() as i32,
@@ -13,6 +18,7 @@ impl RegionGraph {
         )
     }
 
+    /// Returns the node lookup chunk coordinates for a given world-space position.
     pub fn get_node_chunk_coords(pos: godot::prelude::Vector3) -> (i32, i32) {
         (
             (pos.x / Self::NODE_CHUNK_SIZE).floor() as i32,
@@ -20,10 +26,12 @@ impl RegionGraph {
         )
     }
 
+    /// Returns the routing chunk coordinates for the given node.
     pub fn get_node_chunk(&self, node_id: u32) -> (i32, i32) {
         Self::get_chunk_coords(self.nodes[node_id as usize].pos)
     }
 
+    /// Inserts an edge into the R-Tree spatial index.
     pub fn add_to_spatial_index(&mut self, edge_idx: usize) {
         let edge = &self.edges[edge_idx];
         if edge.deleted {
@@ -49,6 +57,7 @@ impl RegionGraph {
         });
     }
 
+    /// Removes an edge from the R-Tree spatial index.
     pub fn remove_from_spatial_index(&mut self, edge_idx: usize) {
         // Recompute AABB to find the entry in the R-Tree.
         // Assumes this is called while the edge still has its original geometry.
@@ -73,6 +82,7 @@ impl RegionGraph {
         self.spatial_edge_rt.remove(&entry);
     }
 
+    /// Registers a node in the chunked node lookup grid.
     pub fn add_node_to_spatial_index(&mut self, node_id: u32) {
         let pos = self.nodes[node_id as usize].pos;
         let chunk_coords = Self::get_node_chunk_coords(pos);
@@ -82,6 +92,7 @@ impl RegionGraph {
         }
     }
 
+    /// Removes a node from the chunked node lookup grid.
     pub fn remove_node_from_spatial_index(&mut self, node_id: u32, pos: Vector3) {
         let chunk_coords = Self::get_node_chunk_coords(pos);
         if let Some(chunk) = self.spatial_node_grid.get_mut(&chunk_coords) {
@@ -89,12 +100,14 @@ impl RegionGraph {
         }
     }
 
+    /// Finds all edges whose bounding boxes overlap the circle at `pos` with `radius`.
     pub fn get_edges_near_point(&self, pos: godot::prelude::Vector3, radius: f32) -> Vec<usize> {
         let min = godot::prelude::Vector3::new(pos.x - radius, 0.0, pos.z - radius);
         let max = godot::prelude::Vector3::new(pos.x + radius, 0.0, pos.z + radius);
         self.get_edges_near_aabb(min, max)
     }
 
+    /// Finds all edges whose bounding boxes intersect the given AABB.
     pub fn get_edges_near_aabb(
         &self,
         min: godot::prelude::Vector3,

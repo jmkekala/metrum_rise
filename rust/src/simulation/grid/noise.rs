@@ -1,16 +1,24 @@
+//! Traffic and building noise emission/diffusion system.
+
 use super::data_grid::DataGrid;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
+use rayon::prelude::*;
 
+/// A grid-based system that simulates noise pollution.
+///
+/// Noise is emitted by vehicles (based on speed) and commercial/industrial buildings,
+/// then diffuses and decays across the environmental grid per tick.
 pub struct NoiseSystem {
+    /// The underlying 2D grid storing noise levels.
     pub grid: DataGrid<f32>,
+    /// Temporary buffer used during the diffusion pass.
     pub swap: DataGrid<f32>,
 }
 
-use rayon::prelude::*;
-
 impl NoiseSystem {
+    /// Creates a new noise system for the given map dimensions.
     pub fn new(config: &crate::simulation::core::config::MapConfig) -> Self {
         let (w, h) = config.get_env_grid_size();
         Self {
@@ -19,6 +27,7 @@ impl NoiseSystem {
         }
     }
 
+    /// Simulates one step of noise emission, diffusion, and decay.
     pub fn tick(
         &mut self,
         allocator: &BuildingAllocator,
@@ -30,8 +39,8 @@ impl NoiseSystem {
 
         let w = self.grid.width;
         let h = self.grid.height;
-        let world_size_x = config.width_m;
-        let world_size_y = config.height_m;
+        let _world_size_x = config.width_m;
+        let _world_size_y = config.height_m;
 
         // 1. Emission (Sequential - small count)
         for b in &allocator.buildings {
@@ -124,7 +133,7 @@ mod tests {
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+    use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
 
     #[test]

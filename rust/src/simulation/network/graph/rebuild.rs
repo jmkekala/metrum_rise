@@ -1,8 +1,11 @@
+//! Logic for rebuilding graph metadata (adjacency, clips, and terrain synchronization).
+
 use super::super::types::*;
 use super::data::RegionGraph;
 use std::collections::HashMap;
 
 impl RegionGraph {
+    /// Rebuilds the adjacency list from the current set of non-deleted edges.
     pub fn rebuild_adjacency_list(&mut self) {
         self.adjacency.clear();
         self.adjacency.resize(self.nodes.len(), Vec::new());
@@ -128,6 +131,9 @@ impl RegionGraph {
         roots.len()
     }
 
+    /// Synchronizes all road nodes and intermediate geometries to the terrain heightmap.
+    ///
+    /// Applies Laplacian smoothing to road grades to ensure smooth vertical transitions.
     pub fn sync_to_terrain(&mut self, terrain: &crate::simulation::terrain::TerrainSystem) {
         let hw = (terrain.width as f32 - 1.0) * 0.5;
         let hh = (terrain.height as f32 - 1.0) * 0.5;
@@ -212,6 +218,10 @@ impl RegionGraph {
         self.rebuild_intersection_clips();
     }
 
+    /// Recalculates the start/end clipping distances for all edges meeting at junctions.
+    ///
+    /// This prevents road geometry from overlapping in the center of an intersection
+    /// and ensures space for the junction mesh.
     pub fn rebuild_intersection_clips(&mut self) {
         let mut connection_counts = HashMap::new();
         for edge in &self.edges {

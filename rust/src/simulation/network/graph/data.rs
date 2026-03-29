@@ -1,3 +1,5 @@
+//! Core graph data structures: Nodes, Edges, and the RegionGraph container.
+
 use super::super::types::*;
 use godot::prelude::*;
 use rstar::{AABB, PointDistance, RTree, RTreeObject};
@@ -38,7 +40,6 @@ impl PointDistance for EdgeEntry {
 pub struct Node {
     /// World-space 3-D position (metres). Y component reflects terrain height.
     pub pos: Vector3,
-    #[allow(dead_code)]
     /// Classification of the node (regular junction, cul-de-sac end, highway border, etc.).
     pub node_type: NodeType,
     /// Turn restriction table for vehicles at this junction.
@@ -50,7 +51,6 @@ pub struct Node {
 }
 
 /// A directed road segment connecting two [`Node`]s.
-#[allow(dead_code)]
 #[derive(Clone)]
 pub struct Edge {
     /// Index of the start node in [`RegionGraph::nodes`].
@@ -152,6 +152,7 @@ pub struct RegionGraph {
 }
 
 impl RegionGraph {
+    /// Creates a new, empty road graph.
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),

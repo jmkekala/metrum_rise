@@ -2,32 +2,36 @@ use godot::prelude::*;
 use std::collections::HashMap;
 
 use super::graph::{Edge, RegionGraph};
-use super::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+use super::types::{NodeType, TransitFlags, TransitType};
 use crate::config;
 
+/// Types of travel lanes supported by the network.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum LaneType {
+    /// Lane for motorized vehicles.
     Vehicle,
+    /// Lane for pedestrians.
     Foot,
 }
 
+/// A single travel lane through a road or intersection.
 #[derive(Clone)]
 pub struct Lane {
-    /// The parent edge this lane belongs to. `usize::MAX` if it is a connection lane inside a junction.
+    /// The parent road edge ID. `usize::MAX` for intersection connections.
     pub edge_id: usize,
-    /// True if this lane travels from `start_node` to `end_node`, false otherwise.
+    /// Direction relative to the edge geometry.
     pub is_fwd: bool,
-    /// Index of the lane (0 is the innermost lane next to centerline).
+    /// Lane index (0 is innermost).
     pub lane_idx: i8,
-    /// The exact 3D polyline defining this lane's path.
+    /// The physical path of the lane.
     pub geometry: Vec<Vector3>,
-    /// Total arc length of `geometry` in metres.
+    /// Total length in meters.
     pub length: f32,
-    /// The type of traffic permitted on this lane.
+    /// The travel type of this lane.
     pub lane_type: LaneType,
-    /// Whether this lane is a visual crosswalk (zebra markings).
+    /// Whether this is a visual crosswalk.
     pub is_crosswalk: bool,
-    /// Indices of the next lanes in the `LaneSystem` that can be entered from the end of this lane.
+    /// Reachable lanes from the end of this lane.
     pub next_lanes: Vec<usize>,
 }
 
@@ -46,13 +50,16 @@ impl Default for Lane {
     }
 }
 
+/// System for managing road and intersection lanes.
 pub struct LaneSystem {
+    /// All active lanes.
     pub lanes: Vec<Lane>,
-    /// Maps `edge_id` to a list of lane indices (both fwd and bkw) that belong to it.
+    /// Mapping of edge IDs to their constituent lanes.
     pub edge_lanes: HashMap<usize, Vec<usize>>,
 }
 
 impl LaneSystem {
+    /// Creates a new, empty lane system.
     pub fn new() -> Self {
         Self {
             lanes: Vec::new(),
@@ -60,6 +67,7 @@ impl LaneSystem {
         }
     }
 
+    /// Clears all lanes and structural mappings.
     pub fn clear(&mut self) {
         self.lanes.clear();
         self.edge_lanes.clear();
@@ -342,16 +350,13 @@ impl LaneSystem {
                     let mouth_pos = node_pos + dir * 5.0 + side_vec * offset;
                     let mouth_angle = (mouth_pos.x - node_pos.x).atan2(mouth_pos.z - node_pos.z);
                     
-                    let mut inbound = None;
-                    let mut outbound = None;
-                    
-                    if is_start {
-                        inbound = lane_map.get(&(e_idx, false, l_idx)).copied();
-                        outbound = lane_map.get(&(e_idx, true, l_idx)).copied();
+                    let (inbound, outbound) = if is_start {
+                        (lane_map.get(&(e_idx, false, l_idx)).copied(),
+                         lane_map.get(&(e_idx, true, l_idx)).copied())
                     } else {
-                        inbound = lane_map.get(&(e_idx, true, l_idx)).copied();
-                        outbound = lane_map.get(&(e_idx, false, l_idx)).copied();
-                    }
+                        (lane_map.get(&(e_idx, true, l_idx)).copied(),
+                         lane_map.get(&(e_idx, false, l_idx)).copied())
+                    };
 
                     if let (Some(in_id), Some(out_id)) = (inbound, outbound) {
                         mouths.push(SidewalkMouth {
@@ -360,39 +365,29 @@ impl LaneSystem {
                             angle: mouth_angle,
                             in_id,
                             out_id,
-                            pos: mouth_pos,
                         });
                     }
                 }
             }
 
-            // Sort mouths by angle
             mouths.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap());
-
             let num_mouths = mouths.len();
             if num_mouths < 2 { continue; }
 
-            // Clear existing lane connections at this node before populating (to stay in sync)
             let node_ref = &mut graph.nodes[node_id];
             node_ref.lane_connections.clear();
 
             let mut crosswalks_added = 0;
             for i in 0..num_mouths {
                 let m_start = &mouths[i];
-                
                 for j in 0..num_mouths {
                     if i == j { continue; }
                     let m_end = &mouths[j];
-
-                    // Determine if CW or CCW is shorter
                     let diff_cw = if j > i { j - i } else { j + num_mouths - i };
                     let diff_ccw = num_mouths - diff_cw;
-                    
                     let use_cw = diff_cw <= diff_ccw;
                     let num_steps = if use_cw { diff_cw } else { diff_ccw };
-                    if num_steps > 1 {
-                        continue;
-                    }
+                    if num_steps > 1 { continue; }
                     
                     let mut steps = Vec::new();
                     let mut current = i;
@@ -400,9 +395,7 @@ impl LaneSystem {
                         let next = if use_cw { (current + 1) % num_mouths } else { (current + num_mouths - 1) % num_mouths };
                         let p0 = *self.lanes[mouths[current].in_id].geometry.last().unwrap();
                         let p1 = self.lanes[mouths[next].out_id].geometry[0];
-                        if steps.is_empty() {
-                            steps.push(p0);
-                        }
+                        if steps.is_empty() { steps.push(p0); }
                         steps.push(p1);
                         current = next;
                     }
@@ -410,24 +403,14 @@ impl LaneSystem {
                     let is_same_edge = m_start.edge_idx == m_end.edge_idx;
                     let deg = graph.adjacency[node_id].len();
                     let node_type = node_ref.node_type;
-                    
-                    // For straight roads (deg=2) or dead ends (deg=1), only mark ONE direction as a visual zebra crosswalk
-                    // This satisfies the "one crosswalk per node" requirement for straight roads.
-                    // EXCEPT if it is a building frontage node, which should have NO crosswalks.
-                    if node_type == NodeType::Frontage && is_same_edge {
-                        continue;
-                    }
+                    if node_type == NodeType::Frontage && is_same_edge { continue; }
 
                     let skip_visual = is_same_edge && deg <= 2 && crosswalks_added >= 2;
                     let is_crosswalk = is_same_edge && num_steps == 1 && !skip_visual;
-                    if is_crosswalk {
-                        crosswalks_added += 1;
-                    }
+                    if is_crosswalk { crosswalks_added += 1; }
 
                     let mut dist = 0.0;
-                    for k in 0..steps.len().saturating_sub(1) {
-                        dist += steps[k].distance_to(steps[k+1]);
-                    }
+                    for k in 0..steps.len().saturating_sub(1) { dist += steps[k].distance_to(steps[k+1]); }
 
                     let conn_id = self.lanes.len();
                     self.lanes.push(Lane {
@@ -442,10 +425,7 @@ impl LaneSystem {
                     });
                     self.lanes[m_start.in_id].next_lanes.push(conn_id);
 
-                    node_ref.lane_connections
-                        .entry((m_start.edge_idx, m_start.lane_idx))
-                        .or_default()
-                        .push((m_end.edge_idx, m_end.lane_idx));
+                    node_ref.lane_connections.entry((m_start.edge_idx, m_start.lane_idx)).or_default().push((m_end.edge_idx, m_end.lane_idx));
                 }
             }
         }
@@ -458,27 +438,6 @@ struct SidewalkMouth {
     angle: f32,
     in_id: usize,
     out_id: usize,
-    pos: Vector3,
-}
-
-fn add_foot_connection(system: &mut LaneSystem, in_id: usize, out_id: usize, is_crosswalk: bool) {
-    let p0 = *system.lanes[in_id].geometry.last().unwrap();
-    let p1 = system.lanes[out_id].geometry[0];
-    let dist = p0.distance_to(p1);
-
-    let conn_id = system.lanes.len();
-    system.lanes.push(Lane {
-        edge_id: usize::MAX,
-        is_fwd: true,
-        lane_idx: 0,
-        geometry: vec![p0, p1],
-        length: dist,
-        lane_type: LaneType::Foot,
-        is_crosswalk,
-        next_lanes: vec![out_id],
-    });
-
-    system.lanes[in_id].next_lanes.push(conn_id);
 }
 
 fn road_half_width(edge: &Edge) -> f32 {

@@ -1,3 +1,8 @@
+//! Network topology modification and intersection processing.
+//!
+//! Handles the logic for detecting road crossings, splitting edges at
+//! intersections, and migrating associated data (zoning, buildings).
+
 use super::TransitNetwork;
 use super::graph::Edge;
 use super::interaction;
@@ -38,6 +43,10 @@ fn snap_new_edge_endpoint_to_intersection(
     }
 }
 
+/// Scans for and processes all intersections for a given edge.
+///
+/// This includes both physical crossings (splitting edges) and snapping
+/// endpoints to nearby nodes/edges.
 pub fn process_intersections(
     network: &mut TransitNetwork,
     graph: &mut crate::simulation::network::graph::RegionGraph,
@@ -200,6 +209,10 @@ pub fn process_intersections(
     }
 }
 
+/// Splits an existing edge at a specific segment and junction node.
+///
+/// Handles the geometric split, re-indexing, and migration of all dependent
+/// simulation data including zoning cells and buildings.
 pub fn split_edge(
     network: &mut TransitNetwork,
     graph: &mut crate::simulation::network::graph::RegionGraph,

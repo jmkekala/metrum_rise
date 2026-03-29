@@ -4,11 +4,16 @@ use super::pollution::PollutionSystem;
 use super::zoning::ZoningSystem;
 use rayon::prelude::*;
 
+/// A grid-based system that calculates land desirability/value.
+///
+/// Composite formula: `50 - pollution * 2.0 - noise * 1.5`.
 pub struct DesirabilitySystem {
+    /// The current land value grid (0-100).
     pub grid: DataGrid<f32>,
 }
 
 impl DesirabilitySystem {
+    /// Creates a new desirability system derived from the world map configuration.
     pub fn new(config: &crate::simulation::core::config::MapConfig) -> Self {
         let (w, h) = config.get_env_grid_size();
         Self {
@@ -16,6 +21,7 @@ impl DesirabilitySystem {
         }
     }
 
+    /// Recalculates the desirability grid based on current pollution and noise levels.
     pub fn tick(
         &mut self,
         _zoning: &ZoningSystem,
