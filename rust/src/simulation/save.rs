@@ -33,7 +33,7 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::Path;
 
-const SAVE_VERSION: i64 = 2;
+const SAVE_VERSION: i64 = 3;
 const NONE_REF: i64 = -1;
 const SCHEMA: &str = r#"
 CREATE TABLE save_meta(
@@ -145,7 +145,8 @@ CREATE TABLE buildings(
     occupancy INTEGER NOT NULL,
     width INTEGER NOT NULL,
     depth INTEGER NOT NULL,
-    frontage_node INTEGER NOT NULL
+    frontage_node INTEGER NOT NULL,
+    variant INTEGER NOT NULL
 );
 CREATE TABLE agents(
     agent_id INTEGER PRIMARY KEY,
@@ -541,8 +542,8 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
         let mut stmt = tx.prepare(
             "INSERT INTO buildings(
                 building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth,
-                frontage_node
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                frontage_node, variant
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         )?;
 
         for (old_building_id, building) in view.allocator.buildings.iter().enumerate() {
@@ -573,7 +574,8 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
                 i64::from(building.occupancy),
                 i64::from(building.width),
                 i64::from(building.depth),
-                i64::from(saved_frontage_node)
+                i64::from(saved_frontage_node),
+                i64::from(building.variant)
             ])?;
         }
     }
@@ -1059,7 +1061,7 @@ fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAllocator> {
     let mut stmt = conn.prepare(
         "SELECT
             building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth,
-            frontage_node
+            frontage_node, variant
          FROM buildings
          ORDER BY building_id",
     )?;
@@ -1098,6 +1100,7 @@ fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAllocator> {
             cell_x: i64_to_usize(row.get(4)?)?,
             cell_y: i64_to_usize(row.get(5)?)?,
             occupancy,
+            variant: i64_to_u8(row.get(11)?)?,
         });
     }
     Ok(allocator)
@@ -1821,6 +1824,7 @@ mod tests {
             cell_x: 0,
             cell_y: 0,
             occupancy: 2,
+            variant: 0,
         });
         allocator
             .recompute_derived_transforms(&graph, &zoning)

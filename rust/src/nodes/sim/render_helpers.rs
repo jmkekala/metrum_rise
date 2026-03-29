@@ -556,7 +556,7 @@ impl SimulationNode {
     }
 
     /// Returns the 12-float transforms for building MultiMeshes.
-    pub fn get_building_transforms_internal(&self, zone_type_int: u8) -> PackedFloat32Array {
+    pub fn get_building_transforms_internal(&self, zone_type_int: u8, variant: u8) -> PackedFloat32Array {
         let target_zone = match zone_type_int {
             1 => ZoneType::Residential,
             2 => ZoneType::Commercial,
@@ -577,7 +577,7 @@ impl SimulationNode {
         let hh = (h - 1.0) * 0.5;
 
         for b in &self.allocator.buildings {
-            if b.zone_type == target_zone {
+            if b.zone_type == target_zone && b.variant == variant {
                 let world_x = b.center_x;
                 let world_z = b.center_y;
 
@@ -594,15 +594,9 @@ impl SimulationNode {
                 let b_xx = -fd.y;
                 let b_xz = fd.x;
 
-                let hash = ((b.center_x * 1000.0) as u32)
-                    .wrapping_mul(12345)
-                    .wrapping_add((b.center_y * 1000.0) as u32)
-                    .wrapping_mul(67890);
-                let height_scalar = 0.5 + (hash % 100) as f32 / 40.0;
-
-                let sx = b.width as f32 * 0.95;
-                let sy = height_scalar;
-                let sz = b.depth as f32 * 0.95;
+                let sx = b.width as f32;
+                let sy = 1.0;
+                let sz = b.depth as f32;
 
                 buffer.push(b_xx * sx);
                 buffer.push(0.0);
@@ -612,7 +606,7 @@ impl SimulationNode {
                 buffer.push(0.0);
                 buffer.push(sy);
                 buffer.push(0.0);
-                buffer.push(world_y + (5.0 * sy) / 2.0);
+                buffer.push(world_y);
 
                 buffer.push(b_xz * sx);
                 buffer.push(0.0);

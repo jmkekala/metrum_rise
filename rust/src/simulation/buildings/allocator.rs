@@ -54,6 +54,8 @@ pub struct Building {
     pub cell_y: usize,
     /// Number of agents currently living in this building.
     pub occupancy: u8,
+    /// Randomly assigned variant ID for 3D model selection.
+    pub variant: u8,
 }
 
 /// Manages the full lifecycle of [`Building`]s: placement, removal, and immigrant spawning.
@@ -357,6 +359,7 @@ impl BuildingAllocator {
                             cell_x: x,
                             cell_y: 0,
                             occupancy: 0,
+                            variant: (edge_idx ^ x) as u8 % 4,
                         };
                         // Mark all 9 cells as occupied
                         for dx in 0..3 {
@@ -725,6 +728,7 @@ mod tests {
                 cell_x: i,
                 cell_y: 0,
                 occupancy: 0,
+                variant: 0,
             });
         }
         allocator.dirty_index = true;
@@ -780,6 +784,7 @@ mod tests {
                 cell_x: i,
                 cell_y: 0,
                 occupancy: 0,
+                variant: 0,
             });
         }
         allocator.rebuild_zone_index();
@@ -1022,6 +1027,7 @@ mod tests {
             cell_x: 0,
             cell_y: 0,
             occupancy: 0,
+            variant: 0,
         });
         for dx in 0..3 {
             for dy in 0..3 {
@@ -1116,6 +1122,7 @@ mod tests {
             cell_x: 0,
             cell_y: 0,
             occupancy: 0,
+            variant: 0,
         });
         allocator.rebuild_zone_index();
 

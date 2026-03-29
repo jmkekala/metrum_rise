@@ -127,6 +127,7 @@ mod tests {
             cell_x: 0,
             cell_y: 0,
             occupancy: 0,
+            variant: 0,
         };
         allocator.buildings.push(source_building);
 

@@ -70,6 +70,7 @@ mod tests {
                 cell_x: 5,
                 cell_y: 0,
                 occupancy: 0,
+                variant: 0,
             });
 
         // 5. Spawn an agent on Road B (Index 1)

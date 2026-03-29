@@ -421,8 +421,8 @@ impl SimulationNode {
 
     /// Returns the packed transforms for buildings of a specific zone type.
     #[func]
-    pub fn get_building_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
-        self.get_building_transforms_internal(zone_type_int)
+    pub fn get_building_transforms(&self, zone_type_int: u8, variant: u8) -> PackedFloat32Array {
+        self.get_building_transforms_internal(zone_type_int, variant)
     }
 
     /// Returns the closest boundary point on a road edge to the given position.

@@ -336,7 +336,7 @@ Target: same agent scale as v0.2. No simulation changes. All work is in `render_
     - In `buildings.gd`, replace the single MultiMesh per zone type with one `MultiMeshInstance3D` per `(zone_type, variant)` pair. With 5 zone types and 3–4 variants each, this is 15–20 draw calls total — well within budget.
 50. **Building 3D models**:
     - Load zone-appropriate `.glb` models per `(zone_type, variant)`. Replace the procedural `SurfaceTool` mesh in `buildings.gd`.
-    - Enable Godot's built-in `GeometryInstance3D` LOD on each `MultiMeshInstance3D`: simplified mesh beyond 150 m, billboard imposter beyond 400 m. No code required — set `lod_min_distance` and `lod_max_distance` in the Inspector or via script.
+    - Enable Godot's built-in `GeometryInstance3D` LOD on each `MultiMeshInstance3D`: simplified mesh beyond 400 m. No code required — set `lod_min_distance` and `lod_max_distance` in the Inspector or via script.
     - Building facing direction is already encoded in the transform basis (from `facing_dir: Vector2` in `Building`). Models must be authored facing +Z so the existing basis assignment produces correct road-facing orientation.
 51. **Environment detail assets** (stretch goal):
     - Trees, benches, streetlights placed at fixed offsets from road edges, derived from the zoning grid cell positions already computed in `ZoningSystem`.
