@@ -56,6 +56,19 @@ impl MapConfig {
     pub fn get_zone_grid_size(&self) -> (usize, usize) {
         (self.zone_grid_width(), self.zone_grid_height())
     }
+
+    /// Maps world-space coordinates (units) to environmental grid coordinates.
+    pub fn world_to_env_grid(&self, x: f32, z: f32, env_w: usize, env_h: usize) -> (f32, f32) {
+        let zw = self.zone_grid_width() as f32;
+        let zh = self.zone_grid_height() as f32;
+        let hw = (zw - 1.0) * 0.5;
+        let hh = (zh - 1.0) * 0.5;
+
+        // Map [-HW, HW] to [0, ZW] then scale to [0, ENV_W]
+        let gx = (x + hw) * (env_w as f32 / zw);
+        let gz = (z + hh) * (env_h as f32 / zh);
+        (gx, gz)
+    }
 }
 
 impl Default for MapConfig {

@@ -36,11 +36,14 @@ impl PollutionSystem {
         // 1. Emission (Sequential as building count is small compared to grid)
         for b in &allocator.buildings {
             if b.zone_type == ZoneType::Industrial {
-                let gx = ((b.center_x / world_size_x) + 0.5) * w as f32;
-                let gy = ((b.center_y / world_size_y) + 0.5) * h as f32;
+                let (gx_raw, gy_raw) = config.world_to_env_grid(b.center_x, b.center_y, w, h);
+                let gx = gx_raw.round() as i32;
+                let gy = gy_raw.round() as i32;
 
-                if let Some(val) = self.grid.get_mut(gx.round() as usize, gy.round() as usize) {
-                    *val += 5.0;
+                if gx >= 0 && gx < w as i32 && gy >= 0 && gy < h as i32 {
+                    if let Some(val) = self.grid.get_mut(gx as usize, gy as usize) {
+                        *val += 5.0;
+                    }
                 }
             }
         }

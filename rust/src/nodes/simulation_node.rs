@@ -760,13 +760,13 @@ impl INode3D for SimulationNode {
         if is_huge {
             godot_print!("HUGE MAP BENCHMARK MODE ENABLED");
             let mut pts = PackedVector3Array::new();
-            let border = (config.height_m * 0.5) - 1.0;
+            let border = (config.zone_grid_height() as f32 * 0.5) - 1.0;
             pts.push(Vector3::new(0.0, 0.0, -border));
             pts.push(Vector3::new(0.0, 0.0, -border + 100.0));
             sim.add_road_internal(pts, 2, 2, true, true);
         } else {
             let mut pts = PackedVector3Array::new();
-            let border = (config.height_m * 0.5) - 1.0;
+            let border = (config.zone_grid_height() as f32 * 0.5) - 1.0;
             pts.push(Vector3::new(0.0, 0.0, -border));
             pts.push(Vector3::new(0.0, 0.0, -border / 2.0));
             sim.add_road_internal(pts, 2, 2, true, true);

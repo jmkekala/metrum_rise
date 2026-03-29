@@ -194,7 +194,7 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 ## Known Bugs
 
-- None currently logged.
+- [DONE] **B17: Environmental map spatial misalignment** — Pollution, noise, and desirability emission sources were squashed toward the center due to a 10:1 coordinate mapping discrepancy (meters vs zoning units). Coordinate mapping unified via `MapConfig::world_to_env_grid`.
 
 
 ## Backlog

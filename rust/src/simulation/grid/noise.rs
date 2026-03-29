@@ -35,17 +35,22 @@ impl NoiseSystem {
 
         // 1. Emission (Sequential - small count)
         for b in &allocator.buildings {
-            let gx = (((b.center_x / world_size_x) + 0.5) * w as f32).round() as usize;
-            let gy = (((b.center_y / world_size_y) + 0.5) * h as f32).round() as usize;
+            let (gx_raw, gy_raw) = config.world_to_env_grid(b.center_x, b.center_y, w, h);
+            let gx = gx_raw.round() as i32;
+            let gy = gy_raw.round() as i32;
 
-            if b.zone_type == ZoneType::Commercial {
-                if let Some(val) = self.grid.get_mut(gx, gy) {
-                    *val = (*val + 30.0).min(100.0);
+            if gx >= 0 && gx < w as i32 && gy >= 0 && gy < h as i32 {
+                let gx = gx as usize;
+                let gy = gy as usize;
+                if b.zone_type == ZoneType::Commercial {
+                    if let Some(val) = self.grid.get_mut(gx, gy) {
+                        *val = (*val + 30.0).min(100.0);
+                    }
                 }
-            }
-            if b.zone_type == ZoneType::Industrial {
-                if let Some(val) = self.grid.get_mut(gx, gy) {
-                    *val = (*val + 80.0).min(100.0);
+                if b.zone_type == ZoneType::Industrial {
+                    if let Some(val) = self.grid.get_mut(gx, gy) {
+                        *val = (*val + 80.0).min(100.0);
+                    }
                 }
             }
         }
@@ -57,8 +62,9 @@ impl NoiseSystem {
             }
             let road_noise = if edge.speed_limit > 60.0 { 4.0 } else { 1.0 };
             for p in &edge.physical_geometry {
-                let gx = (((p.x / world_size_x) + 0.5) * w as f32).round() as i32;
-                let gz = (((p.z / world_size_y) + 0.5) * h as f32).round() as i32;
+                let (gx_raw, gz_raw) = config.world_to_env_grid(p.x, p.z, w, h);
+                let gx = gx_raw.round() as i32;
+                let gz = gz_raw.round() as i32;
                 if gx >= 0 && gx < w as i32 && gz >= 0 && gz < h as i32 {
                     if let Some(val) = self.grid.get_mut(gx as usize, gz as usize) {
                         *val = (*val + road_noise).min(100.0);

@@ -504,8 +504,9 @@ impl AgentSystem {
             }
 
             // 2. Pollution Penalty
-            let gx = (((self.pos_x[i] / world_size_x) + 0.5) * w).round() as i32;
-            let gy = (((self.pos_y[i] / world_size_y) + 0.5) * h).round() as i32;
+            let (gx_raw, gy_raw) = config.world_to_env_grid(self.pos_x[i], self.pos_y[i], w as usize, h as usize);
+            let gx = gx_raw.round() as i32;
+            let gy = gy_raw.round() as i32;
             if gx >= 0 && gx < w as i32 && gy >= 0 && gy < h as i32 {
                 if let Some(p) = pollution.grid.get(gx as usize, gy as usize) {
                     self.happiness[i] -= p * 0.1;

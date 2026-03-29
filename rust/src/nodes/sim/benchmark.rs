@@ -16,17 +16,19 @@ impl SimulationNode {
 
         let mut pts = PackedVector3Array::new();
 
-        // 1. Create a large grid of roads
-        let step = (self.config.width_m - 400.0) / grid_size as f32;
-        let start_x = -self.config.width_m * 0.5 + 200.0;
-        let start_z = -self.config.height_m * 0.5 + 200.0;
+        // 1. Create a large grid of roads (use Zoning units, not meters, as add_road_internal expects)
+        let w_units = self.config.zone_grid_width() as f32;
+        let h_units = self.config.zone_grid_height() as f32;
+        let step = (w_units - 40.0) / grid_size as f32;
+        let start_x = -w_units * 0.5 + 20.0;
+        let start_z = -h_units * 0.5 + 20.0;
 
         // Horizontal roads
         for i in 0..=grid_size {
             pts.clear();
             pts.push(Vector3::new(start_x, 0.0, start_z + i as f32 * step));
             pts.push(Vector3::new(
-                start_x + self.config.width_m - 400.0,
+                start_x + w_units - 40.0,
                 0.0,
                 start_z + i as f32 * step,
             ));
@@ -40,7 +42,7 @@ impl SimulationNode {
             pts.push(Vector3::new(
                 start_x + i as f32 * step,
                 0.0,
-                start_z + self.config.height_m - 400.0,
+                start_z + h_units - 40.0,
             ));
             self.add_road_internal(pts.clone(), 2, 2, true, true);
         }

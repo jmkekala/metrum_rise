@@ -282,16 +282,16 @@ impl BuildingAllocator {
                         let center_2d = world_pos + normal * (edge_width * 0.5 + depth_offset);
 
                         // Map world to grid coordinates
-                        let world_size_x = config.width_m;
-                        let world_size_y = config.height_m;
-                        let gx = (((center_2d.x / world_size_x) + 0.5)
-                            * desirability.grid.width as f32)
-                            .round() as usize;
-                        let gy = (((center_2d.y / world_size_y) + 0.5)
-                            * desirability.grid.height as f32)
-                            .round() as usize;
-                        let gx = gx.min(desirability.grid.width.saturating_sub(1));
-                        let gy = gy.min(desirability.grid.height.saturating_sub(1));
+                        let (gx_raw, gy_raw) = config.world_to_env_grid(
+                            center_2d.x,
+                            center_2d.y,
+                            desirability.grid.width,
+                            desirability.grid.height,
+                        );
+                        let gx =
+                            (gx_raw.round() as usize).min(desirability.grid.width.saturating_sub(1));
+                        let gy = (gy_raw.round() as usize)
+                            .min(desirability.grid.height.saturating_sub(1));
 
                         let val = *desirability.grid.get(gx, gy).unwrap_or(&50.0);
                         if val < 20.0 {
