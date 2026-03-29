@@ -234,7 +234,13 @@ impl AgentSystem {
                                 } else {
                                     1.0
                                 };
-                                let lane_offset = (total_lanes * 0.5 - 0.5) * lane_w * hand;
+                                // For departure, enter on the right side of the road for the current direction
+                                let target_lane_idx = if crate::config::DRIVE_ON_LEFT {
+                                    total_lanes - 1.0 // LHD: High indices (Negative offsets) are Left
+                                } else {
+                                    0.0 // RHD: Low indices (Positive offsets) are Right
+                                };
+                                let lane_offset = (total_lanes * 0.5 - target_lane_idx - 0.5) * lane_w * hand;
                                 base_vec += normal * lane_offset;
                             } else {
                                 let sw_w = crate::config::SIDEWALK_WIDTH;
@@ -554,10 +560,22 @@ impl AgentSystem {
 
                                         let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
                                         let lane_w = edge.width / total_lanes;
-                                        let lane_idx = if is_fwd {
-                                            next_lane as f32
+                                        let bkw_lanes = edge.bkw_lanes as f32;
+                                        let fwd_lanes = edge.fwd_lanes as f32;
+                                        let lane_idx = if crate::config::DRIVE_ON_LEFT {
+                                            // LHD: Target the LEFT side (Negative offsets on the Right-Normal)
+                                            if is_fwd {
+                                                bkw_lanes + next_lane as f32
+                                            } else {
+                                                fwd_lanes + (-next_lane - 1) as f32
+                                            }
                                         } else {
-                                            (-next_lane - 1) as f32
+                                            // RHD: Target the RIGHT side (Positive offsets on the Right-Normal)
+                                            if is_fwd {
+                                                next_lane as f32
+                                            } else {
+                                                (-next_lane - 1) as f32
+                                            }
                                         };
                                         let hand = if crate::config::DRIVE_ON_LEFT {
                                             -1.0
@@ -569,22 +587,32 @@ impl AgentSystem {
                                         let target_pos = Vector2::new(p_start.x, p_start.z)
                                             + normal_next * lane_offset;
 
-                                        self.bezier_p0_x[i] = self.pos_x[i];
-                                        self.bezier_p0_y[i] = self.pos_y[i];
-                                        self.bezier_p3_x[i] = target_pos.x;
-                                        self.bezier_p3_y[i] = target_pos.y;
+                                        let p0 = Vector2::new(self.pos_x[i], self.pos_y[i]);
+                                        let p3 = target_pos;
+                                        let p_center = Vector2::new(p_start.x, p_start.z);
+                                        
+                                        // Incoming tangent (from previous lane position toward node center)
+                                        let diff_in = p_center - p0;
+                                        let tangent_in = if diff_in.length() > 0.01 {
+                                            diff_in.normalized()
+                                        } else {
+                                             // Fallback if already at center (e.g. initial spawn)
+                                             Vector2::new(tangent_next.x, tangent_next.z)
+                                        };
 
-                                        let dist = (target_pos
-                                            - Vector2::new(self.pos_x[i], self.pos_y[i]))
-                                        .length()
-                                        .max(2.0);
+                                        self.bezier_p0_x[i] = p0.x;
+                                        self.bezier_p0_y[i] = p0.y;
+                                        self.bezier_p3_x[i] = p3.x;
+                                        self.bezier_p3_y[i] = p3.y;
 
-                                        self.bezier_p1_x[i] = self.pos_x[i];
-                                        self.bezier_p1_y[i] = self.pos_y[i];
+                                        let curve_dist = (p3 - p0).length().max(2.0) * 0.4;
+
+                                        self.bezier_p1_x[i] = p0.x + tangent_in.x * curve_dist;
+                                        self.bezier_p1_y[i] = p0.y + tangent_in.y * curve_dist;
                                         self.bezier_p2_x[i] =
-                                            target_pos.x - tangent_next.x * (dist * 0.4);
+                                            p3.x - tangent_next.x * curve_dist;
                                         self.bezier_p2_y[i] =
-                                            target_pos.y - tangent_next.z * (dist * 0.4);
+                                            p3.y - tangent_next.z * curve_dist;
 
                                         self.bezier_t[i] = 0.0;
                                         self.transit[i] = TRANSIT_INTERSECTION;
@@ -639,11 +667,7 @@ impl AgentSystem {
 
                             // Calculate lane offset (Direction-independent)
                             let p_prev = edge.physical_geometry[self.edge_progression[i] as usize];
-                            let diff = if is_fwd {
-                                Vector2::new(p_target.x - p_prev.x, p_target.z - p_prev.z)
-                            } else {
-                                Vector2::new(p_prev.x - p_target.x, p_prev.z - p_target.z)
-                            };
+                            let diff = Vector2::new(p_target.x - p_prev.x, p_target.z - p_prev.z);
 
                             if diff.length_squared() < 1e-6 {
                                 self.edge_progression[i] = target_idx; // Skip zero-length segment
@@ -656,11 +680,22 @@ impl AgentSystem {
                             if self.transit_mode[i] == MODE_CAR {
                                 let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
                                 let lane_w = edge.width / total_lanes;
-                                // Forward: lane 0 = rightmost.
-                                let lane_idx = if is_fwd {
-                                    self.current_lane[i] as f32
+                                let bkw_lanes = edge.bkw_lanes as f32;
+                                let fwd_lanes = edge.fwd_lanes as f32;
+                                // Lane mapping: ensures RHD/LHD alignment by choosing correct side of centerline.
+                                // Normal is the RIGHT side of travel direction.
+                                let lane_idx = if crate::config::DRIVE_ON_LEFT {
+                                    if is_fwd {
+                                        bkw_lanes + self.current_lane[i] as f32
+                                    } else {
+                                        fwd_lanes + (-self.current_lane[i] - 1) as f32
+                                    }
                                 } else {
-                                    (-self.current_lane[i] - 1) as f32
+                                    if is_fwd {
+                                        self.current_lane[i] as f32
+                                    } else {
+                                        (-self.current_lane[i] - 1) as f32
+                                    }
                                 };
                                 let hand = if crate::config::DRIVE_ON_LEFT {
                                     -1.0
