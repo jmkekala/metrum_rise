@@ -194,6 +194,7 @@ impl AgentSystem {
             if self.agents.current_edge[i] != usize::MAX {
                 if let Some(&new_id) = mapping.get(&self.agents.current_edge[i]) {
                     self.agents.current_edge[i] = new_id;
+                    self.agents.current_path[i].clear();
                 } else {
                     self.agents.current_edge[i] = usize::MAX;
                     self.agents.current_path[i].clear();

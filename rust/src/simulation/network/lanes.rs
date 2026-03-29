@@ -3,6 +3,8 @@ use std::collections::HashMap;
 
 use super::graph::{Edge, RegionGraph};
 use super::types::{NodeType, TransitFlags, TransitType};
+#[cfg(test)]
+use super::types::EdgeClass;
 use crate::config;
 
 /// Types of travel lanes supported by the network.

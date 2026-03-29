@@ -431,8 +431,34 @@ impl TransitNetwork {
         zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) -> u32 {
+        let total_len = graph.edges[edge_idx].physical_length;
+        let t_dist = t.clamp(0.0, 1.0) * total_len;
+        let min_dist = crate::config::MIN_FRONTAGE_DISTANCE;
+
+        // Snapping Priority:
+        // 1. If within min_dist of start AND (closer to start OR exactly centered), snap to Start.
+        // 2. If within min_dist of end (either directly or via tie-break), snap to End.
+        let snap_node = if t_dist < min_dist && t_dist <= (total_len - t_dist) {
+            Some(graph.edges[edge_idx].start_node)
+        } else if (total_len - t_dist) < min_dist {
+            Some(graph.edges[edge_idx].end_node)
+        } else {
+            None
+        };
+
+        if let Some(node) = snap_node {
+            // Update frontage_node for ALL buildings on this edge that are at the snapped T.
+            // (The building that triggered this call was already pushed to the end of allocator.buildings).
+            for b in &mut allocator.buildings {
+                if b.edge_idx == edge_idx && (b.frontage_t * total_len - t_dist).abs() < 1e-3 {
+                    b.frontage_node = node;
+                }
+            }
+            return node;
+        }
+
         // Walk the geometry to find the segment index and 3-D position at arc-distance t.
-        let target_arc = t.clamp(0.0, 1.0) * graph.edges[edge_idx].physical_length;
+        let target_arc = t_dist;
         let geo: Vec<Vector3> = graph.edges[edge_idx].geometry.clone();
 
         let mut curr = 0.0_f32;
@@ -488,27 +514,52 @@ impl TransitNetwork {
         frontage_node: u32,
         zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+        agents: &mut crate::simulation::economy::agents::AgentSystem,
     ) {
+        // Node must exist and be a virtual frontage node.
+        if frontage_node as usize >= graph.nodes.len()
+            || graph.nodes[frontage_node as usize].node_type != NodeType::Frontage
+        {
+            return;
+        }
+
+        // Shared Node Guard: Only remove the frontage node if NO other building is using it.
+        // This prevents stale node IDs and maintains high-performance agent pathing.
+        let in_use = allocator.buildings.iter().any(|b| b.frontage_node == frontage_node);
+        if in_use {
+            return;
+        }
+
         // Measure the first-half edge (end_node == frontage_node) before the graph is mutated.
         let cell_size = zoning.config.zone_cell_m;
-        let first_half_len = graph
-            .adjacency
-            .get(frontage_node as usize)
-            .and_then(|adj| {
-                adj.iter().find_map(|&e_idx| {
-                    let e = &graph.edges[e_idx];
-                    if !e.deleted && e.end_node == frontage_node {
-                        Some(e.physical_length)
-                    } else {
-                        None
-                    }
-                })
+        let first_half_len = graph.adjacency[frontage_node as usize]
+            .iter()
+            .find_map(|&e_idx| {
+                let e = &graph.edges[e_idx];
+                if !e.deleted && e.end_node == frontage_node {
+                    Some(e.physical_length)
+                } else {
+                    None
+                }
             })
             .unwrap_or(0.0);
         let split_x = (first_half_len / cell_size).floor() as usize;
 
         if let Some((first_idx, second_idx)) = graph.remove_node_and_merge_edges(frontage_node) {
-            // Remap buildings from the now-deleted second half onto the merged edge.
+            let mut mapping = std::collections::HashMap::new();
+            mapping.insert(second_idx, first_idx);
+
+            // Remap Dependents in priority order to preserve simulation invariants
+            // (Agents -> Zoning -> Buildings).
+
+            // 1. Agents: Clear paths and update edge indices.
+            agents.update_edge_indices(&mapping);
+
+            // 2. Zoning: Update edge indices and merge grids.
+            zoning.update_edge_indices(&mapping);
+            zoning.merge_edge_grids(first_idx, second_idx);
+
+            // 3. Buildings: Remap edge indices and shift cell coordinates.
             let merged_len = graph.edges[first_idx].physical_length.max(0.001);
             for b in &mut allocator.buildings {
                 if b.edge_idx == second_idx {
@@ -517,18 +568,8 @@ impl TransitNetwork {
                     let frontage_offset = b.width_cells as f32 * 0.5;
                     b.frontage_t = (b.cell_x as f32 + frontage_offset) * cell_size / merged_len;
                 }
+                // No building uses frontage_node (per in_use guard), so no frontage_node remap needed.
             }
-
-            // Recompute frontage_node for all buildings now on the merged edge.
-            let start = graph.edges[first_idx].start_node;
-            let end = graph.edges[first_idx].end_node;
-            for b in &mut allocator.buildings {
-                if b.edge_idx == first_idx {
-                    b.frontage_node = if b.frontage_t < 0.5 { start } else { end };
-                }
-            }
-
-            zoning.merge_edge_grids(first_idx, second_idx);
 
             graph.rebuild_intersection_clips();
             self.lane_system.rebuild(graph);
@@ -574,3 +615,5 @@ pub mod test_frontage_crossing;
 pub mod test_uturn;
 /// Automated tests for pedestrian movement through junctions.
 pub mod test_ped_junction;
+/// Automated tests for building frontage snapping and remapping.
+pub mod test_frontage_snapping;

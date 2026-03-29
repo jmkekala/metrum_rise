@@ -133,7 +133,7 @@ mod tests {
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
 
     #[test]

@@ -179,7 +179,7 @@ impl BuildingAllocator {
 
                 // Merge the two half-edges back into one. If frontage_node has degree > 2
                 // (not a pure Option-C split node), remove_frontage is a safe no-op.
-                network.remove_frontage(graph, b_frontage_node, zoning, self);
+                network.remove_frontage(graph, b_frontage_node, zoning, self, _agents);
 
                 // Clear occupancy for the entire footprint
                 let w_cells = b_width as usize;

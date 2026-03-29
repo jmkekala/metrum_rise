@@ -90,6 +90,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **`EdgeClass` data model complete**: `Standard | Bridge | Tunnel` enum in `types.rs`; `class: EdgeClass` field on `Edge`; new edges default to `Standard`; `split_edge` copies `class` to the new half-edge.
 - **Junction Rendering (Item 70)**: The old corner-intersection / contour-union / clipped-band renderer is gone from the active path. Junctions now render through the same dilation primitives as the proof-of-concept renderer: widened edge strips, road strips, and circular node fills. There is no active exact contour extraction, no angle-paired sidewalk difference solve, and no scalar handoff clipping in the top-surface renderer.
 - **R-Tree Spatial Index**: `spatial_edge_rt` replaces the uniform 512m grid for all edge queries. O(log N) insert/delete/query provides tight AABB filtering, zero manual deduplication, and eliminates long-edge false positives.
+- **Building Frontage Snapping Guard (B30)**: Enforces a `MIN_FRONTAGE_DISTANCE` (8.0m) for all dynamic road splits. Buildings near junctions snap to existing nodes instead of creating unstable micro-segments, resolving visual mesh gaps and ensuring deterministic agent pathfinding across topology changes. Includes a shared-node occupancy guard to prevent premature frontage removal when multiple buildings share a junction node.
 
 ### Zoning
 - `simulation/grid/zoning.rs` — edge-aligned zoning cells, 10 m × 10 m.
@@ -209,6 +210,7 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 | ID | Severity | Location | Description | Status |
 |----|----------|----------|-------------|--------|
+| B30 | [BLOCKER] | `network/mod.rs` | Road mesh gaps at junctions due to ultra-short building frontage segments. | [DONE] |
 
 
 ## Backlog

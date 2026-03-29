@@ -47,3 +47,8 @@ pub const BORDER_EXTENSION_M: f32 = 10.0;
 /// Horizontal scaling factor (Sx, Sy, Sz) applied to building MultiMesh instances.
 /// Standard assets use 1 unit = 10m, so we scale by 10.0 for a meter-based simulation.
 pub const BUILDING_VISUAL_SCALE: f32 = 10.0;
+
+/// Minimum distance (metres) between a building's frontage node and a junction.
+/// If a building is closer, its frontage will snap to the nearest junction node to prevent
+/// road segments that are too short for stable junction clipping (Bug B30).
+pub const MIN_FRONTAGE_DISTANCE: f32 = 8.0;
