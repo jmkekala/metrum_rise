@@ -446,10 +446,9 @@ impl TransitNetwork {
         let new_edge_id = graph.edges.len() - 1;
 
         // Recompute frontage_node for all existing buildings on either half-edge.
-        // Since every Option-C building lives near the end of its edge (frontage_t ≈ 1.0),
-        // the end_node heuristic always recovers the correct split node.
         for b in &mut allocator.buildings {
             if b.edge_idx == edge_idx || b.edge_idx == new_edge_id {
+                let half_cells = b.width_cells as f32 * 0.5;
                 b.frontage_node = if b.frontage_t < 0.5 {
                     graph.edges[b.edge_idx].start_node
                 } else {
@@ -503,7 +502,8 @@ impl TransitNetwork {
                 if b.edge_idx == second_idx {
                     b.edge_idx = first_idx;
                     b.cell_x += split_x;
-                    b.frontage_t = (b.cell_x as f32 + 1.5) * cell_size / merged_len;
+                    let frontage_offset = b.width_cells as f32 * 0.5;
+                    b.frontage_t = (b.cell_x as f32 + frontage_offset) * cell_size / merged_len;
                 }
             }
 

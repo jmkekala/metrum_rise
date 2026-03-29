@@ -594,9 +594,9 @@ impl SimulationNode {
                 let b_xx = -fd.y;
                 let b_xz = fd.x;
 
-                let sx = b.width as f32;
-                let sy = 1.0;
-                let sz = b.depth as f32;
+                let sx = 10.0;
+                let sy = 10.0;
+                let sz = 10.0;
 
                 buffer.push(b_xx * sx);
                 buffer.push(0.0);

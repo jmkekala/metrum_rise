@@ -425,6 +425,16 @@ impl SimulationNode {
         self.get_building_transforms_internal(zone_type_int, variant)
     }
 
+    /// Registers metadata for a building model to aid in footprint calculation.
+    #[func]
+    pub fn register_building_metadata(&mut self, zone_id: u8, variant: u8, size_x: f32, size_y: f32, size_z: f32) {
+        self.allocator.set_model_metadata(zone_id, variant, crate::simulation::buildings::allocator::ModelMetadata {
+            size_x,
+            size_y,
+            size_z,
+        });
+    }
+
     /// Returns the closest boundary point on a road edge to the given position.
     #[func]
     pub fn get_closest_point_on_edge(&self, edge_idx: i32, point_x: f32, point_y: f32) -> Vector2 {

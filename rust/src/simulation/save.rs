@@ -569,13 +569,13 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
                 building.frontage_t,
                 i64::from(building.side),
                 usize_to_i64(building.cell_x)?,
-                usize_to_i64(building.cell_y)?,
+                u8_to_i64(building.cell_y)?,
                 zone_type_to_i64(building.zone_type),
-                i64::from(building.occupancy),
-                i64::from(building.width),
-                i64::from(building.depth),
-                i64::from(saved_frontage_node),
-                i64::from(building.variant)
+                u32_to_i64(building.occupancy)?,
+                u8_to_i64(building.width_cells)?,
+                u8_to_i64(building.depth_cells)?,
+                u32_to_i64(saved_frontage_node)?,
+                u8_to_i64(building.variant)?
             ])?;
         }
     }
@@ -1076,19 +1076,13 @@ fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAllocator> {
             )));
         }
 
-        let occupancy = i64_to_u8(row.get(7)?)?;
-        if occupancy > 6 {
-            return Err(SaveLoadError::custom(format!(
-                "building {} occupancy {} exceeds capacity 6",
-                building_id, occupancy
-            )));
-        }
-
+        let occupancy = i64_to_u32(row.get(7)?)?;
+        
         allocator.buildings.push(Building {
             center_x: 0.0,
             center_y: 0.0,
-            width: i64_to_u8(row.get(8)?)?,
-            depth: i64_to_u8(row.get(9)?)?,
+            width_cells: i64_to_u8(row.get(8)?)?,
+            depth_cells: i64_to_u8(row.get(9)?)?,
             zone_type: zone_type_from_i64(row.get(6)?)?,
             facing_dir: Vector2::new(0.0, 0.0),
             frontage_t: row.get(2)?,
@@ -1098,7 +1092,7 @@ fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAllocator> {
             edge_idx: i64_to_usize(row.get(1)?)?,
             side: i64_to_i8(row.get(3)?)?,
             cell_x: i64_to_usize(row.get(4)?)?,
-            cell_y: i64_to_usize(row.get(5)?)?,
+            cell_y: i64_to_u8(row.get(5)?)?,
             occupancy,
             variant: i64_to_u8(row.get(11)?)?,
         });
@@ -1238,27 +1232,15 @@ fn repaint_building_occupancy(
     }
 
     for building in &allocator.buildings {
-        let Some(grid) = zoning.edge_grids.get(&building.edge_idx) else {
-            return Err(SaveLoadError::custom(format!(
-                "building edge {} missing zoning grid during occupancy rebuild",
-                building.edge_idx
-            )));
-        };
-        let width_cells = (building.width as f32 / zoning.config.zone_cell_m).round() as usize;
-        let depth_cells = (building.depth as f32 / zoning.config.zone_cell_m).round() as usize;
-        if building.cell_x + width_cells > grid.cells_long {
-            return Err(SaveLoadError::custom(format!(
-                "building footprint exceeds zoning grid on edge {}",
-                building.edge_idx
-            )));
-        }
+        let width_cells = building.width_cells as usize;
+        let depth_cells = building.depth_cells as usize;
         for dx in 0..width_cells {
             for dy in 0..depth_cells {
                 zoning.set_occupied(
                     building.edge_idx,
                     building.side,
                     building.cell_x + dx,
-                    building.cell_y + dy,
+                    usize::from(building.cell_y) + dy,
                     true,
                 );
             }
@@ -1564,6 +1546,14 @@ fn usize_to_i64(value: usize) -> SaveLoadResult<i64> {
 
 fn isize_to_i64(value: isize) -> SaveLoadResult<i64> {
     i64::try_from(value).map_err(|_| SaveLoadError::custom("isize value does not fit i64"))
+}
+
+fn u32_to_i64(value: u32) -> SaveLoadResult<i64> {
+    i64::try_from(value).map_err(|_| SaveLoadError::custom("u32 value does not fit i64"))
+}
+
+fn u8_to_i64(value: u8) -> SaveLoadResult<i64> {
+    Ok(i64::from(value))
 }
 
 fn i64_to_usize(value: i64) -> SaveLoadResult<usize> {

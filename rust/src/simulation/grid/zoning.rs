@@ -100,6 +100,11 @@ impl ZoningSystem {
         self.edge_grids = new_grids;
     }
 
+    /// Returns the number of cells along the road for a specific edge's zoning grid.
+    pub fn get_edge_grid_width(&self, edge_idx: usize) -> usize {
+        self.edge_grids.get(&edge_idx).map(|g| g.cells_long).unwrap_or(0)
+    }
+
     /// Splits an existing edge's zoning grid into two at the specified column index `split_x`.
     pub fn split_edge_grid(&mut self, old_idx: usize, new_idx: usize, split_x: usize) {
         if let Some(old_grid) = self.edge_grids.get(&old_idx).cloned() {
@@ -583,10 +588,6 @@ impl ZoningSystem {
                         if t1.dot(t2) < -0.85 {
                             continue;
                         }
-                    } else {
-                        // User: "Buildings can overlap from now on nodes/junctions"
-                        // If it's a junction (conn_count > 2), we allow overlap (don't flag as asphalt collision here).
-                        continue;
                     }
                 }
 

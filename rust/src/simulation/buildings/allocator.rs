@@ -4,29 +4,35 @@
 //! 1. Removes buildings whose zoning cell has been changed or whose road edge was deleted.
 //! 2. Scans zoned, unoccupied cells with sufficient demand and spawns new buildings.
 //! 3. Spawns immigrant agents up to the current residential capacity.
-//!
-//! **Known issues (see `docs/project.md`):**
-//! - No spawn throttle — can spawn hundreds of buildings per tick (bug B6).
-//! - Desirability is not checked before placement (bug B5).
-//! - Each `split_for_frontage` call triggers a lane rebuild and marks CCH chunks dirty;
-//!   the deferred `rebuild_pathing_if_dirty` at the end of `tick` pays that cost once.
 
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
+use std::collections::HashMap;
+
+/// Metadata for a building model's physical dimensions.
+#[derive(Clone, Copy, Debug)]
+pub struct ModelMetadata {
+    /// Width in Godot units (before 10.0 scale).
+    pub size_x: f32,
+    /// Height in Godot units.
+    pub size_y: f32,
+    /// Depth in Godot units.
+    pub size_z: f32,
+}
 
 /// A placed building occupying a 3 × 3 cell (30 m × 30 m) footprint on a zoning grid.
 #[derive(Clone)]
 pub struct Building {
-    /// World-space X centre of the building footprint (metres).
+    /// World-space X centre of the building footprint (metres, Godot's forward axis).
     pub center_x: f32,
     /// World-space Z centre of the building footprint (metres, Godot's forward axis).
     pub center_y: f32,
-    /// Footprint width in metres (always 30 at present).
-    pub width: u8,
-    /// Footprint depth in metres (always 30 at present).
-    pub depth: u8,
+    /// Width of the footprint in zoning grid cells (1 cell = 10m).
+    pub width_cells: u8,
+    /// Depth of the footprint in zoning grid cells.
+    pub depth_cells: u8,
     /// Zone category this building was spawned into.
     pub zone_type: ZoneType,
     /// Unit vector pointing from the road toward the building (outward normal from the road edge).
@@ -34,26 +40,21 @@ pub struct Building {
     /// T-coordinate (0.0 to 1.0) along the road edge [`edge_idx`] for this building's frontage.
     pub frontage_t: f32,
     /// Road-graph node at this building's frontage point.
-    ///
-    /// Created by [`TransitNetwork::split_for_frontage`] at the exact arc-length position
-    /// `frontage_t` on [`edge_idx`]. This is the agent departure/arrival waypoint for precise
-    /// routing. Persisted as a column in the `buildings` SQLite table; authoritative on load.
     pub frontage_node: u32,
     /// Signed side of the road: `+1.0` = left, `-1.0` = right (relative to edge direction).
     pub side_offset: f32,
-    /// Ticks since this building lost its zoning. Non-zero values are reserved for future
-    /// abandonment / decay logic; currently unused.
+    /// Ticks since this building lost its zoning. Currently unused.
     pub abandoned_timer: u32,
     /// Index into [`RegionGraph::edges`] for the road segment this building fronts.
     pub edge_idx: usize,
     /// Road side: `1` = left, `-1` = right.
     pub side: i8,
-    /// Column index (along the road) of the building's leading cell in the zoning grid.
+    /// Column index (along the road) of the building's leading cell.
     pub cell_x: usize,
-    /// Row index (depth from road) of the building's leading cell; always `0` (first row).
-    pub cell_y: usize,
-    /// Number of agents currently living in this building.
-    pub occupancy: u8,
+    /// Vertical cell index (0 to ZONING_DEPTH-1).
+    pub cell_y: u8,
+    /// Total agents currently residing or working in this building.
+    pub occupancy: u32,
     /// Randomly assigned variant ID for 3D model selection.
     pub variant: u8,
 }
@@ -72,8 +73,10 @@ pub struct BuildingAllocator {
     /// Tracks the position of each building in its respective `vacancy_index` list for O(1) removal.
     /// Indexed by building ID; `usize::MAX` if not in any vacancy list.
     pub vacancy_pos: Vec<usize>,
-    /// If true, the indices need to be recalculated.
+    /// Recalculates inverted indices if true.
     pub dirty_index: bool,
+    /// Metadata for each (ZoneType, variant_id) pair.
+    pub model_metadata: HashMap<(u8, u8), ModelMetadata>,
 }
 
 impl BuildingAllocator {
@@ -103,7 +106,22 @@ impl BuildingAllocator {
             vacancy_index: [const { Vec::new() }; 6],
             vacancy_pos: Vec::new(),
             dirty_index: true,
+            model_metadata: HashMap::new(),
         }
+    }
+
+    /// Sets metadata for a specific building model.
+    pub fn set_model_metadata(&mut self, zone_id: u8, variant: u8, metadata: ModelMetadata) {
+        self.model_metadata.insert((zone_id, variant), metadata);
+    }
+
+    /// Gets metadata for a specific building model, or returns a default 1x1x1 size.
+    pub fn get_model_metadata(&self, zone_id: u8, variant: u8) -> ModelMetadata {
+        *self.model_metadata.get(&(zone_id, variant)).unwrap_or(&ModelMetadata {
+            size_x: 1.0,
+            size_y: 1.0,
+            size_z: 1.0,
+        })
     }
 
     /// Removes all buildings and resets the dirty flag.
@@ -143,7 +161,7 @@ impl BuildingAllocator {
         while i < self.buildings.len() {
             let b = &self.buildings[i];
             let remove = if let Some(_) = zoning.edge_grids.get(&b.edge_idx) {
-                let current_type = zoning.get_cell(b.edge_idx, b.side, b.cell_x, b.cell_y);
+                let current_type = zoning.get_cell(b.edge_idx, b.side, b.cell_x, b.cell_y.into());
                 current_type != b.zone_type || graph.edges[b.edge_idx].deleted
             } else {
                 true // Edge gone
@@ -154,8 +172,8 @@ impl BuildingAllocator {
                 let b_side = b.side;
                 let b_cell_x = b.cell_x;
                 let b_cell_y = b.cell_y;
-                let b_width = b.width;
-                let b_depth = b.depth;
+                let b_width = b.width_cells;
+                let b_depth = b.depth_cells;
                 let b_frontage_node = b.frontage_node;
                 // `b` is no longer borrowed past this point; safe to pass `self` mutably below.
 
@@ -164,15 +182,15 @@ impl BuildingAllocator {
                 network.remove_frontage(graph, b_frontage_node, zoning, self);
 
                 // Clear occupancy for the entire footprint
-                let w_cells = (b_width as f32 / zoning.config.zone_cell_m).round() as usize;
-                let d_cells = (b_depth as f32 / zoning.config.zone_cell_m).round() as usize;
+                let w_cells = b_width as usize;
+                let d_cells = b_depth as usize;
                 for dx in 0..w_cells {
                     for dy in 0..d_cells {
                         zoning.set_occupied(
                             b_edge_idx,
                             b_side,
                             b_cell_x + dx,
-                            b_cell_y + dy,
+                            (b_cell_y as usize) + dy,
                             false,
                         );
                     }
@@ -218,34 +236,13 @@ impl BuildingAllocator {
                 } else {
                     0
                 };
-                if cells_long < 3 {
-                    continue;
-                }
 
-                // Node-Proximal Spawning: iterate from both ends towards the middle
-                let mid = cells_long / 2;
-                let mut x_order: Vec<usize> = Vec::with_capacity(cells_long);
-
-                // Build x_order: [0, max-1, 1, max-2, ...]
-                for i in 0..mid {
-                    x_order.push(i);
-                    x_order.push(cells_long.saturating_sub(3).saturating_sub(i));
-                }
-                if cells_long % 2 != 0 {
-                    x_order.push(mid);
-                }
-                // Filter and deduplicate (saturating_sub might produce duplicates)
-                let mut seen = std::collections::HashSet::new();
-                let x_order: Vec<usize> = x_order
-                    .into_iter()
-                    .filter(|&x| x <= cells_long.saturating_sub(3))
-                    .filter(|&x| seen.insert(x))
-                    .collect();
-
-                for x in x_order {
+                for i in 0..cells_long {
+                    let x = if i % 2 == 0 { (i / 2).min(cells_long - 1) } else { (cells_long - 1).saturating_sub(i / 2) };
                     if spawned_this_tick >= max_spawns {
-                        break;
+                        break 'side_loop;
                     }
+
                     let z_type = zoning.get_cell(edge_idx, side, x, 0);
                     if z_type == ZoneType::None {
                         continue;
@@ -264,13 +261,22 @@ impl BuildingAllocator {
                         continue;
                     }
 
+                    // Determine deterministic variant and its footprint size
+                    let variant = (edge_idx ^ x) as u8 % 64;
+                    let meta = self.get_model_metadata(z_type as u8, variant);
+                    let dw = (meta.size_x).ceil() as usize;
+                    let dh = (meta.size_z).ceil() as usize;
+
+                    // Ensure footprint fits in zoning grid
+                    if x + dw > cells_long || dh > crate::config::ZONING_DEPTH {
+                        continue;
+                    }
+
                     let mut can_build = true;
-                    // Check 3x3 footprint for zone type, occupancy, and cached obstruction.
-                    // is_blocked() reads the precomputed left_blocked/right_blocked cache
-                    // (populated by recalculate_obstructions on road edits) instead of
-                    // rerunning the expensive O(geometry²) check on every tick.
-                    for dx in 0..3 {
-                        for dy in 0..3 {
+                    // B4: Grid Occupancy Check
+                    // We check if all cells in the blueprint are zoned correctly and not occupied.
+                    for dx in 0..dw {
+                        for dy in 0..dh {
                             if zoning.get_cell(edge_idx, side, x + dx, dy) != z_type
                                 || zoning.is_occupied(edge_idx, side, x + dx, dy)
                                 || zoning.is_blocked(edge_idx, side, x + dx, dy)
@@ -286,13 +292,13 @@ impl BuildingAllocator {
 
                     // B5: Desirability Gate
                     if can_build {
-                        let t_center = (x as f32 + 1.5) * zoning.config.zone_cell_m / edge_len;
+                        let t_center = (x as f32 + (dw as f32 * 0.5)) * zoning.config.zone_cell_m / edge_len;
                         let world_pos = self.get_pos_on_edge(&graph, edge_idx, t_center);
                         let tangent = self.get_tangent_on_edge(&graph, edge_idx, t_center);
                         let normal =
                             godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
                         let depth_offset =
-                            crate::config::SIDEWALK_WIDTH + (1.5 * zoning.config.zone_cell_m);
+                            crate::config::SIDEWALK_WIDTH + ((dh as f32 * 0.5) * zoning.config.zone_cell_m);
                         let center_2d = world_pos + normal * (edge_width * 0.5 + depth_offset);
 
                         // Map world to grid coordinates
@@ -320,54 +326,48 @@ impl BuildingAllocator {
                         let normal =
                             godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
 
-                        let b_width = 3.0 * zoning.config.zone_cell_m;
-                        let b_depth = 3.0 * zoning.config.zone_cell_m;
-                        // Centre of the 3-cell deep footprint (1.5 cells out from road edge).
+                        let b_width = dw as f32 * zoning.config.zone_cell_m;
+                        let b_depth = dh as f32 * zoning.config.zone_cell_m;
+                        // Centre of the footprint
                         let depth_offset =
-                            crate::config::SIDEWALK_WIDTH + (1.5 * zoning.config.zone_cell_m);
+                            crate::config::SIDEWALK_WIDTH + ((dh as f32 * 0.5) * zoning.config.zone_cell_m);
                         let center_2d =
                             world_pos_on_edge + normal * (edge_width * 0.5 + depth_offset);
 
                         // Compute frontage_t on the original full edge for the split position.
-                        let frontage_t_full = (x as f32 + 1.5) * zoning.config.zone_cell_m / edge_len;
-                        let frontage_node =
-                            network.split_for_frontage(graph, edge_idx, frontage_t_full, zoning, self);
-                        spawned_this_tick += 1;
-
-                        // The new building is always on the first half (edge_idx) at the same cell_x.
-                        let half_edge_len = graph.edges[edge_idx].physical_length.max(0.001);
-                        let frontage_t =
-                            (x as f32 + 1.5) * zoning.config.zone_cell_m / half_edge_len;
-
-                        // Center along road (1.5 cells in)
-                        let center_adjustment = tangent * (1.5 * zoning.config.zone_cell_m);
-                        let final_center_2d = center_2d + center_adjustment;
-
-                        let b = Building {
-                            center_x: final_center_2d.x,
-                            center_y: final_center_2d.y,
-                            width: b_width as u8,
-                            depth: b_depth as u8,
-                            zone_type: z_type,
-                            facing_dir: -normal,
-                            frontage_t,
-                            frontage_node,
-                            side_offset: side as f32,
-                            abandoned_timer: 0,
-                            edge_idx,
-                            side,
-                            cell_x: x,
-                            cell_y: 0,
-                            occupancy: 0,
-                            variant: (edge_idx ^ x) as u8 % 4,
-                        };
-                        // Mark all 9 cells as occupied
-                        for dx in 0..3 {
-                            for dy in 0..3 {
-                                zoning.set_occupied(edge_idx, side, x + dx, dy, true);
+                        let frontage_t_offset = dw as f32 * 0.5;
+                        let frontage_t_full = (x as f32 + frontage_t_offset) * zoning.config.zone_cell_m / edge_len;
+                        // Mark footprint occupied on full edge BEFORE split (to allow split_edge_grid to copy flags correctly)
+                        for adx in 0..dw {
+                            for ady in 0..dh {
+                                zoning.set_occupied(edge_idx, side, x + adx, ady, true);
                             }
                         }
-                        self.buildings.push(b);
+
+                        // Push building with dummy node (it will be updated by split_for_frontage immediately)
+                        self.buildings.push(Building {
+                            zone_type: z_type,
+                            facing_dir: normal.normalized(),
+                            frontage_t: frontage_t_full,
+                            frontage_node: 0, 
+                            side_offset: edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
+                            center_x: center_2d.x,
+                            center_y: center_2d.y,
+                            edge_idx,
+                            side: side as i8,
+                            cell_x: x,
+                            cell_y: 0,
+                            width_cells: dw as u8,
+                            depth_cells: dh as u8,
+                            occupancy: 0,
+                            variant: variant as u8,
+                            abandoned_timer: 0,
+                        });
+
+                        // This call now includes the new building in its migration loop
+                        network.split_for_frontage(graph, edge_idx, frontage_t_full, zoning, self);
+                        
+                        spawned_this_tick += 1;
                         self.dirty_index = true;
 
                         // Subtract from demand
@@ -561,8 +561,8 @@ impl BuildingAllocator {
             }
 
             let zone_cell_m = zoning.config.zone_cell_m;
-            let width_cells = (building.width as f32 / zone_cell_m).max(1.0);
-            let depth_cells = (building.depth as f32 / zone_cell_m).max(1.0);
+            let width_cells = building.width_cells as f32;
+            let depth_cells = building.depth_cells as f32;
             let along_offset = width_cells * 0.5 * zone_cell_m;
             let depth_offset = crate::config::SIDEWALK_WIDTH
                 + (building.cell_y as f32 + depth_cells * 0.5) * zone_cell_m;
@@ -1109,8 +1109,8 @@ mod tests {
         allocator.buildings.push(Building {
             center_x: 10.0,
             center_y: 10.0,
-            width: 30,
-            depth: 30,
+            width_cells: 3,
+            depth_cells: 3,
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.1,

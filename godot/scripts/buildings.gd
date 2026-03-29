@@ -7,7 +7,7 @@ extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
 
-const NUM_VARIANTS = 4
+const NUM_VARIANTS = 64
 const ZONE_NAMES = {
 	1: "residential",
 	2: "commercial",
@@ -17,48 +17,76 @@ const ZONE_NAMES = {
 
 # multimeshes[zone_id][variant] = MultiMeshInstance3D
 var multimeshes = {}
+# model_files[zone_id] = [filename1, filename2, ...]
+var model_files = {}
 
 func _ready():
+	# Load metadata to inform Rust about footprint sizes
+	var meta_data = {}
+	var meta_path = "res://assets/models/buildings/model_metadata.json"
+	if FileAccess.file_exists(meta_path):
+		var file = FileAccess.open(meta_path, FileAccess.READ)
+		var json = JSON.new()
+		json.parse(file.get_as_text())
+		meta_data = json.get_data()
+	
 	for zone_id in ZONE_NAMES.keys():
 		multimeshes[zone_id] = {}
+		
+		# Discover all models in this zone's directory
+		var zone_name = ZONE_NAMES[zone_id]
+		var model_dir = "res://assets/models/buildings/" + zone_name + "/"
+		model_files[zone_id] = []
+		
+		var dir = DirAccess.open(model_dir)
+		if dir:
+			dir.list_dir_begin()
+			var fn = dir.get_next()
+			while fn != "":
+				if fn.ends_with(".glb"):
+					model_files[zone_id].append(fn)
+				fn = dir.get_next()
+			model_files[zone_id].sort()
+		
+		# Register metadata with Rust for EVERY variant
 		for variant in range(NUM_VARIANTS):
-			setup_building_variant(zone_id, variant)
+			var mesh = null
+			if model_files[zone_id].size() > 0:
+				var fn = model_files[zone_id][variant % model_files[zone_id].size()]
+				if meta_data.has(zone_name) and meta_data[zone_name].has(fn):
+					var m = meta_data[zone_name][fn]
+					# Register with Rust: width, height, depth
+					simulation_node.register_building_metadata(zone_id, variant, m.size_x, m.size_y, m.size_z)
+				
+				mesh = load_building_mesh(zone_id, variant)
+			
+			setup_building_variant(zone_id, variant, mesh)
 
-func setup_building_variant(zone_id: int, variant: int):
+func setup_building_variant(zone_id: int, variant: int, mesh: Mesh):
 	var mmi = MultiMeshInstance3D.new()
 	var mm = MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.instance_count = 0
 	
-	var mesh = load_building_mesh(zone_id, variant)
 	if not mesh:
 		# Fallback to procedural box if model missing
 		mesh = create_fallback_mesh(zone_id)
 	
 	mm.mesh = mesh
 	mmi.multimesh = mm
-	
-	# Enable LOD if supported by the mesh
 	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
 	
 	add_child(mmi)
 	multimeshes[zone_id][variant] = mmi
 
 func load_building_mesh(zone_id: int, variant: int) -> Mesh:
-	var zone_name = ZONE_NAMES[zone_id]
-	var file_name = ""
-	
-	if zone_id == 1: # Residential
-		file_name = "building-type-%d.glb" % variant
-	elif zone_id == 2 or zone_id == 3: # Commercial or Industrial
-		file_name = "building-%d.glb" % variant
-	else:
-		return null # Mixed/Office fallback
-		
-	var path = "res://assets/models/buildings/%s/%s" % [zone_name, file_name]
-	if not ResourceLoader.exists(path):
+	if not model_files.has(zone_id) or model_files[zone_id].size() == 0:
 		return null
 		
+	var zone_name = ZONE_NAMES[zone_id]
+	var file_name = model_files[zone_id][variant % model_files[zone_id].size()]
+	var path = "res://assets/models/buildings/%s/%s" % [zone_name, file_name]
+	
 	var scene = load(path)
 	if not scene:
 		return null

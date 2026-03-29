@@ -299,10 +299,12 @@ pub fn split_edge(
         if b.edge_idx == edge_id {
             if b.cell_x >= split_x {
                 b.edge_idx = new_edge_id;
-                b.cell_x -= split_x;
-                b.frontage_t = (b.cell_x as f32 + 1.5) * cell_size / new_len_second.max(0.001);
+                b.cell_x = b.cell_x.saturating_sub(split_x);
+                let half_cells = b.width_cells as f32 * 0.5;
+                b.frontage_t = (b.cell_x as f32 + half_cells) * cell_size / new_len_second.max(0.001);
             } else {
-                b.frontage_t = (b.cell_x as f32 + 1.5) * cell_size / new_len_first.max(0.001);
+                let half_cells = b.width_cells as f32 * 0.5;
+                b.frontage_t = (b.cell_x as f32 + half_cells) * cell_size / new_len_first.max(0.001);
             }
         }
     }
@@ -377,8 +379,8 @@ mod tests {
         allocator.buildings.push(crate::simulation::buildings::allocator::Building {
             center_x: 80.0,
             center_y: 10.0,
-            width: 30,
-            depth: 30,
+            width_cells: 3,
+            depth_cells: 3,
             zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
             facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
             frontage_t: 0.85, // Pre-split frontage_t
