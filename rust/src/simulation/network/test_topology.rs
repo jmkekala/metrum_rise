@@ -239,8 +239,8 @@ mod tests {
             .push(crate::simulation::buildings::allocator::Building {
                 center_x: 75.0,
                 center_y: 10.0,
-                width: 20,
-                depth: 20,
+                width_cells: 2,
+                depth_cells: 2,
                 zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.75,

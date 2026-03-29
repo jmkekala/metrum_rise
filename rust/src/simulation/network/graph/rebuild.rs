@@ -307,8 +307,19 @@ impl RegionGraph {
                     total_length += (p1 - p0).length();
                 }
 
-                let safe_start = edge.start_clip.min(total_length * 0.49);
-                let safe_end = edge.end_clip.min(total_length * 0.49);
+                // Adaptive clipping: Ensure that the sum of clips does not exceed 
+                // the total segment length, preventing mesh inversion or overlap.
+                // We leave a tiny 2cm safety buffer in the middle.
+                let mut safe_start = edge.start_clip;
+                let mut safe_end = edge.end_clip;
+                let sum_clips = safe_start + safe_end;
+                
+                if sum_clips > total_length - 0.02 {
+                    let scale = (total_length - 0.02) / sum_clips;
+                    safe_start *= scale;
+                    safe_end *= scale;
+                }
+                
                 let clipped_length = f32::max(0.01, total_length - safe_start - safe_end);
 
                 let num_segments = f32::max(1.0, f32::ceil(clipped_length / 2.0)) as usize;

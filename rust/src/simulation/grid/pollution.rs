@@ -114,8 +114,8 @@ mod tests {
         let source_building = Building {
             center_x: 0.0,
             center_y: 0.0,
-            width: 30,
-            depth: 30,
+            width_cells: 3,
+            depth_cells: 3,
             zone_type: ZoneType::Industrial,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,

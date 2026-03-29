@@ -444,6 +444,11 @@ impl CchGraph {
         graph: &RegionGraph,
         allowed_mask: u8,
     ) -> Option<(f32, f32, Vec<u32>)> {
+        // B31: Prevent panic if pathfinding is called with new nodes before CCH rebuild
+        if start as usize >= self.fwd_up.len() || end as usize >= self.fwd_up.len() {
+            return None;
+        }
+
         if start == end {
             return Some((0.0, 0.0, vec![start]));
         }

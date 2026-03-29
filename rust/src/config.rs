@@ -42,3 +42,7 @@ pub const BORDER_DETECTION_THRESHOLD: f32 = 3.0;
 /// The physical distance (metres) that a road is automatically extended off-screen
 /// when marked as an external border connection. This ensures immigrants spawn cleanly off-map.
 pub const BORDER_EXTENSION_M: f32 = 10.0;
+
+/// Horizontal scaling factor (Sx, Sy, Sz) applied to building MultiMesh instances.
+/// Standard assets use 1 unit = 10m, so we scale by 10.0 for a meter-based simulation.
+pub const BUILDING_VISUAL_SCALE: f32 = 10.0;

@@ -299,6 +299,8 @@ impl TransitNetwork {
         zoning.update_edge_grid_size(edge_id, length);
         self.zoning_dirty_edges.insert(edge_id);
         self.invalidate_zoning_near_edge(edge_id, graph);
+        self.mark_point_dirty(graph.nodes[start as usize].pos);
+        self.mark_point_dirty(graph.nodes[end as usize].pos);
 
         topology::process_intersections(self, graph, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(graph); // Clean edge_id if it's dup
@@ -439,7 +441,7 @@ impl TransitNetwork {
         }
 
         // Create the frontage node exactly at the split position.
-        let f = graph.add_node(split_pos, NodeType::Junction);
+        let f = graph.add_node(split_pos, NodeType::Frontage);
 
         // Split the edge; migrates zoning grids and building cell_x/frontage_t in-place.
         topology::split_edge(self, graph, edge_idx, seg, 0.0, f, zoning, allocator);

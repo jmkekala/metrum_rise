@@ -594,9 +594,74 @@ impl SimulationNode {
                 let b_xx = fd.y;
                 let b_xz = -fd.x;
 
-                let sx = 10.0;
-                let sy = 10.0;
-                let sz = 10.0;
+                // Scale logic: 
+                // Metadata or fallback, use BUILDING_VISUAL_SCALE (1 unit in GLB = 10m in world).
+                let (sx, sy, sz) = get_building_visual_scale();
+
+                buffer.push(b_xx * sx);
+                buffer.push(0.0);
+                buffer.push(b_zx * sz);
+                buffer.push(world_x);
+
+                buffer.push(0.0);
+                buffer.push(sy);
+                buffer.push(0.0);
+                buffer.push(world_y);
+
+                buffer.push(b_xz * sx);
+                buffer.push(0.0);
+                buffer.push(b_zz * sz);
+                buffer.push(world_z);
+            }
+        }
+
+        PackedFloat32Array::from_iter(buffer)
+    }
+
+    /// Returns the 12-float transforms for building plot/foundation MultiMeshes (visualizing item 53).
+    pub fn get_building_plot_transforms_internal(&self, zone_type_int: u8) -> PackedFloat32Array {
+        let target_zone = match zone_type_int {
+            1 => ZoneType::Residential,
+            2 => ZoneType::Commercial,
+            3 => ZoneType::Industrial,
+            4 => ZoneType::Office,
+            5 => ZoneType::Mixed,
+            _ => ZoneType::None,
+        };
+
+        if target_zone == ZoneType::None {
+            return PackedFloat32Array::new();
+        }
+
+        let mut buffer = Vec::new();
+        let w = self.heightmap.width as f32;
+        let h = self.heightmap.height as f32;
+        let hw = (w - 1.0) * 0.5;
+        let hh = (h - 1.0) * 0.5;
+
+        for b in &self.allocator.buildings {
+            if b.zone_type == target_zone {
+                let world_x = b.center_x;
+                let world_z = b.center_y;
+
+                let grid_x = b.center_x + hw;
+                let grid_y = b.center_y + hh;
+                let safe_gx = grid_x.round().clamp(0.0, w - 1.0) as usize;
+                let safe_gy = grid_y.round().clamp(0.0, h - 1.0) as usize;
+
+                let world_y = self.heightmap.get_height(safe_gx, safe_gy) * 20.0 + 0.02; // Slightly above terrain
+
+                let fd = b.facing_dir.normalized();
+                let b_zx = fd.x;
+                let b_zz = fd.y;
+                let b_xx = fd.y;
+                let b_xz = -fd.x;
+
+                // Plot size is 10m * cell count (default 3x3 = 30x30)
+                let cell_size = self.config.zone_cell_m;
+                let sx = b.width_cells as f32 * cell_size;
+                let sz = b.depth_cells as f32 * cell_size;
+                let sy = 0.5; // Thin foundation box
 
                 buffer.push(b_xx * sx);
                 buffer.push(0.0);
@@ -711,5 +776,32 @@ impl SimulationNode {
         } else {
             (1.0, 0.0)
         }
+    }
+}
+
+/// Returns the scale factor for a building.
+/// Standard assets use 1:10 scale (1 unit = 10m), so we scale by [`crate::config::BUILDING_VISUAL_SCALE`].
+pub fn get_building_visual_scale() -> (f32, f32, f32) {
+    let s = crate::config::BUILDING_VISUAL_SCALE;
+    (s, s, s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::grid::zoning::ZoneType;
+    use godot::prelude::Vector2;
+
+    #[test]
+    fn test_building_visual_scale_is_adequate() {
+        // This test ensures that buildings are not "miniature" by verifying the scale factor
+        // returned from our logic is at least 10.0 (the standard for current assets).
+        let (sx, sy, sz) = get_building_visual_scale();
+        
+        assert!(sy >= 10.0, "Building vertical scale must be at least 10.0 to match asset scale");
+        assert!(sx >= 10.0, "Building horizontal scale must be at least 10.0 to match asset scale");
+        assert!(sz >= 10.0, "Building depth scale must be at least 10.0 to match asset scale");
     }
 }

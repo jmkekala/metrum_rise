@@ -36,8 +36,8 @@ fn create_test_building(edge_idx: usize, side: i8, frontage_node: u32) -> Buildi
     Building {
         center_x: 0.0,
         center_y: 0.0,
-        width: 10,
-        depth: 10,
+        width_cells: 1,
+        depth_cells: 1,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(1.0, 0.0),
         frontage_t: 0.5,

@@ -175,11 +175,13 @@ pub fn process_intersections(
 
             if factor < 0.1 {
                 let start_node = graph.edges[eid].start_node;
+                network.mark_point_dirty(graph.nodes[start_node as usize].pos);
                 graph.unite_nodes(junction_id, start_node);
                 continue;
             }
             if factor > (geo_len - 1) as f32 - 0.1 {
                 let end_node = graph.edges[eid].end_node;
+                network.mark_point_dirty(graph.nodes[end_node as usize].pos);
                 graph.unite_nodes(junction_id, end_node);
                 continue;
             }
@@ -314,6 +316,7 @@ pub fn split_edge(
     network.zoning_dirty_edges.insert(new_edge_id);
     network.invalidate_zoning_near_edge(edge_id, graph);
     network.invalidate_zoning_near_edge(new_edge_id, graph);
+    network.mark_point_dirty(split_pos);
 }
 
 #[cfg(test)]

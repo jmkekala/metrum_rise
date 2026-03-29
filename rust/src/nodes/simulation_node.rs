@@ -425,6 +425,12 @@ impl SimulationNode {
         self.get_building_transforms_internal(zone_type_int, variant)
     }
 
+    /// Returns the packed transforms for building plots/foundations of a specific zone type.
+    #[func]
+    pub fn get_building_plot_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
+        self.get_building_plot_transforms_internal(zone_type_int)
+    }
+
     /// Registers metadata for a building model to aid in footprint calculation.
     #[func]
     pub fn register_building_metadata(&mut self, zone_id: u8, variant: u8, size_x: f32, size_y: f32, size_z: f32) {
@@ -800,6 +806,9 @@ impl INode3D for SimulationNode {
         }
 
         if self.time.speed_multiplier > 0.0 {
+            // Rebuild CCH if dirty before agents try to pathfind
+            self.transit_network.rebuild_pathing_if_dirty(&mut self.region_graph);
+
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
             self.agents.tick(
                 &mut self.allocator,

@@ -207,7 +207,10 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 ## Known Bugs
 
-
+| ID | Severity | Location | Description | Status |
+|----|----------|----------|-------------|--------|
+| B30 | `[BUG]` | `rebuild.rs` | **Junction Rendering Breakdown**: Splitting an edge for a building frontage very close to a junction (< 10m) creates a short segment that violates the 49% clipping cap. Results in road mesh overlapping junction centers and mesh gaps. | [DONE] |
+| B31 | `[BLOCKER]` | `cch.rs` | **CCH Pathfinding Panic**: Drawing a road (adding nodes) and then immediate pathfinding (immigration/agents) causes an index out of bounds panic in `find_path` because the CCH hierarchy is stale. | [OPEN] |
 ## Backlog
 
 ### Infrastructure

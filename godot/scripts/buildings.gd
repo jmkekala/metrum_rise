@@ -17,8 +17,12 @@ const ZONE_NAMES = {
 
 # multimeshes[zone_id][variant] = MultiMeshInstance3D
 var multimeshes = {}
+# foundation_multimeshes[zone_id] = MultiMeshInstance3D
+var foundation_multimeshes = {}
 # model_files[zone_id] = [filename1, filename2, ...]
 var model_files = {}
+
+var show_foundations = false
 
 func _ready():
 	# Load metadata to inform Rust about footprint sizes
@@ -61,6 +65,9 @@ func _ready():
 				mesh = load_building_mesh(zone_id, variant)
 			
 			setup_building_variant(zone_id, variant, mesh)
+		
+		# Setup foundations for this zone (item 53)
+		setup_foundations(zone_id)
 
 func setup_building_variant(zone_id: int, variant: int, mesh: Mesh):
 	var mmi = MultiMeshInstance3D.new()
@@ -78,6 +85,36 @@ func setup_building_variant(zone_id: int, variant: int, mesh: Mesh):
 	
 	add_child(mmi)
 	multimeshes[zone_id][variant] = mmi
+
+func setup_foundations(zone_id: int):
+	var mmi = MultiMeshInstance3D.new()
+	var mm = MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.instance_count = 0
+	
+	# Flat plot mesh
+	var mesh = BoxMesh.new()
+	mesh.size = Vector3(1.0, 0.1, 1.0) # Scaled by Rust (e.g. 30, 0.1, 30)
+	
+	var mat = StandardMaterial3D.new()
+	var base_color = Color(0.3, 0.3, 0.3) # Default gray
+	match zone_id:
+		1: base_color = Color(0.2, 0.4, 0.2, 0.5) # Residential greenish tint
+		2: base_color = Color(0.2, 0.2, 0.5, 0.5) # Commercial bluish
+		3: base_color = Color(0.4, 0.4, 0.1, 0.5) # Industrial yellowish
+		4: base_color = Color(0.1, 0.4, 0.4, 0.5) # Mixed cyanish
+	
+	mat.albedo_color = base_color
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mesh.material = mat
+	
+	mm.mesh = mesh
+	mmi.multimesh = mm
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mmi.visible = show_foundations
+	
+	add_child(mmi)
+	foundation_multimeshes[zone_id] = mmi
 
 func load_building_mesh(zone_id: int, variant: int) -> Mesh:
 	if not model_files.has(zone_id) or model_files[zone_id].size() == 0:
@@ -155,10 +192,37 @@ func _process(_delta):
 	# Poll for updates every 30 frames
 	if Engine.get_frames_drawn() % 30 == 0:
 		for zone_id in ZONE_NAMES.keys():
+			update_foundations(zone_id)
 			for variant in range(NUM_VARIANTS):
 				update_buildings(zone_id, variant)
 
+func _input(event):
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_F:
+			show_foundations = !show_foundations
+			for mmi in foundation_multimeshes.values():
+				mmi.visible = show_foundations
+			print("Building foundations: ", "VISIBLE" if show_foundations else "HIDDEN")
+
+func update_foundations(zone_id: int):
+	var buffer = simulation_node.get_building_plot_transforms(zone_id)
+	var mmi = foundation_multimeshes[zone_id]
+	var mm = mmi.multimesh
+	
+	var count = buffer.size() / 12
+	mm.instance_count = count
+	if count > 0:
+		mm.buffer = buffer
+
+func update_all_buildings():
+	for zone_id in ZONE_NAMES.keys():
+		update_foundations(zone_id)
+		for variant in range(NUM_VARIANTS):
+			update_buildings(zone_id, variant)
+
 func update_buildings(zone_id: int, variant: int):
+	if not multimeshes.has(zone_id) or not multimeshes[zone_id].has(variant):
+		return
 	var buffer = simulation_node.get_building_transforms(zone_id, variant)
 	var mmi = multimeshes[zone_id][variant]
 	var mm = mmi.multimesh

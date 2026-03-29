@@ -264,11 +264,11 @@ impl BuildingAllocator {
                     // Determine deterministic variant and its footprint size
                     let variant = (edge_idx ^ x) as u8 % 64;
                     let meta = self.get_model_metadata(z_type as u8, variant);
-                    let dw = (meta.size_x).ceil() as usize;
-                    let dh = (meta.size_z).ceil() as usize;
+                    let dw = meta.size_x.ceil().max(1.0) as usize;
+                    let dh = meta.size_z.ceil().max(1.0) as usize;
 
                     // Ensure footprint fits in zoning grid
-                    if x + dw > cells_long || dh > crate::config::ZONING_DEPTH {
+                    if x + dw > cells_long || dh > crate::config::ZONING_DEPTH as usize {
                         continue;
                     }
 
@@ -711,8 +711,8 @@ mod tests {
             allocator.buildings.push(Building {
                 center_x: i as f32,
                 center_y: 0.0,
-                width: 30,
-                depth: 30,
+                width_cells: 3,
+                depth_cells: 3,
                 zone_type: if i % 2 == 0 {
                     ZoneType::Residential
                 } else {
@@ -771,8 +771,8 @@ mod tests {
             allocator.buildings.push(Building {
                 center_x: i as f32,
                 center_y: 0.0,
-                width: 30,
-                depth: 30,
+                width_cells: 3,
+                depth_cells: 3,
                 zone_type: ZoneType::Residential,
                 facing_dir: Vector2::new(0.0, 1.0),
                 frontage_t: 0.5,
@@ -1014,8 +1014,8 @@ mod tests {
         allocator.buildings.push(Building {
             center_x: 5.0,
             center_y: 10.0,
-            width: 30,
-            depth: 30,
+            width_cells: 3,
+            depth_cells: 3,
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.05,

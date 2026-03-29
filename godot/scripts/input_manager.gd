@@ -218,8 +218,7 @@ func _refresh_after_world_load():
 	if road_tool:
 		road_tool.update_main_mesh()
 	if buildings_node:
-		for zone_id in [1, 2, 3, 4]:
-			buildings_node.update_buildings(zone_id)
+		buildings_node.update_all_buildings()
 	if agents_node:
 		agents_node.update_swarm()
 

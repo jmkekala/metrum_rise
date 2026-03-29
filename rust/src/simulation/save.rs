@@ -1610,6 +1610,7 @@ fn node_type_to_i64(value: NodeType) -> i64 {
         NodeType::Airport => 3,
         NodeType::Transfer => 4,
         NodeType::Border => 5,
+        NodeType::Frontage => 6,
     }
 }
 
@@ -1621,6 +1622,7 @@ fn node_type_from_i64(value: i64) -> SaveLoadResult<NodeType> {
         3 => Ok(NodeType::Airport),
         4 => Ok(NodeType::Transfer),
         5 => Ok(NodeType::Border),
+        6 => Ok(NodeType::Frontage),
         _ => Err(SaveLoadError::custom(format!(
             "unknown NodeType value {}",
             value
@@ -1801,8 +1803,8 @@ mod tests {
         allocator.buildings.push(Building {
             center_x: 0.0,
             center_y: 0.0,
-            width: 30,
-            depth: 30,
+            width_cells: 3,
+            depth_cells: 3,
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,

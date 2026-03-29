@@ -405,9 +405,12 @@ impl LaneSystem {
 
                     let is_same_edge = m_start.edge_idx == m_end.edge_idx;
                     let deg = graph.adjacency[node_id].len();
+                    let node_type = node_ref.node_type;
+                    
                     // For straight roads (deg=2) or dead ends (deg=1), only mark ONE direction as a visual zebra crosswalk
                     // This satisfies the "one crosswalk per node" requirement for straight roads.
-                    let skip_visual = is_same_edge && deg <= 2 && crosswalks_added >= 2;
+                    // EXCEPT if it is a building frontage node, which should have NO crosswalks.
+                    let skip_visual = (is_same_edge && deg <= 2 && crosswalks_added >= 2) || node_type == NodeType::Frontage;
 
                     let is_crosswalk = is_same_edge && num_steps == 1 && !skip_visual;
                     if is_crosswalk {
@@ -854,5 +857,68 @@ mod tests {
                  assert_eq!(unique_edges.len(), 2, "Vehicle lane on edge {} should connect to 2 other arms at T-junction", e_in);
             }
         }
+    }
+
+    #[test]
+    fn test_building_frontage_no_crosswalks() {
+        let mut graph = RegionGraph::new();
+        // n0 ---- n1 (Frontage Node) ---- n2
+        let n0 = graph.add_node(Vector3::new(-50.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Frontage);
+        let n2 = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
+
+        let edges = [(n0, n1), (n1, n2)];
+        for (s, e) in edges {
+            graph.add_edge(Edge {
+                start_node: s,
+                end_node: e,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                class: EdgeClass::Standard,
+                width: 7.0,
+                fwd_lanes: 1,
+                bkw_lanes: 1,
+                speed_limit: 50.0,
+                base_cost: 1.0,
+                physical_length: 50.0,
+                current_congestion: 0.0,
+                start_clip: 0.0,
+                end_clip: 0.0,
+                geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
+                physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
+                zoning_left: false,
+                zoning_right: false,
+                deleted: false,
+            });
+        }
+        graph.rebuild_adjacency_list();
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+
+        // Scan for crosswalks at node n1
+        let mut has_crosswalk = false;
+        
+        // Find all inbound lanes to node n1
+        for &e_idx in &graph.adjacency[n1 as usize] {
+            let edge = &graph.edges[e_idx];
+            let is_end = edge.end_node == n1;
+            
+            if let Some(lane_ids) = lanes.edge_lanes.get(&e_idx) {
+                for &l_id in lane_ids {
+                    let l = &lanes.lanes[l_id];
+                    // If this lane enters node n1
+                    if l.is_fwd == is_end {
+                        // Check its next lanes for crosswalks
+                        for &next_id in &l.next_lanes {
+                            if lanes.lanes[next_id].is_crosswalk {
+                                has_crosswalk = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(!has_crosswalk, "Building frontage node should not have pedestrian crosswalks");
     }
 }
