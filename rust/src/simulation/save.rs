@@ -9,7 +9,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::{
-    AgentSystem, TRANSIT_IDLE, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_ON_ROAD,
+    Agent, AgentSystem, TRANSIT_IDLE, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_ON_ROAD,
 };
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::grid::data_grid::DataGrid;
@@ -33,7 +33,7 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::Path;
 
-const SAVE_VERSION: i64 = 1;
+const SAVE_VERSION: i64 = 2;
 const NONE_REF: i64 = -1;
 const SCHEMA: &str = r#"
 CREATE TABLE save_meta(
@@ -144,7 +144,8 @@ CREATE TABLE buildings(
     zone_type INTEGER NOT NULL,
     occupancy INTEGER NOT NULL,
     width INTEGER NOT NULL,
-    depth INTEGER NOT NULL
+    depth INTEGER NOT NULL,
+    frontage_node INTEGER NOT NULL
 );
 CREATE TABLE agents(
     agent_id INTEGER PRIMARY KEY,
@@ -539,8 +540,9 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
     {
         let mut stmt = tx.prepare(
             "INSERT INTO buildings(
-                building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth,
+                frontage_node
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
 
         for (old_building_id, building) in view.allocator.buildings.iter().enumerate() {
@@ -554,6 +556,11 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
                 .get(&building.edge_idx)
                 .copied()
                 .ok_or_else(|| SaveLoadError::custom("building edge missing from saved graph"))?;
+            let saved_frontage_node = maps
+                .node_old_to_new
+                .get(&building.frontage_node)
+                .copied()
+                .ok_or_else(|| SaveLoadError::custom("building frontage_node missing from saved graph"))?;
 
             stmt.execute(params![
                 usize_to_i64(saved_building_id)?,
@@ -565,7 +572,8 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
                 zone_type_to_i64(building.zone_type),
                 i64::from(building.occupancy),
                 i64::from(building.width),
-                i64::from(building.depth)
+                i64::from(building.depth),
+                i64::from(saved_frontage_node)
             ])?;
         }
     }
@@ -586,7 +594,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
             "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
         )?;
 
-        for agent_id in 0..view.agents.count {
+        for agent_id in 0..view.agents.len() {
             let current_node =
                 canonical_existing_node(view.graph, view.agents.current_node[agent_id])?;
             let target_node =
@@ -730,10 +738,10 @@ pub(crate) fn load_from_sqlite(path: &Path) -> SaveLoadResult<LoadedSimulation> 
     let mut terrain = terrain;
     let mut transit_network = TransitNetwork::new();
     rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain);
-    transit_network.lane_system.rebuild(&graph);
+    transit_network.lane_system.rebuild(&mut graph);
 
     // Remap the safely-stored `lane_idx` back into the dynamic `lane_id`
-    for i in 0..agents.count {
+    for i in 0..agents.len() {
         let edge_id = agents.current_edge[i];
         let lane_idx = agents.current_lane_id[i]; // Temporarily stores `lane_idx` across load
         if edge_id != usize::MAX && lane_idx != usize::MAX {
@@ -1050,7 +1058,8 @@ fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
     let mut stmt = conn.prepare(
         "SELECT
-            building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth
+            building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth,
+            frontage_node
          FROM buildings
          ORDER BY building_id",
     )?;
@@ -1081,6 +1090,7 @@ fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAllocator> {
             zone_type: zone_type_from_i64(row.get(6)?)?,
             facing_dir: Vector2::new(0.0, 0.0),
             frontage_t: row.get(2)?,
+            frontage_node: i64_to_u32(row.get(10)?)?,
             side_offset: 0.0,
             abandoned_timer: 0,
             edge_idx: i64_to_usize(row.get(1)?)?,
@@ -1126,10 +1136,10 @@ fn load_agents(conn: &Connection, agent_sim_time: f32) -> SaveLoadResult<AgentSy
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let agent_id = i64_to_usize(row.get(0)?)?;
-        if agent_id != agents.count {
+        if agent_id != agents.len() {
             return Err(SaveLoadError::custom(format!(
                 "agent ids must be contiguous from 0; found {} after {} agents",
-                agent_id, agents.count
+                agent_id, agents.len()
             )));
         }
 
@@ -1143,7 +1153,7 @@ fn load_agents(conn: &Connection, agent_sim_time: f32) -> SaveLoadResult<AgentSy
                 current_node: i64_to_u32(row.get(5)?)?,
                 target_node: i64_to_u32(row.get(6)?)?,
                 current_edge: db_to_optional_usize(row.get(7)?)?,
-                current_lane_id: db_to_optional_usize(row.get(8)?)?,
+                current_lane_id: row.get(8)?, // B18: Read as i64 directly to support signed sidewalk indices (-100, 100)
                 lane_distance: row.get(9)?,
                 pos_x: row.get(10)?,
                 pos_y: row.get(11)?,
@@ -1269,7 +1279,7 @@ fn validate_loaded_agents(
     graph: &RegionGraph,
     allocator: &BuildingAllocator,
 ) -> SaveLoadResult<()> {
-    for i in 0..agents.count {
+    for i in 0..agents.len() {
         if (agents.current_node[i] as usize) >= graph.nodes.len()
             || (agents.target_node[i] as usize) >= graph.nodes.len()
         {
@@ -1381,7 +1391,7 @@ fn build_snapshot_maps(
         saved_nodes.insert(canonical_existing_node(graph, edge.start_node)?);
         saved_nodes.insert(canonical_existing_node(graph, edge.end_node)?);
     }
-    for agent_id in 0..agents.count {
+    for agent_id in 0..agents.len() {
         saved_nodes.insert(canonical_existing_node(
             graph,
             agents.current_node[agent_id],
@@ -1672,7 +1682,7 @@ struct LoadedAgentRecord {
     current_node: u32,
     target_node: u32,
     current_edge: usize,
-    current_lane_id: usize,
+    current_lane_id: i64, // Temporarily stores lane_idx (signed) across load
     lane_distance: f32,
     pos_x: f32,
     pos_y: f32,
@@ -1690,31 +1700,31 @@ struct LoadedAgentRecord {
 }
 
 fn push_loaded_agent(agents: &mut AgentSystem, agent: LoadedAgentRecord) {
-    agents.home_building.push(agent.home_building);
-    agents.work_building.push(agent.work_building);
-    agents.pos_x.push(agent.pos_x);
-    agents.pos_y.push(agent.pos_y);
-    agents.is_visible.push(agent.is_visible);
-    agents.activity.push(agent.activity);
-    agents.transit.push(agent.transit);
-    agents.happiness.push(agent.happiness);
-    agents.money.push(agent.money);
-    agents.journey_start_time.push(agent.journey_start_time);
-    agents.current_building.push(agent.current_building);
-    agents.target_building.push(agent.target_building);
-    agents.current_node.push(agent.current_node);
-    agents.target_node.push(agent.target_node);
-    agents.current_edge.push(agent.current_edge);
-    agents.current_lane_id.push(agent.current_lane_id);
-    agents.lane_distance.push(agent.lane_distance);
-    agents.transit_mode.push(agent.transit_mode);
-
-    agents.current_path_index.push(agent.current_path_index);
-    agents.has_car.push(agent.has_car);
-    agents.vehicle_type.push(agent.vehicle_type);
-    agents.current_path.push(agent.current_path);
-
-    agents.count += 1;
+    let a = Agent {
+        home_building: agent.home_building,
+        work_building: agent.work_building,
+        pos_x: agent.pos_x,
+        pos_y: agent.pos_y,
+        is_visible: agent.is_visible,
+        activity: agent.activity,
+        transit: agent.transit,
+        happiness: agent.happiness,
+        money: agent.money,
+        journey_start_time: agent.journey_start_time,
+        current_building: agent.current_building,
+        target_building: agent.target_building,
+        current_node: agent.current_node,
+        target_node: agent.target_node,
+        current_edge: agent.current_edge,
+        current_lane_id: agent.current_lane_id as usize,
+        lane_distance: agent.lane_distance,
+        transit_mode: agent.transit_mode,
+        current_path: agent.current_path,
+        current_path_index: agent.current_path_index,
+        has_car: agent.has_car,
+        vehicle_type: agent.vehicle_type,
+    };
+    agents.agents.push(a);
 }
 
 #[cfg(test)]
@@ -1803,6 +1813,7 @@ mod tests {
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
+            frontage_node: n1,
             side_offset: 1.0,
             abandoned_timer: 0,
             edge_idx: edge_id,
@@ -1856,7 +1867,7 @@ mod tests {
                 current_node: n1,
                 target_node: n0,
                 current_edge: usize::MAX,
-                current_lane_id: usize::MAX,
+                current_lane_id: -1,
                 lane_distance: 0.0,
                 pos_x: 5.0,
                 pos_y: 0.0,
@@ -1875,7 +1886,7 @@ mod tests {
         );
 
         let mut network = TransitNetwork::new();
-        network.lane_system.rebuild(&graph);
+        network.lane_system.rebuild(&mut graph);
 
         let path = temp_path("round_trip");
         save_to_sqlite(
@@ -1910,11 +1921,13 @@ mod tests {
         assert_eq!(loaded.graph.edges.len(), 1);
         assert_eq!(loaded.zoning.edge_grids.len(), 1);
         assert_eq!(loaded.allocator.buildings.len(), 1);
-        assert_eq!(loaded.agents.count, 2);
+        assert_eq!(loaded.agents.len(), 2);
         assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
 
         assert_eq!(loaded.agents.sim_time, agents.sim_time);
         assert!(loaded.allocator.buildings[0].center_x.is_finite());
+        // frontage_node is persisted and round-trips as the saved node id (n1 maps to 1).
+        assert_eq!(loaded.allocator.buildings[0].frontage_node, 1);
         assert!(!loaded.zoning.edge_grids[&0].left_occupied.is_empty());
     }
 }

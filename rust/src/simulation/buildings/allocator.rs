@@ -8,7 +8,8 @@
 //! **Known issues (see `docs/project.md`):**
 //! - No spawn throttle — can spawn hundreds of buildings per tick (bug B6).
 //! - Desirability is not checked before placement (bug B5).
-//! - Each placement triggers a full CCH rebuild via `split_for_frontage`.
+//! - Each `split_for_frontage` call triggers a lane rebuild and marks CCH chunks dirty;
+//!   the deferred `rebuild_pathing_if_dirty` at the end of `tick` pays that cost once.
 
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
@@ -32,6 +33,12 @@ pub struct Building {
     pub facing_dir: Vector2,
     /// T-coordinate (0.0 to 1.0) along the road edge [`edge_idx`] for this building's frontage.
     pub frontage_t: f32,
+    /// Road-graph node at this building's frontage point.
+    ///
+    /// Created by [`TransitNetwork::split_for_frontage`] at the exact arc-length position
+    /// `frontage_t` on [`edge_idx`]. This is the agent departure/arrival waypoint for precise
+    /// routing. Persisted as a column in the `buildings` SQLite table; authoritative on load.
+    pub frontage_node: u32,
     /// Signed side of the road: `+1.0` = left, `-1.0` = right (relative to edge direction).
     pub side_offset: f32,
     /// Ticks since this building lost its zoning. Non-zero values are reserved for future
@@ -147,8 +154,13 @@ impl BuildingAllocator {
                 let b_cell_y = b.cell_y;
                 let b_width = b.width;
                 let b_depth = b.depth;
+                let b_frontage_node = b.frontage_node;
+                // `b` is no longer borrowed past this point; safe to pass `self` mutably below.
 
-                // network.remove_frontage(frontage_node, zoning, self); // DELETED: Virtual Frontages
+                // Merge the two half-edges back into one. If frontage_node has degree > 2
+                // (not a pure Option-C split node), remove_frontage is a safe no-op.
+                network.remove_frontage(graph, b_frontage_node, zoning, self);
+
                 // Clear occupancy for the entire footprint
                 let w_cells = (b_width as f32 / zoning.config.zone_cell_m).round() as usize;
                 let d_cells = (b_depth as f32 / zoning.config.zone_cell_m).round() as usize;
@@ -198,7 +210,7 @@ impl BuildingAllocator {
                 continue;
             }
 
-            for side in [1, -1] {
+            'side_loop: for side in [1, -1] {
                 let cells_long = if let Some(g) = zoning.edge_grids.get(&edge_idx) {
                     g.cells_long
                 } else {
@@ -308,24 +320,22 @@ impl BuildingAllocator {
 
                         let b_width = 3.0 * zoning.config.zone_cell_m;
                         let b_depth = 3.0 * zoning.config.zone_cell_m;
-                        // Center of the 3-cell deep footprint (1.5 cells out from road edge)
+                        // Centre of the 3-cell deep footprint (1.5 cells out from road edge).
                         let depth_offset =
                             crate::config::SIDEWALK_WIDTH + (1.5 * zoning.config.zone_cell_m);
                         let center_2d =
                             world_pos_on_edge + normal * (edge_width * 0.5 + depth_offset);
 
-                        let frontage_t = (x as f32 + 1.5) * zoning.config.zone_cell_m / edge_len;
-                        // let (frontage_node, new_edge_id, split_x) = network.split_for_frontage(edge_idx, frontage_pos_3d, zoning, self); // DELETED: Virtual Frontages
+                        // Compute frontage_t on the original full edge for the split position.
+                        let frontage_t_full = (x as f32 + 1.5) * zoning.config.zone_cell_m / edge_len;
+                        let frontage_node =
+                            network.split_for_frontage(graph, edge_idx, frontage_t_full, zoning, self);
                         spawned_this_tick += 1;
 
-                        let b_edge_idx = edge_idx;
-                        let b_cell_x = x;
-                        /* // DELETED: Virtual Frontages
-                        if x >= split_x {
-                            b_edge_idx = new_edge_id;
-                            b_cell_x = x - split_x;
-                        }
-                        */
+                        // The new building is always on the first half (edge_idx) at the same cell_x.
+                        let half_edge_len = graph.edges[edge_idx].physical_length.max(0.001);
+                        let frontage_t =
+                            (x as f32 + 1.5) * zoning.config.zone_cell_m / half_edge_len;
 
                         // Center along road (1.5 cells in)
                         let center_adjustment = tangent * (1.5 * zoning.config.zone_cell_m);
@@ -339,18 +349,19 @@ impl BuildingAllocator {
                             zone_type: z_type,
                             facing_dir: -normal,
                             frontage_t,
+                            frontage_node,
                             side_offset: side as f32,
                             abandoned_timer: 0,
-                            edge_idx: b_edge_idx,
+                            edge_idx,
                             side,
-                            cell_x: b_cell_x,
+                            cell_x: x,
                             cell_y: 0,
                             occupancy: 0,
                         };
                         // Mark all 9 cells as occupied
                         for dx in 0..3 {
                             for dy in 0..3 {
-                                zoning.set_occupied(b_edge_idx, side, b_cell_x + dx, dy, true);
+                                zoning.set_occupied(edge_idx, side, x + dx, dy, true);
                             }
                         }
                         self.buildings.push(b);
@@ -363,6 +374,11 @@ impl BuildingAllocator {
                             ZoneType::Industrial => _demand.industrial -= 5.0,
                             _ => {}
                         }
+
+                        // edge_idx geometry is now modified (split_for_frontage changed it
+                        // in-place to the first half). Break both the x and side loops so
+                        // subsequent iterations do not use stale edge_len or cells_long.
+                        break 'side_loop;
                     }
                 }
             }
@@ -385,9 +401,9 @@ impl BuildingAllocator {
             .filter(|b| b.zone_type == ZoneType::Residential || b.zone_type == ZoneType::Mixed)
             .fold(0, |acc, b| acc + (6 - b.occupancy as usize));
 
-        if _agents.count < total_capacity {
+        if _agents.len() < total_capacity {
             let demand_factor = (_demand.residential / 100.0).max(0.0).min(1.0);
-            let gap = total_capacity - _agents.count;
+            let gap = total_capacity - _agents.len();
             let num_to_spawn = ((gap as f32 * 0.2 * demand_factor) as usize).max(1).min(10);
 
             // Collect all connected Border nodes as valid spawn points.
@@ -432,7 +448,7 @@ impl BuildingAllocator {
                         }
 
                         let home_bldg = &self.buildings[home_idx];
-                        let home_node = graph.edges[home_bldg.edge_idx].end_node;
+                        let home_node = home_bldg.frontage_node;
 
                         _agents.spawn_agent(
                             home_idx,
@@ -701,6 +717,7 @@ mod tests {
                 },
                 facing_dir: Vector2::new(0.0, 1.0),
                 frontage_t: 0.5,
+                frontage_node: 0,
                 side_offset: 0.0,
                 abandoned_timer: 0,
                 edge_idx: 0,
@@ -755,6 +772,7 @@ mod tests {
                 zone_type: ZoneType::Residential,
                 facing_dir: Vector2::new(0.0, 1.0),
                 frontage_t: 0.5,
+                frontage_node: 0,
                 side_offset: 0.0,
                 abandoned_timer: 0,
                 edge_idx: 0,
@@ -996,6 +1014,7 @@ mod tests {
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.05,
+            frontage_node: 0,
             side_offset: 1.0,
             abandoned_timer: 0,
             edge_idx: 0,
@@ -1089,6 +1108,7 @@ mod tests {
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.1,
+            frontage_node: 0,
             side_offset: 1.0,
             abandoned_timer: 0,
             edge_idx: edge_id,
@@ -1111,7 +1131,7 @@ mod tests {
             &map_cfg,
         );
 
-        assert_eq!(agents.count, 1, "Agent should have immigrated");
+        assert_eq!(agents.len(), 1, "Agent should have immigrated");
         assert_eq!(
             agents.home_building[0], 0,
             "Immigrant should have claimed home index 0"

@@ -66,13 +66,13 @@ impl SimulationNode {
         // 4. Batch Spawn Agents
         self.agents
             .spawn_random_agents(agent_count as usize, &self.region_graph, &self.allocator);
-        godot_print!("Benchmark city ready. Agents: {}", self.agents.count);
+        godot_print!("Benchmark city ready. Agents: {}", self.agents.len());
     }
 
     /// Returns performance statistics for the simulation.
     pub fn get_perf_stats_internal(&self) -> VarDictionary {
         let mut dict = VarDictionary::new();
-        let _ = dict.insert("agent_count", self.agents.count as i32);
+        let _ = dict.insert("agent_count", self.agents.len() as i32);
         let _ = dict.insert("cell_size", self.config.zone_cell_m);
         let _ = dict.insert("last_tick_ms", self.last_tick_duration);
         let _ = dict.insert("pathfind_calls", self.agents.pathfind_count as i32);
@@ -103,7 +103,7 @@ impl SimulationNode {
 
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let version = env!("CARGO_PKG_VERSION");
-            let agents = self.agents.count;
+            let agents = self.agents.len();
             let map_size = format!("{}x{}", self.heightmap.width, self.heightmap.height);
             let tick_ms = self.last_tick_duration;
             let fps = godot::classes::Engine::singleton().get_frames_per_second();

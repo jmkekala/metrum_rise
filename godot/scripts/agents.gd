@@ -95,10 +95,11 @@ func _ready():
 	debug_mesh_instance = MeshInstance3D.new()
 	debug_mesh = ImmediateMesh.new()
 	var debug_mat = StandardMaterial3D.new()
-	debug_mat.albedo_color = Color(0.2, 0.8, 1.0) # Bright neon cyan lines for networking
+	debug_mat.vertex_color_use_as_albedo = true
+	debug_mat.albedo_color = Color.WHITE # Use vertex colors directly
 	debug_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	debug_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	debug_mat.albedo_color.a = 0.5
+	debug_mat.albedo_color.a = 0.7
 	debug_mesh_instance.material_override = debug_mat
 	debug_mesh_instance.mesh = debug_mesh
 	add_child(debug_mesh_instance)
@@ -229,12 +230,17 @@ func update_swarm():
 			mmi.multimesh.buffer = buffer
 
 	if show_paths:
-		var paths = simulation_node.get_agent_paths_debug()
+		var data = simulation_node.get_agent_paths_debug()
 		debug_mesh.clear_surfaces()
-		if paths.size() > 0:
+		var points = data.get("points", PackedVector3Array())
+		var colors = data.get("colors", PackedColorArray())
+		
+		if points.size() > 0:
 			debug_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
-			for i in range(paths.size()):
-				debug_mesh.surface_add_vertex(paths[i])
+			for i in range(points.size()):
+				if i < colors.size():
+					debug_mesh.surface_set_color(colors[i])
+				debug_mesh.surface_add_vertex(points[i])
 			debug_mesh.surface_end()
 
 	# Update UI Demographics once per second

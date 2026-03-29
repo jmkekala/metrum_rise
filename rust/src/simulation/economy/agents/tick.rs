@@ -26,7 +26,7 @@ impl AgentSystem {
         let mut rng = rand::rngs::ThreadRng::default();
 
         // 1. Safety Scrub
-        for i in 0..self.count {
+        for i in 0..self.len() {
             if self.home_building[i] != usize::MAX
                 && self.home_building[i] >= allocator.buildings.len()
             {
@@ -56,56 +56,21 @@ impl AgentSystem {
             }
         }
 
-        macro_rules! initiate_journey {
-            ($self:expr, $i:expr) => {
-                let curr = $self.current_building[$i];
-                if curr != usize::MAX && curr < allocator.buildings.len() {
-                    let b = &allocator.buildings[curr];
-                    let edge = &graph.edges[b.edge_idx];
-                    $self.transit[$i] = TRANSIT_DEPARTING;
-                    $self.transit[$i] = TRANSIT_DEPARTING;
-                    let n_start = edge.start_node;
-                    let n_end = edge.end_node;
-                    
-                    // Pick the node that is closer to the final destination, 
-                    // but respect one-way constraints for cars.
-                    let can_go_fwd = $self.transit_mode[$i] != MODE_CAR || edge.fwd_lanes > 0;
-                    let can_go_bkw = $self.transit_mode[$i] != MODE_CAR || edge.bkw_lanes > 0;
-
-                    let target_pos = graph.nodes[$self.target_node[$i] as usize].pos;
-                    let d_start = graph.nodes[n_start as usize].pos.distance_to(target_pos);
-                    let d_end = graph.nodes[n_end as usize].pos.distance_to(target_pos);
-                    
-                    if can_go_fwd && can_go_bkw {
-                        $self.current_node[$i] = if d_start < d_end { n_start } else { n_end };
-                    } else if can_go_fwd {
-                        $self.current_node[$i] = n_end;
-                    } else {
-                        $self.current_node[$i] = n_start;
-                    }
-                    $self.is_visible[$i] = true;
-                } else {
-                    $self.transit[$i] = TRANSIT_ARRIVING;
-                }
-            };
-        }
-
         // Swarm Iteration
-        for i in 0..self.count {
+        for i in 0..self.len() {
             self.current_node[i] = graph.get_valid_node(self.current_node[i]);
             self.target_node[i] = graph.get_valid_node(self.target_node[i]);
 
             match self.transit[i] {
                 TRANSIT_IDLE => {
-                    // INSIDE BUILDING
                     if rng.gen_bool((0.05 * delta) as f64) {
                         let mut next_act = self.activity[i];
                         let mut next_bldg = usize::MAX;
 
                         if self.activity[i] == 0 {
                             if self.money[i] >= 20.0 && rng.gen_bool(0.4) {
-                                if let Some(h) = allocator
-                                    .get_random_building_by_zone(ZoneType::Commercial, &mut rng)
+                                if let Some(h) =
+                                    allocator.get_random_building_by_zone(ZoneType::Commercial, &mut rng)
                                 {
                                     next_bldg = h;
                                     next_act = 2;
@@ -124,148 +89,84 @@ impl AgentSystem {
                                     next_act = 1;
                                 }
                             }
-                        } else {
-                            if self.home_building[i] != usize::MAX {
-                                next_bldg = self.home_building[i];
-                                next_act = 0;
-                            }
+                        } else if self.home_building[i] != usize::MAX {
+                            next_bldg = self.home_building[i];
+                            next_act = 0;
                         }
 
-                        if next_bldg != usize::MAX && next_bldg < allocator.buildings.len() {
-                            self.target_building[i] = next_bldg;
-                            self.activity[i] = next_act;
-                            self.journey_start_time[i] = self.sim_time;
-                            let b = &allocator.buildings[next_bldg];
-                            let target_edge = &graph.edges[b.edge_idx];
-                            let target_node = if b.frontage_t < 0.5 {
-                                target_edge.start_node
-                            } else {
-                                target_edge.end_node
-                            };
-                            let (_final_target, mode) = self.decide_transit_mode(
+                        let curr_bldg = self.current_building[i];
+                        if next_bldg != usize::MAX
+                            && next_bldg < allocator.buildings.len()
+                            && curr_bldg != usize::MAX
+                            && curr_bldg < allocator.buildings.len()
+                        {
+                            let origin_node = allocator.buildings[curr_bldg].frontage_node;
+                            let target_node = allocator.buildings[next_bldg].frontage_node;
+                            self.current_node[i] = origin_node;
+                            self.target_node[i] = target_node;
+
+                            let (mode, path) = self.decide_transit_mode(
                                 i,
                                 target_node,
                                 graph,
                                 &transit_network.cch_graph,
                             );
-                            self.target_node[i] = target_node;
-                            self.transit_mode[i] = mode;
-                            self.current_path[i].clear();
-                            self.current_path_index[i] = 0;
-                            self.current_lane_id[i] = usize::MAX;
-                            self.lane_distance[i] = 0.0;
-                            initiate_journey!(self, i);
+
+                            if path.len() > 1 {
+                                self.target_building[i] = next_bldg;
+                                self.activity[i] = next_act;
+                                self.journey_start_time[i] = self.sim_time;
+                                self.transit_mode[i] = mode;
+                                self.current_path[i] = path;
+                                self.current_path_index[i] = 1;
+                                self.current_lane_id[i] = usize::MAX;
+                                self.lane_distance[i] = 0.0;
+                                self.is_visible[i] = true;
+                                self.transit[i] = TRANSIT_DEPARTING;
+                            } else if origin_node == target_node {
+                                // Same access node — walk directly to destination without using the road
+                                self.target_building[i] = next_bldg;
+                                self.activity[i] = next_act;
+                                self.journey_start_time[i] = self.sim_time;
+                                self.transit_mode[i] = MODE_WALK;
+                                self.current_path[i].clear();
+                                self.current_path_index[i] = 0;
+                                self.current_lane_id[i] = usize::MAX;
+                                self.lane_distance[i] = 0.0;
+                                self.is_visible[i] = true;
+                                self.transit[i] = TRANSIT_ARRIVING;
+                            }
+                            // No path found and nodes differ — stay IDLE, do not update activity or target
                         }
                     }
                 }
                 TRANSIT_DEPARTING => {
-                    let node_idx = self.current_node[i];
-                    if node_idx == u32::MAX || node_idx as usize >= graph.nodes.len() {
-                        self.transit[i] = TRANSIT_ON_ROAD;
-                        continue;
-                    }
-
                     let b_id = self.current_building[i];
                     if b_id == usize::MAX || b_id >= allocator.buildings.len() {
                         self.transit[i] = TRANSIT_ON_ROAD;
                         continue;
                     }
-
-                    if self.current_lane_id[i] == usize::MAX {
-                        let b = &allocator.buildings[b_id];
-                        let edge = &graph.edges[b.edge_idx];
-                        let is_fwd = node_idx == edge.end_node;
-                        
-                        if let Some(edge_lanes) = transit_network.lane_system.edge_lanes.get(&b.edge_idx) {
-                            let mut valid_lanes = Vec::new();
-                            for &l_id in edge_lanes {
-                                let lane = &transit_network.lane_system.lanes[l_id];
-                                if lane.is_fwd == is_fwd {
-                                    if self.transit_mode[i] == MODE_WALK {
-                                        let target_idx = b.side as i8 * 100;
-                                        if lane.lane_type == crate::simulation::network::lanes::LaneType::Foot && (lane.lane_idx == target_idx || lane.lane_idx == 0) {
-                                            valid_lanes.push(l_id);
-                                        }
-                                    } else if lane.lane_type == crate::simulation::network::lanes::LaneType::Vehicle {
-                                        valid_lanes.push(l_id);
-                                    }
-                                }
-                            }
-                            if !valid_lanes.is_empty() {
-                                // For cars, pick the outermost lane (highest absolute index) to avoid crossing traffic immediately
-                                let chosen = if self.transit_mode[i] == MODE_CAR {
-                                    valid_lanes.iter().max_by_key(|&&id| {
-                                        transit_network.lane_system.lanes[id].lane_idx.abs()
-                                    }).copied().unwrap()
-                                } else {
-                                    valid_lanes[rng.gen_range(0..valid_lanes.len())]
-                                };
-                                self.current_lane_id[i] = chosen;
-                                let lane = &transit_network.lane_system.lanes[chosen];
-                                self.lane_distance[i] = if is_fwd { b.frontage_t * lane.length } else { (1.0 - b.frontage_t) * lane.length };
-                            } else {
-                                self.transit[i] = TRANSIT_ON_ROAD;
-                                continue;
-                            }
-                        } else {
-                            self.transit[i] = TRANSIT_ON_ROAD;
-                            continue;
-                        }
+                    let frontage_node = allocator.buildings[b_id].frontage_node;
+                    if frontage_node as usize >= graph.nodes.len() {
+                        self.transit[i] = TRANSIT_IDLE;
+                        self.is_visible[i] = false;
+                        continue;
                     }
-
-                    let target_vec = {
-                        let mut out_pos = graph.nodes[node_idx as usize].pos;
-                        if self.current_lane_id[i] != usize::MAX && self.current_lane_id[i] < transit_network.lane_system.lanes.len() {
-                            let lane = &transit_network.lane_system.lanes[self.current_lane_id[i]];
-                            let dist = self.lane_distance[i];
-                            let mut curr = 0.0;
-                            for j in 0..lane.geometry.len() - 1 {
-                                let p0 = lane.geometry[j];
-                                let p1 = lane.geometry[j+1];
-                                let d = p0.distance_to(p1);
-                                if curr + d >= dist || j == lane.geometry.len() - 2 {
-                                    let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
-                                    out_pos = p0.lerp(p1, t.clamp(0.0, 1.0));
-                                    break;
-                                }
-                                curr += d;
-                            }
-                        }
-                        Vector2::new(out_pos.x, out_pos.z)
-                    };
-
+                    let node_pos = graph.nodes[frontage_node as usize].pos;
+                    let target_vec = Vector2::new(node_pos.x, node_pos.z);
                     let dir = target_vec - Vector2::new(self.pos_x[i], self.pos_y[i]);
                     let dist = dir.length();
-                    let speed = if self.transit_mode[i] == MODE_CAR {
-                        10.0
-                    } else {
-                        4.0
-                    };
+                    let speed = if self.transit_mode[i] == MODE_CAR { 10.0 } else { 4.0 };
                     let step = speed * delta;
                     if dist < step {
                         self.pos_x[i] = target_vec.x;
                         self.pos_y[i] = target_vec.y;
-                        self.transit[i] = TRANSIT_ON_ROAD;
-                        self.current_edge[i] = allocator.buildings[self.current_building[i]].edge_idx;
+                        self.current_node[i] = frontage_node;
                         self.current_building[i] = usize::MAX;
-                        
-                        // We must initialize the pathing fully so the loop traverses it 
-                        if self.transit_mode[i] == MODE_CAR && self.current_path[i].is_empty() {
-                            self.pathfind_count += 1;
-                            if let Some((_, _, path)) = transit_network.cch_graph.find_path(
-                                self.current_node[i],
-                                self.target_node[i],
-                                usize::MAX,
-                                graph,
-                                TransitFlags::CAR,
-                            ) {
-                                self.current_path[i] = path;
-                                self.current_path_index[i] = 1; // start traversing towards node 1
-                            } else {
-                                self.transit[i] = TRANSIT_IDLE;
-                            }
-                        }
-                        
+                        self.current_edge[i] = usize::MAX;
+                        self.current_lane_id[i] = usize::MAX;
+                        self.lane_distance[i] = 0.0;
+                        self.transit[i] = TRANSIT_ON_ROAD;
                     } else {
                         let mv = dir.normalized() * step;
                         self.pos_x[i] += mv.x;
@@ -314,14 +215,8 @@ impl AgentSystem {
                             }
 
                             if !path_found {
-                                // Agent is stuck or already at destination
-                                if self.home_building[i] != usize::MAX && self.home_building[i] < allocator.buildings.len() {
-                                    self.target_building[i] = self.home_building[i];
-                                    self.transit[i] = TRANSIT_ARRIVING;
-                                    self.transit_mode[i] = MODE_WALK;
-                                } else {
-                                    self.transit[i] = TRANSIT_IDLE;
-                                }
+                                self.transit[i] = TRANSIT_IDLE;
+                                self.is_visible[i] = false;
                                 break;
                             }
                         }
@@ -402,10 +297,17 @@ impl AgentSystem {
                                     } else {
                                         (1.0 - progress_ratio) * tgt_len
                                     };
-                                    if (agent_prog - (b.frontage_t * tgt_len)).abs() < 4.0 {
+                                    
+                                    // B17: Pedestrians only arrive from the correct side sidewalk
+                                    let side_matches = self.transit_mode[i] != MODE_WALK 
+                                        || lane.lane_idx == (b.side as i8) * 100
+                                        || lane.lane_idx == 0; // Dedicated footpaths use 0
+
+                                    if side_matches && (agent_prog - (b.frontage_t * tgt_len)).abs() < 4.0 {
                                         self.transit[i] = TRANSIT_ARRIVING;
                                         self.transit_mode[i] = MODE_WALK;
                                         self.current_lane_id[i] = usize::MAX;
+                                        self.current_path[i].clear(); // B17a: Clear path to destination when starting direct move to building
                                         remaining_dist = 0.0;
                                     }
                                 }
@@ -464,9 +366,16 @@ impl AgentSystem {
                                         break;
                                     }
                                 } else {
-                                    // Path complete? (Normally intercepted by ARRIVAL first)
+                                    // Agent has reached the last node in the path (target_building.frontage_node).
+                                    // Trigger ARRIVING to walk the final distance to the building door.
                                     self.current_path[i].clear();
                                     self.current_lane_id[i] = usize::MAX;
+                                    let t_bldg = self.target_building[i];
+                                    if t_bldg != usize::MAX && t_bldg < allocator.buildings.len() {
+                                        self.transit[i] = TRANSIT_ARRIVING;
+                                        self.transit_mode[i] = MODE_WALK;
+                                    }
+                                    remaining_dist = 0.0;
                                     break;
                                 }
 
@@ -565,6 +474,14 @@ impl AgentSystem {
                         self.current_building[i] = b_id;
                         self.is_visible[i] = false;
                         self.transit[i] = TRANSIT_IDLE;
+                        // Ensure activity reflects the building actually arrived at (defensive reset for B24)
+                        if b_id == self.home_building[i] {
+                            self.activity[i] = 0;
+                        } else if b_id == self.work_building[i] {
+                            self.activity[i] = 1;
+                        } else {
+                            self.activity[i] = 2;
+                        }
                         self.transit_mode[i] = MODE_WALK;
                         self.current_edge[i] = usize::MAX;
                         self.current_lane_id[i] = usize::MAX;

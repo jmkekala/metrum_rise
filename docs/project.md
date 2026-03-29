@@ -120,7 +120,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 ### Save/Load
 - `simulation/save.rs` now implements single-file SQLite save/load for the live simulation state. Save writes one `savegame.sqlite` transaction containing map config, time, terrain, water + sources, demand, pollution, noise, compact road graph + lane connections, zoning intent, buildings, and live agents.
 - Save canonicalizes only the snapshot: it serializes only live (`!deleted`) edges and remaps node, edge, and building ids into a compact saved graph without mutating the running sim. The live world continues to use soft-deleted edge slots during play.
-- Load hydrates authoritative state only, then rebuilds runtime data: adjacency, spatial indices, intersection clips, building transforms, zoning occupied/blocked caches, building indices, CCH, and desirability. Building frontage attachment (`edge_idx`, `frontage_t`, `side`, `cell_x`, `cell_y`) is authoritative in saves; world-space building transform fields are derived on load.
+- Load hydrates authoritative state only, then rebuilds runtime data: adjacency, spatial indices, intersection clips, building transforms, zoning occupied/blocked caches, building indices, CCH, and desirability. Building frontage attachment (`edge_idx`, `frontage_t`, `frontage_node`, `side`, `cell_x`, `cell_y`) is authoritative in saves; world-space building transform fields are derived on load.
 - Agents persist exact in-progress travel state for walking, driving, and junction turns. On load, saved route references are validated; if any path/building/edge reference is invalid, only the agent's travel state is cleared and the agent replans on the next tick.
 
 ### Buildings
@@ -135,11 +135,15 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - `simulation/economy/agents/` (Submodule) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
 - FSM states: `IDLE → DEPARTING → ON_ROAD → ARRIVING → IDLE` + `IMMIGRATING`.
 - Movement: polyline traversal with sub-tick `remaining_dist` budget; lane offsets from road width / lane count. Agents move at a **fixed speed** with no interaction — cars on the same edge pass through each other. No car-following model, no capacity constraint per lane. See Backlog.
-- **Virtual Frontages**: agents arrive at buildings via `(edge_id, t: f32)` T-coordinates rather than physical graph nodes. The arrival trigger is a **projected distance check along the edge tangent**, ensuring agents on wide roads or sidewalks correctly identify they have reached their destination regardless of lateral offset.
+- **Virtual Frontages (`frontage_node`)**: buildings store `(edge_idx, frontage_t: f32, frontage_node: u32)`. Each building placement calls `TransitNetwork::split_for_frontage(edge_idx, frontage_t, ...)`, which inserts a real `NodeType::Junction` at the exact arc-length position and splits the edge into two half-edges (A→F and F→B) in-place. `frontage_node = F` — the exact split node, not an endpoint approximation. `frontage_t` is stored relative to the half-edge (`≈ 1.0` for the spawning building since F is at the very end of the first half). Building removal calls `TransitNetwork::remove_frontage(frontage_node, ...)`, which merges the two half-edges back and remaps all building `cell_x`/`frontage_t` values. `frontage_node` is persisted as a column in the `buildings` SQLite table (save format version 2) and loaded directly — not recomputed on load. Agent FSM: pathfind exactly once in `TRANSIT_IDLE` (B25 fixed); `TRANSIT_DEPARTING` is a straight-line walk to `frontage_node`; on path failure agents go IDLE+invisible (B21 fixed); activity reset on arrival (B24 fixed).
 - Agent kill: swap-and-pop, O(1). Note: agent indices are not stable across ticks (swap-remove invalidates the last agent's index).
+- **Pedestrian Arrival/Departure Constraints**: Agents arriving at or departing from buildings are now restricted to the sidewalk on the building's frontage side. This eliminates "jaywalking" across asphalt or fields. If no sidewalk exists on the building's side, agents merge directly onto the road.
+- **Stuck Agent Scrub**: `AgentSystem::tick` now includes a safety pass that hides (`is_visible = false`) any agents that enter an `IDLE` state while outside of a building, effectively cleaning up "field-ghost" artifacts from failed pathfinding.
+- **Improved Visualization**: The 'P' debug overlay now displays color-coded paths: Cyan for network-based traversal and Yellow for direct-move (arrival/departure) phases.
 - **Single-threaded tick** — Rayon parallelisation is a v0.1 goal (see Backlog).
+- **`AgentSystem` SoA Migration (Item 59)**: Replaced the manual 29-parallel-vector layout with a type-safe Structure-of-Arrays (SoA) architecture using `soa_derive`. All agent fields are now encapsulated in an `Agent` struct and managed via `AgentVec`, ensuring field synchronisation and simplifying lifecycle methods (`spawn_agent`, `kill_agent`). Direct field access is maintained via `Deref`/`DerefMut`.
 - **Transit Mode Enum** — migrated `is_driving: Vec<bool>` to `transit_mode: Vec<u8>` using constants (WALK=0, CAR=1, ...). This provides the multi-modal foundation for bicycles, buses, and rail.
-- **Unit tests** (`economy/agents_test.rs`): `test_agent_fsm_lifecycle` verifies the complete daily cycle (Home → Work → Shop → Home) including FSM state transitions, money tracking, and arrival detection via virtual frontage T-coordinates.
+- **Unit tests** (`economy/agents_test.rs`): `test_agent_fsm_lifecycle` verifies the complete daily cycle (Home → Work → Shop → Home) including FSM state transitions, money tracking, and arrival detection via virtual frontage nodes.
 
 #### Agent Rules
 - **Immigration**: agents spawn exclusively at `NodeType::Border` nodes (external connections). If no border nodes exist, immigration is fully blocked. A border node that has all its incident edges deleted is skipped (connectivity check via `adjacency`). Capped at `residential_capacity × 1.1`. Multiple border nodes are supported; each immigrant spawn picks one at random.
@@ -203,22 +207,14 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 ## Known Bugs
 
-- [DONE] **B17: Environmental map spatial misalignment** — Pollution, noise, and desirability emission sources were squashed toward the center due to a 10:1 coordinate mapping discrepancy (meters vs zoning units). Coordinate mapping unified via `MapConfig::world_to_env_grid`.
-
 
 ## Backlog
 
 ### Infrastructure
 
-73. **Border node visual indicators**: render a distinct icon (e.g. a billboard or glowing pylon) at each `NodeType::Border` node using `get_border_nodes() -> PackedFloat32Array`. Tint green when connected (road live), red when all incident edges are deleted. Uses the same MultiMesh pattern as the node snap overlay. Low complexity; no Rust changes needed.
-
-59. **`AgentSystem` SoA migration to `soa_derive`**: replace the 29 manually-maintained parallel `Vec<T>` fields in `data.rs` with a `#[derive(SoA)]` schema struct (`Agent`) and a generated `AgentVec`. `spawn_agent` becomes a single `push(Agent { ... })` — the compiler enforces that all fields are initialised; `clear()` becomes one call; adding a new field no longer silently corrupts state. Also fixes B1 (`has_car` missing from `kill_agent`). Implementation: add `soa_derive = "0.3"` to `Cargo.toml`; define `Agent` with all per-agent fields; wrap `AgentVec` in `AgentSystem` via `Deref/DerefMut` so all `agents.field[i]` call sites are unchanged; replace `self.count` with `self.len()` throughout (`tick.rs`, `data.rs` methods, `render_helpers.rs`, `query.rs`, `benchmark.rs`, `allocator.rs`). `sim_time` and `pathfind_count` remain as direct fields on `AgentSystem`, not part of the generated vec.
 
 58. **Split `buildings/allocator.rs`** — 689 lines mixing two concerns. Split into `buildings/allocator/lifecycle.rs` (spawn, kill, evict, remap) and `buildings/allocator/index.rs` (zone_index, vacancy_index, claim_vacancy, release_vacancy). Low complexity, no behaviour change. Do when next working in that file.
 
-72. **Thin kerb line ribbon** — a 0.1 m-wide ribbon placed exactly at the asphalt edge (offset = `edge.width * 0.5`), rendered as a distinct colour (light grey / concrete). Uses the same clipped-ribbon loop already in the lane renderer — no new clipping logic needed. Sits on top of item 71's UV coloring to give a crisp physical boundary. It should terminate at the same clip points as the asphalt and sidewalk band so junction alignment remains exact.
-
-71. **Kerb strip via UV-based road edge coloring** — blend the outer ~1.5 m of each road ribbon from asphalt to a lighter kerb colour using the ribbon's existing UV.y channel (0 = road centre edge, 1 = outer road edge). Zero extra geometry; no junction alignment issues. Requires a shader parameter `kerb_width_uv` (fraction of road half-width that transitions to kerb colour) and a `kerb_color` uniform. Works on top of the current sidewalk/perimeter rendering. Prerequisite: agree on a shader pipeline for the road material.
 
 ### v0.1 — Economy Foundation
 

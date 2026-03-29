@@ -301,14 +301,14 @@ impl SimulationNode {
     /// Car agents are excluded — use `get_car_transforms_internal` for those.
     pub fn get_agent_transforms_internal(&self) -> PackedFloat32Array {
         use crate::simulation::economy::agents::MODE_CAR;
-        let mut buffer = Vec::with_capacity(self.agents.count * 12);
+        let mut buffer = Vec::with_capacity(self.agents.len() * 12);
 
         let w = self.heightmap.width as f32;
         let h = self.heightmap.height as f32;
         let hw = (w - 1.0) * 0.5;
         let hh = (h - 1.0) * 0.5;
 
-        for i in 0..self.agents.count {
+        for i in 0..self.agents.len() {
             if !self.agents.is_visible[i] {
                 continue;
             }
@@ -353,7 +353,7 @@ impl SimulationNode {
         let hw = (w - 1.0) * 0.5;
         let hh = (h - 1.0) * 0.5;
 
-        for i in 0..self.agents.count {
+        for i in 0..self.agents.len() {
             if !self.agents.is_visible[i] {
                 continue;
             }
@@ -456,48 +456,103 @@ impl SimulationNode {
     }
 
     /// Returns debug path geometry for active agents.
-    pub fn get_agent_paths_debug_internal(&self) -> PackedVector3Array {
-        let mut lines = Vec::new();
-        for i in 0..self.agents.count {
+    pub fn get_agent_paths_debug_internal(&self) -> VarDictionary {
+        let mut points = Vec::new();
+        let mut colors = Vec::new();
+        let mut displayed_count = 0;
+        let max_display = 2500; // Limit to avoid 1M-agent frame drop
+
+        let get_h = |pos: Vector3| -> Vector3 {
+            let w = self.heightmap.width as f32;
+            let h = self.heightmap.height as f32;
+            let hw = (w - 1.0) * 0.5;
+            let hh = (h - 1.0) * 0.5;
+            let map_x = (pos.x + hw).clamp(0.0, w - 1.0) as usize;
+            let map_z = (pos.z + hh).clamp(0.0, h - 1.0) as usize;
+            let y = self.heightmap.get_height(map_x, map_z) * 20.0 + 1.2;
+            Vector3::new(pos.x, y, pos.z)
+        };
+
+        let color_path = Color::from_rgb(0.2, 0.8, 1.0); // Cyan
+        let color_direct = Color::from_rgb(1.0, 0.9, 0.2); // Yellow/Golden
+        let _color_stuck = Color::from_rgb(1.0, 0.2, 0.2); // Red (Not used yet, but placeholder)
+
+        use crate::simulation::economy::agents::{TRANSIT_ARRIVING, TRANSIT_DEPARTING};
+
+        for i in 0..self.agents.len() {
             if self.agents.transit[i] != 0 {
-                let curr = self.agents.current_node[i];
-                let target = self.agents.target_node[i];
-
-                let get_h = |pos: Vector3| -> Vector3 {
-                    let w = self.heightmap.width as f32;
-                    let h = self.heightmap.height as f32;
-                    let hw = (w - 1.0) * 0.5;
-                    let hh = (h - 1.0) * 0.5;
-                    let map_x = (pos.x + hw).clamp(0.0, w - 1.0) as usize;
-                    let map_z = (pos.z + hh).clamp(0.0, h - 1.0) as usize;
-                    let y = self.heightmap.get_height(map_x, map_z) * 20.0 + 1.0;
-                    Vector3::new(pos.x, y, pos.z)
-                };
-
                 let current_pos = get_h(Vector3::new(
                     self.agents.pos_x[i],
                     0.0,
                     self.agents.pos_y[i],
                 ));
 
-                if let Some((_cost, _dist, path)) = self.transit_network.cch_graph.find_path(
-                    curr,
-                    target,
-                    usize::MAX,
-                    &self.region_graph,
-                    TransitFlags::CAR,
-                ) {
-                    let mut prev_pos = current_pos;
-                    for &n in &path {
-                        let np = get_h(self.region_graph.nodes[n as usize].pos);
-                        lines.push(prev_pos);
-                        lines.push(np);
-                        prev_pos = np;
+                // A. DEPARTING / ARRIVING direct lines (Yellow)
+                if self.agents.transit[i] == TRANSIT_DEPARTING {
+                    // Heading to node current_node + possibly a lane offset point
+                    let target_node = self.agents.current_node[i] as usize;
+                    if target_node < self.region_graph.nodes.len() {
+                        let target_pos = get_h(self.region_graph.nodes[target_node].pos);
+                        points.push(current_pos);
+                        points.push(target_pos);
+                        colors.push(color_direct);
+                        colors.push(color_direct);
                     }
+                } else if self.agents.transit[i] == TRANSIT_ARRIVING {
+                    let b_id = self.agents.target_building[i];
+                    if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
+                        let b = &self.allocator.buildings[b_id];
+                        let target_pos = get_h(Vector3::new(b.center_x, 0.0, b.center_y));
+                        points.push(current_pos);
+                        points.push(target_pos);
+                        colors.push(color_direct);
+                        colors.push(color_direct);
+                    }
+                }
+
+                // B. Remainder of the CCH path (Cyan)
+                if !self.agents.current_path[i].is_empty() {
+                    let path = &self.agents.current_path[i];
+                    let idx = self.agents.current_path_index[i];
+
+                    if idx < path.len() {
+                        // Segment from current position to the next node in the path
+                        let next_node_idx = path[idx] as usize;
+                        if next_node_idx < self.region_graph.nodes.len() {
+                            let next_node_pos = get_h(self.region_graph.nodes[next_node_idx].pos);
+                            points.push(current_pos);
+                            points.push(next_node_pos);
+                            colors.push(color_path);
+                            colors.push(color_path);
+
+                            // Remaining segments in the path
+                            let mut prev_pos = next_node_pos;
+                            for j in (idx + 1)..path.len() {
+                                let n_idx = path[j] as usize;
+                                if n_idx < self.region_graph.nodes.len() {
+                                    let np = get_h(self.region_graph.nodes[n_idx].pos);
+                                    points.push(prev_pos);
+                                    points.push(np);
+                                    colors.push(color_path);
+                                    colors.push(color_path);
+                                    prev_pos = np;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                displayed_count += 1;
+                if displayed_count >= max_display {
+                    break;
                 }
             }
         }
-        PackedVector3Array::from_iter(lines)
+        
+        let mut dict = VarDictionary::new();
+        dict.set("points", PackedVector3Array::from_iter(points));
+        dict.set("colors", PackedColorArray::from_iter(colors));
+        dict
     }
 
     /// Returns the 12-float transforms for building MultiMeshes.

@@ -6,5 +6,4 @@
 //! [`demand::DemandSystem`] tracks global R/C/I demand counters consumed by the building allocator.
 
 pub mod agents;
-pub mod agents_test;
 pub mod demand;

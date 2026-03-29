@@ -403,7 +403,7 @@ impl SimulationNode {
 
     /// Returns debug path geometry for active agents.
     #[func]
-    pub fn get_agent_paths_debug(&self) -> PackedVector3Array {
+    pub fn get_agent_paths_debug(&self) -> VarDictionary {
         self.get_agent_paths_debug_internal()
     }
 

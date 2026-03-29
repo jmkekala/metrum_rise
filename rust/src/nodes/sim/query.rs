@@ -552,7 +552,7 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
 
         // Calculate population
-        let pop = self.agents.count;
+        let pop = self.agents.len();
 
         let mut employed = 0;
         let mut sum_happiness = 0.0;

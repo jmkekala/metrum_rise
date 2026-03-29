@@ -74,7 +74,7 @@ impl LaneSystem {
 
     /// Completely rebuilds all physical lane geometry and connection splines for the entire graph.
     /// To be called after the road network topology and physical geometries have been updated.
-    pub fn rebuild(&mut self, graph: &RegionGraph) {
+    pub fn rebuild(&mut self, graph: &mut RegionGraph) {
         self.clear();
         
         // Maps (edge_id, is_fwd, lane_idx) -> lane_index in self.lanes
@@ -88,14 +88,7 @@ impl LaneSystem {
 
             let mut edge_lane_indices = Vec::new();
 
-            // Total lanes layout: BKW lanes are on the LHS (if RHD) or RHS (if LHD)
-            // FWD lanes are on the RHS (if RHD) or LHS (if LHD)
-            // Actually, we can reuse the logic from `tick.rs` to find offsets.
-            let total_lanes = (edge.fwd_lanes + edge.bkw_lanes) as f32;
-            let lane_w = edge.width / f32::max(1.0, total_lanes);
-            let bkw_lanes = edge.bkw_lanes as f32;
-            let fwd_lanes = edge.fwd_lanes as f32;
-            let sidewalk_offset = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH * 0.5;
+
 
             // Helper to build a lane
             let mut build_lane = |is_fwd: bool, lane_idx: i8, lane_type: LaneType, lane_offset: f32| {
@@ -236,25 +229,31 @@ impl LaneSystem {
             }
 
             let node = &graph.nodes[node_id];
-            let node_pos = node.pos;
 
             for &(in_edge_id, in_lane_idx, in_lane_id) in &inbound {
                 // Check allowed turn restrictions
-                let allowed_targets = node.lane_connections.get(&(in_edge_id, in_lane_idx));
-                let mut valid_out_lanes = Vec::new();
-
-                for &(out_edge_id, out_lane_idx, out_lane_id) in &outbound {
-                    if in_edge_id == out_edge_id {
-                        continue; // No U-turns allowed yet
-                    }
-
-                    if let Some(rules) = allowed_targets {
-                        if !rules.contains(&(out_edge_id, out_lane_idx)) {
-                            continue;
+                let mut allowed_targets = node.lane_connections.get(&(in_edge_id, in_lane_idx)).cloned();
+                
+                // If no rules exist, generate all meaningful turns (no U-turns)
+                if allowed_targets.is_none() {
+                    let mut defaults = Vec::new();
+                    for &(out_edge_id, out_lane_idx, _) in &outbound {
+                        if out_edge_id != in_edge_id {
+                            defaults.push((out_edge_id, out_lane_idx));
                         }
                     }
+                    if !defaults.is_empty() {
+                        allowed_targets = Some(defaults);
+                    }
+                }
 
-                    valid_out_lanes.push(out_lane_id);
+                let mut valid_out_lanes = Vec::new();
+                for &(out_edge_id, out_lane_idx, out_lane_id) in &outbound {
+                    if let Some(rules) = &allowed_targets {
+                        if rules.contains(&(out_edge_id, out_lane_idx)) {
+                            valid_out_lanes.push(out_lane_id);
+                        }
+                    }
                 }
 
                 for out_lane_id in valid_out_lanes {
@@ -278,7 +277,6 @@ impl LaneSystem {
 
                     let dist = p0.distance_to(p3);
                     
-                    if dist > 0.01 { (p3 - p0).normalized() } else { p2_base };
                     let curve_dist = dist * 0.35;
 
                     let p1 = p0 + p1_base * curve_dist;
@@ -370,25 +368,74 @@ impl LaneSystem {
             // Sort mouths by angle
             mouths.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap());
 
-            let mut crosswalks_added = 0;
             let num_mouths = mouths.len();
+            if num_mouths < 2 { continue; }
+
+            // Clear existing lane connections at this node before populating (to stay in sync)
+            let node_ref = &mut graph.nodes[node_id];
+            node_ref.lane_connections.clear();
+
+            let mut crosswalks_added = 0;
             for i in 0..num_mouths {
-                let m1 = &mouths[i];
-                let m2 = &mouths[(i + 1) % num_mouths];
+                let m_start = &mouths[i];
+                
+                for j in 0..num_mouths {
+                    if i == j { continue; }
+                    let m_end = &mouths[j];
 
-                let is_same_edge = m1.edge_idx == m2.edge_idx;
-                let deg = graph.adjacency[node_id].len();
-                let skip_crosswalk = is_same_edge && deg <= 2 && crosswalks_added >= 1;
+                    // Determine if CW or CCW is shorter
+                    let diff_cw = if j > i { j - i } else { j + num_mouths - i };
+                    let diff_ccw = num_mouths - diff_cw;
+                    
+                    let use_cw = diff_cw <= diff_ccw;
+                    let num_steps = if use_cw { diff_cw } else { diff_ccw };
+                    
+                    let mut steps = Vec::new();
+                    let mut current = i;
+                    for _ in 0..num_steps {
+                        let next = if use_cw { (current + 1) % num_mouths } else { (current + num_mouths - 1) % num_mouths };
+                        let p0 = *self.lanes[mouths[current].in_id].geometry.last().unwrap();
+                        let p1 = self.lanes[mouths[next].out_id].geometry[0];
+                        if steps.is_empty() {
+                            steps.push(p0);
+                        }
+                        steps.push(p1);
+                        current = next;
+                    }
 
-                if is_same_edge && !skip_crosswalk {
-                    // This is a Crosswalk (across the road arm)
-                    add_foot_connection(self, m1.in_id, m2.out_id, true);
-                    add_foot_connection(self, m2.in_id, m1.out_id, true);
-                    crosswalks_added += 1;
-                } else if !is_same_edge {
-                    // This is a Corner (continuing along the curb)
-                    add_foot_connection(self, m1.in_id, m2.out_id, false);
-                    add_foot_connection(self, m2.in_id, m1.out_id, false);
+                    let is_same_edge = m_start.edge_idx == m_end.edge_idx;
+                    let deg = graph.adjacency[node_id].len();
+                    // For straight roads (deg=2) or dead ends (deg=1), only mark ONE direction as a visual zebra crosswalk
+                    // This satisfies the "one crosswalk per node" requirement for straight roads.
+                    let skip_visual = is_same_edge && deg <= 2 && crosswalks_added >= 2;
+
+                    let is_crosswalk = is_same_edge && num_steps == 1 && !skip_visual;
+                    if is_crosswalk {
+                        crosswalks_added += 1;
+                    }
+
+                    let mut dist = 0.0;
+                    for k in 0..steps.len().saturating_sub(1) {
+                        dist += steps[k].distance_to(steps[k+1]);
+                    }
+
+                    let conn_id = self.lanes.len();
+                    self.lanes.push(Lane {
+                        edge_id: usize::MAX,
+                        is_fwd: true,
+                        lane_idx: 0,
+                        geometry: steps,
+                        length: dist,
+                        lane_type: LaneType::Foot,
+                        is_crosswalk,
+                        next_lanes: vec![m_end.out_id],
+                    });
+                    self.lanes[m_start.in_id].next_lanes.push(conn_id);
+
+                    node_ref.lane_connections
+                        .entry((m_start.edge_idx, m_start.lane_idx))
+                        .or_default()
+                        .push((m_end.edge_idx, m_end.lane_idx));
                 }
             }
         }
@@ -755,5 +802,57 @@ mod tests {
         assert_eq!(count_crosswalks_at(&lanes, &graph, n1 as usize), 1, "Straight road n1 should have 1 crosswalk");
         assert_eq!(count_crosswalks_at(&lanes, &graph, n2 as usize), 3, "T-junction n2 should have 3 crosswalks");
         assert_eq!(count_crosswalks_at(&lanes, &graph, n5 as usize), 4, "4-way junction n5 should have 4 crosswalks");
+    }
+
+    #[test]
+    fn test_vehicle_connections() {
+        let mut graph = RegionGraph::new();
+        let n_center = graph.add_node(Vector3::ZERO, NodeType::Junction);
+        let n_north = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
+        let n_east = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let n_south = graph.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
+        
+        let road_params = (1, 1); // 2-lane road
+        for &other in &[n_north, n_east, n_south] {
+            graph.add_edge(Edge {
+                start_node: n_center,
+                end_node: other,
+                primary_type: TransitType::Road,
+                allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+                class: EdgeClass::Standard,
+                width: 7.0,
+                fwd_lanes: road_params.0,
+                bkw_lanes: road_params.1,
+                speed_limit: 50.0,
+                base_cost: 1.0,
+                physical_length: 100.0,
+                current_congestion: 0.0,
+                start_clip: 0.0,
+                end_clip: 0.0,
+                geometry: vec![graph.nodes[n_center as usize].pos, graph.nodes[other as usize].pos],
+                physical_geometry: vec![graph.nodes[n_center as usize].pos, graph.nodes[other as usize].pos],
+                zoning_left: false,
+                zoning_right: false,
+                deleted: false,
+            });
+        }
+        graph.rebuild_adjacency_list();
+        
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        
+        // Node n_center should have 3 incoming vehicle lanes (one from each arm)
+        // Each incoming lane should connect to 2 outgoing lanes (the other two arms)
+        let node = &graph.nodes[n_center as usize];
+        assert!(!node.lane_connections.is_empty(), "Node should have lane connections");
+        
+        for (&(e_in, l_in), targets) in &node.lane_connections {
+            // Only check vehicle lanes (idx 0 for 1-lane roads)
+            if l_in.abs() < 10 {
+                 // Should connect to 2 other edges
+                 let unique_edges: std::collections::HashSet<usize> = targets.iter().map(|(e, _)| *e).collect();
+                 assert_eq!(unique_edges.len(), 2, "Vehicle lane on edge {} should connect to 2 other arms at T-junction", e_in);
+            }
+        }
     }
 }

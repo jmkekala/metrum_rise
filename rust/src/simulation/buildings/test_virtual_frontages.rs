@@ -17,6 +17,8 @@ mod tests {
 
     #[test]
     fn test_virtual_frontage_placement() {
+        // Option C: each building placement calls split_for_frontage, inserting a real graph
+        // node at the exact frontage position and splitting the edge into two half-edges.
         let config = MapConfig::default();
         let mut net = TransitNetwork::new();
         let mut graph = RegionGraph::new();
@@ -34,7 +36,6 @@ mod tests {
         }
         let noise = NoiseSystem::new(&config);
 
-        // Create a single 100m road with zoning enabled
         net.add_road(
             &mut graph,
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
@@ -47,57 +48,55 @@ mod tests {
             &mut allocator,
         );
 
-        // Set zoning for residential on the left side (3x3 area)
-        let edge_idx = 0;
+        // Zone cells 5-7 (frontage_t ≈ 0.65 on the original 100m edge).
         for dx in 0..3 {
             for dy in 0..3 {
-                zoning.set_cell(edge_idx, 1, 5 + dx, dy, ZoneType::Residential);
+                zoning.set_cell(0, 1, 5 + dx, dy, ZoneType::Residential);
             }
         }
-        demand.residential = 500.0; // High demand to force spawning
+        demand.residential = 500.0;
 
-        // Initial graph state
         let initial_nodes = graph.nodes.len();
         let initial_edges = graph.edges.len();
 
-        // Tick allocator to spawn building
         allocator.tick(
-            &mut demand,
-            &mut zoning,
-            &desirability,
-            &noise,
-            &mut agents,
-            &mut net,
-            &mut graph,
-            &config,
+            &mut demand, &mut zoning, &desirability, &noise,
+            &mut agents, &mut net, &mut graph, &config,
         );
 
-        // Verify building was spawned
         assert_eq!(allocator.buildings.len(), 1, "Building should have spawned");
         let b = &allocator.buildings[0];
 
-        // Verify T-coordinate calculation
+        // Option C: a real node was inserted at the frontage position.
+        assert_eq!(
+            graph.nodes.len(), initial_nodes + 1,
+            "Exactly one frontage node should have been inserted"
+        );
         assert!(
-            (b.frontage_t - 0.65).abs() < 0.01,
-            "frontage_t should be 0.65, found {}",
-            b.frontage_t
+            graph.edges.len() > initial_edges,
+            "Edge should have been split into two half-edges"
         );
 
-        // CRITICAL: Verify graph hasn't been physically split
+        // The building references the new node directly.
+        let expected_frontage_node = initial_nodes as u32;
         assert_eq!(
-            graph.nodes.len(),
-            initial_nodes,
-            "Node count should NOT change"
+            b.frontage_node, expected_frontage_node,
+            "Building should reference the new frontage node"
         );
-        assert_eq!(
-            graph.edges.len(),
-            initial_edges,
-            "Edge count should NOT change"
+
+        // After the split the building sits at the end of the first half-edge,
+        // so frontage_t within that half-edge is near 1.0.
+        assert!(
+            b.frontage_t > 0.9,
+            "frontage_t within first half-edge should be close to 1.0, got {}",
+            b.frontage_t
         );
     }
 
     #[test]
     fn test_virtual_frontage_routing_targets() {
+        // Option C: two sequential ticks each insert a frontage node. The second building lands
+        // on the second half-edge produced by the first split. Both buildings get distinct nodes.
         let config = MapConfig::default();
         let mut net = TransitNetwork::new();
         let mut graph = RegionGraph::new();
@@ -115,7 +114,6 @@ mod tests {
         }
         let noise = NoiseSystem::new(&config);
 
-        // Create a road from (0,0,0) to (100,0,0) with zoning
         net.add_road(
             &mut graph,
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
@@ -128,62 +126,49 @@ mod tests {
             &mut allocator,
         );
 
-        // Spawn building at t=0.15 (near start_node)
-        for dx in 0..3 {
+        let orig_start = graph.edges[0].start_node;
+        let orig_end = graph.edges[0].end_node;
+
+        // Fill all cells so both ticks find something to build.
+        for dx in 0..10 {
             for dy in 0..3 {
-                zoning.set_cell(0, 1, 0 + dx, dy, ZoneType::Residential);
+                zoning.set_cell(0, 1, dx, dy, ZoneType::Residential);
             }
         }
         demand.residential = 500.0;
+
+        // First tick: spawns the building closest to the start.
         allocator.tick(
-            &mut demand,
-            &mut zoning,
-            &desirability,
-            &noise,
-            &mut agents,
-            &mut net,
-            &mut graph,
-            &config,
+            &mut demand, &mut zoning, &desirability, &noise,
+            &mut agents, &mut net, &mut graph, &config,
         );
+        assert_eq!(allocator.buildings.len(), 1, "First building should have spawned");
+        let b1_fn = allocator.buildings[0].frontage_node;
 
-        // Spawn building at t=0.85 (near end_node)
-        for dx in 0..3 {
-            for dy in 0..3 {
-                zoning.set_cell(0, 1, 7 + dx, dy, ZoneType::Residential);
-            }
-        }
+        // Second tick: spawns on the second half-edge created by the first split.
         allocator.tick(
-            &mut demand,
-            &mut zoning,
-            &desirability,
-            &noise,
-            &mut agents,
-            &mut net,
-            &mut graph,
-            &config,
+            &mut demand, &mut zoning, &desirability, &noise,
+            &mut agents, &mut net, &mut graph, &config,
         );
+        assert_eq!(allocator.buildings.len(), 2, "Second building should have spawned");
+        let b2_fn = allocator.buildings[1].frontage_node;
 
-        assert_eq!(allocator.buildings.len(), 2);
+        // Each building must have its own distinct frontage node.
+        assert_ne!(b1_fn, b2_fn, "Buildings should have different frontage nodes");
 
-        let start_node = graph.edges[0].start_node;
-        let end_node = graph.edges[0].end_node;
+        // Neither frontage node is the original road endpoint — they are real mid-edge nodes.
+        assert_ne!(b1_fn, orig_start, "b1 frontage should not be orig start_node");
+        assert_ne!(b1_fn, orig_end,   "b1 frontage should not be orig end_node");
+        assert_ne!(b2_fn, orig_start, "b2 frontage should not be orig start_node");
+        assert_ne!(b2_fn, orig_end,   "b2 frontage should not be orig end_node");
 
-        // Verify routing target derivation
-        let b_near_start = &allocator.buildings[0]; // t=0.15
-        let target_near_start = if b_near_start.frontage_t < 0.5 {
-            start_node
-        } else {
-            end_node
-        };
-        assert_eq!(target_near_start, start_node);
-
-        let b_near_end = &allocator.buildings[1]; // t=0.85
-        let target_near_end = if b_near_end.frontage_t < 0.5 {
-            start_node
-        } else {
-            end_node
-        };
-        assert_eq!(target_near_end, end_node);
+        // Verify the nodes are reachable from each other via CCH.
+        let cch = &net.cch_graph;
+        assert!(
+            cch.find_path(b1_fn, b2_fn, usize::MAX, &graph,
+                crate::simulation::network::types::TransitFlags::FOOT).is_some(),
+            "frontage nodes should be connected via road network"
+        );
     }
 
     #[test]

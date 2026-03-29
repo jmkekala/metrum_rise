@@ -259,10 +259,8 @@ impl TransitNetwork {
         if fwd > 0 || bkw > 0 {
             allowed_types |= TransitFlags::CAR;
         }
-        // Pedestrians (and therefore sidewalks) only on walkways and local streets.
-        // Multi-lane roads in either direction are highways/arterials — no footpath.
-        let is_local_street = fwd <= 1 && bkw <= 1;
-        if is_walkway || is_local_street {
+        // Pedestrians (and therefore sidewalks) on walkways and all standard roads.
+        if is_walkway || fwd > 0 || bkw > 0 {
             allowed_types |= TransitFlags::FOOT;
         }
 
@@ -402,6 +400,128 @@ impl TransitNetwork {
     pub fn mark_point_dirty(&mut self, pos: Vector3) {
         let coords = RegionGraph::get_chunk_coords(pos);
         self.cch_dirty_chunks.insert(coords);
+    }
+
+    /// Inserts a real graph node at fractional position `t` (0–1 of arc length) along
+    /// `edge_idx`, creating a precise road-side waypoint for a building's frontage.
+    /// The original edge A→B is split into A→F (first half, kept at `edge_idx`) and F→B
+    /// (second half, new edge). Zoning grids, building `cell_x`/`frontage_t` values, lane
+    /// geometry, and CCH dirty chunks are all updated atomically.
+    ///
+    /// Returns the ID of the newly created [`NodeType::Junction`] at the split position.
+    /// The new building always lands on the first half (`edge_idx`); the caller can use
+    /// its original `cell_x` unchanged.
+    pub fn split_for_frontage(
+        &mut self,
+        graph: &mut RegionGraph,
+        edge_idx: usize,
+        t: f32,
+        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) -> u32 {
+        // Walk the geometry to find the segment index and 3-D position at arc-distance t.
+        let target_arc = t.clamp(0.0, 1.0) * graph.edges[edge_idx].physical_length;
+        let geo: Vec<Vector3> = graph.edges[edge_idx].geometry.clone();
+
+        let mut curr = 0.0_f32;
+        let mut seg = geo.len().saturating_sub(2);
+        let mut split_pos = *geo.last().unwrap_or(&Vector3::ZERO);
+
+        'walk: for i in 0..geo.len().saturating_sub(1) {
+            let d = geo[i].distance_to(geo[i + 1]);
+            if curr + d >= target_arc {
+                let local_t = if d > 1e-6 { (target_arc - curr) / d } else { 0.0 };
+                split_pos = geo[i].lerp(geo[i + 1], local_t);
+                seg = i;
+                break 'walk;
+            }
+            curr += d;
+        }
+
+        // Create the frontage node exactly at the split position.
+        let f = graph.add_node(split_pos, NodeType::Junction);
+
+        // Split the edge; migrates zoning grids and building cell_x/frontage_t in-place.
+        topology::split_edge(self, graph, edge_idx, seg, 0.0, f, zoning, allocator);
+        let new_edge_id = graph.edges.len() - 1;
+
+        // Recompute frontage_node for all existing buildings on either half-edge.
+        // Since every Option-C building lives near the end of its edge (frontage_t ≈ 1.0),
+        // the end_node heuristic always recovers the correct split node.
+        for b in &mut allocator.buildings {
+            if b.edge_idx == edge_idx || b.edge_idx == new_edge_id {
+                b.frontage_node = if b.frontage_t < 0.5 {
+                    graph.edges[b.edge_idx].start_node
+                } else {
+                    graph.edges[b.edge_idx].end_node
+                };
+            }
+        }
+
+        graph.rebuild_intersection_clips();
+        self.lane_system.rebuild(graph);
+        self.cch_dirty_chunks.extend(graph.get_edge_chunks(edge_idx));
+        self.cch_dirty_chunks.extend(graph.get_edge_chunks(new_edge_id));
+
+        f
+    }
+
+    /// Removes the frontage node `frontage_node` (created by [`split_for_frontage`]), merging
+    /// its two incident half-edges back into one. All dependents are updated atomically.
+    ///
+    /// If `frontage_node` does not have exactly two compatible incident edges (e.g. it is a
+    /// real intersection junction with degree > 2), the call is a no-op.
+    pub fn remove_frontage(
+        &mut self,
+        graph: &mut RegionGraph,
+        frontage_node: u32,
+        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+    ) {
+        // Measure the first-half edge (end_node == frontage_node) before the graph is mutated.
+        let cell_size = zoning.config.zone_cell_m;
+        let first_half_len = graph
+            .adjacency
+            .get(frontage_node as usize)
+            .and_then(|adj| {
+                adj.iter().find_map(|&e_idx| {
+                    let e = &graph.edges[e_idx];
+                    if !e.deleted && e.end_node == frontage_node {
+                        Some(e.physical_length)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .unwrap_or(0.0);
+        let split_x = (first_half_len / cell_size).floor() as usize;
+
+        if let Some((first_idx, second_idx)) = graph.remove_node_and_merge_edges(frontage_node) {
+            // Remap buildings from the now-deleted second half onto the merged edge.
+            let merged_len = graph.edges[first_idx].physical_length.max(0.001);
+            for b in &mut allocator.buildings {
+                if b.edge_idx == second_idx {
+                    b.edge_idx = first_idx;
+                    b.cell_x += split_x;
+                    b.frontage_t = (b.cell_x as f32 + 1.5) * cell_size / merged_len;
+                }
+            }
+
+            // Recompute frontage_node for all buildings now on the merged edge.
+            let start = graph.edges[first_idx].start_node;
+            let end = graph.edges[first_idx].end_node;
+            for b in &mut allocator.buildings {
+                if b.edge_idx == first_idx {
+                    b.frontage_node = if b.frontage_t < 0.5 { start } else { end };
+                }
+            }
+
+            zoning.merge_edge_grids(first_idx, second_idx);
+
+            graph.rebuild_intersection_clips();
+            self.lane_system.rebuild(graph);
+            self.cch_dirty_chunks.extend(graph.get_edge_chunks(first_idx));
+        }
     }
 
     fn cleanup_duplicate_edges(&mut self, graph: &mut RegionGraph) {

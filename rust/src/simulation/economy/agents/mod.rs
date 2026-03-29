@@ -3,8 +3,10 @@
 pub mod data;
 pub mod decisions;
 pub mod tick;
+#[cfg(test)]
+mod tests;
 
-pub use data::AgentSystem;
+pub use data::{Agent, AgentSystem, AgentVec};
 
 /// Agent is inside a building — not moving. Waiting for the next activity trigger.
 pub const TRANSIT_IDLE: u8 = 0;

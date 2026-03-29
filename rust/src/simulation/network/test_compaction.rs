@@ -62,6 +62,7 @@ mod tests {
                 zone_type: ZoneType::Residential,
                 facing_dir: Vector2::new(0.0, 1.0),
                 frontage_t: 0.5,
+                frontage_node: 0,
                 side_offset: 5.0,
                 abandoned_timer: 0,
                 edge_idx: 1, // Points to Road B

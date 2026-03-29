@@ -7,41 +7,42 @@ use crate::simulation::network::types::TransitFlags;
 use crate::simulation::pathing::cch::CchGraph;
 
 impl AgentSystem {
-    /// Selects the most appropriate transit mode (Walk vs Car) for the agent based on distance and car ownership.
-    /// Returns the target node and the chosen `MODE_*` constant.
+    /// Selects the most appropriate transit mode (Walk vs Car) for agent `i` based on path distance
+    /// and car ownership. Returns the chosen `MODE_*` constant and the route as a node list.
+    ///
+    /// `self.current_node[i]` must be set to the departure node before calling.
+    /// Returns an empty path if no route exists.
     pub fn decide_transit_mode(
         &mut self,
         i: usize,
         target_node: u32,
         graph: &RegionGraph,
         cch: &CchGraph,
-    ) -> (u32, u8) {
+    ) -> (u8, Vec<u32>) {
         self.pathfind_count += 1;
-        let mut pedestrian_dist = 10000.0;
-        
-        // Use standard CCH to estimate walk distance.
-        if let Some(path) = cch.find_path(self.current_node[i], target_node, usize::MAX, graph, TransitFlags::FOOT) {
-            pedestrian_dist = path.1;
-        }
+        let walk_result = cch.find_path(
+            self.current_node[i],
+            target_node,
+            usize::MAX,
+            graph,
+            TransitFlags::FOOT,
+        );
+        let pedestrian_dist = walk_result.as_ref().map_or(10000.0, |r| r.1);
 
         if pedestrian_dist > 500.0 && self.has_car[i] {
-            // Far target and has car, but ONLY drive if a driving path actually exists!
             self.pathfind_count += 1;
-            if cch
-                .find_path(
-                    self.current_node[i],
-                    target_node,
-                    usize::MAX,
-                    graph,
-                    TransitFlags::CAR,
-                )
-                .is_some()
-            {
-                return (target_node, MODE_CAR);
+            if let Some((_, _, car_path)) = cch.find_path(
+                self.current_node[i],
+                target_node,
+                usize::MAX,
+                graph,
+                TransitFlags::CAR,
+            ) {
+                return (MODE_CAR, car_path);
             }
         }
 
-        // Close target, no car, OR car path disconnected -> Walk
-        return (target_node, MODE_WALK);
+        let path = walk_result.map(|(_, _, p)| p).unwrap_or_default();
+        (MODE_WALK, path)
     }
 }
