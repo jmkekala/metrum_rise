@@ -35,11 +35,17 @@ func analyze_zone(path: String, zone_meta: Dictionary):
 				var mesh_node = find_mesh_recursive(instance)
 				if mesh_node and mesh_node is MeshInstance3D:
 					var aabb = mesh_node.mesh.get_aabb()
+					var material_names = []
+					for s in range(mesh_node.mesh.get_surface_count()):
+						var mat = mesh_node.mesh.surface_get_material(s)
+						if mat: material_names.append(mat.resource_name)
+					
 					zone_meta[file_name] = {
 						"size_x": aabb.size.x,
 						"size_y": aabb.size.y,
 						"size_z": aabb.size.z,
-						"center_offset_y": aabb.position.y # Where the bottom of the mesh is relative to pivot
+						"center_offset_y": aabb.position.y,
+						"materials": material_names
 					}
 				instance.free()
 		file_name = dir.get_next()

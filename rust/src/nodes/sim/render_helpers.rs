@@ -589,10 +589,10 @@ impl SimulationNode {
                 let world_y = self.heightmap.get_height(safe_gx, safe_gy) * 20.0;
 
                 let fd = b.facing_dir.normalized();
-                let b_zx = -fd.x;
-                let b_zz = -fd.y;
-                let b_xx = -fd.y;
-                let b_xz = fd.x;
+                let b_zx = fd.x;
+                let b_zz = fd.y;
+                let b_xx = fd.y;
+                let b_xz = -fd.x;
 
                 let sx = 10.0;
                 let sy = 10.0;
