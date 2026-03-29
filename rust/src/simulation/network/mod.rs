@@ -554,3 +554,6 @@ pub mod test_clips;
 pub mod test_compaction;
 pub mod test_topology;
 pub mod test_verify;
+pub mod test_frontage_crossing;
+pub mod test_uturn;
+pub mod test_ped_junction;

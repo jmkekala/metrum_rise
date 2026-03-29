@@ -234,11 +234,12 @@ impl LaneSystem {
                 // Check allowed turn restrictions
                 let mut allowed_targets = node.lane_connections.get(&(in_edge_id, in_lane_idx)).cloned();
                 
-                // If no rules exist, generate all meaningful turns (no U-turns)
+                // If no rules exist, generate all meaningful turns (no U-turns except at dead ends)
                 if allowed_targets.is_none() {
                     let mut defaults = Vec::new();
+                    let node_deg = graph.adjacency[node_id].len();
                     for &(out_edge_id, out_lane_idx, _) in &outbound {
-                        if out_edge_id != in_edge_id {
+                        if out_edge_id != in_edge_id || node_deg == 1 {
                             defaults.push((out_edge_id, out_lane_idx));
                         }
                     }
@@ -389,6 +390,9 @@ impl LaneSystem {
                     
                     let use_cw = diff_cw <= diff_ccw;
                     let num_steps = if use_cw { diff_cw } else { diff_ccw };
+                    if num_steps > 1 {
+                        continue;
+                    }
                     
                     let mut steps = Vec::new();
                     let mut current = i;
@@ -410,8 +414,11 @@ impl LaneSystem {
                     // For straight roads (deg=2) or dead ends (deg=1), only mark ONE direction as a visual zebra crosswalk
                     // This satisfies the "one crosswalk per node" requirement for straight roads.
                     // EXCEPT if it is a building frontage node, which should have NO crosswalks.
-                    let skip_visual = (is_same_edge && deg <= 2 && crosswalks_added >= 2) || node_type == NodeType::Frontage;
+                    if node_type == NodeType::Frontage && is_same_edge {
+                        continue;
+                    }
 
+                    let skip_visual = is_same_edge && deg <= 2 && crosswalks_added >= 2;
                     let is_crosswalk = is_same_edge && num_steps == 1 && !skip_visual;
                     if is_crosswalk {
                         crosswalks_added += 1;

@@ -162,7 +162,7 @@ impl AgentSystem {
                         self.pos_x[i] = target_vec.x;
                         self.pos_y[i] = target_vec.y;
                         self.current_node[i] = frontage_node;
-                        self.current_building[i] = usize::MAX;
+                        // self.current_building[i] = usize::MAX; // DELAYED until lane pick
                         self.current_edge[i] = usize::MAX;
                         self.current_lane_id[i] = usize::MAX;
                         self.lane_distance[i] = 0.0;
@@ -237,7 +237,17 @@ impl AgentSystem {
                                             if lane.is_fwd == is_fwd {
                                                 if self.transit_mode[i] == MODE_WALK {
                                                     if lane.lane_type == crate::simulation::network::lanes::LaneType::Foot {
-                                                        valid_lanes.push(l_id);
+                                                        // If departing from a building, prefer the same side
+                                                        let b_idx = self.current_building[i];
+                                                        if b_idx != usize::MAX && b_idx < allocator.buildings.len() {
+                                                            let b_side = allocator.buildings[b_idx].side;
+                                                            let lane_side = if lane.lane_idx > 0 { 1 } else { -1 };
+                                                            if lane_side == b_side {
+                                                                valid_lanes.push(l_id);
+                                                            }
+                                                        } else {
+                                                            valid_lanes.push(l_id);
+                                                        }
                                                     }
                                                 } else if lane.lane_type == crate::simulation::network::lanes::LaneType::Vehicle {
                                                     valid_lanes.push(l_id);
@@ -251,6 +261,7 @@ impl AgentSystem {
                                             self.lane_distance[i] = 0.0;
                                             self.current_edge[i] = best_e;
                                             self.transit[i] = TRANSIT_ON_ROAD;
+                                            self.current_building[i] = usize::MAX;
                                         } else {
                                             self.current_path[i].clear();
                                             break;
