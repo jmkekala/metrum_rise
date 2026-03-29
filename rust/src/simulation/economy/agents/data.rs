@@ -65,34 +65,15 @@ pub struct AgentSystem {
     // Spline Geometry
     /// Index into `RegionGraph::edges` for the edge the agent is currently traversing.
     pub current_edge: Vec<usize>,
-    /// Progress along `current_edge` as a signed segment index. Positive = forward, negative = reverse.
-    pub edge_progression: Vec<isize>,
-    /// Lateral lane offset index on the current edge. Positive = forward lane, negative = backward lane.
-    pub current_lane: Vec<i8>,
+    /// Currently traversed lane ID in `LaneSystem`. `usize::MAX` if off-network.
+    pub current_lane_id: Vec<usize>,
+    /// Distance (in metres) travelled along the `current_lane_id`.
+    pub lane_distance: Vec<f32>,
     /// Current transit mode. One of the `MODE_*` constants.
     pub transit_mode: Vec<u8>,
     /// Recorded pedestrian shoulder while walking: `+1` left, `-1` right, `0` centered footpath.
     pub pedestrian_side: Vec<i8>,
 
-    // Traffic Lane Manager — Bezier Intersection Pathing
-    /// Bezier control point 0 (start), world-space X/Z.
-    pub bezier_p0_x: Vec<f32>,
-    /// Bezier control point 0, world-space Z.
-    pub bezier_p0_y: Vec<f32>,
-    /// Bezier control point 1 (first handle), world-space X.
-    pub bezier_p1_x: Vec<f32>,
-    /// Bezier control point 1, world-space Z.
-    pub bezier_p1_y: Vec<f32>,
-    /// Bezier control point 2 (second handle), world-space X.
-    pub bezier_p2_x: Vec<f32>,
-    /// Bezier control point 2, world-space Z.
-    pub bezier_p2_y: Vec<f32>,
-    /// Bezier control point 3 (end), world-space X.
-    pub bezier_p3_x: Vec<f32>,
-    /// Bezier control point 3, world-space Z.
-    pub bezier_p3_y: Vec<f32>,
-    /// Normalised interpolation parameter `t ∈ [0, 1]` along the current bezier curve.
-    pub bezier_t: Vec<f32>,
     /// Sequence of node IDs forming the planned route. Each inner `Vec` is one path segment.
     pub current_path: Vec<Vec<u32>>,
     /// Sequence of edge traversals forming the planned side-aware pedestrian route.
@@ -127,19 +108,10 @@ impl AgentSystem {
             current_node: Vec::new(),
             target_node: Vec::new(),
             current_edge: Vec::new(),
-            edge_progression: Vec::new(),
-            current_lane: Vec::new(),
+            current_lane_id: Vec::new(),
+            lane_distance: Vec::new(),
             transit_mode: Vec::new(),
             pedestrian_side: Vec::new(),
-            bezier_p0_x: Vec::new(),
-            bezier_p0_y: Vec::new(),
-            bezier_p1_x: Vec::new(),
-            bezier_p1_y: Vec::new(),
-            bezier_p2_x: Vec::new(),
-            bezier_p2_y: Vec::new(),
-            bezier_p3_x: Vec::new(),
-            bezier_p3_y: Vec::new(),
-            bezier_t: Vec::new(),
             current_path: Vec::new(),
             current_ped_path: Vec::new(),
             current_path_index: Vec::new(),
@@ -178,19 +150,10 @@ impl AgentSystem {
         self.current_node.push(highway_node);
         self.target_node.push(home_node);
         self.current_edge.push(usize::MAX);
-        self.edge_progression.push(0);
-        self.current_lane.push(0);
+        self.current_lane_id.push(usize::MAX);
+        self.lane_distance.push(0.0);
         self.transit_mode.push(MODE_CAR); // Immigrants always arrive in cars!
         self.pedestrian_side.push(0);
-        self.bezier_p0_x.push(0.0);
-        self.bezier_p0_y.push(0.0);
-        self.bezier_p1_x.push(0.0);
-        self.bezier_p1_y.push(0.0);
-        self.bezier_p2_x.push(0.0);
-        self.bezier_p2_y.push(0.0);
-        self.bezier_p3_x.push(0.0);
-        self.bezier_p3_y.push(0.0);
-        self.bezier_t.push(0.0);
         self.current_path.push(Vec::new());
         self.current_ped_path.push(Vec::new());
         self.current_path_index.push(0);
@@ -258,19 +221,10 @@ impl AgentSystem {
         self.current_node.clear();
         self.target_node.clear();
         self.current_edge.clear();
-        self.edge_progression.clear();
-        self.current_lane.clear();
+        self.current_lane_id.clear();
+        self.lane_distance.clear();
         self.transit_mode.clear();
         self.pedestrian_side.clear();
-        self.bezier_p0_x.clear();
-        self.bezier_p0_y.clear();
-        self.bezier_p1_x.clear();
-        self.bezier_p1_y.clear();
-        self.bezier_p2_x.clear();
-        self.bezier_p2_y.clear();
-        self.bezier_p3_x.clear();
-        self.bezier_p3_y.clear();
-        self.bezier_t.clear();
         self.current_path.clear();
         self.current_ped_path.clear();
         self.current_path_index.clear();
@@ -335,19 +289,10 @@ impl AgentSystem {
         self.current_node.swap(index, last_idx);
         self.target_node.swap(index, last_idx);
         self.current_edge.swap(index, last_idx);
-        self.edge_progression.swap(index, last_idx);
-        self.current_lane.swap(index, last_idx);
+        self.current_lane_id.swap(index, last_idx);
+        self.lane_distance.swap(index, last_idx);
         self.transit_mode.swap(index, last_idx);
         self.pedestrian_side.swap(index, last_idx);
-        self.bezier_p0_x.swap(index, last_idx);
-        self.bezier_p0_y.swap(index, last_idx);
-        self.bezier_p1_x.swap(index, last_idx);
-        self.bezier_p1_y.swap(index, last_idx);
-        self.bezier_p2_x.swap(index, last_idx);
-        self.bezier_p2_y.swap(index, last_idx);
-        self.bezier_p3_x.swap(index, last_idx);
-        self.bezier_p3_y.swap(index, last_idx);
-        self.bezier_t.swap(index, last_idx);
         self.current_path.swap(index, last_idx);
         self.current_ped_path.swap(index, last_idx);
         self.current_path_index.swap(index, last_idx);
@@ -369,19 +314,10 @@ impl AgentSystem {
         self.current_node.pop();
         self.target_node.pop();
         self.current_edge.pop();
-        self.edge_progression.pop();
-        self.current_lane.pop();
+        self.current_lane_id.pop();
+        self.lane_distance.pop();
         self.transit_mode.pop();
         self.pedestrian_side.pop();
-        self.bezier_p0_x.pop();
-        self.bezier_p0_y.pop();
-        self.bezier_p1_x.pop();
-        self.bezier_p1_y.pop();
-        self.bezier_p2_x.pop();
-        self.bezier_p2_y.pop();
-        self.bezier_p3_x.pop();
-        self.bezier_p3_y.pop();
-        self.bezier_t.pop();
         self.current_path.pop();
         self.current_ped_path.pop();
         self.current_path_index.pop();

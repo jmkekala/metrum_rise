@@ -307,11 +307,15 @@ impl RegionGraph {
                     total_length += (p1 - p0).length();
                 }
 
-                let num_segments = f32::max(1.0, f32::ceil(total_length / 2.0)) as usize;
+                let safe_start = edge.start_clip.min(total_length * 0.49);
+                let safe_end = edge.end_clip.min(total_length * 0.49);
+                let clipped_length = f32::max(0.01, total_length - safe_start - safe_end);
+
+                let num_segments = f32::max(1.0, f32::ceil(clipped_length / 2.0)) as usize;
                 let mut resampled = Vec::new();
 
                 for i in 0..=num_segments {
-                    let dist = (i as f32 / num_segments as f32) * total_length;
+                    let dist = safe_start + (i as f32 / num_segments as f32) * clipped_length;
                     let mut curr = 0.0;
                     let mut found = false;
                     for j in 0..count - 1 {
@@ -330,15 +334,14 @@ impl RegionGraph {
                         resampled.push(edge.geometry[count - 1]);
                     }
                 }
-                if !resampled.is_empty() {
-                    let start_node_y = self.nodes[edge.start_node as usize].pos.y;
-                    let end_node_y = self.nodes[edge.end_node as usize].pos.y;
-                    resampled[0].y = start_node_y;
-                    let last_idx = resampled.len() - 1;
-                    resampled[last_idx].y = end_node_y;
+                if !resampled.is_empty() && edge.geometry.len() >= 2 {
+                    // Start/End node heights might be extreme if the junction is sloped,
+                    // but we clipped the road, so we don't snap the Y coordinate to the node's exact Y 
+                    // anymore, because the clipped road end is physically distant from the node centroid.
+                    // Instead we just keep the interpolated Y from the terrain.
                 }
                 edge.physical_geometry = resampled;
-                edge.physical_length = total_length;
+                edge.physical_length = clipped_length;
             } else {
                 edge.physical_geometry = edge.geometry.clone();
                 edge.physical_length = 0.0;

@@ -293,10 +293,17 @@ pub fn split_edge(
     zoning.split_edge_grid(edge_id, new_edge_id, split_x);
 
     // 2. Migrate Buildings
+    let new_len_first = graph.edges[edge_id].physical_length;
+    let new_len_second = graph.edges[new_edge_id].physical_length;
     for b in &mut allocator.buildings {
-        if b.edge_idx == edge_id && b.cell_x >= split_x {
-            b.edge_idx = new_edge_id;
-            b.cell_x -= split_x;
+        if b.edge_idx == edge_id {
+            if b.cell_x >= split_x {
+                b.edge_idx = new_edge_id;
+                b.cell_x -= split_x;
+                b.frontage_t = (b.cell_x as f32 + 1.5) * cell_size / new_len_second.max(0.001);
+            } else {
+                b.frontage_t = (b.cell_x as f32 + 1.5) * cell_size / new_len_first.max(0.001);
+            }
         }
     }
 
@@ -348,6 +355,69 @@ mod tests {
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
+        );
+    }
+    #[test]
+    fn test_split_edge_recalculates_building_frontage() {
+        let mut net = TransitNetwork::new();
+        let mut graph = crate::simulation::network::graph::RegionGraph::new();
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
+
+        net.add_road(
+            &mut graph,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)].into(),
+            1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard,
+            &mut zoning, &mut allocator,
+        );
+        let edge_id = graph.edges.len() - 1;
+
+        // Force a mock building at cell_x = 8, which is at 80m.
+        allocator.buildings.push(crate::simulation::buildings::allocator::Building {
+            center_x: 80.0,
+            center_y: 10.0,
+            width: 30,
+            depth: 30,
+            zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
+            facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
+            frontage_t: 0.85, // Pre-split frontage_t
+            side_offset: 1.0,
+            abandoned_timer: 0,
+            edge_idx: edge_id,
+            side: 1,
+            cell_x: 8,
+            cell_y: 0,
+            occupancy: 0,
+        });
+
+        // Split the road exactly at 50m (cell 5).
+        let junction_id = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
+        split_edge(
+            &mut net,
+            &mut graph,
+            edge_id,
+            0,
+            0.5, // Used to interpolate inside split_edge (dummy)
+            junction_id,
+            &mut zoning,
+            &mut allocator,
+        );
+
+        let b = &allocator.buildings[0];
+        // The edge should have split. The building was at cell 8.
+        // It migrated to the new edge, so its cell_x should be 8 - 5 = 3.
+        assert_eq!(b.cell_x, 3);
+        assert_ne!(b.edge_idx, edge_id);
+
+        // original length = 100m. cell = 10m.
+        // New edge length = 50m.
+        // frontage_t should be updated to a percentage along the new 50m edge.
+        // formula: (3 + 1.5) * 10 / 50 = 45 / 50 = 0.90!
+        assert!(
+            (b.frontage_t - 0.90).abs() < 0.01,
+            "Expected 0.90, got {}",
+            b.frontage_t
         );
     }
 }

@@ -245,20 +245,30 @@ mod tests {
         agents.current_edge[agent_idx] = 0;
         agents.current_node[agent_idx] = graph.edges[0].start_node;
         agents.transit[agent_idx] = TRANSIT_ON_ROAD;
-        agents.transit_mode[agent_idx] = MODE_CAR;
-        agents.current_lane[agent_idx] = 1; // Outer fwd lane
+        agents.current_lane_id[agent_idx] = 1; // Outer fwd lane
+        agents.current_path[agent_idx] = vec![graph.edges[0].start_node, graph.edges[0].end_node];
+        agents.current_path_index[agent_idx] = 1;
+        agents.target_node[agent_idx] = graph.edges[0].end_node;
 
         // Road width 14m, lane width 3.5m. Lane 1 center is 5.25m from centerline.
-        agents.pos_x[agent_idx] = 0.0;
-        agents.pos_y[agent_idx] = 5.25;
+        let physical_len = graph.edges[0].physical_length;
+        let frontage_dist = b.frontage_t * physical_len;
 
-        let frontage_x = b.frontage_t * 100.0; // t * length
+        // Move agent exactly behind the frontage so a single tick (0.32m) triggers arrival
+        agents.lane_distance[agent_idx] = frontage_dist - 0.2;
 
-        // Move agent near the frontage (dist_along < 2m, but Euclidean distance > 5m)
-        agents.pos_x[agent_idx] = frontage_x - 1.0;
+        net.lane_system.rebuild(&mut graph);
+        net.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);
+        agents.tick(&mut allocator, &net, &mut graph, 0.016);
 
-        let cch = crate::simulation::pathing::cch::CchGraph::build(&graph);
-        agents.tick(&mut allocator, &cch, &mut graph, 0.016);
+        println!(
+            "physical_len={}, lane_dist={}, expected_target={}, is_fwd={}, lane_len={}",
+            physical_len,
+            agents.lane_distance[agent_idx],
+            frontage_dist,
+            net.lane_system.lanes[3].is_fwd,
+            net.lane_system.lanes[3].length
+        );
 
         assert_eq!(
             agents.transit[agent_idx], TRANSIT_ARRIVING,

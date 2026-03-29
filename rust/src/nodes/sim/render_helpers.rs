@@ -322,21 +322,7 @@ impl SimulationNode {
             let map_x = (world_x + hw).clamp(0.0, w - 1.0) as usize;
             let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
             let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 1.0;
-            let world_y = {
-                let eidx = self.agents.current_edge[i];
-                if eidx != usize::MAX && eidx < self.region_graph.edges.len() {
-                    let e = &self.region_graph.edges[eidx];
-                    let prog = (self.agents.edge_progression[i].max(0) as usize)
-                        .min(e.physical_geometry.len().saturating_sub(1));
-                    if !e.physical_geometry.is_empty() {
-                        e.physical_geometry[prog].y + 1.0
-                    } else {
-                        terrain_y
-                    }
-                } else {
-                    terrain_y
-                }
-            };
+            let world_y = terrain_y;
 
             buffer.push(1.0_f32);
             buffer.push(0.0_f32);
@@ -384,105 +370,67 @@ impl SimulationNode {
             let world_x = self.agents.pos_x[i];
             let world_z = self.agents.pos_y[i];
 
-            let map_x = (world_x + hw).clamp(0.0, w - 1.0) as usize;
-            let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
-            let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 0.02;
-            let world_y = {
-                let eidx = self.agents.current_edge[i];
-                if eidx != usize::MAX && eidx < self.region_graph.edges.len() {
-                    let e = &self.region_graph.edges[eidx];
-                    let prog = (self.agents.edge_progression[i].max(0) as usize)
-                        .min(e.physical_geometry.len().saturating_sub(1));
-                    if !e.physical_geometry.is_empty() {
-                        e.physical_geometry[prog].y + 0.02
-                    } else {
-                        terrain_y
-                    }
-                } else {
-                    terrain_y
-                }
-            };
-
             let mut basis_x = Vector3::RIGHT;
             let mut basis_y = Vector3::UP;
             let mut basis_z = Vector3::BACK;
 
-            use crate::simulation::economy::agents::{
-                TRANSIT_ARRIVING, TRANSIT_DEPARTING, TRANSIT_INTERSECTION,
-            };
-            let transit = self.agents.transit[i];
-            let edge_idx = self.agents.current_edge[i];
+            let map_x = (world_x + hw).clamp(0.0, w - 1.0) as usize;
+            let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
+            let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 0.02;
+            let mut world_y = terrain_y;
 
-            if transit == TRANSIT_INTERSECTION {
-                // Smooth interpolation through junction
-                let p0 = Vector2::new(self.agents.bezier_p0_x[i], self.agents.bezier_p0_y[i]);
-                let p1 = Vector2::new(self.agents.bezier_p1_x[i], self.agents.bezier_p1_y[i]);
-                let p2 = Vector2::new(self.agents.bezier_p2_x[i], self.agents.bezier_p2_y[i]);
-                let p3 = Vector2::new(self.agents.bezier_p3_x[i], self.agents.bezier_p3_y[i]);
+            let current_lane = self.agents.current_lane_id[i];
+            if current_lane != usize::MAX && current_lane < self.transit_network.lane_system.lanes.len() {
+                let l = &self.transit_network.lane_system.lanes[current_lane];
+                let dist = self.agents.lane_distance[i];
+                if l.geometry.len() >= 2 {
+                    let mut curr = 0.0;
+                    for j in 0..l.geometry.len() - 1 {
+                        let p0 = l.geometry[j];
+                        let p1 = l.geometry[j+1];
+                        let d = p0.distance_to(p1);
+                        if curr + d >= dist || j == l.geometry.len() - 2 {
+                            let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
+                            world_y = p0.y + (p1.y - p0.y) * t.clamp(0.0, 1.0) + 0.02;
 
-                let t = self.agents.bezier_t[i];
-                // Derivative of cubic bezier: 3(1-t)^2(P1-P0) + 6(1-t)t(P2-P1) + 3t^2(P3-P2)
-                let deriv = (p1 - p0) * 3.0 * (1.0 - t).powi(2)
-                    + (p2 - p1) * 6.0 * (1.0 - t) * t
-                    + (p3 - p2) * 3.0 * t.powi(2);
-
-                if deriv.length_squared() > 1e-6 {
-                    let fwd = -Vector3::new(deriv.x, 0.0, deriv.y).normalized();
-                    basis_z = -fwd;
-                    basis_x = Vector3::UP.cross(basis_z).normalized();
-                    basis_y = basis_z.cross(basis_x).normalized();
-                }
-            } else if transit == TRANSIT_ARRIVING
-                && edge_idx != usize::MAX
-                && edge_idx < self.region_graph.edges.len()
-            {
-                // Car is peeling off the road toward a building: face perpendicular to the road edge
-                let edge = &self.region_graph.edges[edge_idx];
-                let prog = (self.agents.edge_progression[i].max(0) as usize)
-                    .min(edge.physical_geometry.len().saturating_sub(2));
-                if edge.physical_geometry.len() >= 2 {
-                    let p1 = edge.physical_geometry[prog];
-                    let p2 = edge.physical_geometry[prog + 1];
-                    let tangent = (p2 - p1).normalized();
-                    let perp = Vector3::new(-tangent.z, 0.0, tangent.x);
-                    let to_agent = Vector3::new(world_x - p1.x, 0.0, world_z - p1.z);
-                    let side = if to_agent.dot(perp) >= 0.0 {
-                        1.0_f32
-                    } else {
-                        -1.0_f32
-                    };
-                    let facing = perp * side;
-                    basis_z = -facing;
-                    basis_x = Vector3::UP.cross(basis_z).normalized();
-                    basis_y = basis_z.cross(basis_x).normalized();
-                }
-            } else if transit == TRANSIT_DEPARTING {
-                // Car is leaving a building toward the road: face toward the target node.
-                let node_idx = self.agents.current_node[i] as usize;
-                if node_idx < self.region_graph.nodes.len() {
-                    let npos = self.region_graph.nodes[node_idx].pos;
-                    let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
-                    if dir.length_squared() > 1e-6 {
-                        basis_z = -dir.normalized();
-                        basis_x = Vector3::UP.cross(basis_z).normalized();
-                        basis_y = basis_z.cross(basis_x).normalized();
+                            let fwd = (p1 - p0).normalized();
+                            if fwd.length_squared() > 1e-6 {
+                                basis_z = -fwd;
+                                basis_x = Vector3::UP.cross(basis_z).normalized();
+                                basis_y = basis_z.cross(basis_x).normalized();
+                            }
+                            break;
+                        }
+                        curr += d;
                     }
+                } else if !l.geometry.is_empty() {
+                    world_y = l.geometry[0].y + 0.02;
                 }
-            } else if edge_idx != usize::MAX && edge_idx < self.region_graph.edges.len() {
-                // Normal on-road movement: align with road tangent.
-                let edge = &self.region_graph.edges[edge_idx];
-                let prog = self.agents.edge_progression[i] as usize;
-                if edge.physical_geometry.len() >= 2 {
-                    let p1_idx = prog.min(edge.physical_geometry.len() - 2);
-                    let p1 = edge.physical_geometry[p1_idx];
-                    let p2 = edge.physical_geometry[p1_idx + 1];
-                    let mut tangent = (p2 - p1).normalized();
-                    if self.agents.current_lane[i] < 0 {
-                        tangent = -tangent;
+            } else {
+                use crate::simulation::economy::agents::{TRANSIT_ARRIVING, TRANSIT_DEPARTING};
+                let transit = self.agents.transit[i];
+                if transit == TRANSIT_DEPARTING {
+                    let node_idx = self.agents.current_node[i] as usize;
+                    if node_idx < self.region_graph.nodes.len() {
+                        let npos = self.region_graph.nodes[node_idx].pos;
+                        let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
+                        if dir.length_squared() > 1e-6 {
+                            basis_z = -dir.normalized();
+                            basis_x = Vector3::UP.cross(basis_z).normalized();
+                            basis_y = basis_z.cross(basis_x).normalized();
+                        }
                     }
-                    basis_z = -tangent;
-                    basis_x = Vector3::UP.cross(basis_z).normalized();
-                    basis_y = basis_z.cross(basis_x).normalized();
+                } else if transit == TRANSIT_ARRIVING {
+                    let b_id = self.agents.target_building[i];
+                    if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
+                        let b = &self.allocator.buildings[b_id];
+                        let dir = Vector3::new(b.center_x - world_x, 0.0, b.center_y - world_z);
+                        if dir.length_squared() > 1e-6 {
+                            basis_z = -dir.normalized();
+                            basis_x = Vector3::UP.cross(basis_z).normalized();
+                            basis_y = basis_z.cross(basis_x).normalized();
+                        }
+                    }
                 }
             }
 

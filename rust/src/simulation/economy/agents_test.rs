@@ -7,8 +7,9 @@ mod tests {
     use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+    use crate::simulation::network::TransitNetwork;
     use crate::simulation::pathing::cch::CchGraph;
-    use godot::prelude::Vector3;
+    use godot::prelude::{Vector2, Vector3};
 
     #[test]
     fn test_car_avoids_walkway() {
@@ -241,7 +242,9 @@ mod tests {
             deleted: false,
         });
 
-        let cch = CchGraph::build(&g);
+        let mut network = TransitNetwork::new();
+        network.lane_system.rebuild(&mut g); // rebuild before CCH
+        network.cch_graph = CchGraph::build(&g);
         let config = MapConfig::default();
         let mut allocator = BuildingAllocator::new();
         let mut zoning = ZoningSystem::new(&config);
@@ -318,7 +321,7 @@ mod tests {
 
         // 3. Tick Simulation
         for _ in 0..1000 {
-            agents.tick(&mut allocator, &cch, &mut g, 1.0);
+            agents.tick(&mut allocator, &network, &mut g, 1.0);
 
             for i in 0..agents.count {
                 if agents.activity[i] != 0 || agents.transit[i] != 0 {
@@ -357,5 +360,72 @@ mod tests {
         assert_eq!(agents.count, 2);
         assert_eq!(agents.vehicle_type[0], type0);
         assert_eq!(agents.vehicle_type[1], type2);
+    }
+
+    #[test]
+    fn test_border_spawn_movement() {
+        use crate::simulation::network::types::{EdgeClass, TransitType};
+        
+        let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+        let config = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&config);
+        let mut allocator = BuildingAllocator::new();
+
+        // Node 0 is the city center. Node 1 is the border node.
+        let n0 = graph.add_node(godot::prelude::Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(godot::prelude::Vector3::new(100.0, 0.0, 0.0), NodeType::Border);
+        
+        // Edge goes from n0 to n1 (City to Border). 
+        // Forward lane goes OUT of city. Backward lane comes INTO city.
+        network.add_road(
+            &mut graph,
+            vec![godot::prelude::Vector3::new(0.0, 0.0, 0.0), godot::prelude::Vector3::new(100.0, 0.0, 0.0)],
+            1, // fwd lanes (going to border)
+            1, // bkw lanes (coming from border)
+            false,
+            false,
+            EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+        
+        // Make sure CCH is ready
+        network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);
+
+        let mut agents = AgentSystem::new();
+        
+        // Add a house at n0 so the agent has a destination
+        allocator.buildings.push(crate::simulation::buildings::allocator::Building {
+            center_x: 0.0,
+            center_y: 0.0,
+            width: 10,
+            depth: 10,
+            zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
+            facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
+            frontage_t: 0.1,
+            side_offset: 5.0,
+            abandoned_timer: 0,
+            edge_idx: 0,
+            side: 1,
+            cell_x: 0,
+            cell_y: 0,
+            occupancy: 0,
+        });
+
+        // Spawn agent at the border
+        let agent_idx = agents.spawn_agent(
+            0, // home bldg index
+            n0, // target node (city)
+            0.0, 0.0,
+            n1, // highway node (start)
+            100.0, 0.0 // Start position
+        );
+
+        // Tick to move
+        agents.tick(&mut allocator, &network, &mut graph, 1.0); // 1 tick
+        
+        println!("Pos X after 1 tick: {}", agents.pos_x[agent_idx]);
+        assert!(agents.pos_x[agent_idx] < 100.0, "Agent should have moved towards city");
     }
 }

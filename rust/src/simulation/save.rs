@@ -155,8 +155,8 @@ CREATE TABLE agents(
     current_node INTEGER NOT NULL,
     target_node INTEGER NOT NULL,
     current_edge INTEGER NOT NULL,
-    edge_progression INTEGER NOT NULL,
-    current_lane INTEGER NOT NULL,
+    current_lane_id INTEGER NOT NULL,
+    lane_distance REAL NOT NULL,
     pos_x REAL NOT NULL,
     pos_y REAL NOT NULL,
     is_visible INTEGER NOT NULL,
@@ -169,15 +169,6 @@ CREATE TABLE agents(
     journey_start_time REAL NOT NULL,
     has_car INTEGER NOT NULL,
     vehicle_type INTEGER NOT NULL,
-    bezier_p0_x REAL NOT NULL,
-    bezier_p0_y REAL NOT NULL,
-    bezier_p1_x REAL NOT NULL,
-    bezier_p1_y REAL NOT NULL,
-    bezier_p2_x REAL NOT NULL,
-    bezier_p2_y REAL NOT NULL,
-    bezier_p3_x REAL NOT NULL,
-    bezier_p3_y REAL NOT NULL,
-    bezier_t REAL NOT NULL,
     current_path_index INTEGER NOT NULL
 );
 CREATE TABLE agent_path_nodes(
@@ -220,6 +211,8 @@ pub(crate) struct SaveGameView<'a> {
     pub allocator: &'a BuildingAllocator,
     /// Agent system.
     pub agents: &'a AgentSystem,
+    /// Transit network for lane mapping.
+    pub network: &'a TransitNetwork,
 }
 
 /// Fully hydrated simulation state returned by SQLite load.
@@ -581,13 +574,12 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
         let mut agent_stmt = tx.prepare(
             "INSERT INTO agents(
                 agent_id, home_building, work_building, current_building, target_building, current_node,
-                target_node, current_edge, edge_progression, current_lane, pos_x, pos_y, is_visible,
+                target_node, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible,
                 activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time,
-                has_car, vehicle_type, bezier_p0_x, bezier_p0_y, bezier_p1_x, bezier_p1_y,
-                bezier_p2_x, bezier_p2_y, bezier_p3_x, bezier_p3_y, bezier_t, current_path_index
+                has_car, vehicle_type, current_path_index
              ) VALUES (
                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
-                ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32
+                ?20, ?21, ?22, ?23
              )",
         )?;
         let mut car_path_stmt = tx.prepare(
@@ -623,8 +615,13 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
                 i64::from(saved_current_node),
                 i64::from(saved_target_node),
                 optional_edge_to_db(view.agents.current_edge[agent_id], &maps)?,
-                isize_to_i64(view.agents.edge_progression[agent_id])?,
-                i64::from(view.agents.current_lane[agent_id]),
+                if view.agents.current_lane_id[agent_id] != usize::MAX {
+                    let lane_idx = view.network.lane_system.lanes[view.agents.current_lane_id[agent_id]].lane_idx;
+                    Some(lane_idx as i64)
+                } else {
+                    Some(-1)
+                },
+                view.agents.lane_distance[agent_id],
                 view.agents.pos_x[agent_id],
                 view.agents.pos_y[agent_id],
                 view.agents.is_visible[agent_id],
@@ -637,15 +634,6 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
                 view.agents.journey_start_time[agent_id],
                 view.agents.has_car[agent_id],
                 i64::from(view.agents.vehicle_type[agent_id]),
-                view.agents.bezier_p0_x[agent_id],
-                view.agents.bezier_p0_y[agent_id],
-                view.agents.bezier_p1_x[agent_id],
-                view.agents.bezier_p1_y[agent_id],
-                view.agents.bezier_p2_x[agent_id],
-                view.agents.bezier_p2_y[agent_id],
-                view.agents.bezier_p3_x[agent_id],
-                view.agents.bezier_p3_y[agent_id],
-                view.agents.bezier_t[agent_id],
                 usize_to_i64(view.agents.current_path_index[agent_id])?
             ])?;
 
@@ -762,6 +750,16 @@ pub(crate) fn load_from_sqlite(path: &Path) -> SaveLoadResult<LoadedSimulation> 
     let mut terrain = terrain;
     let mut transit_network = TransitNetwork::new();
     rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain);
+    transit_network.lane_system.rebuild(&graph);
+
+    // Remap the safely-stored `lane_idx` back into the dynamic `lane_id`
+    for i in 0..agents.count {
+        let edge_id = agents.current_edge[i];
+        let lane_idx = agents.current_lane_id[i]; // Temporarily stores `lane_idx` across load
+        if edge_id != usize::MAX && lane_idx != usize::MAX {
+            agents.current_lane_id[i] = transit_network.lane_system.get_lane_id(edge_id, lane_idx).unwrap_or(usize::MAX);
+        }
+    }
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
     repaint_building_occupancy(&mut zoning, &allocator)?;
@@ -1160,10 +1158,9 @@ fn load_agents(conn: &Connection, agent_sim_time: f32) -> SaveLoadResult<AgentSy
     let mut stmt = conn.prepare(
         "SELECT
             agent_id, home_building, work_building, current_building, target_building, current_node,
-            target_node, current_edge, edge_progression, current_lane, pos_x, pos_y, is_visible,
+            target_node, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible,
             activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time,
-            has_car, vehicle_type, bezier_p0_x, bezier_p0_y, bezier_p1_x, bezier_p1_y, bezier_p2_x,
-            bezier_p2_y, bezier_p3_x, bezier_p3_y, bezier_t, current_path_index
+            has_car, vehicle_type, current_path_index
          FROM agents
          ORDER BY agent_id",
     )?;
@@ -1187,8 +1184,8 @@ fn load_agents(conn: &Connection, agent_sim_time: f32) -> SaveLoadResult<AgentSy
                 current_node: i64_to_u32(row.get(5)?)?,
                 target_node: i64_to_u32(row.get(6)?)?,
                 current_edge: db_to_optional_usize(row.get(7)?)?,
-                edge_progression: i64_to_isize(row.get(8)?)?,
-                current_lane: i64_to_i8(row.get(9)?)?,
+                current_lane_id: db_to_optional_usize(row.get(8)?)?,
+                lane_distance: row.get(9)?,
                 pos_x: row.get(10)?,
                 pos_y: row.get(11)?,
                 is_visible: row.get(12)?,
@@ -1201,16 +1198,7 @@ fn load_agents(conn: &Connection, agent_sim_time: f32) -> SaveLoadResult<AgentSy
                 journey_start_time: row.get(19)?,
                 has_car: row.get(20)?,
                 vehicle_type: i64_to_u8(row.get(21)?)?,
-                bezier_p0_x: row.get(22)?,
-                bezier_p0_y: row.get(23)?,
-                bezier_p1_x: row.get(24)?,
-                bezier_p1_y: row.get(25)?,
-                bezier_p2_x: row.get(26)?,
-                bezier_p2_y: row.get(27)?,
-                bezier_p3_x: row.get(28)?,
-                bezier_p3_y: row.get(29)?,
-                bezier_t: row.get(30)?,
-                current_path_index: i64_to_usize(row.get(31)?)?,
+                current_path_index: i64_to_usize(row.get(22)?)?,
                 current_path: car_paths.remove(&agent_id).unwrap_or_default(),
                 current_ped_path: ped_paths.remove(&agent_id).unwrap_or_default(),
             },
@@ -1382,7 +1370,7 @@ fn validate_loaded_agents(
         if agents.pedestrian_side[i] < -1 || agents.pedestrian_side[i] > 1 {
             clear_travel = true;
         }
-        if !agents.bezier_t[i].is_finite() || agents.bezier_t[i] < 0.0 {
+        if agents.lane_distance[i] < 0.0 || !agents.lane_distance[i].is_finite() {
             clear_travel = true;
         }
 
@@ -1396,29 +1384,11 @@ fn validate_loaded_agents(
                 if edge.physical_geometry.is_empty() {
                     clear_travel = true;
                 } else {
-                    let max_progress = edge.physical_geometry.len().saturating_sub(1) as isize;
-                    agents.edge_progression[i] = agents.edge_progression[i].clamp(0, max_progress);
-                    if agents.transit_mode[i] == crate::simulation::economy::agents::MODE_CAR {
-                        let lane_valid = if agents.current_lane[i] >= 0 {
-                            (agents.current_lane[i] as u8) < edge.fwd_lanes
-                        } else {
-                            let back_lane = (-agents.current_lane[i] - 1) as u8;
-                            back_lane < edge.bkw_lanes
-                        };
-                        if !lane_valid {
-                            clear_travel = true;
-                        }
-                    } else {
-                        agents.current_lane[i] = 0;
+                    if agents.transit_mode[i] != crate::simulation::economy::agents::MODE_CAR {
+                        agents.current_lane_id[i] = usize::MAX;
                     }
                 }
             }
-        }
-
-        if agents.transit[i] == TRANSIT_INTERSECTION
-            && (!agents.bezier_t[i].is_finite() || agents.bezier_t[i] > 1.0)
-        {
-            clear_travel = true;
         }
 
         if clear_travel {
@@ -1434,18 +1404,9 @@ fn clear_agent_travel_state(agents: &mut AgentSystem, agent_id: usize) {
     agents.current_ped_path[agent_id].clear();
     agents.current_path_index[agent_id] = 0;
     agents.current_edge[agent_id] = usize::MAX;
-    agents.edge_progression[agent_id] = 0;
-    agents.current_lane[agent_id] = 0;
+    agents.current_lane_id[agent_id] = usize::MAX;
+    agents.lane_distance[agent_id] = 0.0;
     agents.pedestrian_side[agent_id] = 0;
-    agents.bezier_p0_x[agent_id] = 0.0;
-    agents.bezier_p0_y[agent_id] = 0.0;
-    agents.bezier_p1_x[agent_id] = 0.0;
-    agents.bezier_p1_y[agent_id] = 0.0;
-    agents.bezier_p2_x[agent_id] = 0.0;
-    agents.bezier_p2_y[agent_id] = 0.0;
-    agents.bezier_p3_x[agent_id] = 0.0;
-    agents.bezier_p3_y[agent_id] = 0.0;
-    agents.bezier_t[agent_id] = 0.0;
 
     if agents.transit[agent_id] == TRANSIT_INTERSECTION {
         agents.transit[agent_id] = TRANSIT_ON_ROAD;
@@ -1768,8 +1729,8 @@ struct LoadedAgentRecord {
     current_node: u32,
     target_node: u32,
     current_edge: usize,
-    edge_progression: isize,
-    current_lane: i8,
+    current_lane_id: usize,
+    lane_distance: f32,
     pos_x: f32,
     pos_y: f32,
     is_visible: bool,
@@ -1782,15 +1743,6 @@ struct LoadedAgentRecord {
     journey_start_time: f32,
     has_car: bool,
     vehicle_type: u8,
-    bezier_p0_x: f32,
-    bezier_p0_y: f32,
-    bezier_p1_x: f32,
-    bezier_p1_y: f32,
-    bezier_p2_x: f32,
-    bezier_p2_y: f32,
-    bezier_p3_x: f32,
-    bezier_p3_y: f32,
-    bezier_t: f32,
     current_path_index: usize,
     current_path: Vec<u32>,
     current_ped_path: Vec<PedestrianPathStep>,
@@ -1812,19 +1764,10 @@ fn push_loaded_agent(agents: &mut AgentSystem, agent: LoadedAgentRecord) {
     agents.current_node.push(agent.current_node);
     agents.target_node.push(agent.target_node);
     agents.current_edge.push(agent.current_edge);
-    agents.edge_progression.push(agent.edge_progression);
-    agents.current_lane.push(agent.current_lane);
+    agents.current_lane_id.push(agent.current_lane_id);
+    agents.lane_distance.push(agent.lane_distance);
     agents.transit_mode.push(agent.transit_mode);
     agents.pedestrian_side.push(agent.pedestrian_side);
-    agents.bezier_p0_x.push(agent.bezier_p0_x);
-    agents.bezier_p0_y.push(agent.bezier_p0_y);
-    agents.bezier_p1_x.push(agent.bezier_p1_x);
-    agents.bezier_p1_y.push(agent.bezier_p1_y);
-    agents.bezier_p2_x.push(agent.bezier_p2_x);
-    agents.bezier_p2_y.push(agent.bezier_p2_y);
-    agents.bezier_p3_x.push(agent.bezier_p3_x);
-    agents.bezier_p3_y.push(agent.bezier_p3_y);
-    agents.bezier_t.push(agent.bezier_t);
     agents.current_path.push(agent.current_path);
     agents.current_ped_path.push(agent.current_ped_path);
     agents.current_path_index.push(agent.current_path_index);
@@ -1945,8 +1888,8 @@ mod tests {
                 current_node: n0,
                 target_node: n1,
                 current_edge: edge_id,
-                edge_progression: 0,
-                current_lane: 0,
+                current_lane_id: 0,
+                lane_distance: 0.0,
                 pos_x: -5.0,
                 pos_y: 0.0,
                 is_visible: true,
@@ -1959,15 +1902,6 @@ mod tests {
                 journey_start_time: 12.5,
                 has_car: true,
                 vehicle_type: 0,
-                bezier_p0_x: 0.0,
-                bezier_p0_y: 0.0,
-                bezier_p1_x: 0.0,
-                bezier_p1_y: 0.0,
-                bezier_p2_x: 0.0,
-                bezier_p2_y: 0.0,
-                bezier_p3_x: 0.0,
-                bezier_p3_y: 0.0,
-                bezier_t: 0.0,
                 current_path_index: 1,
                 current_path: vec![n0, n1],
                 current_ped_path: Vec::new(),
@@ -1983,8 +1917,8 @@ mod tests {
                 current_node: n1,
                 target_node: n0,
                 current_edge: usize::MAX,
-                edge_progression: 0,
-                current_lane: 0,
+                current_lane_id: usize::MAX,
+                lane_distance: 0.0,
                 pos_x: 5.0,
                 pos_y: 0.0,
                 is_visible: true,
@@ -1997,15 +1931,6 @@ mod tests {
                 journey_start_time: 6.0,
                 has_car: false,
                 vehicle_type: 0,
-                bezier_p0_x: 1.0,
-                bezier_p0_y: 2.0,
-                bezier_p1_x: 3.0,
-                bezier_p1_y: 4.0,
-                bezier_p2_x: 5.0,
-                bezier_p2_y: 6.0,
-                bezier_p3_x: 7.0,
-                bezier_p3_y: 8.0,
-                bezier_t: 0.5,
                 current_path_index: 0,
                 current_path: Vec::new(),
                 current_ped_path: vec![PedestrianPathStep {
@@ -2015,6 +1940,9 @@ mod tests {
                 }],
             },
         );
+
+        let mut network = TransitNetwork::new();
+        network.lane_system.rebuild(&graph);
 
         let path = temp_path("round_trip");
         save_to_sqlite(
@@ -2031,6 +1959,7 @@ mod tests {
                 demand: &demand,
                 allocator: &allocator,
                 agents: &agents,
+                network: &network,
             },
         )
         .expect("save should succeed");

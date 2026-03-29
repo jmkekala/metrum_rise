@@ -15,6 +15,7 @@ pub use render::NetworkMeshData;
 pub mod interaction;
 pub mod terrain;
 pub mod topology;
+pub mod lanes;
 use crate::config;
 use std::collections::HashSet;
 
@@ -36,6 +37,8 @@ pub struct TransitNetwork {
     pub metric_dirty: bool,
     /// Edges that need their zoning obstruction cache recalculated.
     pub zoning_dirty_edges: HashSet<usize>,
+    /// Pre-calculated lane geometry graph for fast agent traversal.
+    pub lane_system: lanes::LaneSystem,
 }
 
 impl TransitNetwork {
@@ -45,6 +48,7 @@ impl TransitNetwork {
             cch_dirty_chunks: HashSet::new(),
             metric_dirty: false,
             zoning_dirty_edges: HashSet::new(),
+            lane_system: lanes::LaneSystem::new(),
         }
     }
 
@@ -57,6 +61,7 @@ impl TransitNetwork {
         self.cch_dirty_chunks.clear();
         self.metric_dirty = false;
         self.zoning_dirty_edges.clear();
+        self.lane_system.clear();
         zoning.clear();
         allocator.clear();
     }
@@ -300,6 +305,7 @@ impl TransitNetwork {
         topology::process_intersections(self, graph, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(graph); // Clean edge_id if it's dup
         graph.rebuild_intersection_clips();
+        self.lane_system.rebuild(graph);
 
         // Mark chunks as dirty
         let chunks = graph.get_edge_chunks(edge_id);
@@ -369,6 +375,7 @@ impl TransitNetwork {
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) {
         graph.sync_to_terrain(terrain);
+        self.lane_system.rebuild(graph);
     }
 
     pub fn rebuild_pathing(&mut self, graph: &mut RegionGraph) {

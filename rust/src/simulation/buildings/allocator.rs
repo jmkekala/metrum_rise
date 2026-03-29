@@ -411,18 +411,25 @@ impl BuildingAllocator {
             if !border_nodes.is_empty() {
                 let mut rng = rand::thread_rng();
                 for _ in 0..num_to_spawn {
-                    let spawn_node =
-                        border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
-                    let spawn_pos = graph.nodes[spawn_node as usize].pos;
-                    _agents.spawn_agent(
-                        usize::MAX,
-                        spawn_node,
-                        0.0,
-                        0.0,
-                        spawn_node,
-                        spawn_pos.x,
-                        spawn_pos.z,
-                    );
+                    if let Some(home_idx) = _agents.find_available_home(self) {
+                        let spawn_node =
+                            border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
+                        let spawn_pos = graph.nodes[spawn_node as usize].pos;
+                        let home_bldg = &self.buildings[home_idx];
+                        let home_node = graph.edges[home_bldg.edge_idx].end_node;
+
+                        _agents.spawn_agent(
+                            home_idx,
+                            home_node,
+                            0.0,
+                            0.0,
+                            spawn_node,
+                            spawn_pos.x,
+                            spawn_pos.z,
+                        );
+                    } else {
+                        break; // No more homes available
+                    }
                 }
             }
             // No border nodes → immigration is blocked until the player builds an external connection.
@@ -1013,6 +1020,93 @@ mod tests {
         assert!(
             !zoning.is_occupied(0, 1, 0, 0),
             "Zoning cell occupancy should be cleared after building removal"
+        );
+    }
+
+    #[test]
+    fn test_immigration_claims_vacant_home() {
+        use crate::simulation::core::config::MapConfig;
+        use crate::simulation::economy::agents::AgentSystem;
+        use crate::simulation::economy::demand::DemandSystem;
+        use crate::simulation::grid::desirability::DesirabilitySystem;
+        use crate::simulation::grid::noise::NoiseSystem;
+        use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
+        use crate::simulation::network::graph::RegionGraph;
+        use crate::simulation::network::TransitNetwork;
+        use godot::prelude::{Vector2, Vector3};
+
+        let mut allocator = BuildingAllocator::new();
+        let mut demand = DemandSystem::new();
+        let map_cfg = MapConfig::default();
+        let mut zoning = ZoningSystem::new(&map_cfg);
+        let desirability = DesirabilitySystem::new(&map_cfg);
+        let noise = NoiseSystem::new(&map_cfg);
+        let mut agents = AgentSystem::new();
+        let mut network = TransitNetwork::new();
+        let mut graph = RegionGraph::new();
+
+        demand.residential = 100.0;
+
+        network.add_road(
+            &mut graph,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+            1,
+            1,
+            true,
+            false,
+            crate::simulation::network::types::EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
+        );
+        let edge_id = graph.edges.len() - 1;
+
+        // Add a Border node
+        graph.nodes[0].node_type = crate::simulation::network::types::NodeType::Border;
+
+        // Force a vacant residential building
+        zoning.set_cell(edge_id, 1, 0, 0, ZoneType::Residential);
+        allocator.buildings.push(Building {
+            center_x: 10.0,
+            center_y: 10.0,
+            width: 30,
+            depth: 30,
+            zone_type: ZoneType::Residential,
+            facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.1,
+            side_offset: 1.0,
+            abandoned_timer: 0,
+            edge_idx: edge_id,
+            side: 1,
+            cell_x: 0,
+            cell_y: 0,
+            occupancy: 0,
+        });
+        allocator.rebuild_zone_index();
+
+        // 1 immigrant is spawned for sure since demand is high and occupancy is 0/6
+        allocator.tick(
+            &mut demand,
+            &mut zoning,
+            &desirability,
+            &noise,
+            &mut agents,
+            &mut network,
+            &mut graph,
+            &map_cfg,
+        );
+
+        assert_eq!(agents.count, 1, "Agent should have immigrated");
+        assert_eq!(
+            agents.home_building[0], 0,
+            "Immigrant should have claimed home index 0"
+        );
+        assert_eq!(
+            agents.target_building[0], 0,
+            "Immigrant target_building should be set to home"
+        );
+        assert_eq!(
+            allocator.buildings[0].occupancy, 1,
+            "Building occupancy should be 1"
         );
     }
 }

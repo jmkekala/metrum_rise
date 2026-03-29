@@ -793,7 +793,7 @@ impl INode3D for SimulationNode {
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
             self.agents.tick(
                 &mut self.allocator,
-                &self.transit_network.cch_graph,
+                &self.transit_network,
                 &mut self.region_graph,
                 dt,
             );

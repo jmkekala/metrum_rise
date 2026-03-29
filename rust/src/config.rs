@@ -38,3 +38,7 @@ pub const CLEARANCE_THRESHOLD: f32 = 5.0;
 /// node created there will be within [`SNAP_TOLERANCE`] of the edge. 3 m gives comfortable
 /// headroom without triggering for roads that merely pass near the border.
 pub const BORDER_DETECTION_THRESHOLD: f32 = 3.0;
+
+/// The physical distance (metres) that a road is automatically extended off-screen
+/// when marked as an external border connection. This ensures immigrants spawn cleanly off-map.
+pub const BORDER_EXTENSION_M: f32 = 10.0;

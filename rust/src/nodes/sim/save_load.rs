@@ -22,6 +22,7 @@ impl SimulationNode {
                 demand: &self.demand,
                 allocator: &self.allocator,
                 agents: &self.agents,
+                network: &self.transit_network,
             },
         )
         .map_err(|err| err.to_string())

@@ -342,7 +342,73 @@ impl SimulationNode {
         if node_id < 0 || (node_id as usize) >= self.region_graph.nodes.len() {
             return;
         }
+
         self.region_graph.nodes[node_id as usize].node_type =
             crate::simulation::network::types::NodeType::Border;
+
+        // Auto-extend it 10 meters further from the connecting road so agents spawn visually off-screen
+        let mut rebuild_needed = false;
+        if let Some(adj) = self.region_graph.adjacency.get(node_id as usize) {
+            let mut valid_edges = Vec::new();
+            for &e_idx in adj {
+                if !self.region_graph.edges[e_idx].deleted {
+                    valid_edges.push(e_idx);
+                }
+            }
+            if valid_edges.len() == 1 {
+                let e_idx = valid_edges[0];
+                let is_end = self.region_graph.edges[e_idx].end_node == (node_id as u32);
+                let other_node = if is_end {
+                    self.region_graph.edges[e_idx].start_node
+                } else {
+                    self.region_graph.edges[e_idx].end_node
+                };
+
+                let p1 = self.region_graph.nodes[other_node as usize].pos;
+                let p2 = self.region_graph.nodes[node_id as usize].pos;
+
+                let dir_vec = p2 - p1;
+                if dir_vec.length_squared() > 0.001 {
+                    let dir = dir_vec.normalized();
+                    let new_p2 = p2 + dir * crate::config::BORDER_EXTENSION_M;
+                    self.region_graph.nodes[node_id as usize].pos = new_p2;
+
+                    let edge = &mut self.region_graph.edges[e_idx];
+                    if is_end {
+                        if let Some(last) = edge.geometry.last_mut() {
+                            *last = new_p2;
+                        }
+                        if let Some(last) = edge.physical_geometry.last_mut() {
+                            *last = new_p2;
+                        }
+                    } else {
+                        if let Some(first) = edge.geometry.first_mut() {
+                            *first = new_p2;
+                        }
+                        if let Some(first) = edge.physical_geometry.first_mut() {
+                            *first = new_p2;
+                        }
+                    }
+
+                    // Recalculate length and cost
+                    let mut new_len = 0.0;
+                    for i in 0..edge.physical_geometry.len() - 1 {
+                        let pa = edge.physical_geometry[i];
+                        let pb = edge.physical_geometry[i + 1];
+                        let dx = pb.x - pa.x;
+                        let dz = pb.z - pa.z;
+                        new_len += (dx * dx + dz * dz).sqrt();
+                    }
+                    edge.physical_length = new_len;
+                    edge.base_cost = crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge).0;
+                    rebuild_needed = true;
+                }
+            }
+        }
+
+        if rebuild_needed {
+            self.transit_network.lane_system.rebuild(&mut self.region_graph);
+            self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+        }
     }
 }
