@@ -320,23 +320,21 @@ impl BuildingAllocator {
                     }
 
                     if can_build {
-                        let t = (x as f32) * zoning.config.zone_cell_m / edge_len;
-                        let world_pos_on_edge = self.get_pos_on_edge(&graph, edge_idx, t);
-                        let tangent = self.get_tangent_on_edge(&graph, edge_idx, t);
+                        // centre of the footprint
+                        let frontage_t_offset = dw as f32 * 0.5;
+                        let t_center = (x as f32 + frontage_t_offset) * zoning.config.zone_cell_m / edge_len;
+                        let world_pos_on_edge = self.get_pos_on_edge(&graph, edge_idx, t_center);
+                        let tangent = self.get_tangent_on_edge(&graph, edge_idx, t_center);
                         let normal =
                             godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
 
-                        let b_width = dw as f32 * zoning.config.zone_cell_m;
-                        let b_depth = dh as f32 * zoning.config.zone_cell_m;
-                        // Centre of the footprint
                         let depth_offset =
                             crate::config::SIDEWALK_WIDTH + ((dh as f32 * 0.5) * zoning.config.zone_cell_m);
                         let center_2d =
                             world_pos_on_edge + normal * (edge_width * 0.5 + depth_offset);
 
                         // Compute frontage_t on the original full edge for the split position.
-                        let frontage_t_offset = dw as f32 * 0.5;
-                        let frontage_t_full = (x as f32 + frontage_t_offset) * zoning.config.zone_cell_m / edge_len;
+                        let frontage_t_full = t_center;
                         // Mark footprint occupied on full edge BEFORE split (to allow split_edge_grid to copy flags correctly)
                         for adx in 0..dw {
                             for ady in 0..dh {
@@ -347,7 +345,7 @@ impl BuildingAllocator {
                         // Push building with dummy node (it will be updated by split_for_frontage immediately)
                         self.buildings.push(Building {
                             zone_type: z_type,
-                            facing_dir: normal.normalized(),
+                            facing_dir: normal,
                             frontage_t: frontage_t_full,
                             frontage_node: 0, 
                             side_offset: edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
@@ -578,7 +576,7 @@ impl BuildingAllocator {
 
             building.center_x = center_2d.x;
             building.center_y = center_2d.y;
-            building.facing_dir = -normal;
+            building.facing_dir = normal;
             building.side_offset = building.side as f32;
         }
 
