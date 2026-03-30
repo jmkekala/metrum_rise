@@ -40,6 +40,10 @@ pub struct TransitNetwork {
     pub zoning_dirty_edges: HashSet<usize>,
     /// Pre-calculated lane geometry graph for fast agent traversal.
     pub lane_system: lanes::LaneSystem,
+    /// When true, `create_edge_internal` skips `lane_system.rebuild` and
+    /// `rebuild_intersection_clips` on every edge add. The caller must call
+    /// `finalize_bulk_load` once all edges have been added.
+    pub bulk_load: bool,
 }
 
 impl TransitNetwork {
@@ -51,7 +55,23 @@ impl TransitNetwork {
             metric_dirty: false,
             zoning_dirty_edges: HashSet::new(),
             lane_system: lanes::LaneSystem::new(),
+            bulk_load: false,
         }
+    }
+
+    /// Completes a bulk-load sequence started by setting `bulk_load = true`.
+    ///
+    /// Rebuilds intersection clips, lane geometry, and marks all chunks dirty so
+    /// `rebuild_pathing_if_dirty` will rebuild the CCH on the next tick.
+    pub fn finalize_bulk_load(
+        &mut self,
+        graph: &mut RegionGraph,
+        zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+    ) {
+        self.bulk_load = false;
+        graph.rebuild_intersection_clips();
+        self.lane_system.rebuild(graph);
+        self.flush_zoning_updates(zoning, graph);
     }
 
     /// Clears the entire network, including zoning and building allocations.
@@ -231,7 +251,9 @@ impl TransitNetwork {
             );
         }
 
-        self.flush_zoning_updates(zoning, graph);
+        if !self.bulk_load {
+            self.flush_zoning_updates(zoning, graph);
+        }
     }
 
     /// Helper to consistently add a road edge and handle its side effects
@@ -308,8 +330,10 @@ impl TransitNetwork {
 
         topology::process_intersections(self, graph, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(graph); // Clean edge_id if it's dup
-        graph.rebuild_intersection_clips();
-        self.lane_system.rebuild(graph);
+        if !self.bulk_load {
+            graph.rebuild_intersection_clips();
+            self.lane_system.rebuild(graph);
+        }
 
         // Mark chunks as dirty
         let chunks = graph.get_edge_chunks(edge_id);

@@ -56,9 +56,10 @@ fn build_shared() -> SharedSetup {
     let edge_ab = graph.add_edge(edge);
     graph.rebuild_adjacency_list();
 
-    // Build a TransitNetwork with a CCH over this minimal graph.
+    // Build a TransitNetwork with a CCH and lane system over this minimal graph.
     let mut transit = TransitNetwork::new();
     transit.cch_graph = metrum_rise::simulation::pathing::cch::CchGraph::build(&graph);
+    transit.lane_system.rebuild(&mut graph);
 
     SharedSetup { graph, transit, node_a, node_b, edge_ab }
 }
@@ -116,7 +117,7 @@ fn make_on_road_agent(shared: &SharedSetup, bounce_path: Vec<u32>, progression: 
         lane_distance: progression,
         transit_mode: MODE_CAR,
         current_path: bounce_path,
-        current_path_index: 0,
+        current_path_index: 1, // [0] = origin node, [1] = first target
         has_car: true,
         vehicle_type: VEHICLE_SEDAN,
     }
@@ -136,7 +137,7 @@ fn bench_agent_tick(c: &mut Criterion) {
         .map(|i| if i % 2 == 0 { shared.node_a } else { shared.node_b })
         .collect();
 
-    for &count in &[1_000usize, 10_000, 100_000] {
+    for &count in &[1_000usize, 10_000, 100_000, 1_000_000] {
         group.bench_with_input(
             criterion::BenchmarkId::new("on_road", count),
             &count,

@@ -134,7 +134,9 @@ impl SimulationNode {
         zoning_left: bool,
         zoning_right: bool,
     ) {
-        self.push_undo_state(false, false, true, false);
+        if !self.benchmark_mode {
+            self.push_undo_state(false, false, true, false);
+        }
         let mut fixed_points = points.to_vec();
 
         let w = self.heightmap.width;

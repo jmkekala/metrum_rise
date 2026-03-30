@@ -55,6 +55,8 @@ pub struct SimulationNode {
     pub(crate) undo_stack: VecDeque<SimulationSnapshot>,
     pub(crate) last_tick_duration: f64,
     pub(crate) benchmark_mode: bool,
+    pub(crate) benchmark_tick_count: u32,
+    pub(crate) last_agent_tick_us: u64,
     pub(crate) terrain_dirty: bool,
     pub(crate) water_dirty: bool,
     pub(crate) config: MapConfig,
@@ -64,7 +66,6 @@ pub struct SimulationNode {
 impl SimulationNode {
     /// Executes a single simulation tick.
     pub fn simulate_tick(&mut self) {
-        godot_print!("Tick! Day {}", self.time.current_day);
 
         // 1. Environmental Spread
         let tick_start = std::time::Instant::now();
@@ -731,10 +732,13 @@ impl INode3D for SimulationNode {
 
         let args = godot::classes::Os::singleton().get_cmdline_user_args();
         let mut is_huge = false;
+        let mut generate_benchmark = false;
+        let mut run_benchmark = false;
         for arg in args.as_slice() {
-            if arg.to_string() == "--huge-map" {
-                is_huge = true;
-                break;
+            match arg.to_string().as_str() {
+                "--huge-map" | "--benchmark" => { is_huge = true; run_benchmark = true; }
+                "--generate-benchmark" => { is_huge = true; generate_benchmark = true; }
+                _ => {}
             }
         }
 
@@ -767,20 +771,21 @@ impl INode3D for SimulationNode {
             agents: AgentSystem::new(),
             undo_stack: VecDeque::new(),
             last_tick_duration: 0.0,
-            benchmark_mode: is_huge,
+            benchmark_mode: run_benchmark || generate_benchmark,
+            benchmark_tick_count: 0,
+            last_agent_tick_us: 0,
             terrain_dirty: true,
             water_dirty: true,
             config,
         };
 
-        if is_huge {
-            godot_print!("HUGE MAP BENCHMARK MODE ENABLED");
-            let mut pts = PackedVector3Array::new();
-            let border = (config.zone_grid_height() as f32 * 0.5) - 1.0;
-            pts.push(Vector3::new(0.0, 0.0, -border));
-            pts.push(Vector3::new(0.0, 0.0, -border + 100.0));
-            sim.add_road_internal(pts, 2, 2, true, true);
-        } else {
+        if generate_benchmark {
+            godot_print!("BENCHMARK GENERATION MODE — will build city, save, and exit");
+        } else if run_benchmark {
+            godot_print!("BENCHMARK RUN MODE — will load benchmark.sav and simulate");
+        }
+
+        if !is_huge {
             let mut pts = PackedVector3Array::new();
             let border = (config.zone_grid_height() as f32 * 0.5) - 1.0;
             pts.push(Vector3::new(0.0, 0.0, -border));
@@ -792,9 +797,16 @@ impl INode3D for SimulationNode {
     }
 
     fn ready(&mut self) {
-        if self.benchmark_mode {
-            godot_print!("SimulationNode: Auto-triggering benchmark setup");
-            self.setup_benchmark_city_internal(20, 100_000);
+        let args = godot::classes::Os::singleton().get_cmdline_user_args();
+        let generate = args.as_slice().iter().any(|a| a.to_string() == "--generate-benchmark");
+        let run = args.as_slice().iter().any(|a| {
+            matches!(a.to_string().as_str(), "--benchmark" | "--huge-map")
+        });
+
+        if generate {
+            self.generate_benchmark_map();
+        } else if run {
+            self.run_benchmark_from_save();
         }
     }
 
@@ -805,17 +817,38 @@ impl INode3D for SimulationNode {
             self.simulate_tick();
         }
 
+        if self.benchmark_mode {
+            self.benchmark_tick_count += 1;
+            if self.benchmark_tick_count % 600 == 0 {
+                godot_print!("[bench] frame={} agents={} agent_tick_us={} sim_tick_ms={:.2} pathfinds={} RSS={}MB",
+                    self.benchmark_tick_count,
+                    self.agents.len(),
+                    self.last_agent_tick_us,
+                    self.last_tick_duration,
+                    self.agents.pathfind_count,
+                    crate::nodes::sim::benchmark::rss_mb());
+            }
+            if self.benchmark_tick_count >= 3000 {
+                godot_print!("[bench] DONE — 3000 frames complete. See benchmark_results.csv.");
+                self.base_mut().get_tree().unwrap().quit();
+            }
+        }
+
         if self.time.speed_multiplier > 0.0 {
             // Rebuild CCH if dirty before agents try to pathfind
             self.transit_network.rebuild_pathing_if_dirty(&mut self.region_graph);
 
             let dt = (delta * self.time.speed_multiplier as f64) as f32;
+            let t_agents = std::time::Instant::now();
             self.agents.tick(
                 &mut self.allocator,
                 &self.transit_network,
                 &mut self.region_graph,
                 dt,
             );
+            if self.benchmark_mode {
+                self.last_agent_tick_us = t_agents.elapsed().as_micros() as u64;
+            }
 
             let _sub_steps = 2;
             // ... water process logic ...

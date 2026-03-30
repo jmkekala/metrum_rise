@@ -58,6 +58,10 @@ pub struct CchGraph {
     pub bwd_up: Vec<Vec<usize>>,
     /// Precomputed maximum speed in the network for heuristic calculations.
     pub max_v: f32,
+    /// Per-node index of shortcuts whose `start_node` equals the index. Used during contraction.
+    shortcuts_by_start: Vec<Vec<usize>>,
+    /// Per-node index of shortcuts whose `target_node` equals the index. Used during contraction.
+    shortcuts_by_end: Vec<Vec<usize>>,
 }
 
 impl CchGraph {
@@ -71,6 +75,8 @@ impl CchGraph {
             fwd_up: vec![Vec::new(); n_nodes],
             bwd_up: vec![Vec::new(); n_nodes],
             max_v: 1.0,
+            shortcuts_by_start: vec![Vec::new(); n_nodes],
+            shortcuts_by_end: vec![Vec::new(); n_nodes],
         }
     }
 
@@ -204,14 +210,23 @@ impl CchGraph {
             let mut neighbors_in = Vec::new();
             let mut neighbors_out = Vec::new();
 
-            for (idx, s) in self.shortcuts.iter().enumerate() {
-                if s.target_node == u && self.node_rank[s.start_node as usize] > u_rank {
+            // Use per-node index instead of scanning all shortcuts — O(degree) not O(S).
+            for &idx in &self.shortcuts_by_end[u as usize] {
+                let s = &self.shortcuts[idx];
+                if self.node_rank[s.start_node as usize] > u_rank {
                     neighbors_in.push(idx);
                 }
-                if s.start_node == u && self.node_rank[s.target_node as usize] > u_rank {
+            }
+            for &idx in &self.shortcuts_by_start[u as usize] {
+                let s = &self.shortcuts[idx];
+                if self.node_rank[s.target_node as usize] > u_rank {
                     neighbors_out.push(idx);
                 }
             }
+
+            // Deduplicate (start, target) pairs within this contraction step to prevent
+            // exponential shortcut growth. Only one compound shortcut per node-pair is needed.
+            let mut added_pairs: HashSet<(u32, u32)> = HashSet::new();
 
             for &idx_in in &neighbors_in {
                 let (s_in_start, s_in_last, s_in_first, s_in_mask) = {
@@ -226,6 +241,20 @@ impl CchGraph {
                     };
 
                     if s_in_start == s_out_target {
+                        continue;
+                    }
+
+                    // Skip if we already have any shortcut (direct or compound) for this pair
+                    if added_pairs.contains(&(s_in_start, s_out_target)) {
+                        continue;
+                    }
+                    // Also skip if a direct shortcut between these nodes already exists
+                    if self.shortcuts_by_start[s_in_start as usize]
+                        .iter()
+                        .any(|&i| self.shortcuts[i].target_node == s_out_target
+                            && self.shortcuts[i].base_edge != usize::MAX)
+                    {
+                        added_pairs.insert((s_in_start, s_out_target));
                         continue;
                     }
 
@@ -245,6 +274,7 @@ impl CchGraph {
                         }
                     }
 
+                    added_pairs.insert((s_in_start, s_out_target));
                     self.add_compound_shortcut(
                         s_in_start,
                         s_out_target,
@@ -282,6 +312,7 @@ impl CchGraph {
         edge_idx: usize,
         edge: &crate::simulation::network::graph::Edge,
     ) {
+        let idx = self.shortcuts.len();
         self.shortcuts.push(CchShortcut {
             start_node: start,
             target_node: end,
@@ -294,6 +325,8 @@ impl CchGraph {
             last_edge: edge_idx,
             allowed_types: edge.allowed_types,
         });
+        self.shortcuts_by_start[start as usize].push(idx);
+        self.shortcuts_by_end[end as usize].push(idx);
     }
 
     fn add_compound_shortcut(
@@ -306,6 +339,7 @@ impl CchGraph {
         last: usize,
         mask: u8,
     ) {
+        let idx = self.shortcuts.len();
         self.shortcuts.push(CchShortcut {
             start_node: start,
             target_node: end,
@@ -318,6 +352,8 @@ impl CchGraph {
             last_edge: last,
             allowed_types: mask,
         });
+        self.shortcuts_by_start[start as usize].push(idx);
+        self.shortcuts_by_end[end as usize].push(idx);
     }
 
     /// Expands a shortcut into its sequence of concrete base-edge indices.
