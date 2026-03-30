@@ -142,7 +142,8 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - **Pedestrian Arrival/Departure Constraints**: Agents arriving at or departing from buildings are now restricted to the sidewalk on the building's frontage side. This eliminates "jaywalking" across asphalt or fields. If no sidewalk exists on the building's side, agents merge directly onto the road.
 - **Stuck Agent Scrub**: `AgentSystem::tick` now includes a safety pass that hides (`is_visible = false`) any agents that enter an `IDLE` state while outside of a building, effectively cleaning up "field-ghost" artifacts from failed pathfinding.
 - **Improved Visualization**: The 'P' debug overlay now displays color-coded paths: Cyan for network-based traversal and Yellow for direct-move (arrival/departure) phases.
-- **Single-threaded tick** — Rayon parallelisation is a v0.1 goal (see Backlog).
+- **Background simulation thread (item 73)**: `AgentSystem::tick` and all grid ticks run on a dedicated `std::thread` at ~60 Hz, decoupled from Godot's render frame. All simulation state lives in `Arc<Mutex<SimCore>>`; at tick end, the thread writes a `RenderSnapshot` (`Arc<RwLock<RenderSnapshot>>`) containing pre-computed `Vec<f32>` transforms and dirty flags. The Godot main thread reads only the snapshot — no live sim state. `SimCommand` enum (`SetSpeed`, `Quit`) sent via `mpsc::channel` for non-blocking control.
+- **Parallel tick (item 19)**: `AgentSystem::tick` uses `rayon::par_iter_mut` for on-road movement. Immigration assignment (which needs mutable `BuildingAllocator`) remains sequential in a post-parallel phase.
 - **`AgentSystem` SoA Migration (Item 59)**: Replaced the manual 29-parallel-vector layout with a type-safe Structure-of-Arrays (SoA) architecture using `soa_derive`. All agent fields are now encapsulated in an `Agent` struct and managed via `AgentVec`, ensuring field synchronisation and simplifying lifecycle methods (`spawn_agent`, `kill_agent`). Direct field access is maintained via `Deref`/`DerefMut`.
 - **Transit Mode Enum** — migrated `is_driving: Vec<bool>` to `transit_mode: Vec<u8>` using constants (WALK=0, CAR=1, ...). This provides the multi-modal foundation for bicycles, buses, and rail.
 - **Unit tests** (`economy/agents_test.rs`): `test_agent_fsm_lifecycle` verifies the complete daily cycle (Home → Work → Shop → Home) including FSM state transitions, money tracking, and arrival detection via virtual frontage nodes.
@@ -187,23 +188,36 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 ### Demand
 - `simulation/economy/demand.rs` — global R/C/I demand counters. Demand increments globally; buildings consume it on spawn.
 
+### Threading Architecture (items 73 + 19)
+- **`nodes/sim/core.rs`** — defines `SimCore` (all 19 simulation fields), `RenderSnapshot` (pre-computed `Vec<f32>` transforms + dirty flags, `Send+Sync`), and `SimCommand` enum (`SetSpeed(f32)`, `Quit`).
+- **Background sim thread**: `run_sim_thread(Arc<Mutex<SimCore>>, Arc<RwLock<RenderSnapshot>>, Receiver<SimCommand>)` — loops at ~60 Hz. Locks `SimCore`, ticks agents (parallel), runs daily economy ticks via `time.process_delta()`, builds snapshot, releases lock, writes snapshot, sleeps for remainder of frame.
+- **`SimulationNode`** holds only `Arc<Mutex<SimCore>>`, `Arc<RwLock<RenderSnapshot>>`, `cmd_tx: Sender<SimCommand>`, and bookkeeping fields. All `#[func]` wrappers lock the mutex for one call; hot read-only paths (`get_agent_transforms`, `is_terrain_dirty`) read from the snapshot with no mutex.
+- **`SimCommand` channel**: `set_simulation_speed()` sends via channel (non-blocking); the background thread applies it at the top of the next frame.
+
 ### Godot Bridge
-- `nodes/simulation_node.rs` — entry point; split into `sim/editing.rs` (road/zoning mutations), `sim/query.rs` (read-only `#[func]` API), `sim/undo.rs` (VecDeque-backed undo stack, O(1) push/pop), `sim/render_helpers.rs`, `sim/benchmark.rs`.
+- `nodes/simulation_node.rs` — entry point; split into `sim/core.rs` (SimCore struct + thread), `sim/editing.rs` (road/zoning mutations), `sim/query.rs` (read-only `#[func]` API), `sim/undo.rs` (VecDeque-backed undo stack, O(1) push/pop), `sim/render_helpers.rs`, `sim/benchmark.rs`.
 - Save/load bridge is live: `SimulationNode.save_game(path)` and `SimulationNode.load_game(path)` call the SQLite serializer/loader, and `godot/scripts/input_manager.gd` binds `Ctrl+S` / `Ctrl+L` to `user://savegame.sqlite`. After load, the Godot layer rebuilds terrain and water mesh resources and refreshes the road/building/agent visuals against the newly loaded world.
 
 ### Benchmark Mode
-- Launch: `./run.sh --huge-map`
-- Creates a 20 km × 20 km map with a 20 × 20 road grid, zone burst-growth, and 100,000 agents.
-- Logs per-tick: timestamp, version, agent count, map size, tick duration (ms), FPS, pathfind calls.
+- **Generate map** (run once): `./run.sh --generate-benchmark --headless` — builds a 20×20 road grid on a 20 km map, runs CCH, saves `benchmark.sav`, then exits.
+- **Run benchmark**: `./run.sh --benchmark --headless` — loads `benchmark.sav`, spawns 100 k pre-pathed `ON_ROAD` agents, runs the background sim thread, logs results to `godot/benchmark_results.csv`.
+- Logs per in-game day: timestamp, version, agent count, map size, tick duration (ms), FPS, pathfind calls.
 - Results written to `godot/benchmark_results.csv`. Delete the file to reset.
 - Criterion micro-benchmarks: `cd rust && cargo bench` → `target/criterion/`.
-- Memory note: huge-map mode uses ~1 GB+ RAM.
-- **`AgentSystem::tick` baseline (single-threaded, 2026-03-25)**:
+- Memory note: benchmark map uses ~500–770 MB RAM at 100k agents.
+- **`AgentSystem::tick` baseline (single-threaded Criterion, 2026-03-25)**:
   | Benchmark | 1k | 10k | 100k | 1M | Per-agent |
   |-----------|-----|------|-------|-----|-----------|
   | `on_road` (polyline traversal + lane offset) | 12.6 µs | 124.8 µs | 1.23 ms | ~12.3 ms* | ~12.3 ns |
   | `idle_scaling` (SoA iteration floor) | 5.29 µs | 52.9 µs | 537 µs | 5.72 ms | ~5.3 ns |
-  *extrapolated. Near-perfect O(N) on both. Movement costs ~2.3× the idle iteration floor (~7 ns/agent for traversal maths). At 1M on_road agents single-threaded: ~12.3 ms = 74% of a 16.7 ms frame budget; Rayon parallelisation (item 19) is the next multiplier.
+  *extrapolated. Near-perfect O(N) on both.
+- **End-to-end benchmark (parallel background thread, 2026-03-30, i9-12900K)**:
+  - 100k ON_ROAD agents, 20×20 grid map, `--benchmark --headless` (with Godot renderer active)
+  - `agent_tick_us`: 1.9–4.4 ms (Rayon parallel, ~2.2× CPU concurrency observed)
+  - `sim_tick_ms`: 3–7 ms — well within the 16.7 ms budget
+  - Pathfind calls settle from ~1650 (frame 600, route-end churn) to ~600/frame at steady state
+  - RSS steady at ~770 MB; no memory growth observed across 3000 frames
+  - **Frame rate bottleneck is GPU rendering** (GPU 100%), not the sim thread. Sim throughput headroom is large.
 
 ---
 
@@ -253,15 +267,11 @@ Lower levels dominate via soft priority weighting (not hard gating): `urgency(ne
 
 Target: ~250k–500k agents with the first non-car transport mode live and the multi-city region architecture in place.
 
-At ~200k agents three independent performance walls converge: (1) the single-threaded agent tick saturates one core, (2) the O(B) building scan in every IDLE activation becomes the dominant tick cost as the city fills, and (3) per-agent pathfinding accumulates to an unacceptable fraction of frame time even with CCH (flow fields are the answer — item 18). All three must be resolved before the v1.0 path is smooth — deferring any one of them past v0.2 means hitting a hard wall instead of a gradual ramp.
+At ~200k agents two performance walls converge: (1) the O(B) building scan in every IDLE activation becomes the dominant tick cost as the city fills, and (2) per-agent pathfinding accumulates to an unacceptable fraction of frame time even with CCH (flow fields are the answer — item 18). The parallel tick (item 19) and background thread (item 73) are already in place, so the single-core ceiling is no longer a blocker. Both remaining walls must be resolved before the v1.0 path is smooth.
 
 The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) install the two-wire harness. v0.2 validates it by shipping bicycle support — the simplest possible new mode (no VehicleSystem, no WAITING state, no timetables). If bicycles work correctly under load, every subsequent mode (taxi, bus, rail) is an incremental addition, not a structural change.
 
-**Implementation order matters.** Item 73 (simulation thread separation) must come first — it establishes the safe threading boundary that item 19 runs inside. Item 19 (parallel tick) depends on the zone index (B16a fix) existing and providing O(1) vacancy lookup — the parallel tick needs atomic vacancy counters that the index maintains. Item 18 (flow fields) requires item 19 to be done first — flow field queries need to run inside the parallel tick loop. Item 25 (IDM) is independent. Item 30 (bicycle) builds on the `transit_mode` and `allowed_mask` infrastructure already in place. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete — the `RegionGraph` rename and CCH query are the foundation the region system builds on.
-
-73. **Simulation thread separation + double-buffered render snapshot**: move `AgentSystem::tick` and all grid ticks (`PollutionSystem`, `NoiseSystem`, `DesirabilitySystem`, `WaterSystem`) to a dedicated background thread that runs continuously at its own rate, decoupled from Godot's render frame. At the end of each completed tick, the sim thread writes agent transforms, building states, and grid dirty flags into a read-only snapshot buffer; Godot's render callbacks read only from that buffer. The sim thread never touches Godot objects; the render thread never touches live simulation state. Required because at v0.2 scale (250k–500k agents) tick time will exceed 16 ms and a synchronous tick blocks the render thread. Also eliminates the `experimental-threads` data-race risk that currently exists latently in the `gdext` bridge. Prerequisite for item 19.
-
-19. **Parallelise `AgentSystem::tick`**: remove `&mut TransitGraph` from tick signature (currently unused as mut); switch to `rayon::par_iter_mut` over agent index ranges. Use `AtomicU32` for building vacancy counters (enabled by item 20's index); batch immigration assignments in a post-parallel sequential phase. Prerequisite for all subsequent agent-scale targets.
+**Implementation order matters.** Items 73 and 19 are complete (see Implemented Systems). Item 18 (flow fields) requires item 19 to be done first. Item 25 (IDM) is independent. Item 30 (bicycle) builds on the `transit_mode` and `allowed_mask` infrastructure already in place. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete.
 18. **Flow fields for shared destinations**: one reverse Dijkstra from each active destination zone type produces a next-node map of length V. Agents query O(1) instead of running individual CCH queries. Reduces O(A × CCH_cost) to O(M × (V + E) log V) where M ≈ 10–100 active zone types. Retain CCH for immigration and one-off novel destinations. Requires parallel tick (item 19) to be useful — flow field lookup is the O(1) work that fills each parallel agent slot. Add a timing test on completion: Dijkstra from one destination on a 1,000-node graph must complete in < 5 ms (originally listed in v0.01 goals but deferred here until the system exists).
 25. **Car collision — Intelligent Driver Model (IDM)**:
     - Add `speed: Vec<f32>` to `AgentSystem` SoA. Current model uses a hardcoded fixed speed; IDM requires a dynamic per-agent speed state (~4 MB at 1M agents).

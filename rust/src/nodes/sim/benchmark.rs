@@ -2,10 +2,11 @@
 
 use godot::prelude::*;
 extern crate chrono;
+use crate::nodes::sim::core::SimCore;
 use crate::nodes::simulation_node::SimulationNode;
-use rand::Rng;
 use std::time::Instant;
 
+/// Reads the resident set size of this process in megabytes from `/proc/self/status`.
 pub(crate) fn rss_mb() -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -19,7 +20,11 @@ pub(crate) fn rss_mb() -> u64 {
         / 1024
 }
 
-impl SimulationNode {
+// ---------------------------------------------------------------------------
+// SimCore methods — pure simulation operations, callable from any thread.
+// ---------------------------------------------------------------------------
+
+impl SimCore {
     /// Sets up a large-scale benchmark city with a grid of roads and agents.
     pub fn setup_benchmark_city_internal(&mut self, grid_size: i32, agent_count: i32) {
         godot_print!(
@@ -32,9 +37,6 @@ impl SimulationNode {
         let t0 = Instant::now();
         let mut pts = PackedVector3Array::new();
 
-        // 1. Create a large grid of roads.
-        // bulk_load=true defers lane_system.rebuild, rebuild_intersection_clips, and
-        // flush_zoning_updates until finalize_bulk_load() — reduces O(E²) to O(E).
         self.transit_network.bulk_load = true;
 
         let w_units = self.config.zone_grid_width() as f32;
@@ -67,70 +69,39 @@ impl SimulationNode {
             self.add_road_internal(pts.clone(), 2, 2, true, true);
         }
 
-        godot_print!("[bench] roads built: {:.1}s  RSS {}MB  edges={} nodes={}",
-            t0.elapsed().as_secs_f32(), rss_mb(),
-            self.region_graph.edges.len(), self.region_graph.nodes.len());
+        godot_print!(
+            "[bench] roads built: {:.1}s  RSS {}MB  edges={} nodes={}",
+            t0.elapsed().as_secs_f32(),
+            rss_mb(),
+            self.region_graph.edges.len(),
+            self.region_graph.nodes.len()
+        );
 
-        // 2. Single pass: rebuild clips, lanes, and zoning now that all edges are in.
         let t1 = Instant::now();
-        self.transit_network.finalize_bulk_load(&mut self.region_graph, &mut self.zoning);
-        godot_print!("[bench] finalize_bulk_load: {:.1}s  RSS {}MB  lanes={}",
-            t1.elapsed().as_secs_f32(), rss_mb(),
-            self.transit_network.lane_system.lanes.len());
+        self.transit_network
+            .finalize_bulk_load(&mut self.region_graph, &mut self.zoning);
+        godot_print!(
+            "[bench] finalize_bulk_load: {:.1}s  RSS {}MB  lanes={}",
+            t1.elapsed().as_secs_f32(),
+            rss_mb(),
+            self.transit_network.lane_system.lanes.len()
+        );
 
-        godot_print!("[bench] TOTAL setup_benchmark_city_internal: {:.1}s  RSS {}MB",
-            t0.elapsed().as_secs_f32(), rss_mb());
-
-        // Agents are spawned by the caller (generate_benchmark_map / run_benchmark_from_save)
-        // so this function stays agent-free and reusable for generation.
+        godot_print!(
+            "[bench] TOTAL setup_benchmark_city_internal: {:.1}s  RSS {}MB",
+            t0.elapsed().as_secs_f32(),
+            rss_mb()
+        );
     }
 
-    /// Builds the 20 km × 20 km benchmark city, saves it to `benchmark.sav`, then exits.
+    /// Spawns 100 k pre-pathed ON_ROAD agents for the benchmark run.
     ///
-    /// Run once with `./run.sh --generate-benchmark --headless`.
-    /// The resulting file is loaded on every subsequent `--benchmark` run.
-    pub fn generate_benchmark_map(&mut self) {
-        let t0 = Instant::now();
-        godot_print!("[gen] Starting benchmark map generation (20×20 grid, 20 km map)");
-
-        self.setup_benchmark_city_internal(20, 0);
-
-        // Explicitly build CCH so it is stored in the save file — the load path skips
-        // rebuild_pathing_if_dirty, so agents can pathfind immediately after load.
-        let t_cch = Instant::now();
-        self.transit_network.rebuild_pathing(&mut self.region_graph);
-        godot_print!("[gen] CCH built: {:.1}s  RSS {}MB  shortcuts={}",
-            t_cch.elapsed().as_secs_f32(), rss_mb(),
-            self.transit_network.cch_graph.shortcuts.len());
-
-        let save_path = "benchmark.sav";
-        match self.save_game_internal(save_path) {
-            Ok(()) => godot_print!("[gen] Saved to '{}'  total: {:.1}s", save_path, t0.elapsed().as_secs_f32()),
-            Err(e) => godot_print!("[gen] ERROR saving: {}", e),
-        }
-
-        self.base_mut().get_tree().unwrap().quit();
-    }
-
-    /// Loads `benchmark.sav`, spawns 100 k agents (IDLE), and begins the simulation loop.
-    ///
-    /// Run with `./run.sh --benchmark --headless`.
-    pub fn run_benchmark_from_save(&mut self) {
-        let save_path = "benchmark.sav";
-        godot_print!("[bench] Loading benchmark map from '{}'", save_path);
-        let t0 = Instant::now();
-
-        match self.load_game_internal(save_path) {
-            Ok(()) => godot_print!("[bench] Loaded: {:.2}s  RSS {}MB  edges={} lanes={}",
-                t0.elapsed().as_secs_f32(), rss_mb(),
-                self.region_graph.edges.len(),
-                self.transit_network.lane_system.lanes.len()),
-            Err(e) => {
-                godot_print!("[bench] ERROR loading '{}': {}", save_path, e);
-                godot_print!("[bench] Run ./run.sh --generate-benchmark --headless first.");
-                return;
-            }
-        }
+    /// Called from `run_benchmark_from_save` on the Godot main thread (while
+    /// holding the `SimCore` lock).
+    pub(crate) fn spawn_benchmark_agents(&mut self) {
+        use crate::simulation::economy::agents::data::Agent;
+        use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_ON_ROAD};
+        use crate::simulation::network::types::TransitFlags;
 
         let t_spawn = Instant::now();
         let agent_count = 100_000usize;
@@ -140,24 +111,23 @@ impl SimulationNode {
             return;
         }
 
-        use crate::simulation::network::types::TransitFlags;
-        use crate::simulation::economy::agents::{TRANSIT_ON_ROAD, MODE_CAR};
-        use crate::simulation::economy::agents::data::Agent;
-
-        // Pre-compute diverse CCH paths spread across the node grid.
-        // Agents use long bounce paths so movement runs for many ticks before re-pathfinding.
         let n_routes = 200usize;
         let mut routes: Vec<Vec<u32>> = Vec::with_capacity(n_routes);
         let t_routes = Instant::now();
         for i in 0..n_routes {
             let s = (i * node_count / n_routes) as u32;
             let e = ((i + n_routes / 2) * node_count / n_routes % node_count) as u32;
-            if s == e { continue; }
+            if s == e {
+                continue;
+            }
             if let Some((_, _, path)) = self.transit_network.cch_graph.find_path(
-                s, e, usize::MAX, &self.region_graph, TransitFlags::CAR,
+                s,
+                e,
+                usize::MAX,
+                &self.region_graph,
+                TransitFlags::CAR,
             ) {
                 if path.len() > 1 {
-                    // Bounce: forward then reverse, repeated 4× → long path before exhaustion.
                     let mut bounce = path.clone();
                     for _ in 0..4 {
                         let mut rev = path.clone();
@@ -169,7 +139,11 @@ impl SimulationNode {
                 }
             }
         }
-        godot_print!("[bench] Pre-computed {} routes in {:.2}s", routes.len(), t_routes.elapsed().as_secs_f32());
+        godot_print!(
+            "[bench] Pre-computed {} routes in {:.2}s",
+            routes.len(),
+            t_routes.elapsed().as_secs_f32()
+        );
 
         if routes.is_empty() {
             godot_print!("[bench] ERROR: no routes found — check CCH and graph connectivity");
@@ -178,9 +152,6 @@ impl SimulationNode {
 
         for i in 0..agent_count {
             let route = routes[i % routes.len()].clone();
-            let start_node = route[0];
-            let pos = self.region_graph.nodes[start_node as usize].pos;
-            // Spread agents along path so they don't all start at the same point.
             let path_len = route.len();
             let start_idx = (i * path_len / agent_count).min(path_len.saturating_sub(2));
             let current_node = route[start_idx];
@@ -198,7 +169,7 @@ impl SimulationNode {
                 money: 100.0,
                 journey_start_time: 0.0,
                 current_building: usize::MAX,
-                target_building: usize::MAX, // no arrival check → no CCH calls mid-path
+                target_building: usize::MAX,
                 current_node,
                 target_node,
                 current_edge: usize::MAX,
@@ -211,28 +182,106 @@ impl SimulationNode {
                 vehicle_type: (i % 4) as u8,
             });
         }
-        godot_print!("[bench] Spawned {} agents (ON_ROAD): {:.2}s  RSS {}MB",
-            self.agents.len(), t_spawn.elapsed().as_secs_f32(), rss_mb());
+        godot_print!(
+            "[bench] Spawned {} agents (ON_ROAD): {:.2}s  RSS {}MB",
+            self.agents.len(),
+            t_spawn.elapsed().as_secs_f32(),
+            rss_mb()
+        );
 
-        // Auto-start simulation — benchmark runs without user input.
         self.time.speed_multiplier = 1.0;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SimulationNode methods — need Godot base access or read from snapshot.
+// ---------------------------------------------------------------------------
+
+impl SimulationNode {
+    /// Builds the 20 km × 20 km benchmark city, saves it to `benchmark.sav`, then exits.
+    ///
+    /// Run once with `./run.sh --generate-benchmark --headless`.
+    pub fn generate_benchmark_map(&mut self) {
+        let t0 = Instant::now();
+        godot_print!("[gen] Starting benchmark map generation (20×20 grid, 20 km map)");
+
+        {
+            let mut core = self.core.lock().unwrap();
+            core.setup_benchmark_city_internal(20, 0);
+            let t_cch = Instant::now();
+            {
+                let c = &mut *core;
+                c.transit_network.rebuild_pathing(&mut c.region_graph);
+            }
+            godot_print!(
+                "[gen] CCH built: {:.1}s  RSS {}MB  shortcuts={}",
+                t_cch.elapsed().as_secs_f32(),
+                rss_mb(),
+                core.transit_network.cch_graph.shortcuts.len()
+            );
+
+            let save_path = "benchmark.sav";
+            match core.save_game_internal(save_path) {
+                Ok(()) => godot_print!(
+                    "[gen] Saved to '{}'  total: {:.1}s",
+                    save_path,
+                    t0.elapsed().as_secs_f32()
+                ),
+                Err(e) => godot_print!("[gen] ERROR saving: {}", e),
+            }
+        }
+
+        self.base_mut().get_tree().unwrap().quit();
+    }
+
+    /// Loads `benchmark.sav`, spawns 100 k ON_ROAD agents, and begins the simulation loop.
+    ///
+    /// Run with `./run.sh --benchmark --headless`.
+    pub fn run_benchmark_from_save(&mut self) {
+        let save_path = "benchmark.sav";
+        godot_print!("[bench] Loading benchmark map from '{}'", save_path);
+        let t0 = Instant::now();
+
+        {
+            let mut core = self.core.lock().unwrap();
+            match core.load_game_internal(save_path) {
+                Ok(()) => godot_print!(
+                    "[bench] Loaded: {:.2}s  RSS {}MB  edges={} lanes={}",
+                    t0.elapsed().as_secs_f32(),
+                    rss_mb(),
+                    core.region_graph.edges.len(),
+                    core.transit_network.lane_system.lanes.len()
+                ),
+                Err(e) => {
+                    godot_print!("[bench] ERROR loading '{}': {}", save_path, e);
+                    godot_print!("[bench] Run ./run.sh --generate-benchmark --headless first.");
+                    return;
+                }
+            }
+            core.spawn_benchmark_agents();
+        }
     }
 
     /// Returns performance statistics for the simulation.
     pub fn get_perf_stats_internal(&self) -> VarDictionary {
+        let snap = self.snapshot.read().unwrap();
         let mut dict = VarDictionary::new();
-        let _ = dict.insert("agent_count", self.agents.len() as i32);
-        let _ = dict.insert("cell_size", self.config.zone_cell_m);
-        let _ = dict.insert("last_tick_ms", self.last_tick_duration);
-        let _ = dict.insert("pathfind_calls", self.agents.pathfind_count as i32);
+        let _ = dict.insert("agent_count", snap.agent_count);
+        let _ = dict.insert("last_tick_ms", snap.last_tick_ms);
+        let _ = dict.insert("pathfind_calls", snap.pathfind_count as i32);
         let _ = dict.insert(
             "fps",
             godot::classes::Engine::singleton().get_frames_per_second(),
         );
+        // cell_size requires locking core — only needed for debug, do it cheaply.
+        let _ = dict.insert(
+            "cell_size",
+            self.core.lock().unwrap().config.zone_cell_m,
+        );
         dict
     }
 
-    /// Logs benchmark results to a CSV file.
+    /// Logs benchmark results to a CSV file. Called from `_process` once per in-game day.
     pub fn log_benchmark_to_csv(&self) {
         use std::io::Write;
         let path = "benchmark_results.csv";
@@ -250,13 +299,14 @@ impl SimulationNode {
                 );
             }
 
+            let snap = self.snapshot.read().unwrap();
             let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
             let version = env!("CARGO_PKG_VERSION");
-            let agents = self.agents.len();
-            let map_size = format!("{}x{}", self.heightmap.width, self.heightmap.height);
-            let tick_ms = self.last_tick_duration;
+            let agents = snap.agent_count;
+            let map_size = format!("{}x{}", snap.heightmap_width, snap.heightmap_height);
+            let tick_ms = snap.last_tick_ms;
             let fps = godot::classes::Engine::singleton().get_frames_per_second();
-            let paths = self.agents.pathfind_count;
+            let paths = snap.pathfind_count;
 
             let _ = writeln!(
                 file,

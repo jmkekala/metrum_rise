@@ -1,18 +1,22 @@
 //! Rendering and visual helper logic for Godot interaction.
 
 use crate::config::ZONING_DEPTH;
-use crate::nodes::simulation_node::SimulationNode;
+use crate::nodes::sim::core::SimCore;
 use crate::simulation::grid::zoning::ZoneType;
 use godot::classes::MultiMesh;
 use godot::prelude::*;
 
-impl SimulationNode {
+impl SimCore {
     /// Updates the zoning visual MultiMeshes for tool feedback.
+    ///
+    /// `hovered_edges` is a pre-converted `Vec<i32>` (the Godot-side wrapper converts
+    /// from `VarArray` before locking `SimCore` to avoid holding the mutex while
+    /// iterating Godot objects).
     pub fn update_zoning_visuals_internal(
         &self,
         mut grid_mm: Gd<MultiMesh>,
         mut paint_mm: Gd<MultiMesh>,
-        hovered_edges: VarArray,
+        hovered_edges: &[i32],
         is_painting: bool,
         side: i32,
         t1: f32,
@@ -31,14 +35,14 @@ impl SimulationNode {
             let edge_count = hovered_edges.len();
 
             for i in 0..edge_count {
-                let edge_idx = hovered_edges.get(i).expect("Valid edge index").to::<i32>();
+                let edge_idx = hovered_edges[i];
                 if let Some(edge) = graph.edges.get(edge_idx as usize) {
                     let mut current_side_sign = if side > 0 { 1.0 } else { -1.0 };
 
                     // B7: Track side-flips for previous edges
                     for j in 0..i {
-                        let e_a = hovered_edges.get(j).expect("Valid edge").to::<i32>();
-                        let e_b = hovered_edges.get(j + 1).expect("Valid edge").to::<i32>();
+                        let e_a = hovered_edges[j];
+                        let e_b = hovered_edges[j + 1];
                         let (ta, tb) = self.get_connection_rust(e_a as usize, e_b as usize);
                         if (ta - tb).abs() < 0.1 {
                             current_side_sign = -current_side_sign;
@@ -49,16 +53,16 @@ impl SimulationNode {
                     let (s_t, e_t) = if edge_count == 1 {
                         (t1.min(t2), t1.max(t2))
                     } else if i == 0 {
-                        let e_next = hovered_edges.get(1).expect("Valid edge").to::<i32>();
+                        let e_next = hovered_edges[1];
                         let (ta, _) = self.get_connection_rust(edge_idx as usize, e_next as usize);
                         (t1.min(ta), t1.max(ta))
                     } else if i == edge_count - 1 {
-                        let e_prev = hovered_edges.get(i - 1).expect("Valid edge").to::<i32>();
+                        let e_prev = hovered_edges[i - 1];
                         let (_, tb) = self.get_connection_rust(e_prev as usize, edge_idx as usize);
                         (tb.min(t2), tb.max(t2))
                     } else {
-                        let e_prev = hovered_edges.get(i - 1).expect("Valid edge").to::<i32>();
-                        let e_next = hovered_edges.get(i + 1).expect("Valid edge").to::<i32>();
+                        let e_prev = hovered_edges[i - 1];
+                        let e_next = hovered_edges[i + 1];
                         let (_, tb_in) =
                             self.get_connection_rust(e_prev as usize, edge_idx as usize);
                         let (ta_out, _) =
@@ -296,8 +300,8 @@ impl SimulationNode {
         1.0 + t * (0.1 - 1.0)
     }
 
-    /// Returns the 12-float transforms for all visible non-car agents (walkers, cyclists, etc.).
-    /// Car agents are excluded — use `get_car_transforms_internal` for those.
+    /// Returns the 12-float transforms for all visible non-car agents.
+    /// Kept for direct (non-snapshot) callers; `build_snapshot` is the hot path.
     pub fn get_agent_transforms_internal(&self) -> PackedFloat32Array {
         use crate::simulation::economy::agents::MODE_CAR;
         let mut buffer = Vec::with_capacity(self.agents.len() * 12);

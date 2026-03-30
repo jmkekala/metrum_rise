@@ -1,7 +1,7 @@
 //! Spatial queries and projection helpers for the simulation node.
 
 use crate::config::{HEIGHT_SCALE, ZONING_DEPTH};
-use crate::nodes::simulation_node::SimulationNode;
+use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction;
 use godot::prelude::*;
@@ -27,7 +27,12 @@ fn get_closest_canonical_node(graph: &RegionGraph, world_pos: Vector3, max_dist:
     best_id
 }
 
-impl SimulationNode {
+impl SimCore {
+    /// Returns the heightmap dimensions as a Godot Vector2.
+    pub fn get_heightmap_size_internal(&self) -> Vector2 {
+        Vector2::new(self.heightmap.width as f32, self.heightmap.height as f32)
+    }
+
     /// Projects a world position onto a road edge.
     pub fn get_projection_data(
         &self,

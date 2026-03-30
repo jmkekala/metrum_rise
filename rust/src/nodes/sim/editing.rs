@@ -1,12 +1,12 @@
 //! Logic for modifying simulation state (road placement, terrain sculpt, zoning).
 
 use crate::config;
-use crate::nodes::simulation_node::SimulationNode;
+use crate::nodes::sim::core::SimCore;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::*;
 
-impl SimulationNode {
+impl SimCore {
     /// Sculpts the terrain with a given radius and strength.
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.push_undo_state(true, false, true, false);

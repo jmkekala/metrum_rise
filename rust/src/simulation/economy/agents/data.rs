@@ -15,6 +15,7 @@ use rand::Rng;
 use soa_derive::StructOfArray;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// Single agent data structure used for SoA generation.
 #[derive(StructOfArray)]
@@ -81,7 +82,7 @@ pub struct AgentSystem {
     /// Global simulation time for this system.
     pub sim_time: f32,
     /// Running count of pathfinding calls this session, used for benchmark logging.
-    pub pathfind_count: u32,
+    pub pathfind_count: AtomicU32,
 }
 
 impl Deref for AgentSystem {
@@ -103,7 +104,7 @@ impl AgentSystem {
         Self {
             agents: AgentVec::new(),
             sim_time: 0.0,
-            pathfind_count: 0,
+            pathfind_count: AtomicU32::new(0),
         }
     }
 
@@ -185,7 +186,7 @@ impl AgentSystem {
     pub fn clear(&mut self) {
         self.agents.clear();
         self.sim_time = 0.0;
-        self.pathfind_count = 0;
+        self.pathfind_count.store(0, Ordering::Relaxed);
     }
 
     /// Remaps the edge indices stored in all agents from [Old ID] to [New ID].

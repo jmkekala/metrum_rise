@@ -1,10 +1,10 @@
 //! SQLite save/load bridge methods for the Godot simulation node.
 
-use crate::nodes::simulation_node::SimulationNode;
+use crate::nodes::sim::core::SimCore;
 use crate::simulation::save::{LoadedSimulation, SaveGameView, load_from_sqlite, save_to_sqlite};
 use std::path::PathBuf;
 
-impl SimulationNode {
+impl SimCore {
     /// Saves the current simulation state into a single-file SQLite snapshot.
     pub(crate) fn save_game_internal(&self, path: &str) -> Result<(), String> {
         let path = PathBuf::from(path);
@@ -38,7 +38,6 @@ impl SimulationNode {
     fn apply_loaded_simulation(&mut self, loaded: LoadedSimulation) {
         self.config = loaded.config;
         self.time = loaded.time;
-        self.time_passed = 0.0;
         self.heightmap = loaded.terrain;
         self.watermap = loaded.water;
         self.region_graph = loaded.graph;

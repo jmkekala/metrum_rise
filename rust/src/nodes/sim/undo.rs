@@ -1,9 +1,8 @@
 //! Undo/Redo system for simulation state.
 
-// No imports needed here
-use crate::nodes::simulation_node::{SimulationNode, SimulationSnapshot};
+use crate::nodes::sim::core::{SimCore, SimulationSnapshot};
 
-impl SimulationNode {
+impl SimCore {
     /// Pushes a new state snapshot onto the undo stack.
     ///
     /// Parameters `inc_terrain`, `inc_water`, `inc_trans_graph`, `inc_zoning` controls
