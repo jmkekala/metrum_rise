@@ -1,15 +1,18 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::*;
 use metrum_rise::simulation::buildings::allocator::BuildingAllocator;
-use metrum_rise::simulation::economy::agents::AgentSystem;
+use metrum_rise::simulation::economy::agents::{
+    AgentSystem, MODE_CAR, TRANSIT_IDLE, TRANSIT_ON_ROAD, VEHICLE_SEDAN,
+};
+use metrum_rise::simulation::economy::agents::data::Agent;
 use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
 use metrum_rise::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
-use metrum_rise::simulation::pathing::cch::CchGraph;
+use metrum_rise::simulation::network::TransitNetwork;
 use std::time::Duration;
 
 struct SharedSetup {
     graph: RegionGraph,
-    cch: CchGraph,
+    transit: TransitNetwork,
     node_a: u32,
     node_b: u32,
     edge_ab: usize,
@@ -19,17 +22,16 @@ fn build_shared() -> SharedSetup {
     let mut graph = RegionGraph::new();
 
     // Minimal 2-node, 1-edge graph.
-    // No TransitNetwork, no ZoningSystem, no Voronoi — zero expensive setup.
+    // No TransitNetwork::add_road() — no Voronoi, no zoning, no CCH-dirty marking.
     let node_a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let node_b = graph.add_node(Vector3::new(500.0, 0.0, 0.0), NodeType::Junction);
 
     // 500 m edge with geometry every 10 m (50 segments).
-    // At 20 m/s and delta=0.016 s, one segment takes ~3 ticks to traverse.
-    // Total traversal: 50 segments × 3 ticks = 150 ticks per one-way pass.
+    // At 50 km/h (~14 m/s) and delta=0.016 s, each segment (~10 m) takes ~0.7 s / 44 ticks.
     let geometry: Vec<Vector3> = (0..=50)
         .map(|i| Vector3::new(i as f32 * 10.0, 0.0, 0.0))
         .collect();
-    let speed_ms = 50.0_f32 / 3.6; // 50 km/h → m/s
+    let speed_ms = 50.0_f32 / 3.6;
     let edge = Edge {
         start_node: node_a,
         end_node: node_b,
@@ -54,104 +56,70 @@ fn build_shared() -> SharedSetup {
     let edge_ab = graph.add_edge(edge);
     graph.rebuild_adjacency_list();
 
-    let cch = CchGraph::build(&graph);
-    SharedSetup {
-        graph,
-        cch,
-        node_a,
-        node_b,
-        edge_ab,
-    }
+    // Build a TransitNetwork with a CCH over this minimal graph.
+    let mut transit = TransitNetwork::new();
+    transit.cch_graph = metrum_rise::simulation::pathing::cch::CchGraph::build(&graph);
+
+    SharedSetup { graph, transit, node_a, node_b, edge_ab }
 }
 
-fn push_idle_agent(agents: &mut AgentSystem, shared: &SharedSetup) {
-    agents.home_building.push(0); // zeroed by safety scrub (empty allocator → 0 >= 0)
-    agents.work_building.push(0);
-    agents.pos_x.push(0.0);
-    agents.pos_y.push(0.0);
-    agents.is_visible.push(true);
-    agents.activity.push(0);
-    agents
-        .transit
-        .push(metrum_rise::simulation::economy::agents::TRANSIT_IDLE);
-    agents.happiness.push(50.0);
-    agents.money.push(100.0);
-    agents.journey_start_time.push(0.0);
-    agents.current_building.push(0);
-    agents.target_building.push(0);
-    agents.current_node.push(shared.node_a);
-    agents.target_node.push(shared.node_b);
-    agents.current_edge.push(usize::MAX);
-    agents.edge_progression.push(0);
-    agents.current_lane.push(0);
-    agents
-        .transit_mode
-        .push(metrum_rise::simulation::economy::agents::MODE_CAR);
-    agents.bezier_p0_x.push(0.0);
-    agents.bezier_p0_y.push(0.0);
-    agents.bezier_p1_x.push(0.0);
-    agents.bezier_p1_y.push(0.0);
-    agents.bezier_p2_x.push(0.0);
-    agents.bezier_p2_y.push(0.0);
-    agents.bezier_p3_x.push(0.0);
-    agents.bezier_p3_y.push(0.0);
-    agents.bezier_t.push(0.0);
-    agents.current_path.push(Vec::new());
-    agents.current_path_index.push(0);
-    agents.has_car.push(true);
-    agents.count += 1;
+fn make_idle_agent(shared: &SharedSetup) -> Agent {
+    Agent {
+        home_building: usize::MAX, // empty allocator → safety scrub blocks activation
+        work_building: usize::MAX,
+        pos_x: 0.0,
+        pos_y: 0.0,
+        is_visible: true,
+        activity: 0,
+        transit: TRANSIT_IDLE,
+        happiness: 50.0,
+        money: 100.0,
+        journey_start_time: 0.0,
+        current_building: usize::MAX,
+        target_building: usize::MAX,
+        current_node: shared.node_a,
+        target_node: shared.node_b,
+        current_edge: usize::MAX,
+        current_lane_id: usize::MAX,
+        lane_distance: 0.0,
+        transit_mode: MODE_CAR,
+        current_path: Vec::new(),
+        current_path_index: 0,
+        has_car: true,
+        vehicle_type: VEHICLE_SEDAN,
+    }
 }
 
 /// ON_ROAD agent with a pre-computed A↔B bounce path long enough to never be
 /// exhausted during the benchmark window.
 ///
-/// One A→B traversal = 150 ticks. Bounce path of 200 entries = 100 round trips
-/// = 15 000 ticks. With warm_up_time=500 ms and 100k agents at ~0.5 ms/tick,
-/// warm-up runs ~1 000 ticks — well within the 15 000-tick budget.
-///
 /// `target_building = usize::MAX` so the arrival check is skipped every tick
 /// and CCH is never called → zero heap allocation in the hot path.
-fn push_on_road_agent(
-    agents: &mut AgentSystem,
-    shared: &SharedSetup,
-    bounce_path: &[u32],
-    progression: isize,
-) {
-    agents.home_building.push(usize::MAX);
-    agents.work_building.push(usize::MAX);
-    agents.pos_x.push(0.0);
-    agents.pos_y.push(0.0);
-    agents.is_visible.push(true);
-    agents.activity.push(0);
-    agents
-        .transit
-        .push(metrum_rise::simulation::economy::agents::TRANSIT_ON_ROAD);
-    agents.happiness.push(50.0);
-    agents.money.push(100.0);
-    agents.journey_start_time.push(0.0);
-    agents.current_building.push(usize::MAX);
-    agents.target_building.push(usize::MAX); // no arrival check → no CCH calls
-    agents.current_node.push(shared.node_a);
-    agents.target_node.push(shared.node_b);
-    agents.current_edge.push(shared.edge_ab);
-    agents.edge_progression.push(progression);
-    agents.current_lane.push(0);
-    agents
-        .transit_mode
-        .push(metrum_rise::simulation::economy::agents::MODE_CAR);
-    agents.bezier_p0_x.push(0.0);
-    agents.bezier_p0_y.push(0.0);
-    agents.bezier_p1_x.push(0.0);
-    agents.bezier_p1_y.push(0.0);
-    agents.bezier_p2_x.push(0.0);
-    agents.bezier_p2_y.push(0.0);
-    agents.bezier_p3_x.push(0.0);
-    agents.bezier_p3_y.push(0.0);
-    agents.bezier_t.push(0.0);
-    agents.current_path.push(bounce_path.to_vec());
-    agents.current_path_index.push(0);
-    agents.has_car.push(true);
-    agents.count += 1;
+fn make_on_road_agent(shared: &SharedSetup, bounce_path: Vec<u32>, progression: f32) -> Agent {
+    Agent {
+        home_building: usize::MAX,
+        work_building: usize::MAX,
+        pos_x: 0.0,
+        pos_y: 0.0,
+        is_visible: true,
+        activity: 0,
+        transit: TRANSIT_ON_ROAD,
+        happiness: 50.0,
+        money: 100.0,
+        journey_start_time: 0.0,
+        current_building: usize::MAX,
+        target_building: usize::MAX, // no arrival check → no CCH calls
+        current_node: shared.node_a,
+        target_node: shared.node_b,
+        current_edge: shared.edge_ab,
+        current_lane_id: usize::MAX,
+        lane_distance: progression,
+        transit_mode: MODE_CAR,
+        current_path: bounce_path,
+        current_path_index: 0,
+        has_car: true,
+        vehicle_type: VEHICLE_SEDAN,
+    }
 }
 
 fn bench_agent_tick(c: &mut Criterion) {
@@ -162,17 +130,10 @@ fn bench_agent_tick(c: &mut Criterion) {
     group.warm_up_time(Duration::from_millis(500));
     group.measurement_time(Duration::from_secs(2));
 
-    // --- ON_ROAD: measures polyline traversal and lane-offset maths. ---
+    // --- ON_ROAD: measures lane traversal and movement maths. ---
     // 200-entry bounce path, empty allocator → CCH never called, no arena bloat.
-    // Memory: 200 × 4 bytes × 100k agents = 80 MB peak.
     let bounce_path: Vec<u32> = (0..200)
-        .map(|i| {
-            if i % 2 == 0 {
-                shared.node_a
-            } else {
-                shared.node_b
-            }
-        })
+        .map(|i| if i % 2 == 0 { shared.node_a } else { shared.node_b })
         .collect();
 
     for &count in &[1_000usize, 10_000, 100_000] {
@@ -183,19 +144,19 @@ fn bench_agent_tick(c: &mut Criterion) {
                 let mut agents = AgentSystem::new();
                 let mut graph = shared.graph.clone();
                 let mut allocator = BuildingAllocator::new();
+                let transit = &shared.transit;
 
-                let seg_count = shared.graph.edges[shared.edge_ab].physical_geometry.len() as isize;
+                let seg_count = shared.graph.edges[shared.edge_ab].physical_length;
                 for i in 0..count {
-                    // Spread agents across the first half of the edge so they don't all
-                    // hit the node boundary simultaneously.
-                    let prog = (i as isize) % (seg_count / 2).max(1);
-                    push_on_road_agent(&mut agents, &shared, &bounce_path, prog);
+                    // Spread agents across the first half of the edge.
+                    let prog = i as f32 % (seg_count / 2.0).max(1.0);
+                    agents.agents.push(make_on_road_agent(&shared, bounce_path.clone(), prog));
                 }
 
                 b.iter(|| {
                     agents.tick(
                         black_box(&mut allocator),
-                        black_box(&shared.cch),
+                        black_box(transit),
                         black_box(&mut graph),
                         black_box(0.016),
                     );
@@ -215,15 +176,16 @@ fn bench_agent_tick(c: &mut Criterion) {
                 let mut agents = AgentSystem::new();
                 let mut graph = shared.graph.clone();
                 let mut allocator = BuildingAllocator::new();
+                let transit = &shared.transit;
 
                 for _ in 0..count {
-                    push_idle_agent(&mut agents, &shared);
+                    agents.agents.push(make_idle_agent(&shared));
                 }
 
                 b.iter(|| {
                     agents.tick(
                         black_box(&mut allocator),
-                        black_box(&shared.cch),
+                        black_box(transit),
                         black_box(&mut graph),
                         black_box(0.016),
                     );

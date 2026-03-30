@@ -938,7 +938,7 @@ mod tests {
             }
         } // Below gate threshold (< 20.0)
 
-        let mut noise = NoiseSystem::new(&map_cfg);
+        let noise = NoiseSystem::new(&map_cfg);
         let mut agents = AgentSystem::new();
         let mut network = TransitNetwork::new();
         let mut graph = RegionGraph::new();

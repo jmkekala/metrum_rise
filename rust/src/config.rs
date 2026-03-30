@@ -49,6 +49,6 @@ pub const BORDER_EXTENSION_M: f32 = 10.0;
 pub const BUILDING_VISUAL_SCALE: f32 = 10.0;
 
 /// Minimum distance (metres) between a building's frontage node and a junction.
-/// If a building is closer, its frontage will snap to the nearest junction node to prevent
-/// road segments that are too short for stable junction clipping (Bug B30).
+/// If a building is closer, its frontage will snap to the nearest junction node.
+/// This prevents road segments that are too short for stable junction clipping.
 pub const MIN_FRONTAGE_DISTANCE: f32 = 8.0;

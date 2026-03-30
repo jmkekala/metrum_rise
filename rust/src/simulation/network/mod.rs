@@ -617,3 +617,5 @@ pub mod test_uturn;
 pub mod test_ped_junction;
 /// Automated tests for building frontage snapping and remapping.
 pub mod test_frontage_snapping;
+/// Automated tests for building frontage nodes on opposite sides.
+pub mod test_frontage_opposite;

@@ -2,7 +2,7 @@
 mod tests {
     use crate::simulation::network::graph::{RegionGraph, Edge};
     use crate::simulation::network::types::{NodeType, TransitType, TransitFlags, EdgeClass};
-    use crate::simulation::network::lanes::{LaneSystem, LaneType};
+    use crate::simulation::network::lanes::LaneSystem;
     use godot::prelude::Vector3;
 
     #[test]
@@ -60,13 +60,14 @@ mod tests {
                             // If it's a connection lane (edge_id == MAX)
                             if next_l.edge_id == usize::MAX {
                                 // Find where this connection leads
-                                if let Some(&target_id) = next_l.next_lanes.first() {
-                                    let target_l = &lanes.lanes[target_id];
-                                    // If target is on the SAME edge as l, it's a crossing
-                                    if target_l.edge_id == l.edge_id && l.edge_id != usize::MAX {
-                                        crossing_count += 1;
+                                    if let Some(&target_id) = next_l.next_lanes.first() {
+                                        let target_l = &lanes.lanes[target_id];
+                                        // A connection at a Frontage node is only valid if it preserves the physical side (lane_idx)
+                                        // Any connection that changes lane_idx is a crossing.
+                                        if target_l.lane_idx != l.lane_idx {
+                                            crossing_count += 1;
+                                        }
                                     }
-                                }
                             }
                         }
                     }

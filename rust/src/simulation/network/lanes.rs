@@ -405,7 +405,12 @@ impl LaneSystem {
                     let is_same_edge = m_start.edge_idx == m_end.edge_idx;
                     let deg = graph.adjacency[node_id].len();
                     let node_type = node_ref.node_type;
-                    if node_type == NodeType::Frontage && is_same_edge { continue; }
+                    
+                    // Frontage Node Restriction: No crossings Allowed.
+                    // Strictly forbid any side-switching (lane_idx change) at frontage nodes.
+                    if node_type == NodeType::Frontage && (is_same_edge || m_start.lane_idx != m_end.lane_idx) {
+                        continue;
+                    }
 
                     let skip_visual = is_same_edge && deg <= 2 && crosswalks_added >= 2;
                     let is_crosswalk = is_same_edge && num_steps == 1 && !skip_visual;
