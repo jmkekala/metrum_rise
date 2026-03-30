@@ -18,20 +18,10 @@ use std::cell::RefCell;
 use std::sync::atomic::Ordering;
 
 // ---------------------------------------------------------------------------
-// IDM (Intelligent Driver Model) constants and helpers.
+// IDM (Intelligent Driver Model) constants — defined in config.rs.
 // ---------------------------------------------------------------------------
 
-/// Maximum acceleration in m/s².
-const IDM_A_MAX: f32 = 1.5;
-/// Comfortable braking deceleration in m/s². Reserved for the full IDM approach-speed term.
-#[allow(dead_code)]
-const IDM_B: f32 = 3.0;
-/// Desired time headway in seconds.
-const IDM_T_HEAD: f32 = 1.5;
-/// Minimum gap at standstill in metres.
-const IDM_S_MIN: f32 = 2.0;
-/// Effective vehicle length (bumper-to-bumper) in metres.
-const CAR_LENGTH: f32 = 4.5;
+use crate::config::{CAR_LENGTH, IDM_A_MAX, IDM_S_MIN, IDM_T_HEAD};
 
 /// Returns the bumper-to-bumper gap to the nearest vehicle ahead on `lane_id`
 /// at `my_dist`. `occ` must be sorted by `(lane_id, distance)`.

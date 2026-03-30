@@ -206,6 +206,14 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 - **Intersection speed**: cars traversing a bezier intersection lane use `max(speed*0.5, 2.0)` — half IDM speed, floored at 2 m/s.
 - **Congestion feedback** (`AgentSystem::update_edge_congestion`, called from `core.rs` after each tick): accumulates per-edge average speed into `edge_speed_sum`/`edge_agent_cnt` scratch buffers, then writes `Edge::current_congestion = 1 − avg_speed/speed_limit` for occupied edges. O(A + E) sequential. Feeds the CCH metric customization phase.
 
+### Camera Frustum Culling (item 74)
+- **`SimCore::camera_aabb: (f32, f32, f32, f32)`** — world-space (x_min, x_max, z_min, z_max) AABB updated each frame from the Godot main thread via `SimCommand::SetCameraAabb`.
+- **`build_snapshot()`** skips any agent whose `(pos_x, pos_y)` lies outside the AABB. When `x_min >= x_max` the filter is disabled (default). O(A) with no extra allocation.
+- **`config::AGENT_CULL_FAR_M = 4000.0`** — fallback clip distance when the camera ray is nearly horizontal (avoids an infinite ground intersection at shallow angles).
+- **`config::AGENT_CULL_PADDING_M = 200.0`** — AABB padding added in GDScript to avoid pop-in at the viewport edge.
+- **`agents.gd::_update_camera_aabb()`** — called every `_process` frame; casts rays through the four screen corners, intersects with y=0 when `dir.y < -1e-3`, falls back to `AGENT_CULL_FAR_M` otherwise. Sends result via `SimulationNode.set_camera_aabb()`.
+- **Benchmark result** (i9-12900K, RX 7900 XTX, 100k agents, zoomed-in district view): ~3× wall-clock speedup vs no culling. Full-map benchmark camera shows no benefit since all agents are inside the AABB.
+
 ### Threading Architecture (items 73 + 19)
 - **`nodes/sim/core.rs`** — defines `SimCore` (all 19 simulation fields), `RenderSnapshot` (pre-computed `Vec<f32>` transforms + dirty flags, `Send+Sync`), and `SimCommand` enum (`SetSpeed(f32)`, `Quit`).
 - **Background sim thread**: `run_sim_thread(Arc<Mutex<SimCore>>, Arc<RwLock<RenderSnapshot>>, Receiver<SimCommand>)` — loops at ~60 Hz. Locks `SimCore`, ticks agents (parallel), runs daily economy ticks via `time.process_delta()`, builds snapshot, releases lock, writes snapshot, sleeps for remainder of frame.
@@ -289,8 +297,7 @@ At ~200k agents the primary remaining wall is (1) the O(B) building scan in ever
 
 The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) install the two-wire harness. v0.2 validates it by shipping bicycle support — the simplest possible new mode (no VehicleSystem, no WAITING state, no timetables). If bicycles work correctly under load, every subsequent mode (taxi, bus, rail) is an incremental addition, not a structural change.
 
-**Implementation order matters.** Items 73, 19, 18, and 25 are complete (see Implemented Systems). Item 30 (bicycle) builds on the `transit_mode` and `allowed_mask` infrastructure already in place. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete.
-74. **Camera-frustum culling of agent transform uploads**: `build_snapshot()` in `sim/core.rs` currently packs transforms for all agents regardless of visibility. At 100k agents this uploads ~4.8 MB/frame to the GPU even when the camera shows only a fraction of the map, saturating the GPU at 100% before any rendering work. Fix: add `camera_aabb: (f32, f32, f32, f32)` (world-space x_min, x_max, z_min, z_max) to `RenderSnapshot` and update it from the Godot main thread via a `SimCommand::SetCameraAabb` variant. In `build_snapshot()`, skip any agent whose `(pos_x, pos_y)` lies outside the AABB. O(A) filter with no extra allocation — same iteration already in progress. The snapshot write drops from O(A_total) to O(A_visible). Expected GPU load reduction: 60–80% at typical camera zoom on a 100k-agent city. Prerequisite for reaching 250k agents without GPU bottleneck. Camera AABB should be padded by ~200 m to avoid pop-in at the viewport edge.
+**Implementation order matters.** Items 73, 19, 18, 25, and 74 are complete (see Implemented Systems). Item 30 (bicycle) builds on the `transit_mode` and `allowed_mask` infrastructure already in place. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete.
 
 30. **Bicycle support** — first new transport mode; validates the multi-modal foundation (v0.01 goals 3 and 4):
     - Add `BIKE=1<<2` bit to `TransitFlags`. Set it on all edges with a sidewalk or dedicated cycle path — at minimum every `Standard` road edge. Bridges and tunnels: same flag if their geometry accommodates a cycle lane.

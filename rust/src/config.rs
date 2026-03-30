@@ -65,6 +65,22 @@ pub const AGENT_CULL_FAR_M: f32 = 4000.0;
 /// sim thread. Prevents agents from popping in at the exact viewport edge due to AABB latency.
 pub const AGENT_CULL_PADDING_M: f32 = 200.0;
 
+// IDM (Intelligent Driver Model) — Car Physics
+
+/// Maximum acceleration in m/s². Governs how quickly cars reach free-flow speed.
+/// Increase for more aggressive acceleration from standstill.
+pub const IDM_A_MAX: f32 = 6.0;
+/// Comfortable braking deceleration in m/s². Reserved for the full IDM approach-speed term.
+pub const IDM_B: f32 = 6.0;
+/// Desired time headway in seconds. Smaller values produce tighter following distances.
+pub const IDM_T_HEAD: f32 = 0.5;
+/// Minimum bumper-to-bumper gap at standstill in metres.
+pub const IDM_S_MIN: f32 = 0.1;
+/// Effective vehicle length used for IDM gap calculation in metres.
+/// Measured from .glb meshes: sedan/sports 2.55 m, SUV 2.85 m. Using 2.6 m as a
+/// representative average; adjust if packing feels too tight or loose.
+pub const CAR_LENGTH: f32 = 2.6;
+
 /// Minimum distance (metres) between a building's frontage node and a junction.
 /// If a building is closer, its frontage will snap to the nearest junction node.
 /// This prevents road segments that are too short for stable junction clipping.

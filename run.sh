@@ -3,6 +3,7 @@
 
 RELEASE=0
 GODOT_ARGS=()
+export RUST_BACKTRACE=1
 for arg in "$@"; do
     if [ "$arg" = "--release" ]; then
         RELEASE=1
