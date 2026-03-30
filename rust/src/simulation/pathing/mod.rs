@@ -7,6 +7,7 @@
 pub mod astar;
 pub mod cch;
 pub mod cost;
+pub mod flow_field;
 
 
 #[cfg(test)]

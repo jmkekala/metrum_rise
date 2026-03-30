@@ -10,6 +10,7 @@ use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::simulation::network::TransitNetwork;
+use crate::simulation::pathing::flow_field::FlowField;
 use godot::prelude::*;
 use rand::Rng;
 use rayon::prelude::*;
@@ -196,25 +197,59 @@ impl AgentSystem {
                                 *s_cur_n.get_mut(i) = origin_node;
                                 *s_tgt_n.get_mut(i) = target_node;
 
-                                // decide_transit_mode needs &mut self — use inline CCH query
-                                let search_flags = if *s_has_car.get(i) {
-                                    TransitFlags::CAR
+                                let has_car = *s_has_car.get(i);
+                                let mode = if has_car { MODE_CAR } else { MODE_WALK };
+                                let search_flags = if has_car { TransitFlags::CAR } else { TransitFlags::FOOT };
+
+                                // Try flow field first (O(path_len) chain walk, no Dijkstra).
+                                // Flow fields route to the nearest building of the target zone;
+                                // they are only used for work/shop trips (next_act != 0).
+                                // Home trips (next_act == 0) use CCH since home is a specific building.
+                                let target_zone = if next_act == 1 {
+                                    Some(allocator.buildings[next_bldg].zone_type)
                                 } else {
-                                    TransitFlags::FOOT
+                                    None // shop or home — flow field valid for shop too
                                 };
-                                if let Some((_, _, path)) = transit_network.cch_graph.find_path(
-                                    origin_node, target_node, usize::MAX, graph, search_flags,
-                                ) {
-                                    pathfind_count.fetch_add(1, Ordering::Relaxed);
+                                let ff: Option<&FlowField> = target_zone.and_then(|z| {
+                                    if has_car {
+                                        transit_network.flow_fields.car(z)
+                                    } else {
+                                        transit_network.flow_fields.foot(z)
+                                    }
+                                });
+
+                                let path_opt: Option<Vec<u32>> = ff
+                                    .and_then(|f| f.build_path(origin_node, graph.nodes.len() + 1))
+                                    .or_else(|| {
+                                        // Fall back to CCH for home trips, novel destinations,
+                                        // or when flow field is not yet built.
+                                        pathfind_count.fetch_add(1, Ordering::Relaxed);
+                                        transit_network.cch_graph
+                                            .find_path(origin_node, target_node, usize::MAX, graph, search_flags)
+                                            .map(|(_, _, p)| p)
+                                    });
+
+                                if let Some(path) = path_opt {
+                                    // Update target_building to match where the flow field actually leads.
+                                    let effective_tgt = if let Some(f) = ff {
+                                        let dest_node = path.last().copied().unwrap_or(target_node);
+                                        let nearest = f.nearest_building[origin_node as usize];
+                                        if nearest != usize::MAX
+                                            && allocator.buildings[nearest].frontage_node == dest_node
+                                        {
+                                            nearest
+                                        } else {
+                                            next_bldg
+                                        }
+                                    } else {
+                                        next_bldg
+                                    };
+
                                     if path.len() > 1 {
-                                        *s_tgt_b.get_mut(i) = next_bldg;
+                                        *s_tgt_b.get_mut(i) = effective_tgt;
                                         *s_activity.get_mut(i) = next_act;
                                         *s_jstart.get_mut(i) = sim_time;
-                                        *s_tmode.get_mut(i) = if *s_has_car.get(i) {
-                                            MODE_CAR
-                                        } else {
-                                            MODE_WALK
-                                        };
+                                        *s_tmode.get_mut(i) = mode;
                                         *s_path.get_mut(i) = path;
                                         *s_path_idx.get_mut(i) = 1;
                                         *s_lane_id.get_mut(i) = usize::MAX;
@@ -222,7 +257,7 @@ impl AgentSystem {
                                         *s_visible.get_mut(i) = true;
                                         *s_transit.get_mut(i) = TRANSIT_DEPARTING;
                                     } else if origin_node == target_node {
-                                        *s_tgt_b.get_mut(i) = next_bldg;
+                                        *s_tgt_b.get_mut(i) = effective_tgt;
                                         *s_activity.get_mut(i) = next_act;
                                         *s_jstart.get_mut(i) = sim_time;
                                         *s_tmode.get_mut(i) = MODE_WALK;
@@ -280,30 +315,43 @@ impl AgentSystem {
                         let mut remaining_dist = speed * delta;
 
                         while remaining_dist > 0.0 {
-                            // 1. Init path if missing
+                            // 1. Init path if missing — try flow field first, fall back to CCH.
                             if s_path.get(i).is_empty() {
-                                pathfind_count.fetch_add(1, Ordering::Relaxed);
-                                let search_flags = if *s_tmode.get(i) == MODE_WALK {
-                                    TransitFlags::FOOT
-                                } else {
-                                    TransitFlags::CAR
-                                };
-                                let mut path_found = false;
-                                if let Some((_, _, path)) = transit_network.cch_graph.find_path(
-                                    *s_cur_n.get(i),
-                                    *s_tgt_n.get(i),
-                                    usize::MAX,
-                                    graph,
-                                    search_flags,
-                                ) {
-                                    if path.len() > 1 {
-                                        *s_path.get_mut(i) = path;
-                                        *s_path_idx.get_mut(i) = 1;
-                                        *s_lane_id.get_mut(i) = usize::MAX;
-                                        path_found = true;
+                                let cur_n = *s_cur_n.get(i);
+                                let tgt_n = *s_tgt_n.get(i);
+                                let is_walk = *s_tmode.get(i) == MODE_WALK;
+                                let search_flags = if is_walk { TransitFlags::FOOT } else { TransitFlags::CAR };
+
+                                // Try flow field: look up by target building's zone type.
+                                let t_bldg = *s_tgt_b.get(i);
+                                let ff: Option<&FlowField> = if t_bldg != usize::MAX
+                                    && t_bldg < allocator.buildings.len()
+                                {
+                                    let zone = allocator.buildings[t_bldg].zone_type;
+                                    if is_walk {
+                                        transit_network.flow_fields.foot(zone)
+                                    } else {
+                                        transit_network.flow_fields.car(zone)
                                     }
-                                }
-                                if !path_found {
+                                } else {
+                                    None
+                                };
+
+                                let path_opt: Option<Vec<u32>> = ff
+                                    .and_then(|f| f.build_path(cur_n, graph.nodes.len() + 1))
+                                    .filter(|p| p.len() > 1)
+                                    .or_else(|| {
+                                        pathfind_count.fetch_add(1, Ordering::Relaxed);
+                                        transit_network.cch_graph
+                                            .find_path(cur_n, tgt_n, usize::MAX, graph, search_flags)
+                                            .and_then(|(_, _, p)| if p.len() > 1 { Some(p) } else { None })
+                                    });
+
+                                if let Some(path) = path_opt {
+                                    *s_path.get_mut(i) = path;
+                                    *s_path_idx.get_mut(i) = 1;
+                                    *s_lane_id.get_mut(i) = usize::MAX;
+                                } else {
                                     *s_transit.get_mut(i) = TRANSIT_IDLE;
                                     *s_visible.get_mut(i) = false;
                                     break;

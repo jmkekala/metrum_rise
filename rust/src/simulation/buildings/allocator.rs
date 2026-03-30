@@ -75,6 +75,9 @@ pub struct BuildingAllocator {
     pub vacancy_pos: Vec<usize>,
     /// Recalculates inverted indices if true.
     pub dirty_index: bool,
+    /// Per-zone dirty flags set when buildings of a zone type are spawned or removed.
+    /// Drained by `SimCore::simulate_tick_internal` to mark flow fields for rebuild.
+    pub dirty_zones: [bool; 6],
     /// Metadata for each (ZoneType, variant_id) pair.
     pub model_metadata: HashMap<(u8, u8), ModelMetadata>,
 }
@@ -106,6 +109,7 @@ impl BuildingAllocator {
             vacancy_index: [const { Vec::new() }; 6],
             vacancy_pos: Vec::new(),
             dirty_index: true,
+            dirty_zones: [false; 6],
             model_metadata: HashMap::new(),
         }
     }
@@ -175,6 +179,8 @@ impl BuildingAllocator {
                 let b_width = b.width_cells;
                 let b_depth = b.depth_cells;
                 let b_frontage_node = b.frontage_node;
+                let b_zone = b.zone_type;
+                self.dirty_zones[b_zone as usize] = true;
                 // `b` is no longer borrowed past this point; safe to pass `self` mutably below.
 
                 // Merge the two half-edges back into one. If frontage_node has degree > 2
@@ -367,6 +373,7 @@ impl BuildingAllocator {
                         
                         spawned_this_tick += 1;
                         self.dirty_index = true;
+                        self.dirty_zones[z_type as usize] = true;
 
                         // Subtract from demand
                         match z_type {
@@ -663,6 +670,16 @@ impl BuildingAllocator {
             return None;
         }
         Some(list[rng.gen_range(0..list.len())])
+    }
+
+    /// Returns `(frontage_node, building_index)` pairs for all buildings of `zone`.
+    ///
+    /// Used by [`FlowFieldSystem::rebuild_dirty`] to seed the multi-source Dijkstra.
+    pub fn get_sources_for_zone(&self, zone: ZoneType) -> Vec<(u32, usize)> {
+        self.zone_index[zone as usize]
+            .iter()
+            .map(|&idx| (self.buildings[idx].frontage_node, idx))
+            .collect()
     }
 
     /// Pick a random building from any of the specified zone types. O(1).

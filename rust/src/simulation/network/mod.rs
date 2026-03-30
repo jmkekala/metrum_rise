@@ -21,6 +21,7 @@ use crate::config;
 use std::collections::HashSet;
 
 use crate::simulation::pathing::cch::CchGraph;
+use crate::simulation::pathing::flow_field::FlowFieldSystem;
 use graph::*;
 use render::TransitRenderer;
 use render::road::RoadRenderer;
@@ -44,6 +45,8 @@ pub struct TransitNetwork {
     /// `rebuild_intersection_clips` on every edge add. The caller must call
     /// `finalize_bulk_load` once all edges have been added.
     pub bulk_load: bool,
+    /// Per-zone-type flow fields for O(1) agent routing. Rebuilt lazily when dirty.
+    pub flow_fields: FlowFieldSystem,
 }
 
 impl TransitNetwork {
@@ -56,6 +59,7 @@ impl TransitNetwork {
             zoning_dirty_edges: HashSet::new(),
             lane_system: lanes::LaneSystem::new(),
             bulk_load: false,
+            flow_fields: FlowFieldSystem::new(),
         }
     }
 
@@ -412,12 +416,15 @@ impl TransitNetwork {
     }
 
     /// Rebuilds the routing CCH hierarchy from scratch or perform incremental customization.
+    /// Always marks flow fields dirty when topology changes — caller must call
+    /// `flow_fields.rebuild_dirty` afterwards with the building allocator.
     pub fn rebuild_pathing(&mut self, graph: &mut RegionGraph) {
         // Topology changes (Phase 1)
         if !self.cch_dirty_chunks.is_empty() {
             self.cch_graph = CchGraph::build(graph);
             self.cch_dirty_chunks.clear();
             self.metric_dirty = false; // Phase 1 includes customize
+            self.flow_fields.mark_all_dirty();
         } else if self.metric_dirty {
             // Metric-only change (Phase 2)
             self.cch_graph.customize(graph);
