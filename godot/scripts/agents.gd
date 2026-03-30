@@ -201,9 +201,39 @@ func _ready():
 
 
 func _process(delta):
+	_update_camera_aabb()
 	# Refresh visual swarms very often for smooth movement
 	if Engine.get_frames_drawn() % 5 == 0:
 		update_swarm()
+
+func _update_camera_aabb():
+	var camera = get_viewport().get_camera_3d()
+	if not camera:
+		return
+	# Project the four near-plane corners onto y=0 to get a world-space XZ rect.
+	# We use the viewport size and unproject to get world rays, then find the XZ
+	# intersection with the ground plane (y = 0).
+	var vp_size = get_viewport().get_visible_rect().size
+	var corners = [
+		Vector2(0, 0),
+		Vector2(vp_size.x, 0),
+		Vector2(vp_size.x, vp_size.y),
+		Vector2(0, vp_size.y),
+	]
+	var x_min = INF; var x_max = -INF
+	var z_min = INF; var z_max = -INF
+	for c in corners:
+		var origin = camera.project_ray_origin(c)
+		var dir = camera.project_ray_normal(c)
+		# Intersect ray with y = 0 plane: t = -origin.y / dir.y
+		if abs(dir.y) > 1e-4:
+			var t = -origin.y / dir.y
+			var hit = origin + dir * t
+			x_min = min(x_min, hit.x); x_max = max(x_max, hit.x)
+			z_min = min(z_min, hit.z); z_max = max(z_max, hit.z)
+	if x_min < x_max:
+		# Pad by 200 m to avoid pop-in at viewport edge.
+		simulation_node.set_camera_aabb(x_min - 200.0, x_max + 200.0, z_min - 200.0, z_max + 200.0)
 
 func update_swarm():
 	# Walkers

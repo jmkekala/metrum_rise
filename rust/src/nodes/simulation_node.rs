@@ -365,6 +365,19 @@ impl SimulationNode {
         let _ = self.cmd_tx.send(SimCommand::SetSpeed(speed.max(0.0)));
     }
 
+    /// Updates the camera world-space AABB used to cull agent transform uploads.
+    ///
+    /// Call once per frame from GDScript with the camera's visible world rect,
+    /// padded by ~200 m to avoid pop-in at the viewport edge. Agents outside the
+    /// rect are excluded from the next `RenderSnapshot` transform buffers, reducing
+    /// GPU upload cost from O(A_total) to O(A_visible).
+    #[func]
+    pub fn set_camera_aabb(&mut self, x_min: f32, x_max: f32, z_min: f32, z_max: f32) {
+        let _ = self
+            .cmd_tx
+            .send(SimCommand::SetCameraAabb(x_min, x_max, z_min, z_max));
+    }
+
     /// Returns the current simulation day count.
     #[func]
     pub fn get_current_day(&self) -> u32 {
@@ -745,6 +758,7 @@ impl INode3D for SimulationNode {
             benchmark_mode,
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,
+            camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
         };
 
         let core_arc = Arc::new(Mutex::new(core));
