@@ -29,6 +29,9 @@ pub struct Lane {
     pub geometry: Vec<Vector3>,
     /// Total length in meters.
     pub length: f32,
+    /// Cumulative distance at each geometry vertex: `cum_dist[i]` = distance from `geometry[0]` to `geometry[i]`.
+    /// Used for O(log N) position interpolation via binary search.
+    pub cum_dist: Vec<f32>,
     /// The travel type of this lane.
     pub lane_type: LaneType,
     /// Whether this is a visual crosswalk.
@@ -45,11 +48,25 @@ impl Default for Lane {
             lane_idx: 0,
             geometry: Vec::new(),
             length: 0.0,
+            cum_dist: Vec::new(),
             lane_type: LaneType::Vehicle,
             is_crosswalk: false,
             next_lanes: Vec::new(),
         }
     }
+}
+
+// Builds the cumulative-distance prefix sum for a lane's geometry.
+fn build_cum_dist(geometry: &[Vector3]) -> Vec<f32> {
+    let mut v = Vec::with_capacity(geometry.len());
+    let mut acc = 0.0;
+    for i in 0..geometry.len() {
+        if i > 0 {
+            acc += geometry[i - 1].distance_to(geometry[i]);
+        }
+        v.push(acc);
+    }
+    v
 }
 
 /// System for managing road and intersection lanes.
@@ -142,6 +159,7 @@ impl LaneSystem {
                     length += geometry[j].distance_to(geometry[j+1]);
                 }
 
+                let cum_dist = build_cum_dist(&geometry);
                 let new_lane_id = self.lanes.len();
                 self.lanes.push(Lane {
                     edge_id: edge_idx,
@@ -149,6 +167,7 @@ impl LaneSystem {
                     lane_idx,
                     geometry,
                     length,
+                    cum_dist,
                     lane_type,
                     is_crosswalk: false,
                     next_lanes: Vec::new(),
@@ -311,6 +330,7 @@ impl LaneSystem {
                         }
                     }
 
+                    let conn_cum_dist = build_cum_dist(&conn_geom);
                     let conn_lane_id = self.lanes.len();
                     self.lanes.push(Lane {
                         edge_id: usize::MAX,
@@ -318,6 +338,7 @@ impl LaneSystem {
                         lane_idx: 0,
                         geometry: conn_geom,
                         length: conn_len,
+                        cum_dist: conn_cum_dist,
                         lane_type: LaneType::Vehicle,
                         is_crosswalk: false,
                         next_lanes: vec![out_lane_id], // points to the out road lane
@@ -419,6 +440,7 @@ impl LaneSystem {
                     let mut dist = 0.0;
                     for k in 0..steps.len().saturating_sub(1) { dist += steps[k].distance_to(steps[k+1]); }
 
+                    let steps_cum_dist = build_cum_dist(&steps);
                     let conn_id = self.lanes.len();
                     self.lanes.push(Lane {
                         edge_id: usize::MAX,
@@ -426,6 +448,7 @@ impl LaneSystem {
                         lane_idx: 0,
                         geometry: steps,
                         length: dist,
+                        cum_dist: steps_cum_dist,
                         lane_type: LaneType::Foot,
                         is_crosswalk,
                         next_lanes: vec![m_end.out_id],

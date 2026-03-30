@@ -56,6 +56,10 @@ impl AgentSystem {
             }
         }
 
+        // Scratch buffers reused across all agents to avoid per-tick heap allocations.
+        let mut valid_lanes: Vec<usize> = Vec::new();
+        let mut valid_conns: Vec<usize> = Vec::new();
+
         // Swarm Iteration
         for i in 0..self.len() {
             self.current_node[i] = graph.get_valid_node(self.current_node[i]);
@@ -231,7 +235,7 @@ impl AgentSystem {
                                     
                                     // Choose a lane
                                     if let Some(edge_lanes) = transit_network.lane_system.edge_lanes.get(&best_e) {
-                                        let mut valid_lanes = Vec::new();
+                                        valid_lanes.clear();
                                         for &l_id in edge_lanes {
                                             let lane = &transit_network.lane_system.lanes[l_id];
                                             if lane.is_fwd == is_fwd {
@@ -344,7 +348,7 @@ impl AgentSystem {
                                     if let Some(best_e) = graph.get_edge_between_nodes(self.current_node[i], next_node) {
                                         
                                         // Pick a connection lane leading to best_e
-                                        let mut valid_conns = Vec::new();
+                                        valid_conns.clear();
                                         for &c_id in &lane.next_lanes {
                                             if c_id < transit_network.lane_system.lanes.len() {
                                                 let conn_lane = &transit_network.lane_system.lanes[c_id];
@@ -425,36 +429,25 @@ impl AgentSystem {
                             let end = l.geometry.last().unwrap();
                             self.pos_x[i] = end.x;
                             self.pos_y[i] = end.z;
-                        } else if l.geometry.len() >= 2 {
-                            let mut curr = 0.0;
-                            let mut found = false;
-                            for j in 0..l.geometry.len() - 1 {
-                                let p0 = l.geometry[j];
-                                let p1 = l.geometry[j+1];
-                                let d = p0.distance_to(p1);
-                                if curr + d >= dist {
-                                    let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
-                                    let mut out = p0.lerp(p1, t.clamp(0.0, 1.0));
-                                    
-                                    if self.transit_mode[i] == MODE_WALK && d > 1e-5 {
-                                        let tangent = (p1 - p0) / d;
-                                        let normal = Vector3::new(-tangent.z, 0.0, tangent.x);
-                                        let jitter = (f32::sin(i as f32 * 4.0) + f32::cos(i as f32 * 7.0)) * 0.7;
-                                        out += normal * jitter;
-                                    }
-                                    
-                                    self.pos_x[i] = out.x;
-                                    self.pos_y[i] = out.z;
-                                    found = true;
-                                    break;
-                                }
-                                curr += d;
+                        } else if l.geometry.len() >= 2 && !l.cum_dist.is_empty() {
+                            // Binary search for the segment containing `dist`.
+                            let seg = l.cum_dist.partition_point(|&d| d <= dist).saturating_sub(1);
+                            let seg = seg.min(l.geometry.len() - 2);
+                            let p0 = l.geometry[seg];
+                            let p1 = l.geometry[seg + 1];
+                            let seg_len = l.cum_dist[seg + 1] - l.cum_dist[seg];
+                            let t = if seg_len > 1e-5 { (dist - l.cum_dist[seg]) / seg_len } else { 0.0 };
+                            let mut out = p0.lerp(p1, t.clamp(0.0, 1.0));
+
+                            if self.transit_mode[i] == MODE_WALK && seg_len > 1e-5 {
+                                let tangent = (p1 - p0) / seg_len;
+                                let normal = Vector3::new(-tangent.z, 0.0, tangent.x);
+                                let jitter = (f32::sin(i as f32 * 4.0) + f32::cos(i as f32 * 7.0)) * 0.7;
+                                out += normal * jitter;
                             }
-                            if !found {
-                                let end = l.geometry.last().unwrap();
-                                self.pos_x[i] = end.x;
-                                self.pos_y[i] = end.z;
-                            }
+
+                            self.pos_x[i] = out.x;
+                            self.pos_y[i] = out.z;
                         }
                     }
 
