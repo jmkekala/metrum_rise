@@ -49,6 +49,7 @@ impl SimCore {
         self.demand = loaded.demand;
         self.allocator = loaded.allocator;
         self.agents = loaded.agents;
+        self.transit_network.flow_fields.mark_all_dirty();
         self.undo_stack.clear();
         self.terrain_dirty = true;
         self.water_dirty = true;

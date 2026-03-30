@@ -2,7 +2,7 @@
 
 **Scale target**: ≥ 1,000,000 total population across a multi-city region, with a clear distinction between simulation tiers:
 - **Full FSM** (individual pathfinding, real movement, all state transitions): ~300–500k agents on a 20-core machine with DDR5. This is the hardware-honest ceiling — the DDR5 memory bandwidth wall at ~190 MB/tick for 1M SoA entries limits throughput regardless of core count.
-- **Flow-field tier** (group movement via shared destination maps, no per-agent CCH queries): extends the active zone to ~1M total when combined with the full-FSM layer. Requires item 18.
+- **Flow-field tier** (group movement via shared destination maps, no per-agent CCH queries): extends the active zone to ~1M total when combined with the full-FSM layer. Implemented (item 18).
 - **Statistical tier** (aggregate population counters, demand flow numbers, no individual simulation): background cities and distant city regions. No per-tick FSM cost.
 
 "1M agents" in this document means 1M total population across all tiers. It does not mean 1M simultaneously running full FSM. Any claim of full individual simulation at that scale on current hardware is dishonest — the memory bandwidth arithmetic does not support it.
@@ -188,6 +188,16 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 ### Demand
 - `simulation/economy/demand.rs` — global R/C/I demand counters. Demand increments globally; buildings consume it on spawn.
 
+### Flow Fields (item 18)
+- **`simulation/pathing/flow_field.rs`** — `FlowField` (per-zone-type reverse Dijkstra result) and `FlowFieldSystem` (one `FlowField` per zone × mode, lazy rebuild via `dirty: [bool; 6]`).
+- **`FlowField::build(sources, graph, flags)`**: multi-source reverse Dijkstra from all buildings of a zone type. Each node stores `next_node[v]` (cheapest next hop toward nearest destination). O((V+E) log V) per zone rebuild.
+- **`FlowField::build_path(from_node, max_hops) -> Option<Vec<u32>>`**: chains `next_node` lookups to produce a route. O(path_length).
+- **`FlowField::look_ahead(node, hops) -> Vec<u32>`**: IDM preparation hook — returns the next `hops` nodes ahead for anticipation distance.
+- **`BuildingAllocator::dirty_zones: [bool; 6]`**: set when a building is added or removed; drained in `simulate_tick_internal` to call `flow_fields.mark_zone_dirty()`.
+- **`get_sources_for_zone(zone)`**: returns `Vec<(node_id, weight)>` pairs (frontage nodes of all buildings of that zone type) as Dijkstra seeds.
+- **Agent routing in `tick.rs`**: `TRANSIT_IDLE` activations for work/shop use flow fields if a valid field exists; fall back to CCH if not. `TRANSIT_ON_ROAD` with empty path follows the same priority. Home trips always use CCH (specific building destination required).
+- **Save/load**: `dirty_zones` is not serialized. After load, `apply_loaded_simulation` calls `flow_fields.mark_all_dirty()` so all fields are rebuilt on the first sim tick with buildings present.
+
 ### Threading Architecture (items 73 + 19)
 - **`nodes/sim/core.rs`** — defines `SimCore` (all 19 simulation fields), `RenderSnapshot` (pre-computed `Vec<f32>` transforms + dirty flags, `Send+Sync`), and `SimCommand` enum (`SetSpeed(f32)`, `Quit`).
 - **Background sim thread**: `run_sim_thread(Arc<Mutex<SimCore>>, Arc<RwLock<RenderSnapshot>>, Receiver<SimCommand>)` — loops at ~60 Hz. Locks `SimCore`, ticks agents (parallel), runs daily economy ticks via `time.process_delta()`, builds snapshot, releases lock, writes snapshot, sleeps for remainder of frame.
@@ -267,14 +277,13 @@ Lower levels dominate via soft priority weighting (not hard gating): `urgency(ne
 
 Target: ~250k–500k agents with the first non-car transport mode live and the multi-city region architecture in place.
 
-At ~200k agents two performance walls converge: (1) the O(B) building scan in every IDLE activation becomes the dominant tick cost as the city fills, and (2) per-agent pathfinding accumulates to an unacceptable fraction of frame time even with CCH (flow fields are the answer — item 18). The parallel tick (item 19) and background thread (item 73) are already in place, so the single-core ceiling is no longer a blocker. Both remaining walls must be resolved before the v1.0 path is smooth.
+At ~200k agents the primary remaining wall is (1) the O(B) building scan in every IDLE activation as the city fills. The parallel tick (item 19), background thread (item 73), and flow fields (item 18) are all in place, so per-agent pathfinding cost is no longer a blocker. The O(B) scan wall must be resolved before the v1.0 path is smooth.
 
 The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) install the two-wire harness. v0.2 validates it by shipping bicycle support — the simplest possible new mode (no VehicleSystem, no WAITING state, no timetables). If bicycles work correctly under load, every subsequent mode (taxi, bus, rail) is an incremental addition, not a structural change.
 
-**Implementation order matters.** Items 73 and 19 are complete (see Implemented Systems). Item 18 (flow fields) requires item 19 to be done first. Item 25 (IDM) is independent. Item 30 (bicycle) builds on the `transit_mode` and `allowed_mask` infrastructure already in place. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete.
+**Implementation order matters.** Items 73, 19, and 18 are complete (see Implemented Systems). Item 25 (IDM) is independent. Item 30 (bicycle) builds on the `transit_mode` and `allowed_mask` infrastructure already in place. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete.
 74. **Camera-frustum culling of agent transform uploads**: `build_snapshot()` in `sim/core.rs` currently packs transforms for all agents regardless of visibility. At 100k agents this uploads ~4.8 MB/frame to the GPU even when the camera shows only a fraction of the map, saturating the GPU at 100% before any rendering work. Fix: add `camera_aabb: (f32, f32, f32, f32)` (world-space x_min, x_max, z_min, z_max) to `RenderSnapshot` and update it from the Godot main thread via a `SimCommand::SetCameraAabb` variant. In `build_snapshot()`, skip any agent whose `(pos_x, pos_y)` lies outside the AABB. O(A) filter with no extra allocation — same iteration already in progress. The snapshot write drops from O(A_total) to O(A_visible). Expected GPU load reduction: 60–80% at typical camera zoom on a 100k-agent city. Prerequisite for reaching 250k agents without GPU bottleneck. Camera AABB should be padded by ~200 m to avoid pop-in at the viewport edge.
 
-18. **Flow fields for shared destinations**: one reverse Dijkstra from each active destination zone type produces a next-node map of length V. Agents query O(1) instead of running individual CCH queries. Reduces O(A × CCH_cost) to O(M × (V + E) log V) where M ≈ 10–100 active zone types. Retain CCH for immigration and one-off novel destinations. Requires parallel tick (item 19) to be useful — flow field lookup is the O(1) work that fills each parallel agent slot. Add a timing test on completion: Dijkstra from one destination on a 1,000-node graph must complete in < 5 ms (originally listed in v0.01 goals but deferred here until the system exists).
 25. **Car collision — Intelligent Driver Model (IDM)**:
     - Add `speed: Vec<f32>` to `AgentSystem` SoA. Current model uses a hardcoded fixed speed; IDM requires a dynamic per-agent speed state (~4 MB at 1M agents).
     - Each tick, build a transient `lane_agents: Vec<Vec<u32>>` indexed by `edge_idx * MAX_LANES + lane_idx`, each sub-Vec sorted by `edge_progression`. O(A) to build from the SoA; thrown away after the tick. Finding the car directly ahead is O(1) (adjacent element in sorted list).
