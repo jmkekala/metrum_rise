@@ -3,6 +3,13 @@
 //! Import with `use crate::config;` or individual constants as needed.
 //! All physical distances are in **metres**. All speeds are in **m/s**.
 
+// Rendering Limits
+
+/// Target render frame rate cap. The Godot engine's `max_fps` is set to this value at startup.
+/// 60 is sufficient — the sim thread ticks at ~60 Hz so rendering faster wastes GPU.
+/// Set to 0 to uncap (not recommended; causes unnecessary GPU load).
+pub const TARGET_FPS: u32 = 60;
+
 // Map and Global Simulation Limits
 
 /// Vertical exaggeration applied to the terrain heightmap for rendering. Raw height values are multiplied by this.
@@ -47,6 +54,16 @@ pub const BORDER_EXTENSION_M: f32 = 10.0;
 /// Horizontal scaling factor (Sx, Sy, Sz) applied to building MultiMesh instances.
 /// Standard assets use 1 unit = 10m, so we scale by 10.0 for a meter-based simulation.
 pub const BUILDING_VISUAL_SCALE: f32 = 10.0;
+
+/// Maximum far-plane distance (metres) used when computing the camera frustum AABB for agent
+/// culling. Far-plane rays are clamped to this distance before projecting onto XZ, preventing
+/// a near-horizontal camera from producing an AABB that covers the entire map and defeating culling.
+/// Increase if agents visibly pop in at the horizon; decrease to tighten the cull radius.
+pub const AGENT_CULL_FAR_M: f32 = 4000.0;
+
+/// Padding (metres) added to each side of the camera frustum AABB before sending it to the
+/// sim thread. Prevents agents from popping in at the exact viewport edge due to AABB latency.
+pub const AGENT_CULL_PADDING_M: f32 = 200.0;
 
 /// Minimum distance (metres) between a building's frontage node and a junction.
 /// If a building is closer, its frontage will snap to the nearest junction node.

@@ -378,6 +378,24 @@ impl SimulationNode {
             .send(SimCommand::SetCameraAabb(x_min, x_max, z_min, z_max));
     }
 
+    /// Maximum far-plane distance used when building the camera frustum AABB for agent culling.
+    #[func]
+    pub fn get_agent_cull_far_m() -> f32 {
+        crate::config::AGENT_CULL_FAR_M
+    }
+
+    /// Padding added to each side of the camera frustum AABB to prevent pop-in.
+    #[func]
+    pub fn get_agent_cull_padding_m() -> f32 {
+        crate::config::AGENT_CULL_PADDING_M
+    }
+
+    /// Target render FPS cap. Applied to `Engine.max_fps` at startup.
+    #[func]
+    pub fn get_target_fps() -> u32 {
+        crate::config::TARGET_FPS
+    }
+
     /// Returns the current simulation day count.
     #[func]
     pub fn get_current_day(&self) -> u32 {
@@ -796,6 +814,9 @@ impl INode3D for SimulationNode {
     }
 
     fn ready(&mut self) {
+        godot::classes::Engine::singleton()
+            .set_max_fps(crate::config::TARGET_FPS as i32);
+
         let args = godot::classes::Os::singleton().get_cmdline_user_args();
         let generate = args
             .as_slice()

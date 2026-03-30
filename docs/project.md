@@ -211,13 +211,13 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
   | `on_road` (polyline traversal + lane offset) | 12.6 µs | 124.8 µs | 1.23 ms | ~12.3 ms* | ~12.3 ns |
   | `idle_scaling` (SoA iteration floor) | 5.29 µs | 52.9 µs | 537 µs | 5.72 ms | ~5.3 ns |
   *extrapolated. Near-perfect O(N) on both.
-- **End-to-end benchmark (parallel background thread, 2026-03-30, i9-12900K)**:
-  - 100k ON_ROAD agents, 20×20 grid map, `--benchmark --headless` (with Godot renderer active)
-  - `agent_tick_us`: 1.9–4.4 ms (Rayon parallel, ~2.2× CPU concurrency observed)
-  - `sim_tick_ms`: 3–7 ms — well within the 16.7 ms budget
-  - Pathfind calls settle from ~1650 (frame 600, route-end churn) to ~600/frame at steady state
-  - RSS steady at ~770 MB; no memory growth observed across 3000 frames
-  - **Frame rate bottleneck is GPU rendering** (GPU 100%), not the sim thread. Sim throughput headroom is large.
+- **End-to-end benchmark (parallel background thread, 2026-03-30, i9-12900K, RX 7900 XTX)**:
+  - 100k ON_ROAD agents, 20×20 grid map, `--benchmark` (Godot renderer active, full-map camera)
+  - Run 1 (no frustum culling): real 1m49s, user 3m59s (~2.2× concurrency), `agent_tick_us` 1.9–4.4 ms, `sim_tick_ms` 3–7 ms, GPU 100%
+  - Run 2 (frustum culling active): real 1m29s, user 4m9s (~2.8× concurrency), `agent_tick_us` 2–6 ms, `sim_tick_ms` 3–11 ms
+  - Note: benchmark camera shows the full 20 km map so all agents are inside the AABB — culling has no effect in this scenario. The wall-clock difference is measurement variance. Culling benefit is only observable when the camera covers a fraction of the map (normal gameplay, zoomed to a district).
+  - Pathfind calls settle from ~1650 (frame 600, route-end churn) to ~200–600/frame at steady state
+  - RSS steady at ~760–770 MB; no memory growth across 3000 frames
 
 ---
 

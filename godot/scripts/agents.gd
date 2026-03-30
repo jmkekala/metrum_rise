@@ -210,11 +210,14 @@ func _update_camera_aabb():
 	var camera = get_viewport().get_camera_3d()
 	if not camera:
 		return
-	# Project the four near-plane corners onto y=0 to get a world-space XZ rect.
-	# We use the viewport size and unproject to get world rays, then find the XZ
-	# intersection with the ground plane (y = 0).
+	# For each viewport corner ray, find how far along the ray to sample.
+	# Prefer the ground-plane (y=0) intersection — this gives a tight AABB when
+	# the camera is steep. Fall back to AGENT_CULL_FAR_M when the ray is
+	# near-horizontal (dir.y small), which was the original bug: ground intersection
+	# produced a point at astronomical distance or didn't exist at all.
+	var cull_far = SimulationNode.get_agent_cull_far_m()
 	var vp_size = get_viewport().get_visible_rect().size
-	var corners = [
+	var screen_corners = [
 		Vector2(0, 0),
 		Vector2(vp_size.x, 0),
 		Vector2(vp_size.x, vp_size.y),
@@ -222,18 +225,20 @@ func _update_camera_aabb():
 	]
 	var x_min = INF; var x_max = -INF
 	var z_min = INF; var z_max = -INF
-	for c in corners:
+	for c in screen_corners:
 		var origin = camera.project_ray_origin(c)
 		var dir = camera.project_ray_normal(c)
-		# Intersect ray with y = 0 plane: t = -origin.y / dir.y
-		if abs(dir.y) > 1e-4:
-			var t = -origin.y / dir.y
-			var hit = origin + dir * t
-			x_min = min(x_min, hit.x); x_max = max(x_max, hit.x)
-			z_min = min(z_min, hit.z); z_max = max(z_max, hit.z)
-	if x_min < x_max:
-		# Pad by 200 m to avoid pop-in at viewport edge.
-		simulation_node.set_camera_aabb(x_min - 200.0, x_max + 200.0, z_min - 200.0, z_max + 200.0)
+		# Compute the distance to y=0; use it if it's valid and closer than cull_far.
+		var dist: float
+		if dir.y < -1e-3:
+			dist = min(-origin.y / dir.y, cull_far)
+		else:
+			dist = cull_far
+		var pt = origin + dir * dist
+		x_min = min(x_min, pt.x); x_max = max(x_max, pt.x)
+		z_min = min(z_min, pt.z); z_max = max(z_max, pt.z)
+	var pad = SimulationNode.get_agent_cull_padding_m()
+	simulation_node.set_camera_aabb(x_min - pad, x_max + pad, z_min - pad, z_max + pad)
 
 func update_swarm():
 	# Walkers
