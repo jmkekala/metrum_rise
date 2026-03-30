@@ -175,6 +175,7 @@ impl SimCore {
                 current_edge: usize::MAX,
                 current_lane_id: usize::MAX,
                 lane_distance: 0.0,
+                speed: 20.0,
                 transit_mode: MODE_CAR,
                 current_path: route,
                 current_path_index: (start_idx + 1).min(path_len - 1),

@@ -198,6 +198,14 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 - **Agent routing in `tick.rs`**: `TRANSIT_IDLE` activations for work/shop use flow fields if a valid field exists; fall back to CCH if not. `TRANSIT_ON_ROAD` with empty path follows the same priority. Home trips always use CCH (specific building destination required).
 - **Save/load**: `dirty_zones` is not serialized. After load, `apply_loaded_simulation` calls `flow_fields.mark_all_dirty()` so all fields are rebuilt on the first sim tick with buildings present.
 
+### Intelligent Driver Model — IDM (item 25)
+- **`Agent::speed: f32`** — per-agent current speed in m/s (SoA field). Initialised to `20.0` for cars on spawn; loaded saves initialise from `transit_mode` (20.0 car / 4.0 walk).
+- **Lane-occupancy pre-pass** (`tick.rs`, sequential, O(A log A)): each tick, builds `lane_occupants: Vec<(lane_id, agent_idx, dist)>` sorted by `(lane_id, lane_distance)`. Stored in `AgentSystem` as a reused scratch buffer.
+- **IDM parallel update** (O(A)): for each car in `TRANSIT_ON_ROAD`, binary-searches `lane_occupants` to find the bumper-to-bumper gap to the nearest car ahead. Applies `a = A_MAX × (1 − (v/v_max)⁴ − (s*/gap)²)` with `s* = S_MIN + v × T_HEAD`. New speeds written to a `new_speed` scratch buffer, then committed to `agents.speed`.
+- **Parameters**: `A_MAX = 1.5 m/s²`, `T_HEAD = 1.5 s`, `S_MIN = 2.0 m`, `CAR_LENGTH = 4.5 m`. The approach-speed interaction term (`v·Δv / 2√(A·B)`) is deferred until per-agent `v_lead` tracking is added.
+- **Intersection speed**: cars traversing a bezier intersection lane use `max(speed*0.5, 2.0)` — half IDM speed, floored at 2 m/s.
+- **Congestion feedback** (`AgentSystem::update_edge_congestion`, called from `core.rs` after each tick): accumulates per-edge average speed into `edge_speed_sum`/`edge_agent_cnt` scratch buffers, then writes `Edge::current_congestion = 1 − avg_speed/speed_limit` for occupied edges. O(A + E) sequential. Feeds the CCH metric customization phase.
+
 ### Threading Architecture (items 73 + 19)
 - **`nodes/sim/core.rs`** — defines `SimCore` (all 19 simulation fields), `RenderSnapshot` (pre-computed `Vec<f32>` transforms + dirty flags, `Send+Sync`), and `SimCommand` enum (`SetSpeed(f32)`, `Quit`).
 - **Background sim thread**: `run_sim_thread(Arc<Mutex<SimCore>>, Arc<RwLock<RenderSnapshot>>, Receiver<SimCommand>)` — loops at ~60 Hz. Locks `SimCore`, ticks agents (parallel), runs daily economy ticks via `time.process_delta()`, builds snapshot, releases lock, writes snapshot, sleeps for remainder of frame.
@@ -281,17 +289,9 @@ At ~200k agents the primary remaining wall is (1) the O(B) building scan in ever
 
 The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) install the two-wire harness. v0.2 validates it by shipping bicycle support — the simplest possible new mode (no VehicleSystem, no WAITING state, no timetables). If bicycles work correctly under load, every subsequent mode (taxi, bus, rail) is an incremental addition, not a structural change.
 
-**Implementation order matters.** Items 73, 19, and 18 are complete (see Implemented Systems). Item 25 (IDM) is independent. Item 30 (bicycle) builds on the `transit_mode` and `allowed_mask` infrastructure already in place. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete.
+**Implementation order matters.** Items 73, 19, 18, and 25 are complete (see Implemented Systems). Item 30 (bicycle) builds on the `transit_mode` and `allowed_mask` infrastructure already in place. Items 54–56 (multi-city region) require CCH (item 31, v0.1 blocker) to be complete.
 74. **Camera-frustum culling of agent transform uploads**: `build_snapshot()` in `sim/core.rs` currently packs transforms for all agents regardless of visibility. At 100k agents this uploads ~4.8 MB/frame to the GPU even when the camera shows only a fraction of the map, saturating the GPU at 100% before any rendering work. Fix: add `camera_aabb: (f32, f32, f32, f32)` (world-space x_min, x_max, z_min, z_max) to `RenderSnapshot` and update it from the Godot main thread via a `SimCommand::SetCameraAabb` variant. In `build_snapshot()`, skip any agent whose `(pos_x, pos_y)` lies outside the AABB. O(A) filter with no extra allocation — same iteration already in progress. The snapshot write drops from O(A_total) to O(A_visible). Expected GPU load reduction: 60–80% at typical camera zoom on a 100k-agent city. Prerequisite for reaching 250k agents without GPU bottleneck. Camera AABB should be padded by ~200 m to avoid pop-in at the viewport edge.
 
-25. **Car collision — Intelligent Driver Model (IDM)**:
-    - Add `speed: Vec<f32>` to `AgentSystem` SoA. Current model uses a hardcoded fixed speed; IDM requires a dynamic per-agent speed state (~4 MB at 1M agents).
-    - Each tick, build a transient `lane_agents: Vec<Vec<u32>>` indexed by `edge_idx * MAX_LANES + lane_idx`, each sub-Vec sorted by `edge_progression`. O(A) to build from the SoA; thrown away after the tick. Finding the car directly ahead is O(1) (adjacent element in sorted list).
-    - Apply IDM per car: `a = a_max × [1 − (v/v_max)⁴ − (s*(v,Δv) / gap)²]` where desired gap `s*(v,Δv) = s_min + v·T + v·Δv / (2√(a_max·b))`. Produces realistic stop-and-go waves and jam dissolution at O(1) per car.
-    - Intersection queuing: if a car is at the last polyline segment of its edge and the target node has no accepted entry slot this tick, set `speed = 0`. One entry slot per incoming lane per tick.
-    - After the movement pass, write average speed per edge into `Edge::current_congestion`. Feeds directly into the CCH metric customization phase (triggers a fast O(E) weight refresh) and the v1.0 congestion heatmap.
-    - Bridges and tunnels: cars on different vertical levels are on different edges and therefore different lane lists — no cross-level interaction, correct without modification.
-    - Bicycles, buses: both participate in per-lane occupancy lists naturally. A bicycle is just a slow narrow vehicle; a bus is a long slow one. No mode-specific changes to IDM.
 30. **Bicycle support** — first new transport mode; validates the multi-modal foundation (v0.01 goals 3 and 4):
     - Add `BIKE=1<<2` bit to `TransitFlags`. Set it on all edges with a sidewalk or dedicated cycle path — at minimum every `Standard` road edge. Bridges and tunnels: same flag if their geometry accommodates a cycle lane.
     - Speed: 5.5 m/s (~20 km/h). `decide_transit_mode` selects `BIKE` when distance < ~2 km (shorter than car threshold) or when the agent has no car.

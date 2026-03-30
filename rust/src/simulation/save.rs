@@ -9,7 +9,8 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::{
-    Agent, AgentSystem, TRANSIT_IDLE, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION, TRANSIT_ON_ROAD,
+    Agent, AgentSystem, MODE_CAR, TRANSIT_IDLE, TRANSIT_IMMIGRATING, TRANSIT_INTERSECTION,
+    TRANSIT_ON_ROAD,
 };
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::grid::data_grid::DataGrid;
@@ -1704,6 +1705,7 @@ fn push_loaded_agent(agents: &mut AgentSystem, agent: LoadedAgentRecord) {
         current_edge: agent.current_edge,
         current_lane_id: agent.current_lane_id as usize,
         lane_distance: agent.lane_distance,
+        speed: if agent.transit_mode == MODE_CAR { 20.0 } else { 4.0 },
         transit_mode: agent.transit_mode,
         current_path: agent.current_path,
         current_path_index: agent.current_path_index,

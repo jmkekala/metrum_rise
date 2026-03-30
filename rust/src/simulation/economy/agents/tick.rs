@@ -18,6 +18,50 @@ use std::cell::RefCell;
 use std::sync::atomic::Ordering;
 
 // ---------------------------------------------------------------------------
+// IDM (Intelligent Driver Model) constants and helpers.
+// ---------------------------------------------------------------------------
+
+/// Maximum acceleration in m/s².
+const IDM_A_MAX: f32 = 1.5;
+/// Comfortable braking deceleration in m/s². Reserved for the full IDM approach-speed term.
+#[allow(dead_code)]
+const IDM_B: f32 = 3.0;
+/// Desired time headway in seconds.
+const IDM_T_HEAD: f32 = 1.5;
+/// Minimum gap at standstill in metres.
+const IDM_S_MIN: f32 = 2.0;
+/// Effective vehicle length (bumper-to-bumper) in metres.
+const CAR_LENGTH: f32 = 4.5;
+
+/// Returns the bumper-to-bumper gap to the nearest vehicle ahead on `lane_id`
+/// at `my_dist`. `occ` must be sorted by `(lane_id, distance)`.
+fn idm_gap(occ: &[(usize, usize, f32)], lane_id: usize, my_dist: f32) -> f32 {
+    let start = occ.partition_point(|e| e.0 < lane_id);
+    let end   = occ.partition_point(|e| e.0 <= lane_id);
+    let lane  = &occ[start..end];
+    let ahead = lane.partition_point(|e| e.2 <= my_dist + 0.05);
+    if ahead < lane.len() {
+        (lane[ahead].2 - my_dist - CAR_LENGTH).max(0.1)
+    } else {
+        f32::MAX
+    }
+}
+
+/// Returns the new speed for one IDM time step. Uses the simplified IDM without the
+/// approach-speed interaction term (`v·Δv / 2√(a_max·b)`) — the full term can be
+/// added once per-agent `v_lead` tracking is in place.
+fn idm_new_speed(v: f32, v_max: f32, gap: f32, dt: f32) -> f32 {
+    let free = (v / v_max.max(0.1)).powi(4);
+    let acc  = if gap < f32::MAX / 2.0 {
+        let s_star = IDM_S_MIN + v * IDM_T_HEAD;
+        IDM_A_MAX * (1.0 - free - (s_star / gap).powi(2))
+    } else {
+        IDM_A_MAX * (1.0 - free)
+    };
+    (v + acc * dt).clamp(0.0, v_max)
+}
+
+// ---------------------------------------------------------------------------
 // Thread-local scratch buffers — pre-allocated per Rayon worker thread to
 // avoid any heap allocation in the per-agent hot path.
 // ---------------------------------------------------------------------------
@@ -113,7 +157,78 @@ impl AgentSystem {
         });
 
         // -----------------------------------------------------------------------
-        // 2. Main agent loop — parallel.
+        // 2. Lane occupancy snapshot for IDM — sequential O(A + A log A).
+        //    Builds a flat sorted list (lane_id, agent_idx, lane_distance) from all
+        //    on-road agents with a valid lane so the parallel IDM pass can find the
+        //    car-ahead gap via two binary searches.
+        // -----------------------------------------------------------------------
+        {
+            let occ = &mut self.lane_occupants;
+            occ.clear();
+            for i in 0..n {
+                if self.agents.transit[i] == TRANSIT_ON_ROAD {
+                    let lid = self.agents.current_lane_id[i];
+                    if lid != usize::MAX {
+                        occ.push((lid, i, self.agents.lane_distance[i]));
+                    }
+                }
+            }
+            occ.sort_unstable_by(|a, b| {
+                a.0.cmp(&b.0)
+                    .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+            });
+        }
+
+        // -----------------------------------------------------------------------
+        // 3. IDM speed update — parallel.
+        //    Reads current speeds and lane-occupancy snapshot (both read-only),
+        //    writes new speeds to a scratch buffer, then commits.
+        // -----------------------------------------------------------------------
+        self.new_speed.resize(n, 0.0_f32);
+        {
+            let s_transit_idm = RawSlice::new(&mut self.agents.transit);
+            let s_tmode_idm   = RawSlice::new(&mut self.agents.transit_mode);
+            let s_lane_idm    = RawSlice::new(&mut self.agents.current_lane_id);
+            let s_lane_d_idm  = RawSlice::new(&mut self.agents.lane_distance);
+            let s_cur_e_idm   = RawSlice::new(&mut self.agents.current_edge);
+            let s_speed_idm   = RawSlice::new(&mut self.agents.speed);
+            let new_spd_raw   = RawSlice { ptr: self.new_speed.as_mut_ptr(), len: n };
+            let occ_slice: &[(usize, usize, f32)] = &self.lane_occupants;
+
+            (0..n).into_par_iter().for_each(|i| {
+                unsafe {
+                    let cur_spd = *s_speed_idm.get(i);
+                    let transit = *s_transit_idm.get(i);
+                    let tmode   = *s_tmode_idm.get(i);
+
+                    // IDM only applies to cars actively on a road lane.
+                    if transit != TRANSIT_ON_ROAD || tmode != MODE_CAR {
+                        *new_spd_raw.get_mut(i) = cur_spd;
+                        return;
+                    }
+
+                    let lid   = *s_lane_idm.get(i);
+                    let my_d  = *s_lane_d_idm.get(i);
+                    let eid   = *s_cur_e_idm.get(i);
+
+                    let v_max = if eid != usize::MAX && eid < graph.edges.len() {
+                        graph.edges[eid].speed_limit
+                    } else {
+                        20.0_f32
+                    };
+
+                    let gap = idm_gap(occ_slice, lid, my_d);
+                    *new_spd_raw.get_mut(i) = idm_new_speed(cur_spd, v_max, gap, delta);
+                }
+            });
+        }
+        // Commit new speeds.
+        for i in 0..n {
+            self.agents.speed[i] = self.new_speed[i];
+        }
+
+        // -----------------------------------------------------------------------
+        // 4. Main agent loop — parallel.
         //
         // All shared inputs (allocator, transit_network, graph) are read-only.
         // All writes go to disjoint per-agent SoA slots.
@@ -141,6 +256,7 @@ impl AgentSystem {
         let s_path_idx  = RawSlice::new(&mut self.agents.current_path_index);
         let s_has_car   = RawSlice::new(&mut self.agents.has_car);
         let _s_vtype    = RawSlice::new(&mut self.agents.vehicle_type);
+        let s_speed     = RawSlice::new(&mut self.agents.speed);
 
         let pathfind_count = &self.pathfind_count;
         let sim_time = self.sim_time;
@@ -308,9 +424,14 @@ impl AgentSystem {
 
                     TRANSIT_ON_ROAD | TRANSIT_IMMIGRATING | TRANSIT_INTERSECTION => {
                         let speed = if *s_tmode.get(i) == MODE_CAR {
-                            if *s_transit.get(i) == TRANSIT_INTERSECTION { 10.0 } else { 20.0 }
+                            if *s_transit.get(i) == TRANSIT_INTERSECTION {
+                                // Slow through intersections; still IDM-bounded.
+                                (*s_speed.get(i) * 0.5).max(2.0)
+                            } else {
+                                *s_speed.get(i)
+                            }
                         } else {
-                            4.0
+                            4.0 // pedestrians use a fixed speed; IDM is car-only
                         };
                         let mut remaining_dist = speed * delta;
 
@@ -399,6 +520,10 @@ impl AgentSystem {
                                                     *s_cur_e.get_mut(i) = best_e;
                                                     *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
                                                     *s_cur_b.get_mut(i) = usize::MAX;
+                                                    // Seed speed from edge limit on first lane entry.
+                                                    if *s_speed.get(i) == 0.0 {
+                                                        *s_speed.get_mut(i) = graph.edges[best_e].speed_limit;
+                                                    }
                                                 } else {
                                                     s_path.get_mut(i).clear();
                                                 }

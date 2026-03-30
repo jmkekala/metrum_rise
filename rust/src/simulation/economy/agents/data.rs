@@ -5,7 +5,7 @@
 //! [`AgentSystem`] uses a Structure-of-Arrays (SoA) layout provided by the `soa_derive` crate.
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
-use super::{MODE_CAR, TRANSIT_ARRIVING, TRANSIT_IDLE, TRANSIT_IMMIGRATING};
+use super::{MODE_CAR, TRANSIT_ARRIVING, TRANSIT_IDLE, TRANSIT_IMMIGRATING, TRANSIT_ON_ROAD};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::ZoneType;
@@ -59,6 +59,9 @@ pub struct Agent {
     pub current_lane_id: usize,
     /// Distance (in metres) travelled along the `current_lane_id`.
     pub lane_distance: f32,
+    /// Current movement speed in m/s. Updated each tick by the IDM model (cars) or held constant
+    /// (pedestrians). Initialised to the edge speed limit on first lane entry.
+    pub speed: f32,
     /// Current transit mode. One of the `MODE_*` constants.
     pub transit_mode: u8,
 
@@ -83,6 +86,16 @@ pub struct AgentSystem {
     pub sim_time: f32,
     /// Running count of pathfinding calls this session, used for benchmark logging.
     pub pathfind_count: AtomicU32,
+    /// Scratch buffer: (lane_id, agent_idx, lane_distance) sorted by (lane_id, lane_distance).
+    /// Rebuilt at the start of each tick for IDM gap calculations.
+    pub lane_occupants: Vec<(usize, usize, f32)>,
+    /// Scratch buffer: IDM double-buffer for next-tick speeds. Avoids read-write conflicts in
+    /// the parallel IDM pass.
+    pub new_speed: Vec<f32>,
+    /// Scratch buffer: per-edge speed sum for congestion calculation, indexed by edge ID.
+    pub edge_speed_sum: Vec<f32>,
+    /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
+    pub edge_agent_cnt: Vec<u32>,
 }
 
 impl Deref for AgentSystem {
@@ -105,6 +118,10 @@ impl AgentSystem {
             agents: AgentVec::new(),
             sim_time: 0.0,
             pathfind_count: AtomicU32::new(0),
+            lane_occupants: Vec::new(),
+            new_speed: Vec::new(),
+            edge_speed_sum: Vec::new(),
+            edge_agent_cnt: Vec::new(),
         }
     }
 
@@ -138,6 +155,7 @@ impl AgentSystem {
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,
+            speed: 20.0,
             transit_mode: MODE_CAR,
             current_path: Vec::new(),
             current_path_index: 0,
@@ -340,6 +358,39 @@ impl AgentSystem {
             // 3. Final Clamping
             self.agents.happiness[i] = self.agents.happiness[i].clamp(0.0, 100.0);
             self.agents.money[i] = self.agents.money[i].max(0.0);
+        }
+    }
+
+    /// Aggregates per-agent speed into per-edge average speed and writes
+    /// `Edge::current_congestion = 1 − avg_speed/speed_limit` for every edge that has at least
+    /// one car on it. Edges with no cars are left unchanged (their congestion decays on road
+    /// edits; this function does not reset them to zero).
+    ///
+    /// Must be called once per tick by `simulate_tick_internal` after `AgentSystem::tick()`.
+    /// O(A + E) sequential.
+    pub fn update_edge_congestion(&mut self, graph: &mut RegionGraph) {
+        let edge_count = graph.edges.len();
+        self.edge_speed_sum.clear();
+        self.edge_speed_sum.resize(edge_count, 0.0_f32);
+        self.edge_agent_cnt.clear();
+        self.edge_agent_cnt.resize(edge_count, 0_u32);
+
+        for i in 0..self.agents.len() {
+            if self.agents.transit[i] == TRANSIT_ON_ROAD {
+                let eid = self.agents.current_edge[i];
+                if eid != usize::MAX && eid < edge_count {
+                    self.edge_speed_sum[eid] += self.agents.speed[i];
+                    self.edge_agent_cnt[eid] += 1;
+                }
+            }
+        }
+
+        for eid in 0..edge_count {
+            if !graph.edges[eid].deleted && self.edge_agent_cnt[eid] > 0 {
+                let avg = self.edge_speed_sum[eid] / self.edge_agent_cnt[eid] as f32;
+                let limit = graph.edges[eid].speed_limit.max(1.0);
+                graph.edges[eid].current_congestion = (1.0 - avg / limit).max(0.0);
+            }
         }
     }
 
