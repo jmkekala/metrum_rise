@@ -244,6 +244,13 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
   - Note: benchmark camera shows the full 20 km map so all agents are inside the AABB — culling has no effect in this scenario. The wall-clock difference is measurement variance. Culling benefit is only observable when the camera covers a fraction of the map (normal gameplay, zoomed to a district).
   - Pathfind calls settle from ~1650 (frame 600, route-end churn) to ~200–600/frame at steady state
   - RSS steady at ~760–770 MB; no memory growth across 3000 frames
+- **End-to-end benchmark (post-IDM, 2026-03-30, i9-12900K, RX 7900 XTX)**:
+  - 100k ON_ROAD agents, 20×20 grid map, `--benchmark` (Godot renderer active, default full-map camera)
+  - real 1m44s, user 6m1s (~3.5× concurrency), `agent_tick_us` 5.8–12.6 ms, `sim_tick_ms` 2–8 ms
+  - CPU cost roughly doubled vs pre-IDM baseline. Wall clock similar to no-culling pre-IDM run.
+  - Dominant new cost: O(A log A) `lane_occupants` sort (100k entries every frame when all agents are on-road). This is the next optimisation target — replacing the flat sort with per-lane bucket accumulation would reduce IDM overhead to O(A) with small constant.
+  - Pathfind calls 101–844/frame (higher variance than pre-IDM — agents reach destinations faster at higher speed, triggering more re-routes)
+  - RSS ~766–769 MB; stable
 
 ---
 

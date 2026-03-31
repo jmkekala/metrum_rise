@@ -86,9 +86,16 @@ pub struct AgentSystem {
     pub sim_time: f32,
     /// Running count of pathfinding calls this session, used for benchmark logging.
     pub pathfind_count: AtomicU32,
-    /// Scratch buffer: (lane_id, agent_idx, lane_distance) sorted by (lane_id, lane_distance).
-    /// Rebuilt at the start of each tick for IDM gap calculations.
-    pub lane_occupants: Vec<(usize, usize, f32)>,
+    /// Scratch buffer: per-lane agent lists for IDM gap lookup and overlap correction.
+    /// Indexed by lane ID; each entry is `(lane_distance, agent_idx)` sorted ascending by dist.
+    /// Sized to `LaneSystem::lanes.len()`; grows but never shrinks.
+    pub lane_buckets: Vec<Vec<(f32, usize)>>,
+    /// Dedup flag array — `lane_is_dirty[lid] == true` if lane `lid` has been pushed to this
+    /// tick. Sized alongside `lane_buckets`. Cleared via `dirty_lanes` rather than a full scan.
+    pub lane_is_dirty: Vec<bool>,
+    /// Compact list of lane IDs that were touched this tick (no duplicates).
+    /// Used to clear only the dirty buckets at the start of the next tick.
+    pub dirty_lanes: Vec<usize>,
     /// Scratch buffer: IDM double-buffer for next-tick speeds. Avoids read-write conflicts in
     /// the parallel IDM pass.
     pub new_speed: Vec<f32>,
@@ -118,7 +125,9 @@ impl AgentSystem {
             agents: AgentVec::new(),
             sim_time: 0.0,
             pathfind_count: AtomicU32::new(0),
-            lane_occupants: Vec::new(),
+            lane_buckets: Vec::new(),
+            lane_is_dirty: Vec::new(),
+            dirty_lanes: Vec::new(),
             new_speed: Vec::new(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),

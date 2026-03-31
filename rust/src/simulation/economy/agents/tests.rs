@@ -311,3 +311,124 @@ fn test_pedestrian_crosses_junction() {
     }
     assert!(agents.transit[i] == 0);
 }
+
+// ── IDM tests ────────────────────────────────────────────────────────────────
+
+/// Helper: build a two-node, single-edge network and return the forward vehicle lane id.
+fn setup_straight_road() -> (TransitNetwork, RegionGraph, usize, usize) {
+    let mut network = TransitNetwork::new();
+    let mut graph = RegionGraph::new();
+    let mut zoning = ZoningSystem::new(&MapConfig::default());
+    let mut allocator = BuildingAllocator::new();
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
+        1, 1, false, false, EdgeClass::Standard,
+        &mut zoning, &mut allocator,
+    );
+    network.cch_graph = CchGraph::build(&graph);
+    let edge_idx = 0;
+    let fwd_lane = *network.lane_system.edge_lanes[&edge_idx]
+        .iter()
+        .find(|&&lid| {
+            let l = &network.lane_system.lanes[lid];
+            l.is_fwd && l.lane_type == crate::simulation::network::lanes::LaneType::Vehicle
+        })
+        .expect("forward vehicle lane");
+    (network, graph, edge_idx, fwd_lane)
+}
+
+/// Place an agent directly on-road on the given lane.
+fn place_on_lane(
+    agents: &mut AgentSystem,
+    edge_idx: usize,
+    fwd_lane: usize,
+    lane_dist: f32,
+    speed: f32,
+) -> usize {
+    let (n0, n1) = (0u32, 1u32);
+    let idx = agents.spawn_agent(usize::MAX, n1, 0.0, 0.0, n0, 0.0, 0.0);
+    agents.transit[idx] = TRANSIT_ON_ROAD;
+    agents.current_edge[idx] = edge_idx;
+    agents.current_lane_id[idx] = fwd_lane;
+    agents.lane_distance[idx] = lane_dist;
+    agents.speed[idx] = speed;
+    agents.current_path[idx] = vec![n0, n1];
+    agents.current_path_index[idx] = 1;
+    idx
+}
+
+#[test]
+fn test_idm_free_road_accelerates() {
+    // A stopped car on an empty road should accelerate after one tick.
+    let (network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
+    let mut agents = AgentSystem::new();
+    let mut allocator = BuildingAllocator::new();
+    let i = place_on_lane(&mut agents, edge_idx, fwd_lane, 10.0, 0.0);
+    agents.tick(&mut allocator, &network, &mut graph, 1.0);
+    assert!(agents.speed[i] > 0.0, "stopped car should accelerate on free road");
+}
+
+#[test]
+fn test_idm_following_car_slower_than_free_car() {
+    // Car A ahead, car B close behind — B must finish with lower speed than a lone free car.
+    let (network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
+    let mut agents = AgentSystem::new();
+    let mut allocator = BuildingAllocator::new();
+    // Place a fast leader at dist=60 and a follower at dist=50.
+    let _leader = place_on_lane(&mut agents, edge_idx, fwd_lane, 60.0, 40.0);
+    let follower = place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, 40.0);
+
+    // Reference: a lone car at the same position as the follower.
+    let (network2, mut graph2, edge2, fwd2) = setup_straight_road();
+    let mut agents2 = AgentSystem::new();
+    let mut alloc2 = BuildingAllocator::new();
+    let free_car = place_on_lane(&mut agents2, edge2, fwd2, 50.0, 40.0);
+
+    agents.tick(&mut allocator, &network, &mut graph, 0.5);
+    agents2.tick(&mut alloc2, &network2, &mut graph2, 0.5);
+
+    assert!(
+        agents.speed[follower] <= agents2.speed[free_car] + 0.01,
+        "follower speed {} should not exceed free car speed {}",
+        agents.speed[follower],
+        agents2.speed[free_car]
+    );
+}
+
+#[test]
+fn test_overlap_correction_separates_cars() {
+    use crate::config::{CAR_LENGTH, IDM_S_MIN};
+    // Place two cars so they overlap: front car at 20 m, rear car at 20 m + gap < CAR_LENGTH.
+    let (network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
+    let mut agents = AgentSystem::new();
+    let mut allocator = BuildingAllocator::new();
+    let front = place_on_lane(&mut agents, edge_idx, fwd_lane, 20.0, 10.0);
+    let rear  = place_on_lane(&mut agents, edge_idx, fwd_lane, 19.5, 10.0); // 0.5 m apart < CAR_LENGTH
+    agents.tick(&mut allocator, &network, &mut graph, 0.1);
+    let gap = agents.lane_distance[front] - agents.lane_distance[rear];
+    assert!(
+        gap >= CAR_LENGTH + IDM_S_MIN - 0.01,
+        "gap {gap:.3} m after tick must be >= CAR_LENGTH + IDM_S_MIN = {:.3}",
+        CAR_LENGTH + IDM_S_MIN
+    );
+}
+
+#[test]
+fn test_edge_congestion_written_after_tick() {
+    // A car moving at half speed_limit should produce congestion > 0 after update_edge_congestion.
+    let (network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
+    let speed_limit = graph.edges[edge_idx].speed_limit;
+    let mut agents = AgentSystem::new();
+    let mut allocator = BuildingAllocator::new();
+    let i = place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit * 0.5);
+    agents.tick(&mut allocator, &network, &mut graph, 0.1);
+    // Force the agent to stay on road for congestion aggregation.
+    agents.transit[i] = TRANSIT_ON_ROAD;
+    agents.current_edge[i] = edge_idx;
+    agents.update_edge_congestion(&mut graph);
+    assert!(
+        graph.edges[edge_idx].current_congestion > 0.0,
+        "congestion should be > 0 when car is below speed limit"
+    );
+}

@@ -23,15 +23,12 @@ use std::sync::atomic::Ordering;
 
 use crate::config::{CAR_LENGTH, IDM_A_MAX, IDM_S_MIN, IDM_T_HEAD};
 
-/// Returns the bumper-to-bumper gap to the nearest vehicle ahead on `lane_id`
-/// at `my_dist`. `occ` must be sorted by `(lane_id, distance)`.
-fn idm_gap(occ: &[(usize, usize, f32)], lane_id: usize, my_dist: f32) -> f32 {
-    let start = occ.partition_point(|e| e.0 < lane_id);
-    let end   = occ.partition_point(|e| e.0 <= lane_id);
-    let lane  = &occ[start..end];
-    let ahead = lane.partition_point(|e| e.2 <= my_dist + 0.05);
-    if ahead < lane.len() {
-        (lane[ahead].2 - my_dist - CAR_LENGTH).max(0.1)
+/// Returns the bumper-to-bumper gap to the nearest vehicle ahead in a pre-sorted
+/// per-lane bucket. `bucket` must be sorted ascending by distance.
+fn idm_gap_bucket(bucket: &[(f32, usize)], my_dist: f32) -> f32 {
+    let ahead = bucket.partition_point(|e| e.0 <= my_dist + 0.05);
+    if ahead < bucket.len() {
+        (bucket[ahead].0 - my_dist - CAR_LENGTH).max(0.1)
     } else {
         f32::MAX
     }
@@ -147,32 +144,47 @@ impl AgentSystem {
         });
 
         // -----------------------------------------------------------------------
-        // 2. Lane occupancy snapshot for IDM — sequential O(A + A log A).
-        //    Builds a flat sorted list (lane_id, agent_idx, lane_distance) from all
-        //    on-road agents with a valid lane so the parallel IDM pass can find the
-        //    car-ahead gap via two binary searches.
+        // 2. Lane bucket fill — sequential O(A).
+        //    Clears only buckets touched last frame (via dirty_lanes), then fills
+        //    per-lane (dist, agent_idx) buckets and sorts each one.  Total sort
+        //    cost is O(Σ kᵢ log kᵢ) ≈ O(A) since each lane holds only a few cars.
         // -----------------------------------------------------------------------
-        {
-            let occ = &mut self.lane_occupants;
-            occ.clear();
-            for i in 0..n {
-                if self.agents.transit[i] == TRANSIT_ON_ROAD {
-                    let lid = self.agents.current_lane_id[i];
-                    if lid != usize::MAX {
-                        occ.push((lid, i, self.agents.lane_distance[i]));
+        let lane_count = transit_network.lane_system.lanes.len();
+        // Grow bucket / flag arrays if new lanes were added since last tick.
+        if self.lane_buckets.len() < lane_count {
+            self.lane_buckets.resize_with(lane_count, Vec::new);
+            self.lane_is_dirty.resize(lane_count, false);
+        }
+        // Clear only the lanes we touched last tick.
+        for &lid in &self.dirty_lanes {
+            self.lane_buckets[lid].clear();
+            self.lane_is_dirty[lid] = false;
+        }
+        self.dirty_lanes.clear();
+        // Fill.
+        for i in 0..n {
+            if self.agents.transit[i] == TRANSIT_ON_ROAD {
+                let lid = self.agents.current_lane_id[i];
+                if lid != usize::MAX && lid < lane_count {
+                    if !self.lane_is_dirty[lid] {
+                        self.lane_is_dirty[lid] = true;
+                        self.dirty_lanes.push(lid);
                     }
+                    self.lane_buckets[lid].push((self.agents.lane_distance[i], i));
                 }
             }
-            occ.sort_unstable_by(|a, b| {
-                a.0.cmp(&b.0)
-                    .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+        }
+        // Sort each non-empty bucket ascending by distance.
+        for &lid in &self.dirty_lanes {
+            self.lane_buckets[lid].sort_unstable_by(|a, b| {
+                a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
             });
         }
 
         // -----------------------------------------------------------------------
         // 3. IDM speed update — parallel.
-        //    Reads current speeds and lane-occupancy snapshot (both read-only),
-        //    writes new speeds to a scratch buffer, then commits.
+        //    Each car looks up its pre-sorted bucket directly (O(1) index into
+        //    lane_buckets, O(log k) binary search within the bucket).
         // -----------------------------------------------------------------------
         self.new_speed.resize(n, 0.0_f32);
         {
@@ -183,7 +195,8 @@ impl AgentSystem {
             let s_cur_e_idm   = RawSlice::new(&mut self.agents.current_edge);
             let s_speed_idm   = RawSlice::new(&mut self.agents.speed);
             let new_spd_raw   = RawSlice { ptr: self.new_speed.as_mut_ptr(), len: n };
-            let occ_slice: &[(usize, usize, f32)] = &self.lane_occupants;
+            // lane_buckets is read-only during the parallel pass — safe to share.
+            let buckets: &Vec<Vec<(f32, usize)>> = &self.lane_buckets;
 
             (0..n).into_par_iter().for_each(|i| {
                 unsafe {
@@ -191,15 +204,14 @@ impl AgentSystem {
                     let transit = *s_transit_idm.get(i);
                     let tmode   = *s_tmode_idm.get(i);
 
-                    // IDM only applies to cars actively on a road lane.
                     if transit != TRANSIT_ON_ROAD || tmode != MODE_CAR {
                         *new_spd_raw.get_mut(i) = cur_spd;
                         return;
                     }
 
-                    let lid   = *s_lane_idm.get(i);
-                    let my_d  = *s_lane_d_idm.get(i);
-                    let eid   = *s_cur_e_idm.get(i);
+                    let lid  = *s_lane_idm.get(i);
+                    let my_d = *s_lane_d_idm.get(i);
+                    let eid  = *s_cur_e_idm.get(i);
 
                     let v_max = if eid != usize::MAX && eid < graph.edges.len() {
                         graph.edges[eid].speed_limit
@@ -207,7 +219,11 @@ impl AgentSystem {
                         20.0_f32
                     };
 
-                    let gap = idm_gap(occ_slice, lid, my_d);
+                    let gap = if lid < buckets.len() {
+                        idm_gap_bucket(&buckets[lid], my_d)
+                    } else {
+                        f32::MAX
+                    };
                     *new_spd_raw.get_mut(i) = idm_new_speed(cur_spd, v_max, gap, delta);
                 }
             });
@@ -745,5 +761,56 @@ impl AgentSystem {
                 }
             } // unsafe
         }); // par_iter
+
+        // -----------------------------------------------------------------------
+        // 5. Post-movement overlap correction — sequential O(A).
+        //    Rebuild bucket distances from the positions agents reached after
+        //    movement, re-sort, then walk each bucket front-to-back clamping any
+        //    rear car that ended up closer than CAR_LENGTH + IDM_S_MIN to the car
+        //    ahead.  Agents that entered a new lane mid-tick are included because
+        //    we scan current_lane_id / lane_distance directly.
+        //
+        //    One-frame visual lag: position was already written inside the parallel
+        //    loop; the corrected lane_distance will feed the render next tick.
+        // -----------------------------------------------------------------------
+        {
+            // Clear buckets from the IDM pre-pass.
+            for &lid in &self.dirty_lanes {
+                self.lane_buckets[lid].clear();
+                self.lane_is_dirty[lid] = false;
+            }
+            self.dirty_lanes.clear();
+
+            // Refill from post-movement positions.
+            for i in 0..n {
+                if self.agents.transit[i] == TRANSIT_ON_ROAD {
+                    let lid = self.agents.current_lane_id[i];
+                    if lid != usize::MAX && lid < lane_count {
+                        if !self.lane_is_dirty[lid] {
+                            self.lane_is_dirty[lid] = true;
+                            self.dirty_lanes.push(lid);
+                        }
+                        self.lane_buckets[lid].push((self.agents.lane_distance[i], i));
+                    }
+                }
+            }
+
+            let min_sep = CAR_LENGTH + IDM_S_MIN;
+            for &lid in &self.dirty_lanes {
+                let bucket = &mut self.lane_buckets[lid];
+                bucket.sort_unstable_by(|a, b| {
+                    a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                // Walk from the second-to-front car backward, pushing each rear car
+                // away from the car ahead if they are too close.
+                for j in (0..bucket.len().saturating_sub(1)).rev() {
+                    let max_rear = (bucket[j + 1].0 - min_sep).max(0.0);
+                    if bucket[j].0 > max_rear {
+                        bucket[j].0 = max_rear;
+                        self.agents.lane_distance[bucket[j].1] = max_rear;
+                    }
+                }
+            }
+        }
     }
 }
