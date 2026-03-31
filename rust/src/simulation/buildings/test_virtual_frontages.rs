@@ -84,11 +84,12 @@ mod tests {
             "Building should reference the new frontage node"
         );
 
-        // After the split the building sits at the end of the first half-edge,
-        // so frontage_t within that half-edge is near 1.0.
+        // After the split the building migrates to the start of the second half-edge
+        // (cell_x=0 on the new edge). frontage_t is small — the building center is one
+        // half-cell (5 m) from the frontage node that begins the second half.
         assert!(
-            b.frontage_t > 0.9,
-            "frontage_t within first half-edge should be close to 1.0, got {}",
+            b.frontage_t < 0.3,
+            "frontage_t near start of second half-edge should be small, got {}",
             b.frontage_t
         );
     }
@@ -129,8 +130,12 @@ mod tests {
         let orig_start = graph.edges[0].start_node;
         let orig_end = graph.edges[0].end_node;
 
-        // Fill all cells so both ticks find something to build.
-        for dx in 0..10 {
+        // Zone columns 1–8 only (skip 0 and 9). The allocator uses a zigzag scan that visits
+        // column 0 and column 9 first. Both are 5 m from their respective endpoints, which is
+        // below MIN_FRONTAGE_DISTANCE (8 m), causing the frontage to snap to the original node
+        // rather than inserting a new one. Columns 1–8 are each ≥ 15 m from the nearest
+        // endpoint, safely beyond the snap threshold.
+        for dx in 1..9 {
             for dy in 0..3 {
                 zoning.set_cell(0, 1, dx, dy, ZoneType::Residential);
             }
@@ -221,39 +226,45 @@ mod tests {
             &config,
         );
 
-        let b_idx = 0;
-        let b = &allocator.buildings[b_idx];
-
-        // Setup agent on the road part, in a far lane (offset > 2m)
-        let agent_idx = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
-        agents.target_building[agent_idx] = b_idx;
-        agents.current_edge[agent_idx] = 0;
-        agents.current_node[agent_idx] = graph.edges[0].start_node;
-        agents.transit[agent_idx] = TRANSIT_ON_ROAD;
-        agents.current_lane_id[agent_idx] = 1; // Outer fwd lane
-        agents.current_path[agent_idx] = vec![graph.edges[0].start_node, graph.edges[0].end_node];
-        agents.current_path_index[agent_idx] = 1;
-        agents.target_node[agent_idx] = graph.edges[0].end_node;
-
-        // Road width 14m, lane width 3.5m. Lane 1 center is 5.25m from centerline.
-        let physical_len = graph.edges[0].physical_length;
-        let frontage_dist = b.frontage_t * physical_len;
-
-        // Move agent exactly behind the frontage so a single tick (0.32m) triggers arrival
-        agents.lane_distance[agent_idx] = frontage_dist - 0.2;
-
+        // Rebuild lane system and CCH after the allocator's frontage split.
         net.lane_system.rebuild(&mut graph);
         net.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);
-        agents.tick(&mut allocator, &net, &mut graph, 0.016);
 
-        println!(
-            "physical_len={}, lane_dist={}, expected_target={}, is_fwd={}, lane_len={}",
-            physical_len,
-            agents.lane_distance[agent_idx],
-            frontage_dist,
-            net.lane_system.lanes[3].is_fwd,
-            net.lane_system.lanes[3].length
-        );
+        let b_idx = 0;
+        let b_edge_idx = allocator.buildings[b_idx].edge_idx;
+        let b_frontage_t = allocator.buildings[b_idx].frontage_t;
+
+        // Find a forward vehicle lane on the building's edge (any lane offset works — the
+        // midway arrival check uses progress_ratio * physical_len, so offset doesn't affect it).
+        let fwd_veh_lane = *net.lane_system.edge_lanes[&b_edge_idx]
+            .iter()
+            .find(|&&lid| {
+                let l = &net.lane_system.lanes[lid];
+                l.is_fwd && l.lane_type == crate::simulation::network::lanes::LaneType::Vehicle
+            })
+            .expect("forward vehicle lane on building edge");
+
+        let b_edge = &graph.edges[b_edge_idx];
+        let physical_len = b_edge.physical_length;
+        let frontage_dist = b_frontage_t * physical_len;
+
+        // Setup agent on the road part of the building's edge.
+        let agent_idx = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        agents.target_building[agent_idx] = b_idx;
+        agents.current_edge[agent_idx] = b_edge_idx;
+        agents.current_node[agent_idx] = b_edge.start_node;
+        agents.transit[agent_idx] = TRANSIT_ON_ROAD;
+        agents.transit_mode[agent_idx] = MODE_CAR;
+        agents.speed[agent_idx] = 20.0; // 20 m/s so a single tick moves 0.32 m
+        agents.current_lane_id[agent_idx] = fwd_veh_lane;
+        agents.current_path[agent_idx] = vec![b_edge.start_node, b_edge.end_node];
+        agents.current_path_index[agent_idx] = 1;
+        agents.target_node[agent_idx] = b_edge.end_node;
+
+        // Place agent just behind the frontage so one tick (0.32 m) crosses it.
+        agents.lane_distance[agent_idx] = frontage_dist - 0.2;
+
+        agents.tick(&mut allocator, &net, &mut graph, 0.016);
 
         assert_eq!(
             agents.transit[agent_idx], TRANSIT_ARRIVING,

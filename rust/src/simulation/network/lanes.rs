@@ -512,8 +512,9 @@ mod tests {
         lanes.rebuild(&mut graph);
 
         // Should produce 6 physical lanes: 1 FWD Vehicle, 1 BKW Vehicle, and 4 Foot lanes (2 on each side).
-        // No connection lanes since no other roads connect and we disallow same-edge U-turns.
-        assert_eq!(lanes.lanes.len(), 6, "Expected 2 vehicle and 4 foot lanes");
+        // Connection lanes (U-turns at dead ends, crosswalks) are also generated but are not physical lanes.
+        let physical: Vec<_> = lanes.lanes.iter().filter(|l| l.edge_id != usize::MAX).collect();
+        assert_eq!(physical.len(), 6, "Expected 2 vehicle and 4 foot physical lanes");
 
         let l_fwd = &lanes.lanes[0];
         assert!(l_fwd.is_fwd, "Lane 0 should be forward");
@@ -560,9 +561,11 @@ mod tests {
         let mut lanes = LaneSystem::new();
         lanes.rebuild(&mut graph);
 
-        // Should produce 4 vehicle lanes, and 0 foot lanes.
-        assert_eq!(lanes.lanes.len(), 4, "Highways should have no foot lanes");
-        for lane in &lanes.lanes {
+        // Should produce 4 physical vehicle lanes and 0 foot lanes.
+        // Connection lanes (U-turns at dead ends) are also generated but are not physical lanes.
+        let physical: Vec<_> = lanes.lanes.iter().filter(|l| l.edge_id != usize::MAX).collect();
+        assert_eq!(physical.len(), 4, "Highways should have no foot lanes");
+        for lane in &physical {
             assert_eq!(lane.lane_type, LaneType::Vehicle);
         }
     }
