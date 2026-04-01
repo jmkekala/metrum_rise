@@ -74,6 +74,11 @@ pub struct Agent {
     pub has_car: bool,
     /// Type of vehicle the agent uses (if driving). One of the `VEHICLE_*` constants.
     pub vehicle_type: u8,
+
+    /// Variant for pedestrian models (0-3: Male A, Male B, Female A, Female B).
+    pub pedestrian_type: u8,
+    /// Current cycle of the walk animation [0, 1].
+    pub walk_phase: f32,
 }
 
 /// Simulation-wide agent system.
@@ -170,6 +175,8 @@ impl AgentSystem {
             current_path_index: 0,
             has_car: true,
             vehicle_type: rng.gen_range(0..4) as u8,
+            pedestrian_type: rng.gen_range(0..4) as u8,
+            walk_phase: rng.gen_range(0.0..1.0),
         };
 
         self.agents.push(agent);

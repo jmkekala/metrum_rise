@@ -9,7 +9,8 @@ extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
 
-var walker_mmi: MultiMeshInstance3D
+# Key: pedestrian_type (int), Value: MultiMeshInstance3D
+var walker_mmis: Dictionary = {}
 # Key: vehicle_type (int), Value: MultiMeshInstance3D
 var car_mmis: Dictionary = {}
 
@@ -30,23 +31,80 @@ var com_val: Label
 var ind_val: Label
 
 func _ready():
-	# --- Walker MultiMesh (pedestrians, future cyclists, etc.) ---
-	walker_mmi = MultiMeshInstance3D.new()
-	var wmm = MultiMesh.new()
-	wmm.transform_format = MultiMesh.TRANSFORM_3D
-	wmm.use_colors = false
-	wmm.use_custom_data = false
-	wmm.instance_count = 0
-	var walker_mesh = CapsuleMesh.new()
-	walker_mesh.radius = 0.2   # Slim human silhouette
-	walker_mesh.height = 1.7
-	var walker_mat = StandardMaterial3D.new()
-	walker_mat.albedo_color = Color(0.85, 0.72, 0.60)
-	walker_mat.roughness = 0.95
-	walker_mesh.material = walker_mat
-	wmm.mesh = walker_mesh
-	walker_mmi.multimesh = wmm
-	add_child(walker_mmi)
+	# --- Walker MultiMeshes — VAT (Vertex Animation Texture) pipeline ---
+	# Assets baked from .blend source by tools/bake_vat_blend.py.
+	# The GLTF rest mesh has clean Y-up orientation (no FBX rotation offset).
+	var vat_base = "res://assets/models/characters/civilians/VAT/"
+	var person_meshes = {
+		0: vat_base + "male_walk_rest.gltf",
+		1: vat_base + "male_walk_rest.gltf",
+		2: vat_base + "female_walk_rest.gltf",
+		3: vat_base + "female_walk_rest.gltf",
+	}
+	var person_vat_tex = {
+		0: vat_base + "male_vat_walk.exr",
+		1: vat_base + "male_vat_walk.exr",
+		2: vat_base + "female_vat_walk.exr",
+		3: vat_base + "female_vat_walk.exr",
+	}
+	var person_skins = {
+		0: "res://assets/models/characters/civilians/Skins/casualMaleA.png",
+		1: "res://assets/models/characters/civilians/Skins/casualMaleB.png",
+		2: "res://assets/models/characters/civilians/Skins/casualFemaleA.png",
+		3: "res://assets/models/characters/civilians/Skins/casualFemaleB.png",
+	}
+
+	var walk_shader = preload("res://scripts/shaders/pedestrian_walk.gdshader")
+
+	for p_type in person_meshes:
+		var gltf_doc   := GLTFDocument.new()
+		var gltf_state := GLTFState.new()
+		var err := gltf_doc.append_from_file(person_meshes[p_type], gltf_state)
+		if err != OK:
+			push_error("Failed to load VAT mesh: " + person_meshes[p_type])
+			continue
+
+		var node := gltf_doc.generate_scene(gltf_state)
+		if not node:
+			push_error("Could not generate scene from: " + person_meshes[p_type])
+			continue
+
+		# Source .blend is scale=1 rotation=0 → GLTF has no node rotation.
+		# _extract_first_mesh returns the raw mesh resource (no baking needed).
+		var mesh = _extract_first_mesh(node)
+		node.free()
+		if not mesh:
+			push_error("No mesh found in: " + person_meshes[p_type])
+			continue
+
+		var vat_path  := ProjectSettings.globalize_path(person_vat_tex[p_type])
+		var vat_image := Image.load_from_file(vat_path)
+		if not vat_image:
+			push_error("Could not load VAT texture: " + person_vat_tex[p_type])
+			continue
+		var vat_tex := ImageTexture.create_from_image(vat_image)
+		# Note: In Godot 4, the 'filter_nearest' hint in the shader
+		# takes care of this perfectly.
+
+		var mmi := MultiMeshInstance3D.new()
+		var mm  := MultiMesh.new()
+		mm.transform_format = MultiMesh.TRANSFORM_3D
+		mm.use_colors       = false
+		mm.use_custom_data  = true   # INSTANCE_CUSTOM.x = walk_phase [0..1]
+		mm.instance_count   = 0
+		mm.mesh             = mesh
+		mmi.multimesh       = mm
+
+		var mat := ShaderMaterial.new()
+		mat.shader = walk_shader
+		mat.set_shader_parameter("albedo_texture", load(person_skins[p_type]))
+		mat.set_shader_parameter("vat_texture",    vat_tex)
+		mat.set_shader_parameter("num_frames",     31.0)
+		mmi.material_override = mat
+
+		add_child(mmi)
+		walker_mmis[p_type] = mmi
+
 
 	# --- Car MultiMeshes (Civilians) ---
 	var car_models = {
@@ -72,7 +130,7 @@ func _ready():
 			if node:
 				for variant_id in range(color_offsets.size()):
 					var uv_shift = color_offsets[variant_id]
-					var mesh = _extract_mesh(node, uv_shift)
+					var mesh = _extract_mesh(node, uv_shift, 0.0, Vector3(0, PI, 0))
 					if not mesh: continue
 					
 					var mmi = MultiMeshInstance3D.new()
@@ -241,14 +299,18 @@ func _update_camera_aabb():
 	simulation_node.set_camera_aabb(x_min - pad, x_max + pad, z_min - pad, z_max + pad)
 
 func update_swarm():
-	# Walkers
-	var wbuf = simulation_node.get_agent_transforms()
-	var wmm = walker_mmi.multimesh
-	var wcount = wbuf.size() / 12
-	if wcount != wmm.instance_count:
-		wmm.instance_count = wcount
-	if wcount > 0:
-		wmm.buffer = wbuf
+	# Walkers (Grouped by variant)
+	var walker_data = simulation_node.get_agent_transforms()
+	for p_type in walker_mmis:
+		var mmi = walker_mmis[p_type]
+		var buffer = walker_data.get(p_type, PackedFloat32Array())
+		var count = buffer.size() / 16 # Transform (12) + Custom (4)
+		
+		# MMIs are initialized on demand; skip if no agents of this type.
+		if count != mmi.multimesh.instance_count:
+			mmi.multimesh.instance_count = count
+		if count > 0:
+			mmi.multimesh.buffer = buffer
 
 	# Cars (Now grouped by vehicle type and color variant)
 	var car_data = simulation_node.get_car_transforms()
@@ -326,16 +388,20 @@ func _build_car_mesh() -> ArrayMesh:
 	return mesh
 
 # Extracts and merges all surfaces from a Node hierarchy into an ArrayMesh.
-# Automatically rotates 180 degrees and normalizes height so the bottom is at Y=0.
-# Applies uv_shift to randomize colors from the palette.
-func _extract_mesh(root_node: Node, uv_shift: float = 0.0) -> Mesh:
+# target_height: if > 0, scales the model to this height in meters.
+# base_rotation: additional rotation (Euler) to apply before normalization.
+func _extract_mesh(root_node: Node, uv_shift: float = 0.0, target_height: float = 0.0, base_rotation: Vector3 = Vector3.ZERO) -> Mesh:
 	var mesh_instances = []
-	_find_mesh_instances(root_node, Transform3D.IDENTITY, mesh_instances)
+	var base_tf = Transform3D().rotated(Vector3.RIGHT, base_rotation.x)
+	base_tf = base_tf.rotated(Vector3.UP, base_rotation.y)
+	base_tf = base_tf.rotated(Vector3.FORWARD, base_rotation.z)
+	
+	_find_mesh_instances(root_node, base_tf, mesh_instances)
 	
 	if mesh_instances.size() == 0:
 		return null
 		
-	# 1. Calculate the bounding box of the entire merged model to find the bottom.
+	# 1. Calculate the bounding box of the entire merged model to find height and bottom.
 	var aabb = AABB()
 	var first = true
 	for item in mesh_instances:
@@ -349,7 +415,16 @@ func _extract_mesh(root_node: Node, uv_shift: float = 0.0) -> Mesh:
 			aabb = aabb.merge(mi_aabb)
 			
 	# 2. Define our "normalization" transform: 
-	var normalization = Transform3D().rotated(Vector3.UP, PI)
+	var normalization = Transform3D()
+	
+	# Scaling
+	if target_height > 0.0 and aabb.size.y > 0.01:
+		var s = target_height / aabb.size.y
+		normalization = normalization.scaled(Vector3(s, s, s))
+		aabb.position *= s
+		aabb.size *= s
+
+	# Shift so bottom is at Y=0
 	normalization.origin.y = -aabb.position.y
 	
 	var final_mesh := ArrayMesh.new()
@@ -383,6 +458,18 @@ func _extract_mesh(root_node: Node, uv_shift: float = 0.0) -> Mesh:
 				st.commit(final_mesh)
 			
 	return final_mesh
+
+# Extracts the first ArrayMesh from a GLTF scene tree as-is (no coordinate transform).
+# Used for VAT rest-pose meshes which are already in Godot Y-up space.
+func _extract_first_mesh(root: Node) -> Mesh:
+	if root is MeshInstance3D and root.mesh:
+		print("DEBUG MESH AABB: ", root.mesh.get_aabb())
+		return root.mesh
+	for child in root.get_children():
+		var m = _extract_first_mesh(child)
+		if m:
+			return m
+	return null
 
 func _find_mesh_instances(node: Node, parent_transform: Transform3D, out_list: Array) -> void:
 	var current_transform = parent_transform

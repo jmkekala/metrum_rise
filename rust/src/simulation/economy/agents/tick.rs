@@ -263,6 +263,8 @@ impl AgentSystem {
         let s_has_car   = RawSlice::new(&mut self.agents.has_car);
         let _s_vtype    = RawSlice::new(&mut self.agents.vehicle_type);
         let s_speed     = RawSlice::new(&mut self.agents.speed);
+        let _s_ped_type  = RawSlice::new(&mut self.agents.pedestrian_type);
+        let s_walk_phase = RawSlice::new(&mut self.agents.walk_phase);
 
         let pathfind_count = &self.pathfind_count;
         let sim_time = self.sim_time;
@@ -274,6 +276,14 @@ impl AgentSystem {
             unsafe {
                 *s_cur_n.get_mut(i) = graph.get_valid_node(*s_cur_n.get(i));
                 *s_tgt_n.get_mut(i) = graph.get_valid_node(*s_tgt_n.get(i));
+
+                // Update walk animation phase if not in a vehicle.
+                if *s_tmode.get(i) != MODE_CAR {
+                    let spd = *s_speed.get(i);
+                    let phase = *s_walk_phase.get(i);
+                    // Cycle: about 1 time per meter traveled.
+                    *s_walk_phase.get_mut(i) = (phase + (spd.abs() * 0.8 * delta)) % 1.0;
+                }
 
                 match *s_transit.get(i) {
                     TRANSIT_IDLE => {

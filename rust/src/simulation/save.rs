@@ -1166,6 +1166,8 @@ fn load_agents(conn: &Connection, agent_sim_time: f32) -> SaveLoadResult<AgentSy
                 vehicle_type: i64_to_u8(row.get(21)?)?,
                 current_path_index: i64_to_usize(row.get(22)?)?,
                 current_path: car_paths.remove(&agent_id).unwrap_or_default(),
+                pedestrian_type: 0,
+                walk_phase: 0.0,
             },
         );
     }
@@ -1684,6 +1686,8 @@ struct LoadedAgentRecord {
     vehicle_type: u8,
     current_path_index: usize,
     current_path: Vec<u32>,
+    pedestrian_type: u8,
+    walk_phase: f32,
 }
 
 fn push_loaded_agent(agents: &mut AgentSystem, agent: LoadedAgentRecord) {
@@ -1711,6 +1715,8 @@ fn push_loaded_agent(agents: &mut AgentSystem, agent: LoadedAgentRecord) {
         current_path_index: agent.current_path_index,
         has_car: agent.has_car,
         vehicle_type: agent.vehicle_type,
+        pedestrian_type: agent.pedestrian_type,
+        walk_phase: agent.walk_phase,
     };
     agents.agents.push(a);
 }
@@ -1844,6 +1850,8 @@ mod tests {
                 vehicle_type: 0,
                 current_path_index: 1,
                 current_path: vec![n0, n1],
+                pedestrian_type: 0,
+                walk_phase: 0.0,
             },
         );
         push_loaded_agent(
@@ -1871,6 +1879,8 @@ mod tests {
                 vehicle_type: 0,
                 current_path_index: 0,
                 current_path: Vec::new(),
+                pedestrian_type: 0,
+                walk_phase: 0.0,
             },
         );
 

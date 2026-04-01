@@ -181,6 +181,8 @@ impl SimCore {
                 current_path_index: (start_idx + 1).min(path_len - 1),
                 has_car: true,
                 vehicle_type: (i % 4) as u8,
+                pedestrian_type: 0,
+                walk_phase: 0.0,
             });
         }
         godot_print!(

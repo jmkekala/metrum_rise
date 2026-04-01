@@ -402,12 +402,15 @@ impl SimulationNode {
         self.snapshot.read().unwrap().current_day
     }
 
-    /// Returns the packed transforms for all visible non-car agents (walkers, cyclists, etc.).
+    /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.
     #[func]
-    pub fn get_agent_transforms(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(
-            self.snapshot.read().unwrap().pedestrian_transforms.iter().cloned(),
-        )
+    pub fn get_agent_transforms(&self) -> VarDictionary {
+        let snap = self.snapshot.read().unwrap();
+        let mut dict = VarDictionary::new();
+        for (&k, v) in &snap.pedestrian_transforms {
+            dict.set(k as i32, PackedFloat32Array::from_iter(v.iter().cloned()));
+        }
+        dict
     }
 
     /// Returns a Dictionary of packed transforms for visible car agents, keyed by vehicle type.

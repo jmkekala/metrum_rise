@@ -251,6 +251,12 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
   - Dominant new cost: O(A log A) `lane_occupants` sort (100k entries every frame when all agents are on-road). This is the next optimisation target — replacing the flat sort with per-lane bucket accumulation would reduce IDM overhead to O(A) with small constant.
   - Pathfind calls 101–844/frame (higher variance than pre-IDM — agents reach destinations faster at higher speed, triggering more re-routes)
   - RSS ~766–769 MB; stable
+- **End-to-end benchmark (post-IDM + B1–B6 test fixes, 2026-03-31, i9-12900K, RX 7900 XTX)**:
+  - 100k ON_ROAD agents, edges=1400, lanes=45464, `--benchmark` (Godot renderer active)
+  - real 2m5s, user 6m1s (~2.9× concurrency), `agent_tick_us` 5.5–13.5 ms, `sim_tick_ms` 2.55–9.57 ms
+  - CPU identical to previous run; +21s wall clock is within scheduler variance (user time unchanged).
+  - Pathfind calls settling: 314→256→221→143→21/frame (agents converge to stable routes by frame 3000, vs sustained 101–844/frame in previous run — building placement stabilisation from test fixes).
+  - RSS 817–819 MB; stable (higher than previous run due to larger lane count: 45464 vs ~40k).
 
 ---
 
@@ -264,6 +270,9 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 | B4 | [BUG] | `simulation/buildings/test_virtual_frontages.rs:89` | `test_virtual_frontage_placement` expects `frontage_t > 0.9` after a mid-edge split (building should sit at the far end of the first half-edge), but gets `0.2`. Frontage `t` value not being remapped relative to the new half-edge after the split. | [DONE] — test assertion corrected: building migrates to the start of the second half-edge (cell_x=0, small frontage_t is correct). Assertion updated to `< 0.3`. |
 | B5 | [BUG] | `simulation/buildings/test_virtual_frontages.rs:160` | `test_virtual_frontage_routing_targets` expects the second building's `frontage_node` to differ from the original start node; both are `0`. Virtual frontage node insertion not producing a distinct node for the second building placed on the second half-edge. | [DONE] — test zoning updated to columns 1–8 (skip 0 and 9); the zigzag scanner visits col 9 before col 1, and both endpoints snap below MIN_FRONTAGE_DISTANCE. |
 | B6 | [DONE] | `simulation/buildings/test_virtual_frontages.rs` | `test_wide_road_arrival`: test set up agent on edge 0 with hardcoded `lane_id=1`, but after the frontage split the building lives on the second half-edge. Fixed by rebuilding lanes before agent setup, then looking up `b.edge_idx` and the actual forward vehicle lane via `edge_lanes`. | fixed |
+| B7 | [DONE] | `nodes/sim/core.rs:292,382` | Pedestrian and car transforms in `build_snapshot` were pushed in row-major order (grouping each basis vector's xyz components) instead of the column-major layout Godot's `MultiMesh` buffer expects. This transposed the rotation matrix, causing agents and cars to lie flat sideways and VAT limb stretching. Fixed by reordering pushes to `[basis_x.x, basis_y.x, basis_z.x, origin.x, ...]`. | fixed |
+| B8 | [DONE] | `nodes/sim/core.rs` | Pedestrian `basis_z = -fwd` caused characters to walk backwards. The GLTF exporter converts Blender's character-facing direction (-Y in Blender) to +Z in GLTF/Godot space, so the model faces +Z. Changed to `basis_z = fwd` so the model's +Z aligns with the travel direction. | fixed |
+| B9 | [DONE] | `tools/bake_vat_blend.py` | VAT bake EXR had two compounding issues: (1) delta computed in local vs world space (no-op since world_mat=Identity, but clarified), and (2) Blender's sRGB colour management multiplied near-zero float values by ≈12.92× at `img.save()` time, inflating all channel values by that factor. Fixed by bypassing Blender's image save entirely — EXR is now written directly via Python's `OpenEXR` library with rows in reversed fi order to match Blender's Y-flip convention. Both male and female EXR assets re-baked; max_delta now ≈0.95m (correct, bounded to ±1m per channel). | fixed |
 
 
 ## Backlog
@@ -376,6 +385,14 @@ Target: same agent scale as v0.2. No simulation changes. All work is in `render_
     - **Rust change required**: add `walk_phase: Vec<f32>` to `AgentSystem` SoA (~4 MB at 1M agents). Increment each tick: `walk_phase[i] = (walk_phase[i] + delta / stride_length) % 1.0`. Expose via `get_pedestrian_phases() -> PackedFloat32Array`. Pass as MultiMesh `CUSTOM_DATA_FLOAT` channel (Godot `per_instance_color` repurposed as 4 floats).
     - **Why SDF over a 3D model here**: MultiMesh cannot do per-instance skeletal animation, so a 3D model would be a static pose anyway. An SDF billboard looks better than a static mesh at city-view distances (3–20 px), produces clean anti-aliased edges at any resolution, requires no texture VRAM, and the walking animation is trivially added. A 3D model only wins at close range — the v1.0 Agent LoD system (item 32) handles that case by switching to individual `AnimationPlayer` nodes within ~50 m.
     - Colour the silhouette by agent state: walking = neutral tone, idle = slightly desaturated, stressed/unhappy = cooler tint. This visual feedback is free — just sample `happiness[i]` and pass it in another custom data channel.
+
+48b. **Vertex Animation Texture (VAT) pedestrian rendering** — replaces the current static-mesh + vertex-shader approximation with real baked skeletal animation at zero CPU cost per agent:
+    - **Pipeline**: For each character model (male/female), run a headless Blender script that imports `Models/characterLarge*.fbx` + `Animations/walk.fbx`, evaluates the skinned mesh at `N=30` evenly-sampled walk frames, and writes position deltas into a float32 EXR texture (width = vertex count, height = 30 frames). A custom UV1 channel (encoded as `(vi + 0.5) / num_verts`) is baked into the exported rest-pose GLTF to survive vertex-index changes from UV-seam splitting during export.
+    - **Godot side**: Replace `pedestrian_walk.gdshader` with a VAT shader that samples `texture(vat_tex, vec2(UV2.x, phase))` in the vertex stage and adds the offset to `VERTEX`. The `walk_phase` passed via `INSTANCE_CUSTOM.x` drives the V coordinate — directly giving quality skeletal animation with no skeleton overhead.
+    - **Why this achieves 1M-agent scale**: every agent's animation is one texture sample per vertex per frame on the GPU. There is no CPU bone evaluation, no skeleton traversal, and no per-agent branching. The total GPU cost is O(V × agents) texture fetches, which is bounded by the same vertex budget as static mesh rendering. Cities: Skylines 2 uses this exact architecture for its crowd system.
+    - **Rust changes required**: none beyond the existing `walk_phase` SoA field and `INSTANCE_CUSTOM.x` pass-through already in place (implemented in this session).
+    - **Complexity**: Medium. Requires: (1) bake_vat.py Blender script (tooling), (2) GLTF rest-mesh import to Godot, (3) shader rewrite, (4) agents.gd loading VAT textures and rest meshes. No simulation changes.
+    - **Prerequisites**: baked `.exr` and rest-pose `.gltf` assets generated from `tools/bake_vat.py`.
 49. **Building variant system** — small Rust change, prerequisite for building model variety:
     - Add `variant: u8` to `Building` struct. Assign during placement: `variant = (cell_x ^ cell_y ^ edge_idx) as u8 % NUM_VARIANTS` for deterministic pseudo-random variety without an RNG call.
     - Add `get_building_transforms_by_variant(zone_id: i32, variant: i32) -> PackedFloat32Array` to `render_helpers.rs`.
