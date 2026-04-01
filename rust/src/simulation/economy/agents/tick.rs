@@ -34,6 +34,21 @@ fn idm_gap_bucket(bucket: &[(f32, usize)], my_dist: f32) -> f32 {
     }
 }
 
+/// Dispatches `f` over `0..n` sequentially when `n < PAR_THRESHOLD`, otherwise in
+/// parallel via Rayon.  Below the threshold Rayon's worker threads would spin-wait
+/// for ~1 ms after each call looking for more work; at 60 Hz with 3 parallel
+/// sections per tick that idle spin accounts for ~1–2 extra CPU cores even when
+/// the city has only a few hundred agents.
+#[inline]
+fn dispatch_agents<F: Fn(usize) + Send + Sync>(n: usize, f: F) {
+    const PAR_THRESHOLD: usize = 500;
+    if n >= PAR_THRESHOLD {
+        (0..n).into_par_iter().for_each(f);
+    } else {
+        (0..n).for_each(f);
+    }
+}
+
 /// Returns the new speed for one IDM time step. Uses the simplified IDM without the
 /// approach-speed interaction term (`v·Δv / 2√(a_max·b)`) — the full term can be
 /// added once per-agent `v_lead` tracking is in place.
@@ -117,28 +132,26 @@ impl AgentSystem {
         let s_transit  = RawSlice::new(&mut self.agents.transit);
         let s_visible  = RawSlice::new(&mut self.agents.is_visible);
 
-        (0..n).into_par_iter().for_each(|i| {
-            unsafe {
-                if *s_home.get(i) != usize::MAX && *s_home.get(i) >= bldg_count {
-                    *s_home.get_mut(i) = usize::MAX;
-                }
-                if *s_work.get(i) != usize::MAX && *s_work.get(i) >= bldg_count {
-                    *s_work.get_mut(i) = usize::MAX;
-                }
-                if *s_cur_b.get(i) != usize::MAX && *s_cur_b.get(i) >= bldg_count {
-                    *s_cur_b.get_mut(i) = usize::MAX;
+        dispatch_agents(n, |i| unsafe {
+            if *s_home.get(i) != usize::MAX && *s_home.get(i) >= bldg_count {
+                *s_home.get_mut(i) = usize::MAX;
+            }
+            if *s_work.get(i) != usize::MAX && *s_work.get(i) >= bldg_count {
+                *s_work.get_mut(i) = usize::MAX;
+            }
+            if *s_cur_b.get(i) != usize::MAX && *s_cur_b.get(i) >= bldg_count {
+                *s_cur_b.get_mut(i) = usize::MAX;
+                *s_transit.get_mut(i) = TRANSIT_ARRIVING;
+                *s_visible.get_mut(i) = true;
+            }
+            let tgt = *s_tgt_b.get(i);
+            if tgt != usize::MAX && tgt >= bldg_count {
+                let home = *s_home.get(i);
+                if home != usize::MAX {
+                    *s_tgt_b.get_mut(i) = home;
+                } else {
+                    *s_tgt_b.get_mut(i) = usize::MAX;
                     *s_transit.get_mut(i) = TRANSIT_ARRIVING;
-                    *s_visible.get_mut(i) = true;
-                }
-                let tgt = *s_tgt_b.get(i);
-                if tgt != usize::MAX && tgt >= bldg_count {
-                    let home = *s_home.get(i);
-                    if home != usize::MAX {
-                        *s_tgt_b.get_mut(i) = home;
-                    } else {
-                        *s_tgt_b.get_mut(i) = usize::MAX;
-                        *s_transit.get_mut(i) = TRANSIT_ARRIVING;
-                    }
                 }
             }
         });
@@ -198,7 +211,7 @@ impl AgentSystem {
             // lane_buckets is read-only during the parallel pass — safe to share.
             let buckets: &Vec<Vec<(f32, usize)>> = &self.lane_buckets;
 
-            (0..n).into_par_iter().for_each(|i| {
+            dispatch_agents(n, |i| {
                 unsafe {
                     let cur_spd = *s_speed_idm.get(i);
                     let transit = *s_transit_idm.get(i);
@@ -269,7 +282,7 @@ impl AgentSystem {
         let pathfind_count = &self.pathfind_count;
         let sim_time = self.sim_time;
 
-        (0..n).into_par_iter().for_each(|i| {
+        dispatch_agents(n, |i| {
             let mut rng = rand::thread_rng();
 
             // Safety: index i is unique to this thread via par_iter.
@@ -770,7 +783,7 @@ impl AgentSystem {
                     }
                 }
             } // unsafe
-        }); // par_iter
+        }); // dispatch_agents
 
         // -----------------------------------------------------------------------
         // 5. Post-movement overlap correction — sequential O(A).
@@ -820,6 +833,32 @@ impl AgentSystem {
                         self.agents.lane_distance[bucket[j].1] = max_rear;
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dispatch_agents;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Verifies that `dispatch_agents` visits every index in `0..n` exactly once,
+    /// both below the PAR_THRESHOLD (sequential path) and above it (parallel path).
+    #[test]
+    fn test_dispatch_agents_visits_each_index_once() {
+        for n in [10_usize, 499, 500, 501, 600] {
+            let counts: Vec<AtomicUsize> = (0..n).map(|_| AtomicUsize::new(0)).collect();
+            dispatch_agents(n, |i| {
+                counts[i].fetch_add(1, Ordering::Relaxed);
+            });
+            for (i, c) in counts.iter().enumerate() {
+                assert_eq!(
+                    c.load(Ordering::Relaxed),
+                    1,
+                    "n={n}: index {i} was visited {} time(s), expected 1",
+                    c.load(Ordering::Relaxed)
+                );
             }
         }
     }
