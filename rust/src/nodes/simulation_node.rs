@@ -56,9 +56,24 @@ pub struct SimulationNode {
 }
 
 impl SimulationNode {
+    /// Acquires the sim-core mutex, recovering silently if it was poisoned by a
+    /// prior sim-thread panic.  Using `unwrap()` on a poisoned mutex would
+    /// crash Godot on the next frame even though the sim thread has already
+    /// recovered; this helper matches the recovery logic in `run_sim_thread`.
+    #[inline]
+    fn lock_core(&self) -> std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore> {
+        match self.core.lock() {
+            Ok(g) => g,
+            Err(e) => {
+                godot_error!("[sim] mutex poisoned — recovering in Godot main-thread call");
+                e.into_inner()
+            }
+        }
+    }
+
     /// Returns the dimensions of the heightmap.
     pub fn get_heightmap_size_internal(&self) -> Vector2 {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         Vector2::new(core.heightmap.width as f32, core.heightmap.height as f32)
     }
 
@@ -107,7 +122,7 @@ impl SimulationNode {
     /// Returns the pollution image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_pollution_image_data(&self) -> PackedByteArray {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         Self::grid_to_image_data_internal(
             &core.pollution.grid,
             core.heightmap.width,
@@ -119,7 +134,7 @@ impl SimulationNode {
     /// Returns the noise image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_noise_image_data(&self) -> PackedByteArray {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         Self::grid_to_image_data_internal(
             &core.noise.grid,
             core.heightmap.width,
@@ -131,7 +146,7 @@ impl SimulationNode {
     /// Returns the desirability image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_desirability_image_data(&self) -> PackedByteArray {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         Self::grid_to_image_data_internal(
             &core.desirability.grid,
             core.heightmap.width,
@@ -143,25 +158,25 @@ impl SimulationNode {
     /// Undoes the last action.
     #[func]
     pub fn undo_action(&mut self) -> bool {
-        self.core.lock().unwrap().undo_action_internal()
+        self.lock_core().undo_action_internal()
     }
 
     /// Sculpts the terrain heightmap.
     #[func]
     pub fn sculpt_terrain(&mut self, pos: Vector2, radius: f32, strength: f32) {
-        self.core.lock().unwrap().sculpt_terrain_internal(pos, radius, strength);
+        self.lock_core().sculpt_terrain_internal(pos, radius, strength);
     }
 
     /// Adds a volume of water at a specific grid position.
     #[func]
     pub fn add_water(&mut self, pos: Vector2, amount: f32) {
-        self.core.lock().unwrap().add_water_internal(pos, amount);
+        self.lock_core().add_water_internal(pos, amount);
     }
 
     /// Adds a continuous water source at a specific grid position.
     #[func]
     pub fn add_water_source(&mut self, pos: Vector2, rate_add: f32) {
-        self.core.lock().unwrap().add_water_source_internal(pos, rate_add);
+        self.lock_core().add_water_source_internal(pos, rate_add);
     }
 
     /// Returns whether the terrain mesh needs rebuilding.
@@ -179,34 +194,34 @@ impl SimulationNode {
     /// Clears the terrain dirty flag.
     #[func]
     pub fn clear_terrain_dirty(&mut self) {
-        self.core.lock().unwrap().terrain_dirty = false;
+        self.lock_core().terrain_dirty = false;
         self.snapshot.write().unwrap().terrain_dirty = false;
     }
 
     /// Clears the water dirty flag.
     #[func]
     pub fn clear_water_dirty(&mut self) {
-        self.core.lock().unwrap().water_dirty = false;
+        self.lock_core().water_dirty = false;
         self.snapshot.write().unwrap().water_dirty = false;
     }
 
     /// Returns the raw heightmap data.
     #[func]
     pub fn get_heightmap_data(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(self.core.lock().unwrap().heightmap.data.iter().cloned())
+        PackedFloat32Array::from_iter(self.lock_core().heightmap.data.iter().cloned())
     }
 
     /// Returns the raw water depth data.
     #[func]
     pub fn get_water_data(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(self.core.lock().unwrap().watermap.depth.iter().cloned())
+        PackedFloat32Array::from_iter(self.lock_core().watermap.depth.iter().cloned())
     }
 
     /// Returns the raw water velocity data.
     #[func]
     pub fn get_water_velocity_data(&self) -> PackedFloat32Array {
         PackedFloat32Array::from_iter(
-            self.core.lock().unwrap().watermap.velocity.iter().cloned(),
+            self.lock_core().watermap.velocity.iter().cloned(),
         )
     }
 
@@ -219,7 +234,7 @@ impl SimulationNode {
     /// Sets the zone type for a specific 10m cell.
     #[func]
     pub fn set_zoning_cell(&mut self, edge_idx: i32, side: i8, x: i32, y: i32, zone_type_int: u8) {
-        self.core.lock().unwrap().set_zoning_cell_internal(edge_idx, side, x, y, zone_type_int);
+        self.lock_core().set_zoning_cell_internal(edge_idx, side, x, y, zone_type_int);
     }
 
     /// Sets a range of zoning cells with a specific depth.
@@ -233,20 +248,20 @@ impl SimulationNode {
         depth: i32,
         zone_type_int: u8,
     ) {
-        self.core.lock().unwrap().set_zoning_range_internal(edge_idx, side, start_t, end_t, depth, zone_type_int);
+        self.lock_core().set_zoning_range_internal(edge_idx, side, start_t, end_t, depth, zone_type_int);
     }
 
     /// Returns a PackedFloat32Array for rendering the zone grid.
     #[func]
     pub fn get_zoning_grid_data(&self) -> PackedFloat32Array {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         core.zoning.get_render_data(&core.region_graph)
     }
 
     /// Returns information about zoning on a particular edge.
     #[func]
     pub fn get_edge_zoning_info(&self, edge_idx: i32) -> VarDictionary {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         let mut dict = VarDictionary::new();
         if let Some(grid) = core.zoning.edge_grids.get(&(edge_idx as usize)) {
             dict.set("cells_long", grid.cells_long as i32);
@@ -266,7 +281,7 @@ impl SimulationNode {
     /// Returns whether a specific zoning cell is obstructed.
     #[func]
     pub fn is_zoning_cell_obstructed(&self, edge_idx: i32, side: i32, x: i32, y: i32) -> bool {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         let graph = &core.region_graph;
         if let Some(edge) = graph.edges.get(edge_idx as usize) {
             if (side == 1 && !edge.zoning_left) || (side == -1 && !edge.zoning_right) {
@@ -286,13 +301,13 @@ impl SimulationNode {
     /// Enables or disables zoning for a specific side of a road edge.
     #[func]
     pub fn set_zoning_enabled(&mut self, edge_idx: i32, side: i32, enabled: bool) {
-        self.core.lock().unwrap().set_zoning_enabled_internal(edge_idx, side, enabled);
+        self.lock_core().set_zoning_enabled_internal(edge_idx, side, enabled);
     }
 
     /// Returns the world-space center position of a specific zoning cell.
     #[func]
     pub fn get_zoning_cell_center(&self, edge_idx: i32, side: i8, x: i32, y: i32) -> Vector2 {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         let v2 = core.zoning.get_cell_center(
             edge_idx as usize,
             side,
@@ -322,7 +337,7 @@ impl SimulationNode {
             .iter_shared()
             .map(|v| v.to::<i32>())
             .collect();
-        self.core.lock().unwrap().update_zoning_visuals_internal(
+        self.lock_core().update_zoning_visuals_internal(
             grid_mm, paint_mm, &edges, is_painting, side, t1, t2, depth, zone_type,
         );
     }
@@ -334,13 +349,13 @@ impl SimulationNode {
         ignore_poly_id: i32,
         ignore_edge_idx: i32,
     ) -> PackedFloat32Array {
-        self.core.lock().unwrap().get_obstacle_polygons_internal(ignore_poly_id, ignore_edge_idx)
+        self.lock_core().get_obstacle_polygons_internal(ignore_poly_id, ignore_edge_idx)
     }
 
     /// Returns the ID of the edge hovered by the mouse.
     #[func]
     pub fn get_hovered_edge(&self, world_x: f32, world_z: f32) -> i32 {
-        self.core.lock().unwrap().get_hovered_edge_internal(world_x, world_z)
+        self.lock_core().get_hovered_edge_internal(world_x, world_z)
     }
 
     /// Returns the raycast depth against the road network.
@@ -353,7 +368,7 @@ impl SimulationNode {
         dir_z: f32,
         max_search: f32,
     ) -> f32 {
-        self.core.lock().unwrap().get_max_polygon_depth_internal(
+        self.lock_core().get_max_polygon_depth_internal(
             origin_x, origin_z, dir_x, dir_z, max_search,
         )
     }
@@ -427,31 +442,31 @@ impl SimulationNode {
     /// Returns debug path geometry for active agents.
     #[func]
     pub fn get_agent_paths_debug(&self) -> VarDictionary {
-        self.core.lock().unwrap().get_agent_paths_debug_internal()
+        self.lock_core().get_agent_paths_debug_internal()
     }
 
     /// Returns city demographic statistics.
     #[func]
     pub fn get_city_demographics(&self) -> VarDictionary {
-        self.core.lock().unwrap().get_city_demographics_internal()
+        self.lock_core().get_city_demographics_internal()
     }
 
     /// Returns current residential, commercial, and industrial demand values (-100 to 100).
     #[func]
     pub fn get_demand_stats(&self) -> VarDictionary {
-        self.core.lock().unwrap().get_demand_stats_internal()
+        self.lock_core().get_demand_stats_internal()
     }
 
     /// Returns the packed transforms for buildings of a specific zone type.
     #[func]
     pub fn get_building_transforms(&self, zone_type_int: u8, variant: u8) -> PackedFloat32Array {
-        self.core.lock().unwrap().get_building_transforms_internal(zone_type_int, variant)
+        self.lock_core().get_building_transforms_internal(zone_type_int, variant)
     }
 
     /// Returns the packed transforms for building plots/foundations of a specific zone type.
     #[func]
     pub fn get_building_plot_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
-        self.core.lock().unwrap().get_building_plot_transforms_internal(zone_type_int)
+        self.lock_core().get_building_plot_transforms_internal(zone_type_int)
     }
 
     /// Registers metadata for a building model to aid in footprint calculation.
@@ -464,7 +479,7 @@ impl SimulationNode {
         size_y: f32,
         size_z: f32,
     ) {
-        self.core.lock().unwrap().allocator.set_model_metadata(
+        self.lock_core().allocator.set_model_metadata(
             zone_id,
             variant,
             crate::simulation::buildings::allocator::ModelMetadata { size_x, size_y, size_z },
@@ -474,19 +489,19 @@ impl SimulationNode {
     /// Returns the closest boundary point on a road edge to the given position.
     #[func]
     pub fn get_closest_point_on_edge(&self, edge_idx: i32, point_x: f32, point_y: f32) -> Vector2 {
-        self.core.lock().unwrap().get_closest_point_on_edge_internal(edge_idx, point_x, point_y)
+        self.lock_core().get_closest_point_on_edge_internal(edge_idx, point_x, point_y)
     }
 
     /// Returns the physical segment geometry for a road edge.
     #[func]
     pub fn get_edge_geometry(&self, edge_idx: i32) -> PackedVector2Array {
-        self.core.lock().unwrap().get_edge_geometry_internal(edge_idx)
+        self.lock_core().get_edge_geometry_internal(edge_idx)
     }
 
     /// Returns the 3D geometry for a road edge.
     #[func]
     pub fn get_edge_geometry_3d(&self, edge_idx: i32) -> PackedVector3Array {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         if edge_idx < 0 || edge_idx as usize >= core.region_graph.edges.len() {
             return PackedVector3Array::new();
         }
@@ -497,7 +512,7 @@ impl SimulationNode {
     /// Returns the width of a specific road edge.
     #[func]
     pub fn get_edge_width(&self, edge_idx: i32) -> f32 {
-        let core = self.core.lock().unwrap();
+        let core = self.lock_core();
         if edge_idx < 0 || edge_idx as usize >= core.region_graph.edges.len() {
             return 6.0;
         }
@@ -512,7 +527,7 @@ impl SimulationNode {
         start_p: Vector2,
         end_p: Vector2,
     ) -> PackedVector2Array {
-        self.core.lock().unwrap().get_curved_frontage_internal(edge_idx, start_p, end_p)
+        self.lock_core().get_curved_frontage_internal(edge_idx, start_p, end_p)
     }
 
     /// Adds a new road segment to the network.
@@ -525,43 +540,43 @@ impl SimulationNode {
         zoning_left: bool,
         zoning_right: bool,
     ) {
-        self.core.lock().unwrap().add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
+        self.lock_core().add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
     }
 
     /// Returns the node ID of the nearest graph node near the border, or -1.
     #[func]
     pub fn check_border_candidate(&self, pos: Vector3) -> i64 {
-        self.core.lock().unwrap().check_border_candidate_internal(pos)
+        self.lock_core().check_border_candidate_internal(pos)
     }
 
     /// Marks the node at `node_id` as an external border connection.
     #[func]
     pub fn set_border_connection(&mut self, node_id: i32) {
-        self.core.lock().unwrap().set_border_connection_internal(node_id);
+        self.lock_core().set_border_connection_internal(node_id);
     }
 
     /// Returns the world-space positions of all active border nodes as a flat float array.
     #[func]
     pub fn get_border_nodes(&self) -> PackedFloat32Array {
-        self.core.lock().unwrap().get_border_nodes_internal()
+        self.lock_core().get_border_nodes_internal()
     }
 
     /// Sets the classification of an edge (Standard, Bridge, Tunnel).
     #[func]
     pub fn set_edge_class(&mut self, edge_idx: i32, class_int: u8) {
-        self.core.lock().unwrap().set_edge_class_internal(edge_idx, class_int);
+        self.lock_core().set_edge_class_internal(edge_idx, class_int);
     }
 
     /// Returns dictionary of road/intersection mesh data.
     #[func]
     pub fn get_road_mesh_data(&self) -> VarDictionary {
-        self.core.lock().unwrap().get_road_mesh_data_internal()
+        self.lock_core().get_road_mesh_data_internal()
     }
 
     /// Returns the closest network point (node/edge) within range.
     #[func]
     pub fn get_closest_network_point(&self, world_pos: Vector3, max_dist: f32) -> Variant {
-        match self.core.lock().unwrap().get_closest_network_point_internal(world_pos, max_dist) {
+        match self.lock_core().get_closest_network_point_internal(world_pos, max_dist) {
             Some(p) => p.to_variant(),
             None => Variant::nil(),
         }
@@ -570,7 +585,7 @@ impl SimulationNode {
     /// Returns the ID of the closest network node.
     #[func]
     pub fn get_closest_node(&self, world_pos: Vector3, max_dist: f32) -> i32 {
-        self.core.lock().unwrap().get_closest_node_internal(world_pos, max_dist)
+        self.lock_core().get_closest_node_internal(world_pos, max_dist)
     }
 
     /// Placeholder for cul-de-sac tools.
@@ -586,19 +601,19 @@ impl SimulationNode {
     /// Returns the number of road connections for a node.
     #[func]
     pub fn get_node_connection_count(&self, node_id: i32) -> i32 {
-        self.core.lock().unwrap().get_node_connection_count_internal(node_id)
+        self.lock_core().get_node_connection_count_internal(node_id)
     }
 
     /// Repositions a network node.
     #[func]
     pub fn move_network_node(&mut self, node_id: i32, pos: Vector3) {
-        self.core.lock().unwrap().move_network_node_internal(node_id, pos);
+        self.lock_core().move_network_node_internal(node_id, pos);
     }
 
     /// Returns all junction node positions.
     #[func]
     pub fn get_network_nodes(&self) -> PackedVector3Array {
-        self.core.lock().unwrap().get_network_nodes_internal()
+        self.lock_core().get_network_nodes_internal()
     }
 
     /// Configures a lane connection rule at a junction.
@@ -611,7 +626,7 @@ impl SimulationNode {
         to_edge: i32,
         to_lane: i32,
     ) {
-        self.core.lock().unwrap().set_lane_connection_internal(
+        self.lock_core().set_lane_connection_internal(
             node_id, from_edge, from_lane, to_edge, to_lane,
         );
     }
@@ -619,55 +634,55 @@ impl SimulationNode {
     /// Clears all lane rules at a junction node.
     #[func]
     pub fn clear_lane_connections(&mut self, node_id: u32) {
-        self.core.lock().unwrap().clear_lane_connections_internal(node_id);
+        self.lock_core().clear_lane_connections_internal(node_id);
     }
 
     /// Returns the world-space position of a node.
     #[func]
     pub fn get_node_pos(&self, node_id: u32) -> Vector3 {
-        self.core.lock().unwrap().get_node_pos_internal(node_id)
+        self.lock_core().get_node_pos_internal(node_id)
     }
 
     /// Returns information about all lanes entering/leaving a junction.
     #[func]
     pub fn get_node_lanes(&self, node_id: u32) -> VarArray {
-        self.core.lock().unwrap().get_node_lanes_internal(node_id)
+        self.lock_core().get_node_lanes_internal(node_id)
     }
 
     /// Returns an array of current lane turn restrictions at a node.
     #[func]
     pub fn get_lane_connections_array(&self, node_id: u32) -> VarArray {
-        self.core.lock().unwrap().get_lane_connections_array_internal(node_id)
+        self.lock_core().get_lane_connections_array_internal(node_id)
     }
 
     /// Clears lane rules for a specific source lane.
     #[func]
     pub fn clear_lane_source(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
-        self.core.lock().unwrap().clear_lane_source_internal(node_id, from_edge, from_lane);
+        self.lock_core().clear_lane_source_internal(node_id, from_edge, from_lane);
     }
 
     /// Returns the average network direction at a given point.
     #[func]
     pub fn get_network_direction_at_point(&self, pos: Vector3) -> Vector3 {
-        self.core.lock().unwrap().get_network_direction_at_point_internal(pos)
+        self.lock_core().get_network_direction_at_point_internal(pos)
     }
 
     /// Snap terrain to road levels.
     #[func]
     pub fn flatten_terrain_for_roads(&mut self) {
-        self.core.lock().unwrap().flatten_terrain_for_roads_internal();
+        self.lock_core().flatten_terrain_for_roads_internal();
     }
 
     /// Returns terrain height at a position.
     #[func]
     pub fn get_height_at(&self, pos: Vector2) -> f32 {
-        self.core.lock().unwrap().get_height_at_internal(pos)
+        self.lock_core().get_height_at_internal(pos)
     }
 
     /// Raycasts against the terrain heightmap.
     #[func]
     pub fn intersect_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
-        match self.core.lock().unwrap().intersect_terrain_internal(ray_origin, ray_dir) {
+        match self.lock_core().intersect_terrain_internal(ray_origin, ray_dir) {
             Some(p) => p.to_variant(),
             None => Variant::nil(),
         }
@@ -676,13 +691,13 @@ impl SimulationNode {
     /// Loads heightmap from a PackedFloat32Array.
     #[func]
     pub fn load_heightmap_data(&mut self, data: PackedFloat32Array) {
-        self.core.lock().unwrap().load_heightmap_data_internal(data);
+        self.lock_core().load_heightmap_data_internal(data);
     }
 
     /// Saves the current simulation into a single SQLite snapshot file.
     #[func]
     pub fn save_game(&self, path: GString) -> bool {
-        match self.core.lock().unwrap().save_game_internal(&path.to_string()) {
+        match self.lock_core().save_game_internal(&path.to_string()) {
             Ok(()) => true,
             Err(err) => {
                 godot_print!("Save failed: {}", err);
@@ -694,7 +709,7 @@ impl SimulationNode {
     /// Loads a SQLite save snapshot and replaces the live simulation state.
     #[func]
     pub fn load_game(&mut self, path: GString) -> bool {
-        match self.core.lock().unwrap().load_game_internal(&path.to_string()) {
+        match self.lock_core().load_game_internal(&path.to_string()) {
             Ok(()) => true,
             Err(err) => {
                 godot_print!("Load failed: {}", err);
@@ -712,7 +727,7 @@ impl SimulationNode {
     /// High-level city setup for performance testing.
     #[func]
     pub fn setup_benchmark_city(&mut self, grid_size: i32, agent_count: i32) {
-        self.core.lock().unwrap().setup_benchmark_city_internal(grid_size, agent_count);
+        self.lock_core().setup_benchmark_city_internal(grid_size, agent_count);
     }
 
     /// Returns performance stats (ms, FPS, agents).
@@ -790,16 +805,6 @@ impl INode3D for SimulationNode {
             godot_print!("BENCHMARK GENERATION MODE — will build city, save, and exit");
         } else if run_benchmark {
             godot_print!("BENCHMARK RUN MODE — will load benchmark.sav and simulate");
-        }
-
-        // Initial road for the non-benchmark default map (added after mutex wrap).
-        if !is_huge {
-            let config_ref = core_arc.lock().unwrap().config.clone();
-            let border = (config_ref.zone_grid_height() as f32 * 0.5) - 1.0;
-            let mut pts = PackedVector3Array::new();
-            pts.push(Vector3::new(0.0, 0.0, -border));
-            pts.push(Vector3::new(0.0, 0.0, -border / 2.0));
-            core_arc.lock().unwrap().add_road_internal(pts, 2, 2, true, true);
         }
 
         Self {

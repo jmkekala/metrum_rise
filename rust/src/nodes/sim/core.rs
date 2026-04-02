@@ -506,11 +506,40 @@ pub fn run_sim_thread(
                 core.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;
 
                 if core.time.process_delta(TARGET_DT) {
-                    core.simulate_tick_internal();
+                    // Wrap daily tick so a panic here does not poison the mutex.
+                    // Without this, the first daily-tick panic would permanently
+                    // crash every subsequent Godot main-thread lock().unwrap() call.
+                    let daily_result = std::panic::catch_unwind(
+                        std::panic::AssertUnwindSafe(|| core.simulate_tick_internal()),
+                    );
+                    if let Err(e) = daily_result {
+                        let msg = e
+                            .downcast_ref::<&str>()
+                            .copied()
+                            .or_else(|| e.downcast_ref::<String>().map(String::as_str))
+                            .unwrap_or("(non-string payload)");
+                        godot_error!("[sim] daily tick panicked — skipping day: {}", msg);
+                    }
                 }
             }
 
-            core.build_snapshot()
+            // build_snapshot only reads state; wrap anyway so a panic here does
+            // not poison the mutex and kill the render thread.
+            let snap_result = std::panic::catch_unwind(
+                std::panic::AssertUnwindSafe(|| core.build_snapshot()),
+            );
+            match snap_result {
+                Ok(s) => s,
+                Err(e) => {
+                    let msg = e
+                        .downcast_ref::<&str>()
+                        .copied()
+                        .or_else(|| e.downcast_ref::<String>().map(String::as_str))
+                        .unwrap_or("(non-string payload)");
+                    godot_error!("[sim] build_snapshot panicked — using default: {}", msg);
+                    RenderSnapshot::default()
+                }
+            }
         };
 
         // Write snapshot — outside the sim lock so render reads are non-blocking.
