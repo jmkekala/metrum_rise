@@ -317,11 +317,6 @@ impl SimulationNode {
     pub fn is_zoning_cell_obstructed(&self, edge_idx: i32, side: i32, x: i32, y: i32) -> bool {
         let core = self.lock_core();
         let graph = &core.region_graph;
-        if let Some(edge) = graph.edges.get(edge_idx as usize) {
-            if (side == 1 && !edge.zoning_left) || (side == -1 && !edge.zoning_right) {
-                return true;
-            }
-        }
         core.zoning.is_cell_obstructed(
             edge_idx as usize,
             side as i8,
@@ -332,11 +327,6 @@ impl SimulationNode {
         )
     }
 
-    /// Enables or disables zoning for a specific side of a road edge.
-    #[func]
-    pub fn set_zoning_enabled(&mut self, edge_idx: i32, side: i32, enabled: bool) {
-        self.lock_core().set_zoning_enabled_internal(edge_idx, side, enabled);
-    }
 
     /// Returns the world-space center position of a specific zoning cell.
     #[func]
@@ -571,8 +561,6 @@ impl SimulationNode {
         points: PackedVector3Array,
         fwd_lanes: i32,
         bkw_lanes: i32,
-        zoning_left: bool,
-        zoning_right: bool,
     ) {
         // Send to the background thread so the Godot main thread is never blocked
         // by the expensive lane-rebuild and zoning-obstruction passes (~500 ms).
@@ -581,8 +569,6 @@ impl SimulationNode {
             points: points.to_vec(),
             fwd_lanes,
             bkw_lanes,
-            zoning_left,
-            zoning_right,
         });
     }
 
@@ -797,6 +783,22 @@ impl SimulationNode {
     pub fn get_perf_stats(&self) -> VarDictionary {
         self.get_perf_stats_internal()
     }
+
+    /// Returns transformation and custom data for all painted zoning cells, grouped by ZoneType.
+    #[func]
+    pub fn get_persistent_zoning_instances(&self) -> VarDictionary {
+        let core = self.lock_core();
+        let instances =
+            core.get_persistent_zoning_instances_internal(&core.zoning, &core.region_graph);
+        let mut dict = VarDictionary::new();
+        for (z_type, data) in instances {
+            dict.set(
+                z_type as i32,
+                PackedFloat32Array::from_iter(data.iter().cloned()),
+            );
+        }
+        dict
+    }
 }
 
 #[godot_api]
@@ -943,6 +945,5 @@ impl INode3D for SimulationNode {
                 self.base_mut().get_tree().unwrap().quit();
             }
         }
-        // All simulation ticking happens in the background thread.
     }
 }

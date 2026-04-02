@@ -29,7 +29,7 @@ pub struct Building {
     pub center_x: f32,
     /// World-space Z centre of the building footprint (metres, Godot's forward axis).
     pub center_y: f32,
-    /// Width of the footprint in zoning grid cells (1 cell = 10m).
+    /// Width of the footprint in zoning grid cells.
     pub width_cells: u8,
     /// Depth of the footprint in zoning grid cells.
     pub depth_cells: u8,
@@ -270,8 +270,10 @@ impl BuildingAllocator {
                     // Determine deterministic variant and its footprint size
                     let variant = (edge_idx ^ x) as u8 % 64;
                     let meta = self.get_model_metadata(z_type as u8, variant);
-                    let dw = meta.size_x.ceil().max(1.0) as usize;
-                    let dh = meta.size_z.ceil().max(1.0) as usize;
+                    let cell_size = zoning.config.zone_cell_m;
+                    let scale = crate::config::BUILDING_VISUAL_SCALE;
+                    let dw = (meta.size_x * scale / cell_size).ceil().max(1.0) as usize;
+                    let dh = (meta.size_z * scale / cell_size).ceil().max(1.0) as usize;
 
                     // Ensure footprint fits in zoning grid
                     if x + dw > cells_long || dh > crate::config::ZONING_DEPTH as usize {
@@ -900,15 +902,13 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             1,
             1,
-            true,
-            false,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
         );
         for x in 0..3 {
             for y in 0..3 {
-                zoning.set_cell(0, 1, x, y, ZoneType::Residential);
+                zoning.set_cell(0, 1, x, y, ZoneType::Residential, &graph);
             }
         }
         zoning.recalculate_obstructions(0, &graph);
@@ -965,15 +965,13 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             1,
             1,
-            true,
-            false,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
         );
         for x in 0..3 {
             for y in 0..3 {
-                zoning.set_cell(0, 1, x, y, ZoneType::Residential);
+                zoning.set_cell(0, 1, x, y, ZoneType::Residential, &graph);
             }
         }
         zoning.recalculate_obstructions(0, &graph);
@@ -1021,8 +1019,6 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             1,
             1,
-            true,
-            false,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
@@ -1055,7 +1051,7 @@ mod tests {
         // Remove zoning trigger
         for dx in 0..3 {
             for dy in 0..3 {
-                zoning.set_cell(0, 1, dx, dy, ZoneType::None);
+                zoning.set_cell(0, 1, dx, dy, ZoneType::None, &graph);
             }
         }
 
@@ -1110,8 +1106,6 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             1,
             1,
-            true,
-            false,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
@@ -1122,7 +1116,7 @@ mod tests {
         graph.nodes[0].node_type = crate::simulation::network::types::NodeType::Border;
 
         // Force a vacant residential building
-        zoning.set_cell(edge_id, 1, 0, 0, ZoneType::Residential);
+        zoning.set_cell(edge_id, 1, 0, 0, ZoneType::Residential, &graph);
         allocator.buildings.push(Building {
             center_x: 10.0,
             center_y: 10.0,

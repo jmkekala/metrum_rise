@@ -22,8 +22,6 @@ fn test_slope_cost_calculation() {
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     };
@@ -79,8 +77,6 @@ fn test_pathing_avoids_steep_slope() {
             Vector3::new(50.0, 50.0, 0.0),
             Vector3::new(100.0, 0.0, 0.0),
         ],
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     };
@@ -107,8 +103,6 @@ fn test_pathing_avoids_steep_slope() {
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     };
@@ -140,8 +134,6 @@ fn test_pathing_avoids_steep_slope() {
             Vector3::new(50.0, 0.0, 100.0),
             Vector3::new(100.0, 0.0, 0.0),
         ],
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     };
@@ -189,8 +181,6 @@ fn test_bidirectional_walkway_pathing() {
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     });
@@ -239,8 +229,6 @@ fn test_car_uturn_allowed() {
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     });
@@ -295,8 +283,6 @@ fn test_car_avoids_walkway_shortcut() {
         end_clip: 0.0,
         geometry: vec![],
         physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 100.0],
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     });
@@ -316,8 +302,6 @@ fn test_car_avoids_walkway_shortcut() {
         end_clip: 0.0,
         geometry: vec![],
         physical_geometry: vec![Vector3::RIGHT * 100.0, Vector3::RIGHT * 200.0],
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     });
@@ -339,8 +323,6 @@ fn test_car_avoids_walkway_shortcut() {
         end_clip: 0.0,
         geometry: vec![],
         physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 200.0],
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     });

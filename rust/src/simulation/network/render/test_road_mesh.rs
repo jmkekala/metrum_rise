@@ -43,8 +43,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![p1, p2],
             physical_geometry: vec![p1, p2],
-            zoning_left: true,
-            zoning_right: true,
             deleted: false,
         }
     }
@@ -191,8 +189,6 @@ mod tests {
                 road.to_vec(),
                 *fwd,
                 *bkw,
-                false,
-                false,
                 EdgeClass::Standard,
                 &mut zoning,
                 &mut allocator,

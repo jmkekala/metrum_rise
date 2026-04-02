@@ -1,9 +1,10 @@
 //! Common types and enumerations for the transportation network.
 
 /// The mode of transport for an edge or lane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TransitType {
     /// Standard road for vehicles and pedestrians.
+    #[default]
     Road,
     /// Rail-based transport.
     Rail,
@@ -33,9 +34,10 @@ impl TransitFlags {
 }
 
 /// The functional role of a network node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NodeType {
     /// Standard road intersection or endpoint.
+    #[default]
     Junction,
     /// Public transport stop or station.
     Station,
@@ -56,9 +58,10 @@ pub enum NodeType {
 }
 
 /// Architectural classification of a road edge.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum EdgeClass {
     /// Standard surface-level road.
+    #[default]
     Standard,
     /// Elevated road with structural components (deck, walls, pillars).
     Bridge,

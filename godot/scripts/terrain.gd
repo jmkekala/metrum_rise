@@ -12,14 +12,13 @@ extends MeshInstance3D
 var texture: ImageTexture
 var height_image: Image
 
-var zoning_texture: ImageTexture
-var zoning_image: Image
+var overlay_texture: ImageTexture
+var overlay_image: Image
 
 var parcel_texture: ImageTexture
 var parcel_image: Image
 
-var overlay_mode: int = 0 # 0=Zoning, 1=Pollution, 2=Noise, 3=Desirability
-var show_global_zoning: bool = false
+var overlay_mode: int = 0 # 0=None, 1=Pollution, 2=Noise, 3=Desirability
 var sim_speed: float = 0.0
 
 var cached_overlay_state: bool = false
@@ -44,9 +43,9 @@ func rebuild_from_simulation_state():
 	height_image = Image.create(w, h, false, Image.FORMAT_RF)
 	texture = ImageTexture.create_from_image(height_image)
 	
-	# Zoning texture (RGBA8 for colored zones)
-	zoning_image = Image.create(w, h, false, Image.FORMAT_RGBA8)
-	zoning_texture = ImageTexture.create_from_image(zoning_image)
+	# Overlay Texture (RGBA8 for heatmaps)
+	overlay_image = Image.create(w, h, false, Image.FORMAT_RGBA8)
+	overlay_texture = ImageTexture.create_from_image(overlay_image)
 	
 	parcel_image = Image.create(w, h, false, Image.FORMAT_RGBAF)
 	parcel_texture = ImageTexture.create_from_image(parcel_image)
@@ -54,7 +53,7 @@ func rebuild_from_simulation_state():
 	var material = ShaderMaterial.new()
 	material.shader = load("res://assets/materials/terrain.gdshader")
 	material.set_shader_parameter("heightmap", texture)
-	material.set_shader_parameter("zoning_texture", zoning_texture)
+	material.set_shader_parameter("overlay_texture", overlay_texture)
 	material.set_shader_parameter("parcel_texture", parcel_texture)
 	material.set_shader_parameter("height_scale", 20.0)
 	material.set_shader_parameter("mesh_size", size)
@@ -76,9 +75,8 @@ func _process(delta):
 		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 			sculpt_at_mouse(delta)
 	
-	var material = self.material_override as ShaderMaterial
-	if material != null:
-		material.set_shader_parameter("show_global_zoning", show_global_zoning)
+	# Overlay logic handled in update_terrain_visuals
+	pass
 
 func update_terrain_visuals():
 	var data = simulation_node.get_heightmap_data()
@@ -106,8 +104,12 @@ func update_terrain_visuals():
 		zone_bytes = simulation_node.get_desirability_image_data()
 		
 	if zone_bytes.size() > 0:
-		zoning_image.set_data(int(size.x), int(size.y), false, Image.FORMAT_RGBA8, zone_bytes)
-		zoning_texture.update(zoning_image)
+		overlay_image.set_data(int(size.x), int(size.y), false, Image.FORMAT_RGBA8, zone_bytes)
+		overlay_texture.update(overlay_image)
+	else:
+		# Clear overlay if mode is 0 or no data
+		overlay_image.fill(Color(0, 0, 0, 0))
+		overlay_texture.update(overlay_image)
 
 	# Grid-based zoning is now managed by ZoningTool.gd and SimulationNode direct rendering.
 

@@ -26,8 +26,6 @@ fn create_test_edge(n0: u32, n1: u32) -> Edge {
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-        zoning_left: true,
-        zoning_right: true,
         deleted: false,
     }
 }
@@ -276,7 +274,7 @@ fn test_border_spawn_movement() {
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let mut zoning = ZoningSystem::new(&MapConfig::default());
     let mut allocator = BuildingAllocator::new();
-    network.add_road(&mut graph, vec![Vector3::ZERO, Vector3::RIGHT * 100.0], 1, 1, false, false, EdgeClass::Standard, &mut zoning, &mut allocator);
+    network.add_road(&mut graph, vec![Vector3::ZERO, Vector3::RIGHT * 100.0], 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
     network.cch_graph = CchGraph::build(&graph);
     let mut agents = AgentSystem::new();
     allocator.buildings.push(create_test_building(0, 1, n1));
@@ -294,8 +292,8 @@ fn test_pedestrian_crosses_junction() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let mut zoning = ZoningSystem::new(&MapConfig::default());
     let mut allocator = BuildingAllocator::new();
-    network.add_road(&mut graph, vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::ZERO], 1, 1, false, false, EdgeClass::Standard, &mut zoning, &mut allocator);
-    network.add_road(&mut graph, vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)], 1, 1, false, false, EdgeClass::Standard, &mut zoning, &mut allocator);
+    network.add_road(&mut graph, vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::ZERO], 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
+    network.add_road(&mut graph, vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)], 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     allocator.buildings.push(create_test_building(0, 1, n1));
@@ -323,7 +321,7 @@ fn setup_straight_road() -> (TransitNetwork, RegionGraph, usize, usize) {
     network.add_road(
         &mut graph,
         vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
-        1, 1, false, false, EdgeClass::Standard,
+        1, 1, EdgeClass::Standard,
         &mut zoning, &mut allocator,
     );
     network.cch_graph = CchGraph::build(&graph);

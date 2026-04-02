@@ -17,34 +17,36 @@ var state: int = 0 # 0: Idle, 1: Painting
 var active: bool = false
 var hovered_edge_idx: int = -1
 
-var current_depth: int = 4 # Default 40m
+var current_depth: int = 3 # Default 3 cells (15m)
 var drag_start_t: float = -1.0
 
 const ZONING_DEPTH: int = 12
-const CELL_SIZE: float = 10.0
+const CELL_SIZE: float = 5.0
 
 var grid_mesh: MultiMeshInstance3D
 var paint_mesh: MultiMeshInstance3D
 var brush_mesh: MultiMeshInstance3D
 
+var persistent_container: Node3D
+var persistent_meshes: Dictionary = {} # int (ZoneType) -> MultiMeshInstance3D
+
 func _ready():
+	var shader = load("res://scripts/shaders/zoning_grid.gdshader")
+	var mat = ShaderMaterial.new()
+	mat.shader = shader
+	
 	grid_mesh = MultiMeshInstance3D.new()
 	var mm = MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
-	mm.use_custom_data = false
+	mm.use_custom_data = true
 	
-	var box = BoxMesh.new()
-	box.size = Vector3(CELL_SIZE - 0.5, 0.1, CELL_SIZE - 0.5) # cell size 10.0, leave a gap
-	mm.mesh = box
+	var plane = PlaneMesh.new()
+	plane.size = Vector2(1.0, 1.0)
+	
+	mm.mesh = plane
 	grid_mesh.multimesh = mm
-	
-	var mat = StandardMaterial3D.new()
-	mat.albedo_color = Color(1, 1, 1, 0.3)
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.vertex_color_use_as_albedo = true
-	box.surface_set_material(0, mat)
+	grid_mesh.material_override = mat
 	
 	add_child(grid_mesh)
 	grid_mesh.top_level = true
@@ -53,8 +55,8 @@ func _ready():
 	var mm2 = MultiMesh.new()
 	mm2.transform_format = MultiMesh.TRANSFORM_3D
 	mm2.use_colors = true
-	mm2.use_custom_data = false
-	mm2.mesh = box
+	mm2.use_custom_data = true
+	mm2.mesh = plane
 	paint_mesh.multimesh = mm2
 	paint_mesh.material_override = mat # share material
 	add_child(paint_mesh)
@@ -64,7 +66,7 @@ func _ready():
 	var mm3 = MultiMesh.new()
 	mm3.transform_format = MultiMesh.TRANSFORM_3D
 	mm3.use_colors = true
-	mm3.mesh = box
+	mm3.mesh = plane
 	brush_mesh.multimesh = mm3
 	
 	var brush_mat = StandardMaterial3D.new()
@@ -74,14 +76,26 @@ func _ready():
 	brush_mesh.material_override = brush_mat
 	add_child(brush_mesh)
 	brush_mesh.top_level = true
+	
+	persistent_container = Node3D.new()
+	persistent_container.name = "PersistentVisuals"
+	add_child(persistent_container)
+	
+	_update_persistent_visuals()
 
 func _process(delta):
 	if not active:
 		grid_mesh.visible = false
 		paint_mesh.visible = false
 		brush_mesh.visible = false
+		# Keep persistent_container visible at all times! (SC4 style)
 		return
 
+	if simulation_node.is_network_dirty():
+		_update_persistent_visuals()
+		# clear_network_dirty is usually handled by RoadTool or InputManager, 
+		# but if we're in zoning mode we might need to check it.
+		
 	_update_visuals()
 
 var visited_edges: Array = []
@@ -98,14 +112,26 @@ func _update_visuals():
 	var mouse_pos_3d = intersection if intersection != null else Vector3.ZERO
 	
 	hovered_edge_idx = simulation_node.get_hovered_edge(mouse_pos_3d.x, mouse_pos_3d.z) if intersection != null else -1
+	var target_edge_idx = hovered_edge_idx
+	if not visited_edges.is_empty():
+		target_edge_idx = visited_edges[0]
 	
 	var current_t = 0.0
 	var current_side = 0
-	if intersection != null and hovered_edge_idx != -1:
-		var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
+	if intersection != null and target_edge_idx != -1:
+		var edge_geom = simulation_node.get_edge_geometry_3d(target_edge_idx)
 		var proj = _get_projection_data(edge_geom, Vector2(intersection.x, intersection.z))
 		current_t = proj["t"]
 		current_side = proj["side"]
+		
+		# Depth logic: Default 3, or mouse-driven if Ctrl is held
+		if Input.is_key_pressed(KEY_CTRL):
+			var road_width = simulation_node.get_edge_width(target_edge_idx)
+			var curb_dist = road_width * 0.5 + 1.5 # config::SIDEWALK_WIDTH
+			var dist_from_sidewalk = proj["dist_from_road"] - curb_dist
+			current_depth = clamp(int(floor(dist_from_sidewalk / CELL_SIZE)) + 1, 1, ZONING_DEPTH)
+		else:
+			current_depth = 3
 	
 	_handle_painting(hovered_edge_idx, current_t, current_side)
 	
@@ -134,9 +160,27 @@ func _handle_painting(h_edge: int, current_t: float, current_side: int):
 				drag_start_t = current_t
 				drag_side = current_side
 			elif visited_edges[-1] != h_edge:
-				# Add to path if not already there
 				if not h_edge in visited_edges:
-					visited_edges.append(h_edge)
+					var conn = _get_connection(visited_edges[-1], h_edge)
+					# Sensitivity: Only switch edges if we are reasonably close to the new road's center (e.g. 7.5m)
+					# AND closer than we are to the current road's center.
+					var e_geom = simulation_node.get_edge_geometry_3d(h_edge)
+					var last_edge_geom = simulation_node.get_edge_geometry_3d(visited_edges[-1])
+					var camera = get_viewport().get_camera_3d()
+					var mouse_pos = get_viewport().get_mouse_position()
+					var ray_origin = camera.project_ray_origin(mouse_pos)
+					var ray_dir = camera.project_ray_normal(mouse_pos)
+					var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
+					
+					var proj = _get_projection_data(e_geom, Vector2(intersection.x, intersection.z))
+					var last_proj = _get_projection_data(last_edge_geom, Vector2(intersection.x, intersection.z))
+					
+					if conn.has("connected") and conn["connected"] and proj["dist_from_road"] < 7.5 and proj["dist_from_road"] < last_proj["dist_from_road"] - 2.0:
+						# Only follow edges that are roughly collinear with the current one.
+						# This prevents the drag from jumping onto perpendicular arms at junctions.
+						var alignment = _edge_alignment(last_edge_geom, conn["t_a"], e_geom, conn["t_b"])
+						if alignment > 0.7: # cos(~46°) — allows gentle curves, blocks right-angle turns
+							visited_edges.append(h_edge)
 	
 func _unhandled_input(event):
 	if not active: return
@@ -156,7 +200,7 @@ func _unhandled_input(event):
 					var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
 					
 					var last_edge_id = visited_edges[-1]
-					var last_edge_geom = simulation_node.get_edge_geometry(last_edge_id)
+					var last_edge_geom = simulation_node.get_edge_geometry_3d(last_edge_id)
 					var last_proj = _get_projection_data(last_edge_geom, Vector2(intersection.x, intersection.z))
 					var end_t = last_proj["t"]
 					
@@ -187,22 +231,22 @@ func _unhandled_input(event):
 						
 						simulation_node.set_zoning_range(e_idx, cur_side, s_t, e_t, current_depth, current_zone_type)
 						
-						# B7: flip side only if road orientation is genuinely reversed (meet at same endpoint types)
+						# B7: flip side only if road orientation is genuinely reversed
 						if i < num_edges - 1:
 							var conn = _get_connection(visited_edges[i], visited_edges[i + 1])
 							if conn["t_a"] == conn["t_b"]:
 								cur_side = -cur_side
+					
+					_update_persistent_visuals()
 				
 				state = 0
 				visited_edges.clear()
 				drag_start_t = -1.0
 		
 		elif event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
-			current_depth = clamp(current_depth + 1, 2, 12)
-			_show_brush_feedback() # Visual feedback for depth change
+			pass # Mouse wheel functionality removed per user request
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
-			current_depth = clamp(current_depth - 1, 2, 12)
-			_show_brush_feedback()
+			pass
 			
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		if hovered_edge_idx != -1:
@@ -215,6 +259,36 @@ func _unhandled_input(event):
 				var edge_geom = simulation_node.get_edge_geometry(hovered_edge_idx)
 				var proj = _get_projection_data(edge_geom, Vector2(intersection.x, intersection.z))
 				simulation_node.set_zoning_range(hovered_edge_idx, proj["side"], 0.0, 1.0, ZONING_DEPTH, 0) # Clear all
+				_update_persistent_visuals()
+
+# Returns the dot product of the outgoing direction of edge_a (at t_a) and the
+# outgoing direction of edge_b (at t_b). Both are expressed as "away from the junction",
+# so a straight continuation gives ~1.0 and a right-angle turn gives ~0.0.
+func _edge_alignment(geom_a: PackedVector3Array, t_a: float, geom_b: PackedVector3Array, t_b: float) -> float:
+	if geom_a.size() < 2 or geom_b.size() < 2:
+		return 0.0
+	# Tangent of A pointing outward from the junction end.
+	var tan_a: Vector2
+	if t_a > 0.5:
+		var p1 = Vector2(geom_a[-2].x, geom_a[-2].z)
+		var p2 = Vector2(geom_a[-1].x, geom_a[-1].z)
+		tan_a = (p2 - p1).normalized()
+	else:
+		var p1 = Vector2(geom_a[0].x, geom_a[0].z)
+		var p2 = Vector2(geom_a[1].x, geom_a[1].z)
+		tan_a = (p1 - p2).normalized() # reversed: outward from start
+	# Tangent of B pointing outward from the junction end (away from the connection point).
+	var tan_b: Vector2
+	if t_b < 0.5:
+		var p1 = Vector2(geom_b[0].x, geom_b[0].z)
+		var p2 = Vector2(geom_b[1].x, geom_b[1].z)
+		tan_b = (p2 - p1).normalized()
+	else:
+		var n = geom_b.size()
+		var p1 = Vector2(geom_b[n-2].x, geom_b[n-2].z)
+		var p2 = Vector2(geom_b[n-1].x, geom_b[n-1].z)
+		tan_b = (p1 - p2).normalized() # reversed: outward from end
+	return tan_a.dot(tan_b)
 
 func _get_connection(edge_a: int, edge_b: int) -> Dictionary:
 	var ga = simulation_node.get_edge_geometry(edge_a)
@@ -222,11 +296,79 @@ func _get_connection(edge_a: int, edge_b: int) -> Dictionary:
 	var a0 = ga[0];  var a1 = ga[ga.size() - 1]
 	var b0 = gb[0];  var b1 = gb[gb.size() - 1]
 	var thr = 400.0  # 20 m squared — covers any node radius
-	if a1.distance_squared_to(b0) < thr: return {"t_a": 1.0, "t_b": 0.0}
-	elif a1.distance_squared_to(b1) < thr: return {"t_a": 1.0, "t_b": 1.0}
-	elif a0.distance_squared_to(b0) < thr: return {"t_a": 0.0, "t_b": 0.0}
-	elif a0.distance_squared_to(b1) < thr: return {"t_a": 0.0, "t_b": 1.0}
-	else: return {"t_a": 1.0, "t_b": 0.0}  # fallback: assume forward chain
+	if a1.distance_squared_to(b0) < thr: return {"t_a": 1.0, "t_b": 0.0, "connected": true}
+	elif a1.distance_squared_to(b1) < thr: return {"t_a": 1.0, "t_b": 1.0, "connected": true}
+	elif a0.distance_squared_to(b0) < thr: return {"t_a": 0.0, "t_b": 0.0, "connected": true}
+	elif a0.distance_squared_to(b1) < thr: return {"t_a": 0.0, "t_b": 1.0, "connected": true}
+	else: return {"t_a": 1.0, "t_b": 0.0, "connected": false}
+
+func _update_persistent_visuals():
+	if not simulation_node: return
+	
+	var data_dict = simulation_node.get_persistent_zoning_instances()
+	if data_dict == null: return
+	
+	var active_types = data_dict.keys()
+	
+	# Cleanup any meshes for types that no longer exist
+	for z_type in persistent_meshes.keys():
+		if not z_type in active_types:
+			persistent_meshes[z_type].multimesh.instance_count = 0
+	
+	for z_type in active_types:
+		var buffer = data_dict[z_type]
+		if buffer.size() == 0:
+			if persistent_meshes.has(z_type):
+				persistent_meshes[z_type].multimesh.instance_count = 0
+			continue
+			
+		var mmi: MultiMeshInstance3D
+		if persistent_meshes.has(z_type):
+			mmi = persistent_meshes[z_type]
+		else:
+			mmi = _create_persistent_mmi(z_type)
+			persistent_meshes[z_type] = mmi
+			
+		var count = buffer.size() / 20
+		mmi.multimesh.instance_count = count
+		mmi.multimesh.set_buffer(buffer)
+		mmi.visible = true
+
+func _create_persistent_mmi(z_type: int) -> MultiMeshInstance3D:
+	var mmi = MultiMeshInstance3D.new()
+	var mm = MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.use_custom_data = true
+	
+	var plane = PlaneMesh.new()
+	plane.size = Vector2(1.0, 1.0)
+	mm.mesh = plane
+	mmi.multimesh = mm
+	
+	var mat = ShaderMaterial.new()
+	mat.shader = load("res://scripts/shaders/zoning_grid.gdshader")
+	mmi.material_override = mat
+	
+	# Set zone color in the multimesh color buffer (Rust side passes white, 
+	# but we can set per-instance color here if we wanted to be more efficient, 
+	# but for now we just use a uniform or vertex color if needed).
+	# Actually, the shader uses v_color = COLOR, so we must set instance colors.
+	
+	# Since all instances in this MMI are the same type, we can just set them all 
+	# to the same color. However, Rust passes the WHOLE buffer including transforms.
+	# The Rust code I wrote passes godot::prelude::Color::WHITE. 
+	# I should probably update the Rust code to pass the CORRECT color or 
+	# handle color in the shader per MultiMesh.
+	
+	# Better: Set the instance colors on the Godot side by post-processing or 
+	# have the shader use a 'zone_color' uniform.
+	mat.set_shader_parameter("v_color", _get_zone_color(z_type))
+	
+	persistent_container.add_child(mmi)
+	mmi.top_level = true
+	return mmi
+
 
 func _show_brush_feedback():
 	# Simple print or UI label could go here. 
@@ -249,47 +391,35 @@ func _get_depth_alpha(y: int) -> float:
 	var t = float(y - 4) / float(ZONING_DEPTH - 1 - 4)
 	return lerp(1.0, 0.1, t)
 
-func _get_edge_length(geom: PackedVector2Array) -> float:
-	var l = 0.0
-	for i in range(geom.size() - 1):
-		l += geom[i].distance_to(geom[i+1])
-	return l
 
-func _get_pos_on_edge(geom: PackedVector2Array, t: float) -> Vector2:
-	var total_l = _get_edge_length(geom)
+func _get_pos_on_edge(geom: PackedVector3Array, t: float) -> Vector3:
+	var total_l = 0.0
+	for i in range(geom.size() - 1):
+		total_l += geom[i].distance_to(geom[i+1])
 	var target_l = t * total_l
 	var curr_l = 0.0
 	for i in range(geom.size() - 1):
 		var d = geom[i].distance_to(geom[i+1])
 		if curr_l + d >= target_l:
-			var local_t = (target_l - curr_l) / d
+			var local_t = (target_l - curr_l) / max(d, 0.001)
 			return geom[i].lerp(geom[i+1], local_t)
 		curr_l += d
 	return geom[-1]
 
-func _get_tangent_on_edge(geom: PackedVector2Array, t: float) -> Vector2:
-	var total_l = _get_edge_length(geom)
-	var target_l = t * total_l
-	var curr_l = 0.0
-	for i in range(geom.size() - 1):
-		var d = geom[i].distance_to(geom[i+1])
-		if curr_l + d >= target_l:
-			return (geom[i+1] - geom[i]).normalized()
-		curr_l += d
-	return (geom[-1] - geom[-2]).normalized()
-
-func _get_projection_data(geom: PackedVector2Array, p: Vector2) -> Dictionary:
+func _get_projection_data(geom: PackedVector3Array, p: Vector2) -> Dictionary:
 	var best_dist_sq = 1e10
 	var best_t = 0.0
 	var best_side = 1
 	var best_dist_from_road = 0.0
 	
-	var total_l = _get_edge_length(geom)
-	var curr_l = 0.0
-	
+	var total_l = 0.0
 	for i in range(geom.size() - 1):
-		var a = geom[i]
-		var b = geom[i+1]
+		total_l += Vector2(geom[i].x, geom[i].z).distance_to(Vector2(geom[i+1].x, geom[i+1].z))
+		
+	var curr_l = 0.0
+	for i in range(geom.size() - 1):
+		var a = Vector2(geom[i].x, geom[i].z)
+		var b = Vector2(geom[i+1].x, geom[i+1].z)
 		var seg = b - a
 		var l2 = seg.length_squared()
 		if l2 < 0.001: continue
@@ -301,8 +431,9 @@ func _get_projection_data(geom: PackedVector2Array, p: Vector2) -> Dictionary:
 		var dist_sq = p.distance_squared_to(proj)
 		if dist_sq < best_dist_sq:
 			best_dist_sq = dist_sq
-			best_t = (curr_l + t_val * sqrt(l2)) / total_l
+			best_t = (curr_l + t_val * sqrt(l2)) / max(total_l, 0.001)
 			var tangent = seg.normalized()
+			# normal points LEFT in the (y, -x) convention for Godot Y-down (side = 1).
 			var normal = Vector2(tangent.y, -tangent.x)
 			var to_pt = p - proj
 			best_side = 1 if to_pt.dot(normal) > 0 else -1

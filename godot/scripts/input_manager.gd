@@ -183,18 +183,11 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 		Tool.AGENT: if agents_node: pass # Agents diag always available
 		Tool.ZONING: 
 			if zoning_tool: zoning_tool.active = enabled
-			if terrain_node: terrain_node.show_global_zoning = enabled
 		Tool.SELECT:
 			if select_tool: select_tool.active = enabled
 
 func _toggle_zoning_overlay():
-	if terrain_node:
-		terrain_node.show_global_zoning = not terrain_node.show_global_zoning
-		if terrain_node.show_global_zoning:
-			_toggle_tool(Tool.ZONING)
-		else:
-			if current_tool == Tool.ZONING:
-				_cancel_active_tool()
+	_toggle_tool(Tool.ZONING)
 
 func _handle_undo():
 	if simulation_node.undo_action():
@@ -219,6 +212,8 @@ func _refresh_after_world_load():
 		road_tool.update_main_mesh()
 	if buildings_node:
 		buildings_node.update_all_buildings()
+	if zoning_tool:
+		zoning_tool._update_persistent_visuals()
 	if agents_node:
 		agents_node.update_swarm()
 

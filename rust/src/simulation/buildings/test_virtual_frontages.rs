@@ -41,8 +41,6 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             1,
             1,
-            true,
-            true,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
@@ -51,7 +49,7 @@ mod tests {
         // Zone cells 5-7 (frontage_t ≈ 0.65 on the original 100m edge).
         for dx in 0..3 {
             for dy in 0..3 {
-                zoning.set_cell(0, 1, 5 + dx, dy, ZoneType::Residential);
+                zoning.set_cell(0, 1, 5 + dx, dy, ZoneType::Residential, &graph);
             }
         }
         demand.residential = 500.0;
@@ -120,8 +118,6 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             1,
             1,
-            true,
-            true,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
@@ -137,7 +133,7 @@ mod tests {
         // endpoint, safely beyond the snap threshold.
         for dx in 1..9 {
             for dy in 0..3 {
-                zoning.set_cell(0, 1, dx, dy, ZoneType::Residential);
+                zoning.set_cell(0, 1, dx, dy, ZoneType::Residential, &graph);
             }
         }
         demand.residential = 500.0;
@@ -201,8 +197,6 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             2,
             2,
-            true,
-            true,
             EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
@@ -211,7 +205,7 @@ mod tests {
         // Spawn building at t=0.5
         for dx in 0..3 {
             for dy in 0..3 {
-                zoning.set_cell(0, 1, 3 + dx, dy, ZoneType::Residential);
+                zoning.set_cell(0, 1, 3 + dx, dy, ZoneType::Residential, &graph);
             }
         }
         demand.residential = 500.0;

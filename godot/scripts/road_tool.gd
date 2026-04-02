@@ -224,7 +224,7 @@ func _commit_segment(end_pos):
 
 	var points = _get_processed_points()
 	if points.size() > 1:
-		simulation_node.add_road(points, fwd_lanes, bkw_lanes, true, true)
+		simulation_node.add_road(points, fwd_lanes, bkw_lanes)
 		# Do NOT call flatten_terrain_for_roads / update_main_mesh here — the road
 		# is queued to the sim thread and is not in the graph yet.  _process polls
 		# is_roads_dirty() and triggers the refresh once the road is actually added.

@@ -308,65 +308,9 @@ impl RegionGraph {
                 0.0
             };
 
-            let count = edge.geometry.len();
-            if count >= 2 {
-                let mut total_length = 0.0;
-                for i in 0..count - 1 {
-                    let p0 = edge.geometry[i];
-                    let p1 = edge.geometry[i + 1];
-                    total_length += (p1 - p0).length();
-                }
-
-                // Adaptive clipping: Ensure that the sum of clips does not exceed 
-                // the total segment length, preventing mesh inversion or overlap.
-                // We leave a tiny 2cm safety buffer in the middle.
-                let mut safe_start = edge.start_clip;
-                let mut safe_end = edge.end_clip;
-                let sum_clips = safe_start + safe_end;
-                
-                if sum_clips > total_length - 0.02 {
-                    let scale = (total_length - 0.02) / sum_clips;
-                    safe_start *= scale;
-                    safe_end *= scale;
-                }
-                
-                let clipped_length = f32::max(0.01, total_length - safe_start - safe_end);
-
-                let num_segments = f32::max(1.0, f32::ceil(clipped_length / 2.0)) as usize;
-                let mut resampled = Vec::new();
-
-                for i in 0..=num_segments {
-                    let dist = safe_start + (i as f32 / num_segments as f32) * clipped_length;
-                    let mut curr = 0.0;
-                    let mut found = false;
-                    for j in 0..count - 1 {
-                        let p0 = edge.geometry[j];
-                        let p1 = edge.geometry[j + 1];
-                        let d = (p1 - p0).length();
-                        if curr + d >= dist || (i == num_segments && j == count - 2) {
-                            let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
-                            resampled.push(p0.lerp(p1, t.clamp(0.0, 1.0)));
-                            found = true;
-                            break;
-                        }
-                        curr += d;
-                    }
-                    if !found && !edge.geometry.is_empty() {
-                        resampled.push(edge.geometry[count - 1]);
-                    }
-                }
-                if !resampled.is_empty() && edge.geometry.len() >= 2 {
-                    // Start/End node heights might be extreme if the junction is sloped,
-                    // but we clipped the road, so we don't snap the Y coordinate to the node's exact Y 
-                    // anymore, because the clipped road end is physically distant from the node centroid.
-                    // Instead we just keep the interpolated Y from the terrain.
-                }
-                edge.physical_geometry = resampled;
-                edge.physical_length = clipped_length;
-            } else {
-                edge.physical_geometry = edge.geometry.clone();
-                edge.physical_length = 0.0;
-            }
+            // Keep physical_geometry in sync with geometry (which may have updated Y values
+            // from terrain height re-interpolation). The renderer trims it via start_clip/end_clip.
+            edge.physical_geometry = edge.geometry.clone();
         }
 
         // Re-index all roads after a massive batch clip rebuild (e.g. after terrain sync)
@@ -459,50 +403,7 @@ impl RegionGraph {
                 0.0
             };
 
-            let count = edge.geometry.len();
-            if count >= 2 {
-                let mut total_length = 0.0;
-                for i in 0..count - 1 {
-                    total_length += (edge.geometry[i + 1] - edge.geometry[i]).length();
-                }
-                let mut safe_start = edge.start_clip;
-                let mut safe_end = edge.end_clip;
-                let sum_clips = safe_start + safe_end;
-                if sum_clips > total_length - 0.02 {
-                    let scale = (total_length - 0.02) / sum_clips;
-                    safe_start *= scale;
-                    safe_end *= scale;
-                }
-                let clipped_length = f32::max(0.01, total_length - safe_start - safe_end);
-                let num_segments = f32::max(1.0, f32::ceil(clipped_length / 2.0)) as usize;
-                let mut resampled = Vec::with_capacity(num_segments + 1);
-
-                for i in 0..=num_segments {
-                    let dist = safe_start + (i as f32 / num_segments as f32) * clipped_length;
-                    let mut curr = 0.0;
-                    let mut found = false;
-                    for j in 0..count - 1 {
-                        let p0 = edge.geometry[j];
-                        let p1 = edge.geometry[j + 1];
-                        let d = (p1 - p0).length();
-                        if curr + d >= dist || (i == num_segments && j == count - 2) {
-                            let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
-                            resampled.push(p0.lerp(p1, t.clamp(0.0, 1.0)));
-                            found = true;
-                            break;
-                        }
-                        curr += d;
-                    }
-                    if !found && !edge.geometry.is_empty() {
-                        resampled.push(edge.geometry[count - 1]);
-                    }
-                }
-                edge.physical_geometry = resampled;
-                edge.physical_length = clipped_length;
-            } else {
-                edge.physical_geometry = edge.geometry.clone();
-                edge.physical_length = 0.0;
-            }
+            edge.physical_geometry = edge.geometry.clone();
 
             reindex_ids.push(edge_idx);
         }

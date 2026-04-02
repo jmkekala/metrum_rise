@@ -26,8 +26,6 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             2,
             2,
-            true,
-            true,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
@@ -39,8 +37,6 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 50.0), Vector3::new(100.0, 0.0, 50.0)],
             2,
             2,
-            true,
-            true,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
@@ -138,8 +134,6 @@ mod tests {
             end_clip: 0.0,
             geometry: Vec::new(),
             physical_geometry: Vec::new(),
-            zoning_left: false,
-            zoning_right: false,
             deleted: false,
         };
 

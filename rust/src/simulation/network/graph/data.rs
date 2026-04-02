@@ -51,7 +51,7 @@ pub struct Node {
 }
 
 /// A directed road segment connecting two [`Node`]s.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Edge {
     /// Index of the start node in [`RegionGraph::nodes`].
     pub start_node: u32,
@@ -86,10 +86,6 @@ pub struct Edge {
     pub geometry: Vec<Vector3>,
     /// Clipped polyline used for actual road mesh rendering and agent movement.
     pub physical_geometry: Vec<Vector3>,
-    /// Whether the left side of this edge (relative to travel direction) is enabled for zoning.
-    pub zoning_left: bool,
-    /// Whether the right side of this edge is enabled for zoning.
-    pub zoning_right: bool,
     /// All O(E) scans must skip edges where `deleted == true`.
     pub deleted: bool,
 }
@@ -97,11 +93,16 @@ pub struct Edge {
 impl Edge {
     /// Returns the interpolated world-space Y (height) at a given T-coordinate [0, 1].
     pub fn get_y_at_t(&self, t: f32) -> f32 {
+        self.get_pos_and_tangent_at_t(t).0.y
+    }
+
+    /// Returns the (position, tangent) at a given T-coordinate [0, 1] along the physical geometry.
+    pub fn get_pos_and_tangent_at_t(&self, t: f32) -> (Vector3, Vector3) {
         if self.physical_geometry.is_empty() {
-            return 0.0;
+            return (Vector3::ZERO, Vector3::RIGHT);
         }
         if self.physical_geometry.len() == 1 {
-            return self.physical_geometry[0].y;
+            return (self.physical_geometry[0], Vector3::RIGHT);
         }
 
         let t_clamped = t.clamp(0.0, 1.0);
@@ -118,11 +119,19 @@ impl Edge {
                 } else {
                     0.0
                 };
-                return p1.y + (p2.y - p1.y) * local_t;
+                let pos = p1 + (p2 - p1) * local_t;
+                let tangent = (p2 - p1).normalized();
+                return (pos, tangent);
             }
             curr_dist += d;
         }
-        self.physical_geometry.last().unwrap().y
+        (self.physical_geometry.last().unwrap().clone(), (self.physical_geometry.last().unwrap().clone() - self.physical_geometry[self.physical_geometry.len()-2]).normalized())
+    }
+
+    /// Returns the normalized 2D tangent (X, Z) at a given T-coordinate.
+    pub fn get_tangent_at_t(&self, t: f32) -> Vector2 {
+        let (_, t3) = self.get_pos_and_tangent_at_t(t);
+        Vector2::new(t3.x, t3.z).normalized()
     }
 }
 

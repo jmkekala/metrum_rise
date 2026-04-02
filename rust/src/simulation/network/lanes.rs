@@ -914,8 +914,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            zoning_left: false,
-            zoning_right: false,
             deleted: false,
         });
         graph.rebuild_adjacency_list();
@@ -964,8 +962,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            zoning_left: false,
-            zoning_right: false,
             deleted: false,
         });
         graph.rebuild_adjacency_list();
@@ -1005,8 +1001,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            zoning_left: false,
-            zoning_right: false,
             deleted: false,
         });
         graph.rebuild_adjacency_list();
@@ -1056,8 +1050,6 @@ mod tests {
                 end_clip: 0.0,
                 geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-                zoning_left: false,
-                zoning_right: false,
                 deleted: false,
             });
         }
@@ -1103,8 +1095,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            zoning_left: false,
-            zoning_right: false,
             deleted: false,
         });
         graph.rebuild_adjacency_list();
@@ -1174,8 +1164,6 @@ mod tests {
                 end_clip: 0.0,
                 geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-                zoning_left: false,
-                zoning_right: false,
                 deleted: false,
             });
         }
@@ -1245,8 +1233,6 @@ mod tests {
                 end_clip: 0.0,
                 geometry: vec![graph.nodes[n_center as usize].pos, graph.nodes[other as usize].pos],
                 physical_geometry: vec![graph.nodes[n_center as usize].pos, graph.nodes[other as usize].pos],
-                zoning_left: false,
-                zoning_right: false,
                 deleted: false,
             });
         }
@@ -1297,8 +1283,6 @@ mod tests {
                 end_clip: 0.0,
                 geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-                zoning_left: false,
-                zoning_right: false,
                 deleted: false,
             });
         }
@@ -1354,8 +1338,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![p0, p1],
             physical_geometry: vec![p0, p1],
-            zoning_left: false,
-            zoning_right: false,
             deleted: false,
         })
     }

@@ -171,8 +171,6 @@ mod tests {
                 Vector3::ZERO,
                 Vector3::new(25.0, 0.0, 0.0),
             ],
-            zoning_left: false,
-            zoning_right: false,
             deleted: false,
         });
 
@@ -249,8 +247,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
-            zoning_left: false,
-            zoning_right: false,
             deleted: false,
         });
 
@@ -273,8 +269,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
-            zoning_left: false,
-            zoning_right: false,
             deleted: false,
         });
 

@@ -345,8 +345,6 @@ pub fn split_edge(
     let bkw_lanes = old_edge.bkw_lanes;
     let speed_limit = old_edge.speed_limit;
     let current_congestion = old_edge.current_congestion;
-    let zoning_left = old_edge.zoning_left;
-    let zoning_right = old_edge.zoning_right;
     let class = old_edge.class;
 
     let old_end_node = graph.edges[edge_id].end_node;
@@ -385,8 +383,6 @@ pub fn split_edge(
         end_clip: 0.0,
         geometry: part2_geo.clone(),
         physical_geometry: part2_geo.clone(),
-        zoning_left,
-        zoning_right,
         class,
         deleted: false,
     };
@@ -456,8 +452,6 @@ mod tests {
             vec![Vector3::new(-10.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)].into(),
             1,
             1,
-            false,
-            false,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
@@ -469,8 +463,6 @@ mod tests {
             vec![Vector3::new(0.0, 0.0, 10.0), Vector3::new(0.0, 0.0, 0.0)].into(),
             1,
             1,
-            false,
-            false,
             crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning,
             &mut allocator,
@@ -487,7 +479,7 @@ mod tests {
         net.add_road(
             &mut graph,
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)].into(),
-            1, 1, false, false, crate::simulation::network::types::EdgeClass::Standard,
+            1, 1, crate::simulation::network::types::EdgeClass::Standard,
             &mut zoning, &mut allocator,
         );
         let edge_id = graph.edges.len() - 1;

@@ -51,8 +51,15 @@ impl SimCore {
             5 => ZoneType::Mixed,
             _ => ZoneType::None,
         };
-        self.zoning
-            .set_cell(edge_idx as usize, side, x as usize, y as usize, zone_type);
+        self.zoning.set_cell(
+            edge_idx as usize,
+            side,
+            x as usize,
+            y as usize,
+            zone_type,
+            &self.region_graph,
+        );
+        self.recalculate_zoning_local(edge_idx as usize);
         self.allocator.dirty = true;
     }
 
@@ -82,21 +89,12 @@ impl SimCore {
             end_t,
             depth as usize,
             zone_type,
+            &self.region_graph,
         );
+        self.recalculate_zoning_local(edge_idx as usize);
         self.allocator.dirty = true;
     }
 
-    /// Enables or disables zoning on a specific side of a road edge.
-    pub fn set_zoning_enabled_internal(&mut self, edge_idx: i32, side: i32, enabled: bool) {
-        if let Some(edge) = self.region_graph.edges.get_mut(edge_idx as usize) {
-            if side >= 1 {
-                edge.zoning_left = enabled;
-            } else if side <= -1 {
-                edge.zoning_right = enabled;
-            }
-        }
-        self.recalculate_zoning_local(edge_idx as usize);
-    }
 
     /// Sets the classification of an edge.
     pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) {
@@ -113,12 +111,6 @@ impl SimCore {
         {
             let edge = &mut self.region_graph.edges[edge_idx as usize];
             edge.class = class;
-
-            // If promoting to Bridge/Tunnel, zoning is automatically disabled
-            if class != crate::simulation::network::types::EdgeClass::Standard {
-                edge.zoning_left = false;
-                edge.zoning_right = false;
-            }
         }
 
         self.transit_network.cch_graph =
@@ -132,8 +124,6 @@ impl SimCore {
         points: Vec<godot::prelude::Vector3>,
         fwd_lanes: i32,
         bkw_lanes: i32,
-        zoning_left: bool,
-        zoning_right: bool,
     ) {
         let t_undo = Instant::now();
         if !self.benchmark_mode {
@@ -177,8 +167,6 @@ impl SimCore {
             fixed_points,
             fwd_lanes as u8,
             bkw_lanes as u8,
-            zoning_left,
-            zoning_right,
             class,
             &mut self.zoning,
             &mut self.allocator,

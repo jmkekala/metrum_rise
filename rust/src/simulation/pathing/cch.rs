@@ -776,8 +776,6 @@ mod tests {
             end_clip: 0.0,
             geometry: Vec::new(),
             physical_geometry: Vec::new(),
-            zoning_left: false,
-            zoning_right: false,
             class: EdgeClass::Standard,
             deleted: false,
         };

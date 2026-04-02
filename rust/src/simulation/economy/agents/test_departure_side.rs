@@ -28,8 +28,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            zoning_left: true,
-            zoning_right: true,
             deleted: false,
         }
     }

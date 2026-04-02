@@ -493,7 +493,7 @@ mod tests {
             start_clip: 0.0, end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            zoning_left: false, zoning_right: false, deleted: false,
+            ..Default::default()
         });
         let _e1 = graph.add_edge(Edge {
             start_node: n1, end_node: n2,
@@ -506,7 +506,7 @@ mod tests {
             start_clip: 0.0, end_clip: 0.0,
             geometry: vec![Vector3::new(100.0, 0.0, 0.0), Vector3::new(200.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(100.0, 0.0, 0.0), Vector3::new(200.0, 0.0, 0.0)],
-            zoning_left: false, zoning_right: false, deleted: false,
+            ..Default::default()
         });
         graph.rebuild_adjacency_list();
 

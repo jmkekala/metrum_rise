@@ -109,9 +109,7 @@ CREATE TABLE network_edges(
     physical_length REAL NOT NULL,
     current_congestion REAL NOT NULL,
     start_clip REAL NOT NULL,
-    end_clip REAL NOT NULL,
-    zoning_left INTEGER NOT NULL,
-    zoning_right INTEGER NOT NULL
+    end_clip REAL NOT NULL
 );
 CREATE TABLE network_edge_geometry(
     edge_id INTEGER NOT NULL,
@@ -416,8 +414,8 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
             "INSERT INTO network_edges(
                 edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes,
                 bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip,
-                end_clip, zoning_left, zoning_right
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                end_clip
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
         )?;
 
         for (old_edge_id, edge) in view.graph.edges.iter().enumerate() {
@@ -452,9 +450,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
                 edge.physical_length,
                 edge.current_congestion,
                 edge.start_clip,
-                edge.end_clip,
-                edge.zoning_left,
-                edge.zoning_right
+                edge.end_clip
             ])?;
         }
     }
@@ -952,7 +948,7 @@ fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             "SELECT
                 edge_id, start_node, end_node, primary_type, allowed_types, class, width,
                 fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion,
-                start_clip, end_clip, zoning_left, zoning_right
+                start_clip, end_clip
              FROM network_edges
              ORDER BY edge_id",
         )?;
@@ -984,8 +980,6 @@ fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 end_clip: row.get(14)?,
                 geometry: geometry.remove(&edge_id).unwrap_or_default(),
                 physical_geometry: physical_geometry.remove(&edge_id).unwrap_or_default(),
-                zoning_left: row.get(15)?,
-                zoning_right: row.get(16)?,
                 deleted: false,
             };
             graph.add_edge(edge);
@@ -1777,8 +1771,6 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
-            zoning_left: true,
-            zoning_right: true,
             deleted: false,
         });
         graph.nodes[n0 as usize]
@@ -1787,7 +1779,7 @@ mod tests {
 
         let mut zoning = ZoningSystem::new(&config);
         zoning.update_edge_grid_size(edge_id, 40.0);
-        zoning.set_zone_range(edge_id, 1, 0.0, 1.0, 3, ZoneType::Residential);
+        zoning.set_zone_range(edge_id, 1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
 
         let mut pollution = PollutionSystem::new(&config);
         pollution.grid.data[0] = 3.0;

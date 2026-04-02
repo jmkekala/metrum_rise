@@ -219,7 +219,21 @@ impl ZoningSystem {
     }
 
     /// Sets the zone type of a specific cell.
-    pub fn set_cell(&mut self, edge_idx: usize, side: i8, x: usize, y: usize, zone_type: ZoneType) {
+    pub fn set_cell(
+        &mut self,
+        edge_idx: usize,
+        side: i8,
+        x: usize,
+        y: usize,
+        zone_type: ZoneType,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) {
+        // "FIRST ZONED WINS": If we are setting a zone (not clearing), 
+        // skip if the cell is already obstructed by physical road or an existing zone.
+        if zone_type != ZoneType::None && self.is_cell_obstructed(edge_idx, side, x, y, graph, None) {
+             return;
+        }
+
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
             let cells = if side > 0 {
                 &mut grid.left_side
@@ -242,34 +256,66 @@ impl ZoningSystem {
         end_t: f32,
         depth: usize,
         zone_type: ZoneType,
+        graph: &crate::simulation::network::graph::RegionGraph,
     ) {
+        // Collect obstruction results BEFORE mutably borrowing the grid to avoid borrow checker errors.
+        let (cells_long, edge_physical_l, edge_geom) = {
+            if let Some(grid) = self.edge_grids.get(&edge_idx) {
+                let edge = &graph.edges[edge_idx];
+                (grid.cells_long, edge.physical_length, &edge.physical_geometry)
+            } else {
+                return;
+            }
+        };
+
+        if edge_physical_l < 0.1 || edge_geom.is_empty() { return; }
+
+        let start_x = (start_t * cells_long as f32).floor() as usize;
+        let end_x = (end_t * cells_long as f32).ceil() as usize;
+        
+        // Final clamped range
+        let (start, end) = {
+            let sx = start_x.min(cells_long);
+            let ex = end_x.min(cells_long);
+            if sx <= ex { (sx, ex) } else { (ex, sx) }
+        };
+
+        let depth = depth.min(ZONING_DEPTH);
+        
+        // Cache nearby edges for the range
+        let edge = &graph.edges[edge_idx];
+        let mut min_pos = godot::prelude::Vector3::new(f32::MAX, 0.0, f32::MAX);
+        let mut max_pos = godot::prelude::Vector3::new(f32::MIN, 0.0, f32::MIN);
+        for p in &edge.physical_geometry {
+            min_pos.x = min_pos.x.min(p.x);
+            min_pos.z = min_pos.z.min(p.z);
+            max_pos.x = max_pos.x.max(p.x);
+            max_pos.z = max_pos.z.max(p.z);
+        }
+        let padding = 120.0;
+        let nearby_edges = graph.get_edges_near_aabb(
+            godot::prelude::Vector3::new(min_pos.x - padding, 0.0, min_pos.z - padding),
+            godot::prelude::Vector3::new(max_pos.x + padding, 0.0, max_pos.z + padding),
+        );
+
+        // Pre-calculate which cells are NOT obstructed
+        // We only care if we are zoned; if we are clearing (None), everything is "not obstructed"
+        let mut writes = Vec::new();
+        for x in start..end {
+            for y in 0..depth {
+                let allowed = zone_type == ZoneType::None || !self.is_cell_obstructed(edge_idx, side, x, y, graph, Some(&nearby_edges));
+                if allowed {
+                    writes.push((x, y));
+                }
+            }
+        }
+
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
-            let cells_long = grid.cells_long;
-            let start_x = (start_t * cells_long as f32).floor() as usize;
-            let end_x = (end_t * cells_long as f32).ceil() as usize;
-
-            let start_x = start_x.min(cells_long);
-            let end_x = end_x.min(cells_long);
-
-            let (start, end) = if start_x <= end_x {
-                (start_x, end_x)
-            } else {
-                (end_x, start_x)
-            };
-
-            let cells = if side > 0 {
-                &mut grid.left_side
-            } else {
-                &mut grid.right_side
-            };
-            let depth = depth.min(ZONING_DEPTH);
-
-            for x in start..end {
-                for y in 0..depth {
-                    let idx = x * ZONING_DEPTH + y;
-                    if idx < cells.len() {
-                        cells[idx] = zone_type;
-                    }
+            let cells = if side > 0 { &mut grid.left_side } else { &mut grid.right_side };
+            for (x, y) in writes {
+                let idx = x * ZONING_DEPTH + y;
+                if idx < cells.len() {
+                    cells[idx] = zone_type;
                 }
             }
         }
@@ -463,7 +509,8 @@ impl ZoningSystem {
             }
         }
 
-        let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
+        // Left normal is (y, -x) for Godot Y-down (Side 1).
+        let normal = Vector2::new(tangent.y, -tangent.x) * side as f32;
         let depth = (y as f32 + 0.5) * self.config.zone_cell_m;
         let half_width = graph.edges[edge_idx].width * 0.5;
 
@@ -486,50 +533,14 @@ impl ZoningSystem {
 
         let size = self.config.zone_cell_m;
         let edge = &graph.edges[edge_idx];
-        let hw = edge.width * 0.5;
 
-        // We check 5 points: 4 corners + center
-        let mut check_pts_with_t = Vec::new();
-
-        for dx in [-0.5, 0.5] {
-            let local_x = (x as f32 + 0.5 + dx) * size;
-            let t = (local_x / edge.physical_length).clamp(0.0, 1.0);
-            // Compute the on-edge position once per dx (both dy values share the same t).
-            let (pos_on_edge, tangent) =
-                self.get_edge_pos_and_tangent_static(edge_idx, t, graph);
-            let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
-            for dy in [-0.5, 0.5] {
-                let local_y = (y as f32 + 0.5 + dy) * size;
-                let intended_d = hw + crate::config::SIDEWALK_WIDTH + local_y;
-                check_pts_with_t.push((pos_on_edge + normal * intended_d, t));
-            }
-        }
-
-        // 0. SPLAY CHECK: On sharp curves, cells fan out or crunch.
-        // Only applied to y=0 (frontage row) — deeper rows always have larger distortion
-        // on any curve, which previously caused the entire 3x3 footprint to be rejected
-        // on roads with moderate curvature.
-        if y == 0 && check_pts_with_t.len() >= 4 {
-            let p1 = check_pts_with_t[0].0; // Start, Inner
-            let p2 = check_pts_with_t[1].0; // Start, Outer
-            let p3 = check_pts_with_t[2].0; // End, Inner
-            let p4 = check_pts_with_t[3].0; // End, Outer
-
-            let inner_width = p1.distance_to(p3);
-            let outer_width = p2.distance_to(p4);
-
-            if outer_width > inner_width * 1.15 || outer_width < inner_width * 0.85 {
-                return true;
-            }
-        }
-
-        // Also check the center
-        let t_center = (x as f32 + 0.5) * size / edge.physical_length;
-        check_pts_with_t.push((center, t_center));
+        // We check ONLY the center point for obstruction.
+        // This is more permissive and allows zoning to go much closer to junctions.
+        let check_pts_with_t = vec![(center, (x as f32 + 0.5) * size / edge.physical_length)];
 
         for (pt, t_us) in check_pts_with_t {
             let my_y = edge.get_y_at_t(t_us);
-            let mut closest_competitor_d_sq = f32::MAX;
+            let mut closest_competitor_has_zone = false;
             let mut asphalt_collision = false;
 
             let pt_3d = godot::prelude::Vector3::new(pt.x, 0.0, pt.y);
@@ -548,7 +559,6 @@ impl ZoningSystem {
                     continue;
                 }
 
-                // Skip own road — self-overlap is handled by Splay Check only.
                 // Skip own road segment unless it's a sharp curve that overlaps itself
                 let is_self = i == edge_idx;
 
@@ -591,69 +601,86 @@ impl ZoningSystem {
                     }
                 }
 
-                // SUB-SCAN (Check other edge for asphalt/zoning claims)
                 let pts = &e.physical_geometry;
                 if pts.len() < 2 {
                     continue;
                 }
 
+                let mut cur_l_other = 0.0;
                 for j in 0..pts.len() - 1 {
+                    if is_self {
+                        continue; // A road cannot obstruct its own zoning.
+                    }
+
                     let p1 = pts[j];
                     let p2 = pts[j + 1];
                     let p1_2d = Vector2::new(p1.x, p1.z);
                     let p2_2d = Vector2::new(p2.x, p2.z);
                     let seg_vec = p2_2d - p1_2d;
-                    let l2 = seg_vec.length_squared();
-                    if l2 == 0.0 {
+                    let l_seg = seg_vec.length();
+                    if l_seg == 0.0 {
                         continue;
                     }
+                    let l2 = l_seg * l_seg;
 
-                    let mut t_proj =
-                        ((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2;
-                    t_proj = t_proj.clamp(0.0, 1.0);
-
-                    if is_self {
-                        let t_at_seg = (j as f32 + t_proj) / (pts.len() as f32 - 1.0);
-                        if (t_at_seg - t_us).abs() < 0.25 {
-                            continue;
-                        }
-                    }
+                    let t_raw = ((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2;
+                    let is_past_end = t_raw < -1e-4 || t_raw > 1.0 + 1e-4;
+                    let t_proj = t_raw.clamp(0.0, 1.0);
 
                     let proj = p1_2d + seg_vec * t_proj;
                     let d_sq = pt.distance_squared_to(proj);
+                    let tangent_other = seg_vec.normalized();
+                    // Right-side normal is (-y, x) in Godot's Y-down system.
+                    let normal_right = Vector2::new(-tangent_other.y, tangent_other.x);
+                    let to_pt_other = pt - proj;
 
                     // --- VERTICAL CLEARANCE CHECK ---
                     // If the other road is a bridge or tunnel at a different level, ignore it.
                     let other_y = p1.y + (p2.y - p1.y) * t_proj;
                     if (other_y - my_y).abs() > CLEARANCE_THRESHOLD {
+                        cur_l_other += l_seg;
                         continue;
                     }
 
                     // A. Road Footprint Collision: Overlapping other road asphalt or sidewalk
-                    let hw_other = (e.width * 0.5) + crate::config::SIDEWALK_WIDTH;
+                    let mut hw_other = (e.width * 0.5) + crate::config::SIDEWALK_WIDTH;
 
-                    // RESTORED: Explicit Asphalt/Sidewalk Hit-Test
-                    if d_sq < (hw_other + 0.1).powi(2) {
-                        asphalt_collision = true;
-                        break; // No need to scan remaining segments — cell is definitely blocked.
+                    // Relax the check if these roads meet at a junction.
+                    // This allows zoning to 'bite' into the neighbor's sidewalk area at corners,
+                    // which is necessary to fill the gap.
+                    let is_neighbor = i != edge_idx
+                        && (e.start_node == edge.start_node
+                            || e.start_node == edge.end_node
+                            || e.end_node == edge.start_node
+                            || e.end_node == edge.end_node);
+
+                    if is_neighbor {
+                        hw_other = e.width * 0.5; // Only block actual asphalt, allow sidewalk overlap
                     }
 
-                    // B. Zoning Claim: Competitor for space
-                    let tangent = seg_vec.normalized();
-                    let rel_pt = pt - proj;
-                    let is_left = (tangent.x * rel_pt.y - tangent.y * rel_pt.x) < 0.0;
+                    if !is_past_end && d_sq < (hw_other + 0.1).powi(2) {
+                        asphalt_collision = true;
+                        break; 
+                    }
 
-                    let other_is_claiming = if is_left {
-                        e.zoning_left
-                    } else {
-                        e.zoning_right
-                    };
+                    // B. Zoning Claim Check
+                    if e.class == crate::simulation::network::types::EdgeClass::Standard {
+                        let d_other = f32::sqrt(d_sq);
+                        // If dot > 0, point is on the Right side (side -1).
+                        let side_other = if to_pt_other.dot(normal_right) > 0.0 { -1 } else { 1 };
+                        let curb_dist_other = e.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+                        let row_other = ((d_other - curb_dist_other) / size).floor() as usize;
+                        // Use global length along edge for column calculation
+                        let col_other = ((cur_l_other + t_proj * l_seg) / size).floor() as usize;
 
-                    if other_is_claiming {
-                        if d_sq < closest_competitor_d_sq {
-                            closest_competitor_d_sq = d_sq;
+                        // "FIRST ZONED WINS": If this competitor has a zone AT THIS POINT, it wins.
+                        // We ONLY check this if we are actually within the road segment's longitudinal bounds.
+                        // Footprint collision (asphalt) still happens past end to protect intersections.
+                        if !is_past_end && row_other < ZONING_DEPTH && self.get_cell(i, side_other, col_other, row_other) != ZoneType::None {
+                            closest_competitor_has_zone = true;
                         }
                     }
+                    cur_l_other += l_seg;
                 }
                 if asphalt_collision {
                     break;
@@ -664,77 +691,39 @@ impl ZoningSystem {
                 return true;
             }
 
-            // 2. Voronoi Comparison: Is this point closer to its own centerline than any competitor?
-            let self_d_sq = self.get_distance_to_edge_sq(edge_idx, pt, graph);
-            let bias = if self_d_sq < (25.0f32).powi(2) {
-                1.2
-            } else {
-                1.0
-            };
-            if self_d_sq > (closest_competitor_d_sq * bias) + 0.5 {
-                return true;
+            // 2. Competitor Check: Only block if the other road ALREADY has committed zones
+            // spanning this point. This implements a pure "First Zoned Wins" policy without
+            // any neutral Voronoi split.
+            if closest_competitor_has_zone {
+                 return true;
+            }
+            
+            // 3. SPLAY CHECK (Curvature self-overlap)
+            // y=0 cells on very tight curves must be blocked to prevent self-overlap.
+            if y == 0 {
+                let t_eps = 5.0 / edge.physical_length.max(10.0);
+                let t_low = (t_us - t_eps).max(0.0);
+                let t_high = (t_us + t_eps).min(1.0);
+                let tan_low = edge.get_tangent_at_t(t_low);
+                let tan_high = edge.get_tangent_at_t(t_high);
+                let angle_diff = tan_low.angle_to(tan_high).abs();
+                let dist = (t_high - t_low) * edge.physical_length;
+
+                if dist > 0.001 {
+                    let curvature = angle_diff / dist;
+                    let radius = 1.0 / curvature.max(0.0001);
+                    let hw = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+
+                    let splay_ratio = (radius + hw) / radius.max(0.1);
+                    if splay_ratio > 1.15 {
+                        return true;
+                    }
+                }
             }
         }
         false
     }
 
-
-    fn get_distance_to_edge_sq(
-        &self,
-        edge_idx: usize,
-        pt: Vector2,
-        graph: &crate::simulation::network::graph::RegionGraph,
-    ) -> f32 {
-        let edge = &graph.edges[edge_idx];
-        let mut min_d_sq = f32::MAX;
-        for j in 0..edge.physical_geometry.len() - 1 {
-            let p1 = edge.physical_geometry[j];
-            let p2 = edge.physical_geometry[j + 1];
-            let p1_2d = Vector2::new(p1.x, p1.z);
-            let p2_2d = Vector2::new(p2.x, p2.z);
-            let seg_vec = p2_2d - p1_2d;
-            let l2 = seg_vec.length_squared();
-            if l2 == 0.0 {
-                continue;
-            }
-            let t = (((pt.x - p1_2d.x) * seg_vec.x + (pt.y - p1_2d.y) * seg_vec.y) / l2)
-                .clamp(0.0, 1.0);
-            let d_sq = (pt - (p1_2d + seg_vec * t)).length_squared();
-            if d_sq < min_d_sq {
-                min_d_sq = d_sq;
-            }
-        }
-        min_d_sq
-    }
-
-    fn get_edge_pos_and_tangent_static(
-        &self,
-        edge_idx: usize,
-        t: f32,
-        graph: &crate::simulation::network::graph::RegionGraph,
-    ) -> (Vector2, Vector2) {
-        let edge = &graph.edges[edge_idx];
-        let geom = &edge.physical_geometry;
-        let total_l = edge.physical_length;
-        let target_l = t * total_l;
-
-        let mut curr_l = 0.0;
-        for i in 0..geom.len() - 1 {
-            let p1 = Vector2::new(geom[i].x, geom[i].z);
-            let p2 = Vector2::new(geom[i + 1].x, geom[i + 1].z);
-            let d = (p2 - p1).length();
-            if curr_l + d >= target_l || i == geom.len() - 2 {
-                let local_t = if d > 0.0 {
-                    ((target_l - curr_l) / d).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                return (p1 + (p2 - p1) * local_t, (p2 - p1).normalized());
-            }
-            curr_l += d;
-        }
-        (Vector2::new(0.0, 0.0), Vector2::new(1.0, 0.0))
-    }
 
     // Helper for rendering all painted cells
     /// Packs and returns all painted and non-blocked zoning cells for Godot-side rendering.
@@ -748,10 +737,16 @@ impl ZoningSystem {
                 continue;
             }
             for side in [1, -1] {
+                let _side_sign = side as f32;
                 let cells = if side > 0 {
                     &grid.left_side
                 } else {
                     &grid.right_side
+                };
+                let _blocked = if side > 0 {
+                    &grid.left_blocked
+                } else {
+                    &grid.right_blocked
                 };
                 // Safety: Ensure we don't try to access beyond the actual vector length
                 let actual_cells_long = (cells.iter().len() / ZONING_DEPTH).min(grid.cells_long);
@@ -767,12 +762,7 @@ impl ZoningSystem {
                         }
 
                         // PERFORMANCE: Use the pre-computed obstruction cache!
-                        let blocked_cells = if side > 0 {
-                            &grid.left_blocked
-                        } else {
-                            &grid.right_blocked
-                        };
-                        if blocked_cells.get(idx).cloned().unwrap_or(true) {
+                        if _blocked.get(idx).cloned().unwrap_or(true) {
                             continue;
                         }
 
@@ -812,8 +802,8 @@ mod tests {
     #[test]
     fn zone_range_full_zones_all_columns() {
         // 100 m / 10 m = 10 columns
-        let mut z = make_zoning(0, 100.0);
-        z.set_zone_range(0, 1, 0.0, 1.0, 4, ZoneType::Residential);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
+        z.set_zone_range(0, 1, 0.0, 1.0, 4, ZoneType::Residential, &graph);
         for x in 0..10 {
             for y in 0..4 {
                 assert_eq!(
@@ -834,8 +824,8 @@ mod tests {
     #[test]
     fn zone_range_partial_zones_correct_columns() {
         // t=0.3..0.7 on 10 cols → floor(3.0)=3 .. ceil(7.0)=7 → cols 3,4,5,6
-        let mut z = make_zoning(0, 100.0);
-        z.set_zone_range(0, 1, 0.3, 0.7, ZONING_DEPTH, ZoneType::Commercial);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
+        z.set_zone_range(0, 1, 0.3, 0.7, ZONING_DEPTH, ZoneType::Commercial, &graph);
         for x in 0..3 {
             assert_eq!(
                 z.get_cell(0, 1, x, 0),
@@ -861,9 +851,9 @@ mod tests {
 
     #[test]
     fn zone_range_sides_are_independent() {
-        let mut z = make_zoning(0, 100.0);
-        z.set_zone_range(0, 1, 0.0, 1.0, 1, ZoneType::Residential);
-        z.set_zone_range(0, -1, 0.0, 1.0, 1, ZoneType::Commercial);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
+        z.set_zone_range(0, 1, 0.0, 1.0, 1, ZoneType::Residential, &graph);
+        z.set_zone_range(0, -1, 0.0, 1.0, 1, ZoneType::Commercial, &graph);
         assert_eq!(z.get_cell(0, 1, 0, 0), ZoneType::Residential);
         assert_eq!(z.get_cell(0, -1, 0, 0), ZoneType::Commercial);
     }
@@ -871,8 +861,8 @@ mod tests {
     #[test]
     fn zone_range_reversed_t_still_zones_range() {
         // The function must swap start/end when end_t < start_t (B6 regression guard)
-        let mut z = make_zoning(0, 100.0);
-        z.set_zone_range(0, 1, 0.7, 0.3, 1, ZoneType::Industrial);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
+        z.set_zone_range(0, 1, 0.7, 0.3, 1, ZoneType::Industrial, &graph);
         for x in 3..7 {
             assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Industrial, "col {x}");
         }
@@ -887,9 +877,9 @@ mod tests {
 
     #[test]
     fn zone_range_clear_with_none() {
-        let mut z = make_zoning(0, 100.0);
-        z.set_zone_range(0, 1, 0.0, 1.0, 1, ZoneType::Residential);
-        z.set_zone_range(0, 1, 0.0, 0.5, 1, ZoneType::None);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
+        z.set_zone_range(0, 1, 0.0, 1.0, 1, ZoneType::Residential, &graph);
+        z.set_zone_range(0, 1, 0.0, 0.5, 1, ZoneType::None, &graph);
         for x in 0..5 {
             assert_eq!(
                 z.get_cell(0, 1, x, 0),
@@ -932,7 +922,7 @@ mod tests {
     #[test]
     fn split_produces_correct_column_counts() {
         // 100 m → 10 cols. Split at 4 → old=4, new=6
-        let mut z = make_zoning(0, 100.0);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         z.split_edge_grid(0, 1, 4);
         assert_eq!(z.edge_grids[&0].cells_long, 4);
         assert_eq!(z.edge_grids[&1].cells_long, 6);
@@ -940,10 +930,10 @@ mod tests {
 
     #[test]
     fn split_assigns_zone_data_to_correct_half() {
-        let mut z = make_zoning(0, 100.0);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         // Cols 0..4 Residential, cols 4..10 Commercial
-        z.set_zone_range(0, 1, 0.0, 0.4, 1, ZoneType::Residential);
-        z.set_zone_range(0, 1, 0.4, 1.0, 1, ZoneType::Commercial);
+        z.set_zone_range(0, 1, 0.0, 0.4, 1, ZoneType::Residential, &graph);
+        z.set_zone_range(0, 1, 0.4, 1.0, 1, ZoneType::Commercial, &graph);
         z.split_edge_grid(0, 1, 4);
 
         for x in 0..4 {
@@ -957,7 +947,7 @@ mod tests {
 
     #[test]
     fn split_at_zero_produces_empty_old_full_new() {
-        let mut z = make_zoning(0, 100.0);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         z.split_edge_grid(0, 1, 0);
         assert_eq!(z.edge_grids[&0].cells_long, 0);
         assert_eq!(z.edge_grids[&1].cells_long, 10);
@@ -965,7 +955,7 @@ mod tests {
 
     #[test]
     fn split_at_end_produces_full_old_empty_new() {
-        let mut z = make_zoning(0, 100.0);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         z.split_edge_grid(0, 1, 10);
         assert_eq!(z.edge_grids[&0].cells_long, 10);
         assert_eq!(z.edge_grids[&1].cells_long, 0);
@@ -973,7 +963,7 @@ mod tests {
 
     #[test]
     fn split_copies_occupancy_to_new_half() {
-        let mut z = make_zoning(0, 100.0);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         z.set_occupied(0, 1, 7, 0, true);
         z.split_edge_grid(0, 1, 4);
         // Col 7 maps to col 3 in the new edge (7 - 4 = 3)
@@ -991,7 +981,7 @@ mod tests {
 
     #[test]
     fn merge_combines_column_counts_and_removes_second() {
-        let mut z = make_zoning(0, 40.0); // 4 cols
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(40.0, 0.0, 0.0)], 7.0); // 4 cols
         z.update_edge_grid_size(1, 60.0); // 6 cols
         z.merge_edge_grids(0, 1);
         assert_eq!(z.edge_grids[&0].cells_long, 10);
@@ -1003,10 +993,17 @@ mod tests {
 
     #[test]
     fn merge_preserves_zone_data_order() {
-        let mut z = make_zoning(0, 40.0);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(40.0, 0.0, 0.0)], 7.0);
         z.update_edge_grid_size(1, 60.0);
-        z.set_zone_range(0, 1, 0.0, 1.0, 1, ZoneType::Residential); // cols 0..4 of edge 0
-        z.set_zone_range(1, 1, 0.0, 1.0, 1, ZoneType::Commercial); // cols 0..6 of edge 1
+        
+        // Setup data manually to bypass graph/obstruction checks in a pure-data test
+        if let Some(g0) = z.edge_grids.get_mut(&0) {
+            for i in 0..g0.left_side.len() { g0.left_side[i] = ZoneType::Residential; }
+        }
+        if let Some(g1) = z.edge_grids.get_mut(&1) {
+            for i in 0..g1.left_side.len() { g1.left_side[i] = ZoneType::Commercial; }
+        }
+
         z.merge_edge_grids(0, 1);
 
         for x in 0..4 {
@@ -1064,8 +1061,6 @@ mod tests {
             end_clip: 0.0,
             geometry: pts.clone(),
             physical_geometry: pts,
-            zoning_left: true,
-            zoning_right: true,
             class: EdgeClass::Standard,
             deleted: false,
         });
@@ -1130,20 +1125,217 @@ mod tests {
         );
     }
 
+    // ── junction tests ─────────────────────────────────────────────────────────
+
+    fn make_t_junction_graph(
+        angle_rad: f32,
+        width: f32,
+    ) -> (crate::simulation::network::graph::RegionGraph, ZoningSystem) {
+        use crate::simulation::network::graph::{Edge, RegionGraph};
+        use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+        use godot::prelude::Vector3;
+
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n_left = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+        let n_right = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        
+        let dir = Vector3::new(angle_rad.cos(), 0.0, angle_rad.sin());
+        let n_arm = graph.add_node(dir * 100.0, NodeType::Junction);
+
+        // Edge 0: horizontal (-100 to 100). We split it at the center node later?
+        // Actually simpler to just add two edges from center.
+        let e0_pts = vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)];
+        graph.add_edge(Edge {
+            start_node: n_left, end_node: n_right, width, class: EdgeClass::Standard, 
+            primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
+            physical_length: 200.0, geometry: e0_pts.clone(), physical_geometry: e0_pts,
+            fwd_lanes: 1, bkw_lanes: 1, deleted: false,
+            ..Default::default()
+        });
+
+        // Edge 1: the angling arm
+        let e1_pts = vec![Vector3::new(0.0, 0.0, 0.0), dir * 100.0];
+        graph.add_edge(Edge {
+            start_node: center, end_node: n_arm, width, class: EdgeClass::Standard,
+            primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
+            physical_length: 100.0, geometry: e1_pts.clone(), physical_geometry: e1_pts,
+            fwd_lanes: 1, bkw_lanes: 1, deleted: false,
+            ..Default::default()
+        });
+
+        graph.rebuild_adjacency_list();
+        let mut zoning = ZoningSystem::new(&MapConfig::default());
+        zoning.update_edge_grid_size(0, 200.0);
+        zoning.update_edge_grid_size(1, 100.0);
+        (graph, zoning)
+    }
+
+    fn make_star_graph(angles: &[f32], length: f32, width: f32) -> (crate::simulation::network::graph::RegionGraph, ZoningSystem) {
+        use crate::simulation::network::graph::{Edge, RegionGraph};
+        use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+        use godot::prelude::Vector3;
+
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+
+        for (i, &angle) in angles.iter().enumerate() {
+            let dir = Vector3::new(angle.cos(), 0.0, angle.sin());
+            let n_arm = graph.add_node(dir * length, NodeType::Junction);
+            let pts = vec![Vector3::new(0.0, 0.0, 0.0), dir * length];
+            let edge_idx = graph.add_edge(Edge {
+                start_node: center, end_node: n_arm, width, class: EdgeClass::Standard,
+                primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
+                physical_length: length, geometry: pts.clone(), physical_geometry: pts,
+                fwd_lanes: 1, bkw_lanes: 1, deleted: false,
+                ..Default::default()
+            });
+            graph.add_to_spatial_index(edge_idx);
+        }
+
+        graph.rebuild_adjacency_list();
+        let mut zoning = ZoningSystem::new(&MapConfig::default());
+        for i in 0..angles.len() {
+            zoning.update_edge_grid_size(i, length);
+        }
+        (graph, zoning)
+    }
+
+    #[test]
+    fn junction_zoning_90_deg_non_destructive() {
+        // T-junction: Horizontal road (Edge 0) and arm at 90 deg (Edge 1)
+        let (graph, mut zoning) = make_t_junction_graph(std::f32::consts::FRAC_PI_2, 7.0);
+
+        // 1. Zone Edge 0 fully on the side facing the arm.
+        // Side -1 is 'Right' which in Y-down CCW (1,0)->(0,-1) is DOWN.
+        zoning.set_zone_range(0, -1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+        zoning.set_zone_range(1, 1, 0.0, 1.0, 3, ZoneType::Commercial, &graph);
+
+        let initial_count = zoning.edge_grids[&0].right_side.iter().filter(|&&z| z != ZoneType::None).count();
+        assert!(initial_count > 0);
+
+        // 2. Zone Edge 1 (the newcomer)
+        // It's a 100m arm starting at (0,0) and going to (0,100).
+        // Its sidewalk overlaps Edge 0's zones.
+        zoning.set_zone_range(1, 1, 0.0, 1.0, 3, ZoneType::Industrial, &graph);
+        zoning.set_zone_range(1, -1, 0.0, 1.0, 3, ZoneType::Industrial, &graph);
+
+        // ASSERT: Edge 0's zones must be UNCHANGED (First Zoned Wins)
+        let final_count = zoning.edge_grids[&0].right_side.iter().filter(|&&z| z != ZoneType::None).count();
+        assert_eq!(initial_count, final_count, "Existing zones on Edge 0 were corrupted by new road zoning");
+
+        // ASSERT: Edge 1 must have SOME zones, but they should be blocked/skipped near the center
+        let e1_count = zoning.edge_grids[&1].left_side.iter().filter(|&&z| z != ZoneType::None).count();
+        assert!(e1_count > 0);
+        // Specifically, the first cell at t=0 should be blocked because it overlaps Edge 0's asphalt
+        assert_eq!(zoning.get_cell(1, 1, 0, 0), ZoneType::None, "New road zoned on top of asphalt/existing zones");
+    }
+
+    #[test]
+    fn junction_zoning_45_deg_non_destructive() {
+        // T-junction at 45 degrees
+        let (graph, mut zoning) = make_t_junction_graph(std::f32::consts::FRAC_PI_4, 7.0);
+
+        // Main road side -1 (Right/Bottom). Arm side 1 (Left/Right-ish).
+        // They overlap in the inner corner.
+        zoning.set_zone_range(0, -1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+        let initial_count = zoning.edge_grids[&0].right_side.iter().filter(|&&z| z != ZoneType::None).count();
+
+        // Newcomer zones arm
+        zoning.set_zone_range(1, 1, 0.0, 1.0, 3, ZoneType::Commercial, &graph);
+
+        assert_eq!(
+            initial_count, 
+            zoning.edge_grids[&0].right_side.iter().filter(|&&z| z != ZoneType::None).count(),
+            "Existing zones on Edge 0 were corrupted at 45 deg"
+        );
+        
+        // Ensure new road correctly respect the existing Residential
+        // A cell at t=0 on Edge 1 (right on the junction) must be None.
+        assert_eq!(zoning.get_cell(1, 1, 0, 0), ZoneType::None);
+    }
+    #[test]
+    fn junction_zoning_multi_segment_non_destructive() {
+        // T-junction where the horizontal road (Edge 0) has 2 segments.
+        // Bent at (50, 0, 10). Junction at (50, 0, 10).
+        use godot::prelude::Vector3;
+        use crate::simulation::network::graph::RegionGraph;
+        use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, TransitFlags};
+
+        let mut graph = RegionGraph::new();
+        let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n_mid = graph.add_node(Vector3::new(50.0, 0.0, 10.0), NodeType::Junction);
+        let n_end = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let n_arm = graph.add_node(Vector3::new(50.0, 0.0, 50.0), NodeType::Junction);
+
+        // Edge 0: (0,0)->(50,10)->(100,0). Total len approx 101.98m
+        let e0_idx = graph.add_edge(crate::simulation::network::graph::data::Edge {
+            start_node: n0, end_node: n_end, physical_length: 101.98,
+            geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 10.0), Vector3::new(100.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 10.0), Vector3::new(100.0, 0.0, 0.0)],
+            width: 7.0, primary_type: TransitType::Road, allowed_types: TransitFlags::CAR, class: EdgeClass::Standard, ..Default::default()
+        });
+        // Edge 1: (50,10)->(50,50)
+        let e1_idx = graph.add_edge(crate::simulation::network::graph::data::Edge {
+            start_node: n_mid, end_node: n_arm, physical_length: 40.0,
+            geometry: vec![Vector3::new(50.0, 0.0, 10.0), Vector3::new(50.0, 0.0, 50.0)],
+            physical_geometry: vec![Vector3::new(50.0, 0.0, 10.0), Vector3::new(50.0, 0.0, 50.0)],
+            width: 7.0, primary_type: TransitType::Road, allowed_types: TransitFlags::CAR, class: EdgeClass::Standard, ..Default::default()
+        });
+        graph.rebuild_adjacency_list();
+        graph.add_to_spatial_index(e0_idx);
+        graph.add_to_spatial_index(e1_idx);
+
+        let mut zoning = ZoningSystem::new(&crate::simulation::core::config::MapConfig::default());
+        zoning.update_edge_grid_size(0, 101.98);
+        zoning.update_edge_grid_size(1, 40.0);
+
+        // Zone the bent horizontal road first on both sides to ensure we hit the arm
+        zoning.set_zone_range(0, 1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+        zoning.set_zone_range(0, -1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+        let count_left = zoning.edge_grids[&0].left_side.iter().filter(|&&z| z != ZoneType::None).count();
+        let count_right = zoning.edge_grids[&0].right_side.iter().filter(|&&z| z != ZoneType::None).count();
+
+        // Zone the arm vertical road second — use west side (side=-1) which is not claimed by edge 0
+        zoning.set_zone_range(1, -1, 0.0, 1.0, 3, ZoneType::Commercial, &graph);
+
+        // Verify Edge 0 zones were NOT cleared/overwritten
+        assert_eq!(
+            count_left,
+            zoning.edge_grids[&0].left_side.iter().filter(|&&z| z != ZoneType::None).count(),
+            "Manual overwrite occurred on LEFT side of multi-segment edge"
+        );
+        assert_eq!(
+            count_right,
+            zoning.edge_grids[&0].right_side.iter().filter(|&&z| z != ZoneType::None).count(),
+            "Manual overwrite occurred on RIGHT side of multi-segment edge"
+        );
+
+        // Verify Edge 1 correctly zoned its west (free) side at the far end of the arm,
+        // beyond edge 0's 3-row zone depth (~35m reach from the junction).
+        assert_eq!(zoning.get_cell(1, -1, 3, 1), ZoneType::Commercial, "Arm far cell should be zoned Commercial");
+
+        // The cells near the junction may be blocked by edge 0's territory; verify they are not corrupted with Residential
+        for x in 0..4 {
+            let cell = zoning.get_cell(1, -1, x, 0);
+            assert!(cell == ZoneType::None || cell == ZoneType::Commercial, "Cell x={x} was corrupted with neighbor zone data");
+        }
+    }
+
     // ── split → merge round-trip ────────────────────────────────────────────────
 
     #[test]
     fn split_then_merge_round_trips_all_data() {
-        let mut z = make_zoning(0, 100.0);
+        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::new(0.0, 0.0, 0.0), godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         // Paint first half Residential, second half Commercial, 3 rows deep
         for x in 0..5 {
             for y in 0..3 {
-                z.set_cell(0, 1, x, y, ZoneType::Residential);
+                z.set_cell(0, 1, x, y, ZoneType::Residential, &graph);
             }
         }
         for x in 5..10 {
             for y in 0..3 {
-                z.set_cell(0, 1, x, y, ZoneType::Commercial);
+                z.set_cell(0, 1, x, y, ZoneType::Commercial, &graph);
             }
         }
 
@@ -1167,6 +1359,66 @@ mod tests {
                     ZoneType::Commercial,
                     "col={x} row={y}"
                 );
+            }
+        }
+    }
+    #[test]
+    fn junction_zoning_3way() {
+        let angles = [0.0, 2.0944, 4.1888]; // 120 deg apart
+        verify_junction_nongrowth(&angles, "3-way");
+    }
+
+    #[test]
+    fn junction_zoning_4way() {
+        let angles = [0.0, 1.5708, 3.14159, 4.71239]; // 90 deg apart
+        verify_junction_nongrowth(&angles, "4-way");
+    }
+
+    #[test]
+    fn junction_zoning_8way() {
+        let mut angles = Vec::new();
+        for i in 0..8 {
+            angles.push((i as f32) * 0.7854); // 45 deg apart
+        }
+        verify_junction_nongrowth(&angles, "8-way");
+    }
+
+    #[test]
+    fn junction_zoning_y_junction() {
+        let angles = [1.5708, 2.87979, 3.40339]; // Up, then 75 deg off (fork)
+        verify_junction_nongrowth(&angles, "Y-Fork");
+    }
+
+    fn verify_junction_nongrowth(angles: &[f32], name: &str) {
+        let (graph, mut zoning) = make_star_graph(angles, 100.0, 7.0);
+
+        for i in 0..angles.len() {
+            // Record counts of ALL existing roads
+            let mut before_counts = Vec::new();
+            for j in 0..angles.len() {
+                let l = zoning.edge_grids[&j].left_side.iter().filter(|&&z| z != ZoneType::None).count();
+                let r = zoning.edge_grids[&j].right_side.iter().filter(|&&z| z != ZoneType::None).count();
+                before_counts.push((l, r));
+            }
+
+            // Zone new arm on BOTH sides
+            zoning.set_zone_range(i, 1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+            zoning.set_zone_range(i, -1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+
+            // Verify that all PREVIOUSLY zoned roads have identical counts
+            for j in 0..angles.len() {
+                if i == j { 
+                    // i was just zoned, so it should have some zoning
+                    let l = zoning.edge_grids[&j].left_side.iter().filter(|&&z| z != ZoneType::None).count();
+                    let r = zoning.edge_grids[&j].right_side.iter().filter(|&&z| z != ZoneType::None).count();
+                    assert!(l > 0, "Arm {} of {} failed to zone any left cells", i, name);
+                    assert!(r > 0, "Arm {} of {} failed to zone any right cells", i, name);
+                    continue; 
+                }
+                let l = zoning.edge_grids[&j].left_side.iter().filter(|&&z| z != ZoneType::None).count();
+                let r = zoning.edge_grids[&j].right_side.iter().filter(|&&z| z != ZoneType::None).count();
+                assert_eq!(l, before_counts[j].0, "Arm {} of {} corrupted sibling {}'s left zoning", i, name, j);
+                assert_eq!(r, before_counts[j].1, "Arm {} of {} corrupted sibling {}'s right zoning", i, name, j);
             }
         }
     }

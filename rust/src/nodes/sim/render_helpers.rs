@@ -13,8 +13,8 @@ impl SimCore {
     /// from `VarArray` before locking `SimCore` to avoid holding the mutex while
     /// iterating Godot objects).
     pub fn update_zoning_visuals_internal(
-        &self,
-        mut grid_mm: Gd<MultiMesh>,
+        &mut self,
+        mut _grid_mm: Gd<MultiMesh>,
         mut paint_mm: Gd<MultiMesh>,
         hovered_edges: &[i32],
         is_painting: bool,
@@ -26,12 +26,11 @@ impl SimCore {
     ) {
         let graph = &self.region_graph;
         let cell_size = self.config.zone_cell_m;
-        let res_step = 1.0;
+        let res_step = cell_size;
 
         // 1. PREVIEW RIBBON
         let mut preview_instances = Vec::new();
         if !hovered_edges.is_empty() && side != 0 {
-            let total_depth = depth as f32 * cell_size;
             let edge_count = hovered_edges.len();
 
             for i in 0..edge_count {
@@ -73,119 +72,23 @@ impl SimCore {
                     let start_m = s_t * edge.physical_length;
                     let end_m = e_t * edge.physical_length;
 
+                    // Optimization: Batch fetch nearby edges for the whole segment's preview
+                    let mut min_pos = Vector2::new(f32::MAX, f32::MAX);
+                    let mut max_pos = Vector2::new(f32::MIN, f32::MIN);
+                    for p in &edge.physical_geometry {
+                        min_pos.x = min_pos.x.min(p.x);
+                        min_pos.y = min_pos.y.min(p.z);
+                        max_pos.x = max_pos.x.max(p.x);
+                        max_pos.y = max_pos.y.max(p.z);
+                    }
+                    let padding = 120.0;
+                    let nearby_edges = self.region_graph.get_edges_near_aabb(
+                        godot::prelude::Vector3::new(min_pos.x - padding, 0.0, min_pos.y - padding),
+                        godot::prelude::Vector3::new(max_pos.x + padding, 0.0, max_pos.y + padding),
+                    );
+
                     let w = self.heightmap.width as f32;
                     let h = self.heightmap.height as f32;
-
-                    let mut m = start_m;
-                    while m < end_m {
-                        let t_param = (m + res_step * 0.5) / edge.physical_length;
-                        if t_param > 1.0 {
-                            break;
-                        }
-                        let (pos_on_edge, tangent) =
-                            self.get_edge_pos_and_tangent(edge_idx as usize, t_param);
-                        let normal =
-                            godot::prelude::Vector2::new(tangent.y, -tangent.x) * current_side_sign;
-
-                        let sw = res_step * 1.05;
-                        let sd = 0.8;
-                        let color = self.get_zone_color_rust(zone_type);
-
-                        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH + 0.2;
-
-                        // A. INNER RIBBON (Against road)
-                        let center_2d = pos_on_edge + normal * curb_dist;
-                        let world_y = self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.6;
-                        self.push_mm_transform(
-                            &mut preview_instances,
-                            center_2d,
-                            world_y,
-                            tangent,
-                            normal,
-                            sw,
-                            sd,
-                            2.0,
-                            color,
-                            1.0,
-                        );
-
-                        // B. OUTER BOUNDARY (Show only while painting)
-                        if is_painting {
-                            let depth_m = total_depth - 0.5;
-                            let center_2d_outer = pos_on_edge + normal * (curb_dist + depth_m);
-                            let world_y_outer =
-                                self.get_safe_height(center_2d_outer.x, center_2d_outer.y, w, h)
-                                    + 0.6;
-                            self.push_mm_transform(
-                                &mut preview_instances,
-                                center_2d_outer,
-                                world_y_outer,
-                                tangent,
-                                normal,
-                                sw,
-                                0.4,
-                                0.5,
-                                color,
-                                0.4,
-                            );
-                        }
-
-                        m += res_step;
-                    }
-                }
-            }
-        }
-
-        let grid_count = (preview_instances.len() / 16) as i32;
-        grid_mm.set_instance_count(grid_count);
-        if grid_count > 0 {
-            grid_mm.set_buffer(&PackedFloat32Array::from_iter(preview_instances));
-        }
-
-        // 2. PAINTED ZONES
-        let mut paint_instances = Vec::new();
-        for (&edge_idx, grid) in &self.zoning.edge_grids {
-            if let Some(edge) = graph.edges.get(edge_idx) {
-                if edge.deleted {
-                    continue;
-                }
-
-                for side_idx in 0..2 {
-                    let side_sign: f32 = if side_idx == 0 { 1.0 } else { -1.0 };
-                    let data = if side_sign > 0.0 {
-                        &grid.left_side
-                    } else {
-                        &grid.right_side
-                    };
-                    if (side_sign > 0.0 && !edge.zoning_left)
-                        || (side_sign < 0.0 && !edge.zoning_right)
-                    {
-                        continue;
-                    }
-
-                    let mut x = 0;
-                    while x < grid.cells_long {
-                        let z_type = data[x * ZONING_DEPTH];
-                        if z_type == ZoneType::None {
-                            x += 1;
-                            continue;
-                        }
-
-                        let start_x = x;
-                        while x < grid.cells_long && data[x * ZONING_DEPTH] == z_type {
-                            x += 1;
-                        }
-                        let end_x = x;
-
-                        let w = self.heightmap.width as f32;
-                        let h = self.heightmap.height as f32;
-
-                        let start_m = start_x as f32 * cell_size;
-                        let end_m = if end_x >= grid.cells_long {
-                            edge.physical_length
-                        } else {
-                            end_x as f32 * cell_size
-                        };
 
                         let mut m = start_m;
                         while m < end_m {
@@ -194,44 +97,162 @@ impl SimCore {
                                 break;
                             }
                             let (pos_on_edge, tangent) =
-                                self.get_edge_pos_and_tangent(edge_idx, t_param);
+                                self.get_edge_pos_and_tangent(edge_idx as usize, t_param);
                             let normal =
-                                godot::prelude::Vector2::new(tangent.y, -tangent.x) * side_sign;
+                                godot::prelude::Vector2::new(tangent.y, -tangent.x) * current_side_sign;
 
-                            let sw = res_step * 1.05;
-                            let sd = 0.8;
-                            let color = self.get_zone_color_rust(z_type as u8);
+                            let sw = cell_size * 0.95;
+                            let sd = cell_size * 0.95;
+                            let color = self.get_zone_color_rust(zone_type);
 
-                            // INNER RIBBON
-                            let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH + 0.2;
-                            let center_2d = pos_on_edge + normal * curb_dist;
-                            let world_y =
-                                self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.5;
-                            self.push_mm_transform(
-                                &mut paint_instances,
-                                center_2d,
-                                world_y,
-                                tangent,
-                                normal,
-                                sw,
-                                sd,
-                                2.0,
-                                color,
-                                1.0,
-                            );
+                            let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH + 0.1;
+
+                            // MULTI-ROW PREVIEW
+                            let count_rows = if is_painting { depth } else { 5 };
+                            for row in 0..count_rows {
+                                let row_m = row as f32 * cell_size + cell_size * 0.5;
+                                
+                                // OBSTRUCTION CHECK FOR PREVIEW
+                                let col = (m / cell_size).floor() as usize;
+                                if self.zoning.is_cell_obstructed(edge_idx as usize, current_side_sign as i8, col, row as usize, &self.region_graph, Some(&nearby_edges)) {
+                                    continue;
+                                }
+
+                                let center_2d = pos_on_edge + normal * (curb_dist + row_m);
+                                let world_y = self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.6;
+                                
+                                let alpha = if is_painting {
+                                    1.0
+                                } else {
+                                    match row {
+                                        0..=2 => 1.0,
+                                        3 => 0.3,
+                                        4 => 0.05,
+                                        _ => 0.0,
+                                    }
+                                };
+                                
+                                let is_front = if row == 0 { 1.0 } else { 0.0 };
+
+                                self.push_mm_transform(
+                                    &mut preview_instances,
+                                    center_2d,
+                                    world_y,
+                                    tangent,
+                                    normal,
+                                    sw,
+                                    sd,
+                                    1.0,
+                                    color,
+                                    alpha,
+                                    is_front,
+                                );
+                            }
 
                             m += res_step;
                         }
-                    }
                 }
             }
         }
 
-        let paint_count = (paint_instances.len() / 16) as i32;
+        let paint_count = (preview_instances.len() / 20) as i32;
         paint_mm.set_instance_count(paint_count);
         if paint_count > 0 {
-            paint_mm.set_buffer(&PackedFloat32Array::from_iter(paint_instances));
+            paint_mm.set_buffer(&PackedFloat32Array::from_iter(preview_instances));
+        } else {
+            paint_mm.set_instance_count(0);
         }
+    }
+
+    /// Returns transformation and custom data for all painted and non-blocked zoning cells,
+    /// grouped by ZoneType for separate MultiMesh rendering.
+    pub fn get_persistent_zoning_instances_internal(
+        &self,
+        zoning: &crate::simulation::grid::zoning::ZoningSystem,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) -> std::collections::HashMap<u8, Vec<f32>> {
+        let mut result = std::collections::HashMap::new();
+        let cell_size = self.config.zone_cell_m;
+        let depth = crate::config::ZONING_DEPTH;
+        let w = self.heightmap.width as f32;
+        let h = self.heightmap.height as f32;
+
+        for (&edge_idx, grid) in &zoning.edge_grids {
+            if edge_idx >= graph.edges.len() || graph.edges[edge_idx].deleted {
+                continue;
+            }
+            let edge = &graph.edges[edge_idx];
+
+            for side_idx in 0..2 {
+                let side_sign: f32 = if side_idx == 0 { 1.0 } else { -1.0 };
+                let data = if side_sign > 0.0 {
+                    &grid.left_side
+                } else {
+                    &grid.right_side
+                };
+                let _blocked = if side_sign > 0.0 {
+                    &grid.left_blocked
+                } else {
+                    &grid.right_blocked
+                };
+
+                for col in 0..grid.cells_long {
+                    for row in 0..depth {
+                        let idx = col * depth + row;
+                        if idx >= data.len() {
+                            continue;
+                        }
+                        let z_type = data[idx];
+                        if z_type == crate::simulation::grid::zoning::ZoneType::None {
+                            continue;
+                        }
+
+                        // Skip blocked cells only if they are NOT actually zoned yet (for previews).
+                        // However, for persistent instances, we want to see WHO won.
+                        // Since 'First Zoned Wins' prevents overlaps in the data, 
+                        // we don't need to cull here at all—it just creates 'phantom' clearing.
+                        // if blocked.get(idx).cloned().unwrap_or(false) { continue; }
+
+                        let m = (col as f32 + 0.5) * cell_size;
+                        let t_param = m / edge.physical_length;
+                        if t_param > 1.0 {
+                            continue;
+                        }
+
+                        let (pos_on_edge, tangent) =
+                            self.get_edge_pos_and_tangent(edge_idx, t_param);
+                        // Left normal is (y, -x) in Godot's Y-down system. side_sign 1 is Left, -1 is Right.
+                        let normal =
+                            godot::prelude::Vector2::new(tangent.y, -tangent.x) * side_sign;
+
+                        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+                        let cell_dist = curb_dist + (row as f32 + 0.5) * cell_size;
+                        let center_2d = pos_on_edge + normal * cell_dist;
+                        let world_y = self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.02;
+
+                        let buffer = result.entry(z_type as u8).or_insert_with(Vec::new);
+                        let frontage_bit = if row == 0 { 1.0 } else { 0.0 };
+
+                        let color = self.get_zone_color_rust(z_type as u8);
+
+                        self.push_mm_transform(
+                            buffer,
+                            center_2d,
+                            world_y,
+                            tangent,
+                            normal,
+                            cell_size * 0.95, // slight gap between cells
+                            cell_size * 0.95,
+                            1.0,
+                            color,
+                            1.0,
+                            frontage_bit,
+                        );
+                    }
+                }
+            }
+        }
+        result
     }
 
     fn push_mm_transform(
@@ -246,6 +267,7 @@ impl SimCore {
         sy: f32,
         color: godot::prelude::Color,
         alpha: f32,
+        custom_x: f32,
     ) {
         // MultiMesh TRANSFORM_3D buffer layout:
         // Row 0: [ x.x, y.x, z.x, origin.x ]
@@ -270,6 +292,12 @@ impl SimCore {
         buffer.push(color.g);
         buffer.push(color.b);
         buffer.push(alpha);
+
+        // INSTANCE_CUSTOM (4 floats)
+        buffer.push(custom_x);
+        buffer.push(0.0);
+        buffer.push(0.0);
+        buffer.push(0.0);
     }
 
     fn get_safe_height(&self, x: f32, z: f32, w: f32, h: f32) -> f32 {

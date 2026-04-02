@@ -35,8 +35,6 @@ mod tests {
                 Vector3::new(0.0, 0.0, 0.0),
             ],
             physical_geometry: vec![],
-            zoning_left: false,
-            zoning_right: false,
             class: EdgeClass::Standard,
             deleted: false,
         });
@@ -61,8 +59,6 @@ mod tests {
                 Vector3::new(10.0, 0.0, 0.0),
             ],
             physical_geometry: vec![],
-            zoning_left: false,
-            zoning_right: false,
             class: EdgeClass::Standard,
             deleted: false,
         });
@@ -87,8 +83,6 @@ mod tests {
                 Vector3::new(0.0, 0.0, 0.0),
             ],
             physical_geometry: vec![],
-            zoning_left: false,
-            zoning_right: false,
             class: EdgeClass::Standard,
             deleted: false,
         });

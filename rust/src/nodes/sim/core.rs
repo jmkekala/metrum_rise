@@ -164,10 +164,6 @@ pub enum SimCommand {
         fwd_lanes: i32,
         /// Backward lane count.
         bkw_lanes: i32,
-        /// Enable zoning on the left side.
-        zoning_left: bool,
-        /// Enable zoning on the right side.
-        zoning_right: bool,
     },
     /// Ask the background thread to exit cleanly.
     Quit,
@@ -507,12 +503,12 @@ pub fn run_sim_thread(
                 Ok(SimCommand::SetCameraAabb(x0, x1, z0, z1)) => {
                     core.lock().unwrap().camera_aabb = (x0, x1, z0, z1);
                 }
-                Ok(SimCommand::AddRoad { points, fwd_lanes, bkw_lanes, zoning_left, zoning_right }) => {
+                Ok(SimCommand::AddRoad { points, fwd_lanes, bkw_lanes }) => {
                     let road_total = Instant::now();
                     let mut c = core.lock().unwrap();
                     // Bulk-load defers per-edge rebuilds until finalization.
                     c.transit_network.bulk_load = true;
-                    c.add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
+                    c.add_road_internal(points, fwd_lanes, bkw_lanes);
                     {
                         let c = &mut *c;
                         c.transit_network.bulk_load = false;
