@@ -313,6 +313,60 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 58. **Split `buildings/allocator.rs`** — 689 lines mixing two concerns. Split into `buildings/allocator/lifecycle.rs` (spawn, kill, evict, remap) and `buildings/allocator/index.rs` (zone_index, vacancy_index, claim_vacancy, release_vacancy). Low complexity, no behaviour change. Do when next working in that file.
 
 
+### Code Health
+
+Structural issues identified during codebase review (2026-04-03). None are correctness bugs — they are maintenance debt that compounds as features are added. Ordered by recommended priority.
+
+**R1. Consolidate the two `topology.rs` files** — `simulation/network/graph/topology.rs` (310 lines) and `simulation/network/topology.rs` (535 lines) both contain intersection detection and edge-clipping logic. This is a sign of an incomplete earlier refactor. One of them should absorb the other: keep `network/topology.rs` (the higher-level one that drives `process_intersections`) and fold any non-duplicate helpers from `graph/topology.rs` into it, then delete the sub-module file. No behaviour change. Low effort. **Do this the next time either file is touched.**
+
+**R2. Split `simulation/network/lanes.rs` (1458 lines)** — one struct doing four unrelated things: lane geometry generation, vehicle junction connections, pedestrian junction connections, and incremental rebuild orchestration. Recommended split:
+- `lanes/geometry.rs` — `build_one_lane`, cumulative-distance helpers
+- `lanes/vehicle_junctions.rs` — vehicle connection rules and defaults
+- `lanes/pedestrian_junctions.rs` — sidewalk mouth classification, crosswalk logic
+- `lanes/rebuild.rs` — `rebuild`, `rebuild_edges_incremental`, dirty tracking
+- `lanes/mod.rs` — `LaneSystem` struct + public API surface only
+
+This is a prerequisite for adding per-thread lane caching at v0.2 scale. **Target: before adding any new lane type or junction rule.**
+
+**R3. Split `simulation/grid/zoning.rs` (1758 lines)** — `ZoningSystem` has 94 methods across four unrelated concerns. Recommended split:
+- `zoning/grid.rs` — `EdgeZoning` storage struct, cell accessors, split/merge
+- `zoning/obstruction.rs` — `is_cell_obstructed`, Voronoi ownership, splay check
+- `zoning/block.rs` — block-depth and block-ID allocation logic
+- `zoning/mod.rs` — `ZoningSystem` coordinator + public API
+
+**Target: before adding any per-tile obstruction caching (required for v0.2 scale).**
+
+**R4. Split `simulation/network/render/road.rs` (2247 lines)** — the most over-loaded file in the codebase. Sidewalk assembly, asphalt ribbons, junction polygon fill, crosswalk markings, terminal caps, and width-transition tapers are all interleaved in one impl with 60+ private helpers. Adding a rail renderer, bridge deck, or elevated road here would be extremely dangerous. Recommended split:
+- `render/road_strip.rs` — per-edge asphalt and sidewalk ribbon emission
+- `render/junction_fill.rs` — node polygon classification and fill
+- `render/crosswalks.rs` — mouth detection and marking generation
+- `render/caps.rs` — terminal cap geometry
+- `render/mod.rs` — `RoadRenderer` public entry points
+
+**Target: before adding any new road class (rail, elevated, tunnel portal).** This is the highest-risk file for new-feature collisions.
+
+**R5. Split `simulation/save.rs` (1928 lines)** — SQLite schema definitions, per-subsystem serialisation (terrain, water, network, zoning, buildings, agents), deserialisation with migration, and transaction batching are all in one file. A schema change to any one subsystem requires understanding the entire file. Recommended split:
+- `save/schema.rs` — `CREATE TABLE` statements and migration constants
+- `save/network.rs` — road graph + lane connection save/load
+- `save/agents.rs` — agent SoA save/load
+- `save/world.rs` — terrain, water, zoning, buildings, economy
+- `save/mod.rs` — transaction wrapper, `SaveGameManager` public API
+
+**Target: before adding any new saved subsystem (e.g. VehicleSystem from item 39).**
+
+**R6. Privatise `RegionGraph` fields** — `RegionGraph::nodes`, `::edges`, and `::adjacency` are all `pub`, making it possible to mutate them directly from outside the `network/` module. CLAUDE.md already documents "Never mutate RegionGraph directly from outside this module" but the type system does not enforce it. A caller that writes `graph.nodes[i].pos = ...` silently breaks the CCH and spatial index. Recommended approach: make the fields `pub(crate)` and add targeted accessors (`node_pos(id)`, `edge(id)`) as the single read path for external callers. **Do this incrementally — change one field at a time, fix compile errors, commit.**
+
+**R7. Group `SimulationNode` methods by domain** — `nodes/simulation_node.rs` (965 lines), `nodes/sim/query.rs` (901 lines), and `nodes/sim/render_helpers.rs` (951 lines) together expose ~100 public methods on `SimulationNode`/`SimCore` with no internal grouping. This is the Godot bridge layer so it cannot be reduced in method count, but it can be made navigable. Recommended approach: use `// ── Terrain ──`, `// ── Network ──`, `// ── Agents ──` comment section headers within each file, and add a module-level `//!` table listing every method and which Godot script calls it. No behaviour change. **Low effort, high payoff for future contributors.**
+
+**R8. Tighten `AgentSystem` / `tick.rs` (921 lines)** — the FSM state machine, IDM physics, lane bucket management, pedestrian routing, and Rayon dispatch are all in one function. The immediate win is to extract the three major phases into named private functions:
+- `fn build_conn_occupied_snapshot(...)` (already somewhat isolated)
+- `fn process_agent_movement(i, ...)` — the per-agent inner loop
+- `fn write_congestion(...)` — the post-pass edge update
+
+No structural refactor needed yet, but these extractions make the 921-line file reviewable and are a prerequisite for independently testing IDM physics (item 66). **Target: when implementing item 66 (junction IDM extension).**
+
+**R9. Note on walkway zoning grids** — `TransitNetwork::add_road` calls `zoning.update_edge_grid_size` unconditionally, so pure walkways (fwd=0, bkw=0) currently receive a zoning grid even though buildings should not adjoin footpaths. This is harmless today (no mechanism places buildings on walkway edges) but will cause spurious zoning cells to appear in the UI once the zoning painter is live. Fix: add `if edge.allowed_types & TransitFlags::CAR != 0` guard around the `update_edge_grid_size` call in `add_road`. **Do this before the zoning painter UI ships.**
+
 ### v0.1 — Economy Foundation
 
 Target: a closed, utility-driven economic loop at 100k agents. Activity decisions are driven by agent state via a Maslow-inspired need hierarchy. Transit mode is chosen by utility scoring over all available modes. Living standard is a derived read-only metric — an aggregate of per-level need satisfaction — used for immigration and city rating.
