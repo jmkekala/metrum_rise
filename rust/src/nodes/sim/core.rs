@@ -140,6 +140,20 @@ pub enum SimCommand {
     /// Update the camera world-space AABB used for agent frustum culling.
     /// Values: (x_min, x_max, z_min, z_max) in world units, padded by ~200 m.
     SetCameraAabb(f32, f32, f32, f32),
+    /// Place a new road segment.  Executed in the sim thread so the main thread
+    /// never blocks on the expensive lane-rebuild and zoning-obstruction passes.
+    AddRoad {
+        /// World-space polyline points.
+        points: Vec<godot::prelude::Vector3>,
+        /// Forward lane count.
+        fwd_lanes: i32,
+        /// Backward lane count.
+        bkw_lanes: i32,
+        /// Enable zoning on the left side.
+        zoning_left: bool,
+        /// Enable zoning on the right side.
+        zoning_right: bool,
+    },
     /// Ask the background thread to exit cleanly.
     Quit,
 }
@@ -444,6 +458,10 @@ pub fn run_sim_thread(
                 }
                 Ok(SimCommand::SetCameraAabb(x0, x1, z0, z1)) => {
                     core.lock().unwrap().camera_aabb = (x0, x1, z0, z1);
+                }
+                Ok(SimCommand::AddRoad { points, fwd_lanes, bkw_lanes, zoning_left, zoning_right }) => {
+                    let mut c = core.lock().unwrap();
+                    c.add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     should_quit = true;

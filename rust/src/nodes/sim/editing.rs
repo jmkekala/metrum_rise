@@ -128,7 +128,7 @@ impl SimCore {
     /// Adds a new road segment to the transit network.
     pub fn add_road_internal(
         &mut self,
-        points: PackedVector3Array,
+        points: Vec<godot::prelude::Vector3>,
         fwd_lanes: i32,
         bkw_lanes: i32,
         zoning_left: bool,
@@ -137,7 +137,9 @@ impl SimCore {
         if !self.benchmark_mode {
             self.push_undo_state(false, false, true, false);
         }
-        let mut fixed_points = points.to_vec();
+        let first_pt = points.first().copied();
+        let last_pt  = points.last().copied();
+        let mut fixed_points = points;
 
         let w = self.heightmap.width;
         let h = self.heightmap.height;
@@ -180,14 +182,14 @@ impl SimCore {
         );
 
         // Robustly update zoning for all nearby area
-        if let Some(first_pt) = points.to_vec().first() {
-            let nearby = self.region_graph.get_edges_near_point(*first_pt, 200.0);
+        if let Some(pt) = first_pt {
+            let nearby = self.region_graph.get_edges_near_point(pt, 200.0);
             for edge_idx in nearby {
                 self.recalculate_zoning_local(edge_idx);
             }
         }
-        if let Some(last_pt) = points.to_vec().last() {
-            let nearby = self.region_graph.get_edges_near_point(*last_pt, 200.0);
+        if let Some(pt) = last_pt {
+            let nearby = self.region_graph.get_edges_near_point(pt, 200.0);
             for edge_idx in nearby {
                 self.recalculate_zoning_local(edge_idx);
             }

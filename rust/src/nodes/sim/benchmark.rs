@@ -54,7 +54,7 @@ impl SimCore {
                 0.0,
                 start_z + i as f32 * step,
             ));
-            self.add_road_internal(pts.clone(), 2, 2, true, true);
+            self.add_road_internal(pts.to_vec(), 2, 2, true, true);
         }
 
         // Vertical roads
@@ -66,7 +66,7 @@ impl SimCore {
                 0.0,
                 start_z + h_units - 40.0,
             ));
-            self.add_road_internal(pts.clone(), 2, 2, true, true);
+            self.add_road_internal(pts.to_vec(), 2, 2, true, true);
         }
 
         godot_print!(

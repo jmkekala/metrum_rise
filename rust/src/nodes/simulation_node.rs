@@ -540,7 +540,16 @@ impl SimulationNode {
         zoning_left: bool,
         zoning_right: bool,
     ) {
-        self.lock_core().add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
+        // Send to the background thread so the Godot main thread is never blocked
+        // by the expensive lane-rebuild and zoning-obstruction passes (~500 ms).
+        // The road appears on the next sim tick (~16 ms later) — imperceptible delay.
+        let _ = self.cmd_tx.send(crate::nodes::sim::core::SimCommand::AddRoad {
+            points: points.to_vec(),
+            fwd_lanes,
+            bkw_lanes,
+            zoning_left,
+            zoning_right,
+        });
     }
 
     /// Returns the node ID of the nearest graph node near the border, or -1.
