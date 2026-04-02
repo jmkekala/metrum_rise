@@ -181,7 +181,7 @@ fn test_transit_mode_uses_has_car() {
     // otherwise FOOT. Verify the flag constants are distinct and MODE_WALK != MODE_CAR.
     assert_ne!(MODE_WALK, MODE_CAR);
     // An agent without a car should use FOOT search flags.
-    let agents = AgentSystem::new();
+    let _agents = AgentSystem::new();
     // No agents — just verify the constants that govern inline mode selection are correct.
     let foot_flags = TransitFlags::FOOT;
     let car_flags = TransitFlags::CAR;
@@ -256,8 +256,8 @@ fn test_agent_fsm_lifecycle() {
 #[test]
 fn test_vehicle_type_persistence() {
     let mut agents = AgentSystem::new();
-    let i0 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
-    let i1 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+    let _i0 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+    let _i1 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
     let i2 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
     let type2 = agents.vehicle_type[i2];
     let mut allocator = BuildingAllocator::new();

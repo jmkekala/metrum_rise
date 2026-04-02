@@ -739,7 +739,7 @@ mod tests {
         let east = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
 
         // Bend (2 arms)
-        let (graph, mesh_data, _terrain) =
+        let (_graph, mesh_data, _terrain) =
             generate_editor_mesh(&[(&north, 1, 1), (&east, 1, 1)]);
 
         validate_mesh(&mesh_data, 40.0);

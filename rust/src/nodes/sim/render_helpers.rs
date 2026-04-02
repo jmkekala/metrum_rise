@@ -937,10 +937,6 @@ pub fn get_building_visual_scale() -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-    use crate::simulation::core::config::MapConfig;
-    use crate::simulation::grid::zoning::ZoneType;
-    use godot::prelude::Vector2;
 
     #[test]
     fn test_building_visual_scale_is_adequate() {

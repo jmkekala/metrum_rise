@@ -5,7 +5,7 @@ mod tests {
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::network::types::{NodeType, TransitType};
+    use crate::simulation::network::types::NodeType;
     use godot::prelude::Vector3;
 
     #[test]
@@ -213,7 +213,7 @@ mod tests {
 
         assert_eq!(graph.edges.len(), 1);
         let old_edge_id = 0;
-        let old_length = graph.edges[old_edge_id].physical_length;
+        let _old_length = graph.edges[old_edge_id].physical_length;
 
         // 2. Add a building
         allocator

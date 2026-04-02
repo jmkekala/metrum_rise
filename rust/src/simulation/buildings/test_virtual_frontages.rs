@@ -4,7 +4,7 @@ mod tests {
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::economy::agents::AgentSystem;
     use crate::simulation::economy::agents::{
-        MODE_CAR, MODE_WALK, TRANSIT_ARRIVING, TRANSIT_ON_ROAD,
+        MODE_CAR, TRANSIT_ARRIVING, TRANSIT_ON_ROAD,
     };
     use crate::simulation::economy::demand::DemandSystem;
     use crate::simulation::grid::desirability::DesirabilitySystem;

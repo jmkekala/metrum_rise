@@ -146,7 +146,7 @@ fn test_pathing_avoids_steep_slope() {
     let path = cch.find_path(n_a, n_b, usize::MAX, &graph, TransitFlags::CAR);
 
     assert!(path.is_some(), "Should find a path");
-    let (cost_found, _dist, nodes) = path.unwrap();
+    let (_cost_found, _dist, nodes) = path.unwrap();
 
     assert!(
         nodes.contains(&n_c),

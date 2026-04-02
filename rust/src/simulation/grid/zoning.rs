@@ -1045,7 +1045,7 @@ mod tests {
     #[test]
     fn split_produces_correct_column_counts() {
         // 100 m → 10 cols. Split at 4 → old=4, new=6
-        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
+        let (_graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         z.split_edge_grid(0, 1, 4);
         assert_eq!(z.edge_grids[&0].cells_long, 4);
         assert_eq!(z.edge_grids[&1].cells_long, 6);
@@ -1070,7 +1070,7 @@ mod tests {
 
     #[test]
     fn split_at_zero_produces_empty_old_full_new() {
-        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
+        let (_graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         z.split_edge_grid(0, 1, 0);
         assert_eq!(z.edge_grids[&0].cells_long, 0);
         assert_eq!(z.edge_grids[&1].cells_long, 10);
@@ -1078,7 +1078,7 @@ mod tests {
 
     #[test]
     fn split_at_end_produces_full_old_empty_new() {
-        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
+        let (_graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         z.split_edge_grid(0, 1, 10);
         assert_eq!(z.edge_grids[&0].cells_long, 10);
         assert_eq!(z.edge_grids[&1].cells_long, 0);
@@ -1086,7 +1086,7 @@ mod tests {
 
     #[test]
     fn split_copies_occupancy_to_new_half() {
-        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
+        let (_graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
         z.set_occupied(0, 1, 7, 0, true);
         z.split_edge_grid(0, 1, 4);
         // Col 7 maps to col 3 in the new edge (7 - 4 = 3)
@@ -1104,7 +1104,7 @@ mod tests {
 
     #[test]
     fn merge_combines_column_counts_and_removes_second() {
-        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(40.0, 0.0, 0.0)], 7.0); // 4 cols
+        let (_graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(40.0, 0.0, 0.0)], 7.0); // 4 cols
         z.update_edge_grid_size(1, 60.0); // 6 cols
         z.merge_edge_grids(0, 1);
         assert_eq!(z.edge_grids[&0].cells_long, 10);
@@ -1116,7 +1116,7 @@ mod tests {
 
     #[test]
     fn merge_preserves_zone_data_order() {
-        let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(40.0, 0.0, 0.0)], 7.0);
+        let (_graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(40.0, 0.0, 0.0)], 7.0);
         z.update_edge_grid_size(1, 60.0);
         
         // Setup data manually to bypass graph/obstruction checks in a pure-data test
@@ -1302,7 +1302,7 @@ mod tests {
         let mut graph = RegionGraph::new();
         let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
 
-        for (i, &angle) in angles.iter().enumerate() {
+        for (_i, &angle) in angles.iter().enumerate() {
             let dir = Vector3::new(angle.cos(), 0.0, angle.sin());
             let n_arm = graph.add_node(dir * length, NodeType::Junction);
             let pts = vec![Vector3::new(0.0, 0.0, 0.0), dir * length];

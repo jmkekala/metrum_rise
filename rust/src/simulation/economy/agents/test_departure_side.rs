@@ -3,7 +3,6 @@ mod tests {
     use crate::simulation::economy::agents::{AgentSystem, TRANSIT_DEPARTING, TRANSIT_ON_ROAD, MODE_WALK};
     use crate::simulation::network::graph::{RegionGraph, Edge};
     use crate::simulation::network::types::{NodeType, TransitType, TransitFlags, EdgeClass};
-    use crate::simulation::network::lanes::{LaneSystem, LaneType};
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::grid::zoning::ZoneType;

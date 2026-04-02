@@ -783,7 +783,7 @@ mod tests {
     #[test]
     fn test_vacancy_index_consistency() {
         let mut allocator = BuildingAllocator::new();
-        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let _rng = rand::rngs::StdRng::seed_from_u64(42);
 
         // 1. Add 5 Residential buildings
         for i in 0..5 {
@@ -873,7 +873,6 @@ mod tests {
         use crate::simulation::economy::demand::DemandSystem;
         use crate::simulation::grid::desirability::DesirabilitySystem;
         use crate::simulation::grid::noise::NoiseSystem;
-        use crate::simulation::grid::pollution::PollutionSystem;
         use crate::simulation::grid::zoning::ZoningSystem;
         use crate::simulation::network::TransitNetwork;
         use godot::prelude::Vector3;
@@ -936,7 +935,6 @@ mod tests {
         use crate::simulation::economy::demand::DemandSystem;
         use crate::simulation::grid::desirability::DesirabilitySystem;
         use crate::simulation::grid::noise::NoiseSystem;
-        use crate::simulation::grid::pollution::PollutionSystem;
         use crate::simulation::grid::zoning::ZoningSystem;
         use crate::simulation::network::TransitNetwork;
         use godot::prelude::Vector3;
@@ -999,7 +997,6 @@ mod tests {
         use crate::simulation::economy::demand::DemandSystem;
         use crate::simulation::grid::desirability::DesirabilitySystem;
         use crate::simulation::grid::noise::NoiseSystem;
-        use crate::simulation::grid::pollution::PollutionSystem;
         use crate::simulation::grid::zoning::ZoningSystem;
         use crate::simulation::network::TransitNetwork;
         use godot::prelude::Vector3;
