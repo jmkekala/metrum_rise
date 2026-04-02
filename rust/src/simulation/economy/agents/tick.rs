@@ -194,6 +194,22 @@ impl AgentSystem {
             });
         }
 
+        // Build junction gate snapshot: mark every connection lane that already has an
+        // agent in TRANSIT_INTERSECTION.  The parallel movement pass reads this as a
+        // shared immutable reference — no synchronisation needed.
+        if self.conn_occupied.len() < lane_count {
+            self.conn_occupied.resize(lane_count, false);
+        }
+        self.conn_occupied.fill(false);
+        for i in 0..n {
+            if self.agents.transit[i] == TRANSIT_INTERSECTION {
+                let lid = self.agents.current_lane_id[i];
+                if lid < self.conn_occupied.len() {
+                    self.conn_occupied[lid] = true;
+                }
+            }
+        }
+
         // -----------------------------------------------------------------------
         // 3. IDM speed update — parallel.
         //    Each car looks up its pre-sorted bucket directly (O(1) index into
@@ -281,6 +297,7 @@ impl AgentSystem {
 
         let pathfind_count = &self.pathfind_count;
         let sim_time = self.sim_time;
+        let conn_occupied: &Vec<bool> = &self.conn_occupied;
 
         dispatch_agents(n, |i| {
             let mut rng = rand::thread_rng();
@@ -628,9 +645,20 @@ impl AgentSystem {
                                     if path_idx < path_len {
                                         let next_node = s_path.get(i)[path_idx];
                                         if let Some(best_e) = graph.get_edge_between_nodes(*s_cur_n.get(i), next_node) {
-                                            VALID_CONNS.with(|v| {
+                                            let mut wait_for_gap = false;
+                                            // Gate only applies at real junctions (degree ≥ 3).
+                                            // Degree-2 nodes (frontage nodes, road continuation
+                                            // points) have a single straight-through connection;
+                                            // IDM already prevents simultaneous entry so gating
+                                            // there causes spurious waits and loop-de-loops.
+                                            let cur_node_idx = *s_cur_n.get(i) as usize;
+                                            let is_junction = graph.adjacency
+                                                .get(cur_node_idx)
+                                                .map_or(false, |adj| adj.len() >= 3);
+                                        VALID_CONNS.with(|v| {
                                                 let mut valid_conns = v.borrow_mut();
                                                 valid_conns.clear();
+                                                let mut any_routing_valid = false;
                                                 for &c_id in &lane.next_lanes {
                                                     if c_id < transit_network.lane_system.lanes.len() {
                                                         let conn_lane = &transit_network.lane_system.lanes[c_id];
@@ -639,7 +667,14 @@ impl AgentSystem {
                                                             if tgt_road_lane < transit_network.lane_system.lanes.len()
                                                                 && transit_network.lane_system.lanes[tgt_road_lane].edge_id == best_e
                                                             {
-                                                                valid_conns.push(c_id);
+                                                                any_routing_valid = true;
+                                                                // Occupancy check only at junctions. At
+                                                                // degree-2 nodes always allow entry.
+                                                                let occupied = is_junction
+                                                                    && conn_occupied.get(c_id).copied().unwrap_or(false);
+                                                                if !occupied {
+                                                                    valid_conns.push(c_id);
+                                                                }
                                                             }
                                                         }
                                                     }
@@ -649,11 +684,22 @@ impl AgentSystem {
                                                     *s_lane_d.get_mut(i) = 0.0;
                                                     *s_transit.get_mut(i) = TRANSIT_INTERSECTION;
                                                     *s_cur_e.get_mut(i) = usize::MAX;
+                                                } else if any_routing_valid {
+                                                    // All connection lanes at a junction are occupied —
+                                                    // hold at stop line. Revert path_idx so the next
+                                                    // tick's "reached end of lane" re-checks the gate
+                                                    // rather than overshooting the path.
+                                                    *s_path_idx.get_mut(i) -= 1;
+                                                    *s_lane_d.get_mut(i) = lane.length;
+                                                    wait_for_gap = true;
                                                 } else {
                                                     s_path.get_mut(i).clear();
                                                     *s_lane_id.get_mut(i) = usize::MAX;
                                                 }
                                             });
+                                        if wait_for_gap {
+                                            break;
+                                        }
                                             if s_path.get(i).is_empty() { break; }
                                         } else {
                                             s_path.get_mut(i).clear();

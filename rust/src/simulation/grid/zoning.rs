@@ -1703,4 +1703,56 @@ mod tests {
             }
         }
     }
+
+    // ── Sidewalk / zoning eligibility ────────────────────────────────────────────
+
+    // Zoning grids are created for every road edge that carries FOOT traffic (i.e. has
+    // sidewalks). The column count is `floor(length / GRID_CELL_SIZE)` and is invariant
+    // to vehicle lane count — lane width affects road width but not zone cell granularity.
+    //
+    // Note: pure walkways (fwd_lanes = bkw_lanes = 0) currently also receive a zoning
+    // grid via `update_edge_grid_size` because the call in `TransitNetwork::add_road` is
+    // unconditional. Buildings should not be placed adjacent to walkways (no vehicle
+    // access), but no gate enforces this yet. These tests document the current behaviour.
+
+    fn make_sidewalk_road(fwd: u8, bkw: u8, length: f32) -> ZoningSystem {
+        use crate::simulation::core::config::MapConfig;
+        let mut z = ZoningSystem::new(&MapConfig::default());
+        z.update_edge_grid_size(0, length);
+        let _ = (fwd, bkw); // lane count does not affect column granularity
+        z
+    }
+
+    #[test]
+    fn test_zoning_grid_created_for_sidewalk_road() {
+        // A 100 m edge → floor(100 / 10) = 10 columns.
+        // This is invariant across all lane counts because zone cell size is fixed (10 m)
+        // and does not change with road width or number of vehicle lanes.
+        for &(fwd, bkw, label) in crate::simulation::LANE_CONFIGS {
+            let z = make_sidewalk_road(fwd, bkw, 100.0);
+            assert!(z.edge_grids.contains_key(&0),
+                "[{label}] zoning grid should exist for edge 0");
+            let grid = &z.edge_grids[&0];
+            assert_eq!(grid.cells_long, 10,
+                "[{label}] 100 m road should have 10 zone columns, found {}", grid.cells_long);
+        }
+    }
+
+    #[test]
+    fn test_zoning_column_count_scales_with_length() {
+        // Column count = floor(length / GRID_CELL_SIZE). The relationship must be exact
+        // so zone data migrations during edge splits remain aligned.
+        let cases: &[(f32, usize, &str)] = &[
+            (50.0,  5,  "50 m"),
+            (100.0, 10, "100 m"),
+            (200.0, 20, "200 m"),
+            (95.0,  9,  "95 m (partial last column dropped)"),
+        ];
+        for &(length, expected_cols, label) in cases {
+            let z = make_sidewalk_road(1, 1, length);
+            let grid = &z.edge_grids[&0];
+            assert_eq!(grid.cells_long, expected_cols,
+                "[{label}] expected {expected_cols} columns, found {}", grid.cells_long);
+        }
+    }
 }

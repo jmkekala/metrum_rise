@@ -3,22 +3,25 @@ mod tests {
     use crate::simulation::economy::agents::{AgentSystem, TRANSIT_DEPARTING, TRANSIT_ON_ROAD, MODE_WALK};
     use crate::simulation::network::graph::{RegionGraph, Edge};
     use crate::simulation::network::types::{NodeType, TransitType, TransitFlags, EdgeClass};
+    use crate::simulation::network::lanes::LaneType;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::grid::zoning::ZoneType;
     use crate::simulation::pathing::cch::CchGraph;
     use godot::prelude::{Vector2, Vector3};
 
-    fn create_test_edge(n0: u32, n1: u32) -> Edge {
+    use crate::simulation::LANE_CONFIGS;
+
+    fn create_test_edge(n0: u32, n1: u32, fwd: u8, bkw: u8) -> Edge {
         Edge {
             start_node: n0,
             end_node: n1,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
+            width: (fwd as f32 + bkw as f32) * 3.5,
+            fwd_lanes: fwd,
+            bkw_lanes: bkw,
             speed_limit: 50.0,
             base_cost: 1.0,
             physical_length: 100.0,
@@ -52,25 +55,29 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_agent_departure_uses_correct_side_sidewalk() {
+    // Shared departure-side check. Spawns an agent departing from a building on the given
+    // `side` (1 = LEFT, -1 = RIGHT) and asserts it lands on the matching sidewalk lane.
+    //
+    // `lane_idx` for sidewalks is a fixed constant regardless of vehicle lane count:
+    //   LEFT sidewalk  → lane_idx =  100
+    //   RIGHT sidewalk → lane_idx = -100
+    // (See lanes.rs `build_lane` calls at the sidewalk section.)
+    fn check_departure_side(fwd: u8, bkw: u8, building_side: i8, expected_lane_idx: i8, label: &str) {
         let mut graph = RegionGraph::new();
         let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
         let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-        let edge_idx = graph.add_edge(create_test_edge(n0, n1));
+        let edge_idx = graph.add_edge(create_test_edge(n0, n1, fwd, bkw));
         graph.rebuild_adjacency_list();
-        
+
         let mut network = TransitNetwork::new();
         network.lane_system.rebuild(&mut graph);
         network.cch_graph = CchGraph::build(&graph);
-        
+
         let mut allocator = BuildingAllocator::new();
-        // Building on side 1 (LEFT)
-        allocator.buildings.push(create_test_building(edge_idx, 1, n1));
-        
+        allocator.buildings.push(create_test_building(edge_idx, building_side, n1));
+
         let mut agents = AgentSystem::new();
         let a_id = agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
-        
         agents.transit[a_id] = TRANSIT_DEPARTING;
         agents.transit_mode[a_id] = MODE_WALK;
         agents.current_node[a_id] = n1;
@@ -85,16 +92,30 @@ mod tests {
                 test_agents.tick(&mut allocator, &network, &mut graph, 0.1);
                 if test_agents.transit[a_id] == TRANSIT_ON_ROAD { break; }
             }
-            
-            assert_eq!(test_agents.transit[a_id], TRANSIT_ON_ROAD);
-            // One extra tick to initialize the lane in the ON_ROAD state
+
+            assert_eq!(test_agents.transit[a_id], TRANSIT_ON_ROAD,
+                "[{label}] agent never reached ON_ROAD");
+            // One extra tick to initialize the lane in the ON_ROAD state.
             test_agents.tick(&mut allocator, &network, &mut graph, 0.1);
-            
+
             let lane_id = test_agents.current_lane_id[a_id];
             let lane = &network.lane_system.lanes[lane_id];
-            
-            // Side 1 (Left) should match lane_idx 100
-            assert_eq!(lane.lane_idx, 100, "Agent from LEFT building (side=1) should use LEFT sidewalk (lane_idx=100), but used {}", lane.lane_idx);
+
+            assert_eq!(lane.lane_type, LaneType::Foot,
+                "[{label}] side={building_side}: agent should be on a Foot lane, found {:?}", lane.lane_type);
+            assert_eq!(lane.lane_idx, expected_lane_idx,
+                "[{label}] side={building_side}: expected lane_idx={expected_lane_idx} but found {}",
+                lane.lane_idx);
+        }
+    }
+
+    #[test]
+    fn test_agent_departure_uses_correct_side_sidewalk() {
+        for &(fwd, bkw, label) in LANE_CONFIGS {
+            // LEFT building (side=1) → LEFT sidewalk (lane_idx=100)
+            check_departure_side(fwd, bkw, 1, 100, label);
+            // RIGHT building (side=-1) → RIGHT sidewalk (lane_idx=-100)
+            check_departure_side(fwd, bkw, -1, -100, label);
         }
     }
 }

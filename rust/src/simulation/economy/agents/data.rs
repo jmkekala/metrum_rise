@@ -104,6 +104,12 @@ pub struct AgentSystem {
     /// Scratch buffer: IDM double-buffer for next-tick speeds. Avoids read-write conflicts in
     /// the parallel IDM pass.
     pub new_speed: Vec<f32>,
+    /// Scratch buffer: per-connection-lane occupancy snapshot.
+    /// `conn_occupied[lane_id] == true` when at least one `TRANSIT_INTERSECTION` agent
+    /// occupies that connection lane at the start of the current tick.
+    /// Built sequentially before the parallel movement pass; shared as a read-only
+    /// reference during it so no synchronisation is needed.
+    pub conn_occupied: Vec<bool>,
     /// Scratch buffer: per-edge speed sum for congestion calculation, indexed by edge ID.
     pub edge_speed_sum: Vec<f32>,
     /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
@@ -134,6 +140,7 @@ impl AgentSystem {
             lane_is_dirty: Vec::new(),
             dirty_lanes: Vec::new(),
             new_speed: Vec::new(),
+            conn_occupied: Vec::new(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),
         }
