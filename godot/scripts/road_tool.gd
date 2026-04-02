@@ -21,6 +21,10 @@ var altitude_offset: float = 0.0
 
 var draw_mode: int = 0 # 0: straight, 1: spline
 
+# Border-check positions queued while roads are in-flight on the sim thread.
+# Drained by NetworkRenderer._process once the road is confirmed in the graph.
+var _pending_border_checks: Array = []
+
 func _update_lanes_label():
 	if active and current_path != null:
 		_draw_blueprint()
@@ -221,17 +225,13 @@ func _commit_segment(end_pos):
 	var points = _get_processed_points()
 	if points.size() > 1:
 		simulation_node.add_road(points, fwd_lanes, bkw_lanes, true, true)
-		simulation_node.flatten_terrain_for_roads()
-		update_main_mesh()
-		terrain_node.update_terrain_visuals()
+		# Do NOT call flatten_terrain_for_roads / update_main_mesh here — the road
+		# is queued to the sim thread and is not in the graph yet.  _process polls
+		# is_roads_dirty() and triggers the refresh once the road is actually added.
 
-		# Check whether either endpoint landed in the border zone.
-		# check_border_candidate() returns the snapped node ID or -1.
-		var candidate: int = simulation_node.check_border_candidate(start_pos)
-		if candidate < 0:
-			candidate = simulation_node.check_border_candidate(end_pos)
-		if candidate >= 0:
-			_prompt_border_connection(candidate)
+		# Queue border check — must run AFTER the road is in the graph (nodes exist).
+		# NetworkRenderer drains _pending_border_checks when network_dirty fires.
+		_pending_border_checks.push_back([start_pos, end_pos])
 	
 	var dist = start_pos.distance_to(end_pos)
 	
@@ -255,6 +255,17 @@ func cancel_road():
 		blueprint_mesh.mesh = null
 		current_path.queue_free()
 	current_path = null
+
+## Called by NetworkRenderer after the road is confirmed in the graph.
+## Drains _pending_border_checks and shows the border-connection dialog if relevant.
+func drain_pending_border_checks() -> void:
+	while not _pending_border_checks.is_empty():
+		var pair = _pending_border_checks.pop_front()
+		var candidate: int = simulation_node.check_border_candidate(pair[0])
+		if candidate < 0:
+			candidate = simulation_node.check_border_candidate(pair[1])
+		if candidate >= 0:
+			_prompt_border_connection(candidate)
 
 ## Shows a dialog asking whether to make this road endpoint an external connection.
 ## On confirmation, the node is promoted to Border and becomes an immigrant spawn point.

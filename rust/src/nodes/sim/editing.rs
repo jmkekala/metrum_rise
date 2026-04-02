@@ -181,6 +181,8 @@ impl SimCore {
             &mut self.allocator,
         );
 
+        self.network_dirty = true;
+
         // Robustly update zoning for all nearby area
         if let Some(pt) = first_pt {
             let nearby = self.region_graph.get_edges_near_point(pt, 200.0);

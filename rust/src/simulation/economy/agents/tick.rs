@@ -661,12 +661,22 @@ impl AgentSystem {
                                             break;
                                         }
                                     } else {
+                                        // Path exhausted — only transition to TRANSIT_ARRIVING
+                                        // if cur_n is actually the building's frontage_node.
+                                        // If the flow-field path ended at a different node (flow
+                                        // fields route to zone area, not the specific building),
+                                        // leave the path empty so the next tick's path-missing
+                                        // handler CCH-pathfinds directly to tgt_n (= frontage_node).
                                         s_path.get_mut(i).clear();
                                         *s_lane_id.get_mut(i) = usize::MAX;
                                         let t_bldg = *s_tgt_b.get(i);
                                         if t_bldg != usize::MAX && t_bldg < allocator.buildings.len() {
-                                            *s_transit.get_mut(i) = TRANSIT_ARRIVING;
-                                            *s_tmode.get_mut(i) = MODE_WALK;
+                                            let frontage = allocator.buildings[t_bldg].frontage_node;
+                                            if *s_cur_n.get(i) == frontage {
+                                                *s_transit.get_mut(i) = TRANSIT_ARRIVING;
+                                                *s_tmode.get_mut(i) = MODE_WALK;
+                                            }
+                                            // else: wrong node — empty path triggers CCH re-route next tick
                                         }
                                         break;
                                     }

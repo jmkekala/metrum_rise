@@ -71,6 +71,22 @@ impl SimulationNode {
         }
     }
 
+    /// Non-blocking mutex acquire. Returns `None` if the sim thread currently holds
+    /// the lock (e.g., during `add_road_internal`). Used for per-frame read-only
+    /// calls (terrain raycast, network snap) so the Godot main thread never stalls
+    /// waiting for an in-progress road placement.
+    #[inline]
+    fn try_lock_core(&self) -> Option<std::sync::MutexGuard<'_, crate::nodes::sim::core::SimCore>> {
+        match self.core.try_lock() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+            Err(std::sync::TryLockError::Poisoned(e)) => {
+                godot_error!("[sim] mutex poisoned — recovering in try_lock_core");
+                Some(e.into_inner())
+            }
+        }
+    }
+
     /// Returns the dimensions of the heightmap.
     pub fn get_heightmap_size_internal(&self) -> Vector2 {
         let core = self.lock_core();
@@ -203,6 +219,23 @@ impl SimulationNode {
     pub fn clear_water_dirty(&mut self) {
         self.lock_core().water_dirty = false;
         self.snapshot.write().unwrap().water_dirty = false;
+    }
+
+    /// Returns true if the road/rail network was mutated and the visual mesh needs a rebuild.
+    ///
+    /// `NetworkRenderer._process` polls this each frame. The flag stays `true` until
+    /// `clear_network_dirty()` is called by GDScript after the refresh is complete,
+    /// matching the same explicit-clear pattern used by `terrain_dirty` and `water_dirty`.
+    #[func]
+    pub fn is_network_dirty(&self) -> bool {
+        self.snapshot.read().unwrap().network_dirty
+    }
+
+    /// Clears the network-dirty flag after `NetworkRenderer` has rebuilt the road/rail mesh.
+    #[func]
+    pub fn clear_network_dirty(&mut self) {
+        self.lock_core().network_dirty = false;
+        self.snapshot.write().unwrap().network_dirty = false;
     }
 
     /// Returns the raw heightmap data.
@@ -583,10 +616,17 @@ impl SimulationNode {
     }
 
     /// Returns the closest network point (node/edge) within range.
+    ///
+    /// Uses `try_lock` for the same reason as `intersect_terrain` — called every
+    /// frame while the road tool is active; must not stall on the sim mutex.
+    /// Returns `null` when contended; GDScript handles null from this call already.
     #[func]
     pub fn get_closest_network_point(&self, world_pos: Vector3, max_dist: f32) -> Variant {
-        match self.lock_core().get_closest_network_point_internal(world_pos, max_dist) {
-            Some(p) => p.to_variant(),
+        match self.try_lock_core() {
+            Some(core) => match core.get_closest_network_point_internal(world_pos, max_dist) {
+                Some(p) => p.to_variant(),
+                None => Variant::nil(),
+            },
             None => Variant::nil(),
         }
     }
@@ -619,10 +659,15 @@ impl SimulationNode {
         self.lock_core().move_network_node_internal(node_id, pos);
     }
 
-    /// Returns all junction node positions.
+    /// Returns all junction node positions, read from the pre-computed snapshot.
+    ///
+    /// Reading from the snapshot (RwLock) avoids acquiring the SimCore mutex, which
+    /// would stall the Godot main thread while `add_road_internal` holds the lock.
     #[func]
     pub fn get_network_nodes(&self) -> PackedVector3Array {
-        self.lock_core().get_network_nodes_internal()
+        PackedVector3Array::from_iter(
+            self.snapshot.read().unwrap().node_positions.iter().copied(),
+        )
     }
 
     /// Configures a lane connection rule at a junction.
@@ -689,10 +734,17 @@ impl SimulationNode {
     }
 
     /// Raycasts against the terrain heightmap.
+    ///
+    /// Uses `try_lock` so this never stalls the Godot main thread if the sim thread
+    /// is currently holding the mutex (e.g. during `add_road_internal`). Returns
+    /// `null` when contended; GDScript already handles null from this call gracefully.
     #[func]
     pub fn intersect_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
-        match self.lock_core().intersect_terrain_internal(ray_origin, ray_dir) {
-            Some(p) => p.to_variant(),
+        match self.try_lock_core() {
+            Some(core) => match core.intersect_terrain_internal(ray_origin, ray_dir) {
+                Some(p) => p.to_variant(),
+                None => Variant::nil(),
+            },
             None => Variant::nil(),
         }
     }
@@ -800,6 +852,7 @@ impl INode3D for SimulationNode {
             undo_stack: VecDeque::new(),
             terrain_dirty: true,
             water_dirty: true,
+            network_dirty: false,
             benchmark_mode,
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,

@@ -86,7 +86,7 @@ func _process(_delta):
 			cursor_mesh.global_position = pos
 			cursor_mesh.global_position.y += 0.35 # Float above road geometries
 			cursor_mesh.visible = is_valid
-			
+
 		_update_blueprint_visuals()
 		_update_node_visuals()
 	else:

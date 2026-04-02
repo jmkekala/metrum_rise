@@ -73,6 +73,10 @@ pub struct SimCore {
     pub terrain_dirty: bool,
     /// Set by water mutations; cleared by the Godot render layer.
     pub water_dirty: bool,
+    /// Set by any network mutation (road, rail); cleared by `clear_network_dirty()` after
+    /// `NetworkRenderer` finishes rebuilding the visual mesh. Stays `true` until GDScript
+    /// explicitly clears it — same pattern as `terrain_dirty` and `water_dirty`.
+    pub network_dirty: bool,
     /// True when running in benchmark mode (skips undo stack on road placement).
     pub benchmark_mode: bool,
     /// Duration of the last daily economy tick in milliseconds.
@@ -99,6 +103,8 @@ pub struct RenderSnapshot {
     pub terrain_dirty: bool,
     /// Mirrors `SimCore::water_dirty` at snapshot time.
     pub water_dirty: bool,
+    /// Mirrors `SimCore::network_dirty` at snapshot time; cleared the same frame.
+    pub network_dirty: bool,
     /// Current simulation day.
     pub current_day: u32,
     /// Duration of the last daily tick in milliseconds.
@@ -113,6 +119,10 @@ pub struct RenderSnapshot {
     pub heightmap_width: usize,
     /// Heightmap height in cells (for CSV logging on the main thread).
     pub heightmap_height: usize,
+    /// World-space positions of all canonical (non-virtual) network nodes.
+    /// Pre-computed here so `get_network_nodes()` reads the snapshot (RwLock)
+    /// instead of locking SimCore — avoids main-thread stalls during road placement.
+    pub node_positions: Vec<godot::prelude::Vector3>,
 }
 
 impl Default for RenderSnapshot {
@@ -122,12 +132,14 @@ impl Default for RenderSnapshot {
             car_transforms: HashMap::new(),
             terrain_dirty: true,
             water_dirty: true,
+            network_dirty: false,
             current_day: 1,
             last_tick_ms: 0.0,
             last_agent_tick_us: 0,
             pathfind_count: 0,
             agent_count: 0,
             heightmap_width: 0,
+            node_positions: Vec::new(),
             heightmap_height: 0,
         }
     }
@@ -409,11 +421,22 @@ impl SimCore {
             }
         }
 
+        let node_positions: Vec<godot::prelude::Vector3> = self
+            .region_graph
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| self.region_graph.get_valid_node(*i as u32) == *i as u32)
+            .map(|(_, n)| n.pos)
+            .collect();
+
         RenderSnapshot {
             pedestrian_transforms,
             car_transforms,
             terrain_dirty: self.terrain_dirty,
             water_dirty: self.water_dirty,
+            network_dirty: self.network_dirty,
+            node_positions,
             current_day: self.time.current_day,
             last_tick_ms: self.last_tick_duration,
             last_agent_tick_us: self.last_agent_tick_us,
@@ -461,7 +484,17 @@ pub fn run_sim_thread(
                 }
                 Ok(SimCommand::AddRoad { points, fwd_lanes, bkw_lanes, zoning_left, zoning_right }) => {
                     let mut c = core.lock().unwrap();
+                    // Defer lane rebuild and intersection-clip rebuild to a single
+                    // finalize_bulk_load() call at the end.  Without this, add_road
+                    // calls lane_system.rebuild() once per sub-edge created (once per
+                    // intersection with an existing road), so placing a road across K
+                    // existing roads triggers K+1 full O(total_lanes) rebuilds.
+                    c.transit_network.bulk_load = true;
                     c.add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
+                    {
+                        let c = &mut *c;
+                        c.transit_network.finalize_bulk_load(&mut c.region_graph, &mut c.zoning);
+                    }
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     should_quit = true;

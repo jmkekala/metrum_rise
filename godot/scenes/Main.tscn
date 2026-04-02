@@ -10,6 +10,7 @@
 [ext_resource type="Script" path="res://scripts/move_tool.gd" id="8_move"]
 [ext_resource type="Script" path="res://scripts/input_manager.gd" id="9_input"]
 [ext_resource type="Script" path="res://scripts/main_ui.gd" id="10_ui"]
+[ext_resource type="Script" path="res://scripts/network_renderer.gd" id="11_netrender"]
 
 [node name="Main" type="Node3D"]
 
@@ -44,6 +45,9 @@ script = ExtResource("7_lanes")
 
 [node name="MoveTool" type="Node3D" parent="."]
 script = ExtResource("8_move")
+
+[node name="NetworkRenderer" type="Node" parent="."]
+script = ExtResource("11_netrender")
 
 [node name="InputManager" type="Node" parent="."]
 script = ExtResource("9_input")
