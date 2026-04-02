@@ -244,6 +244,11 @@ impl RegionGraph {
     }
 
     /// Moves a node to a new position, smoothly deforming all connected edges.
+    ///
+    /// Uses the adjacency list for O(degree) edge lookup instead of an O(E) full scan.
+    /// Does NOT rebuild intersection clips — callers that need visual clip updates
+    /// (e.g. `move_network_node_internal`) must call `rebuild_intersection_clips` explicitly.
+    /// The topology path (`process_intersections` → `add_road`) calls it after all splits.
     pub fn move_node(&mut self, node_id: u32, new_pos: Vector3) {
         let old_pos = self.nodes[node_id as usize].pos;
         let delta = new_pos - old_pos;
@@ -252,49 +257,54 @@ impl RegionGraph {
         self.nodes[node_id as usize].pos = new_pos;
         self.add_node_to_spatial_index(node_id);
 
-        // Pre-remove modified edges from spatial index while they still have old geometry
-        for i in 0..self.edges.len() {
-            if !self.edges[i].deleted
-                && (self.edges[i].start_node == node_id || self.edges[i].end_node == node_id)
-            {
-                self.remove_from_spatial_index(i);
-            }
+        // Collect connected edges via adjacency list — O(degree), not O(E).
+        let connected: Vec<usize> = self.adjacency[node_id as usize]
+            .iter()
+            .copied()
+            .filter(|&i| !self.edges[i].deleted)
+            .collect();
+
+        // Pre-remove from spatial index while geometry/physical_geometry still have old values.
+        for &i in &connected {
+            self.remove_from_spatial_index(i);
         }
 
-        for edge in &mut self.edges {
-            if edge.deleted {
+        // Update geometry and physical_geometry with smoothstep deformation.
+        for &i in &connected {
+            let edge = &mut self.edges[i];
+            let count = edge.geometry.len();
+            if count < 2 {
                 continue;
             }
-            if edge.start_node == node_id || edge.end_node == node_id {
-                let count = edge.geometry.len();
-                if count < 2 {
-                    continue;
+            let is_start = edge.start_node == node_id;
+            let is_end = edge.end_node == node_id;
+            if is_start && is_end {
+                for pt in edge.geometry.iter_mut().chain(edge.physical_geometry.iter_mut()) {
+                    *pt += delta;
                 }
-
-                let is_start = edge.start_node == node_id;
-                let is_end = edge.end_node == node_id;
-
-                if is_start && is_end {
-                    for i in 0..count {
-                        edge.geometry[i] += delta;
-                    }
-                } else if is_start {
-                    for i in 0..count {
-                        let w = 1.0 - (i as f32 / (count - 1) as f32);
-                        let w_smooth = w * w * (3.0 - 2.0 * w); // Smoothstep curve
-                        edge.geometry[i] += delta * w_smooth;
-                    }
-                } else if is_end {
-                    for i in 0..count {
-                        let w = i as f32 / (count - 1) as f32;
-                        let w_smooth = w * w * (3.0 - 2.0 * w); // Smoothstep curve
-                        edge.geometry[i] += delta * w_smooth;
-                    }
+            } else if is_start {
+                for idx in 0..count {
+                    let w = 1.0 - (idx as f32 / (count - 1) as f32);
+                    let w_smooth = w * w * (3.0 - 2.0 * w);
+                    let d = delta * w_smooth;
+                    edge.geometry[idx] += d;
+                    edge.physical_geometry[idx] += d;
+                }
+            } else {
+                // is_end
+                for idx in 0..count {
+                    let w = idx as f32 / (count - 1) as f32;
+                    let w_smooth = w * w * (3.0 - 2.0 * w);
+                    let d = delta * w_smooth;
+                    edge.geometry[idx] += d;
+                    edge.physical_geometry[idx] += d;
                 }
             }
         }
 
-        // Re-index all affected edges
-        self.rebuild_intersection_clips();
+        // Re-add to spatial index with updated geometry.
+        for &i in &connected {
+            self.add_to_spatial_index(i);
+        }
     }
 }

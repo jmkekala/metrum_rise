@@ -1,5 +1,5 @@
 use godot::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::graph::{Edge, RegionGraph};
 use super::types::{NodeType, TransitFlags, TransitType};
@@ -67,6 +67,298 @@ fn build_cum_dist(geometry: &[Vector3]) -> Vec<f32> {
         v.push(acc);
     }
     v
+}
+
+// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and `edge_lane_indices`.
+fn build_one_lane(
+    lanes: &mut Vec<Lane>,
+    lane_map: &mut HashMap<(usize, bool, i8), usize>,
+    edge_lane_indices: &mut Vec<usize>,
+    edge_idx: usize,
+    edge: &Edge,
+    is_fwd: bool,
+    lane_idx: i8,
+    lane_type: LaneType,
+    lane_offset: f32,
+) {
+    let pts = &edge.physical_geometry;
+    let mut geometry = Vec::with_capacity(pts.len());
+
+    let mut dir0 = pts[1] - pts[0];
+    dir0.y = 0.0;
+    let t0 = if dir0.length() > 1e-5 { dir0.normalized() } else { Vector3::new(1.0, 0.0, 0.0) };
+    let n0 = Vector3::new(-t0.z, 0.0, t0.x);
+    geometry.push(pts[0] + n0 * lane_offset);
+
+    for j in 1..pts.len() - 1 {
+        let mut d1 = pts[j] - pts[j - 1];
+        let mut d2 = pts[j + 1] - pts[j];
+        d1.y = 0.0;
+        d2.y = 0.0;
+        let t1 = if d1.length() > 1e-5 { d1.normalized() } else { t0 };
+        let t2 = if d2.length() > 1e-5 { d2.normalized() } else { t1 };
+        let n1 = Vector3::new(-t1.z, 0.0, t1.x);
+        let n2 = Vector3::new(-t2.z, 0.0, t2.x);
+        let bisect = (n1 + n2).normalized();
+        let dot = n1.dot(bisect).max(0.1);
+        geometry.push(pts[j] + bisect * (lane_offset / dot));
+    }
+
+    let mut d_last = pts[pts.len() - 1] - pts[pts.len() - 2];
+    d_last.y = 0.0;
+    let t_last = if d_last.length() > 1e-5 { d_last.normalized() } else { t0 };
+    let n_last = Vector3::new(-t_last.z, 0.0, t_last.x);
+    geometry.push(pts[pts.len() - 1] + n_last * lane_offset);
+
+    if !is_fwd {
+        geometry.reverse();
+    }
+
+    let mut length = 0.0;
+    for j in 0..geometry.len() - 1 {
+        length += geometry[j].distance_to(geometry[j + 1]);
+    }
+
+    let cum_dist = build_cum_dist(&geometry);
+    let new_lane_id = lanes.len();
+    lanes.push(Lane {
+        edge_id: edge_idx,
+        is_fwd,
+        lane_idx,
+        geometry,
+        length,
+        cum_dist,
+        lane_type,
+        is_crosswalk: false,
+        next_lanes: Vec::new(),
+    });
+    lane_map.insert((edge_idx, is_fwd, lane_idx), new_lane_id);
+    edge_lane_indices.push(new_lane_id);
+}
+
+// Builds vehicle intersection connection lanes at a single node, appending them to `lanes`
+// and pushing their IDs onto the `next_lanes` of the inbound road lanes.
+fn build_vehicle_connections_at_node(
+    lanes: &mut Vec<Lane>,
+    lane_map: &HashMap<(usize, bool, i8), usize>,
+    graph: &RegionGraph,
+    node_id: usize,
+) {
+    let mut inbound: Vec<(usize, i8, usize)> = Vec::new();
+    let mut outbound: Vec<(usize, i8, usize)> = Vec::new();
+
+    for e_idx in &graph.adjacency[node_id] {
+        let edge = &graph.edges[*e_idx];
+        if edge.deleted { continue; }
+
+        if edge.start_node as usize == node_id {
+            for l in 0..edge.fwd_lanes {
+                if let Some(&lid) = lane_map.get(&(*e_idx, true, l as i8)) {
+                    outbound.push((*e_idx, l as i8, lid));
+                }
+            }
+            for l in 0..edge.bkw_lanes {
+                if let Some(&lid) = lane_map.get(&(*e_idx, false, -(l as i8) - 1)) {
+                    inbound.push((*e_idx, -(l as i8) - 1, lid));
+                }
+            }
+        }
+
+        if edge.end_node as usize == node_id {
+            for l in 0..edge.fwd_lanes {
+                if let Some(&lid) = lane_map.get(&(*e_idx, true, l as i8)) {
+                    inbound.push((*e_idx, l as i8, lid));
+                }
+            }
+            for l in 0..edge.bkw_lanes {
+                if let Some(&lid) = lane_map.get(&(*e_idx, false, -(l as i8) - 1)) {
+                    outbound.push((*e_idx, -(l as i8) - 1, lid));
+                }
+            }
+        }
+    }
+
+    let lane_conns = &graph.nodes[node_id].lane_connections;
+    let node_deg = graph.adjacency[node_id].len();
+
+    for &(in_edge_id, in_lane_idx, in_lane_id) in &inbound {
+        let mut allowed = lane_conns.get(&(in_edge_id, in_lane_idx)).cloned();
+
+        if allowed.is_none() {
+            let mut defaults = Vec::new();
+            for &(out_edge_id, out_lane_idx, _) in &outbound {
+                if out_edge_id != in_edge_id || node_deg == 1 {
+                    defaults.push((out_edge_id, out_lane_idx));
+                }
+            }
+            if !defaults.is_empty() { allowed = Some(defaults); }
+        }
+
+        let mut valid_outs = Vec::new();
+        for &(out_edge_id, out_lane_idx, out_lid) in &outbound {
+            if let Some(rules) = &allowed {
+                if rules.contains(&(out_edge_id, out_lane_idx)) {
+                    valid_outs.push(out_lid);
+                }
+            }
+        }
+
+        for out_lid in valid_outs {
+            let p0 = *lanes[in_lane_id].geometry.last().unwrap();
+            let p1_base = {
+                let g = &lanes[in_lane_id].geometry;
+                if g.len() >= 2 {
+                    let d = g[g.len()-1] - g[g.len()-2];
+                    if d.length_squared() > 0.00001 { d.normalized() } else { Vector3::new(1.0,0.0,0.0) }
+                } else { Vector3::new(1.0,0.0,0.0) }
+            };
+            let p3 = lanes[out_lid].geometry[0];
+            let p2_base = {
+                let g = &lanes[out_lid].geometry;
+                if g.len() >= 2 {
+                    let d = g[1] - g[0];
+                    if d.length_squared() > 0.00001 { d.normalized() } else { Vector3::new(1.0,0.0,0.0) }
+                } else { Vector3::new(1.0,0.0,0.0) }
+            };
+
+            let dist = p0.distance_to(p3);
+            let cd = dist * 0.35;
+            let p1 = p0 + p1_base * cd;
+            let p2 = p3 - p2_base * cd;
+
+            let steps = 5;
+            let mut conn_geom = Vec::with_capacity(steps + 1);
+            let mut conn_len = 0.0;
+            for k in 0..=steps {
+                let t = k as f32 / steps as f32;
+                let mut p = (1.0-t).powi(3)*p0 + 3.0*(1.0-t).powi(2)*t*p1
+                    + 3.0*(1.0-t)*t.powi(2)*p2 + t.powi(3)*p3;
+                p.y = p0.y + (p3.y - p0.y) * t;
+                conn_geom.push(p);
+                if k > 0 { conn_len += conn_geom[k-1].distance_to(p); }
+            }
+
+            let conn_cum = build_cum_dist(&conn_geom);
+            let conn_id = lanes.len();
+            lanes.push(Lane {
+                edge_id: usize::MAX,
+                is_fwd: true,
+                lane_idx: 0,
+                geometry: conn_geom,
+                length: conn_len,
+                cum_dist: conn_cum,
+                lane_type: LaneType::Vehicle,
+                is_crosswalk: false,
+                next_lanes: vec![out_lid],
+            });
+            lanes[in_lane_id].next_lanes.push(conn_id);
+        }
+    }
+}
+
+// Builds pedestrian sidewalk connection lanes (crosswalks) at a single node, appending them to
+// `lanes`, updating `next_lanes` on sidewalk road lanes, and rebuilding `node.lane_connections`.
+fn build_pedestrian_connections_at_node(
+    lanes: &mut Vec<Lane>,
+    lane_map: &HashMap<(usize, bool, i8), usize>,
+    graph: &mut RegionGraph,
+    node_id: usize,
+) {
+    let node_pos = graph.nodes[node_id].pos;
+    let adj: Vec<usize> = graph.adjacency[node_id].clone();
+    let mut mouths: Vec<SidewalkMouth> = Vec::new();
+
+    for &e_idx in &adj {
+        let edge = &graph.edges[e_idx];
+        if edge.deleted || (edge.allowed_types & TransitFlags::FOOT) == 0
+            || edge.primary_type != TransitType::Road { continue; }
+
+        let is_start = edge.start_node as usize == node_id;
+        let other_p = if is_start { edge.geometry[1] } else { edge.geometry[edge.geometry.len()-2] };
+        let diff = other_p - node_pos;
+        let dist = other_p.distance_to(node_pos);
+        let dir = if dist > 1e-4 { diff / dist } else { Vector3::ZERO };
+        let side_vec = Vector3::new(-dir.z, 0.0, dir.x);
+
+        for &l_idx in &[-100_i8, 100_i8] {
+            let side = (l_idx as f32) / 100.0;
+            let offset = -(road_half_width(edge) + config::SIDEWALK_WIDTH * 0.5) * side;
+            let mouth_pos = node_pos + dir * 5.0 + side_vec * offset;
+            let mouth_angle = (mouth_pos.x - node_pos.x).atan2(mouth_pos.z - node_pos.z);
+            let (inbound, outbound) = if is_start {
+                (lane_map.get(&(e_idx, false, l_idx)).copied(), lane_map.get(&(e_idx, true, l_idx)).copied())
+            } else {
+                (lane_map.get(&(e_idx, true, l_idx)).copied(), lane_map.get(&(e_idx, false, l_idx)).copied())
+            };
+            if let (Some(in_id), Some(out_id)) = (inbound, outbound) {
+                mouths.push(SidewalkMouth { edge_idx: e_idx, lane_idx: l_idx, angle: mouth_angle, in_id, out_id });
+            }
+        }
+    }
+
+    mouths.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap());
+    let num_mouths = mouths.len();
+    graph.nodes[node_id].lane_connections.clear();
+    if num_mouths < 2 { return; }
+
+    let mut crosswalks_added = 0;
+    for i in 0..num_mouths {
+        for j in 0..num_mouths {
+            if i == j { continue; }
+            let diff_cw = if j > i { j - i } else { j + num_mouths - i };
+            let diff_ccw = num_mouths - diff_cw;
+            let use_cw = diff_cw <= diff_ccw;
+            let num_steps = if use_cw { diff_cw } else { diff_ccw };
+            if num_steps > 1 { continue; }
+
+            let mut steps = Vec::new();
+            let mut current = i;
+            for _ in 0..num_steps {
+                let next = if use_cw { (current+1)%num_mouths } else { (current+num_mouths-1)%num_mouths };
+                let p0 = *lanes[mouths[current].in_id].geometry.last().unwrap();
+                let p1 = lanes[mouths[next].out_id].geometry[0];
+                if steps.is_empty() { steps.push(p0); }
+                steps.push(p1);
+                current = next;
+            }
+
+            let is_same_edge = mouths[i].edge_idx == mouths[j].edge_idx;
+            let deg = graph.adjacency[node_id].len();
+            let node_type = graph.nodes[node_id].node_type;
+
+            if node_type == NodeType::Frontage && (is_same_edge || mouths[i].lane_idx != mouths[j].lane_idx) {
+                continue;
+            }
+
+            let skip_visual = is_same_edge && deg <= 2 && crosswalks_added >= 2;
+            let is_crosswalk = is_same_edge && num_steps == 1 && !skip_visual;
+            if is_crosswalk { crosswalks_added += 1; }
+
+            let mut step_len = 0.0;
+            for k in 0..steps.len().saturating_sub(1) { step_len += steps[k].distance_to(steps[k+1]); }
+
+            let steps_cum = build_cum_dist(&steps);
+            let conn_id = lanes.len();
+            let m_start_in_id = mouths[i].in_id;
+            let m_end_out_id = mouths[j].out_id;
+            lanes.push(Lane {
+                edge_id: usize::MAX,
+                is_fwd: true,
+                lane_idx: 0,
+                geometry: steps,
+                length: step_len,
+                cum_dist: steps_cum,
+                lane_type: LaneType::Foot,
+                is_crosswalk,
+                next_lanes: vec![m_end_out_id],
+            });
+            lanes[m_start_in_id].next_lanes.push(conn_id);
+
+            let key = (mouths[i].edge_idx, mouths[i].lane_idx);
+            let val = (mouths[j].edge_idx, mouths[j].lane_idx);
+            graph.nodes[node_id].lane_connections.entry(key).or_default().push(val);
+        }
+    }
 }
 
 /// System for managing road and intersection lanes.
@@ -457,6 +749,126 @@ impl LaneSystem {
 
                     node_ref.lane_connections.entry((m_start.edge_idx, m_start.lane_idx)).or_default().push((m_end.edge_idx, m_end.lane_idx));
                 }
+            }
+        }
+    }
+
+    /// Incrementally rebuilds lanes only for `affected_edges` and adjacent connection lanes.
+    ///
+    /// Appends new lanes to `self.lanes` without compacting, so unaffected lane IDs remain
+    /// stable. Orphaned old lanes for affected edges stay in the `lanes` Vec but are removed
+    /// from `edge_lanes`. Call [`AgentSystem::invalidate_lane_ids_for_edges`] with the
+    /// **same** affected set **before** calling this method.
+    pub fn rebuild_edges_incremental(
+        &mut self,
+        graph: &mut RegionGraph,
+        affected_edges: &HashSet<usize>,
+    ) {
+        if affected_edges.is_empty() { return; }
+
+        // 1. Collect nodes at both ends of every affected edge.
+        let mut affected_nodes: HashSet<usize> = HashSet::new();
+        for &e_id in affected_edges {
+            if e_id < graph.edges.len() && !graph.edges[e_id].deleted {
+                let e = &graph.edges[e_id];
+                affected_nodes.insert(e.start_node as usize);
+                affected_nodes.insert(e.end_node as usize);
+            }
+        }
+
+        // 2. Expand: also rebuild edges incident to affected nodes because
+        //    rebuild_intersection_clips may have changed their physical_geometry.
+        let mut rebuild_set: HashSet<usize> = affected_edges.clone();
+        for &node_id in &affected_nodes {
+            if node_id < graph.adjacency.len() {
+                for &e_id in &graph.adjacency[node_id] {
+                    if !graph.edges[e_id].deleted {
+                        rebuild_set.insert(e_id);
+                    }
+                }
+            }
+        }
+
+        // 3. Orphan old road lanes for every edge in rebuild_set.
+        for &e_id in &rebuild_set {
+            self.edge_lanes.remove(&e_id);
+        }
+
+        // 4. Clear next_lanes on non-orphaned lanes at affected nodes so
+        //    connection lanes are rebuilt cleanly.
+        for &node_id in &affected_nodes {
+            if node_id >= graph.adjacency.len() { continue; }
+            for &e_id in &graph.adjacency[node_id] {
+                if let Some(lane_ids) = self.edge_lanes.get(&e_id) {
+                    let ids: Vec<usize> = lane_ids.clone();
+                    for lid in ids {
+                        self.lanes[lid].next_lanes.clear();
+                    }
+                }
+            }
+        }
+
+        // 5. lane_map is populated in step 6 as each edge in rebuild_set is rebuilt.
+        // No prior scan of surviving lanes is needed: steps 7/8 only look up edges
+        // incident to affected nodes, and those are all in rebuild_set.
+        let mut lane_map: HashMap<(usize, bool, i8), usize> = HashMap::new();
+
+        // 6. Append new straight lanes for every edge in rebuild_set.
+        for &edge_idx in &rebuild_set {
+            if edge_idx >= graph.edges.len() { continue; }
+            let edge = &graph.edges[edge_idx];
+            if edge.deleted || edge.physical_geometry.len() < 2 { continue; }
+
+            let mut edge_lane_indices = Vec::new();
+            let lane_w = config::LANE_WIDTH;
+            let sidewalk_w = config::SIDEWALK_WIDTH;
+            let asphalt_width = (edge.fwd_lanes + edge.bkw_lanes) as f32 * lane_w;
+            let side_mul = if config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+
+            for l in 0..edge.fwd_lanes {
+                let off = (l as f32 + 0.5) * lane_w * side_mul;
+                build_one_lane(&mut self.lanes, &mut lane_map, &mut edge_lane_indices,
+                    edge_idx, edge, true, l as i8, LaneType::Vehicle, off);
+            }
+            for l in 0..edge.bkw_lanes {
+                let off = -(l as f32 + 0.5) * lane_w * side_mul;
+                build_one_lane(&mut self.lanes, &mut lane_map, &mut edge_lane_indices,
+                    edge_idx, edge, false, -(l as i8) - 1, LaneType::Vehicle, off);
+            }
+
+            if (edge.allowed_types & TransitFlags::FOOT) != 0 {
+                if edge.primary_type == TransitType::Foot {
+                    build_one_lane(&mut self.lanes, &mut lane_map, &mut edge_lane_indices,
+                        edge_idx, edge, true, 0, LaneType::Foot, 0.0);
+                    build_one_lane(&mut self.lanes, &mut lane_map, &mut edge_lane_indices,
+                        edge_idx, edge, false, 0, LaneType::Foot, 0.0);
+                } else {
+                    let left_off = -(asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
+                    build_one_lane(&mut self.lanes, &mut lane_map, &mut edge_lane_indices,
+                        edge_idx, edge, true, 100, LaneType::Foot, left_off);
+                    build_one_lane(&mut self.lanes, &mut lane_map, &mut edge_lane_indices,
+                        edge_idx, edge, false, 100, LaneType::Foot, left_off);
+                    let right_off = (asphalt_width * 0.5 + sidewalk_w * 0.5) * side_mul;
+                    build_one_lane(&mut self.lanes, &mut lane_map, &mut edge_lane_indices,
+                        edge_idx, edge, true, -100, LaneType::Foot, right_off);
+                    build_one_lane(&mut self.lanes, &mut lane_map, &mut edge_lane_indices,
+                        edge_idx, edge, false, -100, LaneType::Foot, right_off);
+                }
+            }
+            self.edge_lanes.insert(edge_idx, edge_lane_indices);
+        }
+
+        // 7. Rebuild vehicle connection lanes for every affected node.
+        for &node_id in &affected_nodes {
+            if node_id < graph.nodes.len() {
+                build_vehicle_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
+            }
+        }
+
+        // 8. Rebuild pedestrian crosswalks for every affected node.
+        for &node_id in &affected_nodes {
+            if node_id < graph.nodes.len() {
+                build_pedestrian_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
             }
         }
     }
@@ -919,5 +1331,146 @@ mod tests {
         }
 
         assert!(!has_crosswalk, "Building frontage node should not have pedestrian crosswalks");
+    }
+
+    // Helper: build a standard 1+1 lane road edge between two nodes.
+    fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
+        let p0 = graph.nodes[s as usize].pos;
+        let p1 = graph.nodes[e as usize].pos;
+        graph.add_edge(Edge {
+            start_node: s,
+            end_node: e,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 1.0,
+            physical_length: p0.distance_to(p1),
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![p0, p1],
+            physical_geometry: vec![p0, p1],
+            zoning_left: false,
+            zoning_right: false,
+            deleted: false,
+        })
+    }
+
+    #[test]
+    fn test_incremental_rebuild_new_edge_gets_lanes() {
+        // Two disconnected edges. Add a third connecting one; incremental rebuild should
+        // give the new edge the same lane count as a full rebuild would.
+        let mut graph = RegionGraph::new();
+        let na = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let nb = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let nc = graph.add_node(Vector3::new(50.0, 0.0, -100.0), NodeType::Junction);
+
+        let e0 = add_road_edge(&mut graph, na, nb);
+        graph.rebuild_adjacency_list();
+
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+
+        // Add a second edge (a new road).
+        let e1 = add_road_edge(&mut graph, nb, nc);
+        graph.rebuild_adjacency_list();
+
+        // Incremental rebuild for just the new edge.
+        let mut affected = HashSet::new();
+        affected.insert(e1);
+        lanes.rebuild_edges_incremental(&mut graph, &affected);
+
+        assert!(lanes.edge_lanes.contains_key(&e1), "New edge should have lanes");
+        // 1+1 car lanes + 4 sidewalk lanes = 6 physical lanes
+        let physical_e1 = lanes.edge_lanes[&e1]
+            .iter()
+            .filter(|&&id| lanes.lanes[id].edge_id != usize::MAX)
+            .count();
+        assert_eq!(physical_e1, 6, "New edge should have 6 physical lanes (same as full rebuild)");
+
+        // e0 is in the rebuild_set (incident to nb which is also an endpoint of e1)
+        // but its lanes should still be present.
+        assert!(lanes.edge_lanes.contains_key(&e0), "Existing edge should still have lanes");
+    }
+
+    #[test]
+    fn test_incremental_rebuild_preserves_unaffected_lane_ids() {
+        // Road A–B (e0) and an isolated road C–D (e_far) with no shared nodes.
+        // Adding a road incident to e0 should not change e_far's lane IDs.
+        let mut graph = RegionGraph::new();
+        let na = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let nb = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let nc = graph.add_node(Vector3::new(50.0, 0.0, -100.0), NodeType::Junction);
+        // Isolated road far away.
+        let nd = graph.add_node(Vector3::new(0.0, 0.0, 500.0), NodeType::Junction);
+        let ne = graph.add_node(Vector3::new(100.0, 0.0, 500.0), NodeType::Junction);
+
+        let _e0 = add_road_edge(&mut graph, na, nb);
+        let e_far = add_road_edge(&mut graph, nd, ne);
+        graph.rebuild_adjacency_list();
+
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+
+        let far_ids_before: Vec<usize> = lanes.edge_lanes[&e_far].clone();
+
+        // Add new road (e1) from nb to nc.
+        let e1 = add_road_edge(&mut graph, nb, nc);
+        graph.rebuild_adjacency_list();
+
+        let mut affected = HashSet::new();
+        affected.insert(e1);
+        lanes.rebuild_edges_incremental(&mut graph, &affected);
+
+        // Isolated road must keep exactly the same lane IDs.
+        assert_eq!(
+            lanes.edge_lanes[&e_far], far_ids_before,
+            "Unaffected far road's lane IDs must be stable after incremental rebuild"
+        );
+    }
+
+    #[test]
+    fn test_incremental_rebuild_connection_lanes_exist_at_junction() {
+        // T-junction: horizontal e0 (A–B) and vertical e1 (B–C).
+        // After incremental rebuild, vehicle connection lanes must exist at node B.
+        let mut graph = RegionGraph::new();
+        let na = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let nb = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let nc = graph.add_node(Vector3::new(100.0, 0.0, -100.0), NodeType::Junction);
+
+        let e0 = add_road_edge(&mut graph, na, nb);
+        graph.rebuild_adjacency_list();
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+
+        let e1 = add_road_edge(&mut graph, nb, nc);
+        graph.rebuild_adjacency_list();
+
+        let mut affected = HashSet::new();
+        affected.insert(e1);
+        lanes.rebuild_edges_incremental(&mut graph, &affected);
+
+        // Check that at least one vehicle connection lane exists at node B (e0 → e1).
+        let nb_usize = nb as usize;
+        let has_vehicle_conn = lanes.lanes.iter().any(|l| {
+            l.edge_id == usize::MAX
+                && l.lane_type == LaneType::Vehicle
+                && !l.next_lanes.is_empty()
+                && {
+                    let target_edge = lanes.lanes[l.next_lanes[0]].edge_id;
+                    target_edge == e0 || target_edge == e1
+                }
+        });
+        // Also verify e0 has next_lanes populated (inbound road lane now connects outward).
+        let e0_lane_has_conns = lanes.edge_lanes[&e0]
+            .iter()
+            .any(|&lid| !lanes.lanes[lid].next_lanes.is_empty());
+        let _ = nb_usize; // silence unused warning
+        assert!(has_vehicle_conn, "Vehicle connection lane should exist after incremental rebuild");
+        assert!(e0_lane_has_conns, "e0 road lanes should have connection lanes after incremental rebuild");
     }
 }

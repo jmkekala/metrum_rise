@@ -2,15 +2,23 @@
 # Metrum Rise Run Script
 
 RELEASE=0
+DEBUG=0
 GODOT_ARGS=()
 export RUST_BACKTRACE=1
 for arg in "$@"; do
     if [ "$arg" = "--release" ]; then
         RELEASE=1
+    elif [ "$arg" = "--debug" ]; then
+        DEBUG=1
     else
         GODOT_ARGS+=("$arg")
     fi
 done
+
+if [ $DEBUG -eq 1 ]; then
+    export METRUM_DEBUG=1
+    echo "Debug logging enabled (output goes to stdout)"
+fi
 
 echo "Building Rust library..."
 cd rust

@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use godot::prelude::{godot_error, Vector3};
+use crate::debug_log;
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
@@ -83,6 +84,8 @@ pub struct SimCore {
     pub last_tick_duration: f64,
     /// Duration of the last agent movement tick in microseconds.
     pub last_agent_tick_us: u64,
+    /// Per-phase timing breakdown from the last road placement, for profiling.
+    pub last_road_timing: String,
     /// World-space AABB for frustum culling: (x_min, x_max, z_min, z_max).
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
@@ -174,6 +177,16 @@ impl SimCore {
     /// Executes one full economy / daily tick (called once per in-game day).
     pub fn simulate_tick_internal(&mut self) {
         let tick_start = Instant::now();
+
+        // Flush any zoning obstruction passes that were deferred since the last
+        // daily tick (e.g. from road placements). Must run before allocator.tick
+        // so building placement sees up-to-date obstruction caches.
+        if !self.transit_network.zoning_dirty_edges.is_empty() {
+            let t_zone = Instant::now();
+            let edge_count = self.transit_network.zoning_dirty_edges.len();
+            self.transit_network.flush_zoning_updates(&mut self.zoning, &self.region_graph);
+            debug_log!("zone", "deferred flush: {}edges in {}µs", edge_count, t_zone.elapsed().as_micros());
+        }
 
         self.demand.tick();
         self.allocator.tick(
@@ -278,13 +291,16 @@ impl SimCore {
                     if l.geometry.len() >= 2 && !l.cum_dist.is_empty() {
                         let seg = l.cum_dist.partition_point(|&d| d <= dist).saturating_sub(1);
                         let seg = seg.min(l.geometry.len() - 2);
-                        let fwd = (l.geometry[seg + 1] - l.geometry[seg]).normalized();
-                        if fwd.length_squared() > 1e-6 {
+                        let raw = l.geometry[seg + 1] - l.geometry[seg];
+                        if raw.length_squared() > 1e-6 {
                             // GLTF export converts Blender -Y (character facing) to +Z, so the
                             // model faces +Z in Godot. basis_z = fwd aligns +Z with travel dir.
-                            basis_z = fwd;
-                            basis_x = Vector3::UP.cross(basis_z).normalized();
-                            basis_y = basis_z.cross(basis_x).normalized();
+                            basis_z = raw.normalized();
+                            let right = Vector3::UP.cross(basis_z);
+                            if right.length_squared() > 1e-6 {
+                                basis_x = right.normalized();
+                                basis_y = basis_z.cross(basis_x).normalized();
+                            }
                         }
                     }
                 } else {
@@ -295,10 +311,12 @@ impl SimCore {
                             let npos = self.region_graph.nodes[node_idx].pos;
                             let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
                             if dir.length_squared() > 1e-6 {
-                                let d = dir.normalized();
-                                basis_z = d;
-                                basis_x = Vector3::UP.cross(basis_z).normalized();
-                                basis_y = basis_z.cross(basis_x).normalized();
+                                basis_z = dir.normalized();
+                                let right = Vector3::UP.cross(basis_z);
+                                if right.length_squared() > 1e-6 {
+                                    basis_x = right.normalized();
+                                    basis_y = basis_z.cross(basis_x).normalized();
+                                }
                             }
                         }
                     } else if transit == TRANSIT_ARRIVING {
@@ -307,10 +325,12 @@ impl SimCore {
                             let b = &self.allocator.buildings[b_id];
                             let dir = Vector3::new(b.center_x - world_x, 0.0, b.center_y - world_z);
                             if dir.length_squared() > 1e-6 {
-                                let d = dir.normalized();
-                                basis_z = d;
-                                basis_x = Vector3::UP.cross(basis_z).normalized();
-                                basis_y = basis_z.cross(basis_x).normalized();
+                                basis_z = dir.normalized();
+                                let right = Vector3::UP.cross(basis_z);
+                                if right.length_squared() > 1e-6 {
+                                    basis_x = right.normalized();
+                                    basis_y = basis_z.cross(basis_x).normalized();
+                                }
                             }
                         }
                     }
@@ -361,11 +381,15 @@ impl SimCore {
                             if curr + d >= dist || j == l.geometry.len() - 2 {
                                 let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
                                 world_y = p0.y + (p1.y - p0.y) * t.clamp(0.0, 1.0) + 0.02;
-                                let fwd = (p1 - p0).normalized();
-                                if fwd.length_squared() > 1e-6 {
+                                let raw = p1 - p0;
+                                if raw.length_squared() > 1e-6 {
+                                    let fwd = raw.normalized();
                                     basis_z = -fwd;
-                                    basis_x = Vector3::UP.cross(basis_z).normalized();
-                                    basis_y = basis_z.cross(basis_x).normalized();
+                                    let right = Vector3::UP.cross(basis_z);
+                                    if right.length_squared() > 1e-6 {
+                                        basis_x = right.normalized();
+                                        basis_y = basis_z.cross(basis_x).normalized();
+                                    }
                                 }
                                 break;
                             }
@@ -380,27 +404,28 @@ impl SimCore {
                         let node_idx = self.agents.current_node[i] as usize;
                         if node_idx < self.region_graph.nodes.len() {
                             let npos = self.region_graph.nodes[node_idx].pos;
-                            let dir =
-                                Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
+                            let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
                             if dir.length_squared() > 1e-6 {
                                 basis_z = -dir.normalized();
-                                basis_x = Vector3::UP.cross(basis_z).normalized();
-                                basis_y = basis_z.cross(basis_x).normalized();
+                                let right = Vector3::UP.cross(basis_z);
+                                if right.length_squared() > 1e-6 {
+                                    basis_x = right.normalized();
+                                    basis_y = basis_z.cross(basis_x).normalized();
+                                }
                             }
                         }
                     } else if transit == TRANSIT_ARRIVING {
                         let b_id = self.agents.target_building[i];
                         if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
                             let b = &self.allocator.buildings[b_id];
-                            let dir = Vector3::new(
-                                b.center_x - world_x,
-                                0.0,
-                                b.center_y - world_z,
-                            );
+                            let dir = Vector3::new(b.center_x - world_x, 0.0, b.center_y - world_z);
                             if dir.length_squared() > 1e-6 {
                                 basis_z = -dir.normalized();
-                                basis_x = Vector3::UP.cross(basis_z).normalized();
-                                basis_y = basis_z.cross(basis_x).normalized();
+                                let right = Vector3::UP.cross(basis_z);
+                                if right.length_squared() > 1e-6 {
+                                    basis_x = right.normalized();
+                                    basis_y = basis_z.cross(basis_x).normalized();
+                                }
                             }
                         }
                     }
@@ -483,18 +508,61 @@ pub fn run_sim_thread(
                     core.lock().unwrap().camera_aabb = (x0, x1, z0, z1);
                 }
                 Ok(SimCommand::AddRoad { points, fwd_lanes, bkw_lanes, zoning_left, zoning_right }) => {
+                    let road_total = Instant::now();
                     let mut c = core.lock().unwrap();
-                    // Defer lane rebuild and intersection-clip rebuild to a single
-                    // finalize_bulk_load() call at the end.  Without this, add_road
-                    // calls lane_system.rebuild() once per sub-edge created (once per
-                    // intersection with an existing road), so placing a road across K
-                    // existing roads triggers K+1 full O(total_lanes) rebuilds.
+                    // Bulk-load defers per-edge rebuilds until finalization.
                     c.transit_network.bulk_load = true;
                     c.add_road_internal(points, fwd_lanes, bkw_lanes, zoning_left, zoning_right);
                     {
                         let c = &mut *c;
-                        c.transit_network.finalize_bulk_load(&mut c.region_graph, &mut c.zoning);
+                        c.transit_network.bulk_load = false;
+
+                        // Take dirty edges first so we can derive the affected nodes
+                        // for the incremental clips pass.
+                        let dirty = std::mem::take(&mut c.transit_network.bulk_dirty_edges);
+                        let dirty_count = dirty.len();
+
+                        // Collect nodes touched by the new/split edges.
+                        let mut affected_nodes = std::collections::HashSet::new();
+                        for &e_id in &dirty {
+                            if e_id < c.region_graph.edges.len() && !c.region_graph.edges[e_id].deleted {
+                                let e = &c.region_graph.edges[e_id];
+                                affected_nodes.insert(c.region_graph.get_valid_node(e.start_node));
+                                affected_nodes.insert(c.region_graph.get_valid_node(e.end_node));
+                            }
+                        }
+
+                        let t_clips = Instant::now();
+                        c.region_graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
+                        let dt_clips_us = t_clips.elapsed().as_micros();
+
+                        let t_inv = Instant::now();
+                        // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
+                        c.agents.invalidate_lane_ids_for_edges(
+                            &dirty,
+                            &c.transit_network.lane_system,
+                        );
+                        let dt_inv_us = t_inv.elapsed().as_micros();
+
+                        let t_lanes = Instant::now();
+                        c.transit_network.lane_system.rebuild_edges_incremental(
+                            &mut c.region_graph,
+                            &dirty,
+                        );
+                        let dt_lanes_us = t_lanes.elapsed().as_micros();
+
+                        // Zone flush is deferred to the next simulate_tick_internal call
+                        // so it does not block road placement. zoning_dirty_edges accumulates.
+
+                        let total_us = road_total.elapsed().as_micros();
+                        let msg = format!(
+                            "TOTAL={}µs  {}  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
+                            total_us, c.last_road_timing, dt_clips_us, dt_lanes_us, dirty_count, dt_inv_us
+                        );
+                        debug_log!("road", "{}", msg);
+                        c.last_road_timing = msg;
                     }
+                    c.network_dirty = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     should_quit = true;

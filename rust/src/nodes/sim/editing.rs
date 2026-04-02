@@ -5,6 +5,7 @@ use crate::nodes::sim::core::SimCore;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::*;
+use std::time::Instant;
 
 impl SimCore {
     /// Sculpts the terrain with a given radius and strength.
@@ -134,11 +135,12 @@ impl SimCore {
         zoning_left: bool,
         zoning_right: bool,
     ) {
+        let t_undo = Instant::now();
         if !self.benchmark_mode {
             self.push_undo_state(false, false, true, false);
         }
-        let first_pt = points.first().copied();
-        let last_pt  = points.last().copied();
+        let dt_undo_ms = t_undo.elapsed().as_micros();
+
         let mut fixed_points = points;
 
         let w = self.heightmap.width;
@@ -169,6 +171,7 @@ impl SimCore {
             }
         }
 
+        let t_topo = Instant::now();
         self.transit_network.add_road(
             &mut self.region_graph,
             fixed_points,
@@ -180,28 +183,26 @@ impl SimCore {
             &mut self.zoning,
             &mut self.allocator,
         );
+        let dt_topo_us = t_topo.elapsed().as_micros();
 
         self.network_dirty = true;
 
-        // Robustly update zoning for all nearby area
-        if let Some(pt) = first_pt {
-            let nearby = self.region_graph.get_edges_near_point(pt, 200.0);
-            for edge_idx in nearby {
-                self.recalculate_zoning_local(edge_idx);
-            }
-        }
-        if let Some(pt) = last_pt {
-            let nearby = self.region_graph.get_edges_near_point(pt, 200.0);
-            for edge_idx in nearby {
-                self.recalculate_zoning_local(edge_idx);
-            }
-        }
+        // Store partial timing so the AddRoad handler can append the remaining phases.
+        // Zoning is NOT flushed here — create_edge_internal already called
+        // invalidate_zoning_near_edge (125 m radius) for every new/split edge.
+        // The AddRoad handler calls flush_zoning_updates once after lane rebuild,
+        // batching all dirty edges into a single pass instead of N separate passes.
+        self.last_road_timing = format!(
+            "undo={}µs topo={}µs",
+            dt_undo_ms, dt_topo_us
+        );
     }
 
     /// Repositions a network node in world space.
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) {
         if node_id >= 0 && (node_id as usize) < self.region_graph.nodes.len() {
             self.region_graph.move_node(node_id as u32, pos);
+            self.region_graph.rebuild_intersection_clips();
             self.push_undo_state(false, false, true, false);
 
             // Recalculate zoning for all affected edges

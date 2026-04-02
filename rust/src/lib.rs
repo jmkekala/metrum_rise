@@ -16,6 +16,7 @@
 use godot::prelude::*;
 
 pub mod config;
+pub mod debug;
 pub mod nodes;
 pub mod simulation;
 pub mod utils;
@@ -23,4 +24,10 @@ pub mod utils;
 struct MetrumRiseExtension;
 
 #[gdextension]
-unsafe impl ExtensionLibrary for MetrumRiseExtension {}
+unsafe impl ExtensionLibrary for MetrumRiseExtension {
+    fn on_level_init(level: InitLevel) {
+        if level == InitLevel::Core {
+            crate::debug::init();
+        }
+    }
+}

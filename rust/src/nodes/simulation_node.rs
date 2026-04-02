@@ -23,6 +23,7 @@ use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 
+use crate::debug_log;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -761,7 +762,7 @@ impl SimulationNode {
         match self.lock_core().save_game_internal(&path.to_string()) {
             Ok(()) => true,
             Err(err) => {
-                godot_print!("Save failed: {}", err);
+                godot_error!("Save failed: {}", err);
                 false
             }
         }
@@ -773,7 +774,7 @@ impl SimulationNode {
         match self.lock_core().load_game_internal(&path.to_string()) {
             Ok(()) => true,
             Err(err) => {
-                godot_print!("Load failed: {}", err);
+                godot_error!("Load failed: {}", err);
                 false
             }
         }
@@ -801,7 +802,7 @@ impl SimulationNode {
 #[godot_api]
 impl INode3D for SimulationNode {
     fn init(base: Base<Node3D>) -> Self {
-        godot_print!("Simulation Engine Initialized (Modular)");
+        debug_log!("init", "Simulation Engine Initialized");
 
         let args = godot::classes::Os::singleton().get_cmdline_user_args();
         let mut is_huge = false;
@@ -856,6 +857,7 @@ impl INode3D for SimulationNode {
             benchmark_mode,
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,
+            last_road_timing: String::new(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
         };
 

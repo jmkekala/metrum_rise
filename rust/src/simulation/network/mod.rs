@@ -45,6 +45,9 @@ pub struct TransitNetwork {
     /// `rebuild_intersection_clips` on every edge add. The caller must call
     /// `finalize_bulk_load` once all edges have been added.
     pub bulk_load: bool,
+    /// Edge IDs that were added or modified during the current bulk-load sequence.
+    /// Drained by `finalize_bulk_load` to drive `rebuild_edges_incremental`.
+    pub bulk_dirty_edges: HashSet<usize>,
     /// Per-zone-type flow fields for O(1) agent routing. Rebuilt lazily when dirty.
     pub flow_fields: FlowFieldSystem,
 }
@@ -59,23 +62,33 @@ impl TransitNetwork {
             zoning_dirty_edges: HashSet::new(),
             lane_system: lanes::LaneSystem::new(),
             bulk_load: false,
+            bulk_dirty_edges: HashSet::new(),
             flow_fields: FlowFieldSystem::new(),
         }
     }
 
     /// Completes a bulk-load sequence started by setting `bulk_load = true`.
     ///
-    /// Rebuilds intersection clips, lane geometry, and marks all chunks dirty so
-    /// `rebuild_pathing_if_dirty` will rebuild the CCH on the next tick.
+    /// Rebuilds intersection clips incrementally for the dirty edge set, then flushes
+    /// zoning updates. Returns the set of edges that were rebuilt so the caller can
+    /// pass it to [`AgentSystem::invalidate_lane_ids_for_edges`].
+    ///
+    /// **Callers that need agent invalidation** should call
+    /// `agent_system.invalidate_lane_ids_for_edges(&dirty, &self.lane_system)` **before**
+    /// calling `lane_system.rebuild_edges_incremental`, i.e. they should inline the steps
+    /// rather than using this helper. This method is provided for contexts where agent
+    /// invalidation is not required (e.g. save-load restore).
     pub fn finalize_bulk_load(
         &mut self,
         graph: &mut RegionGraph,
         zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
-    ) {
+    ) -> HashSet<usize> {
         self.bulk_load = false;
         graph.rebuild_intersection_clips();
-        self.lane_system.rebuild(graph);
+        let dirty = std::mem::take(&mut self.bulk_dirty_edges);
+        self.lane_system.rebuild_edges_incremental(graph, &dirty);
         self.flush_zoning_updates(zoning, graph);
+        dirty
     }
 
     /// Clears the entire network, including zoning and building allocations.
@@ -332,11 +345,38 @@ impl TransitNetwork {
         self.mark_point_dirty(graph.nodes[start as usize].pos);
         self.mark_point_dirty(graph.nodes[end as usize].pos);
 
+        if self.bulk_load {
+            self.bulk_dirty_edges.insert(edge_id);
+        }
+
+        let node_count_before = graph.nodes.len();
+        let edges_before = graph.edges.len();
         topology::process_intersections(self, graph, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(graph); // Clean edge_id if it's dup
+
         if !self.bulk_load {
-            graph.rebuild_intersection_clips();
-            self.lane_system.rebuild(graph);
+            // Incremental clip rebuild: only resample edges incident to nodes touched by this
+            // road placement instead of doing the full O(E) resample + R-tree rebuild.
+            let mut affected_nodes: HashSet<u32> = HashSet::new();
+            let mut affected_edges: HashSet<usize> = HashSet::new();
+            if !graph.edges[edge_id].deleted {
+                affected_nodes.insert(graph.get_valid_node(graph.edges[edge_id].start_node));
+                affected_nodes.insert(graph.get_valid_node(graph.edges[edge_id].end_node));
+                affected_edges.insert(edge_id);
+            }
+            // Junction nodes and split-half edges created during intersection processing.
+            for new_nid in node_count_before as u32..graph.nodes.len() as u32 {
+                affected_nodes.insert(graph.get_valid_node(new_nid));
+            }
+            for new_eid in edges_before..graph.edges.len() {
+                if !graph.edges[new_eid].deleted {
+                    affected_nodes.insert(graph.get_valid_node(graph.edges[new_eid].start_node));
+                    affected_nodes.insert(graph.get_valid_node(graph.edges[new_eid].end_node));
+                    affected_edges.insert(new_eid);
+                }
+            }
+            graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
+            self.lane_system.rebuild_edges_incremental(graph, &affected_edges);
         }
 
         // Mark chunks as dirty
@@ -381,16 +421,89 @@ impl TransitNetwork {
     }
 
     /// Processes all pending zoning updates (dirty edges).
+    ///
+    /// Instead of running one Rayon dispatch per edge (40–50 small batches), we build a
+    /// flat list of every dirty (edge, cell) pair and run a **single** parallel pass over
+    /// all of them.  The nearby-edges R-tree cache is pre-computed per edge in the
+    /// sequential setup phase so the hot parallel body does no allocation.
     pub fn flush_zoning_updates(
         &mut self,
         zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
         graph: &RegionGraph,
     ) {
+        use rayon::prelude::*;
+        use crate::simulation::network::types::EdgeClass;
+
         let dirty: Vec<usize> = self.zoning_dirty_edges.drain().collect();
-        for &edge_idx in &dirty {
-            if edge_idx < graph.edges.len() && !graph.edges[edge_idx].deleted {
-                zoning.recalculate_obstructions(edge_idx, graph);
+        if dirty.is_empty() {
+            return;
+        }
+
+        // --- Phase 1 (sequential): filter edges, pre-compute nearby_edges caches ---
+        struct EdgeWork {
+            edge_idx: usize,
+            cells_long: usize,
+            all_blocked: bool, // Bridge/Tunnel shortcut — skip expensive per-cell test
+            nearby: Vec<usize>,
+        }
+
+        let edge_work: Vec<EdgeWork> = dirty.iter().filter_map(|&eid| {
+            if eid >= graph.edges.len() || graph.edges[eid].deleted {
+                return None;
             }
+            let cells_long = zoning.get_edge_grid_width(eid);
+            if cells_long == 0 {
+                return None;
+            }
+            let all_blocked = graph.edges[eid].class != EdgeClass::Standard;
+            let nearby = if all_blocked {
+                vec![]
+            } else {
+                let e = &graph.edges[eid];
+                let (mnx, mxx, mnz, mxz) = e.physical_geometry.iter().fold(
+                    (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
+                    |(a, b, c, d), p| (a.min(p.x), b.max(p.x), c.min(p.z), d.max(p.z)),
+                );
+                graph.get_edges_near_aabb(
+                    Vector3::new(mnx - 120.0, 0.0, mnz - 120.0),
+                    Vector3::new(mxx + 120.0, 0.0, mxz + 120.0),
+                )
+            };
+            Some(EdgeWork { edge_idx: eid, cells_long, all_blocked, nearby })
+        }).collect();
+
+        // --- Phase 2 (parallel): one flat dispatch over all (edge × cell) pairs ---
+        // Build flat index first so Rayon gets a balanced, evenly-sized slice.
+        let total_cells: usize = edge_work.iter().map(|w| w.cells_long * crate::config::ZONING_DEPTH).sum();
+        let mut flat: Vec<(usize, usize)> = Vec::with_capacity(total_cells);
+        for (w_idx, w) in edge_work.iter().enumerate() {
+            for ci in 0..w.cells_long * crate::config::ZONING_DEPTH {
+                flat.push((w_idx, ci));
+            }
+        }
+
+        // Shared read-only borrow of zoning — safe because the parallel phase only calls
+        // `is_cell_obstructed(&self, …)` which does not mutate any state.
+        let zoning_ro: &crate::simulation::grid::zoning::ZoningSystem = &*zoning;
+
+        let results: Vec<(usize, usize, bool, bool)> = flat.par_iter().map(|&(w_idx, ci)| {
+            let w = &edge_work[w_idx];
+            let x = ci / crate::config::ZONING_DEPTH;
+            let y = ci % crate::config::ZONING_DEPTH;
+            if w.all_blocked {
+                return (w.edge_idx, ci, true, true);
+            }
+            let l = zoning_ro.is_cell_obstructed(w.edge_idx, 1, x, y, graph, Some(&w.nearby));
+            let r = zoning_ro.is_cell_obstructed(w.edge_idx, -1, x, y, graph, Some(&w.nearby));
+            (w.edge_idx, ci, l, r)
+        }).collect();
+
+        // --- Phase 3 (sequential): write back all results ---
+        for (eid, ci, l, r) in results {
+            let x = ci / crate::config::ZONING_DEPTH;
+            let y = ci % crate::config::ZONING_DEPTH;
+            zoning.set_blocked(eid, 1, x, y, l);
+            zoning.set_blocked(eid, -1, x, y, r);
         }
     }
 

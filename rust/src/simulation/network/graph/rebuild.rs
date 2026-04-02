@@ -2,7 +2,7 @@
 
 use super::super::types::*;
 use super::data::RegionGraph;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 impl RegionGraph {
     /// Rebuilds the adjacency list from the current set of non-deleted edges.
@@ -375,5 +375,143 @@ impl RegionGraph {
             self.add_to_spatial_index(i);
         }
         self.rebuild_adjacency_list();
+    }
+
+    /// Rebuilds intersection clips for only the edges incident to `affected_nodes`.
+    ///
+    /// Equivalent to [`rebuild_intersection_clips`] but scoped to the nodes touched
+    /// by a single road placement. Avoids the full O(E) resample pass and full
+    /// R-tree / adjacency rebuild — only the O(K) incident edges are updated.
+    ///
+    /// Use this from the `AddRoad` handler. Use the full rebuild for bulk operations
+    /// such as save-load restore or terrain sync.
+    pub fn rebuild_intersection_clips_for_nodes(&mut self, affected_nodes: &HashSet<u32>) {
+        if affected_nodes.is_empty() {
+            return;
+        }
+
+        // Pre-compute valid node IDs so we can use them during the mutable edge pass.
+        let valid_node_ids: Vec<u32> = (0..self.nodes.len())
+            .map(|i| self.get_valid_node(i as u32))
+            .collect();
+
+        // Pass 1 (read-only): scan every road edge once to build per-node stats,
+        // but only populate entries for nodes in the affected set.
+        let mut connection_counts: HashMap<u32, usize> = HashMap::new();
+        let mut node_max_width: HashMap<u32, f32> = HashMap::new();
+        let mut node_min_width: HashMap<u32, f32> = HashMap::new();
+
+        for edge in &self.edges {
+            if edge.deleted || edge.primary_type != TransitType::Road {
+                continue;
+            }
+            let s = valid_node_ids[edge.start_node as usize];
+            let e = valid_node_ids[edge.end_node as usize];
+            let w = edge.width;
+            for &node in &[s, e] {
+                if affected_nodes.contains(&node) {
+                    *connection_counts.entry(node).or_insert(0) += 1;
+                    let max_w = node_max_width.entry(node).or_insert(0.0_f32);
+                    if w > *max_w { *max_w = w; }
+                    let min_w = node_min_width.entry(node).or_insert(f32::MAX);
+                    if w < *min_w { *min_w = w; }
+                }
+            }
+        }
+
+        // Pass 2 (mutable): resample only edges that touch an affected node.
+        let mut reindex_ids: Vec<usize> = Vec::new();
+        for (edge_idx, edge) in self.edges.iter_mut().enumerate() {
+            if edge.deleted || edge.primary_type != TransitType::Road {
+                continue;
+            }
+            let s = valid_node_ids[edge.start_node as usize];
+            let e = valid_node_ids[edge.end_node as usize];
+
+            if !affected_nodes.contains(&s) && !affected_nodes.contains(&e) {
+                continue;
+            }
+
+            let s_conn = *connection_counts.get(&s).unwrap_or(&0);
+            let e_conn = *connection_counts.get(&e).unwrap_or(&0);
+
+            let s_max_w = *node_max_width.get(&s).unwrap_or(&0.0);
+            let s_min_w = *node_min_width.get(&s).unwrap_or(&0.0);
+            let e_max_w = *node_max_width.get(&e).unwrap_or(&0.0);
+            let e_min_w = *node_min_width.get(&e).unwrap_or(&0.0);
+            let s_different = (s_max_w - s_min_w).abs() > 0.1;
+            let e_different = (e_max_w - e_min_w).abs() > 0.1;
+
+            let s_node_type = self.nodes[s as usize].node_type;
+            let e_node_type = self.nodes[e as usize].node_type;
+
+            let s_clip = (s_max_w * 0.5 + crate::config::SIDEWALK_WIDTH) * 1.2;
+            let e_clip = (e_max_w * 0.5 + crate::config::SIDEWALK_WIDTH) * 1.2;
+
+            edge.start_clip = if (s_conn >= 3 || s_different) && s_node_type == NodeType::Junction {
+                s_clip
+            } else {
+                0.0
+            };
+            edge.end_clip = if (e_conn >= 3 || e_different) && e_node_type == NodeType::Junction {
+                e_clip
+            } else {
+                0.0
+            };
+
+            let count = edge.geometry.len();
+            if count >= 2 {
+                let mut total_length = 0.0;
+                for i in 0..count - 1 {
+                    total_length += (edge.geometry[i + 1] - edge.geometry[i]).length();
+                }
+                let mut safe_start = edge.start_clip;
+                let mut safe_end = edge.end_clip;
+                let sum_clips = safe_start + safe_end;
+                if sum_clips > total_length - 0.02 {
+                    let scale = (total_length - 0.02) / sum_clips;
+                    safe_start *= scale;
+                    safe_end *= scale;
+                }
+                let clipped_length = f32::max(0.01, total_length - safe_start - safe_end);
+                let num_segments = f32::max(1.0, f32::ceil(clipped_length / 2.0)) as usize;
+                let mut resampled = Vec::with_capacity(num_segments + 1);
+
+                for i in 0..=num_segments {
+                    let dist = safe_start + (i as f32 / num_segments as f32) * clipped_length;
+                    let mut curr = 0.0;
+                    let mut found = false;
+                    for j in 0..count - 1 {
+                        let p0 = edge.geometry[j];
+                        let p1 = edge.geometry[j + 1];
+                        let d = (p1 - p0).length();
+                        if curr + d >= dist || (i == num_segments && j == count - 2) {
+                            let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
+                            resampled.push(p0.lerp(p1, t.clamp(0.0, 1.0)));
+                            found = true;
+                            break;
+                        }
+                        curr += d;
+                    }
+                    if !found && !edge.geometry.is_empty() {
+                        resampled.push(edge.geometry[count - 1]);
+                    }
+                }
+                edge.physical_geometry = resampled;
+                edge.physical_length = clipped_length;
+            } else {
+                edge.physical_geometry = edge.geometry.clone();
+                edge.physical_length = 0.0;
+            }
+
+            reindex_ids.push(edge_idx);
+        }
+
+        // Update the spatial R-tree only for the affected edges (not full rebuild).
+        for edge_idx in reindex_ids {
+            self.remove_from_spatial_index(edge_idx);
+            self.add_to_spatial_index(edge_idx);
+        }
+        // Adjacency is unchanged — no rebuild needed.
     }
 }

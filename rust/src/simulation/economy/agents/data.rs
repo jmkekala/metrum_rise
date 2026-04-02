@@ -410,6 +410,47 @@ impl AgentSystem {
         }
     }
 
+    /// Sets `current_lane_id = usize::MAX` for every agent whose active lane belongs to one
+    /// of `affected_edges`, or whose connection lane leads directly into such a lane.
+    ///
+    /// Must be called **before** `LaneSystem::rebuild_edges_incremental` so the old lane IDs
+    /// are still valid for lookup — old orphaned lanes retain their original `edge_id` even
+    /// after `rebuild_edges_incremental` removes them from `edge_lanes`.
+    pub fn invalidate_lane_ids_for_edges(
+        &mut self,
+        affected_edges: &std::collections::HashSet<usize>,
+        lane_system: &crate::simulation::network::lanes::LaneSystem,
+    ) {
+        // Collect lane IDs that belong to affected edges (from the current edge_lanes).
+        let mut affected_lane_ids: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        for &edge_id in affected_edges {
+            if let Some(lane_ids) = lane_system.edge_lanes.get(&edge_id) {
+                affected_lane_ids.extend(lane_ids);
+            }
+        }
+
+        for i in 0..self.agents.len() {
+            let lid = self.agents.current_lane_id[i];
+            if lid == usize::MAX || lid >= lane_system.lanes.len() { continue; }
+            let lane = &lane_system.lanes[lid];
+            let should_invalidate = if lane.edge_id != usize::MAX {
+                // Road lane: invalidate if its edge is affected.
+                affected_edges.contains(&lane.edge_id)
+            } else {
+                // Connection lane: invalidate if it leads into an affected road lane.
+                lane.next_lanes.first().map_or(false, |&next| affected_lane_ids.contains(&next))
+            };
+            if should_invalidate {
+                self.agents.current_lane_id[i] = usize::MAX;
+                // lane_distance is intentionally NOT zeroed here: the agent keeps its
+                // visual position until the next tick re-attaches it to a new lane.
+                // Zeroing it caused agents to visually teleport to edge position 0
+                // immediately when a nearby road was modified.
+            }
+        }
+    }
+
     /// Re-calculates building occupancy and vacancy index from scratch.
     pub fn recalculate_occupancy(&mut self, allocator: &mut BuildingAllocator) {
         for b in &mut allocator.buildings {
@@ -422,5 +463,133 @@ impl AgentSystem {
             }
         }
         allocator.rebuild_zone_index();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::graph::RegionGraph;
+    use crate::simulation::network::lanes::LaneSystem;
+    use crate::simulation::network::graph::data::Edge;
+    use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
+    use godot::prelude::Vector3;
+    use std::collections::HashSet;
+
+    fn make_simple_lane_system() -> (RegionGraph, LaneSystem) {
+        let mut graph = RegionGraph::new();
+        let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), crate::simulation::network::types::NodeType::Junction);
+
+        let _e0 = graph.add_edge(Edge {
+            start_node: n0, end_node: n1,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0, fwd_lanes: 1, bkw_lanes: 1,
+            speed_limit: 50.0, base_cost: 1.0,
+            physical_length: 100.0, current_congestion: 0.0,
+            start_clip: 0.0, end_clip: 0.0,
+            geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+            zoning_left: false, zoning_right: false, deleted: false,
+        });
+        let _e1 = graph.add_edge(Edge {
+            start_node: n1, end_node: n2,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0, fwd_lanes: 1, bkw_lanes: 1,
+            speed_limit: 50.0, base_cost: 1.0,
+            physical_length: 100.0, current_congestion: 0.0,
+            start_clip: 0.0, end_clip: 0.0,
+            geometry: vec![Vector3::new(100.0, 0.0, 0.0), Vector3::new(200.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(100.0, 0.0, 0.0), Vector3::new(200.0, 0.0, 0.0)],
+            zoning_left: false, zoning_right: false, deleted: false,
+        });
+        graph.rebuild_adjacency_list();
+
+        let mut lanes = LaneSystem::new();
+        lanes.rebuild(&mut graph);
+        (graph, lanes)
+    }
+
+    #[test]
+    fn test_invalidate_clears_agents_on_affected_edge() {
+        let (_graph, lane_system) = make_simple_lane_system();
+
+        // Place two agents: one on edge 0, one on edge 1.
+        let e0_lane = lane_system.edge_lanes[&0][0];
+        let e1_lane = lane_system.edge_lanes[&1][0];
+
+        let mut sys = AgentSystem::new();
+        // Spawn minimal agents and manually set their lane IDs.
+        sys.agents.push(Agent {
+            home_building: usize::MAX, work_building: usize::MAX,
+            pos_x: 0.0, pos_y: 0.0, is_visible: true,
+            activity: 0, transit: TRANSIT_ON_ROAD,
+            happiness: 50.0, money: 100.0, journey_start_time: 0.0,
+            current_building: usize::MAX, target_building: usize::MAX,
+            current_node: 0, target_node: 1,
+            current_edge: 0, current_lane_id: e0_lane, lane_distance: 10.0,
+            speed: 10.0, transit_mode: MODE_CAR,
+            current_path: vec![], current_path_index: 0,
+            has_car: true, vehicle_type: 0, pedestrian_type: 0, walk_phase: 0.0,
+        });
+        sys.agents.push(Agent {
+            home_building: usize::MAX, work_building: usize::MAX,
+            pos_x: 150.0, pos_y: 0.0, is_visible: true,
+            activity: 0, transit: TRANSIT_ON_ROAD,
+            happiness: 50.0, money: 100.0, journey_start_time: 0.0,
+            current_building: usize::MAX, target_building: usize::MAX,
+            current_node: 1, target_node: 2,
+            current_edge: 1, current_lane_id: e1_lane, lane_distance: 10.0,
+            speed: 10.0, transit_mode: MODE_CAR,
+            current_path: vec![], current_path_index: 0,
+            has_car: true, vehicle_type: 0, pedestrian_type: 0, walk_phase: 0.0,
+        });
+
+        // Invalidate only edge 0.
+        let mut affected = HashSet::new();
+        affected.insert(0usize);
+        sys.invalidate_lane_ids_for_edges(&affected, &lane_system);
+
+        // Agent 0 (on edge 0) must be invalidated.
+        assert_eq!(sys.agents.current_lane_id[0], usize::MAX,
+            "Agent on affected edge should have lane_id cleared");
+        // lane_distance is intentionally preserved so the agent doesn't visually teleport
+        // to position 0 before the next tick re-attaches it.
+        assert_eq!(sys.agents.lane_distance[0], 10.0,
+            "lane_distance should be preserved to avoid visual teleport on road edit");
+
+        // Agent 1 (on edge 1) must be untouched.
+        assert_eq!(sys.agents.current_lane_id[1], e1_lane,
+            "Agent on unaffected edge should keep its lane_id");
+    }
+
+    #[test]
+    fn test_invalidate_skips_already_invalid_agents() {
+        let (_graph, lane_system) = make_simple_lane_system();
+
+        let mut sys = AgentSystem::new();
+        sys.agents.push(Agent {
+            home_building: usize::MAX, work_building: usize::MAX,
+            pos_x: 0.0, pos_y: 0.0, is_visible: false,
+            activity: 0, transit: TRANSIT_IDLE,
+            happiness: 50.0, money: 100.0, journey_start_time: 0.0,
+            current_building: 0, target_building: 0,
+            current_node: 0, target_node: 0,
+            current_edge: usize::MAX, current_lane_id: usize::MAX, lane_distance: 0.0,
+            speed: 0.0, transit_mode: MODE_CAR,
+            current_path: vec![], current_path_index: 0,
+            has_car: false, vehicle_type: 0, pedestrian_type: 0, walk_phase: 0.0,
+        });
+
+        let mut affected = HashSet::new();
+        affected.insert(0usize);
+        // Should not panic on agents already at usize::MAX.
+        sys.invalidate_lane_ids_for_edges(&affected, &lane_system);
+        assert_eq!(sys.agents.current_lane_id[0], usize::MAX);
     }
 }

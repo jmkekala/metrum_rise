@@ -492,14 +492,14 @@ impl ZoningSystem {
         let mut check_pts_with_t = Vec::new();
 
         for dx in [-0.5, 0.5] {
+            let local_x = (x as f32 + 0.5 + dx) * size;
+            let t = (local_x / edge.physical_length).clamp(0.0, 1.0);
+            // Compute the on-edge position once per dx (both dy values share the same t).
+            let (pos_on_edge, tangent) =
+                self.get_edge_pos_and_tangent_static(edge_idx, t, graph);
+            let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
             for dy in [-0.5, 0.5] {
-                let local_x = (x as f32 + 0.5 + dx) * size;
                 let local_y = (y as f32 + 0.5 + dy) * size;
-
-                let t = (local_x / edge.physical_length).clamp(0.0, 1.0);
-                let (pos_on_edge, tangent) =
-                    self.get_edge_pos_and_tangent_static(edge_idx, t, graph);
-                let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
                 let intended_d = hw + crate::config::SIDEWALK_WIDTH + local_y;
                 check_pts_with_t.push((pos_on_edge + normal * intended_d, t));
             }
@@ -635,6 +635,7 @@ impl ZoningSystem {
                     // RESTORED: Explicit Asphalt/Sidewalk Hit-Test
                     if d_sq < (hw_other + 0.1).powi(2) {
                         asphalt_collision = true;
+                        break; // No need to scan remaining segments — cell is definitely blocked.
                     }
 
                     // B. Zoning Claim: Competitor for space

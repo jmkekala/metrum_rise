@@ -13,6 +13,60 @@ use std::collections::HashMap;
 
 const INTERSECTION_NODE_CAPTURE_EPSILON: f32 = 0.05;
 
+/// Maximum distance between consecutive geometry points used for the O(segs²)
+/// crossing-detection inner loop. Mouse-tracked polylines can have a point
+/// every ~0.5 m; 5 m is accurate enough for roads wider than 7 m and gives a
+/// ~100× reduction in comparisons.
+const ISECT_MIN_STEP: f32 = 5.0;
+
+/// Returns a geometry vec downsampled so consecutive points are ≥ `min_step` apart.
+/// Always keeps the first and last point.
+fn downsample(geo: &[Vector3], min_step: f32) -> Vec<Vector3> {
+    if geo.len() < 2 {
+        return geo.to_vec();
+    }
+    let mut out = Vec::with_capacity(geo.len());
+    out.push(geo[0]);
+    let mut acc = 0.0_f32;
+    for w in geo.windows(2) {
+        acc += w[0].distance_to(w[1]);
+        if acc >= min_step {
+            out.push(w[1]);
+            acc = 0.0;
+        }
+    }
+    if out.last() != geo.last() {
+        out.push(*geo.last().unwrap());
+    }
+    out
+}
+
+/// Returns the float segment-index factor (seg + t) in `geo` closest to `pos`.
+///
+/// Used to convert an approximate 3D intersection position (from downsampled
+/// detection) back to an exact factor in the original full-resolution geometry,
+/// so `split_edge` receives the correct segment index.
+fn find_geo_factor(geo: &[Vector3], pos: Vector3) -> f32 {
+    let mut best_factor = 0.0_f32;
+    let mut best_dist = f32::MAX;
+    for (i, w) in geo.windows(2).enumerate() {
+        let ab = w[1] - w[0];
+        let ab_sq = ab.dot(ab);
+        let t = if ab_sq > 1e-10 {
+            ((pos - w[0]).dot(ab) / ab_sq).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let closest = w[0] + ab * t;
+        let dist = pos.distance_to(closest);
+        if dist < best_dist {
+            best_dist = dist;
+            best_factor = i as f32 + t;
+        }
+    }
+    best_factor
+}
+
 fn find_or_add_intersection_node(
     graph: &mut crate::simulation::network::graph::RegionGraph,
     pos: Vector3,
@@ -54,122 +108,153 @@ pub fn process_intersections(
     zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
+    let t0 = std::time::Instant::now();
     let mut all_splits: HashMap<usize, Vec<(f32, u32)>> = HashMap::new();
 
-    // 1. Find all intersections (crossing AND touching/snapping)
-    let edge_count = graph.edges.len();
-    for other_id in 0..edge_count {
+    // 1. Find all intersections (crossing AND touching/snapping).
+    // Use the spatial R-tree to restrict candidates to edges whose AABB overlaps
+    // the new edge — avoids the O(E) full scan.
+    let (mut min_x, mut max_x, mut min_z, mut max_z) =
+        (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for p in &graph.edges[edge_id].geometry {
+        min_x = min_x.min(p.x);
+        max_x = max_x.max(p.x);
+        min_z = min_z.min(p.z);
+        max_z = max_z.max(p.z);
+    }
+    // Pad by snap tolerance so endpoint-touching edges are included.
+    let pad = crate::config::SNAP_TOLERANCE + 1.0;
+    let t_aabb = std::time::Instant::now();
+    let candidates = graph.get_edges_near_aabb(
+        godot::prelude::Vector3::new(min_x - pad, 0.0, min_z - pad),
+        godot::prelude::Vector3::new(max_x + pad, 0.0, max_z + pad),
+    );
+    // Downsample new edge once for crossing detection — endpoints are preserved.
+    let edge1_geo_ds = downsample(&graph.edges[edge_id].geometry, ISECT_MIN_STEP);
+    // Remember original length so endpoint factors reference the correct segment count.
+    let edge1_original_len = graph.edges[edge_id].geometry.len();
+    let dt_aabb_us = t_aabb.elapsed().as_micros();
+    let n_candidates = candidates.len();
+    let n_edge1_pts = graph.edges[edge_id].geometry.len();
+    let n_edge1_ds = edge1_geo_ds.len();
+
+    let t_scan = std::time::Instant::now();
+    let mut n_cross_iters = 0u32;
+    let mut n_cand2_max_ds = 0usize; // largest ds-point-count seen among candidates
+    for other_id in candidates {
         if graph.edges[other_id].deleted {
             continue;
         }
-        let (edge1_geo, edge2_geo) = {
-            (
-                graph.edges[edge_id].geometry.clone(),
-                graph.edges[other_id].geometry.clone(),
-            )
-        };
 
-        // Check crossing segments
-        for i in 0..edge1_geo.len() - 1 {
-            let d1 = edge1_geo[i + 1] - edge1_geo[i];
+        // Full-resolution clone: used for (a) endpoint snapping and (b) mapping
+        // detected crossing positions back to original-geometry factors.
+        let edge2_geo_full = graph.edges[other_id].geometry.clone();
+        // Downsampled: used for the O(segs²) crossing inner loop only.
+        let edge2_geo_ds = downsample(&edge2_geo_full, ISECT_MIN_STEP);
+        if edge2_geo_ds.len() > n_cand2_max_ds { n_cand2_max_ds = edge2_geo_ds.len(); }
+
+        // --- Crossing detection (uses downsampled geometry) ---
+        for i in 0..edge1_geo_ds.len() - 1 {
+            let d1 = edge1_geo_ds[i + 1] - edge1_geo_ds[i];
             let l1 = d1.length();
             if l1 < 0.001 {
                 continue;
             }
             let v1 = d1 / l1;
 
-            for j in 0..edge2_geo.len() - 1 {
-                // Ignore adjacent segments AND segments very close in sequence (jitter protection)
+            for j in 0..edge2_geo_ds.len() - 1 {
                 if edge_id == other_id && (i as i32 - j as i32).abs() < 5 {
                     continue;
                 }
+                n_cross_iters += 1;
 
-                let d2 = edge2_geo[j + 1] - edge2_geo[j];
+                let d2 = edge2_geo_ds[j + 1] - edge2_geo_ds[j];
                 let l2 = d2.length();
                 if l2 < 0.001 {
                     continue;
                 }
                 let v2 = d2 / l2;
 
-                let dot = v1.dot(v2).abs();
-                if dot > 0.98 {
+                if v1.dot(v2).abs() > 0.98 {
                     continue;
-                } // Near parallel: Ignore for crossing check to avoid 'ghost' junctions
+                }
 
                 if let Some((t, u)) = interaction::find_intersection_2d(
-                    edge1_geo[i],
-                    edge1_geo[i + 1],
-                    edge2_geo[j],
-                    edge2_geo[j + 1],
+                    edge1_geo_ds[i],
+                    edge1_geo_ds[i + 1],
+                    edge2_geo_ds[j],
+                    edge2_geo_ds[j + 1],
                 ) {
-                    let p1 = edge1_geo[i].lerp(edge1_geo[i + 1], t);
-                    let p2 = edge2_geo[j].lerp(edge2_geo[j + 1], u);
+                    let p1 = edge1_geo_ds[i].lerp(edge1_geo_ds[i + 1], t);
+                    let p2 = edge2_geo_ds[j].lerp(edge2_geo_ds[j + 1], u);
 
-                    // VERTICAL CLEARANCE CHECK: Ignore intersections if they are vertically separated
-                    // Use a 4.5m threshold (slightly less than CLEARANCE_THRESHOLD to ensure 5m bridges pass)
                     if (p1.y - p2.y).abs() > 4.5 {
                         continue;
                     }
 
-                    let factor_t = i as f32 + t;
-                    let factor_u = j as f32 + u;
-                    let pos = p1; // or p2, they are 2D identical and vertically close
+                    let pos = p1;
 
-                    // Unified Node Capture
+                    // Map approximate position back to original-geometry factors so
+                    // split_edge receives a correct segment index.
+                    let factor_t = find_geo_factor(&graph.edges[edge_id].geometry, pos);
+                    let factor_u = find_geo_factor(&edge2_geo_full, pos);
+
                     let junction_id = find_or_add_intersection_node(graph, pos);
 
-                    all_splits
-                        .entry(edge_id)
-                        .or_default()
-                        .push((factor_t, junction_id));
-                    all_splits
-                        .entry(other_id)
-                        .or_default()
-                        .push((factor_u, junction_id));
+                    all_splits.entry(edge_id).or_default().push((factor_t, junction_id));
+                    all_splits.entry(other_id).or_default().push((factor_u, junction_id));
                 }
             }
         }
 
-        // Explicitly check endpoints of the new road against segments of other roads (Snapping/Touching)
-        let endpoints = [edge1_geo[0], edge1_geo[edge1_geo.len() - 1]];
-        for (idx, &p) in endpoints.iter().enumerate() {
-            let factor_t = if idx == 0 {
-                0.0
-            } else {
-                (edge1_geo.len() - 1) as f32
-            };
+        // --- Endpoint snapping ---
+        // Phase 1: scan downsampled geometry to quickly reject non-snap candidates.
+        // Phase 2: if within guard threshold, refine with find_geo_factor on full-res.
+        if edge_id != other_id {
+            let snap_guard = config::INTERSECTION_TOLERANCE + ISECT_MIN_STEP;
+            let endpoints = [edge1_geo_ds[0], *edge1_geo_ds.last().unwrap()];
+            for (idx, &p) in endpoints.iter().enumerate() {
+                let factor_t = if idx == 0 { 0.0 } else { (edge1_original_len - 1) as f32 };
 
-            for j in 0..edge2_geo.len() - 1 {
-                if edge_id == other_id {
-                    continue;
+                let mut best_dist = f32::MAX;
+                let mut best_closest = godot::prelude::Vector3::ZERO;
+                for j in 0..edge2_geo_ds.len() - 1 {
+                    let p1 = edge2_geo_ds[j];
+                    let p2 = edge2_geo_ds[j + 1];
+                    let closest = interaction::get_closest_point_on_segment(p, p1, p2);
+                    let dist = Vector2::new(p.x - closest.x, p.z - closest.z).length();
+                    if dist < best_dist {
+                        best_dist = dist;
+                        best_closest = closest;
+                    }
                 }
-                let p1 = edge2_geo[j];
-                let p2 = edge2_geo[j + 1];
-                let closest = interaction::get_closest_point_on_segment(p, p1, p2);
 
-                let p2d = Vector2::new(p.x, p.z);
-                let closest2d = Vector2::new(closest.x, closest.z);
-                let dist = p2d.distance_to(closest2d);
-
-                if dist < config::INTERSECTION_TOLERANCE && (p.y - closest.y).abs() < 4.5 {
-                    let factor_u = j as f32
-                        + (closest2d - Vector2::new(p1.x, p1.z)).length()
-                            / Vector2::new(p2.x - p1.x, p2.z - p1.z).length().max(0.001);
-
-                    let junction_id =
-                        snap_new_edge_endpoint_to_intersection(graph, edge_id, idx == 0, closest);
-                    all_splits
-                        .entry(edge_id)
-                        .or_default()
-                        .push((factor_t, junction_id));
-                    all_splits
-                        .entry(other_id)
-                        .or_default()
-                        .push((factor_u, junction_id));
+                if best_dist < snap_guard && (p.y - best_closest.y).abs() < 4.5 {
+                    // Refine: find exact factor in full-res geometry.
+                    let factor_u = find_geo_factor(&edge2_geo_full, best_closest);
+                    let close_enough = {
+                        // Verify against full-res: reproject to ensure within tolerance.
+                        let seg = factor_u.floor() as usize;
+                        let t = factor_u.fract();
+                        let seg = seg.min(edge2_geo_full.len() - 2);
+                        let refined = edge2_geo_full[seg].lerp(edge2_geo_full[seg + 1], t);
+                        Vector2::new(p.x - refined.x, p.z - refined.z).length()
+                            < config::INTERSECTION_TOLERANCE
+                    };
+                    if close_enough {
+                        let junction_id = snap_new_edge_endpoint_to_intersection(
+                            graph, edge_id, idx == 0, best_closest,
+                        );
+                        all_splits.entry(edge_id).or_default().push((factor_t, junction_id));
+                        all_splits.entry(other_id).or_default().push((factor_u, junction_id));
+                    }
                 }
             }
         }
     }
+
+    let dt_scan_us = t_scan.elapsed().as_micros();
+    let t_split = std::time::Instant::now();
 
     // 2. Process splits for each edge
     for (eid, mut splits) in all_splits {
@@ -207,6 +292,14 @@ pub fn process_intersections(
             );
         }
     }
+    let dt_split_us = t_split.elapsed().as_micros();
+    let dt_total_us = t0.elapsed().as_micros();
+    crate::debug_log!(
+        "isect",
+        "e{}  pts={}/ds={}  cands={}(max_cand_ds={})  iters={}  aabb={}µs scan={}µs splits={}µs  total={}µs",
+        edge_id, n_edge1_pts, n_edge1_ds, n_candidates, n_cand2_max_ds, n_cross_iters,
+        dt_aabb_us, dt_scan_us, dt_split_us, dt_total_us
+    );
 }
 
 /// Splits an existing edge at a specific segment and junction node.
@@ -257,6 +350,12 @@ pub fn split_edge(
     let class = old_edge.class;
 
     let old_end_node = graph.edges[edge_id].end_node;
+
+    // Remove from spatial index BEFORE updating geometry so the AABB still matches
+    // the current entry in the R-tree. Updating geometry first causes a AABB mismatch
+    // and the remove silently fails, leaving a stale entry.
+    graph.remove_from_spatial_index(edge_id);
+
     graph.edges[edge_id].end_node = junction_node_id;
     graph.edges[edge_id].geometry = part1_geo.clone();
     graph.edges[edge_id].physical_geometry = part1_geo;
@@ -265,8 +364,6 @@ pub fn split_edge(
     graph.edges[edge_id].base_cost = cost;
     graph.edges[edge_id].physical_length = length;
 
-    // RE-INDEX and UPDATE ADJACENCY for modified edge
-    graph.remove_from_spatial_index(edge_id);
     graph.add_to_spatial_index(edge_id);
 
     graph.adjacency[old_end_node as usize].retain(|&i| i != edge_id);
@@ -330,6 +427,10 @@ pub fn split_edge(
     network.invalidate_zoning_near_edge(edge_id, graph);
     network.invalidate_zoning_near_edge(new_edge_id, graph);
     network.mark_point_dirty(split_pos);
+    if network.bulk_load {
+        network.bulk_dirty_edges.insert(edge_id);
+        network.bulk_dirty_edges.insert(new_edge_id);
+    }
 }
 
 #[cfg(test)]
