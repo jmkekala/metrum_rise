@@ -1335,9 +1335,10 @@ fn junction_boundary_points(
             .partial_cmp(&b.angle)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    if outer {
-        collapse_boundary_rays(&mut boundary, center);
-    }
+    // Always collapse co-directional boundary rays regardless of layer so that a narrow
+    // road's corners are absorbed by the wider adjacent arm — eliminating the per-edge-width
+    // notch in the fill polygon for both the asphalt and sidewalk layers.
+    collapse_boundary_rays(&mut boundary, center);
     boundary.dedup_by(|a, b| (a.point - b.point).length_squared() < 0.0001);
     if boundary.len() >= 2
         && (boundary[0].point - boundary[boundary.len() - 1].point).length_squared() < 0.0001
