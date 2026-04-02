@@ -184,76 +184,15 @@ impl TransitNetwork {
             }
         }
 
-        // 3. SUBDIVISION LOGIC (Every 100m)
-        let mut current_start_id = start_id;
-        let mut active_segment = vec![simplified_points[0]];
-        let mut accumulated_dist = 0.0;
-
-        for i in 0..count - 1 {
-            let p0 = simplified_points[i];
-            let p1 = simplified_points[i + 1];
-            let d = p0.distance_to(p1);
-
-            if accumulated_dist + d > 100.0 {
-                // Determine how many splits we need in this segment
-                let remaining_in_segment = 100.0 - accumulated_dist;
-                let mut t = remaining_in_segment / d;
-
-                while t <= 1.0 {
-                    let split_pos = p0.lerp(p1, t);
-                    active_segment.push(split_pos);
-
-                    // Create intermediate node
-                    let mid_id = graph.find_or_add_node(split_pos, 0.1, NodeType::Junction);
-
-                    // Add this edge
-                    self.create_edge_internal(
-                        graph,
-                        current_start_id,
-                        mid_id,
-                        active_segment.clone(),
-                        fwd_lanes,
-                        bkw_lanes,
-                        class,
-                        zoning,
-                        allocator,
-                    );
-
-                    // Reset for next segment
-                    current_start_id = mid_id;
-                    active_segment = vec![split_pos];
-                    accumulated_dist = 0.0;
-
-                    // Move to next 100m increment
-                    let next_dist_target = 100.0;
-                    let remaining_after_split = (1.0 - t) * d;
-                    if remaining_after_split > next_dist_target {
-                        t += next_dist_target / d;
-                    } else {
-                        accumulated_dist = remaining_after_split;
-                        break;
-                    }
-                }
-
-                if accumulated_dist > 0.0 {
-                    active_segment.push(p1);
-                }
-            } else {
-                active_segment.push(p1);
-                accumulated_dist += d;
-            }
-        }
-
-        // Final segment to end_id
-        if current_start_id != end_id && active_segment.len() >= 2 {
-            // Replace last point with snapped end_id pos
-            let last_idx = active_segment.len() - 1;
-            active_segment[last_idx] = graph.nodes[end_id as usize].pos;
+        // 3. Create a single edge from start to end with the full simplified geometry.
+        {
+            let last_idx = simplified_points.len() - 1;
+            simplified_points[last_idx] = graph.nodes[end_id as usize].pos;
             self.create_edge_internal(
                 graph,
-                current_start_id,
+                start_id,
                 end_id,
-                active_segment,
+                simplified_points,
                 fwd_lanes,
                 bkw_lanes,
                 class,

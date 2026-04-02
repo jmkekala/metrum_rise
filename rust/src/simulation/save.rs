@@ -1044,6 +1044,10 @@ fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResult<ZoningSy
                 right_occupied: vec![false; cell_count],
                 left_blocked: vec![false; cell_count],
                 right_blocked: vec![false; cell_count],
+                left_block_depth: vec![0u8; cells_long],
+                right_block_depth: vec![0u8; cells_long],
+                left_block_id: vec![0u16; cells_long],
+                right_block_id: vec![0u16; cells_long],
                 cells_long,
             },
         );

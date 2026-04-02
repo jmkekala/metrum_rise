@@ -285,6 +285,21 @@ impl SimulationNode {
         self.lock_core().set_zoning_range_internal(edge_idx, side, start_t, end_t, depth, zone_type_int);
     }
 
+    /// Sets a zoning range as a solid block zone: adjacent cells are merged into one quad in the renderer,
+    /// and the block depth is stored so only buildings matching the block footprint can spawn there.
+    #[func]
+    pub fn set_block_zone_range(
+        &mut self,
+        edge_idx: i32,
+        side: i8,
+        start_t: f32,
+        end_t: f32,
+        depth: i32,
+        zone_type_int: u8,
+    ) {
+        self.lock_core().set_block_zone_range_internal(edge_idx, side, start_t, end_t, depth, zone_type_int)
+    }
+
     /// Returns a PackedFloat32Array for rendering the zone grid.
     #[func]
     pub fn get_zoning_grid_data(&self) -> PackedFloat32Array {
@@ -350,6 +365,7 @@ impl SimulationNode {
         paint_mm: Gd<MultiMesh>,
         hovered_edges: VarArray,
         is_painting: bool,
+        solid: bool,
         side: i32,
         t1: f32,
         t2: f32,
@@ -362,7 +378,7 @@ impl SimulationNode {
             .map(|v| v.to::<i32>())
             .collect();
         self.lock_core().update_zoning_visuals_internal(
-            grid_mm, paint_mm, &edges, is_painting, side, t1, t2, depth, zone_type,
+            grid_mm, paint_mm, &edges, is_painting, solid, side, t1, t2, depth, zone_type,
         );
     }
 

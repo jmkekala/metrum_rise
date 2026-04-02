@@ -95,6 +95,38 @@ impl SimCore {
         self.allocator.dirty = true;
     }
 
+    /// Sets a zoning range as a solid block zone, merging adjacent cells into one quad in the renderer.
+    pub fn set_block_zone_range_internal(
+        &mut self,
+        edge_idx: i32,
+        side: i8,
+        start_t: f32,
+        end_t: f32,
+        depth: i32,
+        zone_type_int: u8,
+    ) {
+        self.push_undo_state(false, false, false, true);
+        let zone_type = match zone_type_int {
+            1 => ZoneType::Residential,
+            2 => ZoneType::Commercial,
+            3 => ZoneType::Industrial,
+            4 => ZoneType::Office,
+            5 => ZoneType::Mixed,
+            _ => ZoneType::None,
+        };
+        self.zoning.set_block_zone_range(
+            edge_idx as usize,
+            side,
+            start_t,
+            end_t,
+            depth as usize,
+            zone_type,
+            &self.region_graph,
+        );
+        self.recalculate_zoning_local(edge_idx as usize);
+        self.allocator.dirty = true;
+    }
+
 
     /// Sets the classification of an edge.
     pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) {

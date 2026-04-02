@@ -186,9 +186,9 @@ mod tests {
             &mut allocator,
         );
 
-        // 250m should be split into 100m, 100m, 50m -> 3 edges
-        assert_eq!(graph.edges.len(), 3, "Should have 3 edges for 250m road");
-        assert_eq!(graph.nodes.len(), 4, "Should have 4 nodes for 250m road");
+        // 250m road: no intermediate subdivision nodes, single edge with two endpoint nodes.
+        assert_eq!(graph.edges.len(), 1, "Should have 1 edge for 250m road (no 100m subdivision)");
+        assert_eq!(graph.nodes.len(), 2, "Should have 2 nodes for 250m road");
     }
 
     #[test]

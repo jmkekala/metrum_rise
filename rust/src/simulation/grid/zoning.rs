@@ -60,6 +60,20 @@ pub struct EdgeZoning {
     pub left_blocked: Vec<bool>,
     /// Cached obstruction result for right-side cells.
     pub right_blocked: Vec<bool>,
+    /// Block depth per column on the left side. 0 = individual cells; N = block zone of depth N.
+    /// Length equals `cells_long`.
+    pub left_block_depth: Vec<u8>,
+    /// Block depth per column on the right side. 0 = individual cells; N = block zone of depth N.
+    /// Length equals `cells_long`.
+    pub right_block_depth: Vec<u8>,
+    /// Block placement ID per column on the left side. 0 = not a block zone; non-zero = unique ID
+    /// for the specific block placement this column belongs to. Prevents adjacent blocks from
+    /// merging into one quad in the renderer even when they share the same zone type and depth.
+    /// Length equals `cells_long`.
+    pub left_block_id: Vec<u16>,
+    /// Block placement ID per column on the right side.
+    /// Length equals `cells_long`.
+    pub right_block_id: Vec<u16>,
     /// Number of columns in this grid (= `floor(edge_length / GRID_CELL_SIZE)`).
     pub cells_long: usize,
 }
@@ -72,6 +86,9 @@ pub struct ZoningSystem {
     pub edge_grids: HashMap<usize, EdgeZoning>,
     /// Global map configuration.
     pub config: MapConfig,
+    /// Monotonically increasing counter for assigning unique block placement IDs.
+    /// Wraps around at u16::MAX; zero is reserved for "not a block zone".
+    pub next_block_id: u16,
 }
 
 impl ZoningSystem {
@@ -80,6 +97,7 @@ impl ZoningSystem {
         Self {
             edge_grids: HashMap::new(),
             config: config.clone(),
+            next_block_id: 1,
         }
     }
 
@@ -120,13 +138,23 @@ impl ZoningSystem {
                 right_occupied: vec![false; part2_cells * ZONING_DEPTH],
                 left_blocked: vec![false; part2_cells * ZONING_DEPTH],
                 right_blocked: vec![false; part2_cells * ZONING_DEPTH],
+                left_block_depth: vec![0u8; part2_cells],
+                right_block_depth: vec![0u8; part2_cells],
+                left_block_id: vec![0u16; part2_cells],
+                right_block_id: vec![0u16; part2_cells],
                 cells_long: part2_cells,
             };
 
             // Copy data to new grid
             for x in 0..part2_cells {
+                let old_x = actual_split_x + x;
+                if old_x < old_grid.left_block_depth.len() {
+                    new_grid.left_block_depth[x] = old_grid.left_block_depth[old_x];
+                    new_grid.right_block_depth[x] = old_grid.right_block_depth[old_x];
+                    new_grid.left_block_id[x] = old_grid.left_block_id[old_x];
+                    new_grid.right_block_id[x] = old_grid.right_block_id[old_x];
+                }
                 for y in 0..ZONING_DEPTH {
-                    let old_x = actual_split_x + x;
                     if old_x * ZONING_DEPTH + y < old_grid.left_side.len() {
                         let old_i = old_x * ZONING_DEPTH + y;
                         let new_i = x * ZONING_DEPTH + y;
@@ -149,6 +177,10 @@ impl ZoningSystem {
                 g.right_occupied.truncate(actual_split_x * ZONING_DEPTH);
                 g.left_blocked.truncate(actual_split_x * ZONING_DEPTH);
                 g.right_blocked.truncate(actual_split_x * ZONING_DEPTH);
+                g.left_block_depth.truncate(actual_split_x);
+                g.right_block_depth.truncate(actual_split_x);
+                g.left_block_id.truncate(actual_split_x);
+                g.right_block_id.truncate(actual_split_x);
                 g.cells_long = actual_split_x;
             }
         }
@@ -181,6 +213,18 @@ impl ZoningSystem {
             first_grid
                 .right_blocked
                 .extend_from_slice(&second_grid.right_blocked);
+            first_grid
+                .left_block_depth
+                .extend_from_slice(&second_grid.left_block_depth);
+            first_grid
+                .right_block_depth
+                .extend_from_slice(&second_grid.right_block_depth);
+            first_grid
+                .left_block_id
+                .extend_from_slice(&second_grid.left_block_id);
+            first_grid
+                .right_block_id
+                .extend_from_slice(&second_grid.right_block_id);
             first_grid.cells_long += second_grid.cells_long;
         }
     }
@@ -198,6 +242,10 @@ impl ZoningSystem {
                 right_occupied: vec![false; cells_long * ZONING_DEPTH],
                 left_blocked: vec![false; cells_long * ZONING_DEPTH],
                 right_blocked: vec![false; cells_long * ZONING_DEPTH],
+                left_block_depth: vec![0u8; cells_long],
+                right_block_depth: vec![0u8; cells_long],
+                left_block_id: vec![0u16; cells_long],
+                right_block_id: vec![0u16; cells_long],
                 cells_long,
             });
 
@@ -214,6 +262,10 @@ impl ZoningSystem {
                 .resize(cells_long * ZONING_DEPTH, false);
             entry.left_blocked.resize(cells_long * ZONING_DEPTH, false);
             entry.right_blocked.resize(cells_long * ZONING_DEPTH, false);
+            entry.left_block_depth.resize(cells_long, 0);
+            entry.right_block_depth.resize(cells_long, 0);
+            entry.left_block_id.resize(cells_long, 0);
+            entry.right_block_id.resize(cells_long, 0);
             entry.cells_long = cells_long;
         }
     }
@@ -316,6 +368,50 @@ impl ZoningSystem {
                 let idx = x * ZONING_DEPTH + y;
                 if idx < cells.len() {
                     cells[idx] = zone_type;
+                }
+            }
+        }
+    }
+
+    /// Sets a zone range as a solid block, storing the block depth per column so the renderer
+    /// can merge adjacent cells into a single quad instead of showing individual cell borders.
+    pub fn set_block_zone_range(
+        &mut self,
+        edge_idx: usize,
+        side: i8,
+        start_t: f32,
+        end_t: f32,
+        depth: usize,
+        zone_type: ZoneType,
+        graph: &crate::simulation::network::graph::RegionGraph,
+    ) {
+        self.set_zone_range(edge_idx, side, start_t, end_t, depth, zone_type, graph);
+        let bid = if zone_type != ZoneType::None {
+            let id = self.next_block_id;
+            self.next_block_id = self.next_block_id.wrapping_add(1).max(1); // never 0
+            id
+        } else {
+            0
+        };
+        if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
+            let cells_long = grid.cells_long;
+            let start_x = (start_t * cells_long as f32).floor() as usize;
+            let end_x = (end_t * cells_long as f32).ceil() as usize;
+            let (start, end) = {
+                let sx = start_x.min(cells_long);
+                let ex = end_x.min(cells_long);
+                if sx <= ex { (sx, ex) } else { (ex, sx) }
+            };
+            let block_depth = depth.min(ZONING_DEPTH) as u8;
+            let (bd, bi) = if side > 0 {
+                (&mut grid.left_block_depth, &mut grid.left_block_id)
+            } else {
+                (&mut grid.right_block_depth, &mut grid.right_block_id)
+            };
+            for x in start..end {
+                if x < bd.len() {
+                    bd[x] = if bid != 0 { block_depth } else { 0 };
+                    bi[x] = bid;
                 }
             }
         }
@@ -694,11 +790,17 @@ impl ZoningSystem {
                         // Use global length along edge for column calculation
                         let col_other = ((cur_l_other + t_proj * l_seg) / size).floor() as usize;
 
-                        // "FIRST ZONED WINS": If this competitor has a zone AT THIS POINT, it wins.
-                        // We ONLY check this if we are actually within the road segment's longitudinal bounds.
-                        // Footprint collision (asphalt) still happens past end to protect intersections.
-                        if !is_past_end && row_other < ZONING_DEPTH && self.get_cell(i, side_other, col_other, row_other) != ZoneType::None {
-                            closest_competitor_has_zone = true;
+                        // "FIRST ZONED WINS": check col_other and its immediate neighbours.
+                        // The floor projection can land on either side of a column boundary,
+                        // so the physically-overlapping cell may be col±1 away.
+                        if !is_past_end && row_other < ZONING_DEPTH {
+                            'col_check: for dc in [0_i32, -1, 1] {
+                                let c = col_other as i32 + dc;
+                                if c >= 0 && self.get_cell(i, side_other, c as usize, row_other) != ZoneType::None {
+                                    closest_competitor_has_zone = true;
+                                    break 'col_check;
+                                }
+                            }
                         }
                     }
                     cur_l_other += l_seg;
@@ -1440,6 +1542,164 @@ mod tests {
                 let r = zoning.edge_grids[&j].right_side.iter().filter(|&&z| z != ZoneType::None).count();
                 assert_eq!(l, before_counts[j].0, "Arm {} of {} corrupted sibling {}'s left zoning", i, name, j);
                 assert_eq!(r, before_counts[j].1, "Arm {} of {} corrupted sibling {}'s right zoning", i, name, j);
+            }
+        }
+    }
+
+    // ── split T-junction with clips ────────────────────────────────────────────
+
+    /// Creates a split T-junction: three edges meeting at origin.
+    /// Edge 0: left arm  (-100,0,0) → (0,0,0), end_clip set.
+    /// Edge 1: right arm (0,0,0) → (100,0,0), start_clip set.
+    /// Edge 2: north arm (0,0,0) → (0,0,-100), start_clip set.
+    /// `clip` is the junction guard radius (typically half-width * 1.2).
+    fn make_split_t_junction(clip: f32) -> (crate::simulation::network::graph::RegionGraph, ZoningSystem) {
+        use crate::simulation::network::graph::{Edge, RegionGraph};
+        use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+        use godot::prelude::Vector3;
+
+        let mut graph = RegionGraph::new();
+        let n_left  = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+        let center  = graph.add_node(Vector3::new(0.0, 0.0, 0.0),    NodeType::Junction);
+        let n_right = graph.add_node(Vector3::new(100.0, 0.0, 0.0),  NodeType::Junction);
+        let n_north = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
+
+        let make_edge = |sn: u32, en: u32, pts: Vec<Vector3>, sc: f32, ec: f32| Edge {
+            start_node: sn, end_node: en, width: 7.0,
+            primary_type: TransitType::Road, allowed_types: TransitFlags::CAR,
+            class: EdgeClass::Standard, fwd_lanes: 1, bkw_lanes: 1,
+            physical_length: 100.0,
+            geometry: pts.clone(), physical_geometry: pts,
+            start_clip: sc, end_clip: ec,
+            deleted: false, ..Default::default()
+        };
+
+        graph.add_edge(make_edge(
+            n_left, center,
+            vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
+            0.0, clip,
+        ));
+        graph.add_edge(make_edge(
+            center, n_right,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+            clip, 0.0,
+        ));
+        graph.add_edge(make_edge(
+            center, n_north,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, -100.0)],
+            clip, 0.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        for idx in 0..3 { graph.add_to_spatial_index(idx); }
+
+        let mut zoning = ZoningSystem::new(&MapConfig::default());
+        for i in 0..3 { zoning.update_edge_grid_size(i, 100.0); }
+        (graph, zoning)
+    }
+
+    #[test]
+    fn split_junction_clip_blocks_cells_inside_junction_box() {
+        // Cells whose 2D center (including lateral offset from road) falls within clip radius
+        // of the junction node must be blocked.
+        //
+        // For a horizontal edge ending at origin, x=9 (last col), side=1, row=0:
+        //   along-road pos ≈ (−5, 0), lateral offset 10m → center ≈ (−5, −10)
+        //   distance from origin ≈ 11.18m
+        // Using clip=12m ensures that cell is inside the guard radius.
+        // x=0 is ~111m from the junction and must never be blocked.
+        let clip = 12.0_f32;
+        let (graph, zoning) = make_split_t_junction(clip);
+
+        assert!(
+            zoning.is_cell_obstructed(0, 1, 9, 0, &graph, Some(&[])),
+            "Last cell of edge 0 should be inside 12m clip radius and thus obstructed"
+        );
+        assert!(
+            !zoning.is_cell_obstructed(0, 1, 0, 0, &graph, Some(&[])),
+            "First cell of edge 0 is ~111m from junction and must not be clip-blocked"
+        );
+    }
+
+    #[test]
+    fn split_junction_first_zoned_wins_col_boundary() {
+        // Regression test for the col±1 boundary miss fix.
+        //
+        // With clip=12m, cells near the junction start of edge 2 are blocked by the clip guard.
+        // Verify that: (a) edge 0 south zones are untouched after edge 2 is zoned,
+        // and (b) edge 2 col 0 is blocked (clip), but far cells (col 5+) are freely zoned.
+        let clip = 12.0_f32;
+        let (graph, mut zoning) = make_split_t_junction(clip);
+
+        zoning.set_zone_range(0, -1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+        let e0_south_count = zoning.edge_grids[&0].right_side.iter().filter(|&&z| z != ZoneType::None).count();
+        assert!(e0_south_count > 0, "Edge 0 must have some south zones");
+
+        zoning.set_zone_range(2, -1, 0.0, 1.0, 3, ZoneType::Commercial, &graph);
+
+        // First-zoned-wins: edge 0 south zones must be unchanged.
+        let e0_south_after = zoning.edge_grids[&0].right_side.iter().filter(|&&z| z != ZoneType::None).count();
+        assert_eq!(e0_south_count, e0_south_after, "Edge 0 south zones were corrupted by edge 2 zoning");
+
+        // Edge 2 col 0 center is ~11.18m from junction node → inside 12m clip → blocked.
+        assert_eq!(
+            zoning.get_cell(2, -1, 0, 0),
+            ZoneType::None,
+            "Edge 2 col 0 at junction must be blocked by 12m clip"
+        );
+        // Edge 2 far cells must be zoned.
+        assert_eq!(
+            zoning.get_cell(2, -1, 5, 0),
+            ZoneType::Commercial,
+            "Edge 2 col 5 should be freely zoned Commercial"
+        );
+    }
+
+    #[test]
+    fn split_junction_reverse_order_no_overlap() {
+        // Reverse order: zone arm (edge 2) first, then horizontal (edge 0).
+        // Neither should overwrite the other's already-placed zones.
+        let clip = 6.0_f32;
+        let (graph, mut zoning) = make_split_t_junction(clip);
+
+        zoning.set_zone_range(2, 1, 0.0, 1.0, 3, ZoneType::Industrial, &graph);
+        let e2_before = zoning.edge_grids[&2].left_side.iter().filter(|&&z| z != ZoneType::None).count();
+        assert!(e2_before > 0);
+
+        zoning.set_zone_range(0, 1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+
+        let e2_after = zoning.edge_grids[&2].left_side.iter().filter(|&&z| z != ZoneType::None).count();
+        assert_eq!(e2_before, e2_after, "Edge 2 zones corrupted after edge 0 was zoned (reverse order)");
+
+        // Verify edge 0 got some zones too.
+        let e0_count = zoning.edge_grids[&0].left_side.iter().filter(|&&z| z != ZoneType::None).count();
+        assert!(e0_count > 0, "Edge 0 should have at least some zones on its north side");
+    }
+
+    #[test]
+    fn split_junction_left_right_zoning_no_overlap() {
+        // Zone left arm (edge 0 south side) left-to-right, then right arm (edge 1 south side) right-to-left.
+        // There must be no cell that is both Residential (from edge 0) and Commercial (from edge 1).
+        let clip = 6.0_f32;
+        let (graph, mut zoning) = make_split_t_junction(clip);
+
+        zoning.set_zone_range(0, -1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+        zoning.set_zone_range(1, -1, 0.0, 1.0, 3, ZoneType::Commercial, &graph);
+
+        // No zone on edge 1 should be Residential (would mean overwrite from edge 0).
+        for x in 0..10_usize {
+            for y in 0..3_usize {
+                let cell = zoning.get_cell(1, -1, x, y);
+                assert_ne!(cell, ZoneType::Residential,
+                    "Edge 1 col={x} row={y} was overwritten with edge 0's Residential zone");
+            }
+        }
+        // No zone on edge 0 should be Commercial.
+        for x in 0..10_usize {
+            for y in 0..3_usize {
+                let cell = zoning.get_cell(0, -1, x, y);
+                assert_ne!(cell, ZoneType::Commercial,
+                    "Edge 0 col={x} row={y} was overwritten with edge 1's Commercial zone");
             }
         }
     }

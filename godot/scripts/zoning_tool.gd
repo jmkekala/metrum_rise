@@ -21,7 +21,7 @@ var current_depth: int = 3 # Default 3 cells (15m)
 var drag_start_t: float = -1.0
 
 const ZONING_DEPTH: int = 12
-const CELL_SIZE: float = 5.0
+const CELL_SIZE: float = 10.0
 
 var grid_mesh: MultiMeshInstance3D
 var paint_mesh: MultiMeshInstance3D
@@ -147,7 +147,8 @@ func _update_visuals():
 	
 	# Pass the whole path to Rust for preview
 	var p_side = drag_side if not visited_edges.is_empty() else current_side
-	simulation_node.update_zoning_visuals(grid_mesh.multimesh, paint_mesh.multimesh, p_edges, is_painting, p_side, p_t1, p_t2, current_depth, current_zone_type)
+	var solid_mode = Input.is_key_pressed(KEY_CTRL)
+	simulation_node.update_zoning_visuals(grid_mesh.multimesh, paint_mesh.multimesh, p_edges, is_painting, solid_mode, p_side, p_t1, p_t2, current_depth, current_zone_type)
 	
 	grid_mesh.visible = true
 	paint_mesh.visible = true
@@ -231,7 +232,10 @@ func _unhandled_input(event):
 							s_t = conn_in["t_b"]
 							e_t = conn_out["t_a"]
 						
-						simulation_node.set_zoning_range(e_idx, cur_side, s_t, e_t, current_depth, current_zone_type)
+						if Input.is_key_pressed(KEY_CTRL):
+							simulation_node.set_block_zone_range(e_idx, cur_side, s_t, e_t, current_depth, current_zone_type)
+						else:
+							simulation_node.set_zoning_range(e_idx, cur_side, s_t, e_t, current_depth, current_zone_type)
 						
 						# B7: flip side only if road orientation is genuinely reversed
 						if i < num_edges - 1:

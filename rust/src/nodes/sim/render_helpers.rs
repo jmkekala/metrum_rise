@@ -18,6 +18,7 @@ impl SimCore {
         mut paint_mm: Gd<MultiMesh>,
         hovered_edges: &[i32],
         is_painting: bool,
+        solid: bool,
         side: i32,
         t1: f32,
         t2: f32,
@@ -101,52 +102,66 @@ impl SimCore {
                             let normal =
                                 godot::prelude::Vector2::new(tangent.y, -tangent.x) * current_side_sign;
 
-                            let sw = cell_size * 0.95;
-                            let sd = cell_size * 0.95;
                             let color = self.get_zone_color_rust(zone_type);
-
                             let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH + 0.1;
+                            let col = (m / cell_size).floor() as usize;
 
-                            // MULTI-ROW PREVIEW
-                            let count_rows = if is_painting { depth } else { 5 };
-                            for row in 0..count_rows {
-                                let row_m = row as f32 * cell_size + cell_size * 0.5;
-                                
-                                // OBSTRUCTION CHECK FOR PREVIEW
-                                let col = (m / cell_size).floor() as usize;
-                                if self.zoning.is_cell_obstructed(edge_idx as usize, current_side_sign as i8, col, row as usize, &self.region_graph, Some(&nearby_edges)) {
-                                    continue;
+                            // Solid block mode: Ctrl held.
+                            // One full-size quad + arrow overlay at frontage, no internal grid.
+                            if is_painting && solid {
+                                let not_obstructed = !self.zoning.is_cell_obstructed(
+                                    edge_idx as usize, current_side_sign as i8, col, 0,
+                                    &self.region_graph, Some(&nearby_edges));
+                                if not_obstructed {
+                                    // Full block quad
+                                    let block_depth_m = depth as f32 * cell_size;
+                                    let block_center = pos_on_edge + normal * (curb_dist + block_depth_m * 0.5);
+                                    let world_y = self.get_safe_height(block_center.x, block_center.y, w, h) + 0.6;
+                                    self.push_mm_transform(
+                                        &mut preview_instances,
+                                        block_center, world_y, tangent, normal,
+                                        cell_size * 0.99, block_depth_m * 0.99,
+                                        1.0, color, 1.0, 0.0,
+                                    );
+                                    // Arrow overlay at frontage
+                                    let front_center = pos_on_edge + normal * (curb_dist + cell_size * 0.5);
+                                    let world_y2 = self.get_safe_height(front_center.x, front_center.y, w, h) + 0.65;
+                                    self.push_arrow_overlay(&mut preview_instances, front_center, world_y2, tangent, normal, cell_size, color);
                                 }
+                            } else {
+                                // MULTI-ROW PREVIEW
+                                let count_rows = if is_painting { depth } else { 5 };
+                                for row in 0..count_rows {
+                                    let row_m = row as f32 * cell_size + cell_size * 0.5;
 
-                                let center_2d = pos_on_edge + normal * (curb_dist + row_m);
-                                let world_y = self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.6;
-                                
-                                let alpha = if is_painting {
-                                    1.0
-                                } else {
-                                    match row {
-                                        0..=2 => 1.0,
-                                        3 => 0.3,
-                                        4 => 0.05,
-                                        _ => 0.0,
+                                    // OBSTRUCTION CHECK FOR PREVIEW
+                                    if self.zoning.is_cell_obstructed(edge_idx as usize, current_side_sign as i8, col, row as usize, &self.region_graph, Some(&nearby_edges)) {
+                                        continue;
                                     }
-                                };
-                                
-                                let is_front = if row == 0 { 1.0 } else { 0.0 };
 
-                                self.push_mm_transform(
-                                    &mut preview_instances,
-                                    center_2d,
-                                    world_y,
-                                    tangent,
-                                    normal,
-                                    sw,
-                                    sd,
-                                    1.0,
-                                    color,
-                                    alpha,
-                                    is_front,
-                                );
+                                    let center_2d = pos_on_edge + normal * (curb_dist + row_m);
+                                    let world_y = self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.6;
+
+                                    let alpha = if is_painting {
+                                        1.0
+                                    } else {
+                                        match row {
+                                            0..=2 => 1.0,
+                                            3 => 0.3,
+                                            4 => 0.05,
+                                            _ => 0.0,
+                                        }
+                                    };
+
+                                    let is_front = if row == 0 { 1.0 } else { 0.0 };
+
+                                    self.push_mm_transform(
+                                        &mut preview_instances,
+                                        center_2d, world_y, tangent, normal,
+                                        cell_size * 0.95, cell_size * 0.95,
+                                        1.0, color, alpha, is_front,
+                                    );
+                                }
                             }
 
                             m += res_step;
@@ -190,64 +205,102 @@ impl SimCore {
                 } else {
                     &grid.right_side
                 };
-                let _blocked = if side_sign > 0.0 {
-                    &grid.left_blocked
+                let block_depth_col = if side_sign > 0.0 {
+                    &grid.left_block_depth
                 } else {
-                    &grid.right_blocked
+                    &grid.right_block_depth
+                };
+                let block_id_col = if side_sign > 0.0 {
+                    &grid.left_block_id
+                } else {
+                    &grid.right_block_id
                 };
 
-                for col in 0..grid.cells_long {
-                    for row in 0..depth {
-                        let idx = col * depth + row;
-                        if idx >= data.len() {
-                            continue;
+                let mut col = 0;
+                while col < grid.cells_long {
+                    let bd = block_depth_col.get(col).copied().unwrap_or(0);
+                    let bid = block_id_col.get(col).copied().unwrap_or(0);
+                    let z_type = if let Some(&z) = data.get(col * depth) { z } else { col += 1; continue; };
+
+                    if bd > 0 && bid > 0 && z_type != crate::simulation::grid::zoning::ZoneType::None {
+                        // Block zone: extend the run only while cols share the SAME block_id.
+                        // This keeps adjacent but distinct block placements visually separate.
+                        let run_start = col;
+                        while col < grid.cells_long
+                            && block_id_col.get(col).copied().unwrap_or(0) == bid
+                        {
+                            col += 1;
                         }
-                        let z_type = data[idx];
-                        if z_type == crate::simulation::grid::zoning::ZoneType::None {
-                            continue;
+                        let run_len = col - run_start;
+                        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+                        let color = self.get_zone_color_rust(z_type as u8);
+                        let buffer = result.entry(z_type as u8).or_insert_with(Vec::new);
+
+                        // One solid quad for the entire block (full width × full depth).
+                        {
+                            let center_col = run_start as f32 + run_len as f32 * 0.5;
+                            let m = center_col * cell_size;
+                            let t_param = m / edge.physical_length;
+                            if t_param <= 1.0 {
+                                let (pos_on_edge, tangent) =
+                                    self.get_edge_pos_and_tangent(edge_idx, t_param);
+                                let normal =
+                                    godot::prelude::Vector2::new(tangent.y, -tangent.x) * side_sign;
+                                let center_2d = pos_on_edge
+                                    + normal * (curb_dist + bd as f32 * cell_size * 0.5);
+                                let world_y = self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.02;
+                                self.push_mm_transform(
+                                    buffer, center_2d, world_y, tangent, normal,
+                                    run_len as f32 * cell_size * 0.99,
+                                    bd as f32 * cell_size * 0.99,
+                                    1.0, color, 1.0, 0.0,
+                                );
+                            }
                         }
 
-                        // Skip blocked cells only if they are NOT actually zoned yet (for previews).
-                        // However, for persistent instances, we want to see WHO won.
-                        // Since 'First Zoned Wins' prevents overlaps in the data, 
-                        // we don't need to cull here at all—it just creates 'phantom' clearing.
-                        // if blocked.get(idx).cloned().unwrap_or(false) { continue; }
-
+                        // Arrow overlays: one per column at the frontage edge (no cell grid visible).
+                        for c in run_start..col {
+                            let m = (c as f32 + 0.5) * cell_size;
+                            let t_param = m / edge.physical_length;
+                            if t_param > 1.0 { continue; }
+                            let (pos_on_edge, tangent) =
+                                self.get_edge_pos_and_tangent(edge_idx, t_param);
+                            let normal =
+                                godot::prelude::Vector2::new(tangent.y, -tangent.x) * side_sign;
+                            let center_2d = pos_on_edge + normal * (curb_dist + cell_size * 0.5);
+                            let world_y = self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.05;
+                            self.push_arrow_overlay(buffer, center_2d, world_y, tangent, normal, cell_size, color);
+                        }
+                    } else {
+                        // Individual cell zones.
                         let m = (col as f32 + 0.5) * cell_size;
                         let t_param = m / edge.physical_length;
-                        if t_param > 1.0 {
-                            continue;
+                        if t_param <= 1.0 {
+                            let (pos_on_edge, tangent) =
+                                self.get_edge_pos_and_tangent(edge_idx, t_param);
+                            let normal =
+                                godot::prelude::Vector2::new(tangent.y, -tangent.x) * side_sign;
+                            let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+
+                            for row in 0..depth {
+                                let idx = col * depth + row;
+                                if idx >= data.len() { break; }
+                                let z = data[idx];
+                                if z == crate::simulation::grid::zoning::ZoneType::None { continue; }
+                                let cell_dist = curb_dist + (row as f32 + 0.5) * cell_size;
+                                let center_2d = pos_on_edge + normal * cell_dist;
+                                let world_y = self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.02;
+                                let buffer = result.entry(z as u8).or_insert_with(Vec::new);
+                                let frontage_bit = if row == 0 { 1.0 } else { 0.0 };
+                                let color = self.get_zone_color_rust(z as u8);
+                                self.push_mm_transform(
+                                    buffer, center_2d, world_y, tangent, normal,
+                                    cell_size * 0.95, cell_size * 0.95, 1.0,
+                                    color, 1.0, frontage_bit,
+                                );
+                            }
                         }
-
-                        let (pos_on_edge, tangent) =
-                            self.get_edge_pos_and_tangent(edge_idx, t_param);
-                        // Left normal is (y, -x) in Godot's Y-down system. side_sign 1 is Left, -1 is Right.
-                        let normal =
-                            godot::prelude::Vector2::new(tangent.y, -tangent.x) * side_sign;
-
-                        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
-                        let cell_dist = curb_dist + (row as f32 + 0.5) * cell_size;
-                        let center_2d = pos_on_edge + normal * cell_dist;
-                        let world_y = self.get_safe_height(center_2d.x, center_2d.y, w, h) + 0.02;
-
-                        let buffer = result.entry(z_type as u8).or_insert_with(Vec::new);
-                        let frontage_bit = if row == 0 { 1.0 } else { 0.0 };
-
-                        let color = self.get_zone_color_rust(z_type as u8);
-
-                        self.push_mm_transform(
-                            buffer,
-                            center_2d,
-                            world_y,
-                            tangent,
-                            normal,
-                            cell_size * 0.95, // slight gap between cells
-                            cell_size * 0.95,
-                            1.0,
-                            color,
-                            1.0,
-                            frontage_bit,
-                        );
+                        col += 1;
                     }
                 }
             }
@@ -268,6 +321,30 @@ impl SimCore {
         color: godot::prelude::Color,
         alpha: f32,
         custom_x: f32,
+    ) {
+        // Border world-space thickness is 5% of a standard cell. Compute UV fractions so the
+        // border appears the same thickness regardless of the quad's actual size.
+        let cell = self.config.zone_cell_m;
+        let border_frac_x = (0.05 * cell) / sw.max(0.01);
+        let border_frac_y = (0.05 * cell) / sd.max(0.01);
+        self.push_mm_transform_raw(buffer, pos_2d, y, tangent, normal, sw, sd, sy, color, alpha, custom_x, border_frac_x, border_frac_y);
+    }
+
+    fn push_mm_transform_raw(
+        &self,
+        buffer: &mut Vec<f32>,
+        pos_2d: Vector2,
+        y: f32,
+        tangent: Vector2,
+        normal: Vector2,
+        sw: f32,
+        sd: f32,
+        sy: f32,
+        color: godot::prelude::Color,
+        alpha: f32,
+        custom_x: f32,
+        custom_y: f32,
+        custom_z: f32,
     ) {
         // MultiMesh TRANSFORM_3D buffer layout:
         // Row 0: [ x.x, y.x, z.x, origin.x ]
@@ -293,11 +370,50 @@ impl SimCore {
         buffer.push(color.b);
         buffer.push(alpha);
 
-        // INSTANCE_CUSTOM (4 floats)
+        // INSTANCE_CUSTOM (4 floats): x=is_front, y=border_frac_x, z=border_frac_y, w=arrow_only
         buffer.push(custom_x);
+        buffer.push(custom_y);
+        buffer.push(custom_z);
+        buffer.push(0.0); // custom_w: set via push_arrow_overlay, not here
+    }
+
+    /// Pushes a cell-sized arrow-only overlay quad (transparent fill/border, just the arrow symbol).
+    /// Used to show frontage direction on solid block zones without adding cell grid lines.
+    fn push_arrow_overlay(
+        &self,
+        buffer: &mut Vec<f32>,
+        pos_2d: Vector2,
+        y: f32,
+        tangent: Vector2,
+        normal: Vector2,
+        cell_size: f32,
+        color: godot::prelude::Color,
+    ) {
+        let sw = cell_size * 0.95;
+        let sd = cell_size * 0.95;
+        // Transform (same layout as push_mm_transform_raw)
+        buffer.push(tangent.x * sw);
         buffer.push(0.0);
+        buffer.push(normal.x * sd);
+        buffer.push(pos_2d.x);
         buffer.push(0.0);
+        buffer.push(1.0);
         buffer.push(0.0);
+        buffer.push(y);
+        buffer.push(tangent.y * sw);
+        buffer.push(0.0);
+        buffer.push(normal.y * sd);
+        buffer.push(pos_2d.y);
+        // Color
+        buffer.push(color.r);
+        buffer.push(color.g);
+        buffer.push(color.b);
+        buffer.push(1.0);
+        // INSTANCE_CUSTOM: x=is_front=1, y=border_frac=0.05, z=border_frac=0.05, w=arrow_only=1
+        buffer.push(1.0);
+        buffer.push(0.05);
+        buffer.push(0.05);
+        buffer.push(1.0);
     }
 
     fn get_safe_height(&self, x: f32, z: f32, w: f32, h: f32) -> f32 {
