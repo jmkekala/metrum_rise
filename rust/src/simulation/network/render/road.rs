@@ -248,6 +248,18 @@ impl TransitRenderer for RoadRenderer {
                         );
                     }
                 }
+                NodeRenderKind::WidthTransition => {
+                    emit_width_transition_taper(
+                        &mut mesh,
+                        MeshLayer::Sidewalk,
+                        graph,
+                        *node_id,
+                        &sidewalk_node_incidents,
+                        true,
+                        SIDEWALK_LAYER_Y,
+                        sidewalk_color(),
+                    );
+                }
                 _ => {}
             }
         }
@@ -344,6 +356,18 @@ impl TransitRenderer for RoadRenderer {
                             road_color(),
                         );
                     }
+                }
+                NodeRenderKind::WidthTransition => {
+                    emit_width_transition_taper(
+                        &mut mesh,
+                        MeshLayer::Road,
+                        graph,
+                        *node_id,
+                        &road_node_incidents,
+                        false,
+                        ROAD_LAYER_Y,
+                        road_color(),
+                    );
                 }
                 _ => {}
             }
@@ -1151,23 +1175,82 @@ fn direction_xz(delta: Vector3) -> Option<Vector2> {
 }
 
 fn node_endpoint_half_width(
-    graph: &RegionGraph,
-    node_states: &HashMap<u32, NodeRenderState>,
-    node_id: u32,
+    _graph: &RegionGraph,
+    _node_states: &HashMap<u32, NodeRenderState>,
+    _node_id: u32,
     fallback: f32,
-    outer: bool,
+    _outer: bool,
 ) -> f32 {
+    // WidthTransition nodes use emit_width_transition_taper for the funnel polygon instead.
+    fallback
+}
+
+fn emit_width_transition_taper(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    graph: &RegionGraph,
+    node_id: u32,
+    node_incidents: &HashMap<u32, Vec<IncidentEdgeEndpoint>>,
+    outer: bool,
+    y_offset: f32,
+    color: Color,
+) {
     let node_id = graph.get_valid_node(node_id);
-    match node_states.get(&node_id) {
-        Some(state) if state.kind == NodeRenderKind::WidthTransition => {
-            if outer {
-                state.outer_radius
-            } else {
-                state.road_radius
-            }
-        }
-        _ => fallback,
+    let Some(incidents) = node_incidents.get(&node_id) else {
+        return;
+    };
+    if incidents.len() != 2 {
+        return;
     }
+
+    let half_width_for_edge = |e: &Edge| {
+        if outer {
+            sidewalk_surface_half_width(e)
+        } else {
+            road_half_width(e)
+        }
+    };
+
+    let inc0 = incidents[0];
+    let inc1 = incidents[1];
+    let hw0 = half_width_for_edge(&graph.edges[inc0.edge_idx]);
+    let hw1 = half_width_for_edge(&graph.edges[inc1.edge_idx]);
+
+    let (narrow_inc, narrow_hw, wide_hw) = if hw0 <= hw1 {
+        (inc0, hw0, hw1)
+    } else {
+        (inc1, hw1, hw0)
+    };
+
+    let taper_dist = (wide_hw - narrow_hw) * 2.0;
+    if taper_dist < 0.01 {
+        return;
+    }
+
+    let pts = edge_points(&graph.edges[narrow_inc.edge_idx]);
+    let Some(dir) = direction_at_endpoint(pts, narrow_inc.at_start) else {
+        return;
+    };
+    let Some((taper_end, _)) = endpoint_section(pts, narrow_inc.at_start, taper_dist) else {
+        return;
+    };
+
+    // Right-hand perpendicular (dir.y, -dir.x) gives CCW winding when viewed from above.
+    let perp = Vector2::new(dir.y, -dir.x);
+    let center = graph.nodes[node_id as usize].pos;
+    let uv = Vector2::new(1.0, 1.0);
+    push_quad(
+        mesh,
+        layer,
+        [
+            lifted_offset(center, perp * wide_hw, y_offset),
+            lifted_offset(taper_end, perp * narrow_hw, y_offset),
+            lifted_offset(taper_end, perp * -narrow_hw, y_offset),
+            lifted_offset(center, perp * -wide_hw, y_offset),
+        ],
+        [uv, uv, uv, uv],
+        color,
+    );
 }
 
 fn emit_node_fill_polygon(
