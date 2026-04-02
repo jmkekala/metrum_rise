@@ -171,7 +171,9 @@ func _handle_painting(h_edge: int, current_t: float, current_side: int):
 					var ray_origin = camera.project_ray_origin(mouse_pos)
 					var ray_dir = camera.project_ray_normal(mouse_pos)
 					var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
-					
+					if intersection == null:
+						return
+
 					var proj = _get_projection_data(e_geom, Vector2(intersection.x, intersection.z))
 					var last_proj = _get_projection_data(last_edge_geom, Vector2(intersection.x, intersection.z))
 					

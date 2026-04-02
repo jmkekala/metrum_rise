@@ -534,9 +534,30 @@ impl ZoningSystem {
         let size = self.config.zone_cell_m;
         let edge = &graph.edges[edge_idx];
 
+        let t_us = (x as f32 + 0.5) * size / edge.physical_length;
+
+        // Junction-box guard: block cells whose 2D center falls within the junction disk at
+        // either end of the edge. Uses 2D distance to the node so only cells literally inside
+        // the intersection polygon are blocked — not cells that are merely longitudinally close
+        // but laterally offset (which are always ≥ halfwidth + sidewalk + half_cell away).
+        // start_clip/end_clip are non-zero only at 3+-way junctions.
+        if edge.start_clip > 0.0 {
+            let sn = graph.nodes[edge.start_node as usize].pos;
+            let d2 = (center.x - sn.x).powi(2) + (center.y - sn.z).powi(2);
+            if d2 < edge.start_clip * edge.start_clip {
+                return true;
+            }
+        }
+        if edge.end_clip > 0.0 {
+            let en = graph.nodes[edge.end_node as usize].pos;
+            let d2 = (center.x - en.x).powi(2) + (center.y - en.z).powi(2);
+            if d2 < edge.end_clip * edge.end_clip {
+                return true;
+            }
+        }
+
         // We check ONLY the center point for obstruction.
-        // This is more permissive and allows zoning to go much closer to junctions.
-        let check_pts_with_t = vec![(center, (x as f32 + 0.5) * size / edge.physical_length)];
+        let check_pts_with_t = vec![(center, t_us)];
 
         for (pt, t_us) in check_pts_with_t {
             let my_y = edge.get_y_at_t(t_us);
