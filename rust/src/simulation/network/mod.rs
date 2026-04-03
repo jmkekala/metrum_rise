@@ -268,9 +268,11 @@ impl TransitNetwork {
         graph.edges[edge_id].base_cost = cost;
         graph.edges[edge_id].physical_length = length;
 
-        zoning.update_edge_grid_size(edge_id, length);
-        self.zoning_dirty_edges.insert(edge_id);
-        self.invalidate_zoning_near_edge(edge_id, graph);
+        if (graph.edge(edge_id).allowed_types & TransitFlags::CAR) != 0 {
+            zoning.update_edge_grid_size(edge_id, length);
+            self.zoning_dirty_edges.insert(edge_id);
+            self.invalidate_zoning_near_edge(edge_id, graph);
+        }
         self.mark_point_dirty(graph.node(start).pos);
         self.mark_point_dirty(graph.node(end).pos);
 

@@ -365,7 +365,7 @@ This is a prerequisite for adding per-thread lane caching at v0.2 scale. **Targe
 
 This refactor improved maintainability and is a prerequisite for independently testing IDM physics (item 66).
 
-**R9. Note on walkway zoning grids** — `TransitNetwork::add_road` calls `zoning.update_edge_grid_size` unconditionally, so pure walkways (fwd=0, bkw=0) currently receive a zoning grid even though buildings should not adjoin footpaths. This is harmless today (no mechanism places buildings on walkway edges) but will cause spurious zoning cells to appear in the UI once the zoning painter is live. Fix: add `if edge.allowed_types & TransitFlags::CAR != 0` guard around the `update_edge_grid_size` call in `add_road`. **Do this before the zoning painter UI ships.**
+[DONE] **R9. Note on walkway zoning grids** — `TransitNetwork::add_road` / `create_edge_internal` now guards `zoning.update_edge_grid_size` with `if edge.allowed_types & TransitFlags::CAR != 0`. This prevents pure walkways from receiving zoning cells in the UI.
 
 ### v0.1 — Economy Foundation
 
