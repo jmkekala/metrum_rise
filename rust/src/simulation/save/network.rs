@@ -19,7 +19,7 @@ pub(super) fn save_network(tx: &Transaction, graph: &RegionGraph, maps: &Snapsho
         node_rows.sort_by_key(|&(new, _)| new);
         let mut stmt = tx.prepare("INSERT INTO network_nodes(node_id, x, y, z, node_type) VALUES (?1, ?2, ?3, ?4, ?5)")?;
         for (saved_id, old_id) in node_rows {
-            let node = &graph.nodes[old_id as usize];
+            let node = graph.node(old_id);
             stmt.execute(params![i64::from(saved_id), node.pos.x, node.pos.y, node.pos.z, node_type_to_i64(node.node_type)])?;
         }
     }
@@ -27,7 +27,7 @@ pub(super) fn save_network(tx: &Transaction, graph: &RegionGraph, maps: &Snapsho
     // 2. Edges
     {
         let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")?;
-        for (old_id, edge) in graph.edges.iter().enumerate() {
+        for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else { continue; };
             let start = maps.node_old_to_new.get(&canonical_existing_node(graph, edge.start_node)?).copied().ok_or_else(|| SaveLoadError::custom("missing saved start node"))?;
             let end = maps.node_old_to_new.get(&canonical_existing_node(graph, edge.end_node)?).copied().ok_or_else(|| SaveLoadError::custom("missing saved end node"))?;
@@ -38,7 +38,7 @@ pub(super) fn save_network(tx: &Transaction, graph: &RegionGraph, maps: &Snapsho
     // 3. Geometry
     {
         let mut stmt = tx.prepare("INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
-        for (old_id, edge) in graph.edges.iter().enumerate() {
+        for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else { continue; };
             for (idx, p) in edge.geometry.iter().enumerate() {
                 stmt.execute(params![usize_to_i64(saved_id)?, usize_to_i64(idx)?, p.x, p.y, p.z, false])?;
@@ -53,7 +53,7 @@ pub(super) fn save_network(tx: &Transaction, graph: &RegionGraph, maps: &Snapsho
     {
         let mut stmt = tx.prepare("INSERT INTO lane_connections(node_id, from_edge, from_lane, to_edge, to_lane) VALUES (?1, ?2, ?3, ?4, ?5)")?;
         for (&old_node, &saved_node) in &maps.node_old_to_new {
-            let node = &graph.nodes[old_node as usize];
+            let node = graph.node(old_node);
             for (&(from_e, from_l), targets) in &node.lane_connections {
                 let Some(&saved_from) = maps.edge_old_to_new.get(&from_e) else { continue; };
                 for &(to_e, to_l) in targets {
@@ -73,8 +73,8 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let node_id = i64_to_u32(row.get(0)?)?;
-            if node_id != graph.nodes.len() as u32 {
-                return Err(SaveLoadError::custom(format!("network node ids must be contiguous; found {} after {} nodes", node_id, graph.nodes.len())));
+            if node_id != graph.node_count() as u32 {
+                return Err(SaveLoadError::custom(format!("network node ids must be contiguous; found {} after {} nodes", node_id, graph.node_count())));
             }
             graph.add_node(Vector3::new(row.get(1)?, row.get(2)?, row.get(3)?), node_type_from_i64(row.get(4)?)?);
         }
@@ -97,8 +97,8 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
-            if eid != graph.edges.len() {
-                return Err(SaveLoadError::custom(format!("network edge ids must be contiguous; found {} after {} edges", eid, graph.edges.len())));
+            if eid != graph.edge_count() {
+                return Err(SaveLoadError::custom(format!("network edge ids must be contiguous; found {} after {} edges", eid, graph.edge_count())));
             }
             graph.add_edge(Edge {
                 start_node: i64_to_u32(row.get(1)?)?, end_node: i64_to_u32(row.get(2)?)?, primary_type: transit_type_from_i64(row.get(3)?)?,
@@ -157,8 +157,8 @@ pub(super) fn rebuild_graph_indices(graph: &mut RegionGraph) {
 }
 
 pub(super) fn canonical_existing_node(graph: &RegionGraph, node_id: u32) -> SaveLoadResult<u32> {
-    if (node_id as usize) >= graph.nodes.len() { return Err(SaveLoadError::custom(format!("node {} out of bounds", node_id))); }
+    if (node_id as usize) >= graph.node_count() { return Err(SaveLoadError::custom(format!("node {} out of bounds", node_id))); }
     let c = graph.get_valid_node(node_id);
-    if (c as usize) >= graph.nodes.len() { return Err(SaveLoadError::custom(format!("canonical node {} out of bounds", c))); }
+    if (c as usize) >= graph.node_count() { return Err(SaveLoadError::custom(format!("canonical node {} out of bounds", c))); }
     Ok(c)
 }

@@ -242,8 +242,8 @@ impl AgentSystem {
                     let my_d = *s_lane_d_idm.get(i);
                     let eid  = *s_cur_e_idm.get(i);
 
-                    let v_max = if eid != usize::MAX && eid < graph.edges.len() {
-                        graph.edges[eid].speed_limit
+                    let v_max = if eid != usize::MAX && eid < graph.edge_count() {
+                        graph.edge(eid).speed_limit
                     } else {
                         20.0_f32
                     };
@@ -381,7 +381,7 @@ impl AgentSystem {
                                 });
 
                                 let path_opt: Option<Vec<u32>> = ff
-                                    .and_then(|f| f.build_path(origin_node, graph.nodes.len() + 1))
+                                    .and_then(|f| f.build_path(origin_node, graph.node_count() + 1))
                                     .or_else(|| {
                                         // Fall back to CCH for home trips, novel destinations,
                                         // or when flow field is not yet built.
@@ -442,12 +442,12 @@ impl AgentSystem {
                             return;
                         }
                         let frontage_node = allocator.buildings[b_id].frontage_node;
-                        if frontage_node as usize >= graph.nodes.len() {
+                        if frontage_node as usize >= graph.node_count() {
                             *s_transit.get_mut(i) = TRANSIT_IDLE;
                             *s_visible.get_mut(i) = false;
                             return;
                         }
-                        let node_pos = graph.nodes[frontage_node as usize].pos;
+                        let node_pos = graph.node(frontage_node).pos;
                         let target_vec = Vector2::new(node_pos.x, node_pos.z);
                         let dir = target_vec - Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
                         let dist = dir.length();
@@ -505,7 +505,7 @@ impl AgentSystem {
                                 };
 
                                 let path_opt: Option<Vec<u32>> = ff
-                                    .and_then(|f| f.build_path(cur_n, graph.nodes.len() + 1))
+                                    .and_then(|f| f.build_path(cur_n, graph.node_count() + 1))
                                     .filter(|p| p.len() > 1)
                                     .or_else(|| {
                                         pathfind_count.fetch_add(1, Ordering::Relaxed);
@@ -532,7 +532,7 @@ impl AgentSystem {
                                 if idx < path.len() {
                                     let next_node = path[idx];
                                     if let Some(best_e) = graph.get_edge_between_nodes(*s_cur_n.get(i), next_node) {
-                                        let edge = &graph.edges[best_e];
+                                        let edge = graph.edge(best_e);
                                         let is_fwd = edge.start_node == *s_cur_n.get(i);
                                         if let Some(edge_lanes) = transit_network.lane_system.edge_lanes.get(&best_e) {
                                             VALID_LANES.with(|v| {
@@ -568,7 +568,7 @@ impl AgentSystem {
                                                     *s_cur_b.get_mut(i) = usize::MAX;
                                                     // Seed speed from edge limit on first lane entry.
                                                     if *s_speed.get(i) == 0.0 {
-                                                        *s_speed.get_mut(i) = graph.edges[best_e].speed_limit;
+                                                        *s_speed.get_mut(i) = graph.edge(best_e).speed_limit;
                                                     }
                                                 } else {
                                                     s_path.get_mut(i).clear();
@@ -608,7 +608,7 @@ impl AgentSystem {
                                 if t_bldg_idx != usize::MAX && t_bldg_idx < allocator.buildings.len() {
                                     let b = &allocator.buildings[t_bldg_idx];
                                     if lane.edge_id == b.edge_idx {
-                                        let tgt_len = graph.edges[b.edge_idx].physical_length;
+                                        let tgt_len = graph.edge(b.edge_idx).physical_length;
                                         let progress_ratio = *s_lane_d.get(i) / lane.length.max(0.001);
                                         let agent_prog = if lane.is_fwd {
                                             progress_ratio * tgt_len
@@ -633,9 +633,9 @@ impl AgentSystem {
 
                                 if lane.edge_id != usize::MAX {
                                     *s_cur_n.get_mut(i) = if lane.is_fwd {
-                                        graph.edges[lane.edge_id].end_node
+                                        graph.edge(lane.edge_id).end_node
                                     } else {
-                                        graph.edges[lane.edge_id].start_node
+                                        graph.edge(lane.edge_id).start_node
                                     };
 
                                     *s_path_idx.get_mut(i) += 1;
@@ -652,9 +652,7 @@ impl AgentSystem {
                                             // IDM already prevents simultaneous entry so gating
                                             // there causes spurious waits and loop-de-loops.
                                             let cur_node_idx = *s_cur_n.get(i) as usize;
-                                            let is_junction = graph.adjacency
-                                                .get(cur_node_idx)
-                                                .map_or(false, |adj| adj.len() >= 3);
+                                            let is_junction = graph.node_adjacency(cur_node_idx as u32).len() >= 3;
                                         VALID_CONNS.with(|v| {
                                                 let mut valid_conns = v.borrow_mut();
                                                 valid_conns.clear();

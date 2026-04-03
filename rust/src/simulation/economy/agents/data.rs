@@ -198,7 +198,7 @@ impl AgentSystem {
         allocator: &BuildingAllocator,
     ) {
         let mut rng = rand::thread_rng();
-        let node_count = graph.nodes.len();
+        let node_count = graph.node_count();
         let bldg_count = allocator.buildings.len();
         if node_count == 0 || bldg_count == 0 {
             return;
@@ -208,8 +208,8 @@ impl AgentSystem {
             let home_idx = rng.gen_range(0..bldg_count);
             let b = &allocator.buildings[home_idx];
             let home_node = b.frontage_node;
-            let start_node = rng.gen_range(0..node_count) as u32;
-            let start_pos = graph.nodes[start_node as usize].pos;
+            let start_node = rng.gen_range(0..graph.node_count()) as u32;
+            let start_pos = graph.node(start_node).pos;
 
             self.spawn_agent(
                 home_idx,
@@ -392,7 +392,7 @@ impl AgentSystem {
     /// Must be called once per tick by `simulate_tick_internal` after `AgentSystem::tick()`.
     /// O(A + E) sequential.
     pub fn update_edge_congestion(&mut self, graph: &mut RegionGraph) {
-        let edge_count = graph.edges.len();
+        let edge_count = graph.edge_count();
         self.edge_speed_sum.clear();
         self.edge_speed_sum.resize(edge_count, 0.0_f32);
         self.edge_agent_cnt.clear();
@@ -409,9 +409,9 @@ impl AgentSystem {
         }
 
         for eid in 0..edge_count {
-            if !graph.edges[eid].deleted && self.edge_agent_cnt[eid] > 0 {
+            if !graph.edge(eid).deleted && self.edge_agent_cnt[eid] > 0 {
                 let avg = self.edge_speed_sum[eid] / self.edge_agent_cnt[eid] as f32;
-                let limit = graph.edges[eid].speed_limit.max(1.0);
+                let limit = graph.edge(eid).speed_limit.max(1.0);
                 graph.edges[eid].current_congestion = (1.0 - avg / limit).max(0.0);
             }
         }

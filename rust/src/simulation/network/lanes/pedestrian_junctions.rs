@@ -27,12 +27,12 @@ pub fn build_pedestrian_connections_at_node(
     graph: &mut RegionGraph,
     node_id: usize,
 ) {
-    let node_pos = graph.nodes[node_id].pos;
-    let adj: Vec<usize> = graph.adjacency[node_id].clone();
+    let node_pos = graph.node(node_id as u32).pos;
+    let adj: Vec<usize> = graph.node_adjacency(node_id as u32).to_vec();
     let mut mouths: Vec<SidewalkMouth> = Vec::new();
 
     for &e_idx in &adj {
-        let edge = &graph.edges[e_idx];
+        let edge = graph.edge(e_idx);
         if edge.deleted || (edge.allowed_types & TransitFlags::FOOT) == 0
             || edge.primary_type != TransitType::Road { continue; }
 
@@ -86,8 +86,8 @@ pub fn build_pedestrian_connections_at_node(
             }
 
             let is_same_edge = mouths[i].edge_idx == mouths[j].edge_idx;
-            let deg = graph.adjacency[node_id].len();
-            let node_type = graph.nodes[node_id].node_type;
+            let deg = graph.node_adjacency(node_id as u32).len();
+            let node_type = graph.node(node_id as u32).node_type;
 
             if node_type == NodeType::Frontage && (is_same_edge || mouths[i].lane_idx != mouths[j].lane_idx) {
                 continue;

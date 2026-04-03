@@ -79,9 +79,9 @@ impl RegionGraph {
 
     /// Returns the index of the edge connecting two nodes, if one exists.
     pub fn get_edge_between_nodes(&self, from: u32, to: u32) -> Option<usize> {
-        if (from as usize) < self.adjacency.len() {
-            for &idx in &self.adjacency[from as usize] {
-                let e = &self.edges[idx];
+        if (from as usize) < self.node_adjacency_count() {
+            for &idx in self.node_adjacency(from) {
+                let e = self.edge(idx);
                 if !e.deleted
                     && ((e.start_node == from && e.end_node == to)
                         || (e.start_node == to && e.end_node == from))
@@ -95,7 +95,7 @@ impl RegionGraph {
 
     /// Adds a new node to the graph at the specified position.
     pub fn add_node(&mut self, pos: Vector3, node_type: NodeType) -> u32 {
-        let id = self.nodes.len() as u32;
+        let id = self.node_count() as u32;
         self.nodes.push(Node {
             pos,
             node_type,
@@ -118,7 +118,7 @@ impl RegionGraph {
                     .get(&(chunk_coords.0 + dx, chunk_coords.1 + dz))
                 {
                     for &node_id in chunk {
-                        if self.nodes[node_id as usize].pos.distance_to(pos) < threshold {
+                        if self.node(node_id).pos.distance_to(pos) < threshold {
                             let id = self.get_valid_node(node_id);
                             return id;
                         }
@@ -132,15 +132,16 @@ impl RegionGraph {
     /// Adds a new edge to the graph and updates adjacency and spatial indices.
     pub fn add_edge(&mut self, mut edge: Edge) -> usize {
         edge.deleted = false;
-        let id = self.edges.len();
+        let start = edge.start_node;
+        let end = edge.end_node;
+        let id = self.edge_count();
         self.edges.push(edge);
         self.add_to_spatial_index(id);
-
+ 
         // Update Adjacency
-        let e = &self.edges[id];
-        self.adjacency[e.start_node as usize].push(id);
-        self.adjacency[e.end_node as usize].push(id);
-
+        self.adjacency[start as usize].push(id);
+        self.adjacency[end as usize].push(id);
+ 
         id
     }
 
@@ -155,15 +156,15 @@ impl RegionGraph {
 
     /// Removes a node and merges its two connected edges if they are compatible.
     pub fn remove_node_and_merge_edges(&mut self, node_id: u32) -> Option<(usize, usize)> {
-        if node_id as usize >= self.nodes.len() {
+        if (node_id as usize) >= self.node_count() {
             return None;
         }
 
         // Find edges connected to this node
         let mut e1_idx = None;
         let mut e2_idx = None;
-
-        for (i, edge) in self.edges.iter().enumerate() {
+ 
+        for (i, edge) in self.edges().iter().enumerate() {
             if edge.deleted {
                 continue;
             } // Important: Skip already deleted edges
@@ -183,8 +184,8 @@ impl RegionGraph {
         if let (Some(i1), Some(i2)) = (e1_idx, e2_idx) {
             // Check if they are compatible for merging
             let (_target_end_node, mid_node, target_start_node) = {
-                let e1 = &self.edges[i1];
-                let e2 = &self.edges[i2];
+                let e1 = self.edge(i1);
+                let e2 = self.edge(i2);
                 if e1.primary_type != e2.primary_type || e1.width != e2.width {
                     return None;
                 }
@@ -207,28 +208,28 @@ impl RegionGraph {
             // Combine geometry
             let mut new_geom = Vec::new();
             let (first_edge_idx, second_edge_idx) = {
-                if self.edges[i1].end_node == mid_node {
+                if self.edge(i1).end_node == mid_node {
                     (i1, i2)
                 } else {
                     (i2, i1)
                 }
             };
-
-            for p in &self.edges[first_edge_idx].geometry {
+ 
+            for p in &self.edge(first_edge_idx).geometry {
                 new_geom.push(*p);
             }
             // Skip the first point of the second edge as it's the same as the last point of the first
-            for i in 1..self.edges[second_edge_idx].geometry.len() {
-                new_geom.push(self.edges[second_edge_idx].geometry[i]);
+            for i in 1..self.edge(second_edge_idx).geometry.len() {
+                new_geom.push(self.edge(second_edge_idx).geometry[i]);
             }
 
             // Update the first edge to span the whole distance
             self.edges[first_edge_idx].end_node = target_start_node;
             self.edges[first_edge_idx].geometry = new_geom;
             // Also combine physical geometry to keep lengths and rendering stable until next rebuild
-            let mut new_phys = self.edges[first_edge_idx].physical_geometry.clone();
-            if !self.edges[second_edge_idx].physical_geometry.is_empty() {
-                new_phys.extend_from_slice(&self.edges[second_edge_idx].physical_geometry[1..]);
+            let mut new_phys = self.edge(first_edge_idx).physical_geometry.clone();
+            if !self.edge(second_edge_idx).physical_geometry.is_empty() {
+                new_phys.extend_from_slice(&self.edge(second_edge_idx).physical_geometry[1..]);
             }
             self.edges[first_edge_idx].physical_geometry = new_phys;
             self.edges[first_edge_idx].physical_length =
@@ -259,8 +260,8 @@ impl RegionGraph {
         if keep == remove {
             return;
         }
-
-        let new_pos = self.nodes[keep as usize].pos;
+ 
+        let new_pos = self.node(keep).pos;
         self.node_aliases.insert(remove, keep);
 
         // Merging two network pieces transforms any restrictive node type into a Junction
@@ -307,18 +308,18 @@ impl RegionGraph {
     /// (e.g. `move_network_node_internal`) must call `rebuild_intersection_clips` explicitly.
     /// The topology path (`process_intersections` → `add_road`) calls it after all splits.
     pub fn move_node(&mut self, node_id: u32, new_pos: Vector3) {
-        let old_pos = self.nodes[node_id as usize].pos;
+        let old_pos = self.node(node_id).pos;
         let delta = new_pos - old_pos;
 
         self.remove_node_from_spatial_index(node_id, old_pos);
         self.nodes[node_id as usize].pos = new_pos;
         self.add_node_to_spatial_index(node_id);
-
+ 
         // Collect connected edges via adjacency list — O(degree), not O(E).
-        let connected: Vec<usize> = self.adjacency[node_id as usize]
+        let connected: Vec<usize> = self.node_adjacency(node_id)
             .iter()
             .copied()
-            .filter(|&i| !self.edges[i].deleted)
+            .filter(|&i| !self.edge(i).deleted)
             .collect();
 
         // Pre-remove from spatial index while geometry/physical_geometry still have old values.
@@ -380,13 +381,13 @@ fn snap_new_edge_endpoint_to_intersection(
     pos: Vector3,
 ) -> u32 {
     let node_id = graph.get_valid_node(if at_start {
-        graph.edges[edge_id].start_node
+        graph.edge(edge_id).start_node
     } else {
-        graph.edges[edge_id].end_node
+        graph.edge(edge_id).end_node
     });
-    let active_degree = graph.adjacency[node_id as usize]
+    let active_degree = graph.node_adjacency(node_id)
         .iter()
-        .filter(|&&incident_edge| !graph.edges[incident_edge].deleted)
+        .filter(|&&incident_edge| !graph.edge(incident_edge).deleted)
         .count();
     if active_degree == 1 {
         graph.move_node(node_id, pos);
@@ -415,7 +416,7 @@ pub fn process_intersections(
     // the new edge — avoids the O(E) full scan.
     let (mut min_x, mut max_x, mut min_z, mut max_z) =
         (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
-    for p in &graph.edges[edge_id].geometry {
+    for p in &graph.edge(edge_id).geometry {
         min_x = min_x.min(p.x);
         max_x = max_x.max(p.x);
         min_z = min_z.min(p.z);
@@ -429,9 +430,9 @@ pub fn process_intersections(
         godot::prelude::Vector3::new(max_x + pad, 0.0, max_z + pad),
     );
     // Downsample new edge once for crossing detection — endpoints are preserved.
-    let edge1_geo_ds = downsample(&graph.edges[edge_id].geometry, ISECT_MIN_STEP);
+    let edge1_geo_ds = downsample(&graph.edge(edge_id).geometry, ISECT_MIN_STEP);
     // Remember original length so endpoint factors reference the correct segment count.
-    let edge1_original_len = graph.edges[edge_id].geometry.len();
+    let edge1_original_len = graph.edge(edge_id).geometry.len();
     let dt_aabb_us = t_aabb.elapsed().as_micros();
     let n_candidates = candidates.len();
     let n_edge1_pts = graph.edges[edge_id].geometry.len();
@@ -441,13 +442,13 @@ pub fn process_intersections(
     let mut n_cross_iters = 0u32;
     let mut n_cand2_max_ds = 0usize; // largest ds-point-count seen among candidates
     for other_id in candidates {
-        if graph.edges[other_id].deleted {
+        if graph.edge(other_id).deleted {
             continue;
         }
 
         // Full-resolution clone: used for (a) endpoint snapping and (b) mapping
         // detected crossing positions back to original-geometry factors.
-        let edge2_geo_full = graph.edges[other_id].geometry.clone();
+        let edge2_geo_full = graph.edge(other_id).geometry.clone();
         // Downsampled: used for the O(segs²) crossing inner loop only.
         let edge2_geo_ds = downsample(&edge2_geo_full, ISECT_MIN_STEP);
         if edge2_geo_ds.len() > n_cand2_max_ds { n_cand2_max_ds = edge2_geo_ds.len(); }
@@ -492,10 +493,10 @@ pub fn process_intersections(
                     }
 
                     let pos = p1;
-
+ 
                     // Map approximate position back to original-geometry factors so
                     // split_edge receives a correct segment index.
-                    let factor_t = find_geo_factor(&graph.edges[edge_id].geometry, pos);
+                    let factor_t = find_geo_factor(&graph.edge(edge_id).geometry, pos);
                     let factor_u = find_geo_factor(&edge2_geo_full, pos);
 
                     let junction_id = find_or_add_intersection_node(graph, pos);
@@ -557,7 +558,7 @@ pub fn process_intersections(
 
     // 2. Process splits for each edge
     for (eid, mut splits) in all_splits {
-        let geo_len = graph.edges[eid].geometry.len();
+        let geo_len = graph.edge(eid).geometry.len();
         splits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
         // Only dedup if it's the EXACT same junction ID to avoid skipping nearby splits
         splits.dedup_by(|a, b| a.1 == b.1);
@@ -567,14 +568,14 @@ pub fn process_intersections(
             let sub_t = factor.fract();
 
             if factor < 0.1 {
-                let start_node = graph.edges[eid].start_node;
-                network.mark_point_dirty(graph.nodes[start_node as usize].pos);
+                let start_node = graph.edge(eid).start_node;
+                network.mark_point_dirty(graph.node(start_node).pos);
                 graph.unite_nodes(junction_id, start_node);
                 continue;
             }
             if factor > (geo_len - 1) as f32 - 0.1 {
-                let end_node = graph.edges[eid].end_node;
-                network.mark_point_dirty(graph.nodes[end_node as usize].pos);
+                let end_node = graph.edge(eid).end_node;
+                network.mark_point_dirty(graph.node(end_node).pos);
                 graph.unite_nodes(junction_id, end_node);
                 continue;
             }
@@ -615,10 +616,10 @@ pub fn split_edge(
     zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
     allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
 ) {
-    let old_edge = &graph.edges[edge_id];
+    let old_edge = graph.edge(edge_id);
     let geometry = &old_edge.geometry;
     let _length = old_edge.physical_length;
-    let split_pos = graph.nodes[junction_node_id as usize].pos;
+    let split_pos = graph.node(junction_node_id).pos;
 
     // Physical distance guard: Don't split if too close to either end (e.g. < 0.2m)
     let start_pos = geometry[0];
@@ -700,8 +701,8 @@ pub fn split_edge(
     zoning.split_edge_grid(edge_id, new_edge_id, split_x);
 
     // 2. Migrate Buildings
-    let new_len_first = graph.edges[edge_id].physical_length;
-    let new_len_second = graph.edges[new_edge_id].physical_length;
+    let new_len_first = graph.edge(edge_id).physical_length;
+    let new_len_second = graph.edge(new_edge_id).physical_length;
     for b in &mut allocator.buildings {
         if b.edge_idx == edge_id {
             if b.cell_x >= split_x {

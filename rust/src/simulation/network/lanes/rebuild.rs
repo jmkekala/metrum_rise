@@ -17,7 +17,7 @@ impl LaneSystem {
         let mut lane_map: HashMap<(usize, bool, i8), usize> = HashMap::new();
 
         // 1. Build Straight Lanes for all active edges
-        for (edge_idx, edge) in graph.edges.iter().enumerate() {
+        for (edge_idx, edge) in graph.edges().iter().enumerate() {
             if edge.deleted || edge.physical_geometry.len() < 2 {
                 continue;
             }
@@ -72,7 +72,7 @@ impl LaneSystem {
         }
 
         // 2. Build Connection Lanes (Intersections)
-        for node_id in 0..graph.nodes.len() {
+        for node_id in 0..graph.node_count() {
             build_vehicle_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
             build_pedestrian_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
         }
@@ -89,8 +89,8 @@ impl LaneSystem {
         // 1. Collect nodes at both ends of every affected edge.
         let mut affected_nodes: HashSet<usize> = HashSet::new();
         for &e_id in affected_edges {
-            if e_id < graph.edges.len() && !graph.edges[e_id].deleted {
-                let e = &graph.edges[e_id];
+            if e_id < graph.edge_count() && !graph.edge(e_id).deleted {
+                let e = graph.edge(e_id);
                 affected_nodes.insert(e.start_node as usize);
                 affected_nodes.insert(e.end_node as usize);
             }
@@ -99,9 +99,9 @@ impl LaneSystem {
         // 2. Expand: also rebuild edges incident to affected nodes.
         let mut rebuild_set: HashSet<usize> = affected_edges.clone();
         for &node_id in &affected_nodes {
-            if node_id < graph.adjacency.len() {
-                for &e_id in &graph.adjacency[node_id] {
-                    if !graph.edges[e_id].deleted {
+            if node_id < graph.node_adjacency_count() {
+                for &e_id in graph.node_adjacency(node_id as u32) {
+                    if !graph.edge(e_id).deleted {
                         rebuild_set.insert(e_id);
                     }
                 }
@@ -115,8 +115,8 @@ impl LaneSystem {
 
         // 4. Clear next_lanes on non-orphaned lanes at affected nodes.
         for &node_id in &affected_nodes {
-            if node_id >= graph.adjacency.len() { continue; }
-            for &e_id in &graph.adjacency[node_id] {
+            if node_id >= graph.node_adjacency_count() { continue; }
+            for &e_id in graph.node_adjacency(node_id as u32) {
                 if let Some(lane_ids) = self.edge_lanes.get(&e_id) {
                     let ids: Vec<usize> = lane_ids.clone();
                     for lid in ids {
@@ -130,8 +130,8 @@ impl LaneSystem {
 
         // 6. Append new straight lanes for every edge in rebuild_set.
         for &edge_idx in &rebuild_set {
-            if edge_idx >= graph.edges.len() { continue; }
-            let edge = &graph.edges[edge_idx];
+            if edge_idx >= graph.edge_count() { continue; }
+            let edge = graph.edge(edge_idx);
             if edge.deleted || edge.physical_geometry.len() < 2 { continue; }
 
             let mut edge_lane_indices = Vec::new();
@@ -175,7 +175,7 @@ impl LaneSystem {
 
         // 7 & 8. Rebuild connections for every affected node.
         for &node_id in &affected_nodes {
-            if node_id < graph.nodes.len() {
+            if node_id < graph.node_count() {
                 build_vehicle_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
                 build_pedestrian_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
             }

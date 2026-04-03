@@ -14,39 +14,39 @@ pub fn build_vehicle_connections_at_node(
     let mut inbound: Vec<(usize, i8, usize)> = Vec::new();
     let mut outbound: Vec<(usize, i8, usize)> = Vec::new();
 
-    for e_idx in &graph.adjacency[node_id] {
-        let edge = &graph.edges[*e_idx];
+    for &e_idx in graph.node_adjacency(node_id as u32) {
+        let edge = graph.edge(e_idx);
         if edge.deleted { continue; }
 
         if edge.start_node as usize == node_id {
             for l in 0..edge.fwd_lanes {
-                if let Some(&lid) = lane_map.get(&(*e_idx, true, l as i8)) {
-                    outbound.push((*e_idx, l as i8, lid));
+                if let Some(&lid) = lane_map.get(&(e_idx, true, l as i8)) {
+                    outbound.push((e_idx, l as i8, lid));
                 }
             }
             for l in 0..edge.bkw_lanes {
-                if let Some(&lid) = lane_map.get(&(*e_idx, false, -(l as i8) - 1)) {
-                    inbound.push((*e_idx, -(l as i8) - 1, lid));
+                if let Some(&lid) = lane_map.get(&(e_idx, false, -(l as i8) - 1)) {
+                    inbound.push((e_idx, -(l as i8) - 1, lid));
                 }
             }
         }
 
         if edge.end_node as usize == node_id {
             for l in 0..edge.fwd_lanes {
-                if let Some(&lid) = lane_map.get(&(*e_idx, true, l as i8)) {
-                    inbound.push((*e_idx, l as i8, lid));
+                if let Some(&lid) = lane_map.get(&(e_idx, true, l as i8)) {
+                    inbound.push((e_idx, l as i8, lid));
                 }
             }
             for l in 0..edge.bkw_lanes {
-                if let Some(&lid) = lane_map.get(&(*e_idx, false, -(l as i8) - 1)) {
-                    outbound.push((*e_idx, -(l as i8) - 1, lid));
+                if let Some(&lid) = lane_map.get(&(e_idx, false, -(l as i8) - 1)) {
+                    outbound.push((e_idx, -(l as i8) - 1, lid));
                 }
             }
         }
     }
 
-    let lane_conns = &graph.nodes[node_id].lane_connections;
-    let node_deg = graph.adjacency[node_id].len();
+    let lane_conns = &graph.node(node_id as u32).lane_connections;
+    let node_deg = graph.node_adjacency_count_at(node_id as u32);
 
     for &(in_edge_id, in_lane_idx, in_lane_id) in &inbound {
         let mut allowed: Option<Vec<(usize, i8)>> = lane_conns.get(&(in_edge_id, in_lane_idx)).cloned();

@@ -82,7 +82,7 @@ impl CchGraph {
 
     /// Builds a new CCH from the provided road network.
     pub fn build(graph: &RegionGraph) -> Self {
-        let n = graph.nodes.len();
+        let n = graph.node_count();
         if n == 0 {
             return Self::new(0);
         }
@@ -96,9 +96,9 @@ impl CchGraph {
     }
 
     fn compute_node_order(&mut self, graph: &RegionGraph) {
-        let n = graph.nodes.len();
+        let n = graph.node_count();
         let mut adj: Vec<HashSet<u32>> = vec![HashSet::new(); n];
-        for edge in &graph.edges {
+        for edge in graph.edges() {
             if edge.deleted {
                 continue;
             }
@@ -182,9 +182,9 @@ impl CchGraph {
     }
 
     fn contract(&mut self, graph: &RegionGraph) {
-        let n = graph.nodes.len();
+        let n = graph.node_count();
 
-        for (edge_idx, edge) in graph.edges.iter().enumerate() {
+        for (edge_idx, edge) in graph.edges().iter().enumerate() {
             if edge.deleted {
                 continue;
             }
@@ -258,8 +258,8 @@ impl CchGraph {
                         continue;
                     }
 
-                    if !graph.nodes[u as usize].lane_connections.is_empty() {
-                        let conn = &graph.nodes[u as usize].lane_connections;
+                    if !graph.node(u).lane_connections.is_empty() {
+                        let conn = &graph.node(u).lane_connections;
                         let mut allowed = false;
                         for (&(e_from, _), targets) in conn {
                             if e_from == s_in_last {
@@ -382,7 +382,7 @@ impl CchGraph {
     /// correctly propagates costs bottom-up without needing to traverse `inner_edges`.
     pub fn customize(&mut self, graph: &RegionGraph) {
         let mut max_speed = 1.0_f32;
-        for edge in &graph.edges {
+        for edge in graph.edges() {
             if !edge.deleted {
                 max_speed = max_speed.max(edge.speed_limit);
             }
@@ -396,7 +396,7 @@ impl CchGraph {
             if self.shortcuts[idx].mid_l == usize::MAX {
                 // Direct shortcut: cost comes from the base edge.
                 let e_idx = self.shortcuts[idx].base_edge;
-                let edge = &graph.edges[e_idx];
+                let edge = graph.edge(e_idx);
                 let cost = edge.base_cost * (1.0 + edge.current_congestion);
                 let dist = edge.physical_length;
                 self.shortcuts[idx].cost = cost;
@@ -413,7 +413,7 @@ impl CchGraph {
         }
 
         // Prune fwd_up and bwd_up following elimination tree order
-        for rank in 0..graph.nodes.len() {
+        for rank in 0..graph.node_count() {
             let u = self.node_order[rank] as usize;
 
             // Deduplicate fwd_up[u]: best shortcut per (target, first_edge, last_edge)
@@ -637,7 +637,7 @@ impl CchGraph {
         let mut nodes = vec![start];
         let mut curr_n = start;
         for &e_idx in &full_edges {
-            let edge = &graph.edges[e_idx];
+            let edge = graph.edge(e_idx);
             curr_n = if edge.start_node == curr_n {
                 edge.end_node
             } else {
@@ -662,7 +662,7 @@ impl CchGraph {
         if in_edge == usize::MAX || out_edge == usize::MAX {
             return true;
         }
-        let node_data = &graph.nodes[node as usize];
+        let node_data = graph.node(node);
         if node_data.lane_connections.is_empty() {
             return true;
         }

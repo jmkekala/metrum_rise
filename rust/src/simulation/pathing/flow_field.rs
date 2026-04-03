@@ -70,17 +70,17 @@ impl FlowField {
         graph: &RegionGraph,
         flags: u8,
     ) -> Self {
-        let node_count = graph.nodes.len();
+        let node_count = graph.node_count();
         let mut dist = vec![f32::INFINITY; node_count];
         let mut next_node = vec![u32::MAX; node_count];
         let mut nearest_building = vec![usize::MAX; node_count];
 
-        // Build reverse adjacency: rev_adj[u] = [(v, cost)] meaning
+        // Reverse adjacency: rev_adj[u] = [(v, cost)] meaning
         // "the original graph has edge v → u with this cost, so in the
         //  reverse graph u → v costs the same."
         // When we process u from the heap, we update v: from v, go to u.
         let mut rev_adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); node_count];
-        for edge in &graph.edges {
+        for edge in graph.edges() {
             if edge.deleted {
                 continue;
             }

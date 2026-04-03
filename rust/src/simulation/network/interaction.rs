@@ -38,7 +38,7 @@ pub fn get_closest_point(
     let node_snap_dist = max_dist * 2.5;
     let mut closest_node_dist = f32::MAX;
 
-    for (i, node) in graph.nodes.iter().enumerate() {
+    for (i, node) in graph.nodes().iter().enumerate() {
         if !is_canonical_node(graph, i as u32) {
             continue;
         }
@@ -68,7 +68,7 @@ pub fn get_closest_point(
     let nearby_edges = graph.get_edges_near_point(world_pos, max_dist.max(20.0));
 
     for edge_idx in nearby_edges {
-        let edge = &graph.edges[edge_idx];
+        let edge = graph.edge(edge_idx);
         if edge.deleted {
             continue;
         }
@@ -105,7 +105,7 @@ pub fn find_closest_edge(graph: &RegionGraph, pos: Vector3, max_dist: f32) -> Op
     let mut min_dist_sq = max_dist * max_dist;
 
     // Iterate over all edges to find the closest point on any segment
-    for (edge_idx, edge) in graph.edges.iter().enumerate() {
+    for (edge_idx, edge) in graph.edges().iter().enumerate() {
         if edge.deleted {
             continue;
         }
@@ -132,7 +132,7 @@ pub fn get_closest_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) 
     let mut closest_node = None;
     let mut min_dist_sq = max_dist * max_dist;
 
-    for (i, node) in graph.nodes.iter().enumerate() {
+    for (i, node) in graph.nodes().iter().enumerate() {
         if !is_canonical_node(graph, i as u32) {
             continue;
         }

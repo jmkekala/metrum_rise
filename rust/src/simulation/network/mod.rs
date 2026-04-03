@@ -152,8 +152,8 @@ impl TransitNetwork {
         );
 
         // Snap geometry to nodes
-        simplified_points[0] = graph.nodes[start_id as usize].pos;
-        simplified_points[count - 1] = graph.nodes[end_id as usize].pos;
+        simplified_points[0] = graph.node(start_id).pos;
+        simplified_points[count - 1] = graph.node(end_id).pos;
 
         // TAUBIN SMOOTHING (Volume-Preserving Harmonic Conformance)
         // Irons out any kinks caused by Start/End node snapping without shrinking the spline.
@@ -187,7 +187,7 @@ impl TransitNetwork {
         // 3. Create a single edge from start to end with the full simplified geometry.
         {
             let last_idx = simplified_points.len() - 1;
-            simplified_points[last_idx] = graph.nodes[end_id as usize].pos;
+            simplified_points[last_idx] = graph.node(end_id).pos;
             self.create_edge_internal(
                 graph,
                 start_id,
@@ -263,7 +263,7 @@ impl TransitNetwork {
         });
 
         let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(
-            &graph.edges[edge_id],
+            graph.edge(edge_id),
         );
         graph.edges[edge_id].base_cost = cost;
         graph.edges[edge_id].physical_length = length;
@@ -271,15 +271,15 @@ impl TransitNetwork {
         zoning.update_edge_grid_size(edge_id, length);
         self.zoning_dirty_edges.insert(edge_id);
         self.invalidate_zoning_near_edge(edge_id, graph);
-        self.mark_point_dirty(graph.nodes[start as usize].pos);
-        self.mark_point_dirty(graph.nodes[end as usize].pos);
+        self.mark_point_dirty(graph.node(start).pos);
+        self.mark_point_dirty(graph.node(end).pos);
 
         if self.bulk_load {
             self.bulk_dirty_edges.insert(edge_id);
         }
 
-        let node_count_before = graph.nodes.len();
-        let edges_before = graph.edges.len();
+        let node_count_before = graph.node_count();
+        let edges_before = graph.edge_count();
         topology::process_intersections(self, graph, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(graph); // Clean edge_id if it's dup
 
@@ -288,19 +288,19 @@ impl TransitNetwork {
             // road placement instead of doing the full O(E) resample + R-tree rebuild.
             let mut affected_nodes: HashSet<u32> = HashSet::new();
             let mut affected_edges: HashSet<usize> = HashSet::new();
-            if !graph.edges[edge_id].deleted {
-                affected_nodes.insert(graph.get_valid_node(graph.edges[edge_id].start_node));
-                affected_nodes.insert(graph.get_valid_node(graph.edges[edge_id].end_node));
+            if !graph.edge(edge_id).deleted {
+                affected_nodes.insert(graph.get_valid_node(graph.edge(edge_id).start_node));
+                affected_nodes.insert(graph.get_valid_node(graph.edge(edge_id).end_node));
                 affected_edges.insert(edge_id);
             }
             // Junction nodes and split-half edges created during intersection processing.
-            for new_nid in node_count_before as u32..graph.nodes.len() as u32 {
+            for new_nid in node_count_before as u32..graph.node_count() as u32 {
                 affected_nodes.insert(graph.get_valid_node(new_nid));
             }
-            for new_eid in edges_before..graph.edges.len() {
-                if !graph.edges[new_eid].deleted {
-                    affected_nodes.insert(graph.get_valid_node(graph.edges[new_eid].start_node));
-                    affected_nodes.insert(graph.get_valid_node(graph.edges[new_eid].end_node));
+            for new_eid in edges_before..graph.edge_count() {
+                if !graph.edge(new_eid).deleted {
+                    affected_nodes.insert(graph.get_valid_node(graph.edge(new_eid).start_node));
+                    affected_nodes.insert(graph.get_valid_node(graph.edge(new_eid).end_node));
                     affected_edges.insert(new_eid);
                 }
             }
@@ -325,10 +325,10 @@ impl TransitNetwork {
 
     /// Marks all edges within a radius of `edge_id` as needing a zoning recalculation.
     pub fn invalidate_zoning_near_edge(&mut self, edge_id: usize, graph: &RegionGraph) {
-        if edge_id >= graph.edges.len() {
+        if edge_id >= graph.edge_count() {
             return;
         }
-        let edge = &graph.edges[edge_id];
+        let edge = graph.edge(edge_id);
         let mut min_x = f32::MAX;
         let mut max_x = f32::MIN;
         let mut min_z = f32::MAX;
@@ -377,18 +377,18 @@ impl TransitNetwork {
         }
 
         let edge_work: Vec<EdgeWork> = dirty.iter().filter_map(|&eid| {
-            if eid >= graph.edges.len() || graph.edges[eid].deleted {
+            if eid >= graph.edge_count() || graph.edge(eid).deleted {
                 return None;
             }
             let cells_long = zoning.get_edge_grid_width(eid);
             if cells_long == 0 {
                 return None;
             }
-            let all_blocked = graph.edges[eid].class != EdgeClass::Standard;
+            let all_blocked = graph.edge(eid).class != EdgeClass::Standard;
             let nearby = if all_blocked {
                 vec![]
             } else {
-                let e = &graph.edges[eid];
+                let e = graph.edge(eid);
                 let (mnx, mxx, mnz, mxz) = e.physical_geometry.iter().fold(
                     (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
                     |(a, b, c, d), p| (a.min(p.x), b.max(p.x), c.min(p.z), d.max(p.z)),
@@ -504,7 +504,7 @@ impl TransitNetwork {
         zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) -> u32 {
-        let total_len = graph.edges[edge_idx].physical_length;
+        let total_len = graph.edge(edge_idx).physical_length;
         let t_dist = t.clamp(0.0, 1.0) * total_len;
         let min_dist = crate::config::MIN_FRONTAGE_DISTANCE;
 
@@ -512,9 +512,9 @@ impl TransitNetwork {
         // 1. If within min_dist of start AND (closer to start OR exactly centered), snap to Start.
         // 2. If within min_dist of end (either directly or via tie-break), snap to End.
         let snap_node = if t_dist < min_dist && t_dist <= (total_len - t_dist) {
-            Some(graph.edges[edge_idx].start_node)
+            Some(graph.edge(edge_idx).start_node)
         } else if (total_len - t_dist) < min_dist {
-            Some(graph.edges[edge_idx].end_node)
+            Some(graph.edge(edge_idx).end_node)
         } else {
             None
         };
@@ -532,7 +532,7 @@ impl TransitNetwork {
 
         // Walk the geometry to find the segment index and 3-D position at arc-distance t.
         let target_arc = t_dist;
-        let geo: Vec<Vector3> = graph.edges[edge_idx].geometry.clone();
+        let geo: Vec<Vector3> = graph.edge(edge_idx).geometry.clone();
 
         let mut curr = 0.0_f32;
         let mut seg = geo.len().saturating_sub(2);
@@ -554,16 +554,16 @@ impl TransitNetwork {
 
         // Split the edge; migrates zoning grids and building cell_x/frontage_t in-place.
         topology::split_edge(self, graph, edge_idx, seg, 0.0, f, zoning, allocator);
-        let new_edge_id = graph.edges.len() - 1;
+        let new_edge_id = graph.edge_count() - 1;
 
         // Recompute frontage_node for all existing buildings on either half-edge.
         for b in &mut allocator.buildings {
             if b.edge_idx == edge_idx || b.edge_idx == new_edge_id {
                 let _half_cells = b.width_cells as f32 * 0.5;
                 b.frontage_node = if b.frontage_t < 0.5 {
-                    graph.edges[b.edge_idx].start_node
+                    graph.edge(b.edge_idx).start_node
                 } else {
-                    graph.edges[b.edge_idx].end_node
+                    graph.edge(b.edge_idx).end_node
                 };
             }
         }
@@ -590,8 +590,8 @@ impl TransitNetwork {
         agents: &mut crate::simulation::economy::agents::AgentSystem,
     ) {
         // Node must exist and be a virtual frontage node.
-        if frontage_node as usize >= graph.nodes.len()
-            || graph.nodes[frontage_node as usize].node_type != NodeType::Frontage
+        if frontage_node as usize >= graph.node_count()
+            || graph.node(frontage_node).node_type != NodeType::Frontage
         {
             return;
         }
@@ -605,10 +605,10 @@ impl TransitNetwork {
 
         // Measure the first-half edge (end_node == frontage_node) before the graph is mutated.
         let cell_size = zoning.config.zone_cell_m;
-        let first_half_len = graph.adjacency[frontage_node as usize]
+        let first_half_len = graph.node_adjacency(frontage_node)
             .iter()
             .find_map(|&e_idx| {
-                let e = &graph.edges[e_idx];
+                let e = graph.edge(e_idx);
                 if !e.deleted && e.end_node == frontage_node {
                     Some(e.physical_length)
                 } else {
@@ -633,7 +633,7 @@ impl TransitNetwork {
             zoning.merge_edge_grids(first_idx, second_idx);
 
             // 3. Buildings: Remap edge indices and shift cell coordinates.
-            let merged_len = graph.edges[first_idx].physical_length.max(0.001);
+            let merged_len = graph.edge(first_idx).physical_length.max(0.001);
             for b in &mut allocator.buildings {
                 if b.edge_idx == second_idx {
                     b.edge_idx = first_idx;
@@ -654,7 +654,7 @@ impl TransitNetwork {
         let mut seen = std::collections::HashSet::new();
         let mut to_remove = Vec::new();
 
-        for (i, edge) in graph.edges.iter().enumerate() {
+        for (i, edge) in graph.edges().iter().enumerate() {
             let pair = if edge.start_node < edge.end_node {
                 (edge.start_node, edge.end_node)
             } else {

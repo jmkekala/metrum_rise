@@ -20,20 +20,20 @@ impl ZoningSystem {
         }
 
         let size = self.config.zone_cell_m;
-        let edge = &graph.edges[edge_idx];
+        let edge = graph.edge(edge_idx);
 
         let t_us = (x as f32 + 0.5) * size / edge.physical_length;
 
         // 1. JUNCTION BOX GUARD
         if edge.start_clip > 0.0 {
-            let sn = graph.nodes[edge.start_node as usize].pos;
+            let sn = graph.node(edge.start_node).pos;
             let d2 = (center.x - sn.x).powi(2) + (center.y - sn.z).powi(2);
             if d2 < edge.start_clip * edge.start_clip {
                 return true;
             }
         }
         if edge.end_clip > 0.0 {
-            let en = graph.nodes[edge.end_node as usize].pos;
+            let en = graph.node(edge.end_node).pos;
             let d2 = (center.x - en.x).powi(2) + (center.y - en.z).powi(2);
             if d2 < edge.end_clip * edge.end_clip {
                 return true;
@@ -58,7 +58,7 @@ impl ZoningSystem {
             };
 
             for &i in nearby_edges {
-                let e = &graph.edges[i];
+                let e = graph.edge(i);
                 if e.deleted { continue; }
 
                 let is_self = i == edge_idx;
@@ -78,7 +78,7 @@ impl ZoningSystem {
                     } else {
                         e.end_node
                     };
-                    let conn_count = graph.adjacency[shared_node as usize].len();
+                    let conn_count = graph.node_adjacency(shared_node).len();
 
                     if conn_count <= 2 {
                         let t1 = if edge.start_node == shared_node {

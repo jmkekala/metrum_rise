@@ -166,7 +166,7 @@ impl BuildingAllocator {
             let b = &self.buildings[i];
             let remove = if let Some(_) = zoning.edge_grids.get(&b.edge_idx) {
                 let current_type = zoning.get_cell(b.edge_idx, b.side, b.cell_x, b.cell_y.into());
-                current_type != b.zone_type || graph.edges[b.edge_idx].deleted
+                current_type != b.zone_type || graph.edge(b.edge_idx).deleted
             } else {
                 true // Edge gone
             };
@@ -222,7 +222,7 @@ impl BuildingAllocator {
             if spawned_this_tick >= max_spawns {
                 break;
             }
-            let (edge_len, edge_width) = if let Some(edge) = graph.edges.get(edge_idx) {
+            let (edge_len, edge_width) = if let Some(edge) = graph.get_edge(edge_idx) {
                 if edge.deleted || edge.physical_geometry.len() < 2 {
                     (0.0, 0.0)
                 } else {
@@ -418,7 +418,7 @@ impl BuildingAllocator {
 
             // Collect all connected Border nodes as valid spawn points.
             let border_nodes: Vec<u32> = graph
-                .nodes
+                .nodes()
                 .iter()
                 .enumerate()
                 .filter_map(|(i, node)| {
@@ -427,9 +427,8 @@ impl BuildingAllocator {
                     }
                     // Only spawn from nodes that still have at least one live incident edge.
                     let connected = graph
-                        .adjacency
-                        .get(i)
-                        .map_or(false, |adj| adj.iter().any(|&e| !graph.edges[e].deleted));
+                        .node_adjacency(i as u32)
+                        .iter().any(|&e| !graph.edge(e).deleted);
                     if connected { Some(i as u32) } else { None }
                 })
                 .collect();
@@ -440,11 +439,11 @@ impl BuildingAllocator {
                     if let Some(home_idx) = _agents.find_available_home(self) {
                         let spawn_node =
                             border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
-                        let mut spawn_pos = graph.nodes[spawn_node as usize].pos;
+                        let mut spawn_pos = graph.node(spawn_node).pos;
                         
                         // Offset the spawn position to the correct lane center (RHT/LHT)
-                        if let Some(edge_idx) = graph.adjacency[spawn_node as usize].get(0) {
-                            let edge = &graph.edges[*edge_idx];
+                        if let Some(&edge_idx) = graph.node_adjacency(spawn_node).get(0) {
+                            let edge = graph.edge(edge_idx);
                             if edge.physical_geometry.len() >= 2 {
                                 let dir = if edge.start_node == spawn_node {
                                     (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
@@ -486,7 +485,7 @@ impl BuildingAllocator {
     }
 
     fn sample_pos_on_edge(graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
-        let edge = &graph.edges[edge_idx];
+        let edge = graph.edge(edge_idx);
         let geo = &edge.physical_geometry;
         if geo.is_empty() {
             return Vector2::ZERO;
@@ -514,7 +513,7 @@ impl BuildingAllocator {
     }
 
     fn sample_tangent_on_edge(graph: &RegionGraph, edge_idx: usize, t: f32) -> Vector2 {
-        let edge = &graph.edges[edge_idx];
+        let edge = graph.edge(edge_idx);
         let geo = &edge.physical_geometry;
         if geo.len() < 2 {
             return Vector2::new(1.0, 0.0);
@@ -553,15 +552,15 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
     ) -> Result<(), String> {
         for building in &mut self.buildings {
-            if building.edge_idx >= graph.edges.len() {
+            if building.edge_idx >= graph.edge_count() {
                 return Err(format!(
                     "building edge {} out of bounds for {} edges",
                     building.edge_idx,
-                    graph.edges.len()
+                    graph.edge_count()
                 ));
             }
 
-            let edge = &graph.edges[building.edge_idx];
+            let edge = graph.edge(building.edge_idx);
             if edge.physical_geometry.len() < 2 || edge.physical_length <= 1e-6 {
                 return Err(format!(
                     "building edge {} has insufficient geometry for transform rebuild",

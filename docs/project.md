@@ -51,7 +51,7 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
     - `spatial.rs`: `rstar` R-Tree for edges and 16 m uniform grid for nodes.
     - `topology.rs`: intersection detection, edge splitting, and node merging.
     - `rebuild.rs`: batch remapping, soft-deletion compaction, and intersection clipping.
-    - **Road Network (`RegionGraph`)**: Adjacency-list based directed graph with spatial acceleration via `rstar::RTree<EdgeEntry>` spatial index (Item 24). Pathfinding via Customizable Contraction Hierarchies (CCH). Supports multi-modal queries via `allowed_mask`.
+    - **Road Network (`RegionGraph`)**: Adjacency-list based directed graph with spatial acceleration via `rstar::RTree<EdgeEntry>` spatial index (Item 24). Pathfinding via Customizable Contraction Hierarchies (CCH). Supports multi-modal queries via `allowed_mask`. Fields are privatized to `pub(crate)` with a read-only public API to prevent unsafe external mutations.
 - **Bridge & Tunnel Infrastructure (Item 27)**:
     - **Structural Geometry**: Automated generation of `EdgeClass::Bridge` deck structural slabs (1m thick), vertical side walls with terrain grounding (1m sink), 10cm thick volumetric railings (1.2m tall), and supporting pillars (every 15m).
     - **Node Continuity (B_BRIDGE5)**: Bridge structural components (railings, walls, deck) are precisely clipped to the `start_clip`/`end_clip` boundaries. **End caps** (concrete faces) are generated only at dead-end terminations (node degree == 1), ensuring seamless transitions through junctions without internal obstructions.
@@ -354,7 +354,7 @@ This is a prerequisite for adding per-thread lane caching at v0.2 scale. **Targe
 
 **Target: before adding any new saved subsystem (e.g. VehicleSystem from item 39).**
 
-**R6. Privatise `RegionGraph` fields** — `RegionGraph::nodes`, `::edges`, and `::adjacency` are all `pub`, making it possible to mutate them directly from outside the `network/` module. CLAUDE.md already documents "Never mutate RegionGraph directly from outside this module" but the type system does not enforce it. A caller that writes `graph.nodes[i].pos = ...` silently breaks the CCH and spatial index. Recommended approach: make the fields `pub(crate)` and add targeted accessors (`node_pos(id)`, `edge(id)`) as the single read path for external callers. **Do this incrementally — change one field at a time, fix compile errors, commit.**
+[DONE] **R6. Privatise `RegionGraph` fields** — `RegionGraph::nodes`, `::edges`, and `::adjacency` are all `pub(crate)`, making it impossible to mutate them directly from outside the `network/` module. Read-only accessors (`node()`, `edge()`, `node_adjacency()`) provide the single read path for external callers, enforcing data isolation and protecting spatial index/CCH integrity.
 
 **R7. Group `SimulationNode` methods by domain** — `nodes/simulation_node.rs` (965 lines), `nodes/sim/query.rs` (901 lines), and `nodes/sim/render_helpers.rs` (951 lines) together expose ~100 public methods on `SimulationNode`/`SimCore` with no internal grouping. This is the Godot bridge layer so it cannot be reduced in method count, but it can be made navigable. Recommended approach: use `// ── Terrain ──`, `// ── Network ──`, `// ── Agents ──` comment section headers within each file, and add a module-level `//!` table listing every method and which Godot script calls it. No behaviour change. **Low effort, high payoff for future contributors.**
 

@@ -145,19 +145,19 @@ impl Edge {
 #[derive(Clone)]
 pub struct RegionGraph {
     /// All road nodes (junctions and endpoints). Indexed by node ID (`u32`).
-    pub nodes: Vec<Node>,
+    pub(crate) nodes: Vec<Node>,
     /// All road edges (segments). Indexed by edge ID (`usize`). Includes soft-deleted entries.
-    pub edges: Vec<Edge>,
+    pub(crate) edges: Vec<Edge>,
     /// Node alias map for the union-find structure used during node merging.
     /// Maps a node ID to its canonical representative after `unite_nodes`.
-    pub node_aliases: HashMap<u32, u32>,
+    pub(crate) node_aliases: HashMap<u32, u32>,
     /// Spatial acceleration structure for edges: RTree of EdgeEntry.
     /// Query via [`get_edges_near_point`](Self::get_edges_near_point); do not access directly.
-    pub spatial_edge_rt: RTree<EdgeEntry>,
+    pub(crate) spatial_edge_rt: RTree<EdgeEntry>,
     /// Adjacency list: node ID -> list of outgoing edge indices. Rebuilt after every road edit.
-    pub adjacency: Vec<Vec<usize>>,
+    pub(crate) adjacency: Vec<Vec<usize>>,
     /// Spatial acceleration structure for nodes: 16 m grid chunks -> node IDs.
-    pub spatial_node_grid: HashMap<(i32, i32), Vec<u32>>,
+    pub(crate) spatial_node_grid: HashMap<(i32, i32), Vec<u32>>,
 }
 
 impl RegionGraph {
@@ -171,6 +171,70 @@ impl RegionGraph {
             adjacency: Vec::new(),
             spatial_node_grid: HashMap::new(),
         }
+    }
+
+    /// Returns the total number of nodes in the graph (including any that were merged).
+    pub fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    /// Returns the total number of nodes in the adjacency list.
+    pub fn node_adjacency_count(&self) -> usize {
+        self.adjacency.len()
+    }
+
+    /// Returns the number of edges incident to a specific node.
+    pub fn node_adjacency_count_at(&self, node_id: u32) -> usize {
+        self.adjacency[node_id as usize].len()
+    }
+
+    /// Returns the total number of edges in the graph (including soft-deleted slots).
+    pub fn edge_count(&self) -> usize {
+        self.edges.len()
+    }
+
+    /// Returns a direct reference to a node by ID.
+    /// # Panics
+    /// Panics if the ID is out of bounds.
+    pub fn node(&self, id: u32) -> &Node {
+        &self.nodes[id as usize]
+    }
+
+    /// Returns a reference to a node by ID, or None if out of bounds.
+    pub fn get_node(&self, id: u32) -> Option<&Node> {
+        self.nodes.get(id as usize)
+    }
+
+    /// Returns a direct reference to an edge by ID.
+    /// # Panics
+    /// Panics if the ID is out of bounds.
+    pub fn edge(&self, id: usize) -> &Edge {
+        &self.edges[id]
+    }
+
+    /// Returns a reference to an edge by ID, or None if out of bounds.
+    pub fn get_edge(&self, id: usize) -> Option<&Edge> {
+        self.edges.get(id)
+    }
+
+    /// Returns a reference to the entire node list.
+    pub fn nodes(&self) -> &[Node] {
+        &self.nodes
+    }
+
+    /// Returns a reference to the entire edge list.
+    pub fn edges(&self) -> &[Edge] {
+        &self.edges
+    }
+
+    /// Returns a reference to the adjacency list for a specific node.
+    pub fn node_adjacency(&self, node_id: u32) -> &[usize] {
+        &self.adjacency[node_id as usize]
+    }
+
+    /// Returns the full adjacency list.
+    pub fn adjacency(&self) -> &[Vec<usize>] {
+        &self.adjacency
     }
 }
 
