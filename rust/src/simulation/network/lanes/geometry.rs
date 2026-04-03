@@ -1,0 +1,90 @@
+use godot::prelude::*;
+use std::collections::HashMap;
+use super::super::graph::Edge;
+use super::{Lane, LaneType};
+use crate::config;
+
+/// Builds the cumulative-distance prefix sum for a lane's geometry.
+pub fn build_cum_dist(geometry: &[Vector3]) -> Vec<f32> {
+    let mut v = Vec::with_capacity(geometry.len());
+    let mut acc = 0.0;
+    for i in 0..geometry.len() {
+        if i > 0 {
+            acc += geometry[i - 1].distance_to(geometry[i]);
+        }
+        v.push(acc);
+    }
+    v
+}
+
+/// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and `edge_lane_indices`.
+pub fn build_one_lane(
+    lanes: &mut Vec<Lane>,
+    lane_map: &mut HashMap<(usize, bool, i8), usize>,
+    edge_lane_indices: &mut Vec<usize>,
+    edge_idx: usize,
+    edge: &Edge,
+    is_fwd: bool,
+    lane_idx: i8,
+    lane_type: LaneType,
+    lane_offset: f32,
+) {
+    let pts = &edge.physical_geometry;
+    let mut geometry = Vec::with_capacity(pts.len());
+
+    let mut dir0 = pts[1] - pts[0];
+    dir0.y = 0.0;
+    let t0 = if dir0.length() > 1e-5 { dir0.normalized() } else { Vector3::new(1.0, 0.0, 0.0) };
+    let n0 = Vector3::new(-t0.z, 0.0, t0.x);
+    geometry.push(pts[0] + n0 * lane_offset);
+
+    for j in 1..pts.len() - 1 {
+        let mut d1 = pts[j] - pts[j - 1];
+        let mut d2 = pts[j + 1] - pts[j];
+        d1.y = 0.0;
+        d2.y = 0.0;
+        let t1 = if d1.length() > 1e-5 { d1.normalized() } else { t0 };
+        let t2 = if d2.length() > 1e-5 { d2.normalized() } else { t1 };
+        let n1 = Vector3::new(-t1.z, 0.0, t1.x);
+        let n2 = Vector3::new(-t2.z, 0.0, t2.x);
+        let bisect = (n1 + n2).normalized();
+        let dot = n1.dot(bisect).max(0.1);
+        geometry.push(pts[j] + bisect * (lane_offset / dot));
+    }
+
+    let mut d_last = pts[pts.len() - 1] - pts[pts.len() - 2];
+    d_last.y = 0.0;
+    let t_last = if d_last.length() > 1e-5 { d_last.normalized() } else { t0 };
+    let n_last = Vector3::new(-t_last.z, 0.0, t_last.x);
+    geometry.push(pts[pts.len() - 1] + n_last * lane_offset);
+
+    if !is_fwd {
+        geometry.reverse();
+    }
+
+    let mut length = 0.0;
+    for j in 0..geometry.len() - 1 {
+        length += geometry[j].distance_to(geometry[j + 1]);
+    }
+
+    let cum_dist = build_cum_dist(&geometry);
+    let new_lane_id = lanes.len();
+    lanes.push(Lane {
+        edge_id: edge_idx,
+        is_fwd,
+        lane_idx,
+        geometry,
+        length,
+        cum_dist,
+        lane_type,
+        is_crosswalk: false,
+        next_lanes: Vec::new(),
+    });
+    lane_map.insert((edge_idx, is_fwd, lane_idx), new_lane_id);
+    edge_lane_indices.push(new_lane_id);
+}
+
+/// Returns the half-width of the road asphalt based on the number of lanes.
+pub fn road_half_width(edge: &Edge) -> f32 {
+    ((edge.fwd_lanes + edge.bkw_lanes) as f32) * config::LANE_WIDTH * 0.5
+}

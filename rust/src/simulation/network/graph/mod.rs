@@ -6,7 +6,5 @@ pub mod data;
 pub mod rebuild;
 /// Chunk-based spatial index for fast distance and AABB queries.
 pub mod spatial;
-/// Topology operations (edge splitting, merging).
-pub mod topology;
 
 pub use data::{verify_intersection_geometry, Edge, Node, RegionGraph};

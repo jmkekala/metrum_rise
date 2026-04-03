@@ -317,9 +317,9 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 Structural issues identified during codebase review (2026-04-03). None are correctness bugs — they are maintenance debt that compounds as features are added. Ordered by recommended priority.
 
-**R1. Consolidate the two `topology.rs` files** — `simulation/network/graph/topology.rs` (310 lines) and `simulation/network/topology.rs` (535 lines) both contain intersection detection and edge-clipping logic. This is a sign of an incomplete earlier refactor. One of them should absorb the other: keep `network/topology.rs` (the higher-level one that drives `process_intersections`) and fold any non-duplicate helpers from `graph/topology.rs` into it, then delete the sub-module file. No behaviour change. Low effort. **Do this the next time either file is touched.**
+[DONE] **R1. Consolidate the two `topology.rs` files** — `simulation/network/graph/topology.rs` (310 lines) and `simulation/network/topology.rs` (535 lines) both contain intersection detection and edge-clipping logic. This is a sign of an incomplete earlier refactor. One of them should absorb the other: keep `network/topology.rs` (the higher-level one that drives `process_intersections`) and fold any non-duplicate helpers from `graph/topology.rs` into it, then delete the sub-module file. No behaviour change. Low effort.
 
-**R2. Split `simulation/network/lanes.rs` (1458 lines)** — one struct doing four unrelated things: lane geometry generation, vehicle junction connections, pedestrian junction connections, and incremental rebuild orchestration. Recommended split:
+[DONE] **R2. Split `simulation/network/lanes.rs` (1458 lines)** — one struct doing four unrelated things: lane geometry generation, vehicle junction connections, pedestrian junction connections, and incremental rebuild orchestration. Recommended split:
 - `lanes/geometry.rs` — `build_one_lane`, cumulative-distance helpers
 - `lanes/vehicle_junctions.rs` — vehicle connection rules and defaults
 - `lanes/pedestrian_junctions.rs` — sidewalk mouth classification, crosswalk logic
@@ -328,7 +328,7 @@ Structural issues identified during codebase review (2026-04-03). None are corre
 
 This is a prerequisite for adding per-thread lane caching at v0.2 scale. **Target: before adding any new lane type or junction rule.**
 
-**R3. Split `simulation/grid/zoning.rs` (1758 lines)** — `ZoningSystem` has 94 methods across four unrelated concerns. Recommended split:
+[DONE] **R3. Split `simulation/grid/zoning.rs` (1758 lines)** — `ZoningSystem` has 94 methods across four unrelated concerns. Recommended split:
 - `zoning/grid.rs` — `EdgeZoning` storage struct, cell accessors, split/merge
 - `zoning/obstruction.rs` — `is_cell_obstructed`, Voronoi ownership, splay check
 - `zoning/block.rs` — block-depth and block-ID allocation logic
