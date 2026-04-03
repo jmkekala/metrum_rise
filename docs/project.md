@@ -345,7 +345,7 @@ This is a prerequisite for adding per-thread lane caching at v0.2 scale. **Targe
 
 **Target: before adding any new road class (rail, elevated, tunnel portal).** This is the highest-risk file for new-feature collisions.
 
-**R5. Split `simulation/save.rs` (1928 lines)** — SQLite schema definitions, per-subsystem serialisation (terrain, water, network, zoning, buildings, agents), deserialisation with migration, and transaction batching are all in one file. A schema change to any one subsystem requires understanding the entire file. Recommended split:
+[DONE] **R5. Split `simulation/save.rs` (1928 lines)** — SQLite schema definitions, per-subsystem serialisation (terrain, water, network, zoning, buildings, agents), deserialisation with migration, and transaction batching are all in one file. A schema change to any one subsystem requires understanding the entire file. Recommended split:
 - `save/schema.rs` — `CREATE TABLE` statements and migration constants
 - `save/network.rs` — road graph + lane connection save/load
 - `save/agents.rs` — agent SoA save/load

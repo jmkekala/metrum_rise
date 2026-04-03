@@ -48,8 +48,6 @@ fn build_shared() -> SharedSetup {
         end_clip: 0.0,
         geometry: geometry.clone(),
         physical_geometry: geometry,
-        zoning_left: false,
-        zoning_right: false,
         class: EdgeClass::Standard,
         deleted: false,
     };
@@ -88,6 +86,9 @@ fn make_idle_agent(shared: &SharedSetup) -> Agent {
         current_path_index: 0,
         has_car: true,
         vehicle_type: VEHICLE_SEDAN,
+        pedestrian_type: 0,
+        speed: 4.0,
+        walk_phase: 0.0,
     }
 }
 
@@ -120,6 +121,9 @@ fn make_on_road_agent(shared: &SharedSetup, bounce_path: Vec<u32>, progression: 
         current_path_index: 1, // [0] = origin node, [1] = first target
         has_car: true,
         vehicle_type: VEHICLE_SEDAN,
+        pedestrian_type: 0,
+        speed: 20.0,
+        walk_phase: 0.0,
     }
 }
 
