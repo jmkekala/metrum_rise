@@ -1,4 +1,18 @@
 //! Rendering and visual helper logic for Godot interaction.
+//!
+//! ### Method Mapping
+//!
+//! | Category | Method | Godot Caller |
+//! |----------|--------|--------------|
+//! | **Zoning**    | `update_zoning_visuals_internal` | `zoning_tool.gd` |
+//! |              | `get_persistent_zoning_instances_internal` | `zoning_renderer.gd` |
+//! | **Agents**    | `get_agent_transforms_internal`   | `agent_renderer.gd` |
+//! |              | `get_car_transforms_internal`     | `agent_renderer.gd` |
+//! |              | `get_agent_paths_debug_internal`  | `agents.gd` (Draw3D debug) |
+//! | **Buildings** | `get_building_transforms_internal` | `building_renderer.gd` |
+//! |              | `get_building_plot_transforms_internal` | `building_renderer.gd` |
+//! | **Network**   | `get_road_mesh_data_internal`     | `network_renderer.gd` |
+//! |              | `get_connection_rust`             | Internal (Zoning) |
 
 use crate::config::ZONING_DEPTH;
 use crate::nodes::sim::core::SimCore;
@@ -7,6 +21,8 @@ use godot::classes::MultiMesh;
 use godot::prelude::*;
 
 impl SimCore {
+    // ── Zoning Renderer ──
+
     /// Updates the zoning visual MultiMeshes for tool feedback.
     ///
     /// `hovered_edges` is a pre-converted `Vec<i32>` (the Godot-side wrapper converts
@@ -434,6 +450,8 @@ impl SimCore {
         }
     }
 
+    // ── Terrain ──
+
     /// Returns the visual alpha for a zoning cell at a given depth.
     pub fn get_depth_alpha(&self, y: i32) -> f32 {
         if y < 4 {
@@ -443,6 +461,8 @@ impl SimCore {
         let t = (y - 4) as f32 / (zoning_depth - 1 - 4) as f32;
         1.0 + t * (0.1 - 1.0)
     }
+
+    // ── Agent Renderer ──
 
     /// Returns the 12-float transforms for all visible non-car agents.
     /// Kept for direct (non-snapshot) callers; `build_snapshot` is the hot path.
@@ -702,6 +722,8 @@ impl SimCore {
         dict
     }
 
+    // ── Building Renderer ──
+
     /// Returns the 12-float transforms for building MultiMeshes.
     pub fn get_building_transforms_internal(&self, zone_type_int: u8, variant: u8) -> PackedFloat32Array {
         let target_zone = match zone_type_int {
@@ -830,7 +852,9 @@ impl SimCore {
         PackedFloat32Array::from_iter(buffer)
     }
 
-    /// Returns a dictionary containing all road mesh geometry for Godot.
+    // ── Network Renderer ──
+
+    /// Returns dictionary of road/intersection mesh data.
     pub fn get_road_mesh_data_internal(&self) -> VarDictionary {
         let mesh_data = self
             .transit_network

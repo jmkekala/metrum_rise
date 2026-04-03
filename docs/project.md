@@ -356,7 +356,7 @@ This is a prerequisite for adding per-thread lane caching at v0.2 scale. **Targe
 
 [DONE] **R6. Privatise `RegionGraph` fields** — `RegionGraph::nodes`, `::edges`, and `::adjacency` are all `pub(crate)`, making it impossible to mutate them directly from outside the `network/` module. Read-only accessors (`node()`, `edge()`, `node_adjacency()`) provide the single read path for external callers, enforcing data isolation and protecting spatial index/CCH integrity.
 
-**R7. Group `SimulationNode` methods by domain** — `nodes/simulation_node.rs` (965 lines), `nodes/sim/query.rs` (901 lines), and `nodes/sim/render_helpers.rs` (951 lines) together expose ~100 public methods on `SimulationNode`/`SimCore` with no internal grouping. This is the Godot bridge layer so it cannot be reduced in method count, but it can be made navigable. Recommended approach: use `// ── Terrain ──`, `// ── Network ──`, `// ── Agents ──` comment section headers within each file, and add a module-level `//!` table listing every method and which Godot script calls it. No behaviour change. **Low effort, high payoff for future contributors.**
+[DONE] **R7. Group `SimulationNode` methods by domain** — Added `// ── Domain ──` headers and navigable mapping tables in `simulation_node.rs`, `query.rs`, and `render_helpers.rs`.
 
 **R8. Tighten `AgentSystem` / `tick.rs` (921 lines)** — the FSM state machine, IDM physics, lane bucket management, pedestrian routing, and Rayon dispatch are all in one function. The immediate win is to extract the three major phases into named private functions:
 - `fn build_conn_occupied_snapshot(...)` (already somewhat isolated)

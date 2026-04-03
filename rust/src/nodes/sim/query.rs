@@ -1,4 +1,31 @@
 //! Spatial queries and projection helpers for the simulation node.
+//!
+//! ### Method Mapping
+//!
+//! | Category | Method | Godot Caller |
+//! |----------|--------|--------------|
+//! | **Stats**    | `get_city_demographics_internal` | `hud.gd` |
+//! |              | `get_demand_stats_internal`      | `hud.gd` |
+//! | **Terrain**  | `get_height_at_internal`         | `road_tool.gd`, `building_tool.gd` |
+//! |              | `get_heightmap_size_internal`    | `main.gd` |
+//! |              | `intersect_terrain_internal`     | `input_manager.gd` (mouse pick) |
+//! | **Network**  | `get_closest_network_point_internal` | `road_tool.gd`, `zoning_tool.gd` |
+//! |              | `get_closest_node_internal`      | `road_tool.gd`, `zoning_tool.gd` |
+//! |              | `get_node_pos_internal`          | `junction_tool.gd` |
+//! |              | `get_node_lanes_internal`        | `junction_tool.gd` |
+//! |              | `get_lane_connections_array_internal` | `junction_tool.gd` |
+//! |              | `get_node_connection_count_internal` | `junction_tool.gd` |
+//! |              | `get_network_nodes_internal`     | `main.gd` |
+//! |              | `get_hovered_edge_internal`      | `zoning_tool.gd` |
+//! |              | `get_max_polygon_depth_internal` | `zoning_tool.gd` |
+//! |              | `get_closest_point_on_edge_internal` | `zoning_tool.gd` |
+//! |              | `get_edge_geometry_internal`     | `zoning_tool.gd` |
+//! |              | `get_curved_frontage_internal`   | `zoning_tool.gd` |
+//! |              | `get_network_direction_at_point_internal` | `road_tool.gd` |
+//! |              | `get_edge_pos_and_tangent`       | Internal (Zoning/Render) |
+//! |              | `get_projection_data`            | Internal (Network) |
+//! |              | `get_obstacle_polygons_internal` | `zoning_tool.gd` |
+//! |              | `get_border_nodes_internal`      | `road_tool.gd` |
 
 use crate::config::{HEIGHT_SCALE, ZONING_DEPTH};
 use crate::nodes::sim::core::SimCore;
@@ -124,6 +151,9 @@ impl SimCore {
             godot::prelude::Vector2::new(1.0, 0.0),
         )
     }
+
+    // ── Network ──
+
 
     /// Returns obstacle polygons for zoning tool overlap checks.
     pub fn get_obstacle_polygons_internal(
@@ -412,6 +442,7 @@ impl SimCore {
         }
     }
 
+
     /// Returns the physical geometry of a road edge as a sequence of points.
     pub fn get_edge_geometry_internal(&self, edge_idx: i32) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
@@ -542,6 +573,9 @@ impl SimCore {
         arr
     }
 
+
+    // ── Terrain ──
+
     /// Returns the terrain height at the given world position.
     pub fn get_height_at_internal(&self, pos: Vector2) -> f32 {
         let size = self.get_heightmap_size_internal();
@@ -551,6 +585,8 @@ impl SimCore {
         let gz = pos.y + hh;
         self.heightmap.get_height_interpolated(gx, gz) * HEIGHT_SCALE
     }
+
+    // ── Stats ──
 
     /// Returns the demographic statistics for the city.
     pub fn get_city_demographics_internal(&self) -> VarDictionary {

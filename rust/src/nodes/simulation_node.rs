@@ -1,9 +1,43 @@
-//! Main GDExtension node for the Metrum Rise simulation.
-//!
-//! This node is a thin Godot bridge. All simulation state lives in `SimCore`
-//! (owned behind `Arc<Mutex<SimCore>>`), which is ticked continuously by a
 //! dedicated background thread. The render thread reads only from a
 //! `RenderSnapshot` that the sim thread writes after each tick.
+//!
+//! ### Method Mapping
+//!
+//! | Category | Method | Godot Caller |
+//! |----------|--------|--------------|
+//! | **System** | `undo_action` | `input_manager.gd` |
+//! | | `save_game` | `input_manager.gd`, `main.gd` |
+//! | | `load_game` | `input_manager.gd`, `main.gd` |
+//! | | `get_perf_stats` | `debug_panel.gd` |
+//! | **Environment** | `get_pollution_image_data` | `overlay_manager.gd` |
+//! | | `get_noise_image_data` | `overlay_manager.gd` |
+//! | | `get_desirability_image_data` | `overlay_manager.gd` |
+//! | **Terrain** | `sculpt_terrain` | `terrain_tool.gd` |
+//! | | `is_terrain_dirty` | `terrain_renderer.gd` |
+//! | | `clear_terrain_dirty` | `terrain_renderer.gd` |
+//! | | `get_heightmap_data` | `terrain_renderer.gd` |
+//! | | `get_height_at` | `road_tool.gd`, `building_tool.gd` |
+//! | | `intersect_terrain` | `input_manager.gd` (mouse pick) |
+//! | **Water** | `add_water` | `water_tool.gd` |
+//! | | `add_water_source` | `water_tool.gd` |
+//! | | `is_water_dirty` | `water_renderer.gd` |
+//! | | `clear_water_dirty` | `water_renderer.gd` |
+//! | | `get_water_data` | `water_renderer.gd` |
+//! | **Network** | `add_road` | `road_tool.gd` |
+//! | | `is_network_dirty` | `network_renderer.gd` |
+//! | | `clear_network_dirty` | `network_renderer.gd` |
+//! | | `get_road_mesh_data` | `network_renderer.gd` |
+//! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
+//! | | `check_border_candidate` | `road_tool.gd` |
+//! | | `set_border_connection` | `road_tool.gd` |
+//! | **Zoning** | `set_zoning_range` | `zoning_tool.gd` |
+//! | | `update_zoning_visuals` | `zoning_tool.gd` |
+//! | | `get_zoning_grid_data` | `zoning_renderer.gd` |
+//! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
+//! | | `get_car_transforms` | `agent_renderer.gd` |
+//! | | `set_camera_aabb` | `agents.gd` (culling update) |
+//! | **Stats** | `get_city_demographics` | `hud.gd` |
+//! | | `get_demand_stats` | `hud.gd` |
 
 use godot::classes::{INode3D, MultiMesh, Node3D};
 use godot::prelude::*;
@@ -57,6 +91,8 @@ pub struct SimulationNode {
 }
 
 impl SimulationNode {
+    // ── Lifecycle ──
+
     /// Acquires the sim-core mutex, recovering silently if it was poisoned by a
     /// prior sim-thread panic.  Using `unwrap()` on a poisoned mutex would
     /// crash Godot on the next frame even though the sim thread has already
@@ -136,6 +172,9 @@ impl SimulationNode {
 
 #[godot_api]
 impl SimulationNode {
+    // ── Environment ──
+
+
     /// Returns the pollution image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_pollution_image_data(&self) -> PackedByteArray {
@@ -172,11 +211,15 @@ impl SimulationNode {
         )
     }
 
+    // ── System ──
+
     /// Undoes the last action.
     #[func]
     pub fn undo_action(&mut self) -> bool {
         self.lock_core().undo_action_internal()
     }
+
+    // ── Terrain & Water ──
 
     /// Sculpts the terrain heightmap.
     #[func]
@@ -264,6 +307,8 @@ impl SimulationNode {
     pub fn get_heightmap_size(&self) -> Vector2 {
         self.get_heightmap_size_internal()
     }
+
+    // ── Zoning ──
 
     /// Sets the zone type for a specific 10m cell.
     #[func]
@@ -413,6 +458,8 @@ impl SimulationNode {
         )
     }
 
+    // ── Simulation ──
+
     /// Sets the simulation speed multiplier.
     #[func]
     pub fn set_simulation_speed(&mut self, speed: f32) {
@@ -457,6 +504,8 @@ impl SimulationNode {
         self.snapshot.read().unwrap().current_day
     }
 
+    // ── Agents ──
+
     /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.
     #[func]
     pub fn get_agent_transforms(&self) -> VarDictionary {
@@ -485,6 +534,8 @@ impl SimulationNode {
         self.lock_core().get_agent_paths_debug_internal()
     }
 
+    // ── Stats ──
+
     /// Returns city demographic statistics.
     #[func]
     pub fn get_city_demographics(&self) -> VarDictionary {
@@ -496,6 +547,8 @@ impl SimulationNode {
     pub fn get_demand_stats(&self) -> VarDictionary {
         self.lock_core().get_demand_stats_internal()
     }
+
+    // ── Buildings ──
 
     /// Returns the packed transforms for buildings of a specific zone type.
     #[func]
@@ -525,6 +578,8 @@ impl SimulationNode {
             crate::simulation::buildings::allocator::ModelMetadata { size_x, size_y, size_z },
         );
     }
+
+    // ── Network ──
 
     /// Returns the closest boundary point on a road edge to the given position.
     #[func]
