@@ -358,12 +358,12 @@ This is a prerequisite for adding per-thread lane caching at v0.2 scale. **Targe
 
 [DONE] **R7. Group `SimulationNode` methods by domain** — Added `// ── Domain ──` headers and navigable mapping tables in `simulation_node.rs`, `query.rs`, and `render_helpers.rs`.
 
-**R8. Tighten `AgentSystem` / `tick.rs` (921 lines)** — the FSM state machine, IDM physics, lane bucket management, pedestrian routing, and Rayon dispatch are all in one function. The immediate win is to extract the three major phases into named private functions:
-- `fn build_conn_occupied_snapshot(...)` (already somewhat isolated)
+[DONE] **R8. Tighten `AgentSystem` / `tick.rs` (921 lines)** — the FSM state machine, IDM physics, lane bucket management, pedestrian routing, and Rayon dispatch are all in one function. The three major phases have been extracted into named private functions:
+- `fn build_conn_occupied_snapshot(...)`
 - `fn process_agent_movement(i, ...)` — the per-agent inner loop
 - `fn write_congestion(...)` — the post-pass edge update
 
-No structural refactor needed yet, but these extractions make the 921-line file reviewable and are a prerequisite for independently testing IDM physics (item 66). **Target: when implementing item 66 (junction IDM extension).**
+This refactor improved maintainability and is a prerequisite for independently testing IDM physics (item 66).
 
 **R9. Note on walkway zoning grids** — `TransitNetwork::add_road` calls `zoning.update_edge_grid_size` unconditionally, so pure walkways (fwd=0, bkw=0) currently receive a zoning grid even though buildings should not adjoin footpaths. This is harmless today (no mechanism places buildings on walkway edges) but will cause spurious zoning cells to appear in the UI once the zoning painter is live. Fix: add `if edge.allowed_types & TransitFlags::CAR != 0` guard around the `update_edge_grid_size` call in `add_road`. **Do this before the zoning painter UI ships.**
 

@@ -5,7 +5,7 @@
 //! [`AgentSystem`] uses a Structure-of-Arrays (SoA) layout provided by the `soa_derive` crate.
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
-use super::{MODE_CAR, TRANSIT_ARRIVING, TRANSIT_IDLE, TRANSIT_IMMIGRATING, TRANSIT_ON_ROAD};
+use super::{MODE_CAR, TRANSIT_ARRIVING, TRANSIT_IDLE, TRANSIT_IMMIGRATING};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::ZoneType;
@@ -384,38 +384,6 @@ impl AgentSystem {
         }
     }
 
-    /// Aggregates per-agent speed into per-edge average speed and writes
-    /// `Edge::current_congestion = 1 − avg_speed/speed_limit` for every edge that has at least
-    /// one car on it. Edges with no cars are left unchanged (their congestion decays on road
-    /// edits; this function does not reset them to zero).
-    ///
-    /// Must be called once per tick by `simulate_tick_internal` after `AgentSystem::tick()`.
-    /// O(A + E) sequential.
-    pub fn update_edge_congestion(&mut self, graph: &mut RegionGraph) {
-        let edge_count = graph.edge_count();
-        self.edge_speed_sum.clear();
-        self.edge_speed_sum.resize(edge_count, 0.0_f32);
-        self.edge_agent_cnt.clear();
-        self.edge_agent_cnt.resize(edge_count, 0_u32);
-
-        for i in 0..self.agents.len() {
-            if self.agents.transit[i] == TRANSIT_ON_ROAD {
-                let eid = self.agents.current_edge[i];
-                if eid != usize::MAX && eid < edge_count {
-                    self.edge_speed_sum[eid] += self.agents.speed[i];
-                    self.edge_agent_cnt[eid] += 1;
-                }
-            }
-        }
-
-        for eid in 0..edge_count {
-            if !graph.edge(eid).deleted && self.edge_agent_cnt[eid] > 0 {
-                let avg = self.edge_speed_sum[eid] / self.edge_agent_cnt[eid] as f32;
-                let limit = graph.edge(eid).speed_limit.max(1.0);
-                graph.edges[eid].current_congestion = (1.0 - avg / limit).max(0.0);
-            }
-        }
-    }
 
     /// Sets `current_lane_id = usize::MAX` for every agent whose active lane belongs to one
     /// of `affected_edges`, or whose connection lane leads directly into such a lane.
@@ -476,6 +444,7 @@ impl AgentSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::TRANSIT_ON_ROAD;
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::lanes::LaneSystem;
     use crate::simulation::network::graph::data::Edge;

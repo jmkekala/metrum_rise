@@ -606,8 +606,7 @@ pub fn run_sim_thread(
                 let tick_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let c = &mut *core;
                     c.agents
-                        .tick(&c.allocator, &c.transit_network, &c.region_graph, dt);
-                    c.agents.update_edge_congestion(&mut c.region_graph);
+                        .tick(&c.allocator, &c.transit_network, &mut c.region_graph, dt);
                 }));
                 if let Err(e) = tick_result {
                     let msg = e

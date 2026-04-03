@@ -216,7 +216,7 @@ fn test_parallel_tick_produces_same_positions_as_sequential() {
     agents.lane_distance[i] = 0.0;
     agents.is_visible[i] = true;
     let x_before = agents.pos_x[i];
-    agents.tick(&allocator, &network, &graph, 1.0);
+    agents.tick(&allocator, &network, &mut graph, 1.0);
     // Agent should have moved along the edge.
     assert!(
         agents.pos_x[i] != x_before || agents.transit[i] != TRANSIT_ON_ROAD,
@@ -425,7 +425,7 @@ fn test_edge_congestion_written_after_tick() {
     // Force the agent to stay on road for congestion aggregation.
     agents.transit[i] = TRANSIT_ON_ROAD;
     agents.current_edge[i] = edge_idx;
-    agents.update_edge_congestion(&mut graph);
+    agents.write_congestion(&mut graph);
     assert!(
         graph.edges[edge_idx].current_congestion > 0.0,
         "congestion should be > 0 when car is below speed limit"
