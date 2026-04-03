@@ -120,25 +120,25 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
             let fl = i64_to_i8(row.get(2)?)?;
             let te = i64_to_usize(row.get(3)?)?;
             let tl = i64_to_i8(row.get(4)?)?;
-            if nid as usize >= graph.nodes.len() || fe >= graph.edges.len() || te >= graph.edges.len() {
+            if nid as usize >= graph.node_count() || fe >= graph.edge_count() || te >= graph.edge_count() {
                 return Err(SaveLoadError::custom("lane connection references out-of-range node or edge"));
             }
-            graph.nodes[nid as usize].lane_connections.entry((fe, fl)).or_default().push((te, tl));
+            graph.add_lane_connection(nid, fe, fl, te, tl);
         }
     }
-    rebuild_graph_indices(&mut graph);
+    graph.rebuild_all_indices();
     Ok(graph)
 }
 
 pub(super) fn rebuild_loaded_graph_runtime(graph: &mut RegionGraph, transit_network: &mut TransitNetwork, terrain: &mut TerrainSystem) {
-    rebuild_graph_indices(graph);
+    graph.rebuild_all_indices();
     terrain.reset_visuals_from_source();
     let source_terrain = TerrainSystem {
         width: terrain.width, height: terrain.height, data: terrain.data.clone(), source_data: terrain.source_data.clone(),
     };
     transit_network.flatten_terrain(graph, &source_terrain, &mut terrain.data, Vector2::new(terrain.width as f32, terrain.height as f32));
     transit_network.sync_to_terrain(graph, terrain);
-    for edge in &mut graph.edges {
+    for edge in graph.edges_iter_mut() {
         if edge.deleted { continue; }
         let (base_cost, len) = CostCalculator::calculate_costs(edge);
         edge.base_cost = base_cost;
@@ -147,14 +147,6 @@ pub(super) fn rebuild_loaded_graph_runtime(graph: &mut RegionGraph, transit_netw
     graph.rebuild_intersection_clips();
 }
 
-pub(super) fn rebuild_graph_indices(graph: &mut RegionGraph) {
-    graph.node_aliases.clear();
-    graph.rebuild_adjacency_list();
-    graph.spatial_edge_rt = rstar::RTree::new();
-    for i in 0..graph.edges.len() { graph.add_to_spatial_index(i); }
-    graph.spatial_node_grid.clear();
-    for i in 0..graph.nodes.len() { graph.add_node_to_spatial_index(i as u32); }
-}
 
 pub(super) fn canonical_existing_node(graph: &RegionGraph, node_id: u32) -> SaveLoadResult<u32> {
     if (node_id as usize) >= graph.node_count() { return Err(SaveLoadError::custom(format!("node {} out of bounds", node_id))); }

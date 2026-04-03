@@ -130,7 +130,7 @@ impl SimCore {
 
     /// Sets the classification of an edge.
     pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) {
-        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() {
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return;
         }
 
@@ -141,7 +141,7 @@ impl SimCore {
         };
 
         {
-            let edge = &mut self.region_graph.edges[edge_idx as usize];
+            let edge = self.region_graph.edge_mut(edge_idx as usize);
             edge.class = class;
         }
 
@@ -220,7 +220,7 @@ impl SimCore {
 
     /// Repositions a network node in world space.
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) {
-        if node_id >= 0 && (node_id as usize) < self.region_graph.nodes.len() {
+        if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() {
             self.region_graph.move_node(node_id as u32, pos);
             self.region_graph.rebuild_intersection_clips();
             self.push_undo_state(false, false, true, false);
@@ -228,7 +228,7 @@ impl SimCore {
             // Recalculate zoning for all affected edges
             let affected_edges: Vec<usize> = self
                 .region_graph
-                .edges
+                .edges()
                 .iter()
                 .enumerate()
                 .filter(|(_, e)| {
@@ -253,16 +253,15 @@ impl SimCore {
         to_lane: i32,
     ) {
         self.push_undo_state(false, false, true, false);
-        if let Some(node) = self.region_graph.nodes.get_mut(node_id as usize) {
+        if (node_id as usize) < self.region_graph.node_count() {
             let key = (from_edge as usize, from_lane as i8);
             let target = (to_edge as usize, to_lane as i8);
-            if !node
+            let already = self.region_graph.node(node_id)
                 .lane_connections
-                .entry(key)
-                .or_default()
-                .contains(&target)
-            {
-                node.lane_connections.get_mut(&key).unwrap().push(target);
+                .get(&key)
+                .map_or(false, |v| v.contains(&target));
+            if !already {
+                self.region_graph.add_lane_connection(node_id, key.0, key.1, target.0, target.1);
             }
         }
         self.transit_network.cch_graph =
@@ -272,8 +271,11 @@ impl SimCore {
     /// Clears all lane connections at a junction node.
     pub fn clear_lane_connections_internal(&mut self, node_id: u32) {
         self.push_undo_state(false, false, true, false);
-        if let Some(node) = self.region_graph.nodes.get_mut(node_id as usize) {
-            node.lane_connections.clear();
+        if (node_id as usize) < self.region_graph.node_count() {
+            let keys: Vec<_> = self.region_graph.node(node_id).lane_connections.keys().copied().collect();
+            for key in keys {
+                self.region_graph.remove_lane_connection(node_id, key);
+            }
         }
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
@@ -281,15 +283,12 @@ impl SimCore {
 
     /// Clears lane connections for a specific source edge/lane at a junction.
     pub fn clear_lane_source_internal(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
-        if node_id as usize >= self.region_graph.nodes.len() {
+        if node_id as usize >= self.region_graph.node_count() {
             return;
         }
 
-        {
-            let node = &mut self.region_graph.nodes[node_id as usize];
-            let key = (from_edge as usize, from_lane as i8);
-            node.lane_connections.remove(&key);
-        }
+        self.region_graph
+            .remove_lane_connection(node_id, (from_edge as usize, from_lane as i8));
 
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
@@ -366,41 +365,42 @@ impl SimCore {
     /// After this call the node's type becomes [`NodeType::Border`] and it will be used as an
     /// immigrant spawn point by [`BuildingAllocator::tick`] as long as the road remains connected.
     pub fn set_border_connection_internal(&mut self, node_id: i32) {
-        if node_id < 0 || (node_id as usize) >= self.region_graph.nodes.len() {
+        if node_id < 0 || (node_id as usize) >= self.region_graph.node_count() {
             return;
         }
 
-        self.region_graph.nodes[node_id as usize].node_type =
-            crate::simulation::network::types::NodeType::Border;
+        self.region_graph
+            .set_node_type(node_id as u32, crate::simulation::network::types::NodeType::Border);
 
         // Auto-extend it 10 meters further from the connecting road so agents spawn visually off-screen
         let mut rebuild_needed = false;
-        if let Some(adj) = self.region_graph.adjacency.get(node_id as usize) {
+        let adj: Vec<usize> = self.region_graph.node_adjacency(node_id as u32).to_vec();
+        {
             let mut valid_edges = Vec::new();
-            for &e_idx in adj {
-                if !self.region_graph.edges[e_idx].deleted {
+            for &e_idx in &adj {
+                if !self.region_graph.edge(e_idx).deleted {
                     valid_edges.push(e_idx);
                 }
             }
             if valid_edges.len() == 1 {
                 let e_idx = valid_edges[0];
-                let is_end = self.region_graph.edges[e_idx].end_node == (node_id as u32);
+                let is_end = self.region_graph.edge(e_idx).end_node == (node_id as u32);
                 let other_node = if is_end {
-                    self.region_graph.edges[e_idx].start_node
+                    self.region_graph.edge(e_idx).start_node
                 } else {
-                    self.region_graph.edges[e_idx].end_node
+                    self.region_graph.edge(e_idx).end_node
                 };
 
-                let p1 = self.region_graph.nodes[other_node as usize].pos;
-                let p2 = self.region_graph.nodes[node_id as usize].pos;
+                let p1 = self.region_graph.node(other_node).pos;
+                let p2 = self.region_graph.node(node_id as u32).pos;
 
                 let dir_vec = p2 - p1;
                 if dir_vec.length_squared() > 0.001 {
                     let dir = dir_vec.normalized();
                     let new_p2 = p2 + dir * crate::config::BORDER_EXTENSION_M;
-                    self.region_graph.nodes[node_id as usize].pos = new_p2;
+                    self.region_graph.set_node_pos(node_id as u32, new_p2);
 
-                    let edge = &mut self.region_graph.edges[e_idx];
+                    let edge = self.region_graph.edge_mut(e_idx);
                     if is_end {
                         if let Some(last) = edge.geometry.last_mut() {
                             *last = new_p2;

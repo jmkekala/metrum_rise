@@ -938,7 +938,7 @@ impl AgentSystem {
             if !graph.edge(eid).deleted && self.edge_agent_cnt[eid] > 0 {
                 let avg = self.edge_speed_sum[eid] / self.edge_agent_cnt[eid] as f32;
                 let limit = graph.edge(eid).speed_limit.max(1.0);
-                graph.edges[eid].current_congestion = (1.0 - avg / limit).max(0.0);
+                graph.set_edge_congestion(eid, (1.0 - avg / limit).max(0.0));
             }
         }
     }

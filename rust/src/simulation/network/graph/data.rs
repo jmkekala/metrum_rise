@@ -145,19 +145,19 @@ impl Edge {
 #[derive(Clone)]
 pub struct RegionGraph {
     /// All road nodes (junctions and endpoints). Indexed by node ID (`u32`).
-    pub(crate) nodes: Vec<Node>,
+    pub(in crate::simulation::network) nodes: Vec<Node>,
     /// All road edges (segments). Indexed by edge ID (`usize`). Includes soft-deleted entries.
-    pub(crate) edges: Vec<Edge>,
+    pub(in crate::simulation::network) edges: Vec<Edge>,
     /// Node alias map for the union-find structure used during node merging.
     /// Maps a node ID to its canonical representative after `unite_nodes`.
-    pub(crate) node_aliases: HashMap<u32, u32>,
+    pub(in crate::simulation::network) node_aliases: HashMap<u32, u32>,
     /// Spatial acceleration structure for edges: RTree of EdgeEntry.
     /// Query via [`get_edges_near_point`](Self::get_edges_near_point); do not access directly.
-    pub(crate) spatial_edge_rt: RTree<EdgeEntry>,
+    pub(in crate::simulation::network) spatial_edge_rt: RTree<EdgeEntry>,
     /// Adjacency list: node ID -> list of outgoing edge indices. Rebuilt after every road edit.
-    pub(crate) adjacency: Vec<Vec<usize>>,
+    pub(in crate::simulation::network) adjacency: Vec<Vec<usize>>,
     /// Spatial acceleration structure for nodes: 16 m grid chunks -> node IDs.
-    pub(crate) spatial_node_grid: HashMap<(i32, i32), Vec<u32>>,
+    pub(in crate::simulation::network) spatial_node_grid: HashMap<(i32, i32), Vec<u32>>,
 }
 
 impl RegionGraph {
@@ -235,6 +235,76 @@ impl RegionGraph {
     /// Returns the full adjacency list.
     pub fn adjacency(&self) -> &[Vec<usize>] {
         &self.adjacency
+    }
+
+    /// Returns a mutable reference to the edge at `id`.
+    pub fn edge_mut(&mut self, id: usize) -> &mut Edge {
+        &mut self.edges[id]
+    }
+
+    /// Sets the congestion value for edge `eid`.
+    pub fn set_edge_congestion(&mut self, eid: usize, value: f32) {
+        self.edges[eid].current_congestion = value;
+    }
+
+    /// Sets the [`NodeType`] of the node at `node_id`.
+    pub fn set_node_type(&mut self, node_id: u32, node_type: NodeType) {
+        self.nodes[node_id as usize].node_type = node_type;
+    }
+
+    /// Sets the world-space position of the node at `node_id`.
+    pub fn set_node_pos(&mut self, node_id: u32, pos: Vector3) {
+        self.nodes[node_id as usize].pos = pos;
+    }
+
+    /// Removes the lane-routing entry for `key` at node `node_id`.
+    pub fn remove_lane_connection(&mut self, node_id: u32, key: (usize, i8)) {
+        if let Some(node) = self.nodes.get_mut(node_id as usize) {
+            node.lane_connections.remove(&key);
+        }
+    }
+
+    /// Appends `(to_edge, to_lane)` to the routing table entry `(from_edge, from_lane)` at node `node_id`.
+    pub fn add_lane_connection(&mut self, node_id: u32, fe: usize, fl: i8, te: usize, tl: i8) {
+        self.nodes[node_id as usize]
+            .lane_connections
+            .entry((fe, fl))
+            .or_default()
+            .push((te, tl));
+    }
+
+    /// Returns a mutable iterator over all edge slots (including soft-deleted ones).
+    pub fn edges_iter_mut(&mut self) -> impl Iterator<Item = &mut Edge> {
+        self.edges.iter_mut()
+    }
+
+    /// Clears all runtime-only caches (node aliases, spatial indices) and rebuilds them from
+    /// the current node and edge lists. Call this after bulk-loading nodes/edges from save data.
+    pub fn rebuild_all_indices(&mut self) {
+        self.node_aliases.clear();
+        self.rebuild_adjacency_list();
+        self.spatial_edge_rt = RTree::new();
+        for i in 0..self.edges.len() {
+            self.add_to_spatial_index(i);
+        }
+        self.spatial_node_grid.clear();
+        for i in 0..self.nodes.len() {
+            self.add_node_to_spatial_index(i as u32);
+        }
+    }
+
+    /// Pushes a node directly into the graph. For test setup only — does not update spatial indices.
+    #[cfg(test)]
+    pub fn push_node_for_test(&mut self, node: Node) {
+        self.nodes.push(node);
+    }
+
+    /// Replaces the node and edge lists wholesale. For test setup only — does not update spatial
+    /// indices or adjacency; call [`rebuild_adjacency_list`](Self::rebuild_adjacency_list) after.
+    #[cfg(test)]
+    pub fn set_nodes_edges_for_test(&mut self, nodes: Vec<Node>, edges: Vec<Edge>) {
+        self.nodes = nodes;
+        self.edges = edges;
     }
 }
 

@@ -52,7 +52,7 @@ impl SimCore {
 
             for i in 0..edge_count {
                 let edge_idx = hovered_edges[i];
-                if let Some(edge) = graph.edges.get(edge_idx as usize) {
+                if let Some(edge) = graph.get_edge(edge_idx as usize) {
                     let mut current_side_sign = if side > 0 { 1.0 } else { -1.0 };
 
                     // B7: Track side-flips for previous edges
@@ -209,10 +209,10 @@ impl SimCore {
         let h = self.heightmap.height as f32;
 
         for (&edge_idx, grid) in &zoning.edge_grids {
-            if edge_idx >= graph.edges.len() || graph.edges[edge_idx].deleted {
+            if edge_idx >= graph.edge_count() || graph.edge(edge_idx).deleted {
                 continue;
             }
-            let edge = &graph.edges[edge_idx];
+            let edge = graph.edge(edge_idx);
 
             for side_idx in 0..2 {
                 let side_sign: f32 = if side_idx == 0 { 1.0 } else { -1.0 };
@@ -578,8 +578,8 @@ impl SimCore {
                 let transit = self.agents.transit[i];
                 if transit == TRANSIT_DEPARTING {
                     let node_idx = self.agents.current_node[i] as usize;
-                    if node_idx < self.region_graph.nodes.len() {
-                        let npos = self.region_graph.nodes[node_idx].pos;
+                    if node_idx < self.region_graph.node_count() {
+                        let npos = self.region_graph.node(node_idx as u32).pos;
                         let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
                         if dir.length_squared() > 1e-6 {
                             basis_z = -dir.normalized();
@@ -658,8 +658,8 @@ impl SimCore {
                 if self.agents.transit[i] == TRANSIT_DEPARTING {
                     // Heading to node current_node + possibly a lane offset point
                     let target_node = self.agents.current_node[i] as usize;
-                    if target_node < self.region_graph.nodes.len() {
-                        let target_pos = get_h(self.region_graph.nodes[target_node].pos);
+                    if target_node < self.region_graph.node_count() {
+                        let target_pos = get_h(self.region_graph.node(target_node as u32).pos);
                         points.push(current_pos);
                         points.push(target_pos);
                         colors.push(color_direct);
@@ -685,8 +685,8 @@ impl SimCore {
                     if idx < path.len() {
                         // Segment from current position to the next node in the path
                         let next_node_idx = path[idx] as usize;
-                        if next_node_idx < self.region_graph.nodes.len() {
-                            let next_node_pos = get_h(self.region_graph.nodes[next_node_idx].pos);
+                        if next_node_idx < self.region_graph.node_count() {
+                            let next_node_pos = get_h(self.region_graph.node(next_node_idx as u32).pos);
                             points.push(current_pos);
                             points.push(next_node_pos);
                             colors.push(color_path);
@@ -696,8 +696,8 @@ impl SimCore {
                             let mut prev_pos = next_node_pos;
                             for j in (idx + 1)..path.len() {
                                 let n_idx = path[j] as usize;
-                                if n_idx < self.region_graph.nodes.len() {
-                                    let np = get_h(self.region_graph.nodes[n_idx].pos);
+                                if n_idx < self.region_graph.node_count() {
+                                    let np = get_h(self.region_graph.node(n_idx as u32).pos);
                                     points.push(prev_pos);
                                     points.push(np);
                                     colors.push(color_path);

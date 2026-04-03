@@ -597,10 +597,10 @@ impl SimulationNode {
     #[func]
     pub fn get_edge_geometry_3d(&self, edge_idx: i32) -> PackedVector3Array {
         let core = self.lock_core();
-        if edge_idx < 0 || edge_idx as usize >= core.region_graph.edges.len() {
+        if edge_idx < 0 || edge_idx as usize >= core.region_graph.edge_count() {
             return PackedVector3Array::new();
         }
-        let edge = &core.region_graph.edges[edge_idx as usize];
+        let edge = core.region_graph.edge(edge_idx as usize);
         PackedVector3Array::from_iter(edge.physical_geometry.iter().cloned())
     }
 
@@ -608,10 +608,10 @@ impl SimulationNode {
     #[func]
     pub fn get_edge_width(&self, edge_idx: i32) -> f32 {
         let core = self.lock_core();
-        if edge_idx < 0 || edge_idx as usize >= core.region_graph.edges.len() {
+        if edge_idx < 0 || edge_idx as usize >= core.region_graph.edge_count() {
             return 6.0;
         }
-        core.region_graph.edges[edge_idx as usize].width
+        core.region_graph.edge(edge_idx as usize).width
     }
 
     /// Returns a curved frontage between two points on an edge.

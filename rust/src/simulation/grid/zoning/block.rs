@@ -15,7 +15,7 @@ impl ZoningSystem {
     ) {
         let (cells_long, edge_physical_l, edge_geom) = {
             if let Some(grid) = self.edge_grids.get(&edge_idx) {
-                let edge = &graph.edges[edge_idx];
+                let edge = graph.edge(edge_idx);
                 (grid.cells_long, edge.physical_length, &edge.physical_geometry)
             } else {
                 return;
@@ -35,7 +35,7 @@ impl ZoningSystem {
 
         let depth = depth.min(ZONING_DEPTH);
         
-        let edge = &graph.edges[edge_idx];
+        let edge = graph.edge(edge_idx);
         let mut min_pos = godot::prelude::Vector3::new(f32::MAX, 0.0, f32::MAX);
         let mut max_pos = godot::prelude::Vector3::new(f32::MIN, 0.0, f32::MIN);
         for p in &edge.physical_geometry {

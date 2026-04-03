@@ -354,7 +354,7 @@ This is a prerequisite for adding per-thread lane caching at v0.2 scale. **Targe
 
 **Target: before adding any new saved subsystem (e.g. VehicleSystem from item 39).**
 
-[DONE] **R6. Privatise `RegionGraph` fields** — `RegionGraph::nodes`, `::edges`, and `::adjacency` are all `pub(crate)`, making it impossible to mutate them directly from outside the `network/` module. Read-only accessors (`node()`, `edge()`, `node_adjacency()`) provide the single read path for external callers, enforcing data isolation and protecting spatial index/CCH integrity.
+[DONE] **R6. Privatise `RegionGraph` fields** — All six `RegionGraph` fields (`nodes`, `edges`, `adjacency`, `node_aliases`, `spatial_edge_rt`, `spatial_node_grid`) changed from `pub(crate)` to `pub(in crate::simulation::network)`, restricting direct mutation to the `network/` module and its submodules. External callers use read-only accessors (`node()`, `edge()`, `nodes()`, `edges()`, `node_adjacency()`, `node_count()`, `edge_count()`) and targeted write methods (`set_node_type()`, `set_node_pos()`, `edge_mut()`, `set_edge_congestion()`, `add_lane_connection()`, `remove_lane_connection()`, `edges_iter_mut()`, `rebuild_all_indices()`). Test-only bulk setup is gated behind `#[cfg(test)]` methods (`set_nodes_edges_for_test()`).
 
 [DONE] **R7. Group `SimulationNode` methods by domain** — Added `// ── Domain ──` headers and navigable mapping tables in `simulation_node.rs`, `query.rs`, and `render_helpers.rs`.
 

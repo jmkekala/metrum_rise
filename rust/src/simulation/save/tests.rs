@@ -41,7 +41,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         physical_geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
         deleted: false,
     });
-    graph.nodes[n0 as usize].lane_connections.insert((edge_id, 0), vec![(edge_id, 0)]);
+    graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     let mut zoning = ZoningSystem::new(&config);
     zoning.update_edge_grid_size(edge_id, 40.0);
     zoning.set_zone_range(edge_id, 1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
@@ -90,7 +90,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.demand.residential, demand.residential);
     assert_eq!(loaded.pollution.grid.data, pollution.grid.data);
     assert_eq!(loaded.noise.grid.data, noise.grid.data);
-    assert_eq!(loaded.graph.edges.len(), 1);
+    assert_eq!(loaded.graph.edge_count(), 1);
     assert_eq!(loaded.zoning.edge_grids.len(), 1);
     assert_eq!(loaded.allocator.buildings.len(), 1);
     assert_eq!(loaded.agents.len(), 2);

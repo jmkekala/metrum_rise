@@ -1106,10 +1106,10 @@ mod tests {
             &mut zoning,
             &mut allocator,
         );
-        let edge_id = graph.edges.len() - 1;
+        let edge_id = graph.edge_count() - 1;
 
         // Add a Border node
-        graph.nodes[0].node_type = crate::simulation::network::types::NodeType::Border;
+        graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
 
         // Force a vacant residential building
         zoning.set_cell(edge_id, 1, 0, 0, ZoneType::Residential, &graph);

@@ -221,7 +221,7 @@ impl SimCore {
 
     /// Invalidates and rebuilds zoning for the area surrounding `edge_idx`.
     pub fn recalculate_zoning_local(&mut self, edge_idx: usize) {
-        if edge_idx >= self.region_graph.edges.len() {
+        if edge_idx >= self.region_graph.edge_count() {
             return;
         }
         self.transit_network.zoning_dirty_edges.insert(edge_idx);
@@ -303,8 +303,8 @@ impl SimCore {
                     let transit = self.agents.transit[i];
                     if transit == TRANSIT_DEPARTING {
                         let node_idx = self.agents.current_node[i] as usize;
-                        if node_idx < self.region_graph.nodes.len() {
-                            let npos = self.region_graph.nodes[node_idx].pos;
+                        if node_idx < self.region_graph.node_count() {
+                            let npos = self.region_graph.node(node_idx as u32).pos;
                             let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
                             if dir.length_squared() > 1e-6 {
                                 basis_z = dir.normalized();
@@ -398,8 +398,8 @@ impl SimCore {
                     let transit = self.agents.transit[i];
                     if transit == TRANSIT_DEPARTING {
                         let node_idx = self.agents.current_node[i] as usize;
-                        if node_idx < self.region_graph.nodes.len() {
-                            let npos = self.region_graph.nodes[node_idx].pos;
+                        if node_idx < self.region_graph.node_count() {
+                            let npos = self.region_graph.node(node_idx as u32).pos;
                             let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
                             if dir.length_squared() > 1e-6 {
                                 basis_z = -dir.normalized();
@@ -444,7 +444,7 @@ impl SimCore {
 
         let node_positions: Vec<godot::prelude::Vector3> = self
             .region_graph
-            .nodes
+            .nodes()
             .iter()
             .enumerate()
             .filter(|(i, _)| self.region_graph.get_valid_node(*i as u32) == *i as u32)
@@ -521,8 +521,8 @@ pub fn run_sim_thread(
                         // Collect nodes touched by the new/split edges.
                         let mut affected_nodes = std::collections::HashSet::new();
                         for &e_id in &dirty {
-                            if e_id < c.region_graph.edges.len() && !c.region_graph.edges[e_id].deleted {
-                                let e = &c.region_graph.edges[e_id];
+                            if e_id < c.region_graph.edge_count() && !c.region_graph.edge(e_id).deleted {
+                                let e = c.region_graph.edge(e_id);
                                 affected_nodes.insert(c.region_graph.get_valid_node(e.start_node));
                                 affected_nodes.insert(c.region_graph.get_valid_node(e.end_node));
                             }

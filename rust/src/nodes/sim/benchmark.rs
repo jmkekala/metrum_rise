@@ -73,8 +73,8 @@ impl SimCore {
             "[bench] roads built: {:.1}s  RSS {}MB  edges={} nodes={}",
             t0.elapsed().as_secs_f32(),
             rss_mb(),
-            self.region_graph.edges.len(),
-            self.region_graph.nodes.len()
+            self.region_graph.edge_count(),
+            self.region_graph.node_count()
         );
 
         let t1 = Instant::now();
@@ -105,7 +105,7 @@ impl SimCore {
 
         let t_spawn = Instant::now();
         let agent_count = 100_000usize;
-        let node_count = self.region_graph.nodes.len();
+        let node_count = self.region_graph.node_count();
         if node_count == 0 {
             godot_print!("[bench] ERROR: no nodes in graph, cannot spawn agents");
             return;
@@ -156,7 +156,7 @@ impl SimCore {
             let start_idx = (i * path_len / agent_count).min(path_len.saturating_sub(2));
             let current_node = route[start_idx];
             let target_node = *route.last().unwrap();
-            let node_pos = self.region_graph.nodes[current_node as usize].pos;
+            let node_pos = self.region_graph.node(current_node).pos;
             self.agents.agents.push(Agent {
                 home_building: usize::MAX,
                 work_building: usize::MAX,
@@ -252,7 +252,7 @@ impl SimulationNode {
                     "[bench] Loaded: {:.2}s  RSS {}MB  edges={} lanes={}",
                     t0.elapsed().as_secs_f32(),
                     rss_mb(),
-                    core.region_graph.edges.len(),
+                    core.region_graph.edge_count(),
                     core.transit_network.lane_system.lanes.len()
                 ),
                 Err(e) => {

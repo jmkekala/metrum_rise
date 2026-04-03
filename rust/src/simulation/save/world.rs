@@ -131,7 +131,7 @@ pub(super) fn repaint_building_occupancy(zoning: &mut ZoningSystem, allocator: &
 
 pub(super) fn rebuild_zoning_obstructions(zoning: &mut ZoningSystem, graph: &RegionGraph) {
     let eids: Vec<usize> = zoning.edge_grids.keys().copied().collect();
-    for eid in eids { if eid < graph.edges.len() && !graph.edges[eid].deleted { zoning.recalculate_obstructions(eid, graph); } }
+    for eid in eids { if eid < graph.edge_count() && !graph.edge(eid).deleted { zoning.recalculate_obstructions(eid, graph); } }
 }
 
 pub(super) trait GridSystemLoader: Sized {

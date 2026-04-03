@@ -81,7 +81,7 @@ impl ZoningSystem {
             return;
         };
 
-        let edge = &graph.edges[edge_idx];
+        let edge = graph.edge(edge_idx);
         if edge.class != EdgeClass::Standard {
             if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
                 grid.left_blocked.fill(true);
@@ -132,7 +132,7 @@ impl ZoningSystem {
     ) -> PackedFloat32Array {
         let mut data = Vec::new();
         for (&edge_idx, grid) in &self.edge_grids {
-            if edge_idx >= graph.edges.len() || graph.edges[edge_idx].deleted { continue; }
+            if edge_idx >= graph.edge_count() || graph.edge(edge_idx).deleted { continue; }
             for side in [1, -1] {
                 let cells = if side > 0 { &grid.left_side } else { &grid.right_side };
                 let blocked = if side > 0 { &grid.left_blocked } else { &grid.right_blocked };
@@ -167,8 +167,8 @@ impl ZoningSystem {
         y: usize,
         graph: &crate::simulation::network::graph::RegionGraph,
     ) -> Vector2 {
-        if edge_idx >= graph.edges.len() { return Vector2::new(0.0, 0.0); }
-        let edge = &graph.edges[edge_idx];
+        if edge_idx >= graph.edge_count() { return Vector2::new(0.0, 0.0); }
+        let edge = graph.edge(edge_idx);
         let geom = &edge.physical_geometry;
         if geom.len() < 2 { return Vector2::new(0.0, 0.0); }
 
@@ -202,7 +202,7 @@ impl ZoningSystem {
 
         let normal = Vector2::new(tangent.y, -tangent.x) * side as f32;
         let depth = (y as f32 + 0.5) * self.config.zone_cell_m;
-        let half_width = graph.edges[edge_idx].width * 0.5;
+        let half_width = graph.edge(edge_idx).width * 0.5;
 
         pos + normal * (half_width + crate::config::SIDEWALK_WIDTH + depth)
     }

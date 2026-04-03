@@ -40,7 +40,7 @@ fn is_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
 fn get_closest_canonical_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) -> i32 {
     let mut best_id = -1;
     let mut min_d = max_dist;
-    for (i, node) in graph.nodes.iter().enumerate() {
+    for (i, node) in graph.nodes().iter().enumerate() {
         let node_id = i as u32;
         if !is_canonical_node(graph, node_id) {
             continue;
@@ -114,7 +114,7 @@ impl SimCore {
         edge_idx: usize,
         t: f32,
     ) -> (godot::prelude::Vector2, godot::prelude::Vector2) {
-        let edge = &self.region_graph.edges[edge_idx];
+        let edge = self.region_graph.edge(edge_idx);
         let geom = &edge.physical_geometry;
         if geom.len() < 2 {
             return (
@@ -165,7 +165,7 @@ impl SimCore {
         let mut count = 0.0;
         data.push(0.0); // Placeholder for count
 
-        for (i, edge) in self.region_graph.edges.iter().enumerate() {
+        for (i, edge) in self.region_graph.edges().iter().enumerate() {
             if edge.deleted || i as i32 == ignore_edge_idx {
                 continue;
             }
@@ -174,12 +174,12 @@ impl SimCore {
             let mut poly = Vec::new();
             if edge.physical_geometry.is_empty() {
                 let n1 = godot::prelude::Vector2::new(
-                    self.region_graph.nodes[edge.start_node as usize].pos.x,
-                    self.region_graph.nodes[edge.start_node as usize].pos.z,
+                    self.region_graph.node(edge.start_node).pos.x,
+                    self.region_graph.node(edge.start_node).pos.z,
                 );
                 let n2 = godot::prelude::Vector2::new(
-                    self.region_graph.nodes[edge.end_node as usize].pos.x,
-                    self.region_graph.nodes[edge.end_node as usize].pos.z,
+                    self.region_graph.node(edge.end_node).pos.x,
+                    self.region_graph.node(edge.end_node).pos.z,
                 );
                 let dir = (n2 - n1).normalized();
                 if dir.length_squared() > 0.0 {
@@ -254,7 +254,7 @@ impl SimCore {
         }
 
         // 3. Include Road Nodes as obstacles to prevent zoning through intersections
-        for node in &self.region_graph.nodes {
+        for node in self.region_graph.nodes() {
             let r = 5.0; // Intersections are protected 5m radius
             data.push(8.0); // Simple octagon
             for j in 0..8 {
@@ -275,7 +275,7 @@ impl SimCore {
         let mut best_dist = f32::MAX;
         let mut best_edge = -1;
 
-        for (i, edge) in self.region_graph.edges.iter().enumerate() {
+        for (i, edge) in self.region_graph.edges().iter().enumerate() {
             let pts = &edge.physical_geometry;
             if pts.len() < 2 {
                 continue;
@@ -333,7 +333,7 @@ impl SimCore {
 
         let mut min_t = max_search;
 
-        for edge in &self.region_graph.edges {
+        for edge in self.region_graph.edges() {
             let pts = &edge.physical_geometry;
             if pts.len() < 2 {
                 continue;
@@ -366,15 +366,15 @@ impl SimCore {
         point_x: f32,
         point_y: f32,
     ) -> godot::prelude::Vector2 {
-        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() {
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return godot::prelude::Vector2::new(point_x, point_y);
         }
-        let edge = &self.region_graph.edges[edge_idx as usize];
+        let edge = self.region_graph.edge(edge_idx as usize);
         let hw = edge.width / 2.0;
 
         if edge.physical_geometry.is_empty() {
-            let n1 = self.region_graph.nodes[edge.start_node as usize].pos;
-            let n2 = self.region_graph.nodes[edge.end_node as usize].pos;
+            let n1 = self.region_graph.node(edge.start_node).pos;
+            let n2 = self.region_graph.node(edge.end_node).pos;
             let a = godot::prelude::Vector2::new(n1.x, n1.z);
             let b = godot::prelude::Vector2::new(n2.x, n2.z);
             let p = godot::prelude::Vector2::new(point_x, point_y);
@@ -446,14 +446,14 @@ impl SimCore {
     /// Returns the physical geometry of a road edge as a sequence of points.
     pub fn get_edge_geometry_internal(&self, edge_idx: i32) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
-        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() {
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return arr;
         }
 
-        let edge = &self.region_graph.edges[edge_idx as usize];
+        let edge = self.region_graph.edge(edge_idx as usize);
         if edge.physical_geometry.is_empty() {
-            let n1 = self.region_graph.nodes[edge.start_node as usize].pos;
-            let n2 = self.region_graph.nodes[edge.end_node as usize].pos;
+            let n1 = self.region_graph.node(edge.start_node).pos;
+            let n2 = self.region_graph.node(edge.end_node).pos;
             arr.push(godot::prelude::Vector2::new(n1.x, n1.z));
             arr.push(godot::prelude::Vector2::new(n2.x, n2.z));
         } else {
@@ -472,10 +472,10 @@ impl SimCore {
         end_p: godot::prelude::Vector2,
     ) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
-        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edges.len() {
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return arr; // Explicitly Fail! No straight-line phantom frontages.
         }
-        let edge = &self.region_graph.edges[edge_idx as usize];
+        let edge = self.region_graph.edge(edge_idx as usize);
         let hw = edge.width / 2.0;
 
         let get_proj = |p: godot::prelude::Vector2| -> (usize, f32, godot::prelude::Vector2, godot::prelude::Vector2) {
@@ -487,8 +487,8 @@ impl SimCore {
 
             let pts: Vec<godot::prelude::Vector2> = if edge.physical_geometry.is_empty() {
                 vec![
-                    godot::prelude::Vector2::new(self.region_graph.nodes[edge.start_node as usize].pos.x, self.region_graph.nodes[edge.start_node as usize].pos.z),
-                    godot::prelude::Vector2::new(self.region_graph.nodes[edge.end_node as usize].pos.x, self.region_graph.nodes[edge.end_node as usize].pos.z)
+                    godot::prelude::Vector2::new(self.region_graph.node(edge.start_node).pos.x, self.region_graph.node(edge.start_node).pos.z),
+                    godot::prelude::Vector2::new(self.region_graph.node(edge.end_node).pos.x, self.region_graph.node(edge.end_node).pos.z)
                 ]
             } else {
                 edge.physical_geometry.iter().map(|v| godot::prelude::Vector2::new(v.x, v.z)).collect()
@@ -526,12 +526,12 @@ impl SimCore {
         let pts: Vec<godot::prelude::Vector2> = if edge.physical_geometry.is_empty() {
             vec![
                 godot::prelude::Vector2::new(
-                    self.region_graph.nodes[edge.start_node as usize].pos.x,
-                    self.region_graph.nodes[edge.start_node as usize].pos.z,
+                    self.region_graph.node(edge.start_node).pos.x,
+                    self.region_graph.node(edge.start_node).pos.z,
                 ),
                 godot::prelude::Vector2::new(
-                    self.region_graph.nodes[edge.end_node as usize].pos.x,
-                    self.region_graph.nodes[edge.end_node as usize].pos.z,
+                    self.region_graph.node(edge.end_node).pos.x,
+                    self.region_graph.node(edge.end_node).pos.z,
                 ),
             ]
         } else {
@@ -650,16 +650,16 @@ impl SimCore {
 
     /// Returns the number of road connections for a node.
     pub fn get_node_connection_count_internal(&self, node_id: i32) -> i32 {
-        if node_id < 0 || node_id as usize >= self.region_graph.adjacency.len() {
+        if node_id < 0 || node_id as usize >= self.region_graph.node_count() {
             return 0;
         }
-        self.region_graph.adjacency[node_id as usize].len() as i32
+        self.region_graph.node_adjacency(node_id as u32).len() as i32
     }
 
     /// Returns all junction node positions.
     pub fn get_network_nodes_internal(&self) -> PackedVector3Array {
         let mut arr = PackedVector3Array::new();
-        for (i, node) in self.region_graph.nodes.iter().enumerate() {
+        for (i, node) in self.region_graph.nodes().iter().enumerate() {
             if is_canonical_node(&self.region_graph, i as u32) {
                 arr.push(node.pos);
             }
@@ -670,8 +670,8 @@ impl SimCore {
     /// Returns the world-space position of a node.
     pub fn get_node_pos_internal(&self, node_id: u32) -> Vector3 {
         let valid_id = self.region_graph.get_valid_node(node_id);
-        if (valid_id as usize) < self.region_graph.nodes.len() {
-            self.region_graph.nodes[valid_id as usize].pos
+        if (valid_id as usize) < self.region_graph.node_count() {
+            self.region_graph.node(valid_id).pos
         } else {
             Vector3::ZERO
         }
@@ -680,10 +680,10 @@ impl SimCore {
     /// Returns an array of current lane turn restrictions at a node.
     pub fn get_lane_connections_array_internal(&self, node_id: u32) -> VarArray {
         let mut arr = VarArray::new();
-        if node_id as usize >= self.region_graph.nodes.len() {
+        if node_id as usize >= self.region_graph.node_count() {
             return arr;
         }
-        let node = &self.region_graph.nodes[node_id as usize];
+        let node = self.region_graph.node(node_id);
 
         for (src, targets) in &node.lane_connections {
             for tgt in targets {
@@ -703,9 +703,9 @@ impl SimCore {
         let mut avg_dir = Vector3::ZERO;
         let mut count = 0;
 
-        for (i, node) in self.region_graph.nodes.iter().enumerate() {
+        for (i, node) in self.region_graph.nodes().iter().enumerate() {
             if node.pos.distance_to(pos) < 0.1 {
-                for edge in &self.region_graph.edges {
+                for edge in self.region_graph.edges() {
                     if edge.start_node == i as u32 {
                         if edge.physical_geometry.len() >= 2 {
                             let dir = (edge.physical_geometry[1] - edge.physical_geometry[0])
@@ -749,13 +749,13 @@ impl SimCore {
         let mut arr = VarArray::new();
 
         let valid_node_id = self.region_graph.get_valid_node(node_id);
-        if valid_node_id as usize >= self.region_graph.nodes.len() {
+        if valid_node_id as usize >= self.region_graph.node_count() {
             return arr;
         }
 
-        let junction_pos = self.region_graph.nodes[valid_node_id as usize].pos;
+        let junction_pos = self.region_graph.node(valid_node_id).pos;
 
-        for (e_id, edge) in self.region_graph.edges.iter().enumerate() {
+        for (e_id, edge) in self.region_graph.edges().iter().enumerate() {
             // Check both ends independently
             let check_start = edge.start_node == valid_node_id;
             let check_end = edge.end_node == valid_node_id;
@@ -828,7 +828,7 @@ impl SimCore {
                         } else {
                             edge.start_node
                         };
-                        diff = self.region_graph.nodes[other_node as usize].pos - junction_pos;
+                        diff = self.region_graph.node(other_node).pos - junction_pos;
                     }
                 }
 
@@ -898,7 +898,7 @@ impl SimCore {
     /// Only canonical (non-alias) nodes with `NodeType::Border` are included.
     pub fn get_border_nodes_internal(&self) -> PackedFloat32Array {
         let mut arr = PackedFloat32Array::new();
-        for (i, node) in self.region_graph.nodes.iter().enumerate() {
+        for (i, node) in self.region_graph.nodes().iter().enumerate() {
             if node.node_type != crate::simulation::network::types::NodeType::Border {
                 continue;
             }

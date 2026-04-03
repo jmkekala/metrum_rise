@@ -737,7 +737,8 @@ mod tests {
 
     fn setup_test_graph() -> RegionGraph {
         let mut graph = RegionGraph::new();
-        graph.nodes = vec![
+
+        let nodes = vec![
             Node {
                 pos: Vector3::new(0.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
@@ -780,7 +781,7 @@ mod tests {
             deleted: false,
         };
 
-        graph.edges = vec![
+        let edges = vec![
             Edge {
                 start_node: 0,
                 end_node: 1,
@@ -809,6 +810,7 @@ mod tests {
             }, // 3
         ];
 
+        graph.set_nodes_edges_for_test(nodes, edges);
         graph.rebuild_adjacency_list();
         graph
     }

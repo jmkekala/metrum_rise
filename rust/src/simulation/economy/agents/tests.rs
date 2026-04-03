@@ -417,7 +417,7 @@ fn test_overlap_correction_separates_cars() {
 fn test_edge_congestion_written_after_tick() {
     // A car moving at half speed_limit should produce congestion > 0 after update_edge_congestion.
     let (network, mut graph, edge_idx, fwd_lane) = setup_straight_road();
-    let speed_limit = graph.edges[edge_idx].speed_limit;
+    let speed_limit = graph.edge(edge_idx).speed_limit;
     let mut agents = AgentSystem::new();
     let mut allocator = BuildingAllocator::new();
     let i = place_on_lane(&mut agents, edge_idx, fwd_lane, 50.0, speed_limit * 0.5);
@@ -427,7 +427,7 @@ fn test_edge_congestion_written_after_tick() {
     agents.current_edge[i] = edge_idx;
     agents.write_congestion(&mut graph);
     assert!(
-        graph.edges[edge_idx].current_congestion > 0.0,
+        graph.edge(edge_idx).current_congestion > 0.0,
         "congestion should be > 0 when car is below speed limit"
     );
 }

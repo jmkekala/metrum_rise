@@ -117,7 +117,7 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
 
 pub(super) fn validate_loaded_agents(agents: &mut AgentSystem, graph: &RegionGraph, allocator: &BuildingAllocator) -> SaveLoadResult<()> {
     for i in 0..agents.len() {
-        if (agents.current_node[i] as usize) >= graph.nodes.len() || (agents.target_node[i] as usize) >= graph.nodes.len() {
+        if (agents.current_node[i] as usize) >= graph.node_count() || (agents.target_node[i] as usize) >= graph.node_count() {
             return Err(SaveLoadError::custom(format!("agent {} has bad node", i)));
         }
         if agents.home_building[i] != usize::MAX && agents.home_building[i] >= allocator.buildings.len() { agents.home_building[i] = usize::MAX; }
@@ -126,10 +126,10 @@ pub(super) fn validate_loaded_agents(agents: &mut AgentSystem, graph: &RegionGra
         if agents.current_building[i] != usize::MAX && agents.current_building[i] >= allocator.buildings.len() { agents.current_building[i] = usize::MAX; clear = true; }
         if agents.target_building[i] != usize::MAX && agents.target_building[i] >= allocator.buildings.len() { agents.target_building[i] = usize::MAX; clear = true; }
         if agents.current_path_index[i] > agents.current_path[i].len() { clear = true; }
-        if agents.current_path[i].iter().any(|&nid| (nid as usize) >= graph.nodes.len()) { clear = true; }
+        if agents.current_path[i].iter().any(|&nid| (nid as usize) >= graph.node_count()) { clear = true; }
         if agents.lane_distance[i] < 0.0 || !agents.lane_distance[i].is_finite() { clear = true; }
         if agents.current_edge[i] != usize::MAX {
-            if agents.current_edge[i] >= graph.edges.len() || graph.edges[agents.current_edge[i]].deleted { clear = true; }
+            if agents.current_edge[i] >= graph.edge_count() || graph.edge(agents.current_edge[i]).deleted { clear = true; }
             else {
                 if agents.transit_mode[i] != MODE_CAR { agents.current_lane_id[i] = usize::MAX; }
             }

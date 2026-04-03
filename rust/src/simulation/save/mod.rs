@@ -153,9 +153,9 @@ pub(crate) fn load_from_sqlite(path: &Path) -> SaveLoadResult<LoadedSimulation> 
 
 fn build_snapshot_maps(graph: &RegionGraph, allocator: &BuildingAllocator, agents: &AgentSystem) -> SaveLoadResult<SnapshotMaps> {
     let mut edge_old_to_new = HashMap::new();
-    for (old, edge) in graph.edges.iter().enumerate() { if !edge.deleted { let nid = edge_old_to_new.len(); edge_old_to_new.insert(old, nid); } }
+    for (old, edge) in graph.edges().iter().enumerate() { if !edge.deleted { let nid = edge_old_to_new.len(); edge_old_to_new.insert(old, nid); } }
     let mut saved_nodes = BTreeSet::new();
-    for edge in &graph.edges { if edge.deleted { continue; } saved_nodes.insert(network::canonical_existing_node(graph, edge.start_node)?); saved_nodes.insert(network::canonical_existing_node(graph, edge.end_node)?); }
+    for edge in graph.edges() { if edge.deleted { continue; } saved_nodes.insert(network::canonical_existing_node(graph, edge.start_node)?); saved_nodes.insert(network::canonical_existing_node(graph, edge.end_node)?); }
     for i in 0..agents.len() { saved_nodes.insert(network::canonical_existing_node(graph, agents.current_node[i])?); saved_nodes.insert(network::canonical_existing_node(graph, agents.target_node[i])?); for &nid in &agents.current_path[i] { saved_nodes.insert(network::canonical_existing_node(graph, nid)?); } }
     let node_old_to_new = saved_nodes.into_iter().enumerate().map(|(n, o)| (o, n as u32)).collect();
     let mut building_old_to_new = HashMap::new();

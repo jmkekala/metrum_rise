@@ -65,7 +65,7 @@ impl NoiseSystem {
         }
 
         // 1B. Emission (Roads)
-        for edge in &graph.edges {
+        for edge in graph.edges() {
             if edge.deleted {
                 continue;
             }
@@ -204,7 +204,7 @@ mod tests {
         );
 
         // 4. Test Decay: remove road and observe values dropping
-        graph.edges[0].deleted = true;
+        graph.edge_mut(0).deleted = true;
         let prev_sum: f32 = noise.grid.data.iter().sum();
 
         for _ in 0..20 {

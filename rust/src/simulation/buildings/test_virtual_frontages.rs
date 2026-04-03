@@ -54,8 +54,8 @@ mod tests {
         }
         demand.residential = 500.0;
 
-        let initial_nodes = graph.nodes.len();
-        let initial_edges = graph.edges.len();
+        let initial_nodes = graph.node_count();
+        let initial_edges = graph.edge_count();
 
         allocator.tick(
             &mut demand, &mut zoning, &desirability, &noise,
@@ -67,11 +67,11 @@ mod tests {
 
         // Option C: a real node was inserted at the frontage position.
         assert_eq!(
-            graph.nodes.len(), initial_nodes + 1,
+            graph.node_count(), initial_nodes + 1,
             "Exactly one frontage node should have been inserted"
         );
         assert!(
-            graph.edges.len() > initial_edges,
+            graph.edge_count() > initial_edges,
             "Edge should have been split into two half-edges"
         );
 
@@ -123,8 +123,8 @@ mod tests {
             &mut allocator,
         );
 
-        let orig_start = graph.edges[0].start_node;
-        let orig_end = graph.edges[0].end_node;
+        let orig_start = graph.edge(0).start_node;
+        let orig_end = graph.edge(0).end_node;
 
         // Zone columns 1–8 only (skip 0 and 9). The allocator uses a zigzag scan that visits
         // column 0 and column 9 first. Both are 5 m from their respective endpoints, which is
@@ -238,7 +238,7 @@ mod tests {
             })
             .expect("forward vehicle lane on building edge");
 
-        let b_edge = &graph.edges[b_edge_idx];
+        let b_edge = graph.edge(b_edge_idx);
         let physical_len = b_edge.physical_length;
         let frontage_dist = b_frontage_t * physical_len;
 
