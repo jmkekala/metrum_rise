@@ -336,7 +336,7 @@ This is a prerequisite for adding per-thread lane caching at v0.2 scale. **Targe
 
 **Target: before adding any per-tile obstruction caching (required for v0.2 scale).**
 
-**R4. Split `simulation/network/render/road.rs` (2247 lines)** — the most over-loaded file in the codebase. Sidewalk assembly, asphalt ribbons, junction polygon fill, crosswalk markings, terminal caps, and width-transition tapers are all interleaved in one impl with 60+ private helpers. Adding a rail renderer, bridge deck, or elevated road here would be extremely dangerous. Recommended split:
+[DONE] **R4. Split `simulation/network/render/road.rs` (2247 lines)** — the most over-loaded file in the codebase. Sidewalk assembly, asphalt ribbons, junction polygon fill, crosswalk markings, terminal caps, and width-transition tapers are all interleaved in one impl with 60+ private helpers. Adding a rail renderer, bridge deck, or elevated road here would be extremely dangerous. Recommended split:
 - `render/road_strip.rs` — per-edge asphalt and sidewalk ribbon emission
 - `render/junction_fill.rs` — node polygon classification and fill
 - `render/crosswalks.rs` — mouth detection and marking generation
