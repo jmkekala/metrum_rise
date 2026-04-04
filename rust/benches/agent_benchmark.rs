@@ -151,7 +151,7 @@ fn bench_agent_tick(c: &mut Criterion) {
                 let mut allocator = BuildingAllocator::new();
                 let transit = &shared.transit;
 
-                let seg_count = shared.graph.edges[shared.edge_ab].physical_length;
+                let seg_count = shared.graph.edges()[shared.edge_ab].physical_length;
                 for i in 0..count {
                     // Spread agents across the first half of the edge.
                     let prog = i as f32 % (seg_count / 2.0).max(1.0);
