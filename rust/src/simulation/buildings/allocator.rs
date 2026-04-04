@@ -25,9 +25,9 @@ pub struct ModelMetadata {
 /// A placed building occupying a 3 × 3 cell (30 m × 30 m) footprint on a zoning grid.
 #[derive(Clone)]
 pub struct Building {
-    /// World-space X centre of the building footprint (metres, Godot's forward axis).
+    /// World-space X centre of the building footprint (metres, ground-plane X axis).
     pub center_x: f32,
-    /// World-space Z centre of the building footprint (metres, Godot's forward axis).
+    /// World-space Z centre of the building footprint (metres, ground-plane Z axis; legacy `*_y` field name).
     pub center_y: f32,
     /// Width of the footprint in zoning grid cells.
     pub width_cells: u8,

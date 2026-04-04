@@ -458,7 +458,7 @@ The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) i
 
 ### v0.3 — 3D asset pipeline
 
-Target: same agent scale as v0.2. No simulation changes. All work is in `render_helpers.rs` (Rust FFI layer) and `godot/scripts/` (GDScript renderers). The 12-float Transform3D format and the MultiMesh instancing architecture are retained — only the meshes assigned to those MultiMesh nodes change.
+Target: same agent scale as v0.2. Most work is in `render_helpers.rs` (Rust FFI layer), `godot/scripts/` (GDScript renderers), and the new asset tooling. Item 58 is the one major simulation-side prerequisite: arbitrary-size assets require retiring the fixed `ZONING_DEPTH` cap in favour of dynamic zoning extents.
 
 **Hard architectural constraint**: Godot's `MultiMesh` does not support per-instance skeletal animation. Bone-animated pedestrians require individual `Node3D` nodes, which does not scale past a few thousand agents. The approach for v0.3 is to use static 3D models (a mid-stride static pose for pedestrians, a static car mesh). GPU vertex animation (baked walk cycle sampled via a custom shader using a per-instance phase offset) is noted as a follow-on and can be added without any simulation or API changes once the static models are in place.
 
@@ -491,14 +491,32 @@ Target: same agent scale as v0.2. No simulation changes. All work is in `render_
     - No simulation interaction — purely visual. No Rust simulation changes; a new `environment.gd` script reads edge geometry via existing `get_edge_geometry()` calls.
 52. **Terrain built-layer ("urban density map")** — eliminates grass visible under roads and buildings:
     - Add a new `DataGrid<f32>` named `built_layer` to the environment system (same architecture as `pollution`, `noise`, `desirability`). Values: `0.0` = natural, `1.0` = fully developed.
-    - Write to the grid on road placement: cells within `SIDEWALK_WIDTH` on both sides of each edge → set to `~0.8`. Write on building placement: all 9 cells of the 3×3 footprint → set to `1.0`. Clear on removal.
+    - Write to the grid on road placement: cells within `SIDEWALK_WIDTH` on both sides of each edge → set to `~0.8`. Write on building placement: all cells of the building's authored footprint → set to `1.0`. Clear on removal.
     - Expose as `get_built_layer_data() -> PackedByteArray` (same interface as `get_pollution_data()` etc.) for the terrain shader.
     - In the terrain `gdshader`, sample the built-layer texture and blend: `mix(grass_color, concrete_color, built_density)`. No change to terrain mesh geometry.
     - **Complexity**: O(E × W) write on road placement (E edges, W = cells per edge), O(1) per building cell. Grid tick is unnecessary — values only change on network/building events.
 53. **Building foundation quads** — eliminates z-fighting and grass bleed at building perimeters:
-    - For each placed building, render a flat `QuadMesh` sized to the 3×3 footprint (30 m × 30 m) at `+0.02 m` above terrain height. Material uses a concrete/pavement albedo that matches the urban density map blend at `1.0`.
+    - For each placed building, render a flat quad or footprint mesh sized to the building's authored lot dimensions at `+0.02 m` above terrain height. Material uses a concrete/pavement albedo that matches the urban density map blend at `1.0`.
     - Add a second `MultiMeshInstance3D` per zone type in `buildings.gd` (e.g. `ResidentialFoundationMesh`). Reuse the same transform data already packed for the building mesh — the foundation quad uses the same center position and facing direction, with a flat scale.
     - No Rust changes beyond what item 52 already requires. Foundation quads are driven entirely from the existing `get_building_transforms()` call in GDScript.
+57. **Asset editor / importer**:
+    - Add a separate `asset_editor` launch mode / executable that boots a stripped-down sandbox scene (target `500 m × 500 m`, no demographics, no live city simulation) for content preview and packaging.
+    - Canonical content format: `glTF 2.0` / `.glb` plus JSON manifests. The editor may accept FBX as a source convenience, but shipped assets should be normalized to `.glb` outputs and explicit metadata files.
+    - First milestone scope: zoned buildings, props, vehicles, and citizen source assets for offline baking. Roads are a later dedicated network-authoring milestone because they must define lane/topology/material metadata, not just meshes.
+    - Add pack/set manifests with enable-disable support, author/license attribution, thumbnails, and per-asset metadata (variable lot width/depth in zoning cells, zone type, worker/resident capacity, category, tags, LODs, source attribution). `3×3` remains only a preset/default, not a hard rule.
+    - Canonical packaged asset orientation: right-handed local basis, `+Y = up`, `+Z = forward`, origin at the asset's placement pivot. Buildings and pedestrians already follow this convention in the current renderer; legacy civilian car loading still applies a hidden `180°` yaw compatibility rotation in `agents.gd` and should be normalized by the importer/runtime over time instead of exposed to modders as a special case.
+    - Texture orientation must be validated in the editor preview instead of guessed globally. Ordinary `.glb` assets should keep authored UVs/textures unless preview proves otherwise; pipeline-generated VAT EXR textures remain a dedicated special case handled by the bake tool + shader contract.
+    - Citizen import must respect the rendering roadmap: skeletal source assets are allowed in the editor, but runtime outputs must remain crowd-scale friendly (static, billboard, or VAT-baked), not live per-instance skeleton animation.
+    - See `docs/asset_editor.md` for the detailed design proposal and scope split.
+58. **Dynamic zoning extents / arbitrary lot sizes**:
+    - Replace the fixed global `ZONING_DEPTH` cap with per-edge-side dynamic `depth_cells`, allocated and grown only from actually painted zoning. Building size should be limited by painted zoning and map space, not by a compile-time constant.
+    - Keep the road-aligned zoning coordinate system `(edge_idx, side, x, y)` so frontage attachment, road-facing orientation, and split-edge migration continue to work. This is a storage redesign, not a move to free-floating building parcels detached from roads.
+    - Replace footprint-related `u8` fields with `u16` or `usize`-scale counts where needed (`Building.width_cells`, `Building.depth_cells`, block depth metadata, and save/load plumbing) so large authored assets are not capped at 255 cells.
+    - Spawn logic must choose only assets whose `(lot_width_cells, lot_depth_cells)` rectangle fits inside the currently zoned, unobstructed, and unoccupied area. If the player paints five adjacent `1×5` columns, a `5×5` asset may consume all five as one footprint.
+    - Fit validation is rectangle-based, never area-based: a `3×3` asset must not spawn on `3×2` zoning or on three adjacent `1×2` parcels. Every cell in the full required rectangle must exist and pass the normal zoning/occupied/blocked checks.
+    - Solid block zoning remains useful, but it becomes parcel metadata rather than a hard-coded depth cap: keep parcel/block IDs so large coherent rectangles stay visually grouped and the allocator can prefer them.
+    - Dirty-edge obstruction recalculation and zoning rendering must iterate only to the local painted depth for that edge-side. Complexity becomes `O(sum(cells_long_e × depth_cells_e))` over dirty edges instead of `O(sum(cells_long_e × global_depth))`.
+    - Prerequisite for item 57's arbitrary-size building workflow and for variable-footprint built-layer/foundation rendering in items 52 and 53.
 
 ---
 
