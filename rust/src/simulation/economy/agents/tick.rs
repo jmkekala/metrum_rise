@@ -312,7 +312,8 @@ impl AgentSystem {
         });
 
         // -----------------------------------------------------------------------
-        // 5. Post-movement overlap correction — sequential O(A).
+        // 5. Post-movement overlap correction + congestion accumulation — sequential O(A).
+        //    Merged into one pass to avoid a second O(A) scan in write_congestion.
         // -----------------------------------------------------------------------
         {
             for &lid in &self.dirty_lanes {
@@ -320,6 +321,12 @@ impl AgentSystem {
                 self.lane_is_dirty[lid] = false;
             }
             self.dirty_lanes.clear();
+
+            let edge_count = graph.edge_count();
+            self.edge_speed_sum.clear();
+            self.edge_speed_sum.resize(edge_count, 0.0_f32);
+            self.edge_agent_cnt.clear();
+            self.edge_agent_cnt.resize(edge_count, 0_u32);
 
             for i in 0..n {
                 if self.agents.transit[i] == TRANSIT_ON_ROAD {
@@ -330,6 +337,11 @@ impl AgentSystem {
                             self.dirty_lanes.push(lid);
                         }
                         self.lane_buckets[lid].push((self.agents.lane_distance[i], i));
+                    }
+                    let eid = self.agents.current_edge[i];
+                    if eid != usize::MAX && eid < edge_count {
+                        self.edge_speed_sum[eid] += self.agents.speed[i];
+                        self.edge_agent_cnt[eid] += 1;
                     }
                 }
             }
@@ -348,10 +360,16 @@ impl AgentSystem {
                     }
                 }
             }
-        }
 
-        // 6. Write congestion.
-        self.write_congestion(graph);
+            // 6. Commit congestion — O(E), already accumulated above.
+            for eid in 0..edge_count {
+                if !graph.edge(eid).deleted && self.edge_agent_cnt[eid] > 0 {
+                    let avg = self.edge_speed_sum[eid] / self.edge_agent_cnt[eid] as f32;
+                    let limit = graph.edge(eid).speed_limit.max(1.0);
+                    graph.set_edge_congestion(eid, (1.0 - avg / limit).max(0.0));
+                }
+            }
+        }
     }
 
     /// Core agent movement logic (FSM and physics).
