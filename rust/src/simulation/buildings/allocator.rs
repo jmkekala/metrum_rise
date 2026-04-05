@@ -772,8 +772,10 @@ mod tests {
             anchors: vec![],
             building: Some(BuildingData {
                 zone_type: zone,
+                density: "low".to_owned(),
                 lot_width_cells: 1,
-                lot_depth_cells: 1, level: 1,
+                lot_depth_cells: 1,
+                level: 1,
                 residents_capacity: Some(6),
                 worker_capacity: None,
                 service_class: None,
@@ -783,7 +785,7 @@ mod tests {
             vehicle: None,
             character: None,
         };
-        allocator.registry.register(pack_id, manifest);
+        allocator.registry.register(pack_id, manifest, String::new());
     }
 
     #[test]

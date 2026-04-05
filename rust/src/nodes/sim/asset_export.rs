@@ -68,6 +68,8 @@ pub struct ExportParams {
     pub service_class: Option<String>,
     #[serde(default)]
     pub preview_scale: Option<f32>,
+    #[serde(default)]
+    pub pivot_offset: Option<[f32; 3]>,
 
     // LODs and anchors
     #[serde(default)]
@@ -130,6 +132,11 @@ fn build_asset_toml(p: &ExportParams) -> String {
             }
             if let Some(ps) = p.preview_scale {
                 if (ps - 1.0).abs() > 0.001 { out.push_str(&format!("preview_scale = {ps}\n")); }
+            }
+            if let Some([px, py, pz]) = p.pivot_offset {
+                if px.abs() > 1e-4 || py.abs() > 1e-4 || pz.abs() > 1e-4 {
+                    out.push_str(&format!("pivot_offset = [{px}, {py}, {pz}]\n"));
+                }
             }
         }
         other => {
@@ -281,6 +288,9 @@ pub fn get_asset_manifest_json_internal(
         obj["worker_capacity"] = serde_json::json!(b.worker_capacity);
         obj["service_class"] = serde_json::json!(b.service_class);
         obj["preview_scale"] = serde_json::json!(b.preview_scale.unwrap_or(1.0));
+    }
+    if let Some(po) = m.pivot_offset {
+        obj["pivot_offset"] = serde_json::json!(po);
     }
 
     serde_json::to_string(&obj).unwrap_or_default()

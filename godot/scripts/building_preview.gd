@@ -1,0 +1,357 @@
+## Manages the 3D preview for the building importer.
+## Handles the imported GLB mesh, lot rectangle wireframe, frontage arrow,
+## ground grid, human-scale reference figure, and ghost comparison mesh.
+extends Node3D
+
+## Emitted after a GLB mesh is successfully loaded.
+## `aabb` is the model-space AABB of the imported scene root.
+signal mesh_loaded(aabb: AABB)
+
+# Zone cell size in metres — must match the sandbox MapConfig (zone_cell_m = 10.0).
+const CELL_M := 10.0
+
+var _mesh_instance: MeshInstance3D
+var _lot_overlay: MeshInstance3D
+var _frontage_arrow: MeshInstance3D
+var _ground_grid: MeshInstance3D
+var _human_figure: MeshInstance3D  # 1.8 m reference capsule
+
+# Ghost: previous mesh shown semi-transparent to the left for comparison.
+var _ghost_root: Node3D            # offset container for ghost mesh
+var _ghost_lot_width: float = 0.0  # width of the ghosted lot in metres
+
+var _width_cells: int = 1
+var _depth_cells: int = 1
+
+var preview_scale: float = 1.0
+var frontage_forward: Vector3 = Vector3.FORWARD
+var _show_human: bool = false
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+func _ready() -> void:
+	_ground_grid = MeshInstance3D.new()
+	add_child(_ground_grid)
+	_build_ground_grid()
+
+	_ghost_root = Node3D.new()
+	add_child(_ghost_root)
+
+	_mesh_instance = MeshInstance3D.new()
+	add_child(_mesh_instance)
+
+	_lot_overlay = MeshInstance3D.new()
+	add_child(_lot_overlay)
+
+	_frontage_arrow = MeshInstance3D.new()
+	add_child(_frontage_arrow)
+
+	_human_figure = MeshInstance3D.new()
+	add_child(_human_figure)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Public API
+# ──────────────────────────────────────────────────────────────────────────────
+
+## Load a GLB, GLTF, or FBX from an absolute native path and place it at the origin.
+func load_glb(native_path: String) -> void:
+	var ext := native_path.get_extension().to_lower()
+	var doc: GLTFDocument
+	var state: GLTFState
+	if ext == "fbx":
+		doc = FBXDocument.new()
+		state = FBXState.new()
+	else:
+		doc = GLTFDocument.new()
+		state = GLTFState.new()
+	var err := doc.append_from_file(native_path, state)
+	if err != OK:
+		push_warning("BuildingPreview: failed to load '%s' (error %d)" % [native_path, err])
+		return
+
+	# Capture current mesh as ghost before replacing it.
+	if _mesh_instance.get_child_count() > 0:
+		_capture_ghost()
+
+	for child in _mesh_instance.get_children():
+		child.queue_free()
+
+	var scene: Node = doc.generate_scene(state)
+	if scene:
+		_mesh_instance.add_child(scene)
+
+	_rebuild_overlays()
+
+	var aabb := AABB()
+	if scene is Node3D:
+		aabb = _compute_aabb(scene as Node3D)
+	emit_signal("mesh_loaded", aabb)
+
+## Update lot dimensions and rebuild overlays.
+func set_lot_size(width_cells: int, depth_cells: int) -> void:
+	_width_cells = maxi(1, width_cells)
+	_depth_cells = maxi(1, depth_cells)
+	_rebuild_overlays()
+
+## Apply a uniform scale to the mesh. Does not affect lot overlays.
+func set_preview_scale(scale_value: float) -> void:
+	preview_scale = maxf(0.001, scale_value)
+	_mesh_instance.scale = Vector3.ONE * preview_scale
+
+## Update frontage forward vector and rebuild the arrow.
+func set_frontage_forward(fwd: Vector3) -> void:
+	frontage_forward = fwd.normalized()
+	_rebuild_overlays()
+
+## Show or hide the 1.8 m human reference figure.
+func set_show_human(visible: bool) -> void:
+	_show_human = visible
+	_human_figure.visible = visible
+
+## Place the human figure at a world XZ position, snapped to the nearest grid line.
+func place_human_at(world_x: float, world_z: float) -> void:
+	_human_figure.position = Vector3(world_x, 0.9, world_z)
+
+## Clear the mesh, ghost, and overlays.
+func clear() -> void:
+	for child in _mesh_instance.get_children():
+		child.queue_free()
+	clear_ghost()
+	_lot_overlay.mesh = null
+	_frontage_arrow.mesh = null
+	_human_figure.mesh = null
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Ghost
+# ──────────────────────────────────────────────────────────────────────────────
+
+func _capture_ghost() -> void:
+	clear_ghost()
+	_ghost_lot_width = _width_cells * CELL_M
+
+	# Duplicate the current scene node (first child of _mesh_instance).
+	for child in _mesh_instance.get_children():
+		var dup: Node = child.duplicate()
+		_ghost_root.add_child(dup)
+		_apply_ghost_material(dup)
+
+	# Carry over the current preview scale.
+	_ghost_root.scale = _mesh_instance.scale
+
+	# Position ghost to the left: half its lot + gap + half current lot.
+	var gap := CELL_M
+	var offset_x := -(_ghost_lot_width * 0.5 + gap + _width_cells * CELL_M * 0.5)
+	_ghost_root.position = Vector3(offset_x, 0.0, 0.0)
+
+func clear_ghost() -> void:
+	for child in _ghost_root.get_children():
+		child.queue_free()
+	_ghost_lot_width = 0.0
+
+# Walk the duplicated subtree and replace every surface material with a
+# semi-transparent blue-grey version of the original albedo.
+func _apply_ghost_material(node: Node) -> void:
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		for surf in mi.get_surface_override_material_count():
+			var orig: Material = mi.get_active_material(surf)
+			var mat := StandardMaterial3D.new()
+			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			mat.albedo_color = Color(0.5, 0.65, 0.9, 0.35)
+			if orig is StandardMaterial3D:
+				# Tint the original albedo rather than replacing it entirely.
+				var orig_color: Color = (orig as StandardMaterial3D).albedo_color
+				mat.albedo_color = Color(
+					lerpf(orig_color.r, 0.5, 0.6),
+					lerpf(orig_color.g, 0.65, 0.6),
+					lerpf(orig_color.b, 0.9, 0.6),
+					0.4)
+			mi.set_surface_override_material(surf, mat)
+	for child in node.get_children():
+		_apply_ghost_material(child)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Human figure
+# ──────────────────────────────────────────────────────────────────────────────
+
+func _build_human_figure() -> void:
+	# 1.8 m tall capsule: CapsuleMesh height = cylinder part, total = height + 2*radius.
+	# radius=0.2, height=1.4 → total=1.8 m.
+	var capsule := CapsuleMesh.new()
+	capsule.radius = 0.2
+	capsule.height = 1.4
+
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.85, 0.1, 0.85)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	capsule.surface_set_material(0, mat)
+
+	_human_figure.mesh = capsule
+	_human_figure.visible = _show_human
+	_place_human_figure()
+
+func _place_human_figure() -> void:
+	# Place at the right corner of the frontage edge, just outside the lot.
+	var w := _width_cells * CELL_M
+	var d := _depth_cells * CELL_M
+	var fwd := frontage_forward
+
+	var edge_center: Vector3
+	var along_edge: Vector3
+	var edge_half: float
+
+	if abs(fwd.x) >= abs(fwd.z):
+		edge_center = Vector3(sign(fwd.x) * w * 0.5, 0.0, 0.0)
+		along_edge  = Vector3(0.0, 0.0, 1.0)
+		edge_half   = d * 0.5
+	else:
+		edge_center = Vector3(0.0, 0.0, sign(fwd.z) * d * 0.5)
+		along_edge  = Vector3(1.0, 0.0, 0.0)
+		edge_half   = w * 0.5
+
+	# Right corner of the frontage edge, one step outside the lot.
+	var corner := edge_center + along_edge * (edge_half + 1.5)
+	_human_figure.position = Vector3(corner.x, 0.9, corner.z)  # y=0.9 centres the capsule
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Overlay builders
+# ──────────────────────────────────────────────────────────────────────────────
+
+func _rebuild_overlays() -> void:
+	_build_ground_grid()
+	_build_lot_wireframe()
+	_build_frontage_arrow()
+	_build_human_figure()
+
+func _build_ground_grid() -> void:
+	var lot_half_w := _width_cells * CELL_M * 0.5
+	var lot_half_d := _depth_cells * CELL_M * 0.5
+	var offset_x   := (_width_cells  % 2) * CELL_M * 0.5
+	var offset_z   := (_depth_cells  % 2) * CELL_M * 0.5
+	const MIN_CELLS := 5
+	var cells_x := maxi(ceili(lot_half_w / CELL_M) + 1, MIN_CELLS)
+	var cells_z := maxi(ceili(lot_half_d / CELL_M) + 1, MIN_CELLS)
+	var start_x := offset_x - cells_x * CELL_M
+	var start_z := offset_z - cells_z * CELL_M
+	var end_x   := offset_x + cells_x * CELL_M
+	var end_z   := offset_z + cells_z * CELL_M
+	var n_x     := cells_x * 2 + 1
+	var n_z     := cells_z * 2 + 1
+	const Y := -0.01
+
+	var im := ImmediateMesh.new()
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	for ix in n_x:
+		var x := start_x + ix * CELL_M
+		im.surface_set_color(Color(0.25, 0.25, 0.25, 1.0))
+		im.surface_add_vertex(Vector3(x, Y, start_z))
+		im.surface_set_color(Color(0.25, 0.25, 0.25, 1.0))
+		im.surface_add_vertex(Vector3(x, Y, end_z))
+	for iz in n_z:
+		var z := start_z + iz * CELL_M
+		im.surface_set_color(Color(0.25, 0.25, 0.25, 1.0))
+		im.surface_add_vertex(Vector3(start_x, Y, z))
+		im.surface_set_color(Color(0.25, 0.25, 0.25, 1.0))
+		im.surface_add_vertex(Vector3(end_x,   Y, z))
+	im.surface_end()
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.vertex_color_use_as_albedo = true
+	im.surface_set_material(0, mat)
+	_ground_grid.mesh = im
+
+func _build_lot_wireframe() -> void:
+	var w := _width_cells * CELL_M
+	var d := _depth_cells * CELL_M
+	var corners := [
+		Vector3(-w * 0.5, 0.0,  d * 0.5),
+		Vector3( w * 0.5, 0.0,  d * 0.5),
+		Vector3( w * 0.5, 0.0, -d * 0.5),
+		Vector3(-w * 0.5, 0.0, -d * 0.5),
+	]
+	var im := ImmediateMesh.new()
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	for i in 4:
+		im.surface_set_color(Color(0.2, 0.8, 0.2, 1.0))
+		im.surface_add_vertex(corners[i])
+		im.surface_add_vertex(corners[(i + 1) % 4])
+	im.surface_end()
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.vertex_color_use_as_albedo = true
+	im.surface_set_material(0, mat)
+	_lot_overlay.mesh = im
+
+func _compute_aabb(node: Node3D) -> AABB:
+	var result := AABB()
+	var first := true
+	for child in node.find_children("*", "MeshInstance3D", true, false):
+		var mi := child as MeshInstance3D
+		if not mi or not mi.mesh:
+			continue
+		var rel := Transform3D.IDENTITY
+		var cur: Node = mi
+		while cur != node and cur != null:
+			if cur is Node3D:
+				rel = (cur as Node3D).transform * rel
+			cur = cur.get_parent()
+		var node_aabb := rel * mi.get_aabb()
+		if first:
+			result = node_aabb
+			first = false
+		else:
+			result = result.merge(node_aabb)
+	return result
+
+func _build_frontage_arrow() -> void:
+	var w := _width_cells  * CELL_M
+	var d := _depth_cells * CELL_M
+	var fwd := frontage_forward
+
+	var edge_center: Vector3
+	var along_edge: Vector3
+	var edge_half: float
+	var num_arrows: int
+
+	if abs(fwd.x) >= abs(fwd.z):
+		edge_center = Vector3(sign(fwd.x) * w * 0.5, 0.0, 0.0)
+		along_edge  = Vector3(0.0, 0.0, 1.0)
+		edge_half   = d * 0.5
+		num_arrows  = _depth_cells
+	else:
+		edge_center = Vector3(0.0, 0.0, sign(fwd.z) * d * 0.5)
+		along_edge  = Vector3(1.0, 0.0, 0.0)
+		edge_half   = w * 0.5
+		num_arrows  = _width_cells
+
+	var arrow_len := CELL_M * 0.45
+	var head_size := CELL_M * 0.18
+	var y         := 0.06
+
+	var im := ImmediateMesh.new()
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	im.surface_set_color(Color(1.0, 0.5, 0.0, 1.0))
+	im.surface_add_vertex(edge_center + along_edge *  edge_half + Vector3(0, y, 0))
+	im.surface_add_vertex(edge_center - along_edge *  edge_half + Vector3(0, y, 0))
+	for i in num_arrows:
+		var t    := -edge_half + CELL_M * (i + 0.5)
+		var base :=  edge_center + along_edge * t + Vector3(0, y, 0)
+		var tip  :=  base + fwd * arrow_len
+		var wing_l := tip - fwd * head_size + along_edge *  head_size * 0.6
+		var wing_r := tip - fwd * head_size - along_edge *  head_size * 0.6
+		im.surface_set_color(Color(1.0, 0.5, 0.0, 1.0))
+		im.surface_add_vertex(base)
+		im.surface_add_vertex(tip)
+		im.surface_add_vertex(tip)
+		im.surface_add_vertex(wing_l)
+		im.surface_add_vertex(tip)
+		im.surface_add_vertex(wing_r)
+	im.surface_end()
+
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.vertex_color_use_as_albedo = true
+	im.surface_set_material(0, mat)
+	_frontage_arrow.mesh = im

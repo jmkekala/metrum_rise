@@ -88,7 +88,7 @@ func _process(delta):
 		grid_mesh.visible = false
 		paint_mesh.visible = false
 		brush_mesh.visible = false
-		# Keep persistent_container visible at all times! (SC4 style)
+		persistent_container.visible = false
 		return
 
 	if simulation_node.is_network_dirty():
@@ -152,6 +152,7 @@ func _update_visuals():
 	
 	grid_mesh.visible = true
 	paint_mesh.visible = true
+	persistent_container.visible = true
 
 func _handle_painting(h_edge: int, current_t: float, current_side: int):
 	if state == 1: # Mouse Pressed (Dragging)

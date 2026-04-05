@@ -26,12 +26,13 @@ mod tests {
             anchors: vec![],
             building: Some(BuildingData {
                 zone_type: ZoneClass::Residential,
+                density: "low".to_owned(),
                 lot_width_cells: 1, lot_depth_cells: 1, level: 1,
                 residents_capacity: Some(6), worker_capacity: None,
                 service_class: None, preview_scale: None,
             }),
             prop: None, vehicle: None, character: None,
-        });
+        }, String::new());
     }
 
     #[test]

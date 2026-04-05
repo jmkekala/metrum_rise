@@ -293,6 +293,13 @@ pub struct AssetManifest {
     #[serde(default)]
     pub anchors: Vec<Anchor>,
 
+    /// XZ-centre + Y-ground offset in model units.
+    /// Applied when positioning the mesh in a MultiMesh transform so the model is
+    /// centred over its lot cell and grounded at Y=0, regardless of where the original
+    /// model pivot was placed. Computed once by the asset editor on import/autofit.
+    #[serde(default)]
+    pub pivot_offset: Option<[f32; 3]>,
+
     // ── Class-specific subsections (exactly one must be Some after parsing) ──
     /// Populated when this is a zoned building asset.
     pub building: Option<BuildingData>,

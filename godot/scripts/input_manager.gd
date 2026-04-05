@@ -211,6 +211,7 @@ func _refresh_after_world_load():
 	if road_tool:
 		road_tool.update_main_mesh()
 	if buildings_node:
+		buildings_node.reload_asset_packs()
 		buildings_node.update_all_buildings()
 	if zoning_tool:
 		zoning_tool._update_persistent_visuals()

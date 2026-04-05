@@ -754,22 +754,38 @@ impl SimCore {
             let b_xx = fd.y;
             let b_xz = -fd.x;
 
-            let (sx, sy, sz) = get_building_visual_scale();
+            // Scale: prefer per-asset preview_scale, fall back to BUILDING_VISUAL_SCALE.
+            let entry = self.allocator.registry.get(asset_id);
+            let s = entry
+                .and_then(|e| e.manifest.building.as_ref())
+                .and_then(|b| b.preview_scale)
+                .unwrap_or(crate::config::BUILDING_VISUAL_SCALE);
+            let (sx, sy, sz) = (s, s, s);
+
+            // Pivot offset: centres the mesh over the lot cell and grounds it at Y=0.
+            // Stored in model units; applied here in world space after scale+rotation.
+            let (po_x, po_y, po_z) = entry
+                .and_then(|e| e.manifest.pivot_offset)
+                .map(|[x, y, z]| (x, y, z))
+                .unwrap_or((0.0, 0.0, 0.0));
+            let tx = world_x + (b_xx * po_x + b_zx * po_z) * sx;
+            let ty = world_y + po_y * sy;
+            let tz = world_z + (b_xz * po_x + b_zz * po_z) * sz;
 
             buffer.push(b_xx * sx);
             buffer.push(0.0);
             buffer.push(b_zx * sz);
-            buffer.push(world_x);
+            buffer.push(tx);
 
             buffer.push(0.0);
             buffer.push(sy);
             buffer.push(0.0);
-            buffer.push(world_y);
+            buffer.push(ty);
 
             buffer.push(b_xz * sx);
             buffer.push(0.0);
             buffer.push(b_zz * sz);
-            buffer.push(world_z);
+            buffer.push(tz);
         }
 
         PackedFloat32Array::from_iter(buffer)

@@ -18,6 +18,9 @@ pub struct AssetEntry {
     pub manifest: AssetManifest,
     /// Pack that owns this asset (`pack_id` from `pack.toml`).
     pub pack_id: String,
+    /// Native filesystem path to the directory containing `asset.toml`.
+    /// Used to resolve relative LOD and texture paths at runtime.
+    pub asset_dir: String,
 }
 
 /// Runtime catalogue of all loaded content-pack assets.
@@ -51,7 +54,8 @@ impl AssetRegistry {
     /// printed and the new registration wins.
     ///
     /// The manifest must already be validated (produced by [`AssetManifest::from_str`]).
-    pub fn register(&mut self, pack_id: &str, manifest: AssetManifest) {
+    /// `asset_dir` is the native filesystem path to the directory containing `asset.toml`.
+    pub fn register(&mut self, pack_id: &str, manifest: AssetManifest, asset_dir: String) {
         let qid = manifest.qualified_id(pack_id);
 
         if let Some(bd) = &manifest.building {
@@ -82,7 +86,7 @@ impl AssetRegistry {
             }
         }
 
-        self.entries.insert(qid, AssetEntry { manifest, pack_id: pack_id.to_owned() });
+        self.entries.insert(qid, AssetEntry { manifest, pack_id: pack_id.to_owned(), asset_dir });
     }
 
     /// Returns the qualified ID of the next upgrade tier for the given asset, or `None`.
@@ -177,8 +181,10 @@ mod tests {
             anchors: vec![],
             building: Some(BuildingData {
                 zone_type: zone,
+                density: "low".to_owned(),
                 lot_width_cells: w,
-                lot_depth_cells: d, level: 1,
+                lot_depth_cells: d,
+                level: 1,
                 residents_capacity: None,
                 worker_capacity: None,
                 service_class: None,
@@ -194,7 +200,7 @@ mod tests {
     fn register_and_get() {
         let mut reg = AssetRegistry::new();
         let m = make_building_manifest("building.residential.house", ZoneClass::Residential, 3, 2);
-        reg.register("base", m.clone());
+        reg.register("base", m.clone(), String::new());
 
         let entry = reg.get("base:building.residential.house").expect("should be registered");
         assert_eq!(entry.pack_id, "base");
@@ -204,7 +210,7 @@ mod tests {
     #[test]
     fn lot_size_returns_manifest_dimensions() {
         let mut reg = AssetRegistry::new();
-        reg.register("base", make_building_manifest("b.res.big", ZoneClass::Residential, 5, 4));
+        reg.register("base", make_building_manifest("b.res.big", ZoneClass::Residential, 5, 4), String::new());
         assert_eq!(reg.lot_size("base:b.res.big"), (5, 4));
     }
 
@@ -217,10 +223,10 @@ mod tests {
     #[test]
     fn buildings_for_zone_returns_sorted_ids() {
         let mut reg = AssetRegistry::new();
-        reg.register("base", make_building_manifest("b.res.c", ZoneClass::Residential, 1, 1));
-        reg.register("base", make_building_manifest("b.res.a", ZoneClass::Residential, 2, 1));
-        reg.register("base", make_building_manifest("b.res.b", ZoneClass::Residential, 1, 2));
-        reg.register("base", make_building_manifest("b.com.x", ZoneClass::Commercial, 1, 1));
+        reg.register("base", make_building_manifest("b.res.c", ZoneClass::Residential, 1, 1), String::new());
+        reg.register("base", make_building_manifest("b.res.a", ZoneClass::Residential, 2, 1), String::new());
+        reg.register("base", make_building_manifest("b.res.b", ZoneClass::Residential, 1, 2), String::new());
+        reg.register("base", make_building_manifest("b.com.x", ZoneClass::Commercial,  1, 1), String::new());
 
         let res = reg.buildings_for_zone(ZoneClass::Residential);
         assert_eq!(res, ["base:b.res.a", "base:b.res.b", "base:b.res.c"]);
@@ -235,8 +241,8 @@ mod tests {
     #[test]
     fn register_replaces_existing_entry() {
         let mut reg = AssetRegistry::new();
-        reg.register("base", make_building_manifest("b.res.house", ZoneClass::Residential, 1, 1));
-        reg.register("base", make_building_manifest("b.res.house", ZoneClass::Residential, 4, 3));
+        reg.register("base", make_building_manifest("b.res.house", ZoneClass::Residential, 1, 1), String::new());
+        reg.register("base", make_building_manifest("b.res.house", ZoneClass::Residential, 4, 3), String::new());
         // Only one entry, no duplicates in zone list.
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.buildings_for_zone(ZoneClass::Residential).len(), 1);
@@ -247,7 +253,7 @@ mod tests {
     fn len_and_is_empty() {
         let mut reg = AssetRegistry::new();
         assert!(reg.is_empty());
-        reg.register("base", make_building_manifest("b.res.x", ZoneClass::Residential, 1, 1));
+        reg.register("base", make_building_manifest("b.res.x", ZoneClass::Residential, 1, 1), String::new());
         assert!(!reg.is_empty());
         assert_eq!(reg.len(), 1);
     }
@@ -255,7 +261,7 @@ mod tests {
     #[test]
     fn clear_empties_registry_and_indices() {
         let mut reg = AssetRegistry::new();
-        reg.register("base", make_building_manifest("b.res.x", ZoneClass::Residential, 1, 1));
+        reg.register("base", make_building_manifest("b.res.x", ZoneClass::Residential, 1, 1), String::new());
         reg.clear();
         assert!(reg.is_empty());
         assert!(reg.buildings_for_zone(ZoneClass::Residential).is_empty());

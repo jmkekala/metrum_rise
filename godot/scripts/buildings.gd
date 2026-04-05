@@ -6,10 +6,14 @@
 ##   get_building_transforms_for_asset(asset_id: String) -> PackedFloat32Array
 ##   get_building_plot_transforms(zone_id: int) -> PackedFloat32Array
 ##
-## At startup, this script scans the native path of "user://mods/" for content packs.
-## Rust parses the manifests; GDScript loads the corresponding mesh files and maintains
-## one MultiMeshInstance3D per asset_id. Building transforms are polled every 30 frames.
+## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
+## passes each enabled pack's native path to Rust for manifest scanning. Packs not
+## listed in the config are ignored. Rust parses the manifests; GDScript loads the
+## corresponding mesh files and maintains one MultiMeshInstance3D per asset_id.
+## Building transforms are polled every 30 frames.
 extends Node3D
+
+const CFG_PATH := "user://active_packs.cfg"
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -22,14 +26,29 @@ var show_foundations := false
 
 const ZONE_IDS = [1, 2, 3, 4, 5]
 
-func _ready() -> void:
-	# Resolve the mods directory to a native path and hand it to Rust.
-	var mods_path := ProjectSettings.globalize_path("user://mods/")
-	var warnings := simulation_node.load_asset_packs(mods_path)
+func reload_asset_packs() -> void:
+	_load_enabled_packs()
+	_rebuild_multimeshes()
+
+func _load_enabled_packs() -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(CFG_PATH) != OK:
+		push_warning("Buildings: no active_packs.cfg found — no packs loaded. Use Mods menu to enable packs.")
+		return
+	var enabled: Array = cfg.get_value("packs", "enabled", [])
+	if enabled.is_empty():
+		push_warning("Buildings: no packs enabled in active_packs.cfg.")
+		return
+	var mods_native := ProjectSettings.globalize_path("user://mods/")
+	var filter := ",".join(enabled)
+	var warnings: String = simulation_node.load_asset_packs(mods_native, filter)
 	if warnings != "":
 		for w in warnings.split("\n"):
 			if w != "":
 				push_warning("Asset pack warning: " + w)
+
+func _ready() -> void:
+	_load_enabled_packs()
 
 	# Build foundation multimeshes for each zone type.
 	for zone_id in ZONE_IDS:
@@ -37,6 +56,13 @@ func _ready() -> void:
 
 	# Build one MultiMeshInstance3D for each registered building asset.
 	_rebuild_multimeshes()
+
+func update_all_buildings() -> void:
+	_rebuild_multimeshes()
+	for aid in multimeshes.keys():
+		_update_buildings_for_asset(aid)
+	for zone_id in ZONE_IDS:
+		_update_foundation(zone_id)
 
 func _rebuild_multimeshes() -> void:
 	var asset_ids: PackedStringArray = simulation_node.get_registered_asset_ids()
@@ -57,41 +83,69 @@ func _setup_multimesh_for_asset(asset_id: String) -> void:
 	multimeshes[asset_id] = mmi
 
 func _load_mesh_for_asset(asset_id: String) -> Mesh:
-	# asset_id format: "pack_id:category.subcategory.name"
-	# Expected pack layout: user://mods/<pack_id>/buildings/<subcategory>/<name>/lods/lod0.glb
-	var parts := asset_id.split(":")
-	if parts.size() != 2:
+	# Ask Rust for the native path to the LOD0 file for this asset.
+	var native_path: String = simulation_node.get_lod0_native_path(asset_id)
+	if native_path.is_empty():
 		return null
-	var pack_id := parts[0]
-	var local_id := parts[1]     # e.g. "building.residential.lowrise_corner"
-	var segments := local_id.split(".")
-	if segments.size() < 3:
+	# Convert native path to a Godot res:// or user:// path via globalize/localize.
+	# Since the file is under user://, we derive the user:// path from the native path.
+	var user_native := ProjectSettings.globalize_path("user://")
+	var godot_path: String
+	if native_path.begins_with(user_native):
+		godot_path = "user://" + native_path.substr(user_native.length())
+	else:
+		godot_path = native_path  # fallback: use native path directly
+	if not FileAccess.file_exists(godot_path):
+		push_warning("Buildings: LOD0 file not found for '%s': %s" % [asset_id, godot_path])
 		return null
-	# segments[0] = "building", segments[1] = category, segments[2..] = name parts
-	var category := segments[1]
-	var name_part := ".".join(segments.slice(2))
-	var path := "user://mods/%s/buildings/%s/%s/lods/lod0.glb" % [pack_id, category, name_part]
-	if not FileAccess.file_exists(path):
+	var doc := GLTFDocument.new()
+	var state := GLTFState.new()
+	if doc.append_from_file(native_path, state) != OK:
+		push_warning("Buildings: failed to load GLB for '%s': %s" % [asset_id, native_path])
 		return null
-	var scene = load(path)
+	var scene := doc.generate_scene(state)
 	if not scene:
 		return null
-	var instance = scene.instantiate()
-	var mesh_node := _find_mesh_recursive(instance)
-	var mesh: Mesh = null
-	if mesh_node and mesh_node is MeshInstance3D:
-		mesh = mesh_node.mesh
-	instance.queue_free()
+	var mesh := _bake_scene_to_mesh(scene)
+	scene.queue_free()
 	return mesh
 
-func _find_mesh_recursive(node: Node) -> MeshInstance3D:
+# Bakes all MeshInstance3D nodes in the scene into a single ArrayMesh,
+# applying each node's transform relative to the scene root so the result
+# is correctly positioned and scaled at the scene origin.
+func _bake_scene_to_mesh(root: Node) -> ArrayMesh:
+	var result := ArrayMesh.new()
+	_bake_node(root, root, Transform3D.IDENTITY, result)
+	return result if result.get_surface_count() > 0 else null
+
+func _bake_node(node: Node, root: Node, parent_xform: Transform3D, result: ArrayMesh) -> void:
+	var xform := parent_xform
+	if node is Node3D and node != root:
+		xform = parent_xform * (node as Node3D).transform
 	if node is MeshInstance3D:
-		return node
+		var mi := node as MeshInstance3D
+		if mi.mesh:
+			var normal_xform := xform.basis.inverse().transposed()
+			for surf in mi.mesh.get_surface_count():
+				var arrays := mi.mesh.surface_get_arrays(surf)
+				# Transform vertex positions and normals into root space.
+				var verts: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX]
+				for i in verts.size():
+					verts[i] = xform * verts[i]
+				arrays[Mesh.ARRAY_VERTEX] = verts
+				if arrays[Mesh.ARRAY_NORMAL] is PackedVector3Array:
+					var normals: PackedVector3Array = arrays[Mesh.ARRAY_NORMAL]
+					for i in normals.size():
+						normals[i] = (normal_xform * normals[i]).normalized()
+					arrays[Mesh.ARRAY_NORMAL] = normals
+				var prim: Mesh.PrimitiveType = mi.mesh.surface_get_primitive_type(surf)
+				var mat := mi.mesh.surface_get_material(surf)
+				var surf_idx := result.get_surface_count()
+				result.add_surface_from_arrays(prim, arrays)
+				if mat:
+					result.surface_set_material(surf_idx, mat)
 	for child in node.get_children():
-		var found := _find_mesh_recursive(child)
-		if found:
-			return found
-	return null
+		_bake_node(child, root, xform, result)
 
 func _create_fallback_mesh() -> ArrayMesh:
 	var st := SurfaceTool.new()

@@ -564,18 +564,28 @@ impl SimulationNode {
 
     /// Scans a native filesystem directory for content packs and registers all valid assets.
     ///
-    /// `dir_path` must be an absolute native path (resolve `user://mods/` with
-    /// `ProjectSettings.globalize_path` before passing it in). Returns a newline-separated
-    /// string of any warnings produced during scanning (empty string = clean load).
+    /// Scans `dir_path` for content packs and registers only those whose `pack_id` appears
+    /// in `enabled_pack_ids` (comma-separated). Pass an empty string to load all packs.
+    /// `dir_path` must be an absolute native path (`ProjectSettings.globalize_path("user://mods/")`).
+    /// Returns a newline-separated string of warnings (empty = clean load).
     #[func]
-    pub fn load_asset_packs(&mut self, dir_path: GString) -> GString {
+    pub fn load_asset_packs(&mut self, dir_path: GString, enabled_pack_ids: GString) -> GString {
         use crate::assets::scan_pack_dir;
         use std::path::Path;
+        let filter_str = enabled_pack_ids.to_string();
+        let filter: Vec<&str> = if filter_str.is_empty() {
+            vec![]
+        } else {
+            filter_str.split(',').map(str::trim).collect()
+        };
         let result = scan_pack_dir(Path::new(&dir_path.to_string()));
         let mut core = self.lock_core();
         for pack in result.packs {
-            for asset in pack.assets {
-                core.allocator.registry.register(&pack.pack.pack_id, asset);
+            if !filter.is_empty() && !filter.contains(&pack.pack.pack_id.as_str()) {
+                continue;
+            }
+            for (asset, asset_dir) in pack.assets {
+                core.allocator.registry.register(&pack.pack.pack_id, asset, asset_dir);
             }
         }
         GString::from(result.warnings.join("\n").as_str())
@@ -590,6 +600,23 @@ impl SimulationNode {
         core.allocator.registry.qualified_ids()
             .map(GString::from)
             .collect()
+    }
+
+    /// Returns the native filesystem path to the LOD0 mesh file for a registered asset.
+    ///
+    /// Returns an empty string if the asset is not registered or has no LODs.
+    /// Godot uses this to load the correct GLB/FBX rather than guessing a path convention.
+    #[func]
+    pub fn get_lod0_native_path(&self, qualified_id: GString) -> GString {
+        let core = self.lock_core();
+        let qid = qualified_id.to_string();
+        if let Some(entry) = core.allocator.registry.get(&qid) {
+            if let Some(lod) = entry.manifest.lods.first() {
+                let path = std::path::Path::new(&entry.asset_dir).join(&lod.file);
+                return GString::from(path.to_string_lossy().as_ref());
+            }
+        }
+        GString::new()
     }
 
     /// Returns the packed 12-float transforms for all placed buildings with the given asset ID.

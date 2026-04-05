@@ -26,8 +26,8 @@ impl DemandSystem {
     /// Advances the demand counters by one organic growth step.
     pub fn tick(&mut self) {
         // Simple organic growth for now
-        self.residential = (self.residential + 0.1).min(100.0);
-        self.commercial = (self.commercial + 0.05).min(100.0);
-        self.industrial = (self.industrial + 0.05).min(100.0);
+        self.residential = (self.residential + 0.3).min(100.0);
+        self.commercial = (self.commercial + 0.15).min(100.0);
+        self.industrial = (self.industrial + 0.15).min(100.0);
     }
 }

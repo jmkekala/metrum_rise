@@ -303,6 +303,12 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 ## Backlog
 
+### Asset System
+
+60. **Broken-asset detection on save load** — when a save file references a `asset_id` (e.g. `kenney:building.residential.house_a`) that is no longer in the registry (pack disabled or deleted), the building should be flagged with a `broken: bool` field on `Building`. Broken buildings render as a bright magenta error mesh in `buildings.gd`, have 0 capacity, and block agent assignment. The building's position, frontage, and zone cell are preserved so the asset can be recovered by re-enabling the pack. Prerequisite: pack manager (Option B config file) is in place so packs can actually be disabled. `[v0.1]`
+
+61. **Pack manager UI (Option C)** — extend the Option B config-file pack selection into a full in-game pack manager screen: shows all installed packs scanned from `user://mods/`, displays name/author/asset count/version, checkboxes to enable/disable, apply button that reloads the registry without restarting. `[v0.1]`
+
 ### Infrastructure
 
 59. **Zone flush: remove forced synchronous execution before `allocator.tick()`** — `flush_zoning_updates` currently runs synchronously at the start of every daily tick after any road placement, blocking agent movement and snapshot production for 10–50 ms (debug) / 2–10 ms (release). The guard exists to ensure `is_blocked` is fresh before building placement, but `allocator.tick()` skips all unpainted cells (`ZoneType::None`) before it ever calls `is_blocked` — so the flush is only load-bearing when a newly placed road overlaps cells on an adjacent road that already has painted zones. The fix: skip the pre-tick flush entirely; instead, in the building-placement loop of `allocator.tick()`, lazily flush only the specific dirty edges that have at least one painted cell (i.e., edges in `zoning_dirty_edges` whose grid contains any non-`None` cell). This eliminates the stall in the common case (new road, no adjacent painted zones) and bounds the stall in the rare case to only the edges that actually matter.

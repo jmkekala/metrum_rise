@@ -5,6 +5,8 @@
 ## No scene file for the UI; every control is created in _ready() and helper functions.
 extends CanvasLayer
 
+const PackManager = preload("res://scripts/pack_manager.gd")
+
 const InputManager = preload("res://scripts/input_manager.gd")
 
 @onready var input_manager = $"../InputManager"
@@ -285,6 +287,13 @@ func _build_ui():
 	select_main_btn.custom_minimum_size = Vector2(100, 50)
 	select_main_btn.add_theme_stylebox_override("normal", style.duplicate())
 	main_toolbar.add_child(select_main_btn)
+
+	var mods_btn := Button.new()
+	mods_btn.text = "Mods"
+	mods_btn.custom_minimum_size = Vector2(100, 50)
+	mods_btn.add_theme_stylebox_override("normal", style.duplicate())
+	mods_btn.pressed.connect(_on_mods_btn_pressed)
+	main_toolbar.add_child(mods_btn)
 	
 	# --- Road Properties Panel (Side) ---
 	road_properties_panel = PanelContainer.new()
@@ -451,3 +460,11 @@ func show_road_properties(edge_idx):
 
 func hide_road_properties():
 	road_properties_panel.visible = false
+
+var _pack_manager: Window = null
+
+func _on_mods_btn_pressed() -> void:
+	if not _pack_manager:
+		_pack_manager = PackManager.new()
+		add_child(_pack_manager)
+	_pack_manager.popup_centered()
