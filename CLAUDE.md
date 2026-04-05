@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Metrum Rise is a city simulation game inspired by Cities: Skylines and SimCity. The long-term goal is to support **≥1,000,000 concurrent autonomous agents** on a 20 km × 20 km map with realistic traffic, zoning, economic, and environmental simulation.
+Metrum Rise is a large-scale city simulation game. The long-term goal is to support **≥1,000,000 concurrent autonomous agents** on a 20 km × 20 km map with realistic traffic, zoning, economic, and environmental simulation.
 
 **Architecture:** Rust simulation backend compiled as a GDExtension DLL (`libmetrum_rise.so`), loaded by a Godot 4 frontend that handles rendering and user input.
 
