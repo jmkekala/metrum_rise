@@ -604,6 +604,48 @@ impl SimulationNode {
         self.lock_core().get_building_plot_transforms_internal(zone_type_int)
     }
 
+    /// Validates the JSON export params, writes `pack.toml` (if absent) and
+    /// `assets/<asset_id>/asset.toml` under `output_dir`, and returns an error
+    /// string or `""` on success.
+    ///
+    /// `output_dir` must be an absolute native path (resolve `user://mods/<pack_id>/`
+    /// with `ProjectSettings.globalize_path` before passing it in).
+    #[func]
+    pub fn validate_and_export_asset(&self, params_json: GString, output_dir: GString) -> GString {
+        use crate::nodes::sim::asset_export::validate_and_export_asset_internal;
+        let result = validate_and_export_asset_internal(
+            &params_json.to_string(),
+            &output_dir.to_string(),
+        );
+        GString::from(result.as_str())
+    }
+
+    /// Returns a JSON object describing the manifest for an already-registered asset,
+    /// or `""` if the qualified ID is not in the registry.
+    ///
+    /// GDScript uses this to repopulate the importer form when re-editing an existing asset.
+    #[func]
+    pub fn get_asset_manifest_json(&self, qualified_id: GString) -> GString {
+        use crate::nodes::sim::asset_export::get_asset_manifest_json_internal;
+        let core = self.lock_core();
+        let result = get_asset_manifest_json_internal(
+            &core.allocator.registry,
+            &qualified_id.to_string(),
+        );
+        GString::from(result.as_str())
+    }
+
+    /// Returns a JSON object with pack metadata (`pack_id`, `display_name`, `author`,
+    /// `version`, `license`) read from `<output_dir>/pack.toml`, or `""` if not found.
+    ///
+    /// `output_dir` must be the absolute native path to the pack directory
+    /// (i.e. `ProjectSettings.globalize_path("user://mods/<pack_id>/")` ).
+    #[func]
+    pub fn get_pack_manifest_json(&self, output_dir: GString) -> GString {
+        use crate::nodes::sim::asset_export::get_pack_manifest_json_internal;
+        GString::from(get_pack_manifest_json_internal(&output_dir.to_string()).as_str())
+    }
+
     // ── Network ──
 
     /// Returns the closest boundary point on a road edge to the given position.
@@ -919,6 +961,9 @@ impl INode3D for SimulationNode {
                 }
                 "--asset-editor" => {
                     asset_editor_mode = true;
+                    // Always enable debug logging in the asset editor so creators
+                    // can follow export/validation output in the terminal.
+                    crate::debug::ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
                 _ => {}
             }
@@ -1013,6 +1058,8 @@ impl INode3D for SimulationNode {
 
         // Asset editor mode: sandbox only — no simulation thread.
         if self.asset_editor_mode {
+            godot_print!("[asset-editor] sandbox ready — 500 m map, no simulation thread");
+            debug_log!("asset-editor", "sandbox ready");
             return;
         }
 

@@ -1,6 +1,7 @@
 //! Simulation node submodules for modular Godot-Rust bridge organization.
 
 // pub mod api; (Moved to simulation_node.rs for macro sanity)
+pub mod asset_export;
 pub mod benchmark;
 pub mod core;
 pub mod editing;

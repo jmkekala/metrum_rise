@@ -581,7 +581,7 @@ Target: same agent scale as v0.2. Most work is in `render_helpers.rs` (Rust FFI 
     - Editor shell layout: center 3D viewport, left asset browser + scene template switcher, right inspector panel (mode-specific), bottom import log and validation output.
     - Scene templates switchable inside the shell: flat studio, zoned roadside lot, lane + sidewalk reference, traffic comparison, night lighting.
 
-    **Step 5 — Building importer:**
+    **Step 5 — Building importer: [DONE 2026-04-05]**
     - Import flow: load `.glb`, set frontage from camera view (`Set Front From Current View`), choose zone type, set `lot_width_cells` and `lot_depth_cells`, snap mesh into a preview plot of that size, enter capacity/category metadata, run validation, export `asset.toml` and pack folder.
     - Viewport shows: lot rectangle, frontage arrow, sidewalk/road reference, entrance anchor gizmo, footprint overflow warning.
     - Exported `asset.toml` stores explicit `lot_width_cells`, `lot_depth_cells`, confirmed frontage direction, `[[anchors]]` entries, and `[[lods]]` entries.
