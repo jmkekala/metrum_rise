@@ -1030,11 +1030,11 @@ Zoned building asset data:
 Constraints:
 
 - `lot_width_cells` and `lot_depth_cells` are first-class authored data and are not inferred from mesh size.
-- The current legacy `model_metadata.json` path stores mesh-local size values that are later multiplied by `BUILDING_VISUAL_SCALE`; those numbers are not a stable cell-space contract for shipped mod content.
+- The legacy `model_metadata.json` path has been replaced. `BuildingAllocator` now holds an `AssetRegistry` keyed by `pack_id:asset_id`, populated from `pack.toml` + `asset.toml` manifests via `scan_pack_dir`. Lot dimensions are read directly from `BuildingData.lot_width_cells` / `lot_depth_cells` in the manifest; no visual-scale multiplier is applied.
 - If the importer offers "guess lot size from mesh", that guess is an editor suggestion only.
 - The exported manifest stores explicit `lot_width_cells` and `lot_depth_cells`.
 - The editor validates the mesh against the lot footprint and does not use free visual scaling to hide a footprint mismatch.
-- The editor emits metadata that maps directly onto the runtime `width_cells`, `depth_cells`, and `variant` structure.
+- The editor emits metadata that maps directly onto the runtime `width_cells`, `depth_cells`, and `asset_id` fields on `Building`. The old numeric `variant: u8` field has been removed; placement and rendering are now keyed by the stable qualified `asset_id` string.
 - Before shipping arbitrary-size lots beyond `u8` bounds, upgrade footprint-related runtime fields to `u16` or `usize`.
 - The current building renderer uses the building's `facing_dir` as local `+Z`, so authored building meshes must face `+Z` in packaged asset space.
 - Do not rely on heavy import-time per-model scale tweaking until runtime building scale handling is normalized.

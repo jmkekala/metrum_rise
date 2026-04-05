@@ -4,7 +4,7 @@ config_version=5
 
 config/name="Metrum Rise"
 config/features=PackedStringArray("4.x", "Forward Plus")
-run/main_scene="res://scenes/Main.tscn"
+run/main_scene="res://scenes/Router.tscn"
 
 [display]
 

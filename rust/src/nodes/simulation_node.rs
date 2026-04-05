@@ -81,6 +81,9 @@ pub struct SimulationNode {
     pub(crate) cmd_rx: Option<std::sync::mpsc::Receiver<SimCommand>>,
     /// True when running in headless benchmark mode.
     pub(crate) benchmark_mode: bool,
+    /// True when launched with `--asset-editor`. Sim thread is not started;
+    /// the node runs a 500 m sandbox for preview only.
+    pub(crate) asset_editor_mode: bool,
     /// Incremented every Godot frame in benchmark mode.
     pub(crate) benchmark_tick_count: u32,
     /// Last day for which benchmark CSV has been written.
@@ -550,6 +553,15 @@ impl SimulationNode {
 
     // ── Buildings ──
 
+    /// Returns `true` when the node was launched with `--asset-editor`.
+    ///
+    /// GDScript uses this to confirm it is running the editor shell rather than the normal
+    /// city simulation, and to skip tick-driven systems that are not active in sandbox mode.
+    #[func]
+    pub fn is_asset_editor_mode(&self) -> bool {
+        self.asset_editor_mode
+    }
+
     /// Scans a native filesystem directory for content packs and registers all valid assets.
     ///
     /// `dir_path` must be an absolute native path (resolve `user://mods/` with
@@ -894,6 +906,7 @@ impl INode3D for SimulationNode {
         let mut is_huge = false;
         let mut generate_benchmark = false;
         let mut run_benchmark = false;
+        let mut asset_editor_mode = false;
         for arg in args.as_slice() {
             match arg.to_string().as_str() {
                 "--huge-map" | "--benchmark" => {
@@ -904,12 +917,18 @@ impl INode3D for SimulationNode {
                     is_huge = true;
                     generate_benchmark = true;
                 }
+                "--asset-editor" => {
+                    asset_editor_mode = true;
+                }
                 _ => {}
             }
         }
 
         let mut config = MapConfig::default();
-        if is_huge {
+        if asset_editor_mode {
+            config.width_m = 500.0;
+            config.height_m = 500.0;
+        } else if is_huge {
             config.width_m = 20000.0;
             config.height_m = 20000.0;
         } else {
@@ -964,6 +983,7 @@ impl INode3D for SimulationNode {
             cmd_tx,
             cmd_rx: Some(cmd_rx),
             benchmark_mode,
+            asset_editor_mode,
             benchmark_tick_count: 0,
             last_logged_day: 0,
             time_passed: 0.0,
@@ -989,6 +1009,11 @@ impl INode3D for SimulationNode {
             return; // generate_benchmark_map() calls quit() — never reaches thread spawn
         } else if run {
             self.run_benchmark_from_save();
+        }
+
+        // Asset editor mode: sandbox only — no simulation thread.
+        if self.asset_editor_mode {
+            return;
         }
 
         // Start the background simulation thread.

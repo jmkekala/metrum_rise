@@ -574,7 +574,7 @@ Target: same agent scale as v0.2. Most work is in `render_helpers.rs` (Rust FFI 
     - Capacity (`residents_capacity`, `worker_capacity`) is read from the current `asset_id` in the registry, not stored on the `Building` struct. The hardcoded `occupancy < 6` cap is replaced by manifest-declared capacity.
     - Save format: SAVE_VERSION 5 → 6, `buildings` table gains `level INTEGER NOT NULL DEFAULT 1`.
 
-    **Step 4 — Asset editor scene (launch mode in the same Godot project):**
+    **Step 4 — Asset editor scene (launch mode in the same Godot project): [DONE 2026-04-05]**
     - The asset editor is a launch mode in the existing Godot project, not a separate project. Use a command-line argument or a dedicated entry scene to boot the editor shell instead of the normal city scene.
     - The editor shell shares the same compiled `.so`, the same asset schemas, and the same canonical paths as the game. No second Godot project, no second export template.
     - Sandbox config: `MapConfig::new(500.0, 500.0, 1.0, 10.0)`. No `AgentSystem`, no demographics, no immigration, no demand simulation.
