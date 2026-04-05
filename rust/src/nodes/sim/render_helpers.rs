@@ -725,21 +725,8 @@ impl SimCore {
 
     // ── Building Renderer ──
 
-    /// Returns the 12-float transforms for building MultiMeshes.
-    pub fn get_building_transforms_internal(&self, zone_type_int: u8, variant: u8) -> PackedFloat32Array {
-        let target_zone = match zone_type_int {
-            1 => ZoneType::Residential,
-            2 => ZoneType::Commercial,
-            3 => ZoneType::Industrial,
-            4 => ZoneType::Office,
-            5 => ZoneType::Mixed,
-            _ => ZoneType::None,
-        };
-
-        if target_zone == ZoneType::None {
-            return PackedFloat32Array::new();
-        }
-
+    /// Returns the 12-float transforms for all placed buildings with the given asset ID.
+    pub fn get_building_transforms_for_asset_internal(&self, asset_id: &str) -> PackedFloat32Array {
         let mut buffer = Vec::new();
         let w = self.heightmap.width as f32;
         let h = self.heightmap.height as f32;
@@ -747,42 +734,42 @@ impl SimCore {
         let hh = (h - 1.0) * 0.5;
 
         for b in &self.allocator.buildings {
-            if b.zone_type == target_zone && b.variant == variant {
-                let world_x = b.center_x;
-                let world_z = b.center_y;
-
-                let grid_x = b.center_x + hw;
-                let grid_y = b.center_y + hh;
-                let safe_gx = grid_x.round().clamp(0.0, w - 1.0) as usize;
-                let safe_gy = grid_y.round().clamp(0.0, h - 1.0) as usize;
-
-                let world_y = self.heightmap.get_height(safe_gx, safe_gy) * 20.0;
-
-                let fd = b.facing_dir.normalized();
-                let b_zx = fd.x;
-                let b_zz = fd.y;
-                let b_xx = fd.y;
-                let b_xz = -fd.x;
-
-                // Scale logic: 
-                // Metadata or fallback, use BUILDING_VISUAL_SCALE (1 unit in GLB = 10m in world).
-                let (sx, sy, sz) = get_building_visual_scale();
-
-                buffer.push(b_xx * sx);
-                buffer.push(0.0);
-                buffer.push(b_zx * sz);
-                buffer.push(world_x);
-
-                buffer.push(0.0);
-                buffer.push(sy);
-                buffer.push(0.0);
-                buffer.push(world_y);
-
-                buffer.push(b_xz * sx);
-                buffer.push(0.0);
-                buffer.push(b_zz * sz);
-                buffer.push(world_z);
+            if b.asset_id != asset_id {
+                continue;
             }
+
+            let world_x = b.center_x;
+            let world_z = b.center_y;
+
+            let grid_x = b.center_x + hw;
+            let grid_y = b.center_y + hh;
+            let safe_gx = grid_x.round().clamp(0.0, w - 1.0) as usize;
+            let safe_gy = grid_y.round().clamp(0.0, h - 1.0) as usize;
+
+            let world_y = self.heightmap.get_height(safe_gx, safe_gy) * 20.0;
+
+            let fd = b.facing_dir.normalized();
+            let b_zx = fd.x;
+            let b_zz = fd.y;
+            let b_xx = fd.y;
+            let b_xz = -fd.x;
+
+            let (sx, sy, sz) = get_building_visual_scale();
+
+            buffer.push(b_xx * sx);
+            buffer.push(0.0);
+            buffer.push(b_zx * sz);
+            buffer.push(world_x);
+
+            buffer.push(0.0);
+            buffer.push(sy);
+            buffer.push(0.0);
+            buffer.push(world_y);
+
+            buffer.push(b_xz * sx);
+            buffer.push(0.0);
+            buffer.push(b_zz * sz);
+            buffer.push(world_z);
         }
 
         PackedFloat32Array::from_iter(buffer)

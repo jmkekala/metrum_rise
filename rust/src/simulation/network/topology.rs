@@ -800,7 +800,7 @@ mod tests {
             cell_x: 8,
             cell_y: 0,
             occupancy: 0,
-            variant: 0,
+            asset_id: String::new(),
         });
 
         // Split the road exactly at 50m (cell 5).

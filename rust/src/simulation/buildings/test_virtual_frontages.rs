@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
+    use crate::assets::AssetManifest;
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::economy::agents::AgentSystem;
@@ -15,6 +17,23 @@ mod tests {
     use crate::simulation::network::types::EdgeClass;
     use godot::prelude::Vector3;
 
+    fn register_test_residential(allocator: &mut BuildingAllocator) {
+        allocator.registry.register("base", AssetManifest {
+            asset_id: "b.res.house".to_owned(),
+            display_name: "Test House".to_owned(),
+            asset_set: None, tags: vec![], thumbnail: None,
+            lods: vec![LodEntry { file: "lod0.glb".to_owned(), distance_min_m: 0.0, distance_max_m: None }],
+            anchors: vec![],
+            building: Some(BuildingData {
+                zone_type: ZoneClass::Residential,
+                lot_width_cells: 1, lot_depth_cells: 1,
+                residents_capacity: Some(6), worker_capacity: None,
+                service_class: None, preview_scale: None,
+            }),
+            prop: None, vehicle: None, character: None,
+        });
+    }
+
     #[test]
     fn test_virtual_frontage_placement() {
         // Option C: each building placement calls split_for_frontage, inserting a real graph
@@ -24,6 +43,7 @@ mod tests {
         let mut graph = RegionGraph::new();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
+        register_test_residential(&mut allocator);
         let mut agents = AgentSystem::new();
         let mut demand = DemandSystem::new();
 
@@ -101,6 +121,7 @@ mod tests {
         let mut graph = RegionGraph::new();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
+        register_test_residential(&mut allocator);
         let mut agents = AgentSystem::new();
         let mut demand = DemandSystem::new();
 
@@ -179,6 +200,7 @@ mod tests {
         let mut graph = RegionGraph::new();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
+        register_test_residential(&mut allocator);
         let mut agents = AgentSystem::new();
         let mut demand = DemandSystem::new();
 

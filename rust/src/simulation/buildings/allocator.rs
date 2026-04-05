@@ -5,22 +5,11 @@
 //! 2. Scans zoned, unoccupied cells with sufficient demand and spawns new buildings.
 //! 3. Spawns immigrant agents up to the current residential capacity.
 
+use crate::assets::{AssetRegistry, ZoneClass};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
-use std::collections::HashMap;
-
-/// Metadata for a building model's physical dimensions.
-#[derive(Clone, Copy, Debug)]
-pub struct ModelMetadata {
-    /// Width in Godot units (before 10.0 scale).
-    pub size_x: f32,
-    /// Height in Godot units.
-    pub size_y: f32,
-    /// Depth in Godot units.
-    pub size_z: f32,
-}
 
 /// A placed building occupying a variable-footprint area on a zoning grid.
 #[derive(Clone)]
@@ -55,8 +44,8 @@ pub struct Building {
     pub cell_y: u16,
     /// Total agents currently residing or working in this building.
     pub occupancy: u32,
-    /// Randomly assigned variant ID for 3D model selection.
-    pub variant: u8,
+    /// Qualified asset ID (`"pack_id:asset_id"`) identifying the model for this building.
+    pub asset_id: String,
 }
 
 /// Manages the full lifecycle of [`Building`]s: placement, removal, and immigrant spawning.
@@ -78,8 +67,21 @@ pub struct BuildingAllocator {
     /// Per-zone dirty flags set when buildings of a zone type are spawned or removed.
     /// Drained by `SimCore::simulate_tick_internal` to mark flow fields for rebuild.
     pub dirty_zones: [bool; 6],
-    /// Metadata for each (ZoneType, variant_id) pair.
-    pub model_metadata: HashMap<(u8, u8), ModelMetadata>,
+    /// Registry of all loaded pack assets. Populated at startup by scanning the mods directory.
+    pub registry: AssetRegistry,
+}
+
+/// Converts a simulation [`ZoneType`] to the corresponding [`ZoneClass`] used by the asset registry.
+/// Returns `None` for `ZoneType::None`.
+fn zone_type_to_zone_class(zt: ZoneType) -> Option<ZoneClass> {
+    match zt {
+        ZoneType::Residential => Some(ZoneClass::Residential),
+        ZoneType::Commercial  => Some(ZoneClass::Commercial),
+        ZoneType::Industrial  => Some(ZoneClass::Industrial),
+        ZoneType::Office      => Some(ZoneClass::Office),
+        ZoneType::Mixed       => Some(ZoneClass::Mixed),
+        ZoneType::None        => None,
+    }
 }
 
 impl BuildingAllocator {
@@ -110,22 +112,8 @@ impl BuildingAllocator {
             vacancy_pos: Vec::new(),
             dirty_index: true,
             dirty_zones: [false; 6],
-            model_metadata: HashMap::new(),
+            registry: AssetRegistry::new(),
         }
-    }
-
-    /// Sets metadata for a specific building model.
-    pub fn set_model_metadata(&mut self, zone_id: u8, variant: u8, metadata: ModelMetadata) {
-        self.model_metadata.insert((zone_id, variant), metadata);
-    }
-
-    /// Gets metadata for a specific building model, or returns a default 1x1x1 size.
-    pub fn get_model_metadata(&self, zone_id: u8, variant: u8) -> ModelMetadata {
-        *self.model_metadata.get(&(zone_id, variant)).unwrap_or(&ModelMetadata {
-            size_x: 1.0,
-            size_y: 1.0,
-            size_z: 1.0,
-        })
     }
 
     /// Removes all buildings and resets the dirty flag.
@@ -268,13 +256,14 @@ impl BuildingAllocator {
                         continue;
                     }
 
-                    // Determine deterministic variant and its footprint size
-                    let variant = (edge_idx ^ x) as u8 % 64;
-                    let meta = self.get_model_metadata(z_type as u8, variant);
-                    let cell_size = zoning.config.zone_cell_m;
-                    let scale = crate::config::BUILDING_VISUAL_SCALE;
-                    let dw = (meta.size_x * scale / cell_size).ceil().max(1.0) as usize;
-                    let dh = (meta.size_z * scale / cell_size).ceil().max(1.0) as usize;
+                    // Select a registered asset for this zone, or skip if none exist.
+                    let zone_class = zone_type_to_zone_class(z_type);
+                    let candidates = zone_class.map(|zc| self.registry.buildings_for_zone(zc)).unwrap_or(&[]);
+                    if candidates.is_empty() {
+                        continue;
+                    }
+                    let asset_id = candidates[(edge_idx ^ x) % candidates.len()].clone();
+                    let (dw, dh) = self.registry.lot_size(&asset_id);
 
                     // Ensure footprint fits within the painted zoning depth and column count.
                     if x + dw > cells_long || dh > side_depth {
@@ -356,7 +345,7 @@ impl BuildingAllocator {
                             zone_type: z_type,
                             facing_dir: normal,
                             frontage_t: frontage_t_full,
-                            frontage_node: 0, 
+                            frontage_node: 0,
                             side_offset: edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
                             center_x: center_2d.x,
                             center_y: center_2d.y,
@@ -367,7 +356,7 @@ impl BuildingAllocator {
                             width_cells: dw as u16,
                             depth_cells: dh as u16,
                             occupancy: 0,
-                            variant: variant as u8,
+                            asset_id,
                             abandoned_timer: 0,
                         });
 
@@ -714,11 +703,39 @@ impl BuildingAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
+    use crate::assets::AssetManifest;
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::economy::agents::AgentSystem;
     use crate::simulation::grid::zoning::ZoneType;
     use godot::prelude::Vector2;
     use rand::SeedableRng;
+
+    /// Registers a minimal 1×1 building asset for the given zone type so placement tests pass.
+    fn register_test_asset(allocator: &mut BuildingAllocator, pack_id: &str, asset_id: &str, zone: ZoneClass) {
+        let manifest = AssetManifest {
+            asset_id: asset_id.to_owned(),
+            display_name: "Test".to_owned(),
+            asset_set: None,
+            tags: vec![],
+            thumbnail: None,
+            lods: vec![LodEntry { file: "lod0.glb".to_owned(), distance_min_m: 0.0, distance_max_m: None }],
+            anchors: vec![],
+            building: Some(BuildingData {
+                zone_type: zone,
+                lot_width_cells: 1,
+                lot_depth_cells: 1,
+                residents_capacity: Some(6),
+                worker_capacity: None,
+                service_class: None,
+                preview_scale: None,
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+        };
+        allocator.registry.register(pack_id, manifest);
+    }
 
     #[test]
     fn test_zone_index_consistency() {
@@ -747,7 +764,7 @@ mod tests {
                 cell_x: i,
                 cell_y: 0,
                 occupancy: 0,
-                variant: 0,
+                asset_id: String::new(),
             });
         }
         allocator.dirty_index = true;
@@ -803,7 +820,7 @@ mod tests {
                 cell_x: i,
                 cell_y: 0,
                 occupancy: 0,
-                variant: 0,
+                asset_id: String::new(),
             });
         }
         allocator.rebuild_zone_index();
@@ -878,6 +895,7 @@ mod tests {
         use godot::prelude::Vector3;
 
         let mut allocator = BuildingAllocator::new();
+        register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
         let mut demand = DemandSystem::new();
         demand.residential = 100.0;
 
@@ -940,6 +958,7 @@ mod tests {
         use godot::prelude::Vector3;
 
         let mut allocator = BuildingAllocator::new();
+        register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
         let mut demand = DemandSystem::new();
         demand.residential = 14.0; // Enough for placement (>10.0)
 
@@ -1002,6 +1021,7 @@ mod tests {
         use godot::prelude::Vector3;
 
         let mut allocator = BuildingAllocator::new();
+        register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
         let mut demand = DemandSystem::new();
         let map_cfg = MapConfig::default();
         let mut zoning = ZoningSystem::new(&map_cfg);
@@ -1037,7 +1057,7 @@ mod tests {
             cell_x: 0,
             cell_y: 0,
             occupancy: 0,
-            variant: 0,
+            asset_id: String::new(),
         });
         for dx in 0..3 {
             for dy in 0..3 {
@@ -1077,6 +1097,7 @@ mod tests {
     #[test]
     fn test_immigration_claims_vacant_home() {
         use crate::simulation::core::config::MapConfig;
+
         use crate::simulation::economy::agents::AgentSystem;
         use crate::simulation::economy::demand::DemandSystem;
         use crate::simulation::grid::desirability::DesirabilitySystem;
@@ -1087,6 +1108,7 @@ mod tests {
         use godot::prelude::{Vector2, Vector3};
 
         let mut allocator = BuildingAllocator::new();
+        register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
         let mut demand = DemandSystem::new();
         let map_cfg = MapConfig::default();
         let mut zoning = ZoningSystem::new(&map_cfg);
@@ -1130,7 +1152,7 @@ mod tests {
             cell_x: 0,
             cell_y: 0,
             occupancy: 0,
-            variant: 0,
+            asset_id: String::new(),
         });
         allocator.rebuild_zone_index();
 

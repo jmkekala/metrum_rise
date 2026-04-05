@@ -5,7 +5,7 @@ use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
 use super::SaveLoadError;
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 4;
+pub const SAVE_VERSION: i64 = 5;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -121,7 +121,7 @@ CREATE TABLE buildings(
     width INTEGER NOT NULL,
     depth INTEGER NOT NULL,
     frontage_node INTEGER NOT NULL,
-    variant INTEGER NOT NULL
+    asset_id TEXT NOT NULL
 );
 CREATE TABLE agents(
     agent_id INTEGER PRIMARY KEY,

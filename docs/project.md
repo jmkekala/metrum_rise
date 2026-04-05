@@ -560,7 +560,7 @@ Target: same agent scale as v0.2. Most work is in `render_helpers.rs` (Rust FFI 
     - Define per-class required fields now, even if the runtime does not yet use them all. Stable IDs are cheap to add early and expensive to retrofit.
     - Packs are data-only: no GDScript, no native plugins, no arbitrary shader files. Materials flow through an engine-controlled schema.
 
-    **Step 3 — Asset registry and pack scanner:**
+    **Step 3 — Asset registry and pack scanner: [DONE 2026-04-05]**
     - Replace `BuildingAllocator::model_metadata: HashMap<(u8, u8), ModelMetadata>` with a registry keyed by `pack_id:asset_id`. The `(zone_type, variant)` numeric lookup becomes a secondary index derived from manifest data, not the primary key.
     - Add a pack scanner that reads `user://mods/` at startup, parses `pack.toml` and each `asset.toml`, and populates the registry. Validate manifests on load; skip broken packs with a logged warning.
     - Rust owns manifests and simulation-facing IDs. Godot runtime owns mesh/texture/material loading. Mod users need neither the Godot Editor nor Rust installed.

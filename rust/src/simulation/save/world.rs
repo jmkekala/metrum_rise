@@ -15,7 +15,7 @@ use rusqlite::{Connection, Transaction, params};
 
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::schema::*;
-use super::{i64_to_u32, i64_to_u8, i64_to_usize, pack_f32_slice, pack_flux_slice, pack_zone_slice, u32_to_i64, u8_to_i64, unpack_f32_blob, unpack_flux_blob, unpack_zone_blob, usize_to_i64};
+use super::{i64_to_u32, i64_to_usize, pack_f32_slice, pack_flux_slice, pack_zone_slice, u32_to_i64, unpack_f32_blob, unpack_flux_blob, unpack_zone_blob, usize_to_i64};
 
 pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &WaterSystem, zoning: &ZoningSystem, buildings: &BuildingAllocator, demand: &DemandSystem, pollution: &PollutionSystem, noise: &NoiseSystem, maps: &SnapshotMaps) -> SaveLoadResult<()> {
     // Terrain
@@ -41,12 +41,12 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, frontage_node, variant) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, frontage_node, asset_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)")?;
     for (old_bid, b) in buildings.buildings.iter().enumerate() {
         let saved_bid = maps.building_old_to_new.get(&old_bid).copied().ok_or_else(|| SaveLoadError::custom("missing building mapping"))?;
         let saved_eid = maps.edge_old_to_new.get(&b.edge_idx).copied().ok_or_else(|| SaveLoadError::custom("missing building edge mapping"))?;
         let saved_fnid = maps.node_old_to_new.get(&b.frontage_node).copied().ok_or_else(|| SaveLoadError::custom("missing building frontage node"))?;
-        bld_stmt.execute(params![usize_to_i64(saved_bid)?, usize_to_i64(saved_eid)?, b.frontage_t, i64::from(b.side), usize_to_i64(b.cell_x)?, usize_to_i64(b.cell_y as usize)?, zone_type_to_i64(b.zone_type), u32_to_i64(b.occupancy)?, usize_to_i64(b.width_cells as usize)?, usize_to_i64(b.depth_cells as usize)?, u32_to_i64(saved_fnid)?, u8_to_i64(b.variant)?])?;
+        bld_stmt.execute(params![usize_to_i64(saved_bid)?, usize_to_i64(saved_eid)?, b.frontage_t, i64::from(b.side), usize_to_i64(b.cell_x)?, usize_to_i64(b.cell_y as usize)?, zone_type_to_i64(b.zone_type), u32_to_i64(b.occupancy)?, usize_to_i64(b.width_cells as usize)?, usize_to_i64(b.depth_cells as usize)?, u32_to_i64(saved_fnid)?, &b.asset_id])?;
     }
 
     Ok(())
@@ -108,7 +108,7 @@ pub(super) fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResu
 
 pub(super) fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, frontage_node, variant FROM buildings ORDER BY building_id")?;
+    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, frontage_node, asset_id FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -122,7 +122,8 @@ pub(super) fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAlloca
             edge_idx: i64_to_usize(row.get(1)?)?, side: (row.get::<_, i64>(3)?) as i8,
             cell_x: i64_to_usize(row.get(4)?)?,
             cell_y: i64_to_usize(row.get(5)?)? as u16,
-            occupancy: i64_to_u32(row.get(7)?)?, variant: i64_to_u8(row.get(11)?)?,
+            occupancy: i64_to_u32(row.get(7)?)?,
+            asset_id: row.get(11)?,
         });
     }
     Ok(allocator)

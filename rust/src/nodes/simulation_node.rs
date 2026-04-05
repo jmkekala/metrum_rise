@@ -550,33 +550,46 @@ impl SimulationNode {
 
     // ── Buildings ──
 
-    /// Returns the packed transforms for buildings of a specific zone type.
+    /// Scans a native filesystem directory for content packs and registers all valid assets.
+    ///
+    /// `dir_path` must be an absolute native path (resolve `user://mods/` with
+    /// `ProjectSettings.globalize_path` before passing it in). Returns a newline-separated
+    /// string of any warnings produced during scanning (empty string = clean load).
     #[func]
-    pub fn get_building_transforms(&self, zone_type_int: u8, variant: u8) -> PackedFloat32Array {
-        self.lock_core().get_building_transforms_internal(zone_type_int, variant)
+    pub fn load_asset_packs(&mut self, dir_path: GString) -> GString {
+        use crate::assets::scan_pack_dir;
+        use std::path::Path;
+        let result = scan_pack_dir(Path::new(&dir_path.to_string()));
+        let mut core = self.lock_core();
+        for pack in result.packs {
+            for asset in pack.assets {
+                core.allocator.registry.register(&pack.pack.pack_id, asset);
+            }
+        }
+        GString::from(result.warnings.join("\n").as_str())
+    }
+
+    /// Returns all qualified asset IDs (`"pack_id:asset_id"`) currently in the registry.
+    ///
+    /// Godot uses this to enumerate which meshes to load for building rendering.
+    #[func]
+    pub fn get_registered_asset_ids(&self) -> PackedStringArray {
+        let core = self.lock_core();
+        core.allocator.registry.qualified_ids()
+            .map(GString::from)
+            .collect()
+    }
+
+    /// Returns the packed 12-float transforms for all placed buildings with the given asset ID.
+    #[func]
+    pub fn get_building_transforms_for_asset(&self, asset_id: GString) -> PackedFloat32Array {
+        self.lock_core().get_building_transforms_for_asset_internal(&asset_id.to_string())
     }
 
     /// Returns the packed transforms for building plots/foundations of a specific zone type.
     #[func]
     pub fn get_building_plot_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
         self.lock_core().get_building_plot_transforms_internal(zone_type_int)
-    }
-
-    /// Registers metadata for a building model to aid in footprint calculation.
-    #[func]
-    pub fn register_building_metadata(
-        &mut self,
-        zone_id: u8,
-        variant: u8,
-        size_x: f32,
-        size_y: f32,
-        size_z: f32,
-    ) {
-        self.lock_core().allocator.set_model_metadata(
-            zone_id,
-            variant,
-            crate::simulation::buildings::allocator::ModelMetadata { size_x, size_y, size_z },
-        );
     }
 
     // ── Network ──

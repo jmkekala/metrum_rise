@@ -1,233 +1,177 @@
-## Building renderer — maintains one MultiMeshInstance3D per (zone, variant) pair.
+## Building renderer — maintains one MultiMeshInstance3D per registered asset ID.
 ##
-## Rust methods called: get_building_transforms(zone_id: int, variant: int)
-## Building transforms arrive as a flat PackedFloat32Array of 12 floats per building.
-## Zone IDs: 1=Residential, 2=Commercial, 3=Industrial, 4=Mixed.
+## Rust methods called:
+##   load_asset_packs(dir_path: String) -> String
+##   get_registered_asset_ids() -> PackedStringArray
+##   get_building_transforms_for_asset(asset_id: String) -> PackedFloat32Array
+##   get_building_plot_transforms(zone_id: int) -> PackedFloat32Array
+##
+## At startup, this script scans the native path of "user://mods/" for content packs.
+## Rust parses the manifests; GDScript loads the corresponding mesh files and maintains
+## one MultiMeshInstance3D per asset_id. Building transforms are polled every 30 frames.
 extends Node3D
 
 @onready var simulation_node = $"../SimulationNode"
 
-const NUM_VARIANTS = 64
-const ZONE_NAMES = {
-	1: "residential",
-	2: "commercial",
-	3: "industrial",
-	4: "mixed"
-}
+## multimeshes[asset_id] = MultiMeshInstance3D
+var multimeshes: Dictionary = {}
+## foundation_multimeshes[zone_id] = MultiMeshInstance3D
+var foundation_multimeshes: Dictionary = {}
 
-# multimeshes[zone_id][variant] = MultiMeshInstance3D
-var multimeshes = {}
-# foundation_multimeshes[zone_id] = MultiMeshInstance3D
-var foundation_multimeshes = {}
-# model_files[zone_id] = [filename1, filename2, ...]
-var model_files = {}
+var show_foundations := false
 
-var show_foundations = false
+const ZONE_IDS = [1, 2, 3, 4, 5]
 
-func _ready():
-	# Load metadata to inform Rust about footprint sizes
-	var meta_data = {}
-	var meta_path = "res://assets/models/buildings/model_metadata.json"
-	if FileAccess.file_exists(meta_path):
-		var file = FileAccess.open(meta_path, FileAccess.READ)
-		var json = JSON.new()
-		json.parse(file.get_as_text())
-		meta_data = json.get_data()
-	
-	for zone_id in ZONE_NAMES.keys():
-		multimeshes[zone_id] = {}
-		
-		# Discover all models in this zone's directory
-		var zone_name = ZONE_NAMES[zone_id]
-		var model_dir = "res://assets/models/buildings/" + zone_name + "/"
-		model_files[zone_id] = []
-		
-		var dir = DirAccess.open(model_dir)
-		if dir:
-			dir.list_dir_begin()
-			var fn = dir.get_next()
-			while fn != "":
-				if fn.ends_with(".glb"):
-					model_files[zone_id].append(fn)
-				fn = dir.get_next()
-			model_files[zone_id].sort()
-		
-		# Register metadata with Rust for EVERY variant
-		for variant in range(NUM_VARIANTS):
-			var mesh = null
-			if model_files[zone_id].size() > 0:
-				var fn = model_files[zone_id][variant % model_files[zone_id].size()]
-				if meta_data.has(zone_name) and meta_data[zone_name].has(fn):
-					var m = meta_data[zone_name][fn]
-					# Register with Rust: width, height, depth
-					simulation_node.register_building_metadata(zone_id, variant, m.size_x, m.size_y, m.size_z)
-				
-				mesh = load_building_mesh(zone_id, variant)
-			
-			setup_building_variant(zone_id, variant, mesh)
-		
-		# Setup foundations for this zone (item 53)
-		setup_foundations(zone_id)
+func _ready() -> void:
+	# Resolve the mods directory to a native path and hand it to Rust.
+	var mods_path := ProjectSettings.globalize_path("user://mods/")
+	var warnings := simulation_node.load_asset_packs(mods_path)
+	if warnings != "":
+		for w in warnings.split("\n"):
+			if w != "":
+				push_warning("Asset pack warning: " + w)
 
-func setup_building_variant(zone_id: int, variant: int, mesh: Mesh):
-	var mmi = MultiMeshInstance3D.new()
-	var mm = MultiMesh.new()
+	# Build foundation multimeshes for each zone type.
+	for zone_id in ZONE_IDS:
+		_setup_foundation(zone_id)
+
+	# Build one MultiMeshInstance3D for each registered building asset.
+	_rebuild_multimeshes()
+
+func _rebuild_multimeshes() -> void:
+	var asset_ids: PackedStringArray = simulation_node.get_registered_asset_ids()
+	for aid in asset_ids:
+		if not multimeshes.has(aid):
+			_setup_multimesh_for_asset(aid)
+
+func _setup_multimesh_for_asset(asset_id: String) -> void:
+	var mesh := _load_mesh_for_asset(asset_id)
+	var mmi := MultiMeshInstance3D.new()
+	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.instance_count = 0
-	
-	if not mesh:
-		# Fallback to procedural box if model missing
-		mesh = create_fallback_mesh(zone_id)
-	
-	mm.mesh = mesh
+	mm.mesh = mesh if mesh else _create_fallback_mesh()
 	mmi.multimesh = mm
 	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
-	
 	add_child(mmi)
-	multimeshes[zone_id][variant] = mmi
+	multimeshes[asset_id] = mmi
 
-func setup_foundations(zone_id: int):
-	var mmi = MultiMeshInstance3D.new()
-	var mm = MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.instance_count = 0
-	
-	# Flat plot mesh
-	var mesh = BoxMesh.new()
-	mesh.size = Vector3(1.0, 0.1, 1.0) # Scaled by Rust (e.g. 30, 0.1, 30)
-	
-	var mat = StandardMaterial3D.new()
-	var base_color = Color(0.3, 0.3, 0.3) # Default gray
-	match zone_id:
-		1: base_color = Color(0.2, 0.4, 0.2, 0.5) # Residential greenish tint
-		2: base_color = Color(0.2, 0.2, 0.5, 0.5) # Commercial bluish
-		3: base_color = Color(0.4, 0.4, 0.1, 0.5) # Industrial yellowish
-		4: base_color = Color(0.1, 0.4, 0.4, 0.5) # Mixed cyanish
-	
-	mat.albedo_color = base_color
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	mesh.material = mat
-	
-	mm.mesh = mesh
-	mmi.multimesh = mm
-	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	mmi.visible = show_foundations
-	
-	add_child(mmi)
-	foundation_multimeshes[zone_id] = mmi
-
-func load_building_mesh(zone_id: int, variant: int) -> Mesh:
-	if not model_files.has(zone_id) or model_files[zone_id].size() == 0:
+func _load_mesh_for_asset(asset_id: String) -> Mesh:
+	# asset_id format: "pack_id:category.subcategory.name"
+	# Expected pack layout: user://mods/<pack_id>/buildings/<subcategory>/<name>/lods/lod0.glb
+	var parts := asset_id.split(":")
+	if parts.size() != 2:
 		return null
-		
-	var zone_name = ZONE_NAMES[zone_id]
-	var file_name = model_files[zone_id][variant % model_files[zone_id].size()]
-	var path = "res://assets/models/buildings/%s/%s" % [zone_name, file_name]
-	
+	var pack_id := parts[0]
+	var local_id := parts[1]     # e.g. "building.residential.lowrise_corner"
+	var segments := local_id.split(".")
+	if segments.size() < 3:
+		return null
+	# segments[0] = "building", segments[1] = category, segments[2..] = name parts
+	var category := segments[1]
+	var name_part := ".".join(segments.slice(2))
+	var path := "user://mods/%s/buildings/%s/%s/lods/lod0.glb" % [pack_id, category, name_part]
+	if not FileAccess.file_exists(path):
+		return null
 	var scene = load(path)
 	if not scene:
 		return null
-		
 	var instance = scene.instantiate()
-	var mesh_node = find_mesh_recursive(instance)
-	var mesh = null
+	var mesh_node := _find_mesh_recursive(instance)
+	var mesh: Mesh = null
 	if mesh_node and mesh_node is MeshInstance3D:
 		mesh = mesh_node.mesh
-	
 	instance.queue_free()
 	return mesh
 
-func find_mesh_recursive(node: Node) -> MeshInstance3D:
+func _find_mesh_recursive(node: Node) -> MeshInstance3D:
 	if node is MeshInstance3D:
 		return node
 	for child in node.get_children():
-		var found = find_mesh_recursive(child)
+		var found := _find_mesh_recursive(child)
 		if found:
 			return found
 	return null
 
-func create_fallback_mesh(zone_id: int) -> ArrayMesh:
-	# Simplified procedural box for missing models
-	var wall_c = Color(0.9, 0.85, 0.7)
-	var roof_c = Color(0.2, 0.4, 0.2)
-	
-	match zone_id:
-		2: # Commercial
-			wall_c = Color(0.8, 0.8, 0.9); roof_c = Color(0.1, 0.2, 0.5)
-		3: # Industrial
-			wall_c = Color(0.5, 0.5, 0.5); roof_c = Color(0.4, 0.1, 0.1)
-		4: # Mixed
-			wall_c = Color(0.8, 0.7, 0.6); roof_c = Color(0.3, 0.2, 0.1)
-			
-	var st = SurfaceTool.new()
+func _create_fallback_mesh() -> ArrayMesh:
+	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	
-	var w = 0.45; var d = 0.45; var h = 4.0
-	var offset = 0.0 # Pivot at base for 3D models
-	
-	var add_face = func(pts: Array, normal: Vector3, color: Color):
-		st.set_color(color)
-		st.set_normal(normal)
+	var w := 0.45; var d := 0.45; var h := 4.0
+	var wall_c := Color(0.9, 0.85, 0.7)
+	var roof_c := Color(0.2, 0.4, 0.2)
+	var add_face := func(pts: Array, normal: Vector3, color: Color) -> void:
+		st.set_color(color); st.set_normal(normal)
 		st.add_vertex(pts[0]); st.add_vertex(pts[1]); st.add_vertex(pts[2])
 		st.add_vertex(pts[0]); st.add_vertex(pts[2]); st.add_vertex(pts[3])
-	
-	var bfl = Vector3(-w, 0, -d); var bfr = Vector3(w, 0, -d)
-	var bbr = Vector3(w, 0, d);  var bbl = Vector3(-w, 0, d)
-	var tfl = Vector3(-w, h, -d); var tfr = Vector3(w, h, -d)
-	var tbr = Vector3(w, h, d);  var tbl = Vector3(-w, h, d)
-	
+	var bfl := Vector3(-w, 0, -d); var bfr := Vector3(w, 0, -d)
+	var bbr := Vector3(w, 0,  d); var bbl := Vector3(-w, 0,  d)
+	var tfl := Vector3(-w, h, -d); var tfr := Vector3(w, h, -d)
+	var tbr := Vector3(w, h,  d); var tbl := Vector3(-w, h,  d)
 	add_face.call([bfl, bfr, tfr, tfl], Vector3(0, 0, -1), wall_c)
-	add_face.call([bfr, bbr, tbr, tfr], Vector3(1, 0, 0), wall_c)
-	add_face.call([bbr, bbl, tbl, tbr], Vector3(0, 0, 1), wall_c)
+	add_face.call([bfr, bbr, tbr, tfr], Vector3(1, 0,  0), wall_c)
+	add_face.call([bbr, bbl, tbl, tbr], Vector3(0, 0,  1), wall_c)
 	add_face.call([bbl, bfl, tfl, tbl], Vector3(-1, 0, 0), wall_c)
-	add_face.call([tfl, tfr, tbr, tbl], Vector3(0, 1, 0), roof_c) # Flat roof for fallback
-	
-	var mat = StandardMaterial3D.new()
+	add_face.call([tfl, tfr, tbr, tbl], Vector3(0, 1,  0), roof_c)
+	var mat := StandardMaterial3D.new()
 	mat.vertex_color_use_as_albedo = true
-	var mesh = st.commit()
+	var mesh := st.commit()
 	mesh.surface_set_material(0, mat)
 	return mesh
 
-func _process(_delta):
-	# Poll for updates every 30 frames
-	if Engine.get_frames_drawn() % 30 == 0:
-		for zone_id in ZONE_NAMES.keys():
-			update_foundations(zone_id)
-			for variant in range(NUM_VARIANTS):
-				update_buildings(zone_id, variant)
+func _setup_foundation(zone_id: int) -> void:
+	var mmi := MultiMeshInstance3D.new()
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.instance_count = 0
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(1.0, 0.1, 1.0)
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	match zone_id:
+		1: mat.albedo_color = Color(0.2, 0.4, 0.2, 0.5)
+		2: mat.albedo_color = Color(0.2, 0.2, 0.5, 0.5)
+		3: mat.albedo_color = Color(0.4, 0.4, 0.1, 0.5)
+		4: mat.albedo_color = Color(0.1, 0.4, 0.4, 0.5)
+		_: mat.albedo_color = Color(0.3, 0.3, 0.3, 0.5)
+	mesh.material = mat
+	mm.mesh = mesh
+	mmi.multimesh = mm
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	mmi.visible = show_foundations
+	add_child(mmi)
+	foundation_multimeshes[zone_id] = mmi
 
-func _input(event):
+func _process(_delta: float) -> void:
+	if Engine.get_frames_drawn() % 30 == 0:
+		_rebuild_multimeshes()
+		for aid in multimeshes.keys():
+			_update_buildings_for_asset(aid)
+		for zone_id in ZONE_IDS:
+			_update_foundation(zone_id)
+
+func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_F:
 			show_foundations = !show_foundations
 			for mmi in foundation_multimeshes.values():
 				mmi.visible = show_foundations
-			print("Building foundations: ", "VISIBLE" if show_foundations else "HIDDEN")
 
-func update_foundations(zone_id: int):
-	var buffer = simulation_node.get_building_plot_transforms(zone_id)
-	var mmi = foundation_multimeshes[zone_id]
-	var mm = mmi.multimesh
-	
-	var count = buffer.size() / 12
-	mm.instance_count = count
-	if count > 0:
-		mm.buffer = buffer
-
-func update_all_buildings():
-	for zone_id in ZONE_NAMES.keys():
-		update_foundations(zone_id)
-		for variant in range(NUM_VARIANTS):
-			update_buildings(zone_id, variant)
-
-func update_buildings(zone_id: int, variant: int):
-	if not multimeshes.has(zone_id) or not multimeshes[zone_id].has(variant):
+func _update_buildings_for_asset(asset_id: String) -> void:
+	if not multimeshes.has(asset_id):
 		return
-	var buffer = simulation_node.get_building_transforms(zone_id, variant)
-	var mmi = multimeshes[zone_id][variant]
-	var mm = mmi.multimesh
-	
-	var count = buffer.size() / 12
-	mm.instance_count = count
+	var buffer: PackedFloat32Array = simulation_node.get_building_transforms_for_asset(asset_id)
+	var mmi: MultiMeshInstance3D = multimeshes[asset_id]
+	var count := buffer.size() / 12
+	mmi.multimesh.instance_count = count
 	if count > 0:
-		mm.buffer = buffer
+		mmi.multimesh.buffer = buffer
+
+func _update_foundation(zone_id: int) -> void:
+	if not foundation_multimeshes.has(zone_id):
+		return
+	var buffer: PackedFloat32Array = simulation_node.get_building_plot_transforms(zone_id)
+	var mmi: MultiMeshInstance3D = foundation_multimeshes[zone_id]
+	var count := buffer.size() / 12
+	mmi.multimesh.instance_count = count
+	if count > 0:
+		mmi.multimesh.buffer = buffer

@@ -51,7 +51,7 @@ mod tests {
             cell_x: 0,
             cell_y: 0,
             occupancy: 0,
-            variant: 0,
+            asset_id: String::new(),
         }
     }
 
