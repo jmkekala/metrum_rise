@@ -45,7 +45,10 @@ pub struct Building {
     /// Total agents currently residing or working in this building.
     pub occupancy: u32,
     /// Qualified asset ID (`"pack_id:asset_id"`) identifying the model for this building.
+    /// Changes when the building upgrades to a higher tier.
     pub asset_id: String,
+    /// Current growth tier, derived from the manifest at placement and incremented on upgrade.
+    pub level: u8,
 }
 
 /// Manages the full lifecycle of [`Building`]s: placement, removal, and immigrant spawning.
@@ -341,6 +344,10 @@ impl BuildingAllocator {
                         }
 
                         // Push building with dummy node (it will be updated by split_for_frontage immediately)
+                        let initial_level = self.registry.get(&asset_id)
+                            .and_then(|e| e.manifest.building.as_ref())
+                            .map(|b| b.level)
+                            .unwrap_or(1);
                         self.buildings.push(Building {
                             zone_type: z_type,
                             facing_dir: normal,
@@ -357,6 +364,7 @@ impl BuildingAllocator {
                             depth_cells: dh as u16,
                             occupancy: 0,
                             asset_id,
+                            level: initial_level,
                             abandoned_timer: 0,
                         });
 
@@ -384,6 +392,35 @@ impl BuildingAllocator {
             }
         }
 
+        // 3. Upgrade pass: buildings whose demand + desirability conditions are met level up
+        //    in-place when a higher-tier asset in the same family is registered.
+        for b in &mut self.buildings {
+            let Some(next_id) = self.registry.next_level(&b.asset_id) else { continue };
+            // Upgrade when demand is high and the city grid says the area is desirable.
+            let demand_ok = match b.zone_type {
+                ZoneType::Residential => _demand.residential > 50.0,
+                ZoneType::Commercial  => _demand.commercial  > 50.0,
+                ZoneType::Industrial  => _demand.industrial  > 50.0,
+                _ => false,
+            };
+            if !demand_ok { continue; }
+            let (gx_raw, gy_raw) = config.world_to_env_grid(
+                b.center_x, b.center_y,
+                desirability.grid.width, desirability.grid.height,
+            );
+            let gx = (gx_raw.round() as usize).min(desirability.grid.width.saturating_sub(1));
+            let gy = (gy_raw.round() as usize).min(desirability.grid.height.saturating_sub(1));
+            if *desirability.grid.get(gx, gy).unwrap_or(&0.0) < 60.0 { continue; }
+
+            b.asset_id = next_id.to_owned();
+            b.level = self.registry.get(&b.asset_id)
+                .and_then(|e| e.manifest.building.as_ref())
+                .map(|bd| bd.level)
+                .unwrap_or(b.level + 1);
+            self.dirty = true;
+            self.dirty_zones[b.zone_type as usize] = true;
+        }
+
         network.rebuild_pathing_if_dirty(graph);
 
         if self.dirty_index {
@@ -399,7 +436,10 @@ impl BuildingAllocator {
             .buildings
             .iter()
             .filter(|b| b.zone_type == ZoneType::Residential || b.zone_type == ZoneType::Mixed)
-            .fold(0, |acc, b| acc + (6 - b.occupancy as usize));
+            .fold(0, |acc, b| {
+                let cap = self.registry.capacity(&b.asset_id).max(1) as usize;
+                acc + cap.saturating_sub(b.occupancy as usize)
+            });
 
         if _agents.len() < total_capacity {
             let demand_factor = (_demand.residential / 100.0).max(0.0).min(1.0);
@@ -584,6 +624,13 @@ impl BuildingAllocator {
         Ok(())
     }
 
+    /// Returns the occupant capacity for a building, from its registered manifest.
+    /// Falls back to 6 if the asset is not registered (legacy / unknown assets).
+    fn building_capacity(&self, building_idx: usize) -> u32 {
+        let cap = self.registry.capacity(&self.buildings[building_idx].asset_id);
+        if cap == 0 { 6 } else { cap }
+    }
+
     /// Repopulates the internal zone and vacancy indices (Bug B16/B16a fix).
     pub fn rebuild_zone_index(&mut self) {
         for list in &mut self.zone_index {
@@ -599,7 +646,7 @@ impl BuildingAllocator {
             let zi = b.zone_type as usize;
             if zi < 6 {
                 self.zone_index[zi].push(idx);
-                if b.occupancy < 6 {
+                if b.occupancy < self.building_capacity(idx) {
                     let v_idx = self.vacancy_index[zi].len();
                     self.vacancy_index[zi].push(idx);
                     self.vacancy_pos[idx] = v_idx;
@@ -614,11 +661,12 @@ impl BuildingAllocator {
         if building_idx >= self.buildings.len() {
             return;
         }
+        let cap = self.building_capacity(building_idx);
         let b = &mut self.buildings[building_idx];
         b.occupancy += 1;
 
         // If it was in the vacancy list and is now full, remove it
-        if b.occupancy == 6 {
+        if b.occupancy >= cap {
             let zi = b.zone_type as usize;
             let v_pos = self.vacancy_pos[building_idx];
             if v_pos != usize::MAX {
@@ -636,11 +684,12 @@ impl BuildingAllocator {
         if building_idx >= self.buildings.len() {
             return;
         }
+        let cap = self.building_capacity(building_idx);
         let b = &mut self.buildings[building_idx];
         b.occupancy = b.occupancy.saturating_sub(1);
 
         // If it was full and now has space, add it back to vacancy index
-        if b.occupancy == 5 {
+        if b.occupancy + 1 == cap {
             let zi = b.zone_type as usize;
             if self.vacancy_pos[building_idx] == usize::MAX {
                 let v_idx = self.vacancy_index[zi].len();
@@ -724,7 +773,7 @@ mod tests {
             building: Some(BuildingData {
                 zone_type: zone,
                 lot_width_cells: 1,
-                lot_depth_cells: 1,
+                lot_depth_cells: 1, level: 1,
                 residents_capacity: Some(6),
                 worker_capacity: None,
                 service_class: None,
@@ -764,7 +813,7 @@ mod tests {
                 cell_x: i,
                 cell_y: 0,
                 occupancy: 0,
-                asset_id: String::new(),
+                asset_id: String::new(), level: 1,
             });
         }
         allocator.dirty_index = true;
@@ -820,7 +869,7 @@ mod tests {
                 cell_x: i,
                 cell_y: 0,
                 occupancy: 0,
-                asset_id: String::new(),
+                asset_id: String::new(), level: 1,
             });
         }
         allocator.rebuild_zone_index();
@@ -1057,7 +1106,7 @@ mod tests {
             cell_x: 0,
             cell_y: 0,
             occupancy: 0,
-            asset_id: String::new(),
+            asset_id: String::new(), level: 1,
         });
         for dx in 0..3 {
             for dy in 0..3 {
@@ -1152,7 +1201,7 @@ mod tests {
             cell_x: 0,
             cell_y: 0,
             occupancy: 0,
-            asset_id: String::new(),
+            asset_id: String::new(), level: 1,
         });
         allocator.rebuild_zone_index();
 

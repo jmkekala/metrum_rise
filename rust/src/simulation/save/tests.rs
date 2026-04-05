@@ -52,7 +52,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     allocator.buildings.push(Building {
         center_x: 0.0, center_y: 0.0, width_cells: 3, depth_cells: 3, zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0), frontage_t: 0.5, frontage_node: n1, side_offset: 1.0, abandoned_timer: 0,
-        edge_idx: edge_id, side: 1, cell_x: 0, cell_y: 0, occupancy: 2, asset_id: String::new(),
+        edge_idx: edge_id, side: 1, cell_x: 0, cell_y: 0, occupancy: 2, asset_id: String::new(), level: 1,
     });
     allocator.recompute_derived_transforms(&graph, &zoning).expect("transforms");
     world::repaint_building_occupancy(&mut zoning, &allocator).expect("occupancy");

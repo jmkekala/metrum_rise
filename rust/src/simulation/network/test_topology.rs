@@ -234,7 +234,7 @@ mod tests {
                 cell_x: 7,
                 cell_y: 0,
                 occupancy: 0,
-                asset_id: String::new(),
+                asset_id: String::new(), level: 1,
             });
 
         // 3. Create a split node at 40m

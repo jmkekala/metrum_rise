@@ -1545,6 +1545,20 @@ Optional fields:
 - `residents_capacity`: integer, `>= 0`
 - `worker_capacity`: integer, `>= 0`
 
+Optional upgrade fields:
+
+- `level`: integer `>= 1`, default `1`. Declares which growth tier this asset represents within its family.
+
+Building families and upgrade levels:
+
+- `asset_set` (shared field on every `asset.toml`) is the family key for buildings. Assets with the same `asset_set` and the same `zone_type` form an upgrade family.
+- `level` must be unique within a family. Two assets with the same `asset_set` and `level` are a conflict; the runtime logs a warning. The second asset loaded wins.
+- A building at level N upgrades to level N+1 in the same family when the runtime finds a registered asset with the same `asset_set` and `level = N+1`. No pointer in the manifest is required.
+- Each family member is independently authorable. Creating a level-2 variant later never requires editing the level-1 file.
+- A building with no `asset_set` belongs to no family and never upgrades. This is valid and common for unique landmark assets.
+- `lot_width_cells` and `lot_depth_cells` must be identical for all members of a family. The footprint does not change on upgrade; only the mesh and capacities change.
+- `residents_capacity` and `worker_capacity` are tier-specific. A level-2 building may house more residents than a level-1 building of the same family.
+
 Building rules:
 
 - `zone_type = "residential"` requires `residents_capacity` and must not use `worker_capacity`.

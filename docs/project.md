@@ -566,6 +566,14 @@ Target: same agent scale as v0.2. Most work is in `render_helpers.rs` (Rust FFI 
     - Rust owns manifests and simulation-facing IDs. Godot runtime owns mesh/texture/material loading. Mod users need neither the Godot Editor nor Rust installed.
     - Building save/load must store `pack_id:asset_id` strings, not raw `variant: u8` indices. Until this is done, exported packs cannot survive a save/load cycle as real assets.
 
+    **Step 3b — Building families and upgrade levels:** [DONE 2026-04-05]
+    - Add `level: u8` (default 1) to `BuildingData` in the manifest. `asset_set` (already on `AssetManifest`) acts as the family key.
+    - Two assets with the same `asset_set` and `level` are a conflict; the registry logs a warning and the second registration wins.
+    - The registry builds a `(asset_set, level) → qualified_id` secondary index. `registry.next_level(qualified_id)` returns the qualified_id for `level + 1` in the same family, or `None`.
+    - `Building` gains `level: u8`. On an upgrade tick, if desirability + demand exceed threshold and `next_level` returns Some, swap `asset_id` → next level, increment `level`. No destroy/rebuild — occupants stay.
+    - Capacity (`residents_capacity`, `worker_capacity`) is read from the current `asset_id` in the registry, not stored on the `Building` struct. The hardcoded `occupancy < 6` cap is replaced by manifest-declared capacity.
+    - Save format: SAVE_VERSION 5 → 6, `buildings` table gains `level INTEGER NOT NULL DEFAULT 1`.
+
     **Step 4 — Asset editor scene (launch mode in the same Godot project):**
     - The asset editor is a launch mode in the existing Godot project, not a separate project. Use a command-line argument or a dedicated entry scene to boot the editor shell instead of the normal city scene.
     - The editor shell shares the same compiled `.so`, the same asset schemas, and the same canonical paths as the game. No second Godot project, no second export template.

@@ -66,7 +66,7 @@ mod tests {
                 cell_x: 5,
                 cell_y: 0,
                 occupancy: 0,
-                asset_id: String::new(),
+                asset_id: String::new(), level: 1,
             });
 
         // 5. Spawn an agent on Road B (Index 1)
