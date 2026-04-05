@@ -32,8 +32,9 @@ pub const Z_FIGHT_BIAS: f32 = 0.001;
 
 // Zoning Simulation Parameters
 
-/// The depth (number of cells) of the zoning grid, defining how far buildings can extend from the road.
-pub const ZONING_DEPTH: usize = 12;
+/// Reference depth used by tooling and heuristics (e.g. camera hit distance, depth-alpha fade).
+/// Not a hard cap on zoning — each edge side grows dynamically from painted cells.
+pub const DEFAULT_ZONING_DEPTH: usize = 12;
 /// Whether traffic drives on the left side of the road (`true` = UK/Japan style, `false` = continental/US style).
 pub const DRIVE_ON_LEFT: bool = false;
 /// Minimum vertical separation (metres) for a bridge/tunnel to NOT obstruct other systems.

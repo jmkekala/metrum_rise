@@ -14,7 +14,7 @@
 //! | **Network**   | `get_road_mesh_data_internal`     | `network_renderer.gd` |
 //! |              | `get_connection_rust`             | Internal (Zoning) |
 
-use crate::config::ZONING_DEPTH;
+use crate::config::DEFAULT_ZONING_DEPTH;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::grid::zoning::ZoneType;
 use godot::classes::MultiMesh;
@@ -204,7 +204,6 @@ impl SimCore {
     ) -> std::collections::HashMap<u8, Vec<f32>> {
         let mut result = std::collections::HashMap::new();
         let cell_size = self.config.zone_cell_m;
-        let depth = crate::config::ZONING_DEPTH;
         let w = self.heightmap.width as f32;
         let h = self.heightmap.height as f32;
 
@@ -216,6 +215,8 @@ impl SimCore {
 
             for side_idx in 0..2 {
                 let side_sign: f32 = if side_idx == 0 { 1.0 } else { -1.0 };
+                let depth = if side_sign > 0.0 { grid.left_depth } else { grid.right_depth };
+                if depth == 0 { continue; }
                 let data = if side_sign > 0.0 {
                     &grid.left_side
                 } else {
@@ -457,7 +458,7 @@ impl SimCore {
         if y < 4 {
             return 1.0;
         }
-        let zoning_depth = ZONING_DEPTH as i32;
+        let zoning_depth = DEFAULT_ZONING_DEPTH as i32;
         let t = (y - 4) as f32 / (zoning_depth - 1 - 4) as f32;
         1.0 + t * (0.1 - 1.0)
     }

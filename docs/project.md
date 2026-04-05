@@ -502,8 +502,8 @@ Target: same agent scale as v0.2. Most work is in `render_helpers.rs` (Rust FFI 
     - No Rust changes beyond what item 52 already requires. Foundation quads are driven entirely from the existing `get_building_transforms()` call in GDScript.
 57. **Asset editor / importer** — see `docs/asset_editor.md` for the full design. Implementation order is strict: each step unblocks the next.
 
-    **Step 1 — Dynamic zoning extents (prerequisite for everything else):**
-    - This must land first. All other steps depend on it.
+    **Step 1 — Dynamic zoning extents (prerequisite for everything else): [DONE]**
+    - Implemented 2026-04-05. All other steps depend on it.
     - Replace the fixed global `ZONING_DEPTH` cap with per-edge-side dynamic `depth_cells`, allocated and grown only from actually painted zoning. Save format breaks intentionally; that is acceptable.
     - Keep the road-aligned coordinate system `(edge_idx, side, x, y)`. This is a storage redesign, not a move to free-floating parcels.
     - Replace footprint `u8` fields with `u16` in `Building.width_cells`, `Building.depth_cells`, block depth metadata, and save/load plumbing.

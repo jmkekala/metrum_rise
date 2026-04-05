@@ -24,7 +24,7 @@ fn zone_range_full_zones_all_columns() {
 #[test]
 fn zone_range_partial_zones_correct_columns() {
     let (graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)], 7.0);
-    z.set_zone_range(0, 1, 0.3, 0.7, ZONING_DEPTH, ZoneType::Commercial, &graph);
+    z.set_zone_range(0, 1, 0.3, 0.7, crate::config::DEFAULT_ZONING_DEPTH, ZoneType::Commercial, &graph);
     for x in 0..3 { assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::None); }
     for x in 3..7 { assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Commercial); }
     for x in 7..10 { assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::None); }
@@ -125,8 +125,9 @@ fn merge_combines_column_counts_and_removes_second() {
 fn merge_preserves_zone_data_order() {
     let (_graph, mut z) = make_edge_graph(vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(40.0, 0.0, 0.0)], 7.0);
     z.update_edge_grid_size(1, 60.0);
-    if let Some(g0) = z.edge_grids.get_mut(&0) { for i in 0..g0.left_side.len() { g0.left_side[i] = ZoneType::Residential; } }
-    if let Some(g1) = z.edge_grids.get_mut(&1) { for i in 0..g1.left_side.len() { g1.left_side[i] = ZoneType::Commercial; } }
+    // Grow both sides to depth 1 so left_side is non-empty before filling.
+    if let Some(g0) = z.edge_grids.get_mut(&0) { g0.grow_left_depth(1); for i in 0..g0.left_side.len() { g0.left_side[i] = ZoneType::Residential; } }
+    if let Some(g1) = z.edge_grids.get_mut(&1) { g1.grow_left_depth(1); for i in 0..g1.left_side.len() { g1.left_side[i] = ZoneType::Commercial; } }
     z.merge_edge_grids(0, 1);
     for x in 0..4 { assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Residential); }
     for x in 4..10 { assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Commercial); }

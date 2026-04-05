@@ -34,10 +34,10 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
     tx.execute("INSERT INTO noise_state(width, height, grid_blob_f32_le) VALUES (?1, ?2, ?3)", params![usize_to_i64(noise.grid.width)?, usize_to_i64(noise.grid.height)?, pack_f32_slice(&noise.grid.data)])?;
 
     // Zoning
-    let mut zone_stmt = tx.prepare("INSERT INTO zoning_grids(edge_id, cells_long, left_zone_blob_u8, right_zone_blob_u8) VALUES (?1, ?2, ?3, ?4)")?;
+    let mut zone_stmt = tx.prepare("INSERT INTO zoning_grids(edge_id, cells_long, left_depth, right_depth, left_zone_blob_u8, right_zone_blob_u8) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
     for (&old_eid, grid) in &zoning.edge_grids {
         let Some(&saved_eid) = maps.edge_old_to_new.get(&old_eid) else { continue; };
-        zone_stmt.execute(params![usize_to_i64(saved_eid)?, usize_to_i64(grid.cells_long)?, pack_zone_slice(&grid.left_side), pack_zone_slice(&grid.right_side)])?;
+        zone_stmt.execute(params![usize_to_i64(saved_eid)?, usize_to_i64(grid.cells_long)?, usize_to_i64(grid.left_depth)?, usize_to_i64(grid.right_depth)?, pack_zone_slice(&grid.left_side), pack_zone_slice(&grid.right_side)])?;
     }
 
     // Buildings
@@ -46,7 +46,7 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
         let saved_bid = maps.building_old_to_new.get(&old_bid).copied().ok_or_else(|| SaveLoadError::custom("missing building mapping"))?;
         let saved_eid = maps.edge_old_to_new.get(&b.edge_idx).copied().ok_or_else(|| SaveLoadError::custom("missing building edge mapping"))?;
         let saved_fnid = maps.node_old_to_new.get(&b.frontage_node).copied().ok_or_else(|| SaveLoadError::custom("missing building frontage node"))?;
-        bld_stmt.execute(params![usize_to_i64(saved_bid)?, usize_to_i64(saved_eid)?, b.frontage_t, i64::from(b.side), usize_to_i64(b.cell_x)?, u8_to_i64(b.cell_y)?, zone_type_to_i64(b.zone_type), u32_to_i64(b.occupancy)?, u8_to_i64(b.width_cells)?, u8_to_i64(b.depth_cells)?, u32_to_i64(saved_fnid)?, u8_to_i64(b.variant)?])?;
+        bld_stmt.execute(params![usize_to_i64(saved_bid)?, usize_to_i64(saved_eid)?, b.frontage_t, i64::from(b.side), usize_to_i64(b.cell_x)?, usize_to_i64(b.cell_y as usize)?, zone_type_to_i64(b.zone_type), u32_to_i64(b.occupancy)?, usize_to_i64(b.width_cells as usize)?, usize_to_i64(b.depth_cells as usize)?, u32_to_i64(saved_fnid)?, u8_to_i64(b.variant)?])?;
     }
 
     Ok(())
@@ -77,22 +77,30 @@ pub(super) fn load_water(conn: &Connection, ew: usize, eh: usize) -> SaveLoadRes
 }
 
 pub(super) fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResult<ZoningSystem> {
-    use crate::config::ZONING_DEPTH;
     let mut zoning = ZoningSystem::new(config);
-    let mut stmt = conn.prepare("SELECT edge_id, cells_long, left_zone_blob_u8, right_zone_blob_u8 FROM zoning_grids ORDER BY edge_id")?;
+    let mut stmt = conn.prepare("SELECT edge_id, cells_long, left_depth, right_depth, left_zone_blob_u8, right_zone_blob_u8 FROM zoning_grids ORDER BY edge_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let eid = i64_to_usize(row.get(0)?)?;
-        let cl = i64_to_usize(row.get(1)?)?;
-        let cc = cl * ZONING_DEPTH;
+        let cl  = i64_to_usize(row.get(1)?)?;
+        let ld  = i64_to_usize(row.get(2)?)?;
+        let rd  = i64_to_usize(row.get(3)?)?;
+        let lcc = cl * ld;
+        let rcc = cl * rd;
         zoning.edge_grids.insert(eid, EdgeZoning {
-            left_side: unpack_zone_blob(&row.get::<_, Vec<u8>>(2)?, cc)?,
-            right_side: unpack_zone_blob(&row.get::<_, Vec<u8>>(3)?, cc)?,
-            left_occupied: vec![false; cc], right_occupied: vec![false; cc],
-            left_blocked: vec![false; cc], right_blocked: vec![false; cc],
-            left_block_depth: vec![0; cl], right_block_depth: vec![0; cl],
-            left_block_id: vec![0; cl], right_block_id: vec![0; cl],
+            left_side:      unpack_zone_blob(&row.get::<_, Vec<u8>>(4)?, lcc)?,
+            right_side:     unpack_zone_blob(&row.get::<_, Vec<u8>>(5)?, rcc)?,
+            left_occupied:  vec![false; lcc],
+            right_occupied: vec![false; rcc],
+            left_blocked:   vec![false; lcc],
+            right_blocked:  vec![false; rcc],
+            left_block_depth:  vec![0; cl],
+            right_block_depth: vec![0; cl],
+            left_block_id:  vec![0; cl],
+            right_block_id: vec![0; cl],
             cells_long: cl,
+            left_depth: ld,
+            right_depth: rd,
         });
     }
     Ok(zoning)
@@ -106,11 +114,14 @@ pub(super) fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAlloca
         let bid = i64_to_usize(row.get(0)?)?;
         if bid != allocator.buildings.len() { return Err(SaveLoadError::custom("non-contiguous building ids")); }
         allocator.buildings.push(Building {
-            center_x: 0.0, center_y: 0.0, width_cells: i64_to_u8(row.get(8)?)?, depth_cells: i64_to_u8(row.get(9)?)?,
+            center_x: 0.0, center_y: 0.0,
+            width_cells: i64_to_usize(row.get(8)?)? as u16,
+            depth_cells: i64_to_usize(row.get(9)?)? as u16,
             zone_type: zone_type_from_i64(row.get(6)?)?, facing_dir: Vector2::ZERO, frontage_t: row.get(2)?,
             frontage_node: i64_to_u32(row.get(10)?)?, side_offset: 0.0, abandoned_timer: 0,
             edge_idx: i64_to_usize(row.get(1)?)?, side: (row.get::<_, i64>(3)?) as i8,
-            cell_x: i64_to_usize(row.get(4)?)?, cell_y: i64_to_u8(row.get(5)?)?,
+            cell_x: i64_to_usize(row.get(4)?)?,
+            cell_y: i64_to_usize(row.get(5)?)? as u16,
             occupancy: i64_to_u32(row.get(7)?)?, variant: i64_to_u8(row.get(11)?)?,
         });
     }

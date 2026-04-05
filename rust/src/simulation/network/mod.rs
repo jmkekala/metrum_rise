@@ -374,6 +374,8 @@ impl TransitNetwork {
         struct EdgeWork {
             edge_idx: usize,
             cells_long: usize,
+            left_depth: usize,
+            right_depth: usize,
             all_blocked: bool, // Bridge/Tunnel shortcut — skip expensive per-cell test
             nearby: Vec<usize>,
         }
@@ -382,10 +384,12 @@ impl TransitNetwork {
             if eid >= graph.edge_count() || graph.edge(eid).deleted {
                 return None;
             }
-            let cells_long = zoning.get_edge_grid_width(eid);
-            if cells_long == 0 {
+            let (cells_long, left_depth, right_depth) = if let Some(g) = zoning.edge_grids.get(&eid) {
+                (g.cells_long, g.left_depth, g.right_depth)
+            } else {
                 return None;
-            }
+            };
+            if cells_long == 0 { return None; }
             let all_blocked = graph.edge(eid).class != EdgeClass::Standard;
             let nearby = if all_blocked {
                 vec![]
@@ -400,16 +404,19 @@ impl TransitNetwork {
                     Vector3::new(mxx + 120.0, 0.0, mxz + 120.0),
                 )
             };
-            Some(EdgeWork { edge_idx: eid, cells_long, all_blocked, nearby })
+            Some(EdgeWork { edge_idx: eid, cells_long, left_depth, right_depth, all_blocked, nearby })
         }).collect();
 
-        // --- Phase 2 (parallel): one flat dispatch over all (edge × cell) pairs ---
-        // Build flat index first so Rayon gets a balanced, evenly-sized slice.
-        let total_cells: usize = edge_work.iter().map(|w| w.cells_long * crate::config::ZONING_DEPTH).sum();
-        let mut flat: Vec<(usize, usize)> = Vec::with_capacity(total_cells);
+        // --- Phase 2 (parallel): flat dispatch over (edge, side, x, y) tuples ---
+        // Left and right sides iterate their own per-side depth independently.
+        let total_items: usize = edge_work.iter().map(|w| {
+            w.cells_long * (w.left_depth + w.right_depth)
+        }).sum();
+        let mut flat: Vec<(usize, i8, usize, usize)> = Vec::with_capacity(total_items);
         for (w_idx, w) in edge_work.iter().enumerate() {
-            for ci in 0..w.cells_long * crate::config::ZONING_DEPTH {
-                flat.push((w_idx, ci));
+            for x in 0..w.cells_long {
+                for y in 0..w.left_depth  { flat.push((w_idx,  1, x, y)); }
+                for y in 0..w.right_depth { flat.push((w_idx, -1, x, y)); }
             }
         }
 
@@ -417,24 +424,16 @@ impl TransitNetwork {
         // `is_cell_obstructed(&self, …)` which does not mutate any state.
         let zoning_ro: &crate::simulation::grid::zoning::ZoningSystem = &*zoning;
 
-        let results: Vec<(usize, usize, bool, bool)> = flat.par_iter().map(|&(w_idx, ci)| {
+        let results: Vec<(usize, i8, usize, usize, bool)> = flat.par_iter().map(|&(w_idx, side, x, y)| {
             let w = &edge_work[w_idx];
-            let x = ci / crate::config::ZONING_DEPTH;
-            let y = ci % crate::config::ZONING_DEPTH;
-            if w.all_blocked {
-                return (w.edge_idx, ci, true, true);
-            }
-            let l = zoning_ro.is_cell_obstructed(w.edge_idx, 1, x, y, graph, Some(&w.nearby));
-            let r = zoning_ro.is_cell_obstructed(w.edge_idx, -1, x, y, graph, Some(&w.nearby));
-            (w.edge_idx, ci, l, r)
+            let blocked = w.all_blocked
+                || zoning_ro.is_cell_obstructed(w.edge_idx, side, x, y, graph, Some(&w.nearby));
+            (w.edge_idx, side, x, y, blocked)
         }).collect();
 
         // --- Phase 3 (sequential): write back all results ---
-        for (eid, ci, l, r) in results {
-            let x = ci / crate::config::ZONING_DEPTH;
-            let y = ci % crate::config::ZONING_DEPTH;
-            zoning.set_blocked(eid, 1, x, y, l);
-            zoning.set_blocked(eid, -1, x, y, r);
+        for (eid, side, x, y, blocked) in results {
+            zoning.set_blocked(eid, side, x, y, blocked);
         }
     }
 

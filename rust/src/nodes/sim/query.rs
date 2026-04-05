@@ -27,7 +27,7 @@
 //! |              | `get_obstacle_polygons_internal` | `zoning_tool.gd` |
 //! |              | `get_border_nodes_internal`      | `road_tool.gd` |
 
-use crate::config::{HEIGHT_SCALE, ZONING_DEPTH};
+use crate::config::{HEIGHT_SCALE, DEFAULT_ZONING_DEPTH};
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction;
@@ -311,7 +311,7 @@ impl SimCore {
         }
 
         // Return if mouse is near the road, or within the dynamic bounding limit (grid depth + padding)
-        let max_depth = (ZONING_DEPTH as f32 * self.config.zone_cell_m) + 10.0;
+        let max_depth = (DEFAULT_ZONING_DEPTH as f32 * self.config.zone_cell_m) + 10.0;
         if best_dist <= (max_depth * max_depth) {
             best_edge
         } else {

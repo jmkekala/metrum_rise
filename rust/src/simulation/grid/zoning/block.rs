@@ -1,8 +1,8 @@
-use crate::config::ZONING_DEPTH;
 use super::{ZoningSystem, ZoneType};
 
 impl ZoningSystem {
     /// Sets a range of cells to a specific zone type with a given depth.
+    /// Grows the side's depth automatically if `depth` exceeds the current allocated depth.
     pub fn set_zone_range(
         &mut self,
         edge_idx: usize,
@@ -23,18 +23,22 @@ impl ZoningSystem {
         };
 
         if edge_physical_l < 0.1 || edge_geom.is_empty() { return; }
+        if depth == 0 { return; }
 
         let start_x = (start_t * cells_long as f32).floor() as usize;
-        let end_x = (end_t * cells_long as f32).ceil() as usize;
-        
+        let end_x   = (end_t   * cells_long as f32).ceil()  as usize;
         let (start, end) = {
             let sx = start_x.min(cells_long);
             let ex = end_x.min(cells_long);
             if sx <= ex { (sx, ex) } else { (ex, sx) }
         };
 
-        let depth = depth.min(ZONING_DEPTH);
-        
+        // Grow side depth before the obstruction pass so new rows are accessible.
+        if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
+            if side > 0 { grid.grow_left_depth(depth); }
+            else        { grid.grow_right_depth(depth); }
+        }
+
         let edge = graph.edge(edge_idx);
         let mut min_pos = godot::prelude::Vector3::new(f32::MAX, 0.0, f32::MAX);
         let mut max_pos = godot::prelude::Vector3::new(f32::MIN, 0.0, f32::MIN);
@@ -53,7 +57,8 @@ impl ZoningSystem {
         let mut writes = Vec::new();
         for x in start..end {
             for y in 0..depth {
-                let allowed = zone_type == ZoneType::None || !self.is_cell_obstructed(edge_idx, side, x, y, graph, Some(&nearby_edges));
+                let allowed = zone_type == ZoneType::None
+                    || !self.is_cell_obstructed(edge_idx, side, x, y, graph, Some(&nearby_edges));
                 if allowed {
                     writes.push((x, y));
                 }
@@ -61,9 +66,10 @@ impl ZoningSystem {
         }
 
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
+            let d = grid.side_depth(side);
             let cells = if side > 0 { &mut grid.left_side } else { &mut grid.right_side };
             for (x, y) in writes {
-                let idx = x * ZONING_DEPTH + y;
+                let idx = x * d + y;
                 if idx < cells.len() {
                     cells[idx] = zone_type;
                 }
@@ -94,13 +100,13 @@ impl ZoningSystem {
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
             let cells_long = grid.cells_long;
             let start_x = (start_t * cells_long as f32).floor() as usize;
-            let end_x = (end_t * cells_long as f32).ceil() as usize;
+            let end_x   = (end_t   * cells_long as f32).ceil()  as usize;
             let (start, end) = {
                 let sx = start_x.min(cells_long);
                 let ex = end_x.min(cells_long);
                 if sx <= ex { (sx, ex) } else { (ex, sx) }
             };
-            let block_depth = depth.min(ZONING_DEPTH) as u8;
+            let block_depth = depth as u16;
             let (bd, bi) = if side > 0 {
                 (&mut grid.left_block_depth, &mut grid.left_block_id)
             } else {

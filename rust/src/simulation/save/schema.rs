@@ -5,7 +5,7 @@ use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
 use super::SaveLoadError;
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 3;
+pub const SAVE_VERSION: i64 = 4;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -104,6 +104,8 @@ CREATE TABLE lane_connections(
 CREATE TABLE zoning_grids(
     edge_id INTEGER PRIMARY KEY,
     cells_long INTEGER NOT NULL,
+    left_depth INTEGER NOT NULL,
+    right_depth INTEGER NOT NULL,
     left_zone_blob_u8 BLOB NOT NULL,
     right_zone_blob_u8 BLOB NOT NULL
 );

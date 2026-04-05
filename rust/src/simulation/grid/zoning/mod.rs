@@ -1,4 +1,3 @@
-use crate::config::ZONING_DEPTH;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::network::types::EdgeClass;
 use godot::prelude::*;
@@ -106,22 +105,41 @@ impl ZoningSystem {
             godot::prelude::Vector3::new(max_x + padding, 0.0, max_z + padding),
         );
 
-        let results: Vec<(bool, bool)> = (0..cells_long * ZONING_DEPTH)
-            .into_par_iter()
-            .map(|idx| {
-                let x = idx / ZONING_DEPTH;
-                let y = idx % ZONING_DEPTH;
-                let l = self.is_cell_obstructed(edge_idx, 1, x, y, graph, Some(&nearby_edges));
-                let r = self.is_cell_obstructed(edge_idx, -1, x, y, graph, Some(&nearby_edges));
-                (l, r)
-            })
-            .collect();
+        let (left_depth, right_depth) = if let Some(g) = self.edge_grids.get(&edge_idx) {
+            (g.left_depth, g.right_depth)
+        } else {
+            return;
+        };
+
+        let left_results: Vec<bool> = if left_depth > 0 {
+            (0..cells_long * left_depth)
+                .into_par_iter()
+                .map(|idx| {
+                    let x = idx / left_depth;
+                    let y = idx % left_depth;
+                    self.is_cell_obstructed(edge_idx, 1, x, y, graph, Some(&nearby_edges))
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        let right_results: Vec<bool> = if right_depth > 0 {
+            (0..cells_long * right_depth)
+                .into_par_iter()
+                .map(|idx| {
+                    let x = idx / right_depth;
+                    let y = idx % right_depth;
+                    self.is_cell_obstructed(edge_idx, -1, x, y, graph, Some(&nearby_edges))
+                })
+                .collect()
+        } else {
+            vec![]
+        };
 
         if let Some(grid) = self.edge_grids.get_mut(&edge_idx) {
-            for (i, (l_blocked, r_blocked)) in results.into_iter().enumerate() {
-                grid.left_blocked[i] = l_blocked;
-                grid.right_blocked[i] = r_blocked;
-            }
+            grid.left_blocked  = left_results;
+            grid.right_blocked = right_results;
         }
     }
 
@@ -133,19 +151,17 @@ impl ZoningSystem {
         let mut data = Vec::new();
         for (&edge_idx, grid) in &self.edge_grids {
             if edge_idx >= graph.edge_count() || graph.edge(edge_idx).deleted { continue; }
-            for side in [1, -1] {
-                let cells = if side > 0 { &grid.left_side } else { &grid.right_side };
+            for side in [1i8, -1] {
+                let depth = grid.side_depth(side);
+                if depth == 0 { continue; }
+                let cells   = if side > 0 { &grid.left_side }    else { &grid.right_side };
                 let blocked = if side > 0 { &grid.left_blocked } else { &grid.right_blocked };
-                let actual_cells_long = (cells.iter().len() / ZONING_DEPTH).min(grid.cells_long);
-                for x in 0..actual_cells_long {
-                    for y in 0..ZONING_DEPTH {
-                        let idx = x * ZONING_DEPTH + y;
-                        if idx >= cells.len() { continue; }
+                for x in 0..grid.cells_long {
+                    for y in 0..depth {
+                        let idx = x * depth + y;
                         let z_type = cells[idx];
                         if z_type == ZoneType::None { continue; }
-
-                        if blocked.get(idx).cloned().unwrap_or(true) { continue; }
-
+                        if blocked[idx] { continue; }
                         data.push(edge_idx as f32);
                         data.push(side as f32);
                         data.push(x as f32);

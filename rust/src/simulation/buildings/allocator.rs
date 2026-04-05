@@ -22,7 +22,7 @@ pub struct ModelMetadata {
     pub size_z: f32,
 }
 
-/// A placed building occupying a 3 × 3 cell (30 m × 30 m) footprint on a zoning grid.
+/// A placed building occupying a variable-footprint area on a zoning grid.
 #[derive(Clone)]
 pub struct Building {
     /// World-space X centre of the building footprint (metres, ground-plane X axis).
@@ -30,9 +30,9 @@ pub struct Building {
     /// World-space Z centre of the building footprint (metres, ground-plane Z axis; legacy `*_y` field name).
     pub center_y: f32,
     /// Width of the footprint in zoning grid cells.
-    pub width_cells: u8,
+    pub width_cells: u16,
     /// Depth of the footprint in zoning grid cells.
-    pub depth_cells: u8,
+    pub depth_cells: u16,
     /// Zone category this building was spawned into.
     pub zone_type: ZoneType,
     /// Unit vector pointing from the road toward the building (outward normal from the road edge).
@@ -51,8 +51,8 @@ pub struct Building {
     pub side: i8,
     /// Column index (along the road) of the building's leading cell.
     pub cell_x: usize,
-    /// Vertical cell index (0 to ZONING_DEPTH-1).
-    pub cell_y: u8,
+    /// Depth offset of the building's leading cell (0 = frontage row).
+    pub cell_y: u16,
     /// Total agents currently residing or working in this building.
     pub occupancy: u32,
     /// Randomly assigned variant ID for 3D model selection.
@@ -237,11 +237,12 @@ impl BuildingAllocator {
             }
 
             'side_loop: for side in [1, -1] {
-                let cells_long = if let Some(g) = zoning.edge_grids.get(&edge_idx) {
-                    g.cells_long
+                let (cells_long, left_depth, right_depth) = if let Some(g) = zoning.edge_grids.get(&edge_idx) {
+                    (g.cells_long, g.left_depth, g.right_depth)
                 } else {
-                    0
+                    (0, 0, 0)
                 };
+                let side_depth = if side > 0 { left_depth } else { right_depth };
 
                 for i in 0..cells_long {
                     let x = if i % 2 == 0 { (i / 2).min(cells_long - 1) } else { (cells_long - 1).saturating_sub(i / 2) };
@@ -275,8 +276,8 @@ impl BuildingAllocator {
                     let dw = (meta.size_x * scale / cell_size).ceil().max(1.0) as usize;
                     let dh = (meta.size_z * scale / cell_size).ceil().max(1.0) as usize;
 
-                    // Ensure footprint fits in zoning grid
-                    if x + dw > cells_long || dh > crate::config::ZONING_DEPTH as usize {
+                    // Ensure footprint fits within the painted zoning depth and column count.
+                    if x + dw > cells_long || dh > side_depth {
                         continue;
                     }
 
@@ -363,8 +364,8 @@ impl BuildingAllocator {
                             side: side as i8,
                             cell_x: x,
                             cell_y: 0,
-                            width_cells: dw as u8,
-                            depth_cells: dh as u8,
+                            width_cells: dw as u16,
+                            depth_cells: dh as u16,
                             occupancy: 0,
                             variant: variant as u8,
                             abandoned_timer: 0,

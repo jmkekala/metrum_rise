@@ -1,4 +1,4 @@
-use crate::config::{CLEARANCE_THRESHOLD, ZONING_DEPTH};
+use crate::config::CLEARANCE_THRESHOLD;
 use godot::prelude::*;
 use super::{ZoningSystem, ZoneType};
 use crate::simulation::network::types::EdgeClass;
@@ -158,7 +158,12 @@ impl ZoningSystem {
                         let row_other = ((d_other - curb_dist_other) / size).floor() as usize;
                         let col_other = ((cur_l_other + t_proj * l_seg) / size).floor() as usize;
 
-                        if !is_past_end && row_other < ZONING_DEPTH {
+                        let depth_other = if side_other > 0 {
+                            self.edge_grids.get(&i).map(|g| g.left_depth).unwrap_or(0)
+                        } else {
+                            self.edge_grids.get(&i).map(|g| g.right_depth).unwrap_or(0)
+                        };
+                        if !is_past_end && row_other < depth_other {
                             'col_check: for dc in [0_i32, -1, 1] {
                                 let c = col_other as i32 + dc;
                                 if c >= 0 && self.get_cell(i, side_other, c as usize, row_other) != ZoneType::None {
