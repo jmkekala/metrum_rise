@@ -368,6 +368,48 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **R9. Note on walkway zoning grids** — `TransitNetwork::add_road` / `create_edge_internal` now guards `zoning.update_edge_grid_size` with `if edge.allowed_types & TransitFlags::CAR != 0`. This prevents pure walkways from receiving zoning cells in the UI.
 
+**Top 5 code refactors to do next (2026-04-05 follow-up):**
+
+**R10. Split `simulation/buildings/allocator.rs` (1163 lines)** — still the most overloaded simulation file after the earlier lane/zoning/render/save splits. It currently mixes stale-building cleanup, zoning scan/build placement, frontage split coordination, immigration spawning, edge sampling helpers, and vacancy/zone index maintenance. Recommended split:
+- `buildings/allocator/placement.rs` — zoning scan, desirability gate, frontage insertion
+- `buildings/allocator/lifecycle.rs` — removal, remap, immigration spawning
+- `buildings/allocator/index.rs` — `zone_index`, `vacancy_index`, `claim_vacancy`, `release_vacancy`
+- `buildings/allocator/geometry.rs` — `get_pos_on_edge`, `get_tangent_on_edge`
+- `buildings/allocator/mod.rs` — `BuildingAllocator` type + public API
+
+**Target: before item 57 (plot-size enforcement) or any asset-driven building metadata expansion.** This is the next highest-leverage backend refactor.
+
+**R11. Break `simulation/network/topology.rs` phase logic into focused helpers** — the file was successfully consolidated, but `process_intersections` (~200 lines) and `split_edge` (~120 lines) still each do too many things at once: candidate query, crossing scan, endpoint snapping, factor refinement, split scheduling, edge mutation, zoning migration, and building migration. Recommended extraction:
+- `scan_intersection_candidates(...)`
+- `collect_crossing_splits(...)`
+- `collect_endpoint_snap_splits(...)`
+- `apply_splits(...)`
+- `migrate_split_dependents(...)`
+
+**Target: before any more bridge/tunnel rules, frontage-node work, or new network edit tool.** This is now the highest-risk mutation path in the road system.
+
+**R12. Split `nodes/sim/render_helpers.rs` (976 lines)** — zoning visuals, agent transforms, car transforms, path-debug buffers, building transforms, plot transforms, and road mesh export are all bundled into one Godot bridge file. Recommended split:
+- `nodes/sim/render/agents.rs` — pedestrian/car transforms and path debug
+- `nodes/sim/render/buildings.rs` — building and plot transform buffers
+- `nodes/sim/render/network.rs` — road mesh export helpers
+- `nodes/sim/render/zoning.rs` — zoning overlay colors and instance buffers
+- `nodes/sim/render/mod.rs` — shared glue only
+
+**Target: before the asset registry / asset editor starts changing runtime render payloads.** Right now one file absorbs nearly every render-facing schema change.
+
+**R13. Split `nodes/sim/query.rs` (937 lines)** — terrain raycasts, edge projection math, hovered-edge selection, lane/node inspection, border-node queries, and city stats are all mixed together. Recommended split:
+- `nodes/sim/query/terrain.rs` — `get_height_at_internal`, `intersect_terrain_internal`
+- `nodes/sim/query/network.rs` — closest point, edge geometry, frontage projection, obstacle polygons
+- `nodes/sim/query/debug.rs` — lane/node inspection helpers
+- `nodes/sim/query/stats.rs` — demographics and demand queries
+- `nodes/sim/query/mod.rs` — shared helpers only
+
+**Target: before adding more editor-side inspection tools (junction editor, asset editor integration, richer lane debugging).** This is the next Godot bridge file at risk of becoming an unreviewable grab-bag.
+
+**R14. De-duplicate road-path conditioning in `godot/scripts/road_tool.gd` (431 lines)** — `_draw_blueprint()` and `_get_processed_points()` both sample terrain and run the same Taubin smoothing pass. Any future change to bridge/tunnel rules, slope guards, or height smoothing can silently make preview and committed geometry diverge. Refactor to one shared helper that returns processed points plus validation flags, then let both preview and commit consume the same result.
+
+**Target: before touching bridge/tunnel placement or border snapping again.** This is small compared with the other items, but it protects one of the most user-visible tools from drift.
+
 ### v0.1 — Economy Foundation
 
 Target: a closed, utility-driven economic loop at 100k agents. Activity decisions are driven by agent state via a Maslow-inspired need hierarchy. Transit mode is chosen by utility scoring over all available modes. Living standard is a derived read-only metric — an aggregate of per-level need satisfaction — used for immigration and city rating.
@@ -511,7 +553,7 @@ Target: same agent scale as v0.2. Most work is in `render_helpers.rs` (Rust FFI 
     - Dirty-edge obstruction and zoning rendering iterate only to the local painted depth. Complexity `O(sum(cells_long_e × depth_cells_e))` over dirty edges instead of the current global cap.
     - Full caller audit required: split/merge migration, obstruction, zoning paint UI, queries, rendering helpers, allocator fit checks, and save/load plumbing. Realistic cost: 1–2 focused days for core conversion plus audit.
 
-    **Step 2 — Pack manifest structs in Rust:**
+    **Step 2 — Pack manifest structs in Rust: [DONE 2026-04-05]**
     - Define `PackManifest` and `AssetManifest` structs with serde + `toml` deserialization. No loader code yet — just the schema.
     - `pack_id` is a kebab-case string slug, unique per pack. `asset_id` is a dot-separated path within a pack (`building.residential.lowrise_corner`). Global identity is `pack_id:asset_id`.
     - Pack layout is category-first: `buildings/residential/...`, `vehicles/civil/...`, etc. Stable identity comes from `asset_id` in `asset.toml`, not the folder name.

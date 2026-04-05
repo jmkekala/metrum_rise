@@ -133,6 +133,149 @@ fn merge_preserves_zone_data_order() {
     for x in 4..10 { assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Commercial); }
 }
 
+// ── Step 1: dynamic depth tests ──────────────────────────────────────────────
+
+#[test]
+fn grow_depth_preserves_existing_cells() {
+    // Paint a 3-column edge to depth 1 (Residential on all cols), then call
+    // grow_left_depth(3) directly. Verify the y=0 row survives the reformat and
+    // the new y=1, y=2 rows are None.
+    let (graph, mut z) = make_edge_graph(
+        vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(30.0, 0.0, 0.0)],
+        7.0,
+    );
+    z.set_zone_range(0, 1, 0.0, 1.0, 1, ZoneType::Residential, &graph);
+    assert_eq!(z.edge_grids[&0].left_depth, 1);
+
+    z.edge_grids.get_mut(&0).unwrap().grow_left_depth(3);
+    assert_eq!(z.edge_grids[&0].left_depth, 3);
+
+    for x in 0..3 {
+        assert_eq!(z.get_cell(0, 1, x, 0), ZoneType::Residential, "col {x} y=0 should survive grow");
+        assert_eq!(z.get_cell(0, 1, x, 1), ZoneType::None,        "col {x} y=1 new row should be None");
+        assert_eq!(z.get_cell(0, 1, x, 2), ZoneType::None,        "col {x} y=2 new row should be None");
+    }
+}
+
+#[test]
+fn set_cell_autogrow_paints_correct_cell() {
+    // Edge at depth 0. set_cell at y=2 must grow depth to 3, leave y=0..1 as None.
+    let (graph, mut z) = make_edge_graph(
+        vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)],
+        7.0,
+    );
+    assert_eq!(z.edge_grids[&0].left_depth, 0);
+    z.set_cell(0, 1, 3, 2, ZoneType::Residential, &graph);
+    assert_eq!(z.edge_grids[&0].left_depth, 3, "depth should have grown to 3");
+    assert_eq!(z.get_cell(0, 1, 3, 2), ZoneType::Residential);
+    assert_eq!(z.get_cell(0, 1, 3, 0), ZoneType::None);
+    assert_eq!(z.get_cell(0, 1, 3, 1), ZoneType::None);
+}
+
+#[test]
+fn set_occupied_autogrow() {
+    let (_graph, mut z) = make_edge_graph(
+        vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)],
+        7.0,
+    );
+    assert_eq!(z.edge_grids[&0].right_depth, 0);
+    z.set_occupied(0, -1, 2, 3, true);
+    assert_eq!(z.edge_grids[&0].right_depth, 4, "depth should have grown to 4");
+    assert!(z.is_occupied(0, -1, 2, 3));
+    assert!(!z.is_occupied(0, -1, 2, 0));
+}
+
+#[test]
+fn split_with_asymmetric_depths_preserves_both_sides() {
+    // Paint the left side to depth 3, leave right at depth 1.
+    let (graph, mut z) = make_edge_graph(
+        vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)],
+        7.0,
+    );
+    z.set_zone_range(0, 1,  0.0, 1.0, 3, ZoneType::Residential, &graph);
+    z.set_zone_range(0, -1, 0.0, 1.0, 1, ZoneType::Commercial,  &graph);
+    assert_eq!(z.edge_grids[&0].left_depth,  3);
+    assert_eq!(z.edge_grids[&0].right_depth, 1);
+
+    z.split_edge_grid(0, 1, 4);
+
+    // Depths propagate to both halves.
+    assert_eq!(z.edge_grids[&0].left_depth,  3);
+    assert_eq!(z.edge_grids[&0].right_depth, 1);
+    assert_eq!(z.edge_grids[&1].left_depth,  3);
+    assert_eq!(z.edge_grids[&1].right_depth, 1);
+
+    // Left side data in both halves.
+    for x in 0..4 { for y in 0..3 { assert_eq!(z.get_cell(0, 1,  x, y), ZoneType::Residential, "old x={x} y={y}"); } }
+    for x in 0..6 { for y in 0..3 { assert_eq!(z.get_cell(1, 1,  x, y), ZoneType::Residential, "new x={x} y={y}"); } }
+    // Right side data in both halves.
+    for x in 0..4 { assert_eq!(z.get_cell(0, -1, x, 0), ZoneType::Commercial, "old right x={x}"); }
+    for x in 0..6 { assert_eq!(z.get_cell(1, -1, x, 0), ZoneType::Commercial, "new right x={x}"); }
+}
+
+#[test]
+fn merge_with_mismatched_depths_normalises_to_max() {
+    // First grid: left_depth=3, right_depth=1.
+    // Second grid: left_depth=1, right_depth=2.
+    // After merge: left_depth=3, right_depth=2 in the combined grid.
+    let (graph, mut z) = make_edge_graph(
+        vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(40.0, 0.0, 0.0)],
+        7.0,
+    );
+    z.update_edge_grid_size(1, 60.0);
+
+    // Paint first grid.
+    z.set_zone_range(0, 1,  0.0, 1.0, 3, ZoneType::Residential, &graph);
+    z.set_zone_range(0, -1, 0.0, 1.0, 1, ZoneType::Commercial,  &graph);
+    // Paint second grid — use set_zone_range via a temporary graph (same edge 1).
+    // We have no graph for edge 1, so drive depth via set_cell directly.
+    let (graph2, mut z2) = make_edge_graph(
+        vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(60.0, 0.0, 0.0)],
+        7.0,
+    );
+    z2.set_zone_range(0, 1,  0.0, 1.0, 1, ZoneType::Industrial, &graph2);
+    z2.set_zone_range(0, -1, 0.0, 1.0, 2, ZoneType::Office,     &graph2);
+    // Copy the painted grid into z under index 1.
+    let painted = z2.edge_grids.remove(&0).unwrap();
+    z.edge_grids.insert(1, painted);
+
+    assert_eq!(z.edge_grids[&0].left_depth,  3);
+    assert_eq!(z.edge_grids[&0].right_depth, 1);
+    assert_eq!(z.edge_grids[&1].left_depth,  1);
+    assert_eq!(z.edge_grids[&1].right_depth, 2);
+
+    z.merge_edge_grids(0, 1);
+
+    let merged = &z.edge_grids[&0];
+    assert_eq!(merged.left_depth,  3, "merged left_depth should be max(3,1)=3");
+    assert_eq!(merged.right_depth, 2, "merged right_depth should be max(1,2)=2");
+    assert_eq!(merged.cells_long,  10, "4 + 6 columns");
+
+    // First grid left side: all 3 depths painted Residential.
+    for x in 0..4 { for y in 0..3 { assert_eq!(z.get_cell(0, 1,  x, y), ZoneType::Residential, "first left x={x} y={y}"); } }
+    // Second grid left side: depth 1 painted Industrial, depths 1-2 should be None.
+    for x in 4..10 { assert_eq!(z.get_cell(0, 1,  x, 0), ZoneType::Industrial, "second left x={x} y=0"); }
+    for x in 4..10 { assert_eq!(z.get_cell(0, 1,  x, 1), ZoneType::None,       "second left x={x} y=1 expanded"); }
+    // First grid right side: depth 1.
+    for x in 0..4 { assert_eq!(z.get_cell(0, -1, x, 0), ZoneType::Commercial, "first right x={x}"); }
+    // Second grid right side: depth 2 painted Office.
+    for x in 4..10 { assert_eq!(z.get_cell(0, -1, x, 0), ZoneType::Office, "second right x={x} y=0"); }
+    for x in 4..10 { assert_eq!(z.get_cell(0, -1, x, 1), ZoneType::Office, "second right x={x} y=1"); }
+}
+
+#[test]
+fn zone_range_beyond_default_depth_is_accepted() {
+    // Depth 20 is larger than DEFAULT_ZONING_DEPTH (12) — must work without capping.
+    let (graph, mut z) = make_edge_graph(
+        vec![godot::prelude::Vector3::ZERO, godot::prelude::Vector3::new(100.0, 0.0, 0.0)],
+        7.0,
+    );
+    z.set_zone_range(0, 1, 0.0, 1.0, 20, ZoneType::Residential, &graph);
+    assert_eq!(z.edge_grids[&0].left_depth, 20);
+    assert_eq!(z.get_cell(0, 1, 0, 19), ZoneType::Residential);
+    assert_eq!(z.get_cell(0, 1, 5, 15), ZoneType::Residential);
+}
+
 fn make_edge_graph(pts: Vec<godot::prelude::Vector3>, width: f32) -> (crate::simulation::network::graph::RegionGraph, ZoningSystem) {
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};

@@ -15,6 +15,7 @@
 
 use godot::prelude::*;
 
+pub mod assets;
 pub mod config;
 pub mod debug;
 pub mod nodes;
