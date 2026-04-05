@@ -186,22 +186,22 @@ Distribution model:
 
 Editor outputs:
 
-- `Export Pack`: writes the normal unpacked pack folder
-- `Export Share Archive`: writes a zip archive for distribution
-- Default export flow: export the pack folder first, then optionally generate the share archive from that exact folder
+- `Export Runtime Pack`: writes the normal unpacked runtime pack folder
+- `Export Share Archive`: writes a zip archive of the runtime pack for distribution
+- Default export flow: export the runtime pack folder first, then optionally generate the share archive from that exact folder
 
-Do not make zip the only exported artifact. The unpacked folder should remain the canonical editable/installable form.
+Do not make zip the only exported artifact. The unpacked runtime pack should remain the canonical installable form.
 
 Player workflow:
 
-1. Creator exports a pack folder from the asset editor.
+1. Creator exports a runtime pack folder from the asset editor.
 2. Creator shares that pack as:
    - the folder itself, or
    - a `.zip` made from that folder
 3. Another player installs it by:
    - dropping the folder into `user://mods/`, or
    - importing/selecting the `.zip` in the game or asset editor, which then unpacks it into `user://mods/`
-4. The game validates `pack.toml`, dependencies, and cache/index files.
+4. The game validates `pack.toml`, asset manifests, `checksums.sha256`, and `pack.index.bin` when present.
 5. The player enables or disables the pack from the content/mod manager.
 
 Runtime rule:
@@ -213,7 +213,7 @@ Rationale:
 
 - An unpacked folder is easier to inspect, debug, patch, and hand-edit.
 - It keeps the mod format open instead of hiding content behind a container.
-- Dependency checks, cache generation, and asset-path resolution are simpler and more robust on normal extracted files.
+- Checksum verification, cache generation, and asset-path resolution are simpler and more robust on normal extracted files.
 
 Install location:
 
@@ -228,12 +228,12 @@ Conflict rules:
   - version
   - author
   - enabled/disabled state
-  - dependency warnings
+  - validation warnings
 
 Export contents:
 
 - `pack.toml`
-- `pack.index.bin` or equivalent generated cache
+- `pack.index.bin`
 - `assets/...`
 - thumbnails and any baked outputs required by the assets
 
@@ -411,7 +411,7 @@ Limitation:
 ### Editor Workspace
 
 - The exported pack is the portable runtime artifact.
-- The local editor workspace is optional editor-only metadata stored outside the exported pack.
+- The local editor workspace is optional editor-only metadata stored outside the exported runtime pack.
 - The game does not require workspace files to load or validate a pack.
 
 Canonical workspace rules:
@@ -475,10 +475,10 @@ Autosave and recovery rules:
 
 Sharing rule:
 
-- do not require the workspace file for the game to load the pack
+- do not require the workspace file for the game to load the runtime pack
 - do not include editor-only local source paths in the shared runtime pack
 - do not include autosaves, recovery files, or editor-only notes in the shared runtime pack
-- allow the editor to reopen a plain exported pack even when the workspace file is missing, but warn that some rebake/rebuild features may be unavailable
+- allow the editor to reopen a plain exported runtime pack even when the workspace file is missing, but warn that some rebake/rebuild features may be unavailable
 
 Editor behavior:
 
@@ -496,8 +496,9 @@ Lifecycle rules:
 
 Later workspace extension rules:
 
-- published packs remain free of local paths and editor-only machine state
-- cross-machine authoring handoff, if implemented, uses an explicit `Export Workspace Bundle` feature
+- published runtime packs remain free of local paths and editor-only machine state
+- cross-machine authoring handoff, if implemented, uses an explicit `Export Editable Bundle` feature
+- `Export Editable Bundle` is a creator-facing handoff artifact and is not the normal mod install or share format
 
 ### Manifest Caches At Scale
 
@@ -764,7 +765,6 @@ Built-in anchor types:
 - `prop_socket`
 - `wheel`
 - `light`
-- `placement`
 
 All asset classes use the same `[[anchors]]` table shape, including single-anchor cases.
 
@@ -827,7 +827,7 @@ Editor responsibilities:
 
 Runtime responsibilities:
 
-- switch representations automatically by distance or projected size
+- switch representations automatically by camera-distance bands in meters
 - never run heavy mesh simplification at gameplay load time
 - treat LOD selection as a rendering concern, not simulation metadata
 - use discrete switching plus hysteresis
@@ -1152,6 +1152,7 @@ V1 editor support:
 Runtime output rules:
 
 - V1 runtime output is a VAT-ready rest mesh plus baked animation textures.
+- V1 runtime packs store baked VAT outputs only and do not include character source clips or source meshes.
 - A far-distance SDF billboard descriptor is a later crowd LoD tier, not part of the primary v1 runtime path.
 - The bake path is self-contained from the modder's point of view: opening the shipped editor and pressing bake is enough.
 - The bake path does not depend on user-managed external tooling.
@@ -1273,7 +1274,7 @@ Thumbnail generation rules:
 
 V1 inspector and viewport contract:
 
-- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`zone_type`, `service_class`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, capacity fields), optional material paths, entrance/service/prop_socket anchors, and `[[lods]]`.
+- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`zone_type`, `service_class`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `residents_capacity`, `worker_capacity`), optional material paths, entrance/service/prop_socket anchors, and `[[lods]]`.
 - Building mode viewport shows the lot rectangle, frontage arrow, sidewalk/road reference, entrance anchor gizmo, orientation validation, and footprint overflow warnings.
 - Prop mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), prop fields (`category`, `bounding_size_m`, `snap_mode`, `terrain_behavior`), and optional material paths.
 - Prop mode viewport shows ground contact, snap target, pivot, authored bounds, and orientation validation.
@@ -1389,8 +1390,6 @@ user://mods/
         adult_male/
           casual_male_a/
             asset.toml
-            source_rest.glb
-            source_walk.glb
             rest.glb
             walk.exr
             thumbnail.png
@@ -1509,7 +1508,7 @@ Optional `[materials]` table for static-mesh assets:
 
 Optional `[[anchors]]` table:
 
-- `type`: enum, one of `entrance`, `service`, `prop_socket`, `wheel`, `light`, `placement`
+- `type`: enum, one of `entrance`, `service`, `prop_socket`, `wheel`, `light`
 - `name`: string
 - `position`: `[f32, f32, f32]`
 - `forward`: optional `[f32, f32, f32]`
@@ -1605,16 +1604,6 @@ Required fields:
 - `age_group`: enum, one of `adult`, `child`
 - `body_type`: lower-case slug
 
-Required `[source]` table:
-
-- `rest_mesh`: relative path to source rest mesh
-- `walk_clip`: relative path to source walk clip
-
-Optional `[source]` fields:
-
-- `idle_clip`: relative path
-- `run_clip`: relative path
-
 Required `[runtime_vat]` table:
 
 - `rest_mesh`: relative path to baked runtime rest mesh
@@ -1624,9 +1613,10 @@ Required `[runtime_vat]` table:
 
 Character rules:
 
-- `walk_clip` is mandatory in v1.
+- VAT bake authoring requires a source `walk` clip in v1.
 - The baked output must be self-contained from the author's point of view: opening the shipped editor and pressing bake is enough.
-- In v1, the exported character asset contains both source inputs and baked outputs because there is no separate workspace contract yet.
+- The exported runtime character asset stores baked runtime outputs only.
+- Character source inputs are editor-only authoring data and are not part of the runtime pack.
 - Runtime skeletal playback is out of scope. The shipped output is the baked VAT representation, not the source skeleton.
 
 Example `pack.toml`:
@@ -1722,7 +1712,7 @@ Hard errors:
 - missing canonical mesh file
 - invalid enum value for asset class, zone type, prop snap mode, prop terrain behavior, vehicle taxonomy, or character archetype fields
 - invalid axes / origin conventions
-- character asset lacks required `walk` source clip for VAT mode
+- character VAT authoring input lacks required `walk` source clip
 
 Warnings:
 
@@ -1762,7 +1752,7 @@ Warnings:
 - Add character source import and clip preview.
 - Add self-contained offline baking to the current runtime format:
   - VAT outputs from source clips
-- Export both the baked runtime outputs and the minimal source inputs needed by the v1 no-workspace flow.
+- Export baked runtime outputs into the runtime pack only.
 - Leave room for a future optional far-distance crowd tier:
   - SDF billboard descriptor
 - Keep the shipped runtime asset free of skeleton cost.
