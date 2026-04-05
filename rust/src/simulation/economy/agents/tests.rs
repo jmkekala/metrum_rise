@@ -31,7 +31,7 @@ fn create_test_edge(n0: u32, n1: u32) -> Edge {
     }
 }
 
-fn create_test_building(edge_idx: usize, side: i8, frontage_node: u32) -> Building {
+fn create_test_building(edge_idx: usize, side: i8) -> Building {
     Building {
         center_x: 0.0,
         center_y: 0.0,
@@ -39,8 +39,7 @@ fn create_test_building(edge_idx: usize, side: i8, frontage_node: u32) -> Buildi
         depth_cells: 1,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(1.0, 0.0),
-        frontage_t: 0.5,
-        frontage_node,
+        frontage_t: 0.5, // t=0.5 → depart node = end_node of the edge
         side_offset: 5.0,
         abandoned_timer: 0,
         edge_idx,
@@ -67,7 +66,7 @@ fn test_agent_departure_sidewalk_selection() {
     network.cch_graph = CchGraph::build(&graph);
     let mut allocator = BuildingAllocator::new();
     // frontage_t = 0.5 → end_node = n1
-    allocator.buildings.push(create_test_building(edge_idx, 1, n1));
+    allocator.buildings.push(create_test_building(edge_idx, 1));
     let mut agents = AgentSystem::new();
     agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
     let a_id = 0;
@@ -110,7 +109,7 @@ fn test_agent_departure_car_selection() {
     network.cch_graph = CchGraph::build(&graph);
     let mut allocator = BuildingAllocator::new();
     // frontage_t = 0.5 → end_node = n1
-    allocator.buildings.push(create_test_building(edge_idx, 1, n1));
+    allocator.buildings.push(create_test_building(edge_idx, 1));
     let mut agents = AgentSystem::new();
     agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
     let a_id = 0;
@@ -234,8 +233,8 @@ fn test_agent_fsm_lifecycle() {
     network.lane_system.rebuild(&mut g);
     network.cch_graph = CchGraph::build(&g);
     let mut allocator = BuildingAllocator::new();
-    allocator.buildings.push(create_test_building(0, 1, n1));
-    allocator.buildings.push(create_test_building(0, 1, n1));
+    allocator.buildings.push(create_test_building(0, 1));
+    allocator.buildings.push(create_test_building(0, 1));
     allocator.buildings[1].zone_type = ZoneType::Industrial;
     allocator.rebuild_zone_index();
     let mut agents = AgentSystem::new();
@@ -278,7 +277,7 @@ fn test_border_spawn_movement() {
     network.add_road(&mut graph, vec![Vector3::ZERO, Vector3::RIGHT * 100.0], 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
     network.cch_graph = CchGraph::build(&graph);
     let mut agents = AgentSystem::new();
-    allocator.buildings.push(create_test_building(0, 1, n1));
+    allocator.buildings.push(create_test_building(0, 1));
     let agent_idx = agents.spawn_agent(0, n0, 0.0, 0.0, n1, 100.0, 0.0);
     agents.tick(&mut allocator, &network, &mut graph, 1.0);
     assert!(agents.pos_x[agent_idx] < 100.0);
@@ -297,8 +296,8 @@ fn test_pedestrian_crosses_junction() {
     network.add_road(&mut graph, vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)], 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
-    allocator.buildings.push(create_test_building(0, 1, n1));
-    allocator.buildings.push(create_test_building(1, -1, n2));
+    allocator.buildings.push(create_test_building(0, 1));
+    allocator.buildings.push(create_test_building(1, -1));
     allocator.buildings[1].zone_type = ZoneType::Commercial;
     let mut agents = AgentSystem::new();
     let i = agents.spawn_agent(0, n2, 0.0, 0.0, n0, -50.0, 10.0);

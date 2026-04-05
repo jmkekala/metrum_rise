@@ -495,8 +495,8 @@ impl AgentSystem {
                             && curr_bldg != usize::MAX
                             && curr_bldg < allocator.buildings.len()
                         {
-                            let origin_node = allocator.buildings[curr_bldg].frontage_node;
-                            let target_node = allocator.buildings[next_bldg].frontage_node;
+                            let origin_node = crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[curr_bldg], graph);
+                            let target_node = crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[next_bldg], graph);
                             *s_cur_n.get_mut(i) = origin_node;
                             *s_tgt_n.get_mut(i) = target_node;
 
@@ -538,7 +538,7 @@ impl AgentSystem {
                                     let dest_node = path.last().copied().unwrap_or(target_node);
                                     let nearest = f.nearest_building[origin_node as usize];
                                     if nearest != usize::MAX
-                                        && allocator.buildings[nearest].frontage_node == dest_node
+                                        && crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[nearest], graph) == dest_node
                                     {
                                         nearest
                                     } else {
@@ -582,7 +582,7 @@ impl AgentSystem {
                         *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
                         return;
                     }
-                    let frontage_node = allocator.buildings[b_id].frontage_node;
+                    let frontage_node = crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[b_id], graph);
                     if frontage_node as usize >= graph.node_count() {
                         *s_transit.get_mut(i) = TRANSIT_IDLE;
                         *s_visible.get_mut(i) = false;
@@ -839,7 +839,7 @@ impl AgentSystem {
                                     *s_lane_id.get_mut(i) = usize::MAX;
                                     let t_bldg = *s_tgt_b.get(i);
                                     if t_bldg != usize::MAX && t_bldg < allocator.buildings.len() {
-                                        let frontage = allocator.buildings[t_bldg].frontage_node;
+                                        let frontage = crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[t_bldg], graph);
                                         if *s_cur_n.get(i) == frontage {
                                             *s_transit.get_mut(i) = TRANSIT_ARRIVING;
                                             *s_tmode.get_mut(i) = MODE_WALK;

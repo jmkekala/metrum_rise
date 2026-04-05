@@ -120,7 +120,6 @@ CREATE TABLE buildings(
     occupancy INTEGER NOT NULL,
     width INTEGER NOT NULL,
     depth INTEGER NOT NULL,
-    frontage_node INTEGER NOT NULL,
     asset_id TEXT NOT NULL,
     level INTEGER NOT NULL
 );
@@ -197,7 +196,6 @@ pub fn node_type_to_i64(value: NodeType) -> i64 {
         NodeType::Airport => 3,
         NodeType::Transfer => 4,
         NodeType::Border => 5,
-        NodeType::Frontage => 6,
     }
 }
 
@@ -209,7 +207,6 @@ pub fn node_type_from_i64(value: i64) -> Result<NodeType, SaveLoadError> {
         3 => Ok(NodeType::Airport),
         4 => Ok(NodeType::Transfer),
         5 => Ok(NodeType::Border),
-        6 => Ok(NodeType::Frontage),
         _ => Err(SaveLoadError::custom(format!(
             "unknown NodeType value {}",
             value

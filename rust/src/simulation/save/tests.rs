@@ -51,7 +51,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let mut allocator = BuildingAllocator::new();
     allocator.buildings.push(Building {
         center_x: 0.0, center_y: 0.0, width_cells: 3, depth_cells: 3, zone_type: ZoneType::Residential,
-        facing_dir: Vector2::new(0.0, 1.0), frontage_t: 0.5, frontage_node: n1, side_offset: 1.0, abandoned_timer: 0,
+        facing_dir: Vector2::new(0.0, 1.0), frontage_t: 0.5, side_offset: 1.0, abandoned_timer: 0,
         edge_idx: edge_id, side: 1, cell_x: 0, cell_y: 0, occupancy: 2, asset_id: String::new(), level: 1,
     });
     allocator.recompute_derived_transforms(&graph, &zoning).expect("transforms");
@@ -96,5 +96,5 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
     assert_eq!(loaded.agents.sim_time, agents_sys.sim_time);
-    assert_eq!(loaded.allocator.buildings[0].frontage_node, 1);
+    assert_eq!(loaded.allocator.buildings[0].frontage_t, 0.5);
 }

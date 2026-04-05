@@ -593,7 +593,7 @@ pub fn run_sim_thread(
                     let alloc = &c.allocator;
                     let graph = &c.region_graph;
                     c.transit_network.flow_fields.rebuild_dirty(graph, |zone| {
-                        alloc.get_sources_for_zone(zone)
+                        alloc.get_sources_for_zone(zone, graph)
                     });
                 }
 

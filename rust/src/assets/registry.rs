@@ -193,6 +193,7 @@ mod tests {
             prop: None,
             vehicle: None,
             character: None,
+            pivot_offset: None,
         }
     }
 

@@ -34,7 +34,7 @@ mod tests {
         }
     }
 
-    fn create_test_building(edge_idx: usize, side: i8, frontage_node: u32) -> Building {
+    fn create_test_building(edge_idx: usize, side: i8) -> Building {
         Building {
             center_x: 0.0,
             center_y: 0.0,
@@ -42,8 +42,7 @@ mod tests {
             depth_cells: 1,
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(1.0, 0.0),
-            frontage_t: 0.5,
-            frontage_node,
+            frontage_t: 0.5, // t=0.5 → depart node = end_node of the edge
             side_offset: 5.0,
             abandoned_timer: 0,
             edge_idx,
@@ -74,7 +73,7 @@ mod tests {
         network.cch_graph = CchGraph::build(&graph);
 
         let mut allocator = BuildingAllocator::new();
-        allocator.buildings.push(create_test_building(edge_idx, building_side, n1));
+        allocator.buildings.push(create_test_building(edge_idx, building_side));
 
         let mut agents = AgentSystem::new();
         let a_id = agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);

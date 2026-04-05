@@ -128,7 +128,6 @@ mod tests {
             zone_type: ZoneType::Industrial,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
-            frontage_node: 0,
             side_offset: 0.0,
             abandoned_timer: 0,
             edge_idx: 0,

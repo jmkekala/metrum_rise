@@ -336,58 +336,6 @@ fn test_vehicle_connections() {
     }
 }
 
-#[test]
-fn test_building_frontage_no_crosswalks() {
-    let mut graph = RegionGraph::new();
-    let n0 = graph.add_node(Vector3::new(-50.0, 0.0, 0.0), NodeType::Junction);
-    let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Frontage);
-    let n2 = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
-
-    let edges = [(n0, n1), (n1, n2)];
-    for (s, e) in edges {
-        graph.add_edge(Edge {
-            start_node: s,
-            end_node: e,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
-            width: 7.0,
-            fwd_lanes: 1,
-            bkw_lanes: 1,
-            speed_limit: 50.0,
-            base_cost: 1.0,
-            physical_length: 50.0,
-            current_congestion: 0.0,
-            start_clip: 0.0,
-            end_clip: 0.0,
-            geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-            physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-            deleted: false,
-        });
-    }
-    graph.rebuild_adjacency_list();
-    let mut lanes = LaneSystem::new();
-    lanes.rebuild(&mut graph);
-
-    let mut has_crosswalk = false;
-    for &e_idx in &graph.adjacency[n1 as usize] {
-        let edge = &graph.edges[e_idx];
-        let is_end = edge.end_node == n1;
-        if let Some(lane_ids) = lanes.edge_lanes.get(&e_idx) {
-            for &l_id in lane_ids {
-                let l = &lanes.lanes[l_id];
-                if l.is_fwd == is_end {
-                    for &next_id in &l.next_lanes {
-                        if lanes.lanes[next_id].is_crosswalk {
-                            has_crosswalk = true;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    assert!(!has_crosswalk);
-}
 
 fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
     let p0 = graph.nodes[s as usize].pos;

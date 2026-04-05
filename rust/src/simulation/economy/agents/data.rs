@@ -207,7 +207,7 @@ impl AgentSystem {
         for _ in 0..count {
             let home_idx = rng.gen_range(0..bldg_count);
             let b = &allocator.buildings[home_idx];
-            let home_node = b.frontage_node;
+            let home_node = crate::simulation::buildings::allocator::building_depart_node(b, graph);
             let start_node = rng.gen_range(0..graph.node_count()) as u32;
             let start_pos = graph.node(start_node).pos;
 

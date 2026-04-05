@@ -28,8 +28,6 @@ pub struct Building {
     pub facing_dir: Vector2,
     /// T-coordinate (0.0 to 1.0) along the road edge [`edge_idx`] for this building's frontage.
     pub frontage_t: f32,
-    /// Road-graph node at this building's frontage point.
-    pub frontage_node: u32,
     /// Signed side of the road: `+1.0` = left, `-1.0` = right (relative to edge direction).
     pub side_offset: f32,
     /// Ticks since this building lost its zoning. Currently unused.
@@ -72,6 +70,20 @@ pub struct BuildingAllocator {
     pub dirty_zones: [bool; 6],
     /// Registry of all loaded pack assets. Populated at startup by scanning the mods directory.
     pub registry: AssetRegistry,
+}
+
+/// Returns the road node an agent departing from `building` should walk toward.
+///
+/// Picks the nearer endpoint: start_node when `frontage_t < 0.5`, end_node otherwise.
+/// This replaces the old `frontage_node` stored field, computing it on demand from the
+/// graph so that no split node needs to be inserted into the road graph.
+pub(crate) fn building_depart_node(building: &Building, graph: &RegionGraph) -> u32 {
+    let edge = graph.edge(building.edge_idx);
+    if building.frontage_t < 0.5 {
+        edge.start_node
+    } else {
+        edge.end_node
+    }
 }
 
 /// Converts a simulation [`ZoneType`] to the corresponding [`ZoneClass`] used by the asset registry.
@@ -169,14 +181,9 @@ impl BuildingAllocator {
                 let b_cell_y = b.cell_y;
                 let b_width = b.width_cells;
                 let b_depth = b.depth_cells;
-                let b_frontage_node = b.frontage_node;
                 let b_zone = b.zone_type;
                 self.dirty_zones[b_zone as usize] = true;
-                // `b` is no longer borrowed past this point; safe to pass `self` mutably below.
-
-                // Merge the two half-edges back into one. If frontage_node has degree > 2
-                // (not a pure Option-C split node), remove_frontage is a safe no-op.
-                network.remove_frontage(graph, b_frontage_node, zoning, self, _agents);
+                // `b` is no longer borrowed past this point.
 
                 // Clear occupancy for the entire footprint
                 let w_cells = b_width as usize;
@@ -343,7 +350,6 @@ impl BuildingAllocator {
                             }
                         }
 
-                        // Push building with dummy node (it will be updated by split_for_frontage immediately)
                         let initial_level = self.registry.get(&asset_id)
                             .and_then(|e| e.manifest.building.as_ref())
                             .map(|b| b.level)
@@ -352,7 +358,6 @@ impl BuildingAllocator {
                             zone_type: z_type,
                             facing_dir: normal,
                             frontage_t: frontage_t_full,
-                            frontage_node: 0,
                             side_offset: edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
                             center_x: center_2d.x,
                             center_y: center_2d.y,
@@ -368,9 +373,6 @@ impl BuildingAllocator {
                             abandoned_timer: 0,
                         });
 
-                        // This call now includes the new building in its migration loop
-                        network.split_for_frontage(graph, edge_idx, frontage_t_full, zoning, self);
-                        
                         spawned_this_tick += 1;
                         self.dirty_index = true;
                         self.dirty_zones[z_type as usize] = true;
@@ -383,9 +385,6 @@ impl BuildingAllocator {
                             _ => {}
                         }
 
-                        // edge_idx geometry is now modified (split_for_frontage changed it
-                        // in-place to the first half). Break both the x and side loops so
-                        // subsequent iterations do not use stale edge_len or cells_long.
                         break 'side_loop;
                     }
                 }
@@ -487,7 +486,7 @@ impl BuildingAllocator {
                         }
 
                         let home_bldg = &self.buildings[home_idx];
-                        let home_node = home_bldg.frontage_node;
+                        let home_node = building_depart_node(home_bldg, graph);
 
                         _agents.spawn_agent(
                             home_idx,
@@ -712,13 +711,13 @@ impl BuildingAllocator {
         Some(list[rng.gen_range(0..list.len())])
     }
 
-    /// Returns `(frontage_node, building_index)` pairs for all buildings of `zone`.
+    /// Returns `(depart_node, building_index)` pairs for all buildings of `zone`.
     ///
     /// Used by [`FlowFieldSystem::rebuild_dirty`] to seed the multi-source Dijkstra.
-    pub fn get_sources_for_zone(&self, zone: ZoneType) -> Vec<(u32, usize)> {
+    pub fn get_sources_for_zone(&self, zone: ZoneType, graph: &RegionGraph) -> Vec<(u32, usize)> {
         self.zone_index[zone as usize]
             .iter()
-            .map(|&idx| (self.buildings[idx].frontage_node, idx))
+            .map(|&idx| (building_depart_node(&self.buildings[idx], graph), idx))
             .collect()
     }
 
@@ -784,6 +783,7 @@ mod tests {
             prop: None,
             vehicle: None,
             character: None,
+            pivot_offset: None,
         };
         allocator.registry.register(pack_id, manifest, String::new());
     }
@@ -807,7 +807,6 @@ mod tests {
                 },
                 facing_dir: Vector2::new(0.0, 1.0),
                 frontage_t: 0.5,
-                frontage_node: 0,
                 side_offset: 0.0,
                 abandoned_timer: 0,
                 edge_idx: 0,
@@ -863,7 +862,6 @@ mod tests {
                 zone_type: ZoneType::Residential,
                 facing_dir: Vector2::new(0.0, 1.0),
                 frontage_t: 0.5,
-                frontage_node: 0,
                 side_offset: 0.0,
                 abandoned_timer: 0,
                 edge_idx: 0,
@@ -1100,7 +1098,6 @@ mod tests {
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.05,
-            frontage_node: 0,
             side_offset: 1.0,
             abandoned_timer: 0,
             edge_idx: 0,
@@ -1195,7 +1192,6 @@ mod tests {
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.1,
-            frontage_node: 0,
             side_offset: 1.0,
             abandoned_timer: 0,
             edge_idx: edge_id,

@@ -226,7 +226,6 @@ mod tests {
                 zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.75,
-                frontage_node: 0,
                 side_offset: 5.0,
                 abandoned_timer: 0,
                 edge_idx: old_edge_id,

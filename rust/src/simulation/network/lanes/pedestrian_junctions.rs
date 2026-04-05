@@ -1,7 +1,7 @@
 use godot::prelude::*;
 use std::collections::HashMap;
 use super::super::graph::RegionGraph;
-use super::super::types::{NodeType, TransitFlags, TransitType};
+use super::super::types::{TransitFlags, TransitType};
 use super::{Lane, LaneType};
 use super::geometry::{build_cum_dist, road_half_width};
 use crate::config;
@@ -87,11 +87,6 @@ pub fn build_pedestrian_connections_at_node(
 
             let is_same_edge = mouths[i].edge_idx == mouths[j].edge_idx;
             let deg = graph.node_adjacency(node_id as u32).len();
-            let node_type = graph.node(node_id as u32).node_type;
-
-            if node_type == NodeType::Frontage && (is_same_edge || mouths[i].lane_idx != mouths[j].lane_idx) {
-                continue;
-            }
 
             let skip_visual = is_same_edge && deg <= 2 && crosswalks_added >= 2;
             let is_crosswalk = is_same_edge && num_steps == 1 && !skip_visual;

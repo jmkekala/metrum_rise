@@ -792,7 +792,6 @@ mod tests {
             zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
             facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
             frontage_t: 0.85, // Pre-split frontage_t
-            frontage_node: 0,
             side_offset: 1.0,
             abandoned_timer: 0,
             edge_idx: edge_id,

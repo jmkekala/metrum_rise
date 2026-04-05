@@ -53,8 +53,6 @@ pub enum NodeType {
     /// functions as a spawn point if it has at least one non-deleted incident edge (i.e. the
     /// road is actually connected to the city network).
     Border,
-    /// A node created by building frontage split. Should not have crosswalks.
-    Frontage,
 }
 
 /// Architectural classification of a road edge.
