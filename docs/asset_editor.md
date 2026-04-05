@@ -1534,6 +1534,7 @@ Required fields:
 - `asset_class = "building"`
 - `mesh`: relative path to `LOD0` mesh
 - `zone_type`: enum, one of `residential`, `commercial`, `industrial`, `office`, `mixed`
+- `density`: enum, one of `low`, `medium`, `high`. Controls which density zones this building may be placed in. Default `low`.
 - `lot_width_cells`: integer, `>= 1`
 - `lot_depth_cells`: integer, `>= 1`
 
@@ -1559,11 +1560,35 @@ Building families and upgrade levels:
 - `lot_width_cells` and `lot_depth_cells` must be identical for all members of a family. The footprint does not change on upgrade; only the mesh and capacities change.
 - `residents_capacity` and `worker_capacity` are tier-specific. A level-2 building may house more residents than a level-1 building of the same family.
 
+#### Capacity estimation
+
+The asset editor auto-suggests capacity values when a mesh is scaled. The formulas are:
+
+```
+floors         = max(1, round(scaled_height / 3.5))        # ~3.5 m per storey
+res_floors     = max(1, round(scaled_height × 0.65 / 3.5)) # residential: 35% height discount for roof pitch
+footprint = scaled_width × scaled_depth           # m²
+```
+
+m² per person/worker by zone and density:
+
+| Zone | Low | Medium | High |
+|------|-----|--------|------|
+| residential | 30 m²/person | 20 m²/person | 12 m²/person |
+| commercial / office | 20 m²/worker | 15 m²/worker | 10 m²/worker |
+| industrial | 25 m²/worker | 19 m²/worker | 13 m²/worker |
+| mixed | 40 m²/each | 27 m²/each | 16 m²/each |
+
+`level` does not affect the suggestion — capacity scaling by level is deferred until the wealth/money system is implemented.
+
+These are starting-point estimates only. Adjust before export to reflect the intended simulation density.
+
 Building rules:
 
 - `zone_type = "residential"` requires `residents_capacity` and must not use `worker_capacity`.
 - `zone_type = "commercial"`, `industrial`, and `office` require `worker_capacity`.
 - `zone_type = "mixed"` may use both capacities, but at least one must be present.
+- `density` is independent of `zone_type`. A `residential / high` building is a high-density apartment; `residential / low` is a detached house. The zoning system uses both fields together to determine placement eligibility.
 - `service_class = "none"` is the default for ordinary zoned private buildings.
 - At least one `[[anchors]]` entry with `type = "entrance"` is required.
 - In the normal case, `min_zone_*` equals the footprint size.
