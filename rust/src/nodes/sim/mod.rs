@@ -6,6 +6,7 @@ pub mod benchmark;
 pub mod core;
 pub mod editing;
 pub mod query;
-pub mod render_helpers;
+/// Rendering bridge sub-modules for Godot-Rust interaction.
+pub mod render;
 pub mod save_load;
 pub mod undo;

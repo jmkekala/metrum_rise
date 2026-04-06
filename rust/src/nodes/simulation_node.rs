@@ -133,33 +133,6 @@ impl SimulationNode {
         Vector2::new(core.heightmap.width as f32, core.heightmap.height as f32)
     }
 
-    /// Helper: converts a `DataGrid<f32>` to an upsampled `PackedByteArray` for Godot ImageTexture.
-    pub fn grid_to_image_data_internal(
-        grid: &crate::simulation::grid::data_grid::DataGrid<f32>,
-        target_w: usize,
-        target_h: usize,
-        r: u8,
-        g: u8,
-        b: u8,
-        max_val: f32,
-    ) -> PackedByteArray {
-        let mut pixels = Vec::with_capacity(target_w * target_h * 4);
-        let scale_x = grid.width as f32 / target_w as f32;
-        let scale_y = grid.height as f32 / target_h as f32;
-
-        for y in 0..target_h {
-            for x in 0..target_w {
-                let val = grid.sample_bilinear(x as f32 * scale_x, y as f32 * scale_y);
-                if val <= 0.01 {
-                    pixels.extend_from_slice(&[0, 0, 0, 0]);
-                } else {
-                    let alpha = ((val / max_val).clamp(0.0, 1.0) * 200.0) as u8;
-                    pixels.extend_from_slice(&[r, g, b, alpha]);
-                }
-            }
-        }
-        PackedByteArray::from_iter(pixels)
-    }
 
     /// Spawns the background simulation thread.
     fn start_sim_thread(&mut self) {
@@ -181,37 +154,19 @@ impl SimulationNode {
     /// Returns the pollution image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_pollution_image_data(&self) -> PackedByteArray {
-        let core = self.lock_core();
-        Self::grid_to_image_data_internal(
-            &core.pollution.grid,
-            core.heightmap.width,
-            core.heightmap.height,
-            255, 50, 50, 100.0,
-        )
+        self.lock_core().get_pollution_image_data_internal()
     }
 
     /// Returns the noise image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_noise_image_data(&self) -> PackedByteArray {
-        let core = self.lock_core();
-        Self::grid_to_image_data_internal(
-            &core.noise.grid,
-            core.heightmap.width,
-            core.heightmap.height,
-            200, 200, 200, 100.0,
-        )
+        self.lock_core().get_noise_image_data_internal()
     }
 
     /// Returns the desirability image data as a PackedByteArray (RGBA8).
     #[func]
     pub fn get_desirability_image_data(&self) -> PackedByteArray {
-        let core = self.lock_core();
-        Self::grid_to_image_data_internal(
-            &core.desirability.grid,
-            core.heightmap.width,
-            core.heightmap.height,
-            50, 255, 50, 100.0,
-        )
+        self.lock_core().get_desirability_image_data_internal()
     }
 
     // ── System ──

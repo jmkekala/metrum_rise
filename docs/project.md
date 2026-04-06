@@ -382,14 +382,9 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **R11. Break `simulation/network/topology.rs` phase logic into focused helpers** — `process_intersections` and `split_edge` refactored into modular sub-phases: `scan_intersection_candidates`, `collect_crossing_splits`, `collect_endpoint_snap_splits`, `apply_splits`, and `migrate_split_dependents`. This eliminates the monolithic 300-line mutation loop and provides a cleaner entry point for future elevated/bridge topology rules.
 
-**Top 3 code refactors to do next (2026-04-06 follow-up):**
+[DONE] **R12. Split `nodes/sim/render_helpers.rs` (976 lines)** — zoning visuals, agent transforms, car transforms, path-debug buffers, building transforms, plot transforms, and road mesh export decoupled into `nodes/sim/render/` sub-modules. This separation isolates Godot-facing transform logic and image generation from the core simulation, clarifying the bridge architecture.
 
-**R12. Split `nodes/sim/render_helpers.rs` (976 lines)** — zoning visuals, agent transforms, car transforms, path-debug buffers, building transforms, plot transforms, and road mesh export are all bundled into one Godot bridge file. Recommended split:
-- `nodes/sim/render/agents.rs` — pedestrian/car transforms and path debug
-- `nodes/sim/render/buildings.rs` — building and plot transform buffers
-- `nodes/sim/render/network.rs` — road mesh export helpers
-- `nodes/sim/render/zoning.rs` — zoning overlay colors and instance buffers
-- `nodes/sim/render/mod.rs` — shared glue only
+**Top 3 code refactors to do next (2026-04-06 follow-up):**
 
 **Target: before the asset registry / asset editor starts changing runtime render payloads.** Right now one file absorbs nearly every render-facing schema change.
 
