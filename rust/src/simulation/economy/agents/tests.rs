@@ -288,7 +288,7 @@ fn test_pedestrian_crosses_junction() {
     let mut network = TransitNetwork::new();
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
-    let n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let _n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let mut zoning = ZoningSystem::new(&MapConfig::default());
     let mut allocator = BuildingAllocator::new();

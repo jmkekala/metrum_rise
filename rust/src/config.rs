@@ -15,9 +15,9 @@ pub const TARGET_FPS: u32 = 60;
 /// Vertical exaggeration applied to the terrain heightmap for rendering. Raw height values are multiplied by this.
 pub const HEIGHT_SCALE: f32 = 20.0;
 /// Maximum distance (metres) within which two road endpoint positions are snapped to the same node.
-pub const SNAP_TOLERANCE: f32 = 1.0;
+pub const SNAP_TOLERANCE: f32 = 2.0;
 /// Maximum distance (metres) within which a new road endpoint is considered to intersect an existing edge.
-pub const INTERSECTION_TOLERANCE: f32 = 1.0;
+pub const INTERSECTION_TOLERANCE: f32 = 2.0;
 
 // Road Geometry and Rendering Constants
 

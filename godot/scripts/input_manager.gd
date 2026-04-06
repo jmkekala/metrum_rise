@@ -164,13 +164,15 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 	match tool_type:
 		Tool.MOVE: if move_tool: move_tool.active = enabled
 		Tool.LANE: if lane_tool: lane_tool.active = enabled
-		Tool.ROAD: 
-			if road_tool: 
+		Tool.ROAD:
+			if road_tool:
 				road_tool.active = enabled
 				if enabled:
 					road_tool.fwd_lanes = 1
 					road_tool.bkw_lanes = 1
 					road_tool._update_lanes_label()
+					road_tool._ghost_guides_dirty = true
+					road_tool._rebuild_ghost_lines()
 		Tool.WALKWAY: 
 			if road_tool: 
 				road_tool.active = enabled
@@ -199,7 +201,10 @@ func _handle_undo():
 	if simulation_node.undo_action():
 		print("Undo Executed Globally")
 		if terrain_node: terrain_node.update_terrain_visuals()
-		if road_tool: road_tool.update_main_mesh()
+		if road_tool:
+			road_tool.update_main_mesh()
+			road_tool._ghost_guides_dirty = true
+			road_tool._rebuild_ghost_lines()
 
 func _savegame_path() -> String:
 	return ProjectSettings.globalize_path("user://savegame.sqlite")

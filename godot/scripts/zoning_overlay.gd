@@ -167,10 +167,14 @@ func _rebuild_no_build_overlay():
 
 	_no_build_mesh_instance.visible = _tool_active_target > 0.5
 
+	var indices: PackedInt32Array = simulation_node.get_no_building_spawn_edge_indices()
+	if indices.is_empty():
+		_no_build_mesh_instance.mesh = null
+		return
+
 	var im := ImmediateMesh.new()
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
 
-	var indices: PackedInt32Array = simulation_node.get_no_building_spawn_edge_indices()
 	for edge_idx in indices:
 		var pts: PackedVector3Array = simulation_node.get_edge_geometry_3d(edge_idx)
 		for i in range(pts.size() - 1):

@@ -12,68 +12,95 @@ use crate::debug_log;
 
 // ── Input structs (JSON from GDScript) ───────────────────────────────────────
 
+/// LOD entry sent from the building importer form.
 #[derive(Deserialize)]
 pub struct LodParams {
+    /// Path to the `.glb` file for this LOD level, relative to the pack directory.
     pub file: String,
+    /// Minimum camera distance (m) at which this LOD is used.
     pub distance_min_m: f32,
+    /// Maximum camera distance (m) at which this LOD is used; `None` means no upper limit.
     #[serde(default)]
     pub distance_max_m: Option<f32>,
 }
 
+/// Anchor point entry sent from the building importer form.
 #[derive(Deserialize)]
 pub struct AnchorParams {
+    /// Semantic type of this anchor (e.g. `"frontage"`, `"entrance"`).
     pub anchor_type: String,
+    /// Identifier for this anchor within the asset (e.g. `"main"`).
     pub name: String,
+    /// World-space position of the anchor relative to the asset origin.
     pub position: [f32; 3],
+    /// Forward direction vector of the anchor in asset-local space.
     pub forward: [f32; 3],
 }
 
 /// Flat JSON payload sent by the building importer form.
 #[derive(Deserialize)]
 pub struct ExportParams {
-    // Pack
+    /// Pack identifier string (e.g. `"kenney"`).
     pub pack_id: String,
+    /// Human-readable pack name shown in the pack manager.
     pub pack_name: String,
+    /// Author credit shown in the pack manager.
     pub pack_author: String,
+    /// Semver version string for the pack (default `"0.1.0"`).
     #[serde(default = "default_version")]
     pub pack_version: String,
+    /// SPDX licence identifier for the pack (default `"CC0"`).
     #[serde(default = "default_license")]
     pub pack_license: String,
 
-    // Asset manifest
-    pub asset_class: String,  // "building" only for Step 5; extended in Step 6
+    /// Asset class tag (`"building"` for Step 5; extended in Step 6).
+    pub asset_class: String,
+    /// Asset identifier string (e.g. `"building.residential.house_a"`).
     pub asset_id: String,
+    /// Human-readable name shown in the asset browser.
     pub display_name: String,
+    /// Optional grouping set within the pack (e.g. `"suburban"`).
     #[serde(default)]
     pub asset_set: Option<String>,
+    /// Free-form search tags.
     #[serde(default)]
     pub tags: Vec<String>,
 
-    // Building-specific
+    /// Zone type the building belongs to (e.g. `"residential"`).
     #[serde(default)]
     pub zone_type: Option<String>,
+    /// Density hint (e.g. `"low"`, `"medium"`, `"high"`).
     #[serde(default)]
     pub density: Option<String>,
+    /// Footprint width in 10 m zone cells along the road frontage.
     #[serde(default)]
     pub lot_width_cells: u16,
+    /// Footprint depth in 10 m zone cells away from the road.
     #[serde(default)]
     pub lot_depth_cells: u16,
+    /// Development level (1 = lowest density / newest; higher = denser / upgraded).
     #[serde(default = "default_level")]
     pub level: u8,
+    /// Maximum number of residents this building can house.
     #[serde(default)]
     pub residents_capacity: Option<u32>,
+    /// Maximum number of workers this building can employ.
     #[serde(default)]
     pub worker_capacity: Option<u32>,
+    /// Service class tag for civic buildings (e.g. `"fire_station"`).
     #[serde(default)]
     pub service_class: Option<String>,
+    /// Uniform scale applied in the asset preview viewport.
     #[serde(default)]
     pub preview_scale: Option<f32>,
+    /// Pivot offset applied when placing the asset in world space.
     #[serde(default)]
     pub pivot_offset: Option<[f32; 3]>,
 
-    // LODs and anchors
+    /// LOD entries ordered from highest to lowest detail.
     #[serde(default)]
     pub lods: Vec<LodParams>,
+    /// Named anchor points (frontage, entrances, etc.).
     #[serde(default)]
     pub anchors: Vec<AnchorParams>,
 }

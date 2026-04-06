@@ -1,7 +1,8 @@
 ## Base class for all road-network editing tools (RoadTool, MoveTool, CulDeSacTool).
 ##
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
-##   get_road_mesh_data(), get_network_nodes(), get_node_pos(), get_height_at()
+##   get_road_mesh_data(), get_network_nodes(), get_node_pos(), get_height_at(),
+##   get_road_ghost_guides()
 ## Owns the shared preview mesh, blueprint spline, and node snapping MultiMesh.
 ## Subclasses override _handle_input() and _commit() for their specific editing behaviour.
 extends Node3D
@@ -20,6 +21,7 @@ var blueprint_mesh: MeshInstance3D # The preview line/spline
 var blueprint_mat: StandardMaterial3D
 var node_multimesh: MultiMeshInstance3D # Holographic snapping points
 var cursor_mesh: MeshInstance3D # Active hovered snap cursor
+var ghost_mesh: MeshInstance3D # Ghost guide lines (SimCity-style grid overlay, road tool only)
 
 func _ready():
 	_setup_visuals()
@@ -78,6 +80,21 @@ func _setup_visuals():
 	cm_mat.cull_mode = StandardMaterial3D.CULL_DISABLED
 	cursor_mesh.material_override = cm_mat
 	add_child(cursor_mesh)
+
+	# Ghost guide lines (RoadTool only — other tools leave this null)
+	if name == "RoadTool":
+		ghost_mesh = MeshInstance3D.new()
+		ghost_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		ghost_mesh.visible = false
+		var gm := StandardMaterial3D.new()
+		gm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		gm.albedo_color = Color(1.0, 1.0, 1.0, 1.0)  # alpha driven per-vertex
+		gm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		gm.vertex_color_use_as_albedo = true
+		gm.no_depth_test = true
+		gm.render_priority = 1
+		ghost_mesh.material_override = gm
+		add_child(ghost_mesh)
 
 func _process(_delta):
 	if active:

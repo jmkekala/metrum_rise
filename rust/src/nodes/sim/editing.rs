@@ -86,6 +86,7 @@ impl SimCore {
         self.allocator.dirty = true;
     }
 
+    /// Sets the classification of an edge by integer class code.
     pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) {
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return;

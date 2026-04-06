@@ -246,7 +246,7 @@ lot_depth_cells = 2
 
         for name in ["pack-b", "pack-a", "pack-c"] {
             let pack = base.join(name);
-            let mut toml = VALID_PACK_TOML.replace("test-pack", name);
+            let toml = VALID_PACK_TOML.replace("test-pack", name);
             write(&pack.join("pack.toml"), &toml);
         }
 

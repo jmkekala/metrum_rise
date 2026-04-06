@@ -39,7 +39,7 @@
 //! | **Stats** | `get_city_demographics` | `hud.gd` |
 //! | | `get_demand_stats` | `hud.gd` |
 
-use godot::classes::{INode3D, MultiMesh, Node3D};
+use godot::classes::{INode3D, Node3D};
 use godot::prelude::*;
 
 use crate::config;
@@ -796,6 +796,115 @@ impl SimulationNode {
         PackedVector3Array::from_iter(
             self.snapshot.read().unwrap().node_positions.iter().copied(),
         )
+    }
+
+    /// Returns ghost guide data for the road-tool overlay.
+    ///
+    /// Flat array `[ax, az, dx, dz, ...]` — one quad (4 floats) per non-deleted edge endpoint.
+    /// `(ax, az)` is the world-XZ anchor (endpoint position); `(dx, dz)` is the outward unit
+    /// tangent of the edge at that endpoint. GDScript extends each entry as a ray from the
+    /// anchor in direction `(dx, dz)` to form a visual reference grid.
+    ///
+    /// Non-blocking: returns an empty array if the SimCore mutex is contended.
+    #[func]
+    pub fn get_road_ghost_guides(&self) -> PackedFloat32Array {
+        let core = match self.try_lock_core() {
+            Some(c) => c,
+            None => return PackedFloat32Array::new(),
+        };
+        let graph = &core.region_graph;
+        let mut out = PackedFloat32Array::new();
+        for edge in graph.edges().iter().filter(|e| !e.deleted && e.physical_geometry.len() >= 2) {
+            let geom = &edge.physical_geometry;
+            let n = geom.len();
+            // Start endpoint — tangent points outward (away from edge interior)
+            let t0 = (geom[0] - geom[1]).normalized();
+            out.push(geom[0].x); out.push(geom[0].z);
+            out.push(t0.x);      out.push(t0.z);
+            // End endpoint — tangent points outward
+            let t1 = (geom[n - 1] - geom[n - 2]).normalized();
+            out.push(geom[n - 1].x); out.push(geom[n - 1].z);
+            out.push(t1.x);          out.push(t1.z);
+        }
+        out
+    }
+
+    /// Returns the full physical geometry of every non-deleted road edge.
+    ///
+    /// Format: `[N, x0, z0, x1, z1, ..., x_{N-1}, z_{N-1}, N, ...]` where `N` is the
+    /// number of points in the polyline. Used by the road-tool ghost overlay to draw
+    /// parallel offset curves that follow road curvature (spline roads included).
+    ///
+    /// Non-blocking: returns an empty array if the SimCore mutex is contended.
+    #[func]
+    pub fn get_road_edge_polylines(&self) -> PackedFloat32Array {
+        let core = match self.try_lock_core() {
+            Some(c) => c,
+            None => return PackedFloat32Array::new(),
+        };
+        let graph = &core.region_graph;
+        let mut out = PackedFloat32Array::new();
+        for edge in graph.edges().iter().filter(|e| !e.deleted && e.physical_geometry.len() >= 2) {
+            let geom = &edge.physical_geometry;
+            out.push(geom.len() as f32);
+            for p in geom {
+                out.push(p.x);
+                out.push(p.z);
+            }
+        }
+        out
+    }
+
+    /// Returns the tangent direction of the road whose endpoint is nearest to `pos`
+    /// within `max_dist` metres.
+    ///
+    /// Returns the road tangent direction closest to `pos` within `max_dist` metres.
+    ///
+    /// Walks the physical geometry of every non-deleted edge and finds the closest point
+    /// on the polyline (not just endpoints), returning the segment tangent at that point.
+    /// This ensures mid-road snaps give the correct perpendicular direction.
+    ///
+    /// The returned `Vector2` is `(world_x, world_z)` of the unit tangent (either
+    /// direction along the edge — callers only need the axis, not the sign).
+    /// Returns `Vector2(0, 1)` (world +Z) if no road is within range.
+    ///
+    /// Non-blocking: returns `Vector2(0, 1)` if the SimCore mutex is contended.
+    #[func]
+    pub fn get_road_tangent_at(&self, pos: Vector3, max_dist: f32) -> Vector2 {
+        let core = match self.try_lock_core() {
+            Some(c) => c,
+            None => return Vector2::new(0.0, 1.0),
+        };
+        let graph = &core.region_graph;
+        let mut best_dist_sq = max_dist * max_dist;
+        let mut best_tangent = Vector2::new(0.0, 1.0); // fallback: world +Z (north)
+
+        for edge in graph.edges().iter().filter(|e| !e.deleted && e.physical_geometry.len() >= 2) {
+            let geom = &edge.physical_geometry;
+            // Walk each segment of the polyline and find the closest point on it.
+            for seg in geom.windows(2) {
+                let a = seg[0];
+                let b = seg[1];
+                let abx = b.x - a.x;
+                let abz = b.z - a.z;
+                let len_sq = abx * abx + abz * abz;
+                if len_sq < 1e-6 { continue; }
+                // Project pos onto segment, clamped to [0,1].
+                let t = ((pos.x - a.x) * abx + (pos.z - a.z) * abz) / len_sq;
+                let t = t.clamp(0.0, 1.0);
+                let cx = a.x + t * abx;
+                let cz = a.z + t * abz;
+                let dx = pos.x - cx;
+                let dz = pos.z - cz;
+                let dist_sq = dx * dx + dz * dz;
+                if dist_sq < best_dist_sq {
+                    best_dist_sq = dist_sq;
+                    let inv_len = 1.0 / len_sq.sqrt();
+                    best_tangent = Vector2::new(abx * inv_len, abz * inv_len);
+                }
+            }
+        }
+        best_tangent
     }
 
     /// Configures a lane connection rule at a junction.

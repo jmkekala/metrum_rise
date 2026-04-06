@@ -8,7 +8,7 @@ use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
+use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::pathing::cch::CchGraph;
@@ -167,15 +167,11 @@ pub(super) fn pack_f32_slice(v: &[f32]) -> Vec<u8> { let mut b = Vec::with_capac
 pub(super) fn unpack_f32_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<f32>> { if b.len() != len * 4 { return Err(SaveLoadError::custom("f32 blob size mismatch")); } let mut v = Vec::with_capacity(len); for c in b.chunks_exact(4) { v.push(f32::from_le_bytes([c[0], c[1], c[2], c[3]])); } Ok(v) }
 pub(super) fn pack_flux_slice(v: &[[f32; 4]]) -> Vec<u8> { let mut b = Vec::with_capacity(v.len() * 16); for q in v { for &x in q { b.extend_from_slice(&x.to_le_bytes()); } } b }
 pub(super) fn unpack_flux_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<[f32; 4]>> { if b.len() != len * 16 { return Err(SaveLoadError::custom("flux blob mismatch")); } let mut v = Vec::with_capacity(len); for c in b.chunks_exact(16) { v.push([f32::from_le_bytes([c[0], c[1], c[2], c[3]]), f32::from_le_bytes([c[4], c[5], c[6], c[7]]), f32::from_le_bytes([c[8], c[9], c[10], c[11]]), f32::from_le_bytes([c[12], c[13], c[14], c[15]])]); } Ok(v) }
-pub(super) fn pack_zone_slice(v: &[ZoneType]) -> Vec<u8> { v.iter().map(|&z| z as u8).collect() }
-pub(super) fn unpack_zone_blob(b: &[u8], len: usize) -> SaveLoadResult<Vec<ZoneType>> { if b.len() != len { return Err(SaveLoadError::custom("zone blob mismatch")); } b.iter().map(|&v| zone_type_from_i64(i64::from(v))).collect() }
-
 pub(super) fn optional_building_to_db(v: usize, m: &SnapshotMaps) -> SaveLoadResult<i64> { if v == usize::MAX { Ok(NONE_REF) } else { usize_to_i64(m.building_old_to_new.get(&v).copied().ok_or_else(|| SaveLoadError::custom("missing bld map"))?) } }
 pub(super) fn optional_edge_to_db(v: usize, m: &SnapshotMaps) -> SaveLoadResult<i64> { if v == usize::MAX { Ok(NONE_REF) } else { usize_to_i64(m.edge_old_to_new.get(&v).copied().ok_or_else(|| SaveLoadError::custom("missing edge map"))?) } }
 pub(super) fn db_to_optional_usize(v: i64) -> SaveLoadResult<usize> { if v == NONE_REF { Ok(usize::MAX) } else { i64_to_usize(v) } }
 pub(super) fn usize_to_i64(v: usize) -> SaveLoadResult<i64> { i64::try_from(v).map_err(|_| SaveLoadError::custom("usize overflow")) }
 pub(super) fn u32_to_i64(v: u32) -> SaveLoadResult<i64> { Ok(i64::from(v)) }
-pub(super) fn u8_to_i64(v: u8) -> SaveLoadResult<i64> { Ok(i64::from(v)) }
 pub(super) fn i64_to_usize(v: i64) -> SaveLoadResult<usize> { usize::try_from(v).map_err(|_| SaveLoadError::custom("usize underflow")) }
 pub(super) fn i64_to_u32(v: i64) -> SaveLoadResult<u32> { u32::try_from(v).map_err(|_| SaveLoadError::custom("u32 overflow")) }
 pub(super) fn i64_to_u8(v: i64) -> SaveLoadResult<u8> { u8::try_from(v).map_err(|_| SaveLoadError::custom("u8 overflow")) }
