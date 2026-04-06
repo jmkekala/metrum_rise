@@ -8,15 +8,15 @@ Metrum Rise is a large-scale city simulation game. The long-term goal is to supp
 
 ## Tech Stack
 
-| Layer | Technology |
-|-------|-----------|
-| Game Engine | Godot 4 (GDScript) |
-| Simulation | Rust 2024 edition |
+| Layer             | Technology                                                 |
+| -------------------| ------------------------------------------------------------|
+| Game Engine       | Godot 4.6 (GDScript)                                       |
+| Simulation        | Rust 1.94                                                |
 | Godot–Rust bridge | `godot-rust` (gdext 0.4.5), `experimental-threads` feature |
-| Parallelism | Rayon 1.10 |
-| Serialization | serde + serde_json |
-| Benchmarking | criterion 0.5 |
-
+| Parallelism       | Rayon 1.10                                                 |
+| Serialization     | serde + serde_json                                         |
+| Benchmarking      | criterion 0.5                                              |
+| Modeling          | Blender 5.1                                                |
 ## Project Structure
 
 ```

@@ -5,6 +5,7 @@
 [ext_resource type="Script" path="res://scripts/road_tool.gd" id="3_road"]
 [ext_resource type="Script" path="res://scripts/zoning_tool.gd" id="4_zoning"]
 [ext_resource type="Script" path="res://scripts/buildings.gd" id="5_buildings"]
+[ext_resource type="Script" path="res://scripts/zoning_overlay.gd" id="12_zoneoverlay"]
 [ext_resource type="Script" path="res://scripts/agents.gd" id="6_agents"]
 [ext_resource type="Script" path="res://scripts/lane_tool.gd" id="7_lanes"]
 [ext_resource type="Script" path="res://scripts/move_tool.gd" id="8_move"]
@@ -30,6 +31,9 @@ script = ExtResource("2_water")
 
 [node name="RoadTool" type="Node3D" parent="."]
 script = ExtResource("3_road")
+
+[node name="ZoningOverlay" type="MeshInstance3D" parent="."]
+script = ExtResource("12_zoneoverlay")
 
 [node name="ZoningTool" type="Node3D" parent="."]
 script = ExtResource("4_zoning")

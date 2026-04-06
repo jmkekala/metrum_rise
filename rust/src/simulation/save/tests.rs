@@ -39,12 +39,11 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         physical_length: 40.0, current_congestion: 0.1, start_clip: 0.0, end_clip: 0.0,
         geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     let mut zoning = ZoningSystem::new(&config);
-    zoning.update_edge_grid_size(edge_id, 40.0);
-    zoning.set_zone_range(edge_id, 1, 0.0, 1.0, 3, ZoneType::Residential, &graph);
+    zoning.set_zone_rect(-20.0, -15.0, 20.0, 15.0, ZoneType::Residential);
     let mut pollution = PollutionSystem::new(&config); pollution.grid.data[0] = 3.0;
     let mut noise = NoiseSystem::new(&config); noise.grid.data[0] = 7.0;
     let mut demand = DemandSystem::new(); demand.residential = 12.0; demand.commercial = 8.0; demand.industrial = 4.0;
@@ -91,7 +90,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.pollution.grid.data, pollution.grid.data);
     assert_eq!(loaded.noise.grid.data, noise.grid.data);
     assert_eq!(loaded.graph.edge_count(), 1);
-    assert_eq!(loaded.zoning.edge_grids.len(), 1);
+    assert_eq!(loaded.zoning.get_zone_world(0.0, 0.0), ZoneType::Residential);
     assert_eq!(loaded.allocator.buildings.len(), 1);
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);

@@ -340,16 +340,35 @@ func _build_ui():
 	prop_vbox.add_child(warning_label)
 	road_properties_panel.set_meta("warning_label", warning_label)
 	
+	var class_btns: Array[Button] = []
 	var classes = ["Standard", "Bridge", "Tunnel"]
 	for i in range(classes.size()):
 		var btn = Button.new()
 		btn.text = classes[i]
+		btn.toggle_mode = true
 		prop_vbox.add_child(btn)
-		btn.pressed.connect(func(): 
+		class_btns.append(btn)
+		btn.pressed.connect(func():
 			if input_manager.select_tool:
 				input_manager.select_tool.set_selected_edge_class(i)
+			# Visually depress only this button
+			for j in range(class_btns.size()):
+				class_btns[j].set_pressed_no_signal(j == i)
 		)
-	
+	road_properties_panel.set_meta("class_btns", class_btns)
+
+	var prop_sep = HSeparator.new()
+	prop_vbox.add_child(prop_sep)
+
+	var no_build_check = CheckBox.new()
+	no_build_check.text = "No buildings"
+	prop_vbox.add_child(no_build_check)
+	no_build_check.toggled.connect(func(pressed: bool):
+		if input_manager.select_tool:
+			input_manager.select_tool.set_selected_edge_no_building_spawn(pressed)
+	)
+	road_properties_panel.set_meta("no_build_check", no_build_check)
+
 	# Wrapper to center main toolbar
 	var hbox_main_center = HBoxContainer.new()
 	hbox_main_center.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -431,32 +450,50 @@ func _on_select_main_pressed():
 	zoning_combined_hbox.visible = false
 	input_manager._toggle_tool(InputManager.Tool.SELECT)
 
-func show_road_properties(edge_idx):
+## Shows the road properties panel for one or more selected edges.
+## When multiple edges are selected the warning is suppressed and the
+## "No buildings" checkbox reflects whether ALL selected edges have the flag set.
+func show_road_properties_multi(edge_indices: Array):
+	if edge_indices.is_empty(): return
 	road_properties_panel.visible = true
-	var warning = road_properties_panel.get_meta("warning_label")
-	warning.text = ""
-	
-	var geo = simulation_node.get_edge_geometry_3d(edge_idx)
-	if geo.size() < 2: return
-	
-	# Basic Validation Logic (Item 27)
-	var p0 = geo[0]
-	var p1 = geo[-1]
-	var h0 = simulation_node.get_height_at(Vector2(p0.x, p0.z))
-	var h1 = simulation_node.get_height_at(Vector2(p1.x, p1.z))
-	
-	# Sample midpoint for terrain clearance
-	var t_mid = geo[geo.size()/2]
-	var h_mid = simulation_node.get_height_at(Vector2(t_mid.x, t_mid.z))
-	
-	# We'd need the edge class to show specific warnings
-	# For now, general "incorrect elevation" warning based on common sense
-	if p0.y > h0 + 1.0 and p1.y > h1 + 1.0:
-		if t_mid.y < h_mid + 2.0:
-			warning.text = "Warning: Bridge may clash with terrain!"
-	elif p0.y < h0 - 1.0 and p1.y < h1 - 1.0:
-		if t_mid.y > h_mid - 2.0:
-			warning.text = "Warning: Tunnel might be above surface!"
+
+	var warning = road_properties_panel.get_meta("warning_label") as Label
+	var no_build_check = road_properties_panel.get_meta("no_build_check") as CheckBox
+	var class_btns: Array = road_properties_panel.get_meta("class_btns")
+
+	if edge_indices.size() == 1:
+		var edge_idx: int = edge_indices[0]
+		warning.text = ""
+		no_build_check.set_pressed_no_signal(simulation_node.get_no_building_spawn(edge_idx))
+		# Reflect current class
+		var cur_class: int = simulation_node.get_edge_class(edge_idx)
+		for j in range(class_btns.size()):
+			class_btns[j].set_pressed_no_signal(j == cur_class)
+
+		var geo = simulation_node.get_edge_geometry_3d(edge_idx)
+		if geo.size() >= 2:
+			var p0 = geo[0]; var p1 = geo[-1]
+			var h0 = simulation_node.get_height_at(Vector2(p0.x, p0.z))
+			var h1 = simulation_node.get_height_at(Vector2(p1.x, p1.z))
+			var t_mid = geo[geo.size() / 2]
+			var h_mid = simulation_node.get_height_at(Vector2(t_mid.x, t_mid.z))
+			if p0.y > h0 + 1.0 and p1.y > h1 + 1.0:
+				if t_mid.y < h_mid + 2.0:
+					warning.text = "Warning: Bridge may clash with terrain!"
+			elif p0.y < h0 - 1.0 and p1.y < h1 - 1.0:
+				if t_mid.y > h_mid - 2.0:
+					warning.text = "Warning: Tunnel might be above surface!"
+	else:
+		warning.text = "%d edges selected" % edge_indices.size()
+		var all_no_build: bool = edge_indices.all(
+			func(idx): return simulation_node.get_no_building_spawn(idx))
+		no_build_check.set_pressed_no_signal(all_no_build)
+		# Class buttons: depress the shared class if all edges have the same one.
+		var first_class: int = simulation_node.get_edge_class(edge_indices[0])
+		var shared: bool = edge_indices.all(
+			func(idx): return simulation_node.get_edge_class(idx) == first_class)
+		for j in range(class_btns.size()):
+			class_btns[j].set_pressed_no_signal(shared and j == first_class)
 
 func hide_road_properties():
 	road_properties_panel.visible = false

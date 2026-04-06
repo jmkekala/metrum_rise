@@ -313,131 +313,49 @@ impl SimulationNode {
 
     // ── Zoning ──
 
-    /// Sets the zone type for a specific 10m cell.
+    /// Paints a world-space rectangle with the given zone type. `zone_type_int` 0 = erase.
     #[func]
-    pub fn set_zoning_cell(&mut self, edge_idx: i32, side: i8, x: i32, y: i32, zone_type_int: u8) {
-        self.lock_core().set_zoning_cell_internal(edge_idx, side, x, y, zone_type_int);
+    pub fn set_zone_rect(&mut self, x_min: f32, z_min: f32, x_max: f32, z_max: f32, zone_type_int: u8) {
+        self.lock_core().set_zone_rect_internal(x_min, z_min, x_max, z_max, zone_type_int);
     }
 
-    /// Sets a range of zoning cells with a specific depth.
+    /// Restores a raw zone sub-rectangle (GDScript undo path).
     #[func]
-    pub fn set_zoning_range(
-        &mut self,
-        edge_idx: i32,
-        side: i8,
-        start_t: f32,
-        end_t: f32,
-        depth: i32,
-        zone_type_int: u8,
-    ) {
-        self.lock_core().set_zoning_range_internal(edge_idx, side, start_t, end_t, depth, zone_type_int);
+    pub fn set_zone_rect_raw(&mut self, x_min: f32, z_min: f32, x_max: f32, z_max: f32, bytes: PackedByteArray) {
+        self.lock_core().set_zone_rect_raw_internal(x_min, z_min, x_max, z_max, bytes.to_vec());
     }
 
-    /// Sets a zoning range as a solid block zone: adjacent cells are merged into one quad in the renderer,
-    /// and the block depth is stored so only buildings matching the block footprint can spawn there.
+    /// Captures the zone bytes of a sub-rectangle (call before painting for undo state).
     #[func]
-    pub fn set_block_zone_range(
-        &mut self,
-        edge_idx: i32,
-        side: i8,
-        start_t: f32,
-        end_t: f32,
-        depth: i32,
-        zone_type_int: u8,
-    ) {
-        self.lock_core().set_block_zone_range_internal(edge_idx, side, start_t, end_t, depth, zone_type_int)
+    pub fn get_zone_subrect(&self, x_min: f32, z_min: f32, x_max: f32, z_max: f32) -> PackedByteArray {
+        PackedByteArray::from_iter(self.lock_core().get_zone_subrect_internal(x_min, z_min, x_max, z_max))
     }
 
-    /// Returns a PackedFloat32Array for rendering the zone grid.
+    /// Returns the full zone-type grid as a flat byte array for R8 texture upload.
     #[func]
-    pub fn get_zoning_grid_data(&self) -> PackedFloat32Array {
-        let core = self.lock_core();
-        core.zoning.get_render_data(&core.region_graph)
+    pub fn get_zone_texture_data(&self) -> PackedByteArray {
+        PackedByteArray::from_iter(self.lock_core().zoning.get_zone_texture_data())
     }
 
-    /// Returns information about zoning on a particular edge.
+    /// Returns the occupied grid as a flat byte array (0/1 per cell) for texture upload.
     #[func]
-    pub fn get_edge_zoning_info(&self, edge_idx: i32) -> VarDictionary {
-        let core = self.lock_core();
-        let mut dict = VarDictionary::new();
-        if let Some(grid) = core.zoning.edge_grids.get(&(edge_idx as usize)) {
-            dict.set("cells_long", grid.cells_long as i32);
-            dict.set("cell_size", core.config.zone_cell_m);
-            dict.set(
-                "left_side",
-                PackedByteArray::from_iter(grid.left_side.iter().map(|&z| z as u8)),
-            );
-            dict.set(
-                "right_side",
-                PackedByteArray::from_iter(grid.right_side.iter().map(|&z| z as u8)),
-            );
-        }
-        dict
+    pub fn get_occupied_texture_data(&self) -> PackedByteArray {
+        PackedByteArray::from_iter(self.lock_core().zoning.get_occupied_texture_data())
     }
 
-    /// Returns whether a specific zoning cell is obstructed.
+    /// Returns the distance-to-road grid as a flat byte array for texture upload.
     #[func]
-    pub fn is_zoning_cell_obstructed(&self, edge_idx: i32, side: i32, x: i32, y: i32) -> bool {
-        let core = self.lock_core();
-        let graph = &core.region_graph;
-        core.zoning.is_cell_obstructed(
-            edge_idx as usize,
-            side as i8,
-            x as usize,
-            y as usize,
-            graph,
-            None,
-        )
+    pub fn get_distance_texture_data(&self) -> PackedByteArray {
+        PackedByteArray::from_iter(self.lock_core().zoning.get_distance_texture_data())
     }
 
-
-    /// Returns the world-space center position of a specific zoning cell.
+    /// Returns the no-build mask as a flat `u8` byte array (0 or 255 per cell).
+    ///
+    /// Cells within ~32 m of a `no_building_spawn` road surface are 255; all others are 0.
+    /// Upload as an R8 texture to drive shader-side zone-tint suppression on no-build roads.
     #[func]
-    pub fn get_zoning_cell_center(&self, edge_idx: i32, side: i8, x: i32, y: i32) -> Vector2 {
-        let core = self.lock_core();
-        let v2 = core.zoning.get_cell_center(
-            edge_idx as usize,
-            side,
-            x as usize,
-            y as usize,
-            &core.region_graph,
-        );
-        Vector2::new(v2.x, v2.y)
-    }
-
-    /// Updates the MultiMesh visualizers for the zoning tool.
-    #[func]
-    pub fn update_zoning_visuals(
-        &self,
-        grid_mm: Gd<MultiMesh>,
-        paint_mm: Gd<MultiMesh>,
-        hovered_edges: VarArray,
-        is_painting: bool,
-        solid: bool,
-        side: i32,
-        t1: f32,
-        t2: f32,
-        depth: i32,
-        zone_type: u8,
-    ) {
-        // Convert GDScript VarArray to pure Rust slice before locking SimCore.
-        let edges: Vec<i32> = hovered_edges
-            .iter_shared()
-            .map(|v| v.to::<i32>())
-            .collect();
-        self.lock_core().update_zoning_visuals_internal(
-            grid_mm, paint_mm, &edges, is_painting, solid, side, t1, t2, depth, zone_type,
-        );
-    }
-
-    /// Returns obstacle polygons for zoning tool overlap checks.
-    #[func]
-    pub fn get_obstacle_polygons_float_array(
-        &self,
-        ignore_poly_id: i32,
-        ignore_edge_idx: i32,
-    ) -> PackedFloat32Array {
-        self.lock_core().get_obstacle_polygons_internal(ignore_poly_id, ignore_edge_idx)
+    pub fn get_no_build_mask_texture_data(&self) -> PackedByteArray {
+        PackedByteArray::from_iter(self.lock_core().zoning.get_no_build_mask_texture_data())
     }
 
     /// Returns the ID of the edge hovered by the mouse.
@@ -755,10 +673,68 @@ impl SimulationNode {
         self.lock_core().get_border_nodes_internal()
     }
 
+    /// Returns the classification of an edge as an integer (0=Standard, 1=Bridge, 2=Tunnel).
+    /// Returns 0 if the edge index is invalid.
+    #[func]
+    pub fn get_edge_class(&self, edge_idx: i32) -> u8 {
+        let core = self.lock_core();
+        if edge_idx < 0 || edge_idx as usize >= core.region_graph.edge_count() {
+            return 0;
+        }
+        match core.region_graph.edge(edge_idx as usize).class {
+            crate::simulation::network::types::EdgeClass::Bridge => 1,
+            crate::simulation::network::types::EdgeClass::Tunnel => 2,
+            _ => 0,
+        }
+    }
+
     /// Sets the classification of an edge (Standard, Bridge, Tunnel).
     #[func]
     pub fn set_edge_class(&mut self, edge_idx: i32, class_int: u8) {
         self.lock_core().set_edge_class_internal(edge_idx, class_int);
+    }
+
+    /// Sets or clears the no-building-spawn flag on an edge. When true the building
+    /// allocator skips this edge. Player-toggleable; also auto-set for speed ≥ 80 km/h.
+    #[func]
+    pub fn set_no_building_spawn(&mut self, edge_idx: i32, enabled: bool) {
+        self.lock_core().set_no_building_spawn_internal(edge_idx, enabled);
+    }
+
+    /// Returns true if the given edge has the no-building-spawn flag set.
+    #[func]
+    pub fn get_no_building_spawn(&self, edge_idx: i32) -> bool {
+        let core = self.lock_core();
+        if edge_idx < 0 || edge_idx as usize >= core.region_graph.edge_count() {
+            return false;
+        }
+        core.region_graph.edge(edge_idx as usize).no_building_spawn
+    }
+
+    /// Returns the start and end node indices of an edge as `Vector2i(start, end)`.
+    /// Returns `(-1, -1)` if the edge index is invalid.
+    #[func]
+    pub fn get_edge_nodes(&self, edge_idx: i32) -> Vector2i {
+        let core = self.lock_core();
+        if edge_idx < 0 || edge_idx as usize >= core.region_graph.edge_count() {
+            return Vector2i::new(-1, -1);
+        }
+        let e = core.region_graph.edge(edge_idx as usize);
+        Vector2i::new(e.start_node as i32, e.end_node as i32)
+    }
+
+    /// Returns the indices of all non-deleted edges with `no_building_spawn = true`.
+    /// Used by the zone-tool overlay to draw the hatched no-build indicator.
+    #[func]
+    pub fn get_no_building_spawn_edge_indices(&self) -> PackedInt32Array {
+        let core = self.lock_core();
+        let mut out = PackedInt32Array::new();
+        for (i, e) in core.region_graph.edges().iter().enumerate() {
+            if !e.deleted && e.no_building_spawn {
+                out.push(i as i32);
+            }
+        }
+        out
     }
 
     /// Returns dictionary of road/intersection mesh data.
@@ -949,20 +925,11 @@ impl SimulationNode {
         self.get_perf_stats_internal()
     }
 
-    /// Returns transformation and custom data for all painted zoning cells, grouped by ZoneType.
+    /// Returns zone grid dimensions for texture setup.
     #[func]
-    pub fn get_persistent_zoning_instances(&self) -> VarDictionary {
+    pub fn get_zone_grid_size(&self) -> Vector2i {
         let core = self.lock_core();
-        let instances =
-            core.get_persistent_zoning_instances_internal(&core.zoning, &core.region_graph);
-        let mut dict = VarDictionary::new();
-        for (z_type, data) in instances {
-            dict.set(
-                z_type as i32,
-                PackedFloat32Array::from_iter(data.iter().cloned()),
-            );
-        }
-        dict
+        Vector2i::new(core.zoning.grid.width as i32, core.zoning.grid.height as i32)
     }
 }
 

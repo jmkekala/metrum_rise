@@ -778,7 +778,7 @@ mod tests {
             geometry: Vec::new(),
             physical_geometry: Vec::new(),
             class: EdgeClass::Standard,
-            deleted: false,
+            deleted: false, no_building_spawn: false,
         };
 
         let edges = vec![

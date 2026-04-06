@@ -322,7 +322,7 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(cost * 50.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(cost * 50.0, 0.0, 0.0)],
-            deleted: false,
+            deleted: false, no_building_spawn: false,
         }
     }
 

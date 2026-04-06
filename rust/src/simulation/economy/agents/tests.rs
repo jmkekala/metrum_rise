@@ -27,7 +27,7 @@ fn create_test_edge(n0: u32, n1: u32) -> Edge {
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     }
 }
 
@@ -464,7 +464,7 @@ fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGraph, Vec<us
         current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
         geometry: vec![Vector3::new(x0, 0.0, 0.0), Vector3::new(x1, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(x0, 0.0, 0.0), Vector3::new(x1, 0.0, 0.0)],
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     };
     graph.add_edge(make(n0, n1, 0.0, 100.0));
     graph.add_edge(make(n1, n2, 100.0, 200.0));
@@ -496,7 +496,7 @@ fn build_4way_junction(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGraph, [Vec<u
         current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
         geometry: vec![Vector3::new(sx, 0.0, sz), Vector3::new(ex, 0.0, ez)],
         physical_geometry: vec![Vector3::new(sx, 0.0, sz), Vector3::new(ex, 0.0, ez)],
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     };
     let ew = graph.add_edge(arm(nw, nc, -100.0, 0.0, 0.0, 0.0));
     let ee = graph.add_edge(arm(ne, nc,  100.0, 0.0, 0.0, 0.0));
@@ -963,7 +963,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
             geometry: vec![Vector3::new(x, 0.0, 0.0), Vector3::new(x + 100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(x, 0.0, 0.0), Vector3::new(x + 100.0, 0.0, 0.0)],
-            deleted: false,
+            deleted: false, no_building_spawn: false,
         };
         edges.push(graph.add_edge(e));
     }

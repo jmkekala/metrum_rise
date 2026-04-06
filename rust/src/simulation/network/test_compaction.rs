@@ -133,7 +133,7 @@ mod tests {
             end_clip: 0.0,
             geometry: Vec::new(),
             physical_geometry: Vec::new(),
-            deleted: false,
+            deleted: false, no_building_spawn: false,
         };
 
         graph.edges = vec![

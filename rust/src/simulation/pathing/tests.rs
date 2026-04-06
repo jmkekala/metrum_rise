@@ -23,7 +23,7 @@ fn test_slope_cost_calculation() {
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     };
 
     let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
@@ -78,7 +78,7 @@ fn test_pathing_avoids_steep_slope() {
             Vector3::new(100.0, 0.0, 0.0),
         ],
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     };
     let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);
     edge_ab.base_cost = cost_ab;
@@ -104,7 +104,7 @@ fn test_pathing_avoids_steep_slope() {
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     };
     let (cost_ac, dist_ac) = cost::CostCalculator::calculate_costs(&edge_ac);
     edge_ac.base_cost = cost_ac;
@@ -135,7 +135,7 @@ fn test_pathing_avoids_steep_slope() {
             Vector3::new(100.0, 0.0, 0.0),
         ],
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     };
     let (cost_cb, dist_cb) = cost::CostCalculator::calculate_costs(&edge_cb);
     edge_cb.base_cost = cost_cb;
@@ -182,7 +182,7 @@ fn test_bidirectional_walkway_pathing() {
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     });
 
     let cch = CchGraph::build(&graph);
@@ -230,7 +230,7 @@ fn test_car_uturn_allowed() {
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     });
 
     let cch = CchGraph::build(&graph);
@@ -284,7 +284,7 @@ fn test_car_avoids_walkway_shortcut() {
         geometry: vec![],
         physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 100.0],
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     });
     graph.add_edge(Edge {
         start_node: n1,
@@ -303,7 +303,7 @@ fn test_car_avoids_walkway_shortcut() {
         geometry: vec![],
         physical_geometry: vec![Vector3::RIGHT * 100.0, Vector3::RIGHT * 200.0],
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     });
 
     // Walkway shortcut n0 -> n2 directly
@@ -324,7 +324,7 @@ fn test_car_avoids_walkway_shortcut() {
         geometry: vec![],
         physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 200.0],
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     });
 
     let cch = cch::CchGraph::build(&graph);

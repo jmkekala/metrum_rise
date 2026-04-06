@@ -26,12 +26,12 @@ pub(super) fn save_network(tx: &Transaction, graph: &RegionGraph, maps: &Snapsho
 
     // 2. Edges
     {
-        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")?;
+        let mut stmt = tx.prepare("INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)")?;
         for (old_id, edge) in graph.edges().iter().enumerate() {
             let Some(&saved_id) = maps.edge_old_to_new.get(&old_id) else { continue; };
             let start = maps.node_old_to_new.get(&canonical_existing_node(graph, edge.start_node)?).copied().ok_or_else(|| SaveLoadError::custom("missing saved start node"))?;
             let end = maps.node_old_to_new.get(&canonical_existing_node(graph, edge.end_node)?).copied().ok_or_else(|| SaveLoadError::custom("missing saved end node"))?;
-            stmt.execute(params![usize_to_i64(saved_id)?, i64::from(start), i64::from(end), transit_type_to_i64(edge.primary_type), i64::from(edge.allowed_types), edge_class_to_i64(edge.class), edge.width, i64::from(edge.fwd_lanes), i64::from(edge.bkw_lanes), edge.speed_limit, edge.base_cost, edge.physical_length, edge.current_congestion, edge.start_clip, edge.end_clip])?;
+            stmt.execute(params![usize_to_i64(saved_id)?, i64::from(start), i64::from(end), transit_type_to_i64(edge.primary_type), i64::from(edge.allowed_types), edge_class_to_i64(edge.class), edge.width, i64::from(edge.fwd_lanes), i64::from(edge.bkw_lanes), edge.speed_limit, edge.base_cost, edge.physical_length, edge.current_congestion, edge.start_clip, edge.end_clip, i64::from(edge.no_building_spawn)])?;
         }
     }
 
@@ -67,6 +67,8 @@ pub(super) fn save_network(tx: &Transaction, graph: &RegionGraph, maps: &Snapsho
 }
 
 pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
+    // Forward-compatible migration: add no_building_spawn if the column is absent in older saves.
+    let _ = conn.execute("ALTER TABLE network_edges ADD COLUMN no_building_spawn INTEGER NOT NULL DEFAULT 0", []);
     let mut graph = RegionGraph::new();
     {
         let mut stmt = conn.prepare("SELECT node_id, x, y, z, node_type FROM network_nodes ORDER BY node_id")?;
@@ -93,7 +95,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
     }
 
     {
-        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip FROM network_edges ORDER BY edge_id")?;
+        let mut stmt = conn.prepare("SELECT edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip, no_building_spawn FROM network_edges ORDER BY edge_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let eid = i64_to_usize(row.get(0)?)?;
@@ -107,6 +109,7 @@ pub(super) fn load_graph(conn: &Connection) -> SaveLoadResult<RegionGraph> {
                 base_cost: row.get(10)?, physical_length: row.get(11)?, current_congestion: row.get(12)?,
                 start_clip: row.get(13)?, end_clip: row.get(14)?, geometry: geometry.remove(&eid).unwrap_or_default(),
                 physical_geometry: physical_geometry.remove(&eid).unwrap_or_default(), deleted: false,
+                no_building_spawn: row.get::<_, i64>(15)? != 0,
             });
         }
     }

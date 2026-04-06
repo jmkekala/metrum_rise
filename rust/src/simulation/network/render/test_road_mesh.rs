@@ -43,7 +43,7 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![p1, p2],
             physical_geometry: vec![p1, p2],
-            deleted: false,
+            deleted: false, no_building_spawn: false,
         }
     }
 

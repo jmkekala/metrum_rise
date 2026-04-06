@@ -83,7 +83,8 @@ CREATE TABLE network_edges(
     physical_length REAL NOT NULL,
     current_congestion REAL NOT NULL,
     start_clip REAL NOT NULL,
-    end_clip REAL NOT NULL
+    end_clip REAL NOT NULL,
+    no_building_spawn INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE network_edge_geometry(
     edge_id INTEGER NOT NULL,
@@ -101,13 +102,18 @@ CREATE TABLE lane_connections(
     to_edge INTEGER NOT NULL,
     to_lane INTEGER NOT NULL
 );
-CREATE TABLE zoning_grids(
+CREATE TABLE IF NOT EXISTS zoning_grids(
     edge_id INTEGER PRIMARY KEY,
     cells_long INTEGER NOT NULL,
     left_depth INTEGER NOT NULL,
     right_depth INTEGER NOT NULL,
     left_zone_blob_u8 BLOB NOT NULL,
     right_zone_blob_u8 BLOB NOT NULL
+);
+CREATE TABLE zoning_world_grid(
+    width INTEGER NOT NULL,
+    height INTEGER NOT NULL,
+    data BLOB NOT NULL
 );
 CREATE TABLE buildings(
     building_id INTEGER PRIMARY KEY,

@@ -13,6 +13,7 @@ extends Node
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain = $"../Terrain"
 @onready var road_tool = $"../RoadTool"
+@onready var zoning_overlay = $"../ZoningOverlay"
 # @onready var rail_tool = $"../RailTool"  # uncomment when RailTool exists
 
 func _process(_delta: float) -> void:
@@ -36,5 +37,8 @@ func _process(_delta: float) -> void:
 	# Must run after the road is in the graph so check_border_candidate() finds the node.
 	road_tool.drain_pending_border_checks()
 
-	# 5. Clear the flag now that the refresh is done — same pattern as clear_terrain_dirty().
+	# 5. Road geometry changed → distance_to_road was recomputed by Rust; re-upload the texture.
+	if zoning_overlay: zoning_overlay.mark_distance_dirty()
+
+	# 6. Clear the flag now that the refresh is done — same pattern as clear_terrain_dirty().
 	simulation_node.clear_network_dirty()

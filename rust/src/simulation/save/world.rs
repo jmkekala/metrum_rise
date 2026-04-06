@@ -6,7 +6,7 @@ use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::grid::data_grid::DataGrid;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
-use crate::simulation::grid::zoning::{EdgeZoning, ZoningSystem};
+use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
@@ -33,11 +33,13 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
     tx.execute("INSERT INTO pollution_state(width, height, grid_blob_f32_le) VALUES (?1, ?2, ?3)", params![usize_to_i64(pollution.grid.width)?, usize_to_i64(pollution.grid.height)?, pack_f32_slice(&pollution.grid.data)])?;
     tx.execute("INSERT INTO noise_state(width, height, grid_blob_f32_le) VALUES (?1, ?2, ?3)", params![usize_to_i64(noise.grid.width)?, usize_to_i64(noise.grid.height)?, pack_f32_slice(&noise.grid.data)])?;
 
-    // Zoning
-    let mut zone_stmt = tx.prepare("INSERT INTO zoning_grids(edge_id, cells_long, left_depth, right_depth, left_zone_blob_u8, right_zone_blob_u8) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")?;
-    for (&old_eid, grid) in &zoning.edge_grids {
-        let Some(&saved_eid) = maps.edge_old_to_new.get(&old_eid) else { continue; };
-        zone_stmt.execute(params![usize_to_i64(saved_eid)?, usize_to_i64(grid.cells_long)?, usize_to_i64(grid.left_depth)?, usize_to_i64(grid.right_depth)?, pack_zone_slice(&grid.left_side), pack_zone_slice(&grid.right_side)])?;
+    // Zoning — serialize the flat world-grid as a single BLOB
+    {
+        let data: Vec<u8> = zoning.grid.data.iter().map(|&z| z as u8).collect();
+        tx.execute(
+            "INSERT INTO zoning_world_grid(width, height, data) VALUES (?1, ?2, ?3)",
+            params![usize_to_i64(zoning.grid.width)?, usize_to_i64(zoning.grid.height)?, data],
+        )?;
     }
 
     // Buildings
@@ -76,32 +78,23 @@ pub(super) fn load_water(conn: &Connection, ew: usize, eh: usize) -> SaveLoadRes
 }
 
 pub(super) fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResult<ZoningSystem> {
+    use crate::simulation::grid::zoning::ZoneType;
     let mut zoning = ZoningSystem::new(config);
-    let mut stmt = conn.prepare("SELECT edge_id, cells_long, left_depth, right_depth, left_zone_blob_u8, right_zone_blob_u8 FROM zoning_grids ORDER BY edge_id")?;
-    let mut rows = stmt.query([])?;
-    while let Some(row) = rows.next()? {
-        let eid = i64_to_usize(row.get(0)?)?;
-        let cl  = i64_to_usize(row.get(1)?)?;
-        let ld  = i64_to_usize(row.get(2)?)?;
-        let rd  = i64_to_usize(row.get(3)?)?;
-        let lcc = cl * ld;
-        let rcc = cl * rd;
-        zoning.edge_grids.insert(eid, EdgeZoning {
-            left_side:      unpack_zone_blob(&row.get::<_, Vec<u8>>(4)?, lcc)?,
-            right_side:     unpack_zone_blob(&row.get::<_, Vec<u8>>(5)?, rcc)?,
-            left_occupied:  vec![false; lcc],
-            right_occupied: vec![false; rcc],
-            left_blocked:   vec![false; lcc],
-            right_blocked:  vec![false; rcc],
-            left_block_depth:  vec![0; cl],
-            right_block_depth: vec![0; cl],
-            left_block_id:  vec![0; cl],
-            right_block_id: vec![0; cl],
-            cells_long: cl,
-            left_depth: ld,
-            right_depth: rd,
-        });
+    // Try new world-grid format first; fall back to empty grid if the table is absent (old saves).
+    let result: rusqlite::Result<(i64, i64, Vec<u8>)> = conn.query_row(
+        "SELECT width, height, data FROM zoning_world_grid LIMIT 1",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    );
+    if let Ok((w_raw, h_raw, blob)) = result {
+        let w = i64_to_usize(w_raw)?;
+        let h = i64_to_usize(h_raw)?;
+        let expected = w * h;
+        if blob.len() == expected {
+            zoning.grid.data = blob.into_iter().map(ZoneType::from_u8).collect();
+        }
     }
+    // Old saves using zoning_grids are silently ignored — the player repaints zones.
     Ok(zoning)
 }
 
@@ -130,20 +123,23 @@ pub(super) fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAlloca
 }
 
 pub(super) fn repaint_building_occupancy(zoning: &mut ZoningSystem, allocator: &BuildingAllocator) -> SaveLoadResult<()> {
-    for grid in zoning.edge_grids.values_mut() { grid.left_occupied.fill(false); grid.right_occupied.fill(false); }
+    zoning.occupied.data.fill(false);
     for b in &allocator.buildings {
-        for dx in 0..b.width_cells as usize {
-            for dy in 0..b.depth_cells as usize {
-                zoning.set_occupied(b.edge_idx, b.side, b.cell_x + dx, b.cell_y as usize + dy, true);
-            }
-        }
+        let cell_m = zoning.config.zone_cell_m;
+        zoning.mark_occupied_rect(
+            b.center_x,
+            b.center_y,
+            b.facing_dir,
+            b.width_cells as f32 * cell_m,
+            b.depth_cells as f32 * cell_m,
+            true,
+        );
     }
     Ok(())
 }
 
-pub(super) fn rebuild_zoning_obstructions(zoning: &mut ZoningSystem, graph: &RegionGraph) {
-    let eids: Vec<usize> = zoning.edge_grids.keys().copied().collect();
-    for eid in eids { if eid < graph.edge_count() && !graph.edge(eid).deleted { zoning.recalculate_obstructions(eid, graph); } }
+pub(super) fn rebuild_distance_to_road(zoning: &mut ZoningSystem, graph: &RegionGraph) {
+    zoning.update_distance_to_road(graph);
 }
 
 pub(super) trait GridSystemLoader: Sized {

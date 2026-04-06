@@ -33,102 +33,59 @@ impl SimCore {
         self.water_dirty = true;
     }
 
-    /// Sets the zone type for a specific cell.
-    pub fn set_zoning_cell_internal(
+    /// Paints a world-space rectangle with the given zone type.
+    ///
+    /// Coordinates in metres, snapped to the 10 m cell grid. `zone_type_int` 0 = erase.
+    pub fn set_zone_rect_internal(
         &mut self,
-        edge_idx: i32,
-        side: i8,
-        x: i32,
-        y: i32,
+        x_min: f32,
+        z_min: f32,
+        x_max: f32,
+        z_max: f32,
         zone_type_int: u8,
     ) {
         self.push_undo_state(false, false, false, true);
-        let zone_type = match zone_type_int {
-            1 => ZoneType::Residential,
-            2 => ZoneType::Commercial,
-            3 => ZoneType::Industrial,
-            4 => ZoneType::Office,
-            5 => ZoneType::Mixed,
-            _ => ZoneType::None,
-        };
-        self.zoning.set_cell(
-            edge_idx as usize,
-            side,
-            x as usize,
-            y as usize,
-            zone_type,
-            &self.region_graph,
-        );
-        self.recalculate_zoning_local(edge_idx as usize);
+        let zone_type = ZoneType::from_u8(zone_type_int);
+        self.zoning.set_zone_rect(x_min, z_min, x_max, z_max, zone_type);
         self.allocator.dirty = true;
     }
 
-    /// Sets a range of zoning cells with a specific depth.
-    pub fn set_zoning_range_internal(
+    /// Restores a raw zone sub-rectangle. Used exclusively by the GDScript undo path.
+    pub fn set_zone_rect_raw_internal(
         &mut self,
-        edge_idx: i32,
-        side: i8,
-        start_t: f32,
-        end_t: f32,
-        depth: i32,
-        zone_type_int: u8,
+        x_min: f32,
+        z_min: f32,
+        x_max: f32,
+        z_max: f32,
+        bytes: Vec<u8>,
     ) {
-        self.push_undo_state(false, false, false, true);
-        let zone_type = match zone_type_int {
-            1 => ZoneType::Residential,
-            2 => ZoneType::Commercial,
-            3 => ZoneType::Industrial,
-            4 => ZoneType::Office,
-            5 => ZoneType::Mixed,
-            _ => ZoneType::None,
-        };
-        self.zoning.set_zone_range(
-            edge_idx as usize,
-            side,
-            start_t,
-            end_t,
-            depth as usize,
-            zone_type,
-            &self.region_graph,
-        );
-        self.recalculate_zoning_local(edge_idx as usize);
+        self.zoning.set_zone_rect_raw(x_min, z_min, x_max, z_max, &bytes);
         self.allocator.dirty = true;
     }
 
-    /// Sets a zoning range as a solid block zone, merging adjacent cells into one quad in the renderer.
-    pub fn set_block_zone_range_internal(
-        &mut self,
-        edge_idx: i32,
-        side: i8,
-        start_t: f32,
-        end_t: f32,
-        depth: i32,
-        zone_type_int: u8,
-    ) {
-        self.push_undo_state(false, false, false, true);
-        let zone_type = match zone_type_int {
-            1 => ZoneType::Residential,
-            2 => ZoneType::Commercial,
-            3 => ZoneType::Industrial,
-            4 => ZoneType::Office,
-            5 => ZoneType::Mixed,
-            _ => ZoneType::None,
-        };
-        self.zoning.set_block_zone_range(
-            edge_idx as usize,
-            side,
-            start_t,
-            end_t,
-            depth as usize,
-            zone_type,
-            &self.region_graph,
-        );
-        self.recalculate_zoning_local(edge_idx as usize);
-        self.allocator.dirty = true;
+    /// Captures the zone bytes of a sub-rectangle. Called before painting for undo state.
+    pub fn get_zone_subrect_internal(
+        &self,
+        x_min: f32,
+        z_min: f32,
+        x_max: f32,
+        z_max: f32,
+    ) -> Vec<u8> {
+        self.zoning.get_zone_subrect(x_min, z_min, x_max, z_max)
     }
 
 
     /// Sets the classification of an edge.
+    /// Sets or clears the no-building-spawn flag on an edge.
+    pub fn set_no_building_spawn_internal(&mut self, edge_idx: i32, enabled: bool) {
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
+            return;
+        }
+        self.region_graph.edge_mut(edge_idx as usize).no_building_spawn = enabled;
+        self.zoning.update_no_build_mask(&self.region_graph);
+        self.allocator.dirty = true;
+    }
+
     pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) {
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return;
@@ -147,7 +104,6 @@ impl SimCore {
 
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
-        self.recalculate_zoning_local(edge_idx as usize);
     }
 
     /// Adds a new road segment to the transit network.
@@ -237,9 +193,8 @@ impl SimCore {
                 .map(|(i, _)| i)
                 .collect();
 
-            for i in affected_edges {
-                self.recalculate_zoning_local(i);
-            }
+            // Zone lookup is now world-grid based; no per-edge recalculation needed.
+            let _ = affected_edges;
         }
     }
 

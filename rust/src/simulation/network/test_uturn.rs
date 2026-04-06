@@ -32,7 +32,7 @@ mod tests {
                 end_clip: 0.0,
                 geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-                deleted: false,
+                deleted: false, no_building_spawn: false,
             });
         }
         graph.rebuild_adjacency_list();
@@ -102,7 +102,7 @@ mod tests {
                 end_clip: 0.0,
                 geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-                deleted: false,
+                deleted: false, no_building_spawn: false,
             });
         }
         graph.rebuild_adjacency_list();
@@ -156,7 +156,7 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![graph.nodes[n0 as usize].pos, graph.nodes[n1 as usize].pos],
             physical_geometry: vec![graph.nodes[n0 as usize].pos, graph.nodes[n1 as usize].pos],
-            deleted: false,
+            deleted: false, no_building_spawn: false,
         });
         graph.rebuild_adjacency_list();
         let mut lanes = LaneSystem::new();

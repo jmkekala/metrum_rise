@@ -171,7 +171,7 @@ mod tests {
                 Vector3::ZERO,
                 Vector3::new(25.0, 0.0, 0.0),
             ],
-            deleted: false,
+            deleted: false, no_building_spawn: false,
         });
 
         // 2. Tick once - source cells should be positive
@@ -247,7 +247,7 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
-            deleted: false,
+            deleted: false, no_building_spawn: false,
         });
 
         let n1_h = graph_high.add_node(Vector3::ZERO, NodeType::Junction);
@@ -269,7 +269,7 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
-            deleted: false,
+            deleted: false, no_building_spawn: false,
         });
 
         noise_low.tick(&allocator, &graph_low, &config);

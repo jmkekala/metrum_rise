@@ -646,6 +646,7 @@ pub fn split_edge(
     let speed_limit = old_edge.speed_limit;
     let current_congestion = old_edge.current_congestion;
     let class = old_edge.class;
+    let no_building_spawn = old_edge.no_building_spawn;
 
     let old_end_node = graph.edges[edge_id].end_node;
 
@@ -685,6 +686,7 @@ pub fn split_edge(
         physical_geometry: part2_geo.clone(),
         class,
         deleted: false,
+        no_building_spawn,
     };
     let (cost_new, length_new) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);
@@ -695,14 +697,14 @@ pub fn split_edge(
 
     // --- MIGRATION LOGIC ---
     let cell_size = zoning.config.zone_cell_m;
-    let split_x = (length / cell_size).floor() as usize;
-
-    // 1. Migrate Zoning
-    zoning.split_edge_grid(edge_id, new_edge_id, split_x);
-
-    // 2. Migrate Buildings
-    let new_len_first = graph.edge(edge_id).physical_length;
+    let new_len_first  = graph.edge(edge_id).physical_length;
     let new_len_second = graph.edge(new_edge_id).physical_length;
+    // split_x = number of zone cells in the first half of the split edge.
+    let split_x = (new_len_first / cell_size).floor() as usize;
+
+    // Migrate buildings: reassign edge_idx and update frontage_t for buildings
+    // that crossed the split point. Zone type is looked up from the world grid
+    // on the fly, so no zone data needs migrating.
     for b in &mut allocator.buildings {
         if b.edge_idx == edge_id {
             if b.cell_x >= split_x {
@@ -716,12 +718,26 @@ pub fn split_edge(
             }
         }
     }
+    // Migrate edge_occupancy: split the frontage occupancy tracker.
+    if let Some(old_occ) = allocator.edge_occupancy.remove(&edge_id) {
+        let part1_len = split_x.min(old_occ.cells_long);
+        let part2_len = old_occ.cells_long.saturating_sub(split_x);
+        allocator.edge_occupancy.insert(edge_id, crate::simulation::buildings::allocator::EdgeOccupancy {
+            cells_long: part1_len,
+            left:  old_occ.left[..part1_len].to_vec(),
+            right: old_occ.right[..part1_len].to_vec(),
+        });
+        if part2_len > 0 {
+            allocator.edge_occupancy.insert(new_edge_id, crate::simulation::buildings::allocator::EdgeOccupancy {
+                cells_long: part2_len,
+                left:  old_occ.left[split_x..].to_vec(),
+                right: old_occ.right[split_x..].to_vec(),
+            });
+        }
+    }
 
-    // --- DIRTY MARKING ---
-    network.zoning_dirty_edges.insert(edge_id);
-    network.zoning_dirty_edges.insert(new_edge_id);
-    network.invalidate_zoning_near_edge(edge_id, graph);
-    network.invalidate_zoning_near_edge(new_edge_id, graph);
+    // distance_to_road grid does not need updating per split; it is recomputed
+    // once after the full road placement in add_road / finalize_bulk_load.
     network.mark_point_dirty(split_pos);
     if network.bulk_load {
         network.bulk_dirty_edges.insert(edge_id);

@@ -88,6 +88,9 @@ pub struct Edge {
     pub physical_geometry: Vec<Vector3>,
     /// All O(E) scans must skip edges where `deleted == true`.
     pub deleted: bool,
+    /// When `true` the building allocator will not place buildings along this edge.
+    /// Auto-set for roads with `speed_limit ≥ 80 km/h`; player-toggleable in the road inspector.
+    pub no_building_spawn: bool,
 }
 
 impl Edge {

@@ -16,6 +16,7 @@ extends Node3D
 const CFG_PATH := "user://active_packs.cfg"
 
 @onready var simulation_node = $"../SimulationNode"
+@onready var zoning_overlay = $"../ZoningOverlay"
 
 ## multimeshes[asset_id] = MultiMeshInstance3D
 var multimeshes: Dictionary = {}
@@ -198,6 +199,7 @@ func _setup_foundation(zone_id: int) -> void:
 func _process(_delta: float) -> void:
 	if Engine.get_frames_drawn() % 30 == 0:
 		_rebuild_multimeshes()
+		if zoning_overlay: zoning_overlay.mark_occupied_dirty()
 		for aid in multimeshes.keys():
 			_update_buildings_for_asset(aid)
 		for zone_id in ZONE_IDS:

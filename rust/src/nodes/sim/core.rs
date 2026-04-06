@@ -174,16 +174,6 @@ impl SimCore {
     pub fn simulate_tick_internal(&mut self) {
         let tick_start = Instant::now();
 
-        // Flush any zoning obstruction passes that were deferred since the last
-        // daily tick (e.g. from road placements). Must run before allocator.tick
-        // so building placement sees up-to-date obstruction caches.
-        if !self.transit_network.zoning_dirty_edges.is_empty() {
-            let t_zone = Instant::now();
-            let edge_count = self.transit_network.zoning_dirty_edges.len();
-            self.transit_network.flush_zoning_updates(&mut self.zoning, &self.region_graph);
-            debug_log!("zone", "deferred flush: {}edges in {}µs", edge_count, t_zone.elapsed().as_micros());
-        }
-
         self.demand.tick();
         self.allocator.tick(
             &mut self.demand,
@@ -217,18 +207,6 @@ impl SimCore {
             .store(0, std::sync::atomic::Ordering::Relaxed);
 
         self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
-    }
-
-    /// Invalidates and rebuilds zoning for the area surrounding `edge_idx`.
-    pub fn recalculate_zoning_local(&mut self, edge_idx: usize) {
-        if edge_idx >= self.region_graph.edge_count() {
-            return;
-        }
-        self.transit_network.zoning_dirty_edges.insert(edge_idx);
-        self.transit_network
-            .invalidate_zoning_near_edge(edge_idx, &self.region_graph);
-        self.transit_network
-            .flush_zoning_updates(&mut self.zoning, &self.region_graph);
     }
 
     /// Pre-computes all per-frame rendering data into a `RenderSnapshot`.

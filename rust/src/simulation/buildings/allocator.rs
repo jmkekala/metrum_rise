@@ -10,6 +10,7 @@ use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
+use std::collections::HashMap;
 
 /// A placed building occupying a variable-footprint area on a zoning grid.
 #[derive(Clone)]
@@ -56,6 +57,9 @@ pub struct BuildingAllocator {
     pub buildings: Vec<Building>,
     /// Set to `true` when the building list changes in a tick, signalling renderers to refresh.
     pub dirty: bool,
+    /// Per-edge frontage occupancy tracker. Keyed by edge index.
+    /// Avoids redundant world-grid checks for the common same-road case.
+    pub edge_occupancy: HashMap<usize, EdgeOccupancy>,
     /// Inverted index: `zone_index[ZoneType as usize]` contains building indices (Bug B16).
     pub zone_index: [Vec<usize>; 6],
     /// Inverted index: `vacancy_index[ZoneType as usize]` contains indices of buildings with occupancy < 6 (Bug B16a).
@@ -70,6 +74,19 @@ pub struct BuildingAllocator {
     pub dirty_zones: [bool; 6],
     /// Registry of all loaded pack assets. Populated at startup by scanning the mods directory.
     pub registry: AssetRegistry,
+}
+
+/// Tracks which frontage columns along a road edge are claimed by placed buildings.
+///
+/// One entry per edge side (left/right). Indexed by column number along the road (cell_x).
+#[derive(Clone)]
+pub struct EdgeOccupancy {
+    /// Number of columns along this road edge.
+    pub cells_long: usize,
+    /// True if a building has its frontage in this column on the left side.
+    pub left: Vec<bool>,
+    /// True if a building has its frontage in this column on the right side.
+    pub right: Vec<bool>,
 }
 
 /// Returns the road node an agent departing from `building` should walk toward.
@@ -101,7 +118,7 @@ fn zone_type_to_zone_class(zt: ZoneType) -> Option<ZoneClass> {
 
 impl BuildingAllocator {
     /// Remaps all building edge indices after a road network compaction.
-    pub fn update_edge_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+    pub fn update_edge_indices(&mut self, mapping: &HashMap<usize, usize>) {
         let old_len = self.buildings.len();
         for b in &mut self.buildings {
             if let Some(&new_id) = mapping.get(&b.edge_idx) {
@@ -115,6 +132,14 @@ impl BuildingAllocator {
             self.dirty = true;
             self.dirty_index = true;
         }
+        // Remap edge_occupancy keys.
+        let mut new_occ = HashMap::new();
+        for (old_idx, occ) in self.edge_occupancy.drain() {
+            if let Some(&new_id) = mapping.get(&old_idx) {
+                new_occ.insert(new_id, occ);
+            }
+        }
+        self.edge_occupancy = new_occ;
     }
 
     /// Creates an empty allocator.
@@ -122,6 +147,7 @@ impl BuildingAllocator {
         Self {
             buildings: Vec::new(),
             dirty: false,
+            edge_occupancy: HashMap::new(),
             zone_index: [const { Vec::new() }; 6],
             vacancy_index: [const { Vec::new() }; 6],
             vacancy_pos: Vec::new(),
@@ -134,6 +160,7 @@ impl BuildingAllocator {
     /// Removes all buildings and resets the dirty flag.
     pub fn clear(&mut self) {
         self.buildings.clear();
+        self.edge_occupancy.clear();
         for list in &mut self.zone_index {
             list.clear();
         }
@@ -163,44 +190,67 @@ impl BuildingAllocator {
         let mut spawned_this_tick = 0;
         let max_spawns = 10;
 
-        // 1. Cleanup: Remove buildings if their cells are no longer zoned correctly OR if the edge they're on is gone.
+        // 1. Cleanup: Remove buildings if their zone changed or their road edge was deleted.
+        let zone_cell_m = zoning.config.zone_cell_m;
         let mut i = 0;
         while i < self.buildings.len() {
             let b = &self.buildings[i];
-            let remove = if let Some(_) = zoning.edge_grids.get(&b.edge_idx) {
-                let current_type = zoning.get_cell(b.edge_idx, b.side, b.cell_x, b.cell_y.into());
-                current_type != b.zone_type || graph.edge(b.edge_idx).deleted
-            } else {
-                true // Edge gone
+            let remove = {
+                let edge_ok = b.edge_idx < graph.edge_count() && !graph.edge(b.edge_idx).deleted;
+                if !edge_ok {
+                    true
+                } else if graph.edge(b.edge_idx).no_building_spawn {
+                    // Edge was flagged no-build after this building was placed — evict it.
+                    true
+                } else {
+                    // Check whether a road now runs through the building's body.
+                    // Building center sits ~(SIDEWALK_WIDTH + half_depth) from its own road edge,
+                    // so a value less than half_depth means a different road is inside the footprint.
+                    let half_depth = b.depth_cells as f32 * zone_cell_m * 0.5;
+                    let road_dist = zoning.distance_to_road_world(b.center_x, b.center_y) as f32;
+                    if road_dist < half_depth {
+                        true
+                    } else {
+                        // Check zone type at the building's frontage world position.
+                        let current_zone = zoning.get_zone_world(b.center_x, b.center_y);
+                        current_zone != b.zone_type
+                    }
+                }
             };
 
             if remove {
                 let b_edge_idx = b.edge_idx;
                 let b_side = b.side;
                 let b_cell_x = b.cell_x;
-                let b_cell_y = b.cell_y;
+                let b_center_x = b.center_x;
+                let b_center_y = b.center_y;
+                let b_facing = b.facing_dir;
                 let b_width = b.width_cells;
                 let b_depth = b.depth_cells;
                 let b_zone = b.zone_type;
                 self.dirty_zones[b_zone as usize] = true;
-                // `b` is no longer borrowed past this point.
 
-                // Clear occupancy for the entire footprint
-                let w_cells = b_width as usize;
-                let d_cells = b_depth as usize;
-                for dx in 0..w_cells {
-                    for dy in 0..d_cells {
-                        zoning.set_occupied(
-                            b_edge_idx,
-                            b_side,
-                            b_cell_x + dx,
-                            (b_cell_y as usize) + dy,
-                            false,
-                        );
-                    }
+                // Clear world-grid occupancy for the entire rotated-rect footprint.
+                // facing_dir points outward from road (= normal), tangent is perpendicular.
+                let tangent = Vector2::new(-b_facing.y, b_facing.x);
+                let width_m  = b_width as f32 * zone_cell_m;
+                let depth_m  = b_depth as f32 * zone_cell_m;
+                zoning.mark_occupied_rect(b_center_x, b_center_y, tangent, width_m, depth_m, false);
+
+                // Clear per-edge frontage slot.
+                if let Some(occ) = self.edge_occupancy.get_mut(&b_edge_idx) {
+                    let slot = if b_side > 0 { &mut occ.left } else { &mut occ.right };
+                    if b_cell_x < slot.len() { slot[b_cell_x] = false; }
                 }
+
+                let _ = (b_side, b_cell_x); // suppress unused warnings
                 let last_idx = self.buildings.len() - 1;
                 if i < last_idx {
+                    // The building at last_idx will be moved into slot i by swap_remove.
+                    // Its zone's flow field holds `nearest_building[v] = last_idx`, which
+                    // will be out of bounds after the removal. Mark it dirty so the flow
+                    // field is rebuilt with the corrected index on the next frame.
+                    self.dirty_zones[self.buildings[last_idx].zone_type as usize] = true;
                     let mut mapping = std::collections::HashMap::new();
                     mapping.insert(last_idx, i);
                     _agents.remap_building_indices(&mapping);
@@ -213,180 +263,188 @@ impl BuildingAllocator {
             }
         }
 
-        // 2. Growth Logic: Find areas with un-occupied zones and high demand
-        let edges_to_check: Vec<usize> = zoning.edge_grids.keys().cloned().collect();
-
-        for edge_idx in edges_to_check {
+        // 2. Growth Logic: scan road frontage cells for unoccupied zoned land.
+        'edge_loop: for edge_idx in 0..graph.edge_count() {
             if spawned_this_tick >= max_spawns {
                 break;
             }
-            let (edge_len, edge_width) = if let Some(edge) = graph.get_edge(edge_idx) {
-                if edge.deleted || edge.physical_geometry.len() < 2 {
-                    (0.0, 0.0)
-                } else {
-                    (edge.physical_length, edge.width)
-                }
-            } else {
-                (0.0, 0.0)
-            };
-
-            if edge_len < 0.1 {
+            let edge = graph.edge(edge_idx);
+            if edge.deleted || edge.no_building_spawn || edge.physical_length < 0.1 || edge.physical_geometry.len() < 2 {
                 continue;
             }
+            let edge_len   = edge.physical_length;
+            let edge_width = edge.width;
+            let cells_long = (edge_len / zone_cell_m).floor() as usize;
+            if cells_long == 0 { continue; }
 
-            'side_loop: for side in [1, -1] {
-                let (cells_long, left_depth, right_depth) = if let Some(g) = zoning.edge_grids.get(&edge_idx) {
-                    (g.cells_long, g.left_depth, g.right_depth)
-                } else {
-                    (0, 0, 0)
-                };
-                let side_depth = if side > 0 { left_depth } else { right_depth };
-
+            'side_loop: for side in [1i8, -1i8] {
                 for i in 0..cells_long {
+                    // Alternate scan direction for visual variety.
                     let x = if i % 2 == 0 { (i / 2).min(cells_long - 1) } else { (cells_long - 1).saturating_sub(i / 2) };
                     if spawned_this_tick >= max_spawns {
-                        break 'side_loop;
+                        break 'edge_loop;
                     }
 
-                    let z_type = zoning.get_cell(edge_idx, side, x, 0);
+                    // Fast pre-check: is the frontage column already taken by a building on this edge?
+                    if let Some(occ) = self.edge_occupancy.get(&edge_idx) {
+                        let slot = if side > 0 { &occ.left } else { &occ.right };
+                        if x < slot.len() && slot[x] { continue; }
+                    }
+
+                    // Compute world position of frontage cell centre (row 0).
+                    let t_col = (x as f32 + 0.5) * zone_cell_m / edge_len;
+                    let world_pos = self.get_pos_on_edge(graph, edge_idx, t_col);
+                    let tangent   = self.get_tangent_on_edge(graph, edge_idx, t_col);
+                    let normal    = Vector2::new(tangent.y, -tangent.x) * (side as f32);
+                    let curb_dist = edge_width * 0.5 + crate::config::SIDEWALK_WIDTH;
+                    let frontage_center = world_pos + normal * (curb_dist + zone_cell_m * 0.5);
+
+                    // Ownership check: if a closer road surface exists, that road's scan will
+                    // claim this slot. Skip to avoid buildings facing the wrong road.
+                    // Expected distance from frontage_center to this edge's surface:
+                    //   SIDEWALK_WIDTH + zone_cell_m * 0.5 = 1.5 + 5.0 = 6.5 m.
+                    // Threshold is 5 m (1.5 m tolerance for grid quantization).
+                    {
+                        let road_dist = zoning.distance_to_road_world(frontage_center.x, frontage_center.y);
+                        let expected: u8 = (crate::config::SIDEWALK_WIDTH + zone_cell_m * 0.5 - 1.5) as u8;
+                        if road_dist < expected {
+                            continue;
+                        }
+                    }
+
+                    let z_type = zoning.get_zone_world(frontage_center.x, frontage_center.y);
                     if z_type == ZoneType::None {
                         continue;
                     }
 
                     let demand = match z_type {
                         ZoneType::Residential => _demand.residential,
-                        ZoneType::Commercial => _demand.commercial,
-                        ZoneType::Industrial => _demand.industrial,
-                        ZoneType::Office => _demand.commercial * 0.5,
-                        ZoneType::Mixed => (_demand.residential + _demand.commercial) * 0.5,
+                        ZoneType::Commercial  => _demand.commercial,
+                        ZoneType::Industrial  => _demand.industrial,
+                        ZoneType::Office      => _demand.commercial * 0.5,
+                        ZoneType::Mixed       => (_demand.residential + _demand.commercial) * 0.5,
                         _ => 0.0,
                     };
+                    if demand < 10.0 { continue; }
 
-                    if demand < 10.0 {
-                        continue;
-                    }
-
-                    // Select a registered asset for this zone, or skip if none exist.
+                    // Select a registered asset for this zone.
                     let zone_class = zone_type_to_zone_class(z_type);
                     let candidates = zone_class.map(|zc| self.registry.buildings_for_zone(zc)).unwrap_or(&[]);
-                    if candidates.is_empty() {
-                        continue;
-                    }
+                    if candidates.is_empty() { continue; }
                     let asset_id = candidates[(edge_idx ^ x) % candidates.len()].clone();
                     let (dw, dh) = self.registry.lot_size(&asset_id);
 
-                    // Ensure footprint fits within the painted zoning depth and column count.
-                    if x + dw > cells_long || dh > side_depth {
+                    // Footprint must fit within remaining columns.
+                    if x + dw > cells_long { continue; }
+
+                    // Compute footprint centre in world space.
+                    let t_center = (x as f32 + dw as f32 * 0.5) * zone_cell_m / edge_len;
+                    let world_pos_on_edge = self.get_pos_on_edge(graph, edge_idx, t_center);
+                    let tangent_c = self.get_tangent_on_edge(graph, edge_idx, t_center);
+                    let normal_c  = Vector2::new(tangent_c.y, -tangent_c.x) * (side as f32);
+                    let depth_offset = crate::config::SIDEWALK_WIDTH + (dh as f32 * 0.5) * zone_cell_m;
+                    let center_2d = world_pos_on_edge + normal_c * (edge_width * 0.5 + depth_offset);
+
+                    // Zone check: all footprint cells must share the same zone type.
+                    let mut can_build = true;
+                    'zone_check: for dx in 0..dw {
+                        let t_dx = (x as f32 + dx as f32 + 0.5) * zone_cell_m / edge_len;
+                        let wp = self.get_pos_on_edge(graph, edge_idx, t_dx);
+                        let td = self.get_tangent_on_edge(graph, edge_idx, t_dx);
+                        let nd = Vector2::new(td.y, -td.x) * (side as f32);
+                        for dy in 0..dh {
+                            let cell_center = wp + nd * (curb_dist + (dy as f32 + 0.5) * zone_cell_m);
+                            if zoning.get_zone_world(cell_center.x, cell_center.y) != z_type {
+                                can_build = false;
+                                break 'zone_check;
+                            }
+                        }
+                    }
+                    if !can_build { continue; }
+
+                    // Rotated-rect occupancy check on the world grid.
+                    let width_m = dw as f32 * zone_cell_m;
+                    let depth_m = dh as f32 * zone_cell_m;
+                    if zoning.is_rect_occupied(center_2d.x, center_2d.y, tangent_c, width_m, depth_m) {
                         continue;
                     }
 
-                    let mut can_build = true;
-                    // B4: Grid Occupancy Check
-                    // We check if all cells in the blueprint are zoned correctly and not occupied.
-                    for dx in 0..dw {
-                        for dy in 0..dh {
-                            if zoning.get_cell(edge_idx, side, x + dx, dy) != z_type
-                                || zoning.is_occupied(edge_idx, side, x + dx, dy)
-                                || zoning.is_blocked(edge_idx, side, x + dx, dy)
-                            {
-                                can_build = false;
-                                break;
-                            }
-                        }
-                        if !can_build {
-                            break;
+                    // Reject if the building centre is inside another road's carriageway.
+                    // A legitimately placed building sits (SIDEWALK_WIDTH + half_depth) from its
+                    // own road edge, so distance_to_road ≥ SIDEWALK_WIDTH there. Using half_depth
+                    // as the threshold catches any candidate whose body overlaps a road surface.
+                    {
+                        let half_depth = depth_m * 0.5;
+                        let road_dist = zoning.distance_to_road_world(center_2d.x, center_2d.y) as f32;
+                        if road_dist < half_depth {
+                            continue;
                         }
                     }
 
-                    // B5: Desirability Gate
-                    if can_build {
-                        let t_center = (x as f32 + (dw as f32 * 0.5)) * zoning.config.zone_cell_m / edge_len;
-                        let world_pos = self.get_pos_on_edge(&graph, edge_idx, t_center);
-                        let tangent = self.get_tangent_on_edge(&graph, edge_idx, t_center);
-                        let normal =
-                            godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
-                        let depth_offset =
-                            crate::config::SIDEWALK_WIDTH + ((dh as f32 * 0.5) * zoning.config.zone_cell_m);
-                        let center_2d = world_pos + normal * (edge_width * 0.5 + depth_offset);
-
-                        // Map world to grid coordinates
+                    // B5: Desirability Gate.
+                    {
                         let (gx_raw, gy_raw) = config.world_to_env_grid(
-                            center_2d.x,
-                            center_2d.y,
-                            desirability.grid.width,
-                            desirability.grid.height,
+                            center_2d.x, center_2d.y,
+                            desirability.grid.width, desirability.grid.height,
                         );
-                        let gx =
-                            (gx_raw.round() as usize).min(desirability.grid.width.saturating_sub(1));
-                        let gy = (gy_raw.round() as usize)
-                            .min(desirability.grid.height.saturating_sub(1));
-
-                        let val = *desirability.grid.get(gx, gy).unwrap_or(&50.0);
-                        if val < 20.0 {
-                            can_build = false;
+                        let gx = (gx_raw.round() as usize).min(desirability.grid.width.saturating_sub(1));
+                        let gy = (gy_raw.round() as usize).min(desirability.grid.height.saturating_sub(1));
+                        if *desirability.grid.get(gx, gy).unwrap_or(&50.0) < 20.0 {
+                            continue;
                         }
                     }
 
-                    if can_build {
-                        // centre of the footprint
-                        let frontage_t_offset = dw as f32 * 0.5;
-                        let t_center = (x as f32 + frontage_t_offset) * zoning.config.zone_cell_m / edge_len;
-                        let world_pos_on_edge = self.get_pos_on_edge(&graph, edge_idx, t_center);
-                        let tangent = self.get_tangent_on_edge(&graph, edge_idx, t_center);
-                        let normal =
-                            godot::prelude::Vector2::new(tangent.y, -tangent.x) * (side as f32);
+                    // All checks passed — place the building.
+                    let frontage_t_full = t_center;
 
-                        let depth_offset =
-                            crate::config::SIDEWALK_WIDTH + ((dh as f32 * 0.5) * zoning.config.zone_cell_m);
-                        let center_2d =
-                            world_pos_on_edge + normal * (edge_width * 0.5 + depth_offset);
+                    // Mark world-grid cells as occupied.
+                    zoning.mark_occupied_rect(center_2d.x, center_2d.y, tangent_c, width_m, depth_m, true);
 
-                        // Compute frontage_t on the original full edge for the split position.
-                        let frontage_t_full = t_center;
-                        // Mark footprint occupied on full edge BEFORE split (to allow split_edge_grid to copy flags correctly)
-                        for adx in 0..dw {
-                            for ady in 0..dh {
-                                zoning.set_occupied(edge_idx, side, x + adx, ady, true);
-                            }
-                        }
+                    // Mark per-edge frontage slot.
+                    let occ = self.edge_occupancy.entry(edge_idx).or_insert_with(|| EdgeOccupancy {
+                        cells_long,
+                        left:  vec![false; cells_long],
+                        right: vec![false; cells_long],
+                    });
+                    let slot = if side > 0 { &mut occ.left } else { &mut occ.right };
+                    if x < slot.len() { slot[x] = true; }
 
-                        let initial_level = self.registry.get(&asset_id)
-                            .and_then(|e| e.manifest.building.as_ref())
-                            .map(|b| b.level)
-                            .unwrap_or(1);
-                        self.buildings.push(Building {
-                            zone_type: z_type,
-                            facing_dir: normal,
-                            frontage_t: frontage_t_full,
-                            side_offset: edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
-                            center_x: center_2d.x,
-                            center_y: center_2d.y,
-                            edge_idx,
-                            side: side as i8,
-                            cell_x: x,
-                            cell_y: 0,
-                            width_cells: dw as u16,
-                            depth_cells: dh as u16,
-                            occupancy: 0,
-                            asset_id,
-                            level: initial_level,
-                            abandoned_timer: 0,
-                        });
+                    let initial_level = self.registry.get(&asset_id)
+                        .and_then(|e| e.manifest.building.as_ref())
+                        .map(|b| b.level)
+                        .unwrap_or(1);
 
-                        spawned_this_tick += 1;
-                        self.dirty_index = true;
-                        self.dirty_zones[z_type as usize] = true;
+                    self.buildings.push(Building {
+                        zone_type: z_type,
+                        facing_dir: normal_c,
+                        frontage_t: frontage_t_full,
+                        side_offset: edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
+                        center_x: center_2d.x,
+                        center_y: center_2d.y,
+                        edge_idx,
+                        side,
+                        cell_x: x,
+                        cell_y: 0,
+                        width_cells: dw as u16,
+                        depth_cells: dh as u16,
+                        occupancy: 0,
+                        asset_id,
+                        level: initial_level,
+                        abandoned_timer: 0,
+                    });
 
-                        // Subtract from demand
-                        match z_type {
-                            ZoneType::Residential => _demand.residential -= 5.0,
-                            ZoneType::Commercial => _demand.commercial -= 5.0,
-                            ZoneType::Industrial => _demand.industrial -= 5.0,
-                            _ => {}
-                        }
+                    spawned_this_tick += 1;
+                    self.dirty_index = true;
+                    self.dirty_zones[z_type as usize] = true;
 
-                        break 'side_loop;
+                    match z_type {
+                        ZoneType::Residential => _demand.residential -= 5.0,
+                        ZoneType::Commercial  => _demand.commercial  -= 5.0,
+                        ZoneType::Industrial  => _demand.industrial  -= 5.0,
+                        _ => {}
                     }
+
+                    break 'side_loop;
                 }
             }
         }
@@ -972,12 +1030,8 @@ mod tests {
             &mut zoning,
             &mut allocator,
         );
-        for x in 0..3 {
-            for y in 0..3 {
-                zoning.set_cell(0, 1, x, y, ZoneType::Residential, &graph);
-            }
-        }
-        zoning.recalculate_obstructions(0, &graph);
+        // Paint zone rect covering the road frontage area
+        zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, crate::simulation::grid::zoning::ZoneType::Residential);
 
         allocator.tick(
             &mut demand,
@@ -1035,12 +1089,7 @@ mod tests {
             &mut zoning,
             &mut allocator,
         );
-        for x in 0..3 {
-            for y in 0..3 {
-                zoning.set_cell(0, 1, x, y, ZoneType::Residential, &graph);
-            }
-        }
-        zoning.recalculate_obstructions(0, &graph);
+        zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, crate::simulation::grid::zoning::ZoneType::Residential);
 
         allocator.tick(
             &mut demand,
@@ -1107,18 +1156,11 @@ mod tests {
             occupancy: 0,
             asset_id: String::new(), level: 1,
         });
-        for dx in 0..3 {
-            for dy in 0..3 {
-                zoning.set_occupied(0, 1, dx, dy, true);
-            }
-        }
+        // Mark the building footprint as occupied
+        zoning.mark_occupied_rect(5.0, 10.0, godot::prelude::Vector2::new(0.0, 1.0), 30.0, 30.0, true);
 
-        // Remove zoning trigger
-        for dx in 0..3 {
-            for dy in 0..3 {
-                zoning.set_cell(0, 1, dx, dy, ZoneType::None, &graph);
-            }
-        }
+        // Remove zoning: leave world grid empty (no zone painted) — building zone_type won't match
+        // ZoneType::None, so removal will trigger because get_zone_world returns None.
 
         allocator.tick(
             &mut demand,
@@ -1136,9 +1178,10 @@ mod tests {
             0,
             "Building should have been removed"
         );
+        // After removal, the occupied rect at that location should be cleared.
         assert!(
-            !zoning.is_occupied(0, 1, 0, 0),
-            "Zoning cell occupancy should be cleared after building removal"
+            !zoning.is_rect_occupied(5.0, 10.0, godot::prelude::Vector2::new(0.0, 1.0), 5.0, 5.0),
+            "Zoning occupancy should be cleared after building removal"
         );
     }
 
@@ -1182,8 +1225,8 @@ mod tests {
         // Add a Border node
         graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
 
-        // Force a vacant residential building
-        zoning.set_cell(edge_id, 1, 0, 0, ZoneType::Residential, &graph);
+        // Paint zone so the frontage area is residential
+        zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, ZoneType::Residential);
         allocator.buildings.push(Building {
             center_x: 10.0,
             center_y: 10.0,

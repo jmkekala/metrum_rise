@@ -7,6 +7,7 @@ extends Node
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain_node = $"../Terrain"
+@onready var zoning_overlay = $"../ZoningOverlay"
 @onready var water_node = $"../Water"
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_tool = $"../ZoningTool"
@@ -181,8 +182,9 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 			if cul_de_sac_tool:
 				cul_de_sac_tool.active = enabled
 		Tool.AGENT: if agents_node: pass # Agents diag always available
-		Tool.ZONING: 
+		Tool.ZONING:
 			if zoning_tool: zoning_tool.active = enabled
+			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
 		Tool.SELECT:
 			if select_tool: select_tool.active = enabled
 
@@ -190,6 +192,10 @@ func _toggle_zoning_overlay():
 	_toggle_tool(Tool.ZONING)
 
 func _handle_undo():
+	# Zoning tool maintains its own undo stack for zone paint operations.
+	if current_tool == Tool.ZONING and zoning_tool:
+		zoning_tool.undo()
+		return
 	if simulation_node.undo_action():
 		print("Undo Executed Globally")
 		if terrain_node: terrain_node.update_terrain_visuals()
@@ -213,8 +219,7 @@ func _refresh_after_world_load():
 	if buildings_node:
 		buildings_node.reload_asset_packs()
 		buildings_node.update_all_buildings()
-	if zoning_tool:
-		zoning_tool._update_persistent_visuals()
+	if zoning_overlay: zoning_overlay.full_refresh()
 	if agents_node:
 		agents_node.update_swarm()
 

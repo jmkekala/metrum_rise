@@ -49,7 +49,7 @@ fn build_shared() -> SharedSetup {
         geometry: geometry.clone(),
         physical_geometry: geometry,
         class: EdgeClass::Standard,
-        deleted: false,
+        deleted: false, no_building_spawn: false,
     };
     let edge_ab = graph.add_edge(edge);
     graph.rebuild_adjacency_list();
@@ -131,9 +131,9 @@ fn bench_agent_tick(c: &mut Criterion) {
     let shared = build_shared();
 
     let mut group = c.benchmark_group("AgentSystem::tick");
-    group.sample_size(10);
-    group.warm_up_time(Duration::from_millis(500));
-    group.measurement_time(Duration::from_secs(2));
+    group.sample_size(30);
+    group.warm_up_time(Duration::from_secs(2));
+    group.measurement_time(Duration::from_secs(8));
 
     // --- ON_ROAD: measures lane traversal and movement maths. ---
     // 200-entry bounce path, empty allocator → CCH never called, no arena bloat.

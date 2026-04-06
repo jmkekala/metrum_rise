@@ -141,7 +141,7 @@ pub(crate) fn load_from_sqlite(path: &Path) -> SaveLoadResult<LoadedSimulation> 
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
     allocator.rebuild_zone_index();
     allocator.dirty = true;
-    world::rebuild_zoning_obstructions(&mut zoning, &graph);
+    world::rebuild_distance_to_road(&mut zoning, &graph);
     transit_network.cch_graph = CchGraph::build(&graph);
     agents::validate_loaded_agents(&mut agents, &graph, &allocator)?;
 
