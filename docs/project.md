@@ -388,35 +388,18 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **R14. De-duplicate road-path conditioning in `godot/scripts/road_tool.gd` (431 lines)** — `_draw_blueprint()` and `_get_processed_points()` consolidated into a single `_get_conditioned_geometry()` helper. This ensures that terrain sampling, Taubin smoothing, and slope/altitude validation are applied consistently to both the preview and the committed road segment, preventing geometric drift.
 
-**Top 3 code refactors to do next (2026-04-06 follow-up):**
+**Top 3 project tasks to do next (2026-04-06):**
+1. **R15. Split `nodes/simulation_node.rs` (1,182 lines)** — Final Godot bridge cleanup.
+2. **E1. Economy — Need-level satisfaction & NiFi-like "Controllers" (Item 60/61)** — Transition activity selection from RNG to utility scoring driven by the "Controller" model (Shelter/Rest focus).
+3. **E2. Economy — Truck-based Supply Chain (Item 64 Rework)** — Implement initial truck logistics (Production -> Stock -> Truck Agent -> Delivery).
 
 ### v0.1 — Economy Foundation
 
-Target: a closed, utility-driven economic loop at 100k agents. Activity decisions are driven by agent state via a Maslow-inspired need hierarchy. Transit mode is chosen by utility scoring over all available modes. Living standard is a derived read-only metric — an aggregate of per-level need satisfaction — used for immigration and city rating.
+Target: a closed, utility-driven economic loop at 1,000,000 agents as specified in [`docs/economy.md`](economy.md).
 
-**Maslow mapping**:
-| Level | Needs | Simulation drivers |
-|---|---|---|
-| 1 — Physiological | Food, shelter, rest | `hunger`, home building, rest recovery |
-| 2 — Safety | Income, health, security | `money`, employment, hospital/police coverage |
-| 3 — Social | Community, belonging | entertainment, parks |
-| 4 — Esteem | Status, quality of life | neighbourhood desirability, housing quality |
+60. **Implement v0.1 Economy Foundation**: complete the closed, utility-driven economic loop. This includes adding `stock` and `revenue` to buildings, implementing the `LogisticsController` for physical truck deliveries, and transitioning agent `TRANSIT_IDLE` selection to utility-based scoring (Shelter/Rest focus). Prerequisite: item 59.
 
-Lower levels dominate via soft priority weighting (not hard gating): `urgency(need) = base_weight(level) × (1 − satisfaction) × (1 + w_priority × unmet_lower_needs)`. Higher needs never fully drop to zero — agents occasionally visit the park when slightly hungry — they just do so far less. Level 5 (self-actualisation) is too abstract for simulation and is omitted.
-
-**Implementation order**: item 59 (soa_derive) first. Then 60 (utility decisions) + 61 (need levels) as a unit. Then 62 (multi-modal utility) once bicycle infrastructure (item 30) is live. Items 63–65 (needs, supply chain, services) follow in dependency order.
-
-60. **Utility-based agent decision system**: replace the hardcoded 5%/40% activity selection in `TRANSIT_IDLE` with explicit utility scores driven by need-level satisfaction. Each activity scores against the relevant level: `score(work) = w_safety × (1 − safety_sat[i]) + w_income × (1 − money/cap)`, `score(shop_food) = w_physio × hunger[i]`, `score(stay) = w_rest × (1 − happiness[i]) + w_esteem × esteem_sat[i]`. Agent picks the highest-scoring activity. All weights live in a shared `AgentConfig` struct. Evaluation cost: ~12 multiplies per activation (~5% agents per second), negligible at any scale. Prerequisite: item 59.
-
-61. **Need-level satisfaction fields and living standard**: add four per-agent satisfaction scalars to the SoA — `physio_sat`, `safety_sat`, `social_sat`, `esteem_sat` — each in `[0, 1]`. Updated every N seconds (not per tick) via `par_iter`. Formulas: `physio_sat` = `f(hunger, has_home)`; `safety_sat` = `f(money, employment, safety_grid[home_pos])`; `social_sat` = `f(entertainment_grid[home_pos])`; `esteem_sat` = `f(desirability_grid[home_pos], housing_quality)`. `living_standard[i]` is derived as a weighted sum across all four levels — a read-only output used for immigration gates, city rating, and the Implemented Systems description. DataGrid lookups are O(1); periodic update keeps per-tick cost zero.
-
-62. **Multi-modal utility transit selection**: replace the 500 m car threshold in `decide_transit_mode` with utility scoring over all available modes (walk, bike, car, bus, train). Score per mode: `−w_time × estimated_time − w_cost × trip_cost + w_pref × personal_preference[i]`. Pre-screen with straight-line distance; CCH pathfind only the winning mode — keeps max 1–2 CCH calls per activation (same as today). New SoA fields: `has_bike: Vec<bool>`, `eco_preference: Vec<f32>`. Bus and train scores require `bus_access_grid` and `train_access_grid` (DataGrid lookups written when stops are placed); both default to 0 until infrastructure exists. Prerequisite: item 30 (bicycle), item 59.
-
-63. **Agent needs — physiological level**: `hunger: Vec<f32>` decays passively each tick; shop visits targeting food buildings restore it. Fulfils `physio_sat` (item 61). Shop trips become need-driven — `score(shop_food) += w_hunger × hunger[i]`. New building field: `product: ProductType` enum (Food, Goods, …). When a food shop has no stock, `hunger` cannot be restored; `physio_sat` drops; safety and higher levels are suppressed via soft priority. Prerequisite: items 60, 61.
-
-64. **Supply chain and building economic actors**: buildings gain `stock: f32`, `revenue: f32`. Farms/factories accumulate stock proportional to employment fill rate. Shops deplete stock on agent purchase; zero stock means the shop cannot restore the relevant need (natural demand signal). Buildings make utility-based decisions each N seconds (hire, adjust production) driven by revenue and vacancy — same utility pattern as agents, negligible cost since building count << agent count. Supply transport: goods flow along road graph connections at a rate proportional to road connectivity (no individual truck agents). Prerequisite: items 60–63.
-
-65. **Service buildings — static coverage model**: police stations, hospitals, and fire departments emit influence onto `safety_grid` and `health_grid` (same `DataGrid<f32>` architecture as pollution/noise). These grids feed directly into `safety_sat` (item 61 — level 2). No event simulation, no dispatch — static coverage is the correct first model at city scale. Building-level utility decisions (resource allocation) follow the same pattern as item 64 when that ships.
+61. **Service buildings — coverage model**: police, fire, and medical stations emit influence onto grids that feed directly into `stability_sat`. No individual dispatch — static coverage remains the primary model to ensure O(1) per-tick cost at the 1M-agent target.
 
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 
@@ -439,7 +422,7 @@ The multi-modal angle: v0.01 goals 3 and 4 (`transit_mode` and `allowed_mask`) i
 55. **Multi-city region — border crossing spawn/despawn**: when an agent leaves the active city onto an inter-city edge, it is demoted to a statistical entry in a queue attached to that edge (arrival time estimated from CCH path cost). When it arrives at the destination city boundary, it is promoted to a full FSM agent and spawned at the border node. If the destination city is inactive, it is absorbed into that city's statistical population counter. Border nodes already exist as `NodeType::Border` in `types.rs`; immigration logic in `tick.rs` (highway border spawn) is the direct predecessor of this system.
 56. **Multi-city region — region view**: a coarse top-level view showing all city tiles, inter-city connection throughput, and aggregate demand flow. No agent rendering at this zoom level — statistical flow numbers only. Switching the active city promotes it to full simulation and demotes the previous active city to statistical mode.
 32. **Agent Level-of-Detail**: full FSM + rendering for camera-visible agents (~50k); flow-field-only routing within 2 km (~500k, no individual pathfinding); statistical aggregate counts only beyond 2 km (~450k). Promotion/demotion at LoD boundaries must preserve city-level supply/demand statistics.
-33. **AoSoA agent layout**: replace flat SoA with 8-wide SIMD batches (Array of Structures of Arrays). Enables AVX2 to process 8 agents per instruction for position update, lane offset, and transform generation. Prerequisite for GPU-offload of movement arithmetic.
+33. **AoSoA agent layout (16-wide SIMD)**: replace flat SoA with 16-wide SIMD batches (Array of Structures of Arrays). Targets **AVX-512** (16 agents/instruction) on supported CPUs with fallback to AVX2 (2x8-wide) via architecture-agnostic SIMD abstraction (`core::simd` on Nightly or `wide` on Stable). This layout is the mandatory prerequisite for **Item 34 (GPU Compute)** as it aligns CPU memory structure with GPU wavefronts/warps. Benefit: 3x–6x speedup on movement math, zero-copy handoff to GPU buffers.
 34. **GPU compute (`wgpu`)**: move agent position update (polyline interpolation, lane offset, transform assembly) to GPU compute shader. Keep FSM state transitions and pathfinding on CPU. Requires AoSoA layout.
 35. **CSR graph for pathfinding**: convert `nodes`/`edges` + `adjacency` to Compressed Sparse Row format for the read-only pathfinding phase. Single cache line per node expansion. Road edits trigger an O(E) CSR rebuild (acceptable since edits are rare interactive events).
 36. **Building levels (1→3)**: upgrade driven by demand pressure history and neighbourhood desirability.
@@ -608,3 +591,4 @@ Instead of one CCH hierarchy, build a separate contraction hierarchy per cost fu
 ---
 
 See [`docs/reference.md`](reference.md) for grid specs, movement speeds, memory budget, design patterns, transport vocabulary, Godot scene tree, script→Rust method inventory, and data buffer formats. See [`docs/improved_roads.md`](improved_roads.md) for the current road-renderer architecture notes.
+See [`docs/economy.md`](economy.md) for the NiFi-inspired multimodal logistics and need-hierarchy specification.
