@@ -52,14 +52,25 @@ pub fn build_vehicle_connections_at_node(
     for &(in_edge_id, in_lane_idx, in_lane_id) in &inbound {
         let mut allowed: Option<Vec<(usize, i8)>> = lane_conns.get(&(in_edge_id, in_lane_idx)).cloned();
 
+        // Global whitelist mode: if the node has ANY user vehicle connection (lane_idx ≠ ±100),
+        // ALL unspecified turns are blocked. Only explicitly listed turns are permitted.
+        // Nodes with no user connections remain fully open (allow all non-U-turns).
         if allowed.is_none() {
-            let mut defaults = Vec::new();
-            for &(out_edge_id, out_lane_idx, _) in &outbound {
-                if out_edge_id != in_edge_id || node_deg == 1 {
-                    defaults.push((out_edge_id, out_lane_idx));
+            let node_has_any_conn = lane_conns.keys().any(|&(_, lane_idx)| {
+                lane_idx != 100 && lane_idx != -100
+            });
+            if !node_has_any_conn {
+                // Open node: allow all non-U-turn outbound lanes.
+                let mut defaults = Vec::new();
+                for &(out_edge_id, out_lane_idx, _) in &outbound {
+                    if out_edge_id != in_edge_id || node_deg == 1 {
+                        defaults.push((out_edge_id, out_lane_idx));
+                    }
                 }
+                if !defaults.is_empty() { allowed = Some(defaults); }
             }
-            if !defaults.is_empty() { allowed = Some(defaults); }
+            // If node_has_any_conn but this arm has no explicit connection, allowed stays
+            // None → no junction connection lanes created → turn is blocked.
         }
 
         let mut valid_outs = Vec::new();

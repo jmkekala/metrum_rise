@@ -351,3 +351,110 @@ fn test_car_avoids_walkway_shortcut() {
     assert_eq!(nodes_ped[0], n0);
     assert_eq!(nodes_ped[1], n2);
 }
+
+/// Build a loop road network:
+///
+///   east_border ──(e_ew_e)──► jct ──(e_ew_w)──► west_border
+///                              │
+///                           (e_n)↑
+///                              │
+///                           n_north
+///
+/// Also: east_border ──(e_south)──► south_node ──(e_sw)──► west_border
+///                                      │
+///                                   (e_sn)↑
+///                                      │
+///                                   n_north  (shared destination)
+///
+/// The direct right-turn  east_border → jct → n_north  is blocked.
+/// The only way to reach n_north is  east_border → south_node → n_north.
+fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize, usize, usize) {
+    let mut g = RegionGraph::new();
+    let n_east  = g.add_node(Vector3::new(-200.0, 0.0,  0.0), NodeType::Junction);
+    let n_jct   = g.add_node(Vector3::new(   0.0, 0.0,  0.0), NodeType::Junction);
+    let n_west  = g.add_node(Vector3::new( 200.0, 0.0,  0.0), NodeType::Junction);
+    let n_north = g.add_node(Vector3::new(   0.0, 0.0, -200.0), NodeType::Junction);
+    let n_south = g.add_node(Vector3::new(   0.0, 0.0,  200.0), NodeType::Junction);
+
+    let mk = |s: u32, e: u32, g: &mut RegionGraph| -> usize {
+        let p0 = g.nodes()[s as usize].pos;
+        let p1 = g.nodes()[e as usize].pos;
+        let len = p0.distance_to(p1);
+        g.add_edge(Edge {
+            start_node: s, end_node: e,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR,
+            class: EdgeClass::Standard,
+            width: 7.0, fwd_lanes: 1, bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: len / (50.0 / 3.6),
+            physical_length: len,
+            current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+            geometry: vec![p0, p1],
+            physical_geometry: vec![p0, p1],
+            deleted: false, no_building_spawn: false,
+        })
+    };
+
+    let e_ew_e = mk(n_east,  n_jct,   &mut g); // east → junction
+    let e_ew_w = mk(n_jct,   n_west,  &mut g); // junction → west
+    let e_n    = mk(n_jct,   n_north, &mut g); // junction → north (blocked right turn)
+    let _e_es  = mk(n_east,  n_south, &mut g); // east → south
+    let _e_sw  = mk(n_south, n_west,  &mut g); // south → west
+    let _e_sn  = mk(n_south, n_north, &mut g); // south → north (alternate route)
+    g.rebuild_adjacency_list();
+    (g, n_east, n_jct, n_west, n_north, n_south, e_ew_e, e_ew_w, e_n)
+}
+
+/// Without any restrictions the direct path east → jct → north should be found.
+#[test]
+fn test_cch_finds_direct_path_without_restriction() {
+    let (mut g, n_east, _n_jct, _n_west, n_north, _n_south, _, _, _) =
+        build_loop_with_restriction();
+    let cch = CchGraph::build(&mut g);
+    let result = cch.find_path(n_east, n_north, usize::MAX, &g, TransitFlags::CAR);
+    assert!(result.is_some(), "Should find a path from east to north");
+    let (_, _, nodes) = result.unwrap();
+    assert_eq!(nodes.first(), Some(&n_east));
+    assert_eq!(nodes.last(), Some(&n_north));
+}
+
+/// After blocking the right-turn at jct (east_arm → north_arm), CCH must reroute
+/// through the southern loop.  The path must NOT contain the junction node as an
+/// intermediate step between east_border and north.
+#[test]
+fn test_cch_reroutes_around_turn_restriction() {
+    let (mut g, n_east, n_jct, _n_west, n_north, n_south, e_ew_e, _e_ew_w, _e_n) =
+        build_loop_with_restriction();
+
+    // User blocks the right turn: east arm can only go west (no east→north connection).
+    // Setting only e_ew_e → e_ew_w puts the node in whitelist mode; e_ew_e → e_n is blocked.
+    g.add_lane_connection(n_jct, e_ew_e, 0, _e_ew_w, 0);
+
+    let cch = CchGraph::build(&mut g);
+    let result = cch.find_path(n_east, n_north, usize::MAX, &g, TransitFlags::CAR);
+
+    assert!(result.is_some(), "Should still find a path via southern loop");
+    let (_, _, nodes) = result.unwrap();
+
+    assert_eq!(nodes.first(), Some(&n_east),  "path must start at east");
+    assert_eq!(nodes.last(),  Some(&n_north), "path must end at north");
+
+    // The path must NOT route east → jct → north (blocked right turn).
+    // Either n_jct is absent from the path, or n_south is the detour point.
+    let jct_idx   = nodes.iter().position(|&n| n == n_jct);
+    let _north_idx = nodes.iter().position(|&n| n == n_north).unwrap();
+    if let Some(ji) = jct_idx {
+        // If jct appears, it must NOT be immediately followed by north.
+        assert!(
+            ji + 1 < nodes.len() && nodes[ji + 1] != n_north,
+            "CCH must not route east → jct → north (right turn is restricted). Path: {:?}",
+            nodes
+        );
+    }
+    assert!(
+        nodes.contains(&n_south),
+        "Alternate route must pass through south node. Path: {:?}",
+        nodes
+    );
+}

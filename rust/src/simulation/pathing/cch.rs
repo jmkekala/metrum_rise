@@ -3,6 +3,7 @@
 //! Provides fast queries and O(E) metric customization for dynamic traffic.
 //! Replaces HPA* as the primary routing engine for agents.
 
+use crate::traffic_log;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{TransitFlags, TransitType};
 use std::cmp::Ordering;
@@ -58,6 +59,8 @@ pub struct CchGraph {
     pub bwd_up: Vec<Vec<usize>>,
     /// Precomputed maximum speed in the network for heuristic calculations.
     pub max_v: f32,
+    /// Monotonically incremented each time the graph is rebuilt; used to reset per-build debug counters.
+    pub build_generation: u32,
     /// Per-node index of shortcuts whose `start_node` equals the index. Used during contraction.
     shortcuts_by_start: Vec<Vec<usize>>,
     /// Per-node index of shortcuts whose `target_node` equals the index. Used during contraction.
@@ -75,6 +78,7 @@ impl CchGraph {
             fwd_up: vec![Vec::new(); n_nodes],
             bwd_up: vec![Vec::new(); n_nodes],
             max_v: 1.0,
+            build_generation: 0,
             shortcuts_by_start: vec![Vec::new(); n_nodes],
             shortcuts_by_end: vec![Vec::new(); n_nodes],
         }
@@ -82,12 +86,20 @@ impl CchGraph {
 
     /// Builds a new CCH from the provided road network.
     pub fn build(graph: &RegionGraph) -> Self {
+        // Fetch and increment the global build generation so per-build debug counters reset.
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static BUILD_GEN: AtomicU32 = AtomicU32::new(0);
+        let generation = BUILD_GEN.fetch_add(1, Ordering::Relaxed);
+
         let n = graph.node_count();
         if n == 0 {
-            return Self::new(0);
+            let mut cch = Self::new(0);
+            cch.build_generation = generation;
+            return cch;
         }
 
         let mut cch = Self::new(n);
+        cch.build_generation = generation;
         cch.compute_node_order(graph);
         cch.contract(graph);
         cch.customize(graph);
@@ -183,6 +195,19 @@ impl CchGraph {
 
     fn contract(&mut self, graph: &RegionGraph) {
         let n = graph.node_count();
+        // Debug: log nodes that have user vehicle connections (whitelist mode).
+        if crate::debug::is_traffic_enabled() {
+            for i in 0..n {
+                let node = graph.node(i as u32);
+                let vehicle_conns: Vec<_> = node.lane_connections.iter()
+                    .filter(|((_, lane_idx), _)| *lane_idx != 100 && *lane_idx != -100)
+                    .map(|((e, l), targets)| format!("(edge={e},lane={l})->{targets:?}"))
+                    .collect();
+                if !vehicle_conns.is_empty() {
+                    eprintln!("[CCH_BUILD] node={i} has user vehicle connections: {}", vehicle_conns.join(", "));
+                }
+            }
+        }
 
         for (edge_idx, edge) in graph.edges().iter().enumerate() {
             if edge.deleted {
@@ -226,6 +251,17 @@ impl CchGraph {
 
             // Deduplicate (start, target) pairs within this contraction step to prevent
             // exponential shortcut growth. Only one compound shortcut per node-pair is needed.
+            if crate::debug::is_traffic_enabled() && (!neighbors_in.is_empty() || !neighbors_out.is_empty()) {
+                let ni: Vec<_> = neighbors_in.iter().map(|&i| {
+                    let s = &self.shortcuts[i];
+                    format!("{}→{}(e{})", s.start_node, s.target_node, s.last_edge)
+                }).collect();
+                let no: Vec<_> = neighbors_out.iter().map(|&i| {
+                    let s = &self.shortcuts[i];
+                    format!("{}→{}(e{})", s.start_node, s.target_node, s.first_edge)
+                }).collect();
+                eprintln!("[CCH_CONTRACT] contracting node={u} rank={u_rank} neighbors_in=[{}] neighbors_out=[{}]", ni.join(","), no.join(","));
+            }
             let mut added_pairs: HashSet<(u32, u32)> = HashSet::new();
 
             for &idx_in in &neighbors_in {
@@ -241,11 +277,13 @@ impl CchGraph {
                     };
 
                     if s_in_start == s_out_target {
+                        traffic_log!("[CCH_CONTRACT] node={u} skip U-turn {s_in_start}↔{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})");
                         continue;
                     }
 
                     // Skip if we already have any shortcut (direct or compound) for this pair
                     if added_pairs.contains(&(s_in_start, s_out_target)) {
+                        traffic_log!("[CCH_CONTRACT] node={u} skip already-added {s_in_start}→{s_out_target}");
                         continue;
                     }
                     // Also skip if a direct shortcut between these nodes already exists
@@ -254,26 +292,17 @@ impl CchGraph {
                         .any(|&i| self.shortcuts[i].target_node == s_out_target
                             && self.shortcuts[i].base_edge != usize::MAX)
                     {
+                        traffic_log!("[CCH_CONTRACT] node={u} skip direct-exists {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})");
                         added_pairs.insert((s_in_start, s_out_target));
                         continue;
                     }
 
-                    if !graph.node(u).lane_connections.is_empty() {
-                        let conn = &graph.node(u).lane_connections;
-                        let mut allowed = false;
-                        for (&(e_from, _), targets) in conn {
-                            if e_from == s_in_last {
-                                if targets.iter().any(|&(e_to, _)| e_to == s_out_first) {
-                                    allowed = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if !allowed {
-                            continue;
-                        }
+                    if !Self::vehicle_turn_allowed(graph.node(u), s_in_last, s_out_first) {
+                        traffic_log!("[CCH_BUILD] blocked shortcut: {s_in_start}→{u}→{s_out_target} (in_edge={s_in_last}, out_edge={s_out_first})");
+                        continue;
                     }
 
+                    traffic_log!("[CCH_CONTRACT] node={u} create shortcut {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})");
                     added_pairs.insert((s_in_start, s_out_target));
                     self.add_compound_shortcut(
                         s_in_start,
@@ -502,8 +531,12 @@ impl CchGraph {
                     }
 
                     for (&(b_node, b_out_edge), &(b_cost, _, _, _)) in &bwd_data {
-                        if b_node == node && self.is_turn_allowed(node, l_edge, b_out_edge, graph) {
-                            if cost + b_cost < min_total_cost {
+                        if b_node == node {
+                            let allowed = self.is_turn_allowed(node, l_edge, b_out_edge, graph);
+                            if !allowed {
+                                traffic_log!("[CCH_REJECT] fwd meeting blocked at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})");
+                            } else if cost + b_cost < min_total_cost {
+                                traffic_log!("[CCH_ACCEPT] fwd meeting at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})");
                                 min_total_cost = cost + b_cost;
                                 meeting_node = node;
                                 meeting_f_edge = l_edge;
@@ -649,6 +682,27 @@ impl CchGraph {
         let f_dist = fwd_data.get(&(meeting_node, meeting_f_edge)).unwrap().1;
         let b_dist = bwd_data.get(&(meeting_node, meeting_b_edge)).unwrap().1;
 
+        // Debug: log the first 20 paths per CCH build generation.
+        // build_generation increments each time CchGraph::build() is called, so this
+        // counter resets after every CCH rebuild (e.g., after lane connection changes).
+        if crate::debug::is_traffic_enabled() {
+            use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+            static LAST_GEN: AtomicU32 = AtomicU32::new(u32::MAX);
+            static PATH_LOG_COUNT: AtomicU64 = AtomicU64::new(0);
+            let prev_gen = LAST_GEN.swap(self.build_generation, Ordering::Relaxed);
+            if prev_gen != self.build_generation {
+                PATH_LOG_COUNT.store(0, Ordering::Relaxed);
+                eprintln!("[CCH_QUERY] --- new CCH generation {} ---", self.build_generation);
+            }
+            let count = PATH_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+            if count < 20 {
+                eprintln!("[CCH_QUERY] find_path {start}→{end}: nodes={nodes:?} edges={full_edges:?}");
+            }
+            if count == 20 {
+                eprintln!("[CCH_QUERY] (further path logs suppressed for this generation)");
+            }
+        }
+
         Some((min_total_cost, f_dist + b_dist, nodes))
     }
 
@@ -662,20 +716,71 @@ impl CchGraph {
         if in_edge == usize::MAX || out_edge == usize::MAX {
             return true;
         }
-        let node_data = graph.node(node);
-        if node_data.lane_connections.is_empty() {
-            return true;
-        }
+        Self::vehicle_turn_allowed(graph.node(node), in_edge, out_edge)
+    }
 
-        // Check if any lane from in_edge can turn to any lane in out_edge
-        for (&(e_from, _), targets) in &node_data.lane_connections {
-            if e_from == in_edge {
+    /// Returns whether a vehicle turn from `in_edge` to `out_edge` at `node_data` is
+    /// permitted under the global whitelist model.
+    ///
+    /// - If the node has **no** user-defined vehicle connections (lane_idx ≠ ±100) the
+    ///   junction is fully open and all turns are allowed.
+    /// - If **any** user vehicle connection exists anywhere on the node, the entire node
+    ///   enters whitelist mode: only explicitly listed turns are permitted; all others
+    ///   are blocked regardless of which arm they come from.
+    ///
+    /// Pedestrian lane entries (lane_idx == ±100) are always ignored so that the
+    /// presence of sidewalk connections does not accidentally engage whitelist mode.
+    fn vehicle_turn_allowed(
+        node_data: &crate::simulation::network::graph::data::Node,
+        in_edge: usize,
+        out_edge: usize,
+    ) -> bool {
+        // Global whitelist: if the node has any user vehicle connection, all unspecified
+        // turns are blocked. If the node has no user connections, all turns are open.
+        let node_has_any_conn = node_data.lane_connections.keys().any(|&(_, lane_idx)| {
+            lane_idx != 100 && lane_idx != -100
+        });
+        if !node_has_any_conn {
+            return true; // open node
+        }
+        // Whitelist mode: check explicit vehicle turns only.
+        for (&(e_from, lane_idx), targets) in &node_data.lane_connections {
+            if lane_idx != 100 && lane_idx != -100 && e_from == in_edge {
                 if targets.iter().any(|&(e_to, _)| e_to == out_edge) {
+                    traffic_log!("[TURN_ALLOWED] in_edge={in_edge} out_edge={out_edge} -> TRUE (explicit connection)");
                     return true;
                 }
             }
         }
+        traffic_log!("[TURN_BLOCKED] in_edge={in_edge} out_edge={out_edge} (whitelist active, no match)");
         false
+    }
+
+    /// Returns `true` if every turn in `path` is permitted under the current turn
+    /// restrictions. A path with fewer than 3 nodes has no intermediate junctions and
+    /// is always valid. Paths where consecutive edge IDs cannot be resolved are skipped
+    /// (treated as open).
+    ///
+    /// Complexity: O(path.len() × node_degree) — cheap for typical city paths.
+    pub fn path_has_valid_turns(path: &[u32], graph: &RegionGraph) -> bool {
+        if path.len() < 3 {
+            return true;
+        }
+        for i in 0..path.len() - 2 {
+            let a = path[i];
+            let jct = path[i + 1];
+            let b = path[i + 2];
+            let Some(in_e) = graph.get_edge_between_nodes(a, jct) else {
+                continue;
+            };
+            let Some(out_e) = graph.get_edge_between_nodes(jct, b) else {
+                continue;
+            };
+            if !Self::vehicle_turn_allowed(graph.node(jct), in_e, out_e) {
+                return false;
+            }
+        }
+        true
     }
 }
 
@@ -743,21 +848,25 @@ mod tests {
                 pos: Vector3::new(0.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
+                crosswalk_overrides: HashMap::new(),
             },
             Node {
                 pos: Vector3::new(600.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
+                crosswalk_overrides: HashMap::new(),
             },
             Node {
                 pos: Vector3::new(1200.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
+                crosswalk_overrides: HashMap::new(),
             },
             Node {
                 pos: Vector3::new(600.0, 0.0, 600.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
+                crosswalk_overrides: HashMap::new(),
             },
         ];
 

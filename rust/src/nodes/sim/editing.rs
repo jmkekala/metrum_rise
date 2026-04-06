@@ -1,10 +1,12 @@
 //! Logic for modifying simulation state (road placement, terrain sculpt, zoning).
 
+use crate::traffic_log;
 use crate::config;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::*;
+use std::collections::HashSet;
 use std::time::Instant;
 
 impl SimCore {
@@ -209,6 +211,7 @@ impl SimCore {
         to_lane: i32,
     ) {
         self.push_undo_state(false, false, true, false);
+        traffic_log!("[LANE_EDIT] set_lane_connection: node={node_id} from_edge={from_edge} from_lane={from_lane} to_edge={to_edge} to_lane={to_lane}");
         if (node_id as usize) < self.region_graph.node_count() {
             let key = (from_edge as usize, from_lane as i8);
             let target = (to_edge as usize, to_lane as i8);
@@ -220,8 +223,31 @@ impl SimCore {
                 self.region_graph.add_lane_connection(node_id, key.0, key.1, target.0, target.1);
             }
         }
+        let affected: HashSet<usize> = self.region_graph
+            .node_adjacency(node_id)
+            .iter()
+            .copied()
+            .collect();
+        self.agents.invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.transit_network.lane_system.rebuild_edges_incremental(&mut self.region_graph, &affected);
+        if crate::debug::is_traffic_enabled() {
+            if (node_id as usize) < self.region_graph.node_count() {
+                let conns = &self.region_graph.node(node_id).lane_connections;
+                let mut entries: Vec<_> = conns.iter()
+                    .map(|(&(e, l), targets)| format!("  (edge={e},lane={l}) -> {:?}", targets))
+                    .collect();
+                entries.sort();
+                eprintln!("[LANE_EDIT] node={node_id} lane_connections after rebuild:");
+                for s in &entries { eprintln!("{s}"); }
+            }
+        }
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+        self.transit_network.flow_fields.mark_all_dirty();
+        if (node_id as usize) < self.region_graph.node_count() {
+            let pos = self.region_graph.node(node_id).pos;
+            self.transit_network.mark_point_dirty(pos);
+        }
     }
 
     /// Clears all lane connections at a junction node.
@@ -233,8 +259,20 @@ impl SimCore {
                 self.region_graph.remove_lane_connection(node_id, key);
             }
         }
+        let affected: HashSet<usize> = self.region_graph
+            .node_adjacency(node_id)
+            .iter()
+            .copied()
+            .collect();
+        self.agents.invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.transit_network.lane_system.rebuild_edges_incremental(&mut self.region_graph, &affected);
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+        self.transit_network.flow_fields.mark_all_dirty();
+        if (node_id as usize) < self.region_graph.node_count() {
+            let pos = self.region_graph.node(node_id).pos;
+            self.transit_network.mark_point_dirty(pos);
+        }
     }
 
     /// Clears lane connections for a specific source edge/lane at a junction.
@@ -243,11 +281,45 @@ impl SimCore {
             return;
         }
 
+        self.push_undo_state(false, false, true, false);
         self.region_graph
             .remove_lane_connection(node_id, (from_edge as usize, from_lane as i8));
 
+        let affected: HashSet<usize> = self.region_graph
+            .node_adjacency(node_id)
+            .iter()
+            .copied()
+            .collect();
+        self.agents.invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.transit_network.lane_system.rebuild_edges_incremental(&mut self.region_graph, &affected);
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+        self.transit_network.flow_fields.mark_all_dirty();
+        if (node_id as usize) < self.region_graph.node_count() {
+            let pos = self.region_graph.node(node_id).pos;
+            self.transit_network.mark_point_dirty(pos);
+        }
+    }
+
+    /// Toggles a user override for a crosswalk at a specific road mouth.
+    pub fn set_crosswalk_override_internal(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
+        if node_id as usize >= self.region_graph.node_count() || edge_id < 0 {
+            return;
+        }
+        self.push_undo_state(false, false, true, false);
+        self.region_graph.set_crosswalk_override(node_id, edge_id as usize, enabled);
+        
+        let affected: HashSet<usize> = self.region_graph
+            .node_adjacency(node_id)
+            .iter()
+            .copied()
+            .collect();
+        self.agents.invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.transit_network.lane_system.rebuild_edges_incremental(&mut self.region_graph, &affected);
+        if (node_id as usize) < self.region_graph.node_count() {
+            let pos = self.region_graph.node(node_id).pos;
+            self.transit_network.mark_point_dirty(pos);
+        }
     }
 
     /// Flattens the terrain to match the grade of the road network.

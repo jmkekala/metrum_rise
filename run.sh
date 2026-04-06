@@ -3,21 +3,30 @@
 
 RELEASE=0
 DEBUG=0
+DEBUG_TRAFFIC=0
 GODOT_ARGS=()
 export RUST_BACKTRACE=1
+prev_arg=""
 for arg in "$@"; do
     if [ "$arg" = "--release" ]; then
         RELEASE=1
     elif [ "$arg" = "--debug" ]; then
         DEBUG=1
+    elif [ "$arg" = "traffic" ] && [ "$prev_arg" = "--debug" ]; then
+        DEBUG_TRAFFIC=1
     else
         GODOT_ARGS+=("$arg")
     fi
+    prev_arg="$arg"
 done
 
 if [ $DEBUG -eq 1 ]; then
     export METRUM_DEBUG=1
     echo "Debug logging enabled (output goes to stdout)"
+fi
+if [ $DEBUG_TRAFFIC -eq 1 ]; then
+    export METRUM_DEBUG_TRAFFIC=1
+    echo "Traffic/routing debug logging enabled (output goes to stderr)"
 fi
 
 echo "Building Rust library..."

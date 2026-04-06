@@ -108,11 +108,13 @@ mod tests {
                 pos: Vector3::new(0.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
+                crosswalk_overrides: HashMap::new(),
             },
             Node {
                 pos: Vector3::new(100.0, 0.0, 0.0),
                 node_type: NodeType::Junction,
                 lane_connections: HashMap::new(),
+                crosswalk_overrides: HashMap::new(),
             },
         ];
 

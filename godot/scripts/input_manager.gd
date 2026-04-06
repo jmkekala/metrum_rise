@@ -12,14 +12,13 @@ extends Node
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_tool = $"../ZoningTool"
 @onready var move_tool = $"../MoveTool"
-@onready var lane_tool = $"../LaneTool"
 var cul_de_sac_tool: Node3D
 @onready var main_ui = $"../MainUI"
 @onready var agents_node = $"../Agents"
 @onready var buildings_node = $"../Buildings"
 var select_tool: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, LANE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
 var current_tool: Tool = Tool.NONE
 
 func _ready():
@@ -78,7 +77,6 @@ func _unhandled_input(event):
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_M: _toggle_tool(Tool.MOVE)
-			KEY_T: _toggle_tool(Tool.LANE)
 			KEY_R: _toggle_tool(Tool.ROAD)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
@@ -133,16 +131,16 @@ func _handle_escape():
 	elif terrain_node and terrain_node.show_global_zoning:
 		_toggle_zoning_overlay()
 
+func _handle_lane_adjust(fwd, bkw):
+	if current_tool == Tool.ROAD and road_tool:
+		road_tool.adjust_lanes(fwd, bkw)
+
 func _toggle_agent_paths():
 	if agents_node:
 		agents_node.show_paths = not agents_node.show_paths
 		if not agents_node.show_paths:
 			agents_node.debug_mesh.clear_surfaces()
 		print("Agent Path Debug: ", agents_node.show_paths)
-
-func _handle_lane_adjust(fwd, bkw):
-	if current_tool == Tool.ROAD and road_tool:
-		road_tool.adjust_lanes(fwd, bkw)
 
 # --- Logic Hub ---
 
@@ -163,7 +161,6 @@ func _cancel_active_tool():
 func _activate_tool_logic(tool_type: Tool, enabled: bool):
 	match tool_type:
 		Tool.MOVE: if move_tool: move_tool.active = enabled
-		Tool.LANE: if lane_tool: lane_tool.active = enabled
 		Tool.ROAD:
 			if road_tool:
 				road_tool.active = enabled

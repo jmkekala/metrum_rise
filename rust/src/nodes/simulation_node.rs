@@ -928,6 +928,18 @@ impl SimulationNode {
         self.lock_core().clear_lane_connections_internal(node_id);
     }
 
+    /// Toggles a user override for a crosswalk at a specific road mouth.
+    #[func]
+    pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
+        self.lock_core().set_crosswalk_override_internal(node_id, edge_id, enabled);
+    }
+
+    /// Returns true if a crosswalk exists natively or by user override.
+    #[func]
+    pub fn has_crosswalk(&self, node_id: u32, edge_id: i32) -> bool {
+        self.lock_core().has_crosswalk_internal(node_id, edge_id)
+    }
+
     /// Returns the world-space position of a node.
     #[func]
     pub fn get_node_pos(&self, node_id: u32) -> Vector3 {

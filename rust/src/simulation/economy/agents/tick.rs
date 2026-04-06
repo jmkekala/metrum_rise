@@ -523,6 +523,10 @@ impl AgentSystem {
 
                             let path_opt: Option<Vec<u32>> = ff
                                 .and_then(|f| f.build_path(origin_node, graph.node_count() + 1))
+                                // Discard flow-field paths that cross a restricted turn:
+                                // flow fields have no turn-restriction awareness, so an agent
+                                // following such a path would get stuck at the junction.
+                                .filter(|p| crate::simulation::pathing::cch::CchGraph::path_has_valid_turns(p, graph))
                                 .or_else(|| {
                                     // Fall back to CCH for home trips, novel destinations,
                                     // or when flow field is not yet built.
@@ -645,15 +649,22 @@ impl AgentSystem {
                                 None
                             };
 
-                            let path_opt: Option<Vec<u32>> = ff
-                                .and_then(|f| f.build_path(cur_n, graph.node_count() + 1))
-                                .filter(|p| p.len() > 1)
-                                .or_else(|| {
-                                    pathfind_count.fetch_add(1, Ordering::Relaxed);
-                                    transit_network.cch_graph
-                                        .find_path(cur_n, tgt_n, usize::MAX, graph, search_flags)
-                                        .and_then(|(_, _, p)| if p.len() > 1 { Some(p) } else { None })
-                                });
+                            // If the agent has a known incoming edge at the current node,
+                            // the flow field cannot account for turn restrictions — skip it
+                            // and let CCH enforce the constraint via start_edge.
+                            let incoming_edge = *s_cur_e.get(i);
+                            let ff_blocked = incoming_edge != usize::MAX;
+
+                            let path_opt: Option<Vec<u32>> = if ff_blocked { None } else {
+                                ff.and_then(|f| f.build_path(cur_n, graph.node_count() + 1))
+                                  .filter(|p| p.len() > 1)
+                                  .filter(|p| crate::simulation::pathing::cch::CchGraph::path_has_valid_turns(p, graph))
+                            }.or_else(|| {
+                                pathfind_count.fetch_add(1, Ordering::Relaxed);
+                                transit_network.cch_graph
+                                    .find_path(cur_n, tgt_n, incoming_edge, graph, search_flags)
+                                    .and_then(|(_, _, p)| if p.len() > 1 { Some(p) } else { None })
+                            });
 
                             if let Some(path) = path_opt {
                                 *s_path.get_mut(i) = path;
@@ -821,6 +832,10 @@ impl AgentSystem {
                                                 *s_lane_d.get_mut(i) = lane.length;
                                                 wait_for_gap = true;
                                             } else {
+                                                // No connection lane exists for this turn.
+                                                // Clear the path so the agent re-pathfinds on
+                                                // the next tick — the updated CCH will now route
+                                                // around the restricted junction.
                                                 s_path.get_mut(i).clear();
                                                 *s_lane_id.get_mut(i) = usize::MAX;
                                             }

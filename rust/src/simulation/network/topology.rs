@@ -99,7 +99,8 @@ impl RegionGraph {
         self.nodes.push(Node {
             pos,
             node_type,
-            lane_connections: HashMap::new(),
+            lane_connections: std::collections::HashMap::new(),
+            crosswalk_overrides: std::collections::HashMap::new(),
         });
         self.adjacency.push(Vec::new());
         self.add_node_to_spatial_index(id);

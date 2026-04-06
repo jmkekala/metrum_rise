@@ -48,6 +48,9 @@ pub struct Node {
     /// If the key is absent, all turns from that edge/lane are allowed (open junction).
     /// Pedestrians bypass this table entirely.
     pub lane_connections: HashMap<(usize, i8), Vec<(usize, i8)>>,
+    /// Manually enforced crosswalks: Key `edge_id` -> bool override (true = force, false = disable).
+    /// If an edge ID is missing, default procedural generation decides.
+    pub crosswalk_overrides: HashMap<usize, bool>,
 }
 
 /// A directed road segment connecting two [`Node`]s.
@@ -274,6 +277,12 @@ impl RegionGraph {
             .entry((fe, fl))
             .or_default()
             .push((te, tl));
+    }
+
+    /// Sets a user override for a crosswalk at a specific road mouth.
+    pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: usize, enabled: bool) {
+        if node_id as usize >= self.nodes.len() { return; }
+        self.nodes[node_id as usize].crosswalk_overrides.insert(edge_id, enabled);
     }
 
     /// Returns a mutable iterator over all edge slots (including soft-deleted ones).

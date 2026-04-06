@@ -128,6 +128,15 @@ impl LaneSystem {
 
         let mut lane_map: HashMap<(usize, bool, i8), usize> = HashMap::new();
 
+        // 5. Pre-populate lane_map from surviving (non-rebuilt) edges so that connection
+        //    builders at affected nodes can route through arms that weren't touched.
+        for (&edge_idx, lane_ids) in &self.edge_lanes {
+            for &lid in lane_ids {
+                let lane = &self.lanes[lid];
+                lane_map.insert((edge_idx, lane.is_fwd, lane.lane_idx), lid);
+            }
+        }
+
         // 6. Append new straight lanes for every edge in rebuild_set.
         for &edge_idx in &rebuild_set {
             if edge_idx >= graph.edge_count() { continue; }

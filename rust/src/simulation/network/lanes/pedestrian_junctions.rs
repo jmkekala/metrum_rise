@@ -138,7 +138,19 @@ pub fn build_pedestrian_connections_at_node(
 
     mouths.sort_by(|a, b| a.angle.partial_cmp(&b.angle).unwrap());
     let num_mouths = mouths.len();
-    graph.nodes[node_id].lane_connections.clear();
+    let to_remove: Vec<_> = graph.nodes[node_id]
+        .lane_connections
+        .keys()
+        .filter(|&&(edge_idx, lane_idx)| {
+            let edge = graph.edge(edge_idx);
+            lane_idx == 100 || lane_idx == -100 || edge.primary_type == crate::simulation::network::types::TransitType::Foot
+        })
+        .copied()
+        .collect();
+
+    for key in to_remove {
+        graph.nodes[node_id].lane_connections.remove(&key);
+    }
     if num_mouths < 2 { return; }
 
     let deg = graph.node_adjacency(node_id as u32).len();
@@ -150,8 +162,16 @@ pub fn build_pedestrian_connections_at_node(
         for j in (i + 1)..num_mouths {
             let dot = mouths[i].dir.dot(mouths[j].dir);
             if dot <= 0.99 { continue; }
-            // Bends and pass-through nodes (deg ≤ 2) are not intersections; no crossings.
-            if deg <= 2 { continue; }
+            let edge_idx = mouths[i].edge_idx;
+            let override_opt = graph.nodes[node_id].crosswalk_overrides.get(&edge_idx).copied();
+            
+            if override_opt == Some(false) {
+                continue;
+            } else if override_opt == None {
+                // Bends and pass-through nodes (deg ≤ 2) are not intersections; no crossings.
+                if deg <= 2 { continue; }
+            }
+            
             let steps = vec![mouths[i].road_edge_pos, mouths[j].road_edge_pos];
             let mut step_len = 0.0;
             for k in 0..steps.len().saturating_sub(1) { step_len += steps[k].distance_to(steps[k+1]); }

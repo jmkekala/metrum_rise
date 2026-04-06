@@ -634,6 +634,21 @@ impl SimCore {
         dict
     }
 
+    /// Determines if a crosswalk exists (either by procedural logic or user override).
+    pub fn has_crosswalk_internal(&self, node_id: u32, edge_id: i32) -> bool {
+        let valid_id = self.region_graph.get_valid_node(node_id);
+        if valid_id as usize >= self.region_graph.node_count() || edge_id < 0 {
+            return false;
+        }
+        let node = self.region_graph.node(valid_id);
+        if let Some(&forced) = node.crosswalk_overrides.get(&(edge_id as usize)) {
+            return forced;
+        }
+        // Procedural fallback
+        let deg = self.region_graph.node_adjacency_count_at(valid_id);
+        deg > 2
+    }
+
     /// Returns the closest network point (node/edge) within range.
     pub fn get_closest_network_point_internal(
         &self,
@@ -872,7 +887,7 @@ impl SimCore {
                         if is_fwd {
                             l_idx
                         } else {
-                            l_idx - fwd_lanes as i32
+                            -(l_idx - fwd_lanes as i32 + 1)
                         },
                     );
                     dict.set(
