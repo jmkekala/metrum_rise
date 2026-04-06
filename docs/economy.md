@@ -10,7 +10,6 @@ The following gaps and contradictions still need resolution before the economy d
 - **Logistics anti-explosion rules are missing.** The document defines shipments and carriers, but it does not yet define batching thresholds, minimum shipment sizes, reservation rules, retry behavior, outstanding-job limits, or failure handling. At Metrum Rise scale, these are not optional details; they are core performance and correctness constraints.
 - **Pack churn and missing-profile failure modes need hard rules.** The new model is that assets carry an `economy_profile` reference while profile definitions live in economy data. The document still does not define what happens when an asset disappears, when a profile disappears, or when an asset references a profile that is not currently available. Since packs and economy data can change independently, this must be deterministic and visible to the user.
 - **The first-pass pricing model is still unclear.** A `price-response controller` exists in concept, but the document does not yet say whether `v0.1` uses fixed prices and wages or already supports dynamic local pricing. This should be decided explicitly so early implementation does not accidentally build more market complexity than intended.
-- **Developer-only tools versus future gameplay controls still need a sharper boundary.** The document now correctly says the economy editor is not gameplay, but some controller and area-override ideas still sound like future player-facing policy levers. We should explicitly separate what is design-time balancing only from what may later become player policy, so the document does not quietly blur those two layers again.
 
 ## Purpose
 
@@ -65,9 +64,11 @@ This creates the intended feedback loop:
 
 ### 4. Balancing and validation are visual; persistence is data-driven
 
-Developers should use a tool, not raw text files, to balance production chains, controllers, and district policies.
+Developers should use a tool, not raw text files, to balance production chains, controllers, and developer-authored area or scenario rules.
 
 Persisted data files still exist for save/load, export, version control, and modding, but they are outputs of the economy tool rather than the primary authoring surface.
+
+Future player-facing fiscal controls such as income tax, property tax, real estate tax, tariffs, and subsidies are a separate gameplay policy layer. They must not be treated as raw access to the developer economy editor.
 
 ### 5. Runtime cost must scale by building, household, district, and shipment count
 
@@ -291,10 +292,20 @@ The runtime game should still expose economy inspection tools:
 
 - stock and shortage overlays
 - route and shipment debugging
-- district policy summary
+- player policy summary, when a gameplay policy layer exists
 - building-level throughput and staffing inspectors
 
-But the live game should remain read-only for economy tuning. It can expose inspection and diagnostics, not balancing controls or graph authoring.
+But the live game should remain read-only for developer-side economy tuning. It can expose inspection and diagnostics, and later a separate bounded policy UI, but not graph authoring or raw controller editing.
+
+### Control boundaries
+
+To keep authoring and gameplay cleanly separated, the economy should use three distinct control layers.
+
+- `Developer authoring layer`: economy profiles, recipes, controller formulas, default coefficients, allowed policy ranges, and scenario or area overrides used for balancing and validation.
+- `Simulation-owned outcomes`: wages and labor prices, staffing pressure, production throughput, household demand, and delivery cost outcomes. These are calculated by the simulation and are not direct player inputs.
+- `Future player policy layer`: curated fiscal or trade levers such as income tax, property tax, real estate tax, tariffs, and subsidies. Players change bounded values or presets in gameplay UI, not raw controller graphs or balancing formulas.
+
+If a future player policy is backed by a controller, the controller is still authored by developers. Gameplay should only expose named policy inputs and allowed ranges, never the full controller graph.
 
 ## Responsibility Split
 
@@ -324,11 +335,11 @@ Examples:
 
 - which reusable economy profiles exist
 - which producer classes can supply which consumer classes
-- which controllers affect pricing, taxes, subsidies, or household delivery rules
-- which area-specific overrides apply in one place but not another
+- which controller formulas back wages, taxes, tariffs, subsidies, or household delivery rules
+- which area-specific scenario overrides apply in one place but not another
 - which goods are required for household stability versus optional quality-of-life supply
 
-It is also the main developer surface for validating and debugging shortages, dead chains, impossible recipes, and other balance failures before those rules ship into gameplay.
+It is also the main developer surface for validating and debugging shortages, dead chains, impossible recipes, and other balance failures before those rules ship into gameplay. The economy editor is not a prototype player policy screen.
 
 ### Runtime Simulation
 
@@ -442,17 +453,20 @@ It holds runtime state such as:
 
 ### 5. Controllers
 
-Controllers are authored policy objects that modify behavior across many nodes.
+Controllers are authored simulation rule objects that modify behavior across many nodes.
 
 Examples:
 
-- wage policy controller
-- local tax controller
+- wage-response controller
+- tax controller
+- tariff controller
 - price-response controller
 - subsidy controller
 - household delivery cost controller
 
 Controllers are not arbitrary scripts. They are bounded, inspectable systems with defined inputs, outputs, scope, and update cadence.
+
+Some controllers may later expose a small set of bounded parameters to the gameplay policy layer, but players do not edit controller graphs or formulas directly.
 
 Each controller definition should specify:
 
@@ -669,10 +683,10 @@ A simple map view where developers define named economy areas on a test scenario
 
 This is a developer-side balancing tool, not a player-facing map setup step.
 
-Use it to author:
+Use it to author scenario or authored-content overrides such as:
 
-- tax modifiers
-- subsidies
+- tax or tariff test modifiers
+- subsidy test overrides
 - service focus
 - `ADS` availability or delivery-cost modifiers
 - local bans or restrictions
@@ -860,8 +874,10 @@ The economy should be balanced and validated through a visual, building-centric 
 The recommended design is:
 
 - assets define identity, base metadata, and an `economy_profile` reference
-- the economy editor lets developers tune graphs, controllers, and district policies
+- the economy editor lets developers tune graphs, controllers, and developer-only area or scenario overrides
 - runtime simulation executes compiled building-level inventories, labor, and shipment rules
+- wages and labor prices remain simulation outcomes rather than direct player inputs
+- future player policies such as income tax, property tax, tariffs, and subsidies use a separate bounded gameplay UI
 - households consume shared household supply so agents do not need constant shopping trips
 
 That gives Metrum Rise a debuggable economy authoring workflow without violating the project's scale and performance constraints.
