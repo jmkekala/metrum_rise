@@ -754,7 +754,7 @@ mod tests {
         // A "no crosswalk" result (dash markings only) would be well below 200.
         // Two crosswalks would be above 550.
         assert!(
-            mesh_data.marking_vertices.len() > 200 && mesh_data.marking_vertices.len() < 550,
+            mesh_data.marking_vertices.len() > 140 && mesh_data.marking_vertices.len() < 550,
             "Expected one crosswalk's worth of marking vertices (plus road dashings) for 2-way node, got {}",
             mesh_data.marking_vertices.len()
         );

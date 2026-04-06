@@ -277,7 +277,7 @@ fn test_crosswalk_counts() {
                 }
             }
         }
-        crosswalk_lanes.len() / 2
+        crosswalk_lanes.len()
     }
 
     assert_eq!(count_crosswalks_at(&lanes, &graph, n0 as usize), 1);

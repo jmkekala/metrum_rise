@@ -158,6 +158,7 @@ pub fn build_pedestrian_connections_at_node(
     // Pass 1 — crosswalks: one per road arm regardless of angular adjacency.
     // Same-arm mouths share an identical `dir` (derived from the same edge), so dot ≈ +1.
     // We process each unordered pair once (i < j) to avoid duplicate geometry.
+    let mut crosswalks_added = 0;
     for i in 0..num_mouths {
         for j in (i + 1)..num_mouths {
             let dot = mouths[i].dir.dot(mouths[j].dir);
@@ -168,8 +169,10 @@ pub fn build_pedestrian_connections_at_node(
             if override_opt == Some(false) {
                 continue;
             } else if override_opt == None {
-                // Bends and pass-through nodes (deg ≤ 2) are not intersections; no crossings.
-                if deg <= 2 { continue; }
+                // Dead-ends always have one crosswalk. Bends get only one (the "one crosswalk rule").
+                if deg == 2 && crosswalks_added >= 1 {
+                    continue;
+                }
             }
             
             let steps = vec![mouths[i].road_edge_pos, mouths[j].road_edge_pos];
@@ -217,6 +220,7 @@ pub fn build_pedestrian_connections_at_node(
             let key2 = (mouths[j].edge_idx, mouths[j].lane_idx);
             let val2 = (mouths[i].edge_idx, mouths[i].lane_idx);
             graph.nodes[node_id].lane_connections.entry(key2).or_default().push(val2);
+            crosswalks_added += 1;
         }
     }
 
