@@ -380,16 +380,9 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **R10. Split `simulation/buildings/allocator.rs` (1163 lines)** — Modularized into specialized sub-modules (placement, lifecycle, index, and geometry). This refactor separates building placement logic from state maintenance and removal, unblocking future asset expansions and parallel simulation passes.
 
-**Top 4 code refactors to do next (2026-04-06 follow-up):**
+[DONE] **R11. Break `simulation/network/topology.rs` phase logic into focused helpers** — `process_intersections` and `split_edge` refactored into modular sub-phases: `scan_intersection_candidates`, `collect_crossing_splits`, `collect_endpoint_snap_splits`, `apply_splits`, and `migrate_split_dependents`. This eliminates the monolithic 300-line mutation loop and provides a cleaner entry point for future elevated/bridge topology rules.
 
-**R11. Break `simulation/network/topology.rs` phase logic into focused helpers** — the file was successfully consolidated, but `process_intersections` (~200 lines) and `split_edge` (~120 lines) still each do too many things at once: candidate query, crossing scan, endpoint snapping, factor refinement, split scheduling, edge mutation, zoning migration, and building migration. Recommended extraction:
-- `scan_intersection_candidates(...)`
-- `collect_crossing_splits(...)`
-- `collect_endpoint_snap_splits(...)`
-- `apply_splits(...)`
-- `migrate_split_dependents(...)`
-
-**Target: before any more bridge/tunnel rules, frontage-node work, or new network edit tool.** This is now the highest-risk mutation path in the road system.
+**Top 3 code refactors to do next (2026-04-06 follow-up):**
 
 **R12. Split `nodes/sim/render_helpers.rs` (976 lines)** — zoning visuals, agent transforms, car transforms, path-debug buffers, building transforms, plot transforms, and road mesh export are all bundled into one Godot bridge file. Recommended split:
 - `nodes/sim/render/agents.rs` — pedestrian/car transforms and path debug

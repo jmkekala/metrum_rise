@@ -368,10 +368,7 @@ impl RegionGraph {
     }
 }
 
-fn find_or_add_intersection_node(
-    graph: &mut RegionGraph,
-    pos: Vector3,
-) -> u32 {
+fn find_or_add_intersection_node(graph: &mut RegionGraph, pos: Vector3) -> u32 {
     graph.find_or_add_node(pos, INTERSECTION_NODE_CAPTURE_EPSILON, NodeType::Junction)
 }
 
@@ -386,7 +383,8 @@ fn snap_new_edge_endpoint_to_intersection(
     } else {
         graph.edge(edge_id).end_node
     });
-    let active_degree = graph.node_adjacency(node_id)
+    let active_degree = graph
+        .node_adjacency(node_id)
         .iter()
         .filter(|&&incident_edge| !graph.edge(incident_edge).deleted)
         .count();
@@ -398,63 +396,43 @@ fn snap_new_edge_endpoint_to_intersection(
     }
 }
 
-/// Scans for and processes all intersections for a given edge.
-///
-/// This includes both physical crossings (splitting edges) and snapping
-/// endpoints to nearby nodes/edges.
-pub fn process_intersections(
-    network: &mut TransitNetwork,
-    graph: &mut RegionGraph,
-    edge_id: usize,
-    zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
-    allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
-) {
-    let t0 = std::time::Instant::now();
-    let mut all_splits: HashMap<usize, Vec<(f32, u32)>> = HashMap::new();
-
-    // 1. Find all intersections (crossing AND touching/snapping).
-    // Use the spatial R-tree to restrict candidates to edges whose AABB overlaps
-    // the new edge — avoids the O(E) full scan.
-    let (mut min_x, mut max_x, mut min_z, mut max_z) =
-        (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+/// Finds all edges whose AABB overlaps the new edge's padded AABB.
+pub(crate) fn scan_intersection_candidates(graph: &RegionGraph, edge_id: usize) -> Vec<usize> {
+    let mut min_x = f32::MAX;
+    let mut max_x = f32::MIN;
+    let mut min_z = f32::MAX;
+    let mut max_z = f32::MIN;
     for p in &graph.edge(edge_id).geometry {
         min_x = min_x.min(p.x);
         max_x = max_x.max(p.x);
         min_z = min_z.min(p.z);
         max_z = max_z.max(p.z);
     }
-    // Pad by snap tolerance so endpoint-touching edges are included.
-    let pad = crate::config::SNAP_TOLERANCE + 1.0;
-    let t_aabb = std::time::Instant::now();
-    let candidates = graph.get_edges_near_aabb(
+    let pad = config::SNAP_TOLERANCE + 1.0;
+    graph.get_edges_near_aabb(
         godot::prelude::Vector3::new(min_x - pad, 0.0, min_z - pad),
         godot::prelude::Vector3::new(max_x + pad, 0.0, max_z + pad),
-    );
-    // Downsample new edge once for crossing detection — endpoints are preserved.
-    let edge1_geo_ds = downsample(&graph.edge(edge_id).geometry, ISECT_MIN_STEP);
-    // Remember original length so endpoint factors reference the correct segment count.
-    let edge1_original_len = graph.edge(edge_id).geometry.len();
-    let dt_aabb_us = t_aabb.elapsed().as_micros();
-    let n_candidates = candidates.len();
-    let n_edge1_pts = graph.edges[edge_id].geometry.len();
-    let n_edge1_ds = edge1_geo_ds.len();
+    )
+}
 
-    let t_scan = std::time::Instant::now();
-    let mut n_cross_iters = 0u32;
-    let mut n_cand2_max_ds = 0usize; // largest ds-point-count seen among candidates
-    for other_id in candidates {
+/// Identifies all physical road crossings where edges intersect in 2D.
+fn collect_crossing_splits(
+    graph: &mut RegionGraph,
+    edge_id: usize,
+    candidates: &[usize],
+    all_splits: &mut HashMap<usize, Vec<(f32, u32)>>,
+) {
+    let edge1_geo_full = graph.edge(edge_id).geometry.clone();
+    let edge1_geo_ds = downsample(&edge1_geo_full, ISECT_MIN_STEP);
+
+    for &other_id in candidates {
         if graph.edge(other_id).deleted {
             continue;
         }
 
-        // Full-resolution clone: used for (a) endpoint snapping and (b) mapping
-        // detected crossing positions back to original-geometry factors.
         let edge2_geo_full = graph.edge(other_id).geometry.clone();
-        // Downsampled: used for the O(segs²) crossing inner loop only.
         let edge2_geo_ds = downsample(&edge2_geo_full, ISECT_MIN_STEP);
-        if edge2_geo_ds.len() > n_cand2_max_ds { n_cand2_max_ds = edge2_geo_ds.len(); }
 
-        // --- Crossing detection (uses downsampled geometry) ---
         for i in 0..edge1_geo_ds.len() - 1 {
             let d1 = edge1_geo_ds[i + 1] - edge1_geo_ds[i];
             let l1 = d1.length();
@@ -467,7 +445,6 @@ pub fn process_intersections(
                 if edge_id == other_id && (i as i32 - j as i32).abs() < 5 {
                     continue;
                 }
-                n_cross_iters += 1;
 
                 let d2 = edge2_geo_ds[j + 1] - edge2_geo_ds[j];
                 let l2 = d2.length();
@@ -494,74 +471,104 @@ pub fn process_intersections(
                     }
 
                     let pos = p1;
- 
-                    // Map approximate position back to original-geometry factors so
-                    // split_edge receives a correct segment index.
-                    let factor_t = find_geo_factor(&graph.edge(edge_id).geometry, pos);
+                    let factor_t = find_geo_factor(&edge1_geo_full, pos);
                     let factor_u = find_geo_factor(&edge2_geo_full, pos);
 
                     let junction_id = find_or_add_intersection_node(graph, pos);
-
-                    all_splits.entry(edge_id).or_default().push((factor_t, junction_id));
-                    all_splits.entry(other_id).or_default().push((factor_u, junction_id));
-                }
-            }
-        }
-
-        // --- Endpoint snapping ---
-        // Phase 1: scan downsampled geometry to quickly reject non-snap candidates.
-        // Phase 2: if within guard threshold, refine with find_geo_factor on full-res.
-        if edge_id != other_id {
-            let snap_guard = config::INTERSECTION_TOLERANCE + ISECT_MIN_STEP;
-            let endpoints = [edge1_geo_ds[0], *edge1_geo_ds.last().unwrap()];
-            for (idx, &p) in endpoints.iter().enumerate() {
-                let factor_t = if idx == 0 { 0.0 } else { (edge1_original_len - 1) as f32 };
-
-                let mut best_dist = f32::MAX;
-                let mut best_closest = godot::prelude::Vector3::ZERO;
-                for j in 0..edge2_geo_ds.len() - 1 {
-                    let p1 = edge2_geo_ds[j];
-                    let p2 = edge2_geo_ds[j + 1];
-                    let closest = interaction::get_closest_point_on_segment(p, p1, p2);
-                    let dist = Vector2::new(p.x - closest.x, p.z - closest.z).length();
-                    if dist < best_dist {
-                        best_dist = dist;
-                        best_closest = closest;
-                    }
-                }
-
-                if best_dist < snap_guard && (p.y - best_closest.y).abs() < 4.5 {
-                    // Refine: find exact factor in full-res geometry.
-                    let factor_u = find_geo_factor(&edge2_geo_full, best_closest);
-                    let close_enough = {
-                        // Verify against full-res: reproject to ensure within tolerance.
-                        let seg = factor_u.floor() as usize;
-                        let t = factor_u.fract();
-                        let seg = seg.min(edge2_geo_full.len() - 2);
-                        let refined = edge2_geo_full[seg].lerp(edge2_geo_full[seg + 1], t);
-                        Vector2::new(p.x - refined.x, p.z - refined.z).length()
-                            < config::INTERSECTION_TOLERANCE
-                    };
-                    if close_enough {
-                        let junction_id = snap_new_edge_endpoint_to_intersection(
-                            graph, edge_id, idx == 0, best_closest,
-                        );
-                        all_splits.entry(edge_id).or_default().push((factor_t, junction_id));
-                        all_splits.entry(other_id).or_default().push((factor_u, junction_id));
-                    }
+                    all_splits
+                        .entry(edge_id)
+                        .or_default()
+                        .push((factor_t, junction_id));
+                    all_splits
+                        .entry(other_id)
+                        .or_default()
+                        .push((factor_u, junction_id));
                 }
             }
         }
     }
+}
 
-    let dt_scan_us = t_scan.elapsed().as_micros();
-    let t_split = std::time::Instant::now();
+/// Checks endpoints of the new edge for snapping to existing edges or nodes.
+fn collect_endpoint_snap_splits(
+    graph: &mut RegionGraph,
+    edge_id: usize,
+    candidates: &[usize],
+    all_splits: &mut HashMap<usize, Vec<(f32, u32)>>,
+) {
+    let edge1_geo_full = graph.edge(edge_id).geometry.clone();
+    let edge1_geo_ds = downsample(&edge1_geo_full, ISECT_MIN_STEP);
+    let original_len = edge1_geo_full.len();
 
-    // 2. Process splits for each edge
+    let snap_guard = config::INTERSECTION_TOLERANCE + ISECT_MIN_STEP;
+    let endpoints = [edge1_geo_ds[0], *edge1_geo_ds.last().unwrap()];
+
+    for &other_id in candidates {
+        if edge_id == other_id || graph.edge(other_id).deleted {
+            continue;
+        }
+
+        let edge2_geo_full = graph.edge(other_id).geometry.clone();
+        let edge2_geo_ds = downsample(&edge2_geo_full, ISECT_MIN_STEP);
+
+        for (idx, &p) in endpoints.iter().enumerate() {
+            let factor_t = if idx == 0 {
+                0.0
+            } else {
+                (original_len - 1) as f32
+            };
+
+            let mut best_dist = f32::MAX;
+            let mut best_closest = godot::prelude::Vector3::ZERO;
+            for j in 0..edge2_geo_ds.len() - 1 {
+                let closest = interaction::get_closest_point_on_segment(p, edge2_geo_ds[j], edge2_geo_ds[j + 1]);
+                let dist = Vector2::new(p.x - closest.x, p.z - closest.z).length();
+                if dist < best_dist {
+                    best_dist = dist;
+                    best_closest = closest;
+                }
+            }
+
+            if best_dist < snap_guard && (p.y - best_closest.y).abs() < 4.5 {
+                let factor_u = find_geo_factor(&edge2_geo_full, best_closest);
+                let seg = (factor_u.floor() as usize).min(edge2_geo_full.len() - 2);
+                let t = factor_u.fract();
+                let refined = edge2_geo_full[seg].lerp(edge2_geo_full[seg + 1], t);
+
+                if Vector2::new(p.x - refined.x, p.z - refined.z).length()
+                    < config::INTERSECTION_TOLERANCE
+                {
+                    let junction_id = snap_new_edge_endpoint_to_intersection(
+                        graph,
+                        edge_id,
+                        idx == 0,
+                        best_closest,
+                    );
+                    all_splits
+                        .entry(edge_id)
+                        .or_default()
+                        .push((factor_t, junction_id));
+                    all_splits
+                        .entry(other_id)
+                        .or_default()
+                        .push((factor_u, junction_id));
+                }
+            }
+        }
+    }
+}
+
+/// Applies all identified splits to the graph, handling node unification and edge splitting.
+fn apply_splits(
+    all_splits: HashMap<usize, Vec<(f32, u32)>>,
+    network: &mut TransitNetwork,
+    graph: &mut RegionGraph,
+    zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+    allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+) {
     for (eid, mut splits) in all_splits {
         let geo_len = graph.edge(eid).geometry.len();
         splits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
-        // Only dedup if it's the EXACT same junction ID to avoid skipping nearby splits
         splits.dedup_by(|a, b| a.1 == b.1);
 
         for (factor, junction_id) in splits {
@@ -593,13 +600,88 @@ pub fn process_intersections(
             );
         }
     }
-    let dt_split_us = t_split.elapsed().as_micros();
+}
+
+/// Migrates zoning occupancy and buildings when an edge is split.
+fn migrate_split_dependents(
+    edge_id: usize,
+    new_edge_id: usize,
+    split_x: usize,
+    new_len_first: f32,
+    new_len_second: f32,
+    zoning: &crate::simulation::grid::zoning::ZoningSystem,
+    allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+) {
+    let cell_size = zoning.config.zone_cell_m;
+
+    // Migrate buildings
+    for b in &mut allocator.buildings {
+        if b.edge_idx == edge_id {
+            if b.cell_x >= split_x {
+                b.edge_idx = new_edge_id;
+                b.cell_x = b.cell_x.saturating_sub(split_x);
+                let half_cells = b.width_cells as f32 * 0.5;
+                b.frontage_t = (b.cell_x as f32 + half_cells) * cell_size / new_len_second.max(0.001);
+            } else {
+                let half_cells = b.width_cells as f32 * 0.5;
+                b.frontage_t = (b.cell_x as f32 + half_cells) * cell_size / new_len_first.max(0.001);
+            }
+        }
+    }
+
+    // Migrate edge occupancy
+    if let Some(old_occ) = allocator.edge_occupancy.remove(&edge_id) {
+        let part1_len = split_x.min(old_occ.cells_long);
+        let part2_len = old_occ.cells_long.saturating_sub(split_x);
+        allocator.edge_occupancy.insert(
+            edge_id,
+            crate::simulation::buildings::allocator::EdgeOccupancy {
+                cells_long: part1_len,
+                left: old_occ.left[..part1_len].to_vec(),
+                right: old_occ.right[..part1_len].to_vec(),
+            },
+        );
+        if part2_len > 0 {
+            allocator.edge_occupancy.insert(
+                new_edge_id,
+                crate::simulation::buildings::allocator::EdgeOccupancy {
+                    cells_long: part2_len,
+                    left: old_occ.left[split_x..].to_vec(),
+                    right: old_occ.right[split_x..].to_vec(),
+                },
+            );
+        }
+    }
+}
+
+/// Scans for and processes all intersections for a given edge.
+pub fn process_intersections(
+    network: &mut TransitNetwork,
+    graph: &mut RegionGraph,
+    edge_id: usize,
+    zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+    allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
+) {
+    let t0 = std::time::Instant::now();
+
+    // 1. Scan for candidates
+    let candidates = scan_intersection_candidates(graph, edge_id);
+    let mut all_splits: HashMap<usize, Vec<(f32, u32)>> = HashMap::new();
+
+    // 2. Collect all splits from crossings and endpoint snaps
+    collect_crossing_splits(graph, edge_id, &candidates, &mut all_splits);
+    collect_endpoint_snap_splits(graph, edge_id, &candidates, &mut all_splits);
+
+    // 3. Apply splits to the graph and dependent systems
+    apply_splits(all_splits, network, graph, zoning, allocator);
+
     let dt_total_us = t0.elapsed().as_micros();
     crate::debug_log!(
         "isect",
-        "e{}  pts={}/ds={}  cands={}(max_cand_ds={})  iters={}  aabb={}µs scan={}µs splits={}µs  total={}µs",
-        edge_id, n_edge1_pts, n_edge1_ds, n_candidates, n_cand2_max_ds, n_cross_iters,
-        dt_aabb_us, dt_scan_us, dt_split_us, dt_total_us
+        "e{} candidates={} total={}µs",
+        edge_id,
+        candidates.len(),
+        dt_total_us
     );
 }
 
@@ -697,45 +779,19 @@ pub fn split_edge(
     let new_edge_id = graph.add_edge(new_edge);
 
     // --- MIGRATION LOGIC ---
-    let cell_size = zoning.config.zone_cell_m;
-    let new_len_first  = graph.edge(edge_id).physical_length;
+    let new_len_first = graph.edge(edge_id).physical_length;
     let new_len_second = graph.edge(new_edge_id).physical_length;
-    // split_x = number of zone cells in the first half of the split edge.
-    let split_x = (new_len_first / cell_size).floor() as usize;
+    let split_x = (new_len_first / zoning.config.zone_cell_m).floor() as usize;
 
-    // Migrate buildings: reassign edge_idx and update frontage_t for buildings
-    // that crossed the split point. Zone type is looked up from the world grid
-    // on the fly, so no zone data needs migrating.
-    for b in &mut allocator.buildings {
-        if b.edge_idx == edge_id {
-            if b.cell_x >= split_x {
-                b.edge_idx = new_edge_id;
-                b.cell_x = b.cell_x.saturating_sub(split_x);
-                let half_cells = b.width_cells as f32 * 0.5;
-                b.frontage_t = (b.cell_x as f32 + half_cells) * cell_size / new_len_second.max(0.001);
-            } else {
-                let half_cells = b.width_cells as f32 * 0.5;
-                b.frontage_t = (b.cell_x as f32 + half_cells) * cell_size / new_len_first.max(0.001);
-            }
-        }
-    }
-    // Migrate edge_occupancy: split the frontage occupancy tracker.
-    if let Some(old_occ) = allocator.edge_occupancy.remove(&edge_id) {
-        let part1_len = split_x.min(old_occ.cells_long);
-        let part2_len = old_occ.cells_long.saturating_sub(split_x);
-        allocator.edge_occupancy.insert(edge_id, crate::simulation::buildings::allocator::EdgeOccupancy {
-            cells_long: part1_len,
-            left:  old_occ.left[..part1_len].to_vec(),
-            right: old_occ.right[..part1_len].to_vec(),
-        });
-        if part2_len > 0 {
-            allocator.edge_occupancy.insert(new_edge_id, crate::simulation::buildings::allocator::EdgeOccupancy {
-                cells_long: part2_len,
-                left:  old_occ.left[split_x..].to_vec(),
-                right: old_occ.right[split_x..].to_vec(),
-            });
-        }
-    }
+    migrate_split_dependents(
+        edge_id,
+        new_edge_id,
+        split_x,
+        new_len_first,
+        new_len_second,
+        zoning,
+        allocator,
+    );
 
     // distance_to_road grid does not need updating per split; it is recomputed
     // once after the full road placement in add_road / finalize_bulk_load.
