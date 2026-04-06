@@ -17,6 +17,29 @@ pub fn build_cum_dist(geometry: &[Vector3]) -> Vec<f32> {
     v
 }
 
+/// Trims `dist` metres from the front of `geom`, returning the truncated polyline starting at
+/// the interpolated cut point. Returns a single-point slice at the far end if `dist` exceeds
+/// the total length.
+fn trim_from_front(geom: &[Vector3], dist: f32) -> Vec<Vector3> {
+    if dist <= 0.0 || geom.len() < 2 {
+        return geom.to_vec();
+    }
+    let mut acc = 0.0;
+    for i in 0..geom.len() - 1 {
+        let seg = geom[i].distance_to(geom[i + 1]);
+        if acc + seg >= dist {
+            let t = ((dist - acc) / seg.max(1e-6)).clamp(0.0, 1.0);
+            let cut = geom[i].lerp(geom[i + 1], t);
+            let mut out = Vec::with_capacity(geom.len() - i);
+            out.push(cut);
+            out.extend_from_slice(&geom[i + 1..]);
+            return out;
+        }
+        acc += seg;
+    }
+    vec![*geom.last().unwrap()]
+}
+
 /// Builds geometry and appends one straight lane to `lanes`, updating `lane_map` and `edge_lane_indices`.
 pub fn build_one_lane(
     lanes: &mut Vec<Lane>,
@@ -57,6 +80,21 @@ pub fn build_one_lane(
     let t_last = if d_last.length() > 1e-5 { d_last.normalized() } else { t0 };
     let n_last = Vector3::new(-t_last.z, 0.0, t_last.x);
     geometry.push(pts[pts.len() - 1] + n_last * lane_offset);
+
+    // Clip lane endpoints to stop at the visual junction boundary, matching the road mesh.
+    // start_clip trims from pts[0] (start_node) side; end_clip from pts.last() (end_node) side.
+    if edge.start_clip > 0.0 {
+        geometry = trim_from_front(&geometry, edge.start_clip);
+    }
+    if edge.end_clip > 0.0 {
+        geometry.reverse();
+        geometry = trim_from_front(&geometry, edge.end_clip);
+        geometry.reverse();
+    }
+
+    if geometry.len() < 2 {
+        return; // Edge too short after clipping — skip.
+    }
 
     if !is_fwd {
         geometry.reverse();
