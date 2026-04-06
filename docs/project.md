@@ -384,16 +384,9 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **R12. Split `nodes/sim/render_helpers.rs` (976 lines)** — zoning visuals, agent transforms, car transforms, path-debug buffers, building transforms, plot transforms, and road mesh export decoupled into `nodes/sim/render/` sub-modules. This separation isolates Godot-facing transform logic and image generation from the core simulation, clarifying the bridge architecture.
 
+[DONE] **R13. Split `nodes/sim/query.rs` (937 lines)** — terrain raycasts, edge projection math, hovered-edge selection, lane/node inspection, border-node queries, and city stats are decoupled into `nodes/sim/query/` sub-modules. This split clarifies the distinction between low-level geometric math (terrain/network) and high-level simulation state inspection (stats/lanes).
+
 **Top 3 code refactors to do next (2026-04-06 follow-up):**
-
-**Target: before the asset registry / asset editor starts changing runtime render payloads.** Right now one file absorbs nearly every render-facing schema change.
-
-**R13. Split `nodes/sim/query.rs` (937 lines)** — terrain raycasts, edge projection math, hovered-edge selection, lane/node inspection, border-node queries, and city stats are all mixed together. Recommended split:
-- `nodes/sim/query/terrain.rs` — `get_height_at_internal`, `intersect_terrain_internal`
-- `nodes/sim/query/network.rs` — closest point, edge geometry, frontage projection, obstacle polygons
-- `nodes/sim/query/debug.rs` — lane/node inspection helpers
-- `nodes/sim/query/stats.rs` — demographics and demand queries
-- `nodes/sim/query/mod.rs` — shared helpers only
 
 **Target: before adding more editor-side inspection tools (junction editor, asset editor integration, richer lane debugging).** This is the next Godot bridge file at risk of becoming an unreviewable grab-bag.
 

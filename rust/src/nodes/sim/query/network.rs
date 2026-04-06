@@ -1,65 +1,12 @@
-//! Spatial queries and projection helpers for the simulation node.
-//!
-//! ### Method Mapping
-//!
-//! | Category | Method | Godot Caller |
-//! |----------|--------|--------------|
-//! | **Stats**    | `get_city_demographics_internal` | `hud.gd` |
-//! |              | `get_demand_stats_internal`      | `hud.gd` |
-//! | **Terrain**  | `get_height_at_internal`         | `road_tool.gd`, `building_tool.gd` |
-//! |              | `get_heightmap_size_internal`    | `main.gd` |
-//! |              | `intersect_terrain_internal`     | `input_manager.gd` (mouse pick) |
-//! | **Network**  | `get_closest_network_point_internal` | `road_tool.gd`, `zoning_tool.gd` |
-//! |              | `get_closest_node_internal`      | `road_tool.gd`, `zoning_tool.gd` |
-//! |              | `get_node_pos_internal`          | `junction_tool.gd` |
-//! |              | `get_node_lanes_internal`        | `junction_tool.gd` |
-//! |              | `get_lane_connections_array_internal` | `junction_tool.gd` |
-//! |              | `get_node_connection_count_internal` | `junction_tool.gd` |
-//! |              | `get_network_nodes_internal`     | `main.gd` |
-//! |              | `get_hovered_edge_internal`      | `zoning_tool.gd` |
-//! |              | `get_max_polygon_depth_internal` | `zoning_tool.gd` |
-//! |              | `get_closest_point_on_edge_internal` | `zoning_tool.gd` |
-//! |              | `get_edge_geometry_internal`     | `zoning_tool.gd` |
-//! |              | `get_curved_frontage_internal`   | `zoning_tool.gd` |
-//! |              | `get_network_direction_at_point_internal` | `road_tool.gd` |
-//! |              | `get_edge_pos_and_tangent`       | Internal (Zoning/Render) |
-//! |              | `get_projection_data`            | Internal (Network) |
-//! |              | `get_obstacle_polygons_internal` | `zoning_tool.gd` |
-//! |              | `get_border_nodes_internal`      | `road_tool.gd` |
+//! Road-network spatial queries (closest-point identification, edge projection).
 
-use crate::config::{HEIGHT_SCALE, DEFAULT_ZONING_DEPTH};
+use crate::config::DEFAULT_ZONING_DEPTH;
 use crate::nodes::sim::core::SimCore;
-use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::interaction;
 use godot::prelude::*;
-
-fn is_canonical_node(graph: &RegionGraph, node_id: u32) -> bool {
-    graph.get_valid_node(node_id) == node_id
-}
-
-fn get_closest_canonical_node(graph: &RegionGraph, world_pos: Vector3, max_dist: f32) -> i32 {
-    let mut best_id = -1;
-    let mut min_d = max_dist;
-    for (i, node) in graph.nodes().iter().enumerate() {
-        let node_id = i as u32;
-        if !is_canonical_node(graph, node_id) {
-            continue;
-        }
-        let d = node.pos.distance_to(world_pos);
-        if d < min_d {
-            min_d = d;
-            best_id = node_id as i32;
-        }
-    }
-    best_id
-}
+use super::{is_canonical_node, get_closest_canonical_node};
 
 impl SimCore {
-    /// Returns the heightmap dimensions as a Godot Vector2.
-    pub fn get_heightmap_size_internal(&self) -> Vector2 {
-        Vector2::new(self.heightmap.width as f32, self.heightmap.height as f32)
-    }
-
     /// Projects a world position onto a road edge.
     pub fn get_projection_data(
         &self,
@@ -151,9 +98,6 @@ impl SimCore {
             godot::prelude::Vector2::new(1.0, 0.0),
         )
     }
-
-    // ── Network ──
-
 
     /// Returns obstacle polygons for zoning tool overlap checks.
     pub fn get_obstacle_polygons_internal(
@@ -442,7 +386,6 @@ impl SimCore {
         }
     }
 
-
     /// Returns the physical geometry of a road edge as a sequence of points.
     pub fn get_edge_geometry_internal(&self, edge_idx: i32) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
@@ -473,7 +416,7 @@ impl SimCore {
     ) -> PackedVector2Array {
         let mut arr = PackedVector2Array::new();
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
-            return arr; // Explicitly Fail! No straight-line phantom frontages.
+            return arr;
         }
         let edge = self.region_graph.edge(edge_idx as usize);
         let hw = edge.width / 2.0;
@@ -573,82 +516,6 @@ impl SimCore {
         arr
     }
 
-
-    // ── Terrain ──
-
-    /// Returns the terrain height at the given world position.
-    pub fn get_height_at_internal(&self, pos: Vector2) -> f32 {
-        let size = self.get_heightmap_size_internal();
-        let hw = (size.x - 1.0) * 0.5;
-        let hh = (size.y - 1.0) * 0.5;
-        let gx = pos.x + hw;
-        let gz = pos.y + hh;
-        self.heightmap.get_height_interpolated(gx, gz) * HEIGHT_SCALE
-    }
-
-    // ── Stats ──
-
-    /// Returns the demographic statistics for the city.
-    pub fn get_city_demographics_internal(&self) -> VarDictionary {
-        let mut dict = VarDictionary::new();
-
-        // Calculate population
-        let pop = self.agents.len();
-
-        let mut employed = 0;
-        let mut sum_happiness = 0.0;
-        let mut sum_wealth = 0.0;
-
-        if pop > 0 {
-            for i in 0..pop {
-                if self.agents.work_building[i] != usize::MAX {
-                    employed += 1;
-                }
-                sum_happiness += self.agents.happiness[i];
-                sum_wealth += self.agents.money[i];
-            }
-            let emp_rate = (employed as f32 / pop as f32) * 100.0;
-            let avg_hap = sum_happiness / pop as f32;
-            let avg_wealth = sum_wealth / pop as f32;
-
-            dict.set("population", pop as i32);
-            dict.set("employment_rate", emp_rate);
-            dict.set("average_happiness", avg_hap);
-            dict.set("average_wealth", avg_wealth);
-        } else {
-            dict.set("population", 0_i32);
-            dict.set("employment_rate", 0.0_f32);
-            dict.set("average_happiness", 100.0_f32);
-            dict.set("average_wealth", 0.0_f32);
-        }
-
-        dict
-    }
-
-    /// Returns current residential, commercial, and industrial demand values (-100 to 100).
-    pub fn get_demand_stats_internal(&self) -> VarDictionary {
-        let mut dict = VarDictionary::new();
-        dict.set("residential", self.demand.residential);
-        dict.set("commercial", self.demand.commercial);
-        dict.set("industrial", self.demand.industrial);
-        dict
-    }
-
-    /// Determines if a crosswalk exists (either by procedural logic or user override).
-    pub fn has_crosswalk_internal(&self, node_id: u32, edge_id: i32) -> bool {
-        let valid_id = self.region_graph.get_valid_node(node_id);
-        if valid_id as usize >= self.region_graph.node_count() || edge_id < 0 {
-            return false;
-        }
-        let node = self.region_graph.node(valid_id);
-        if let Some(&forced) = node.crosswalk_overrides.get(&(edge_id as usize)) {
-            return forced;
-        }
-        // Procedural fallback
-        let deg = self.region_graph.node_adjacency_count_at(valid_id);
-        deg > 2
-    }
-
     /// Returns the closest network point (node/edge) within range.
     pub fn get_closest_network_point_internal(
         &self,
@@ -692,27 +559,6 @@ impl SimCore {
         }
     }
 
-    /// Returns an array of current lane turn restrictions at a node.
-    pub fn get_lane_connections_array_internal(&self, node_id: u32) -> VarArray {
-        let mut arr = VarArray::new();
-        if node_id as usize >= self.region_graph.node_count() {
-            return arr;
-        }
-        let node = self.region_graph.node(node_id);
-
-        for (src, targets) in &node.lane_connections {
-            for tgt in targets {
-                let mut dict = VarDictionary::new();
-                dict.set("from_edge", src.0 as i32);
-                dict.set("from_lane", src.1 as i32);
-                dict.set("to_edge", tgt.0 as i32);
-                dict.set("to_lane", tgt.1 as i32);
-                arr.push(&dict.to_variant());
-            }
-        }
-        arr
-    }
-
     /// Returns the average network direction at a given point.
     pub fn get_network_direction_at_point_internal(&self, pos: Vector3) -> Vector3 {
         let mut avg_dir = Vector3::ZERO;
@@ -750,167 +596,7 @@ impl SimCore {
         }
     }
 
-    /// Raycasts against the terrain heightmap.
-    pub fn intersect_terrain_internal(
-        &self,
-        ray_origin: Vector3,
-        ray_dir: Vector3,
-    ) -> Option<Vector3> {
-        self.heightmap.raycast_terrain(ray_origin, ray_dir)
-    }
-
-    /// Returns a list of all lanes at the given node for visual tool feedback.
-    pub fn get_node_lanes_internal(&self, node_id: u32) -> VarArray {
-        let mut arr = VarArray::new();
-
-        let valid_node_id = self.region_graph.get_valid_node(node_id);
-        if valid_node_id as usize >= self.region_graph.node_count() {
-            return arr;
-        }
-
-        let junction_pos = self.region_graph.node(valid_node_id).pos;
-
-        for (e_id, edge) in self.region_graph.edges().iter().enumerate() {
-            // Check both ends independently
-            let check_start = edge.start_node == valid_node_id;
-            let check_end = edge.end_node == valid_node_id;
-
-            if !check_start && !check_end {
-                continue;
-            }
-
-            // PREFER LOGICAL GEOMETRY for robust visuals
-            let geo = if edge.geometry.len() >= 2 {
-                &edge.geometry
-            } else {
-                &edge.physical_geometry
-            };
-            if geo.len() < 2 {
-                continue;
-            }
-            let lc = geo.len();
-
-            // Process each end that matches this junction.
-            // If both match (self-loop), we process it twice for both stub ends!
-            let possible_ends = if check_start && check_end {
-                vec![true, false]
-            } else if check_start {
-                vec![true]
-            } else {
-                vec![false]
-            };
-
-            for is_start_side in possible_ends {
-                // 1. Establish robust "Into-the-Leg" direction
-                // ANCHOR: We must skip the "stub" (points near the center from merged nodes)
-                // Search for the first point at least 3.1m away (HUB_RADIUS + margin)
-                const SEARCH_RADIUS: f32 = 3.1;
-                let mut diff = Vector3::ZERO;
-                let mut best_stub = Vector3::ZERO;
-
-                if is_start_side {
-                    for j in 0..lc {
-                        let d = geo[j] - junction_pos;
-                        if d.length() > SEARCH_RADIUS {
-                            diff = d;
-                            break;
-                        }
-                        if d.length() > 0.1 {
-                            best_stub = d;
-                        }
-                    }
-                } else {
-                    for j in (0..lc).rev() {
-                        let d = geo[j] - junction_pos;
-                        if d.length() > SEARCH_RADIUS {
-                            diff = d;
-                            break;
-                        }
-                        if d.length() > 0.1 {
-                            best_stub = d;
-                        }
-                    }
-                }
-
-                // Fallback: If the road is very short, use the best stub or just the other end.
-                if diff.length_squared() < 0.01 {
-                    if best_stub.length_squared() > 0.01 {
-                        diff = best_stub;
-                    } else {
-                        // Absolute fallback: other node's pos
-                        let other_node = if is_start_side {
-                            edge.end_node
-                        } else {
-                            edge.start_node
-                        };
-                        diff = self.region_graph.node(other_node).pos - junction_pos;
-                    }
-                }
-
-                if diff.length_squared() < 1e-6 {
-                    continue;
-                }
-                let dir_to_leg = diff.normalized();
-
-                // ANCHOR: Use a CONSISTENT Forward Tangent to prevent side-flipping (criss-cross)
-                // If at start, dir_to_leg is forward. If at end, -dir_to_leg is forward.
-                let forward_tangent = if is_start_side {
-                    dir_to_leg
-                } else {
-                    -dir_to_leg
-                };
-                let road_normal = Vector3::new(-forward_tangent.z, 0.0, forward_tangent.x);
-
-                // 2. Base position offset (5.0m ensures it's clearly past the 3.0m hub)
-                let mut current_pos = junction_pos + dir_to_leg * 5.0;
-                current_pos.y += 0.4;
-
-                let fwd_lanes = edge.fwd_lanes;
-                let bkw_lanes = edge.bkw_lanes;
-                let total_lanes = (fwd_lanes + bkw_lanes) as i32;
-                let lane_w = 1.0;
-
-                // Process ALL lanes at this end
-                for l_idx in 0..total_lanes {
-                    let is_fwd = l_idx < fwd_lanes as i32;
-                    // RHT Logic: Fwd lanes (lower indices) stay on the Right (+lateral_offset)
-                    let lateral_offset = (total_lanes as f32 * 0.5 - l_idx as f32 - 0.5) * lane_w;
-
-                    // Always use road_normal for lateral placement
-                    let mut lane_pos = current_pos + road_normal * lateral_offset;
-                    lane_pos.y += 0.2; // Slightly lower spheres for schematic view
-
-                    let mut dict = VarDictionary::new();
-                    dict.set("edge_id", e_id as i32);
-                    dict.set(
-                        "lane_id",
-                        if is_fwd {
-                            l_idx
-                        } else {
-                            -(l_idx - fwd_lanes as i32 + 1)
-                        },
-                    );
-                    dict.set(
-                        "is_incoming",
-                        if is_fwd {
-                            !is_start_side
-                        } else {
-                            is_start_side
-                        },
-                    );
-                    dict.set("pos", lane_pos);
-                    arr.push(&dict.to_variant());
-                }
-            }
-        }
-        arr
-    }
-
     /// Returns the world-space positions of all active border (external connection) nodes.
-    ///
-    /// Each border node is returned as a flat `[x, y, z]` triple packed into a
-    /// `PackedFloat32Array`. Use this to render external-connection icons in Godot.
-    /// Only canonical (non-alias) nodes with `NodeType::Border` are included.
     pub fn get_border_nodes_internal(&self) -> PackedFloat32Array {
         let mut arr = PackedFloat32Array::new();
         for (i, node) in self.region_graph.nodes().iter().enumerate() {
@@ -925,28 +611,5 @@ impl SimCore {
             arr.push(node.pos.z);
         }
         arr
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{get_closest_canonical_node, is_canonical_node};
-    use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::network::types::NodeType;
-    use godot::prelude::Vector3;
-
-    #[test]
-    fn merged_alias_nodes_are_not_treated_as_live_query_nodes() {
-        let mut graph = RegionGraph::new();
-        let keep = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
-        let remove = graph.add_node(Vector3::new(10.2, 0.0, 0.0), NodeType::Junction);
-        graph.unite_nodes(keep, remove);
-
-        assert!(is_canonical_node(&graph, keep));
-        assert!(!is_canonical_node(&graph, remove));
-        assert_eq!(
-            get_closest_canonical_node(&graph, Vector3::new(10.1, 0.0, 0.0), 2.0),
-            keep as i32
-        );
     }
 }
