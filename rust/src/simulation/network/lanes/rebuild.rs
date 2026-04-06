@@ -73,8 +73,8 @@ impl LaneSystem {
 
         // 2. Build Connection Lanes (Intersections)
         for node_id in 0..graph.node_count() {
-            build_vehicle_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
-            build_pedestrian_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
+            build_vehicle_connections_at_node(&mut self.lanes, &lane_map, graph, node_id, &mut self.node_lanes);
+            build_pedestrian_connections_at_node(&mut self.lanes, &lane_map, graph, node_id, &mut self.node_lanes);
         }
     }
 
@@ -176,8 +176,18 @@ impl LaneSystem {
         // 7 & 8. Rebuild connections for every affected node.
         for &node_id in &affected_nodes {
             if node_id < graph.node_count() {
-                build_vehicle_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
-                build_pedestrian_connections_at_node(&mut self.lanes, &lane_map, graph, node_id);
+                // Tombstone old connection lanes at this node so the renderer skips them.
+                if let Some(old_ids) = self.node_lanes.remove(&node_id) {
+                    for lid in old_ids {
+                        if lid < self.lanes.len() {
+                            self.lanes[lid].is_crosswalk = false;
+                            self.lanes[lid].geometry.clear();
+                            self.lanes[lid].next_lanes.clear();
+                        }
+                    }
+                }
+                build_vehicle_connections_at_node(&mut self.lanes, &lane_map, graph, node_id, &mut self.node_lanes);
+                build_pedestrian_connections_at_node(&mut self.lanes, &lane_map, graph, node_id, &mut self.node_lanes);
             }
         }
     }

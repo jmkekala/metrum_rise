@@ -43,6 +43,8 @@ pub struct Lane {
     pub is_crosswalk: bool,
     /// Reachable lanes from the end of this lane.
     pub next_lanes: Vec<usize>,
+    /// The junction node this connection lane belongs to. `usize::MAX` for road lanes.
+    pub node_id: usize,
 }
 
 impl Default for Lane {
@@ -57,6 +59,7 @@ impl Default for Lane {
             lane_type: LaneType::Vehicle,
             is_crosswalk: false,
             next_lanes: Vec::new(),
+            node_id: usize::MAX,
         }
     }
 }
@@ -67,6 +70,8 @@ pub struct LaneSystem {
     pub lanes: Vec<Lane>,
     /// Mapping of edge IDs to their constituent lanes.
     pub edge_lanes: HashMap<usize, Vec<usize>>,
+    /// Mapping of node IDs to their connection lane indices (crosswalks and vehicle turns).
+    pub node_lanes: HashMap<usize, Vec<usize>>,
 }
 
 impl LaneSystem {
@@ -75,6 +80,7 @@ impl LaneSystem {
         Self {
             lanes: Vec::new(),
             edge_lanes: HashMap::new(),
+            node_lanes: HashMap::new(),
         }
     }
 
@@ -82,6 +88,7 @@ impl LaneSystem {
     pub fn clear(&mut self) {
         self.lanes.clear();
         self.edge_lanes.clear();
+        self.node_lanes.clear();
     }
 
     /// Retrieve the global `lane_id` given an `edge_idx` and a local `lane_idx`.

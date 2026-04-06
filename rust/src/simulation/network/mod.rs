@@ -305,12 +305,7 @@ impl TransitNetwork {
                 }
             }
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
-            // Full lane rebuild rather than incremental: the incremental path leaves orphaned
-            // crosswalk connection lanes (edge_id == usize::MAX) in lane_system.lanes because
-            // connection lanes are never removed by edge_lanes cleanup. All orphaned lanes are
-            // then rendered as stale crosswalks at old junction shapes.
-            // Road commits are infrequent so a full O(E×N) rebuild is acceptable here.
-            self.lane_system.rebuild(graph);
+            self.lane_system.rebuild_edges_incremental(graph, &affected_edges);
         }
 
         // Mark chunks as dirty

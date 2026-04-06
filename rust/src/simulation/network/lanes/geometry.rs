@@ -79,6 +79,7 @@ pub fn build_one_lane(
         lane_type,
         is_crosswalk: false,
         next_lanes: Vec::new(),
+        node_id: usize::MAX,
     });
     lane_map.insert((edge_idx, is_fwd, lane_idx), new_lane_id);
     edge_lane_indices.push(new_lane_id);

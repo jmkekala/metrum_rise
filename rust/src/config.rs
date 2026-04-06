@@ -27,6 +27,9 @@ pub const ROAD_H_OFFSET: f32 = 0.01;
 pub const LANE_WIDTH: f32 = 3.5;
 /// Width of a single sidewalk in metres, applied on each side of the road.
 pub const SIDEWALK_WIDTH: f32 = 1.5;
+/// How far inside the junction mouth crosswalks are placed, in metres.
+/// 0.0 = flush with the clip boundary; positive values push crosswalks further into the road.
+pub const CROSSWALK_INSET: f32 = 4.0;
 /// Fine Z-bias (metres) applied to overlay meshes (e.g., zoning highlights) to prevent Z-fighting with the road mesh.
 pub const Z_FIGHT_BIAS: f32 = 0.001;
 

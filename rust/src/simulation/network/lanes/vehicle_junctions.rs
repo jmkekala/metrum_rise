@@ -10,6 +10,7 @@ pub fn build_vehicle_connections_at_node(
     lane_map: &HashMap<(usize, bool, i8), usize>,
     graph: &RegionGraph,
     node_id: usize,
+    node_lanes: &mut std::collections::HashMap<usize, Vec<usize>>,
 ) {
     let mut inbound: Vec<(usize, i8, usize)> = Vec::new();
     let mut outbound: Vec<(usize, i8, usize)> = Vec::new();
@@ -117,7 +118,9 @@ pub fn build_vehicle_connections_at_node(
                 lane_type: LaneType::Vehicle,
                 is_crosswalk: false,
                 next_lanes: vec![out_lid],
+                node_id,
             });
+            node_lanes.entry(node_id).or_default().push(conn_id);
             lanes[in_lane_id].next_lanes.push(conn_id);
         }
     }

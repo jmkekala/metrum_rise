@@ -195,6 +195,7 @@ func _load_texture(path: String) -> Texture2D:
 
 static var _road_mat: ShaderMaterial = null
 static var _concrete_mat: ShaderMaterial = null
+static var _marking_mat: StandardMaterial3D = null
 
 func update_main_mesh():
 	if name != "RoadTool":
@@ -214,6 +215,14 @@ func update_main_mesh():
 		_road_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_rough_4k.png"))
 		_road_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/road/clean_asphalt/clean_asphalt_disp_4k.png"))
 	
+	if _marking_mat == null:
+		_marking_mat = StandardMaterial3D.new()
+		_marking_mat.vertex_color_use_as_albedo = true
+		_marking_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		_marking_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		_marking_mat.albedo_color = Color(1.0, 1.0, 1.0, 0.35)
+		_marking_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+
 	if _concrete_mat == null:
 		_concrete_mat = ShaderMaterial.new()
 		_concrete_mat.shader = load("res://assets/materials/concrete.gdshader")
@@ -247,7 +256,7 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_road_mat)
 
-	# Surface 2: Markings
+	# Surface 2: Markings (lane lines + crosswalk stripes — unlit white, semi-transparent)
 	if data.has("marking_vertices") and data.marking_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -256,7 +265,7 @@ func update_main_mesh():
 		arrays[Mesh.ARRAY_COLOR] = data.marking_colors
 		arrays[Mesh.ARRAY_TEX_UV] = data.marking_uvs
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-		surface_map.push_back(_road_mat)
+		surface_map.push_back(_marking_mat)
 
 	# Surface 3: Concrete
 	if data.has("concrete_vertices") and data.concrete_vertices.size() > 0:
