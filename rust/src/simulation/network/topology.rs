@@ -817,6 +817,7 @@ mod tests {
             cell_y: 0,
             occupancy: 0,
             asset_id: String::new(), level: 1,
+            broken: false,
         });
 
         // Split the road exactly at 50m (cell 5).

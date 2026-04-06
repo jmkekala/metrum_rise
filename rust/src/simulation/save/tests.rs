@@ -52,6 +52,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         center_x: 0.0, center_y: 0.0, width_cells: 3, depth_cells: 3, zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0), frontage_t: 0.5, side_offset: 1.0, abandoned_timer: 0,
         edge_idx: edge_id, side: 1, cell_x: 0, cell_y: 0, occupancy: 2, asset_id: String::new(), level: 1,
+        broken: false,
     });
     allocator.recompute_derived_transforms(&graph, &zoning).expect("transforms");
     world::repaint_building_occupancy(&mut zoning, &allocator).expect("occupancy");
@@ -79,7 +80,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         config: &config, time: &time, terrain: &terrain, water: &water, graph: &graph, zoning: &zoning,
         pollution: &pollution, noise: &noise, demand: &demand, allocator: &allocator, agents: &agents_sys, network: &network_sys,
     }).expect("save");
-    let loaded = load_from_sqlite(&path).expect("load");
+    let loaded = load_from_sqlite(&path, &allocator.registry).expect("load");
     fs::remove_file(&path).ok();
 
     assert_eq!(loaded.config.width_m, config.width_m);

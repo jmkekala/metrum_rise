@@ -1,0 +1,125 @@
+//! Building search indices and vacancy management.
+
+use crate::simulation::grid::zoning::ZoneType;
+use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
+use crate::simulation::network::graph::RegionGraph;
+
+impl BuildingAllocator {
+    /// Repopulates the internal zone and vacancy indices (Bug B16/B16a fix).
+    pub fn rebuild_zone_index(&mut self) {
+        for list in &mut self.zone_index {
+            list.clear();
+        }
+        for list in &mut self.vacancy_index {
+            list.clear();
+        }
+        self.vacancy_pos.clear();
+        self.vacancy_pos.resize(self.buildings.len(), usize::MAX);
+
+        for (idx, b) in self.buildings.iter().enumerate() {
+            let zi = b.zone_type as usize;
+            if zi < 6 {
+                self.zone_index[zi].push(idx);
+                if b.occupancy < self.building_capacity(idx) {
+                    let v_idx = self.vacancy_index[zi].len();
+                    self.vacancy_index[zi].push(idx);
+                    self.vacancy_pos[idx] = v_idx;
+                }
+            }
+        }
+        self.dirty_index = false;
+    }
+
+    /// Increments occupancy for a building and updates vacancy index if it becomes full. O(1).
+    pub fn claim_vacancy(&mut self, building_idx: usize) {
+        if building_idx >= self.buildings.len() {
+            return;
+        }
+        let cap = self.building_capacity(building_idx);
+        let b = &mut self.buildings[building_idx];
+        b.occupancy += 1;
+
+        // If it was in the vacancy list and is now full, remove it
+        if b.occupancy >= cap {
+            let zi = b.zone_type as usize;
+            let v_pos = self.vacancy_pos[building_idx];
+            if v_pos != usize::MAX {
+                let list = &mut self.vacancy_index[zi];
+                let last_b_idx = *list.last().unwrap();
+                list.swap_remove(v_pos);
+                self.vacancy_pos[last_b_idx] = v_pos;
+                self.vacancy_pos[building_idx] = usize::MAX;
+            }
+        }
+    }
+
+    /// Decrements occupancy for a building and updates vacancy index if it gained space. O(1).
+    pub fn release_vacancy(&mut self, building_idx: usize) {
+        if building_idx >= self.buildings.len() {
+            return;
+        }
+        let cap = self.building_capacity(building_idx);
+        let b = &mut self.buildings[building_idx];
+        b.occupancy = b.occupancy.saturating_sub(1);
+
+        // If it was full and now has space, add it back to vacancy index
+        if b.occupancy + 1 == cap {
+            let zi = b.zone_type as usize;
+            if self.vacancy_pos[building_idx] == usize::MAX {
+                let v_idx = self.vacancy_index[zi].len();
+                self.vacancy_index[zi].push(building_idx);
+                self.vacancy_pos[building_idx] = v_idx;
+            }
+        }
+    }
+
+    /// Pick a random building from a specific zone type. O(1).
+    pub fn get_random_building_by_zone(
+        &self,
+        zone: ZoneType,
+        rng: &mut impl rand::Rng,
+    ) -> Option<usize> {
+        let list = &self.zone_index[zone as usize];
+        if list.is_empty() {
+            return None;
+        }
+        Some(list[rng.gen_range(0..list.len())])
+    }
+
+    /// Returns `(depart_node, building_index)` pairs for all buildings of `zone`.
+    ///
+    /// Used by [`FlowFieldSystem::rebuild_dirty`] to seed the multi-source Dijkstra.
+    pub fn get_sources_for_zone(&self, zone: ZoneType, graph: &RegionGraph) -> Vec<(u32, usize)> {
+        self.zone_index[zone as usize]
+            .iter()
+            .map(|&idx| (building_depart_node(&self.buildings[idx], graph), idx))
+            .collect()
+    }
+
+    /// Pick a random building from any of the specified zone types. O(1).
+    pub fn get_random_building_by_zones(
+        &self,
+        zones: &[ZoneType],
+        rng: &mut impl rand::Rng,
+    ) -> Option<usize> {
+        // We sum the counts and pick based on weighted probability of lengths
+        let mut total = 0;
+        for &zone in zones {
+            total += self.zone_index[zone as usize].len();
+        }
+
+        if total == 0 {
+            return None;
+        }
+
+        let mut pick = rng.gen_range(0..total);
+        for &zone in zones {
+            let list = &self.zone_index[zone as usize];
+            if pick < list.len() {
+                return Some(list[pick]);
+            }
+            pick -= list.len();
+        }
+        None
+    }
+}

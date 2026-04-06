@@ -135,9 +135,13 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Rendered via MultiMesh instancing: one draw call per zone type.
 - Building deletion via swap-remove, O(1).
 - Save/load now persists only authoritative frontage attachment and occupancy state for buildings. `center_x`, `center_y`, `facing_dir`, and `side_offset` are recomputed on load before any zoning, render, noise, or pollution consumer reads the building list.
-- **Building Index**: Inverted zone-type index (`zone_index: [Vec<usize>; 6]`) and vacancy index (`vacancy_index: [Vec<usize>; 6]`, `vacancy_pos: Vec<usize>`) implemented in `BuildingAllocator`. `find_available_home()` is O(1) random selection from the vacancy index. `claim_vacancy`/`release_vacancy` maintain the index incrementally in O(1); `kill_agent` calls `release_vacancy` before swap-remove. Building deletion triggers a full `rebuild_zone_index()` via `dirty_index`. Prerequisite for parallel tick.
-- **Unit tests** (`buildings/allocator.rs`): desirability gate (no spawn when grid value < 50.0), demand subtraction (residential demand decreases on spawn), occupancy clearing (3×3 zoning cells cleared on building removal).
-- **Broken-asset detection on save load (Item 60)**: when a save file references a `asset_id` (e.g. `kenney:building.residential.house_a`) that is no longer in the registry (pack disabled or deleted), the building is flagged with a `broken: bool` field. Broken buildings render as a bright magenta error mesh, have 0 capacity, and block agent assignment. Their position, frontage, and zone cell are preserved so the asset can be recovered by re-enabling the pack.
+- **Building Allocator (R10)**: [DONE 2026-04-06] The monolithic `allocator.rs` has been split into a modular directory structure:
+    - `placement.rs`: Geometry scanning, zone fitment, and building growth/upgrade logic.
+    - `lifecycle.rs`: Stale building removal, immigrant spawning, and coordinate restoration.
+    - `index.rs`: Occupant search indices (zone/vacancy) and occupancy tracking.
+    - `geometry.rs`: World-space edge sampling and tangent calculations.
+    - `mod.rs`: High-level orchestration and shared building types.
+- **Broken-asset detection on save load (Item 60)**: [DONE 2026-04-06] when a save file references a `asset_id` (e.g. `kenney:building.residential.house_a`) that is no longer in the registry (pack disabled or deleted), the building is flagged with a `broken: bool` field. Broken buildings render as a bright magenta error mesh, have 0 capacity, and block agent assignment. Their position, frontage, and zone cell are preserved so the asset can be recovered by re-enabling the pack.
     - **Implementation**: SQL schema version 7 adds a `broken` column. `load_buildings` cross-references each `asset_id` against the live `AssetRegistry`. The building renderer (`buildings.gd`) uses a virtual `broken:error` asset ID to display magenta fallback boxes for all broken buildings in a single draw call.
 ### Agents
 - `simulation/economy/agents/` (Submodule) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
@@ -374,16 +378,9 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **R9. Walkway zoning guard** — moot after item 80. `update_edge_grid_size` is deleted. Pure walkways never receive zone cells because the zone grid is world-space, not edge-keyed.
 
-**Top 5 code refactors to do next (2026-04-05 follow-up):**
+[DONE] **R10. Split `simulation/buildings/allocator.rs` (1163 lines)** — Modularized into specialized sub-modules (placement, lifecycle, index, and geometry). This refactor separates building placement logic from state maintenance and removal, unblocking future asset expansions and parallel simulation passes.
 
-**R10. Split `simulation/buildings/allocator.rs` (1163 lines)** — still the most overloaded simulation file after the earlier lane/zoning/render/save splits. It currently mixes stale-building cleanup, zoning scan/build placement, frontage split coordination, immigration spawning, edge sampling helpers, and vacancy/zone index maintenance. Recommended split:
-- `buildings/allocator/placement.rs` — zoning scan, desirability gate, frontage insertion
-- `buildings/allocator/lifecycle.rs` — removal, remap, immigration spawning
-- `buildings/allocator/index.rs` — `zone_index`, `vacancy_index`, `claim_vacancy`, `release_vacancy`
-- `buildings/allocator/geometry.rs` — `get_pos_on_edge`, `get_tangent_on_edge`
-- `buildings/allocator/mod.rs` — `BuildingAllocator` type + public API
-
-**Target: before item 57 (plot-size enforcement) or any asset-driven building metadata expansion.** This is the next highest-leverage backend refactor.
+**Top 4 code refactors to do next (2026-04-06 follow-up):**
 
 **R11. Break `simulation/network/topology.rs` phase logic into focused helpers** — the file was successfully consolidated, but `process_intersections` (~200 lines) and `split_edge` (~120 lines) still each do too many things at once: candidate query, crossing scan, endpoint snapping, factor refinement, split scheduling, edge mutation, zoning migration, and building migration. Recommended extraction:
 - `scan_intersection_candidates(...)`
@@ -578,7 +575,7 @@ Target: same agent scale as v0.2. Most work is in `render_helpers.rs` (Rust FFI 
     - The registry builds a `(asset_set, level) → qualified_id` secondary index. `registry.next_level(qualified_id)` returns the qualified_id for `level + 1` in the same family, or `None`.
     - `Building` gains `level: u8`. On an upgrade tick, if desirability + demand exceed threshold and `next_level` returns Some, swap `asset_id` → next level, increment `level`. No destroy/rebuild — occupants stay.
     - Capacity (`residents_capacity`, `worker_capacity`) is read from the current `asset_id` in the registry, not stored on the `Building` struct. The hardcoded `occupancy < 6` cap is replaced by manifest-declared capacity.
-    - Save format: SAVE_VERSION 5 → 6, `buildings` table gains `level INTEGER NOT NULL DEFAULT 1`.
+    - Save format: SAVE_VERSION 5 → 6 (level), 6 → 7 (broken). `buildings` table now includes `broken INTEGER NOT NULL DEFAULT 0`.
 
     **Step 4 — Asset editor scene (launch mode in the same Godot project): [DONE 2026-04-05]**
     - The asset editor is a launch mode in the existing Godot project, not a separate project. Use a command-line argument or a dedicated entry scene to boot the editor shell instead of the normal city scene.
