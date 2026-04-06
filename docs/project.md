@@ -405,6 +405,8 @@ Target: a closed, utility-driven economic loop at 1,000,000 agents as specified 
 
 62. **Economy editor shell**: build a dedicated developer-facing balancing and validation tool for resource chains, controller definitions, district overrides, and economy debugging. The main workflow must be UI-driven rather than raw file editing. This is not a gameplay feature. Scope for the first pass: graph canvas, inspector, district-scoping view, validation panel, and small sandbox playback using compiled economy definitions from [`docs/economy.md`](economy.md).
 
+63. **Asset editor economy-profile integration**: extend the building importer/inspector so `economy_profile` is chosen from the shipped baseline economy profile catalog or the latest exported profile list, not typed ad hoc. The asset editor should validate the selected profile against current economy data, warn clearly when the local catalog is missing or stale, and degrade gracefully instead of blocking general asset import work. Asset creators do not define new economy profiles in the asset editor; they select from existing economy data. Prerequisites: item 62 and item 57 Step 5.
+
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 
 Target: ~250k–500k agents with the first non-car transport mode live and the multi-city region architecture in place.

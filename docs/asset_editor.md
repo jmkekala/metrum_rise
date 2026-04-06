@@ -1020,6 +1020,7 @@ Zoned building asset data:
   - `lot_depth_cells`
   - `residents_capacity`, `worker_capacity`, or both depending on `zone_type`
   - `service_class`
+  - `economy_profile` reference
   - `asset_set`
   - `author`
   - `license`
@@ -1033,6 +1034,8 @@ Constraints:
 - The legacy `model_metadata.json` path has been replaced. `BuildingAllocator` now holds an `AssetRegistry` keyed by `pack_id:asset_id`, populated from `pack.toml` + `asset.toml` manifests via `scan_pack_dir`. Lot dimensions are read directly from `BuildingData.lot_width_cells` / `lot_depth_cells` in the manifest; no visual-scale multiplier is applied.
 - If the importer offers "guess lot size from mesh", that guess is an editor suggestion only.
 - The exported manifest stores explicit `lot_width_cells` and `lot_depth_cells`.
+- `economy_profile` is a reference to an existing live economy profile. The asset editor should present this as a list or suggestion source from current economy data rather than expecting the importer to invent a new profile name manually.
+- The shipped game/editor should include or load a baseline economy profile catalog for asset creators. When that local catalog is outdated, the editor should warn clearly and let the creator refresh to a newer profile list or newer game/editor build instead of inventing new profile names.
 - The editor validates the mesh against the lot footprint and does not use free visual scaling to hide a footprint mismatch.
 - The editor emits metadata that maps directly onto the runtime `width_cells`, `depth_cells`, and `asset_id` fields on `Building`. The old numeric `variant: u8` field has been removed; placement and rendering are now keyed by the stable qualified `asset_id` string.
 - Before shipping arbitrary-size lots beyond `u8` bounds, upgrade footprint-related runtime fields to `u16` or `usize`.
@@ -1274,7 +1277,7 @@ Thumbnail generation rules:
 
 V1 inspector and viewport contract:
 
-- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`zone_type`, `service_class`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `residents_capacity`, `worker_capacity`), optional material paths, entrance/service/prop_socket anchors, and `[[lods]]`.
+- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`zone_type`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `residents_capacity`, `worker_capacity`), optional material paths, entrance/service/prop_socket anchors, and `[[lods]]`.
 - Building mode viewport shows the lot rectangle, frontage arrow, sidewalk/road reference, entrance anchor gizmo, orientation validation, and footprint overflow warnings.
 - Prop mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), prop fields (`category`, `bounding_size_m`, `snap_mode`, `terrain_behavior`), and optional material paths.
 - Prop mode viewport shows ground contact, snap target, pivot, authored bounds, and orientation validation.

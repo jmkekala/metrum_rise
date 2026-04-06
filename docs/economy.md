@@ -4,23 +4,24 @@
 
 The following gaps and contradictions still need resolution before the economy design is implementation-ready:
 
-- **Ownership split still needs one final clean rule.** The current document is much better than before, but some wording still risks implying that assets own economy behavior. The intended split is that assets own stable identity and base building metadata, while economy profiles own recipes, schedules, storage, and other behavior. This must be made fully consistent so implementation does not drift.
 - **Bootstrap and external market rules are still too vague.** The outside world is the correct solution for starting an empty map, but the document does not yet define import pricing, export pricing, starter capital, border throughput, or why external supply should be intentionally worse than a healthy local chain. Without that, imports may either trivialize the economy or fail to solve the bootstrap deadlock.
 - **Operational clock state is not specified deeply enough.** The document defines day length and multiple clocks, but not the runtime state needed to support them cleanly. We still need explicit rules for hour-of-day, minute-of-day, schedule windows, departure windows, and how rush-hour timing is represented in data rather than only described conceptually.
 - **Household representation is still unresolved.** Households now matter for budgets, replenishment, migration, and consumption, but the document still leaves room for either true household objects or a more compressed representation inside residential buildings. This needs an explicit decision, because it affects save/load format, demand calculation, budgeting, and performance.
 - **Logistics anti-explosion rules are missing.** The document defines shipments and carriers, but it does not yet define batching thresholds, minimum shipment sizes, reservation rules, retry behavior, outstanding-job limits, or failure handling. At Metrum Rise scale, these are not optional details; they are core performance and correctness constraints.
-- **Pack churn and binding failure modes need hard rules.** The new `asset metadata + economy profile + binding` model is correct, but the document still does not define binding precedence, conflict resolution, or what happens when an asset disappears but its profile remains, or when a profile disappears but the asset still exists. Since packs can come and go, this must be deterministic and visible to the user.
+- **Pack churn and missing-profile failure modes need hard rules.** The new model is that assets carry an `economy_profile` reference while profile definitions live in economy data. The document still does not define what happens when an asset disappears, when a profile disappears, or when an asset references a profile that is not currently available. Since packs and economy data can change independently, this must be deterministic and visible to the user.
 - **The first-pass pricing model is still unclear.** A `price-response controller` exists in concept, but the document does not yet say whether `v0.1` uses fixed prices and wages or already supports dynamic local pricing. This should be decided explicitly so early implementation does not accidentally build more market complexity than intended.
 - **Developer-only tools versus future gameplay controls still need a sharper boundary.** The document now correctly says the economy editor is not gameplay, but some controller and area-override ideas still sound like future player-facing policy levers. We should explicitly separate what is design-time balancing only from what may later become player policy, so the document does not quietly blur those two layers again.
 
 ## Purpose
 
-Metrum Rise needs an economy model that is both simulation-scale and authorable by humans. The system cannot live as a pile of hardcoded constants in Rust, and it also cannot depend on per-agent shopping behavior that explodes pathfinding and logistics cost.
+Metrum Rise needs an economy model that is believable enough to make sense, abstract enough to stay fun and usable, and efficient enough to scale. The system cannot live as a pile of hardcoded constants in Rust, and it also cannot depend on per-agent shopping behavior that explodes pathfinding and logistics cost.
 
-This document defines a building-centric economy with three goals:
+This document defines a building-centric economy with the following design goals:
 
-- support a closed production and distribution loop
-- preserve the 1,000,000-population performance target
+- support a closed production and distribution loop that feels believable to the player
+- preserve the 1,000,000-population performance target through aggregation and bounded runtime rules
+- keep the simulation understandable, so cause and effect are visible rather than hidden behind opaque formulas
+- stay fun and easy to use, avoiding mandatory micromanagement and per-agent shopping chores
 - give developers a visual tool for balancing and validating economic relationships without hand-editing numbers in files
 
 ## Core Principles
@@ -305,18 +306,23 @@ Examples:
 
 - a residential building asset declares `residential_capacity`
 - a workplace asset declares `worker_capacity`
+- an asset may store one `economy_profile` reference that points at an existing live economy profile
 - lot size, service class, and similar building facts remain asset-authored metadata
 - those values may be derived from floor area or other building-shape logic inside the asset toolchain
 
-The asset editor does not define city-wide wiring, area policies, recipes, inputs, outputs, or economy balancing rules.
+The asset editor does not define city-wide wiring, area policies, recipes, inputs, outputs, or economy balancing rules. It only stores the profile reference, not the profile definition itself.
+
+The asset editor should list or suggest currently available economy profiles from the live economy data. Asset importers should not be expected to invent new profile names ad hoc.
+
+The shipped game/editor should include a baseline economy profile catalog for asset creators. When new profiles are added, creators may need the latest exported profile list or a newer game/editor build to stay in sync. If the local profile catalog is missing or outdated, the asset editor should warn clearly and degrade gracefully rather than blocking general asset import work.
 
 ### Economy Editor
 
-The economy editor is a developer-facing balancing and validation environment. It defines economy profiles, bindings, and relationships between economic actors, then helps catch systemic design mistakes before those rules ship into the runtime.
+The economy editor is a developer-facing balancing and validation environment. It defines economy profiles and relationships between economic actors, then helps catch systemic design mistakes before those rules ship into the runtime.
 
 Examples:
 
-- which economy profile a given asset or asset family should use
+- which reusable economy profiles exist
 - which producer classes can supply which consumer classes
 - which controllers affect pricing, taxes, subsidies, or household delivery rules
 - which area-specific overrides apply in one place but not another
@@ -341,24 +347,24 @@ The runtime should evaluate authored rules efficiently, not reinterpret a fully 
 
 The link between content assets and the economy works in three steps:
 
-1. The asset editor defines stable asset identity plus base building metadata such as capacities.
-2. The economy editor defines reusable economy profiles and binds assets or asset families to those profiles.
-3. The runtime combines the placed asset and the bound economy profile to create the building's economic behavior.
+1. The asset editor defines stable asset identity plus base building metadata such as capacities and stores an `economy_profile` reference.
+2. The economy editor defines the reusable economy profiles that those references point to.
+3. The runtime resolves the profile reference and combines the placed asset with the referenced economy profile to create the building's economic behavior.
 
 Example:
 
 - an asset with id `base:building.industrial.food_processor_small` declares base metadata such as `worker_capacity`
+- the same asset stores `economy_profile = "food_processor_basic"`
 - the economy editor defines a profile such as `food_processor_basic`
 - that profile declares inputs, outputs, schedule profile, storage caps, and production rules
-- the economy editor binds the asset or asset family to `food_processor_basic`
-- when the asset is placed as a building, the runtime combines the asset metadata and the bound profile
+- when the asset is placed as a building, the runtime combines the asset metadata and the referenced profile
 - the placed building then knows both its base capacity and its economic role in the wider supply chain
 
 Short version:
 
 - assets define identity and base metadata
+- assets reference one economy profile
 - economy profiles define behavior
-- bindings connect the two
 - runtime building instances execute the combined result
 
 ## Economic Data Model
@@ -387,7 +393,7 @@ Rules:
 
 ### 2. Economy Profiles
 
-An economy profile is a reusable template owned by the economy editor and bound to one or more assets or asset families.
+An economy profile is a reusable template owned by the economy editor and referenced by one or more assets.
 
 It defines:
 
@@ -407,17 +413,19 @@ Example:
 
 Base capacities such as `worker_capacity` or `residential_capacity` remain asset-authored metadata and are consumed by the profile rather than redefined inside it.
 
-### 3. Economy Bindings
+### 3. Economy Profile References
 
-An economy binding connects a concrete asset or an asset family to an economy profile.
+An economy profile reference lives on the asset side and points to one named economy profile.
 
-Preferred binding targets are:
+Rules:
 
-- exact `pack_id:asset_id`
-- `asset_set`
-- `service_class`
-
-Tags may help editor search and filtering, but they should not be the primary economy binding contract.
+- the asset stores only the profile name or ID, not the full economy definition
+- the asset editor should offer a live list or suggestions of existing economy profiles
+- asset importers should select from existing profiles rather than inventing new profile names
+- the shipped game/editor should provide a baseline profile catalog so asset creators have a stable starting set
+- when that local catalog is outdated, the editor should warn and allow refresh to a newer profile list or game/editor version
+- multiple assets from different asset sets may reference the same profile
+- tags may help editor search and filtering, but they should not be the primary economy contract
 
 ### 4. Economic Node Instances
 
@@ -737,6 +745,40 @@ The tool must validate common design mistakes before export:
 
 The runtime should not execute the editor canvas directly. It should compile the authored graph into compact data tables.
 
+### Rule export format
+
+Economy rules should be exported as open, human-readable text files. They must not be hidden inside opaque editor-only data.
+
+The canonical source of truth should be visible files in the exported pack or economy data folder, following the same philosophy as the asset editor manifests.
+
+Recommended direction:
+
+- use TOML as the canonical exported rule format
+- keep the exported files readable and editable in a normal text editor
+- treat any compiled or binary representation as optional derived cache only
+- require the game and the economy editor to load correctly even when caches are missing
+- regenerate caches whenever they disagree with the text source files
+
+Manual editing is allowed. If a developer or modder wants to tweak the values in a text editor instead of the economy editor UI, that should be supported as long as the files still validate.
+
+### Suggested exported structure
+
+The exact filenames are still open, but the intended structure is:
+
+```text
+economy/
+  profiles.toml        # economy profiles and recipe definitions
+  controllers.toml     # controller definitions and parameters
+  areas.toml           # optional area-based overrides
+  economy.index.bin    # optional derived cache
+```
+
+The important rule is not the exact folder shape. The important rule is:
+
+- text files are authoritative
+- caches are derived
+- exported economy data remains inspectable and editable outside the tool
+
 Examples of compiled forms:
 
 - resource IDs
@@ -817,7 +859,7 @@ The economy should be balanced and validated through a visual, building-centric 
 
 The recommended design is:
 
-- assets define economic ports and defaults
+- assets define identity, base metadata, and an `economy_profile` reference
 - the economy editor lets developers tune graphs, controllers, and district policies
 - runtime simulation executes compiled building-level inventories, labor, and shipment rules
 - households consume shared household supply so agents do not need constant shopping trips
