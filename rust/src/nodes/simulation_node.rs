@@ -515,9 +515,16 @@ impl SimulationNode {
     #[func]
     pub fn get_registered_asset_ids(&self) -> PackedStringArray {
         let core = self.lock_core();
-        core.allocator.registry.qualified_ids()
+        let mut ids: Vec<GString> = core.allocator.registry.qualified_ids()
             .map(GString::from)
-            .collect()
+            .collect();
+        
+        let has_broken = core.allocator.buildings.iter().any(|b| b.broken);
+        if has_broken {
+            ids.push(GString::from("broken:error"));
+        }
+        
+        PackedStringArray::from_iter(ids)
     }
 
     /// Returns the native filesystem path to the LOD0 mesh file for a registered asset.

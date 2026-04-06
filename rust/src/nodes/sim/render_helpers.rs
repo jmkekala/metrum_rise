@@ -288,8 +288,12 @@ impl SimCore {
         let hh = (h - 1.0) * 0.5;
 
         for b in &self.allocator.buildings {
-            if b.asset_id != asset_id {
-                continue;
+            if asset_id == "broken:error" {
+                if !b.broken { continue; }
+            } else {
+                if b.broken || b.asset_id != asset_id {
+                    continue;
+                }
             }
 
             let world_x = b.center_x;

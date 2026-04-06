@@ -137,7 +137,8 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 - Save/load now persists only authoritative frontage attachment and occupancy state for buildings. `center_x`, `center_y`, `facing_dir`, and `side_offset` are recomputed on load before any zoning, render, noise, or pollution consumer reads the building list.
 - **Building Index**: Inverted zone-type index (`zone_index: [Vec<usize>; 6]`) and vacancy index (`vacancy_index: [Vec<usize>; 6]`, `vacancy_pos: Vec<usize>`) implemented in `BuildingAllocator`. `find_available_home()` is O(1) random selection from the vacancy index. `claim_vacancy`/`release_vacancy` maintain the index incrementally in O(1); `kill_agent` calls `release_vacancy` before swap-remove. Building deletion triggers a full `rebuild_zone_index()` via `dirty_index`. Prerequisite for parallel tick.
 - **Unit tests** (`buildings/allocator.rs`): desirability gate (no spawn when grid value < 50.0), demand subtraction (residential demand decreases on spawn), occupancy clearing (3×3 zoning cells cleared on building removal).
-
+- **Broken-asset detection on save load (Item 60)**: when a save file references a `asset_id` (e.g. `kenney:building.residential.house_a`) that is no longer in the registry (pack disabled or deleted), the building is flagged with a `broken: bool` field. Broken buildings render as a bright magenta error mesh, have 0 capacity, and block agent assignment. Their position, frontage, and zone cell are preserved so the asset can be recovered by re-enabling the pack.
+    - **Implementation**: SQL schema version 7 adds a `broken` column. `load_buildings` cross-references each `asset_id` against the live `AssetRegistry`. The building renderer (`buildings.gd`) uses a virtual `broken:error` asset ID to display magenta fallback boxes for all broken buildings in a single draw call.
 ### Agents
 - `simulation/economy/agents/` (Submodule) — `AgentSystem` in Structure-of-Arrays (SoA) layout.
 - FSM states: `IDLE → DEPARTING → ON_ROAD → ARRIVING → IDLE` + `IMMIGRATING`.
@@ -302,7 +303,6 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 
 ### Asset System
 
-60. **Broken-asset detection on save load** — when a save file references a `asset_id` (e.g. `kenney:building.residential.house_a`) that is no longer in the registry (pack disabled or deleted), the building should be flagged with a `broken: bool` field on `Building`. Broken buildings render as a bright magenta error mesh in `buildings.gd`, have 0 capacity, and block agent assignment. The building's position, frontage, and zone cell are preserved so the asset can be recovered by re-enabling the pack. Prerequisite: pack manager (Option B config file) is in place so packs can actually be disabled. `[v0.1]`
 
 61. **Pack manager UI (Option C)** — extend the Option B config-file pack selection into a full in-game pack manager screen: shows all installed packs scanned from `user://mods/`, displays name/author/asset count/version, checkboxes to enable/disable, apply button that reloads the registry without restarting. `[v0.1]`
 

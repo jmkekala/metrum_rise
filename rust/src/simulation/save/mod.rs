@@ -106,7 +106,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
 }
 
 /// Entry point to load a simulation state from a SQLite database.
-pub(crate) fn load_from_sqlite(path: &Path) -> SaveLoadResult<LoadedSimulation> {
+pub(crate) fn load_from_sqlite(path: &Path, registry: &crate::assets::AssetRegistry) -> SaveLoadResult<LoadedSimulation> {
     let conn = Connection::open(path)?;
     let version: i64 = conn.query_row("SELECT version FROM save_meta LIMIT 1", [], |row| row.get(0))?;
     if version != SAVE_VERSION { return Err(SaveLoadError::custom("version mismatch")); }
@@ -122,7 +122,7 @@ pub(crate) fn load_from_sqlite(path: &Path) -> SaveLoadResult<LoadedSimulation> 
 
     let mut graph = network::load_graph(&conn)?;
     let mut zoning = world::load_zoning(&conn, &config)?;
-    let mut allocator = world::load_buildings(&conn)?;
+    let mut allocator = world::load_buildings(&conn, registry)?;
     let mut agents = agents::load_agents(&conn, time_r.4)?;
 
     let mut transit_network = TransitNetwork::new();

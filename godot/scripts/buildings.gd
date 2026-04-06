@@ -73,11 +73,21 @@ func _rebuild_multimeshes() -> void:
 
 func _setup_multimesh_for_asset(asset_id: String) -> void:
 	var mesh := _load_mesh_for_asset(asset_id)
+	var is_broken := asset_id == "broken:error"
 	var mmi := MultiMeshInstance3D.new()
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.instance_count = 0
-	mm.mesh = mesh if mesh else _create_fallback_mesh()
+	if mesh:
+		mm.mesh = mesh
+	else:
+		mm.mesh = _create_fallback_mesh()
+		if is_broken:
+			var mat := StandardMaterial3D.new()
+			mat.albedo_color = Color.MAGENTA
+			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED # Glow!
+			mm.mesh.surface_set_material(0, mat)
+	
 	mmi.multimesh = mm
 	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
 	add_child(mmi)

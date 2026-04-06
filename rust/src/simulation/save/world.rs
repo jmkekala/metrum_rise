@@ -43,11 +43,25 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, asset_id, level) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, asset_id, level, broken) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")?;
     for (old_bid, b) in buildings.buildings.iter().enumerate() {
         let saved_bid = maps.building_old_to_new.get(&old_bid).copied().ok_or_else(|| SaveLoadError::custom("missing building mapping"))?;
         let saved_eid = maps.edge_old_to_new.get(&b.edge_idx).copied().ok_or_else(|| SaveLoadError::custom("missing building edge mapping"))?;
-        bld_stmt.execute(params![usize_to_i64(saved_bid)?, usize_to_i64(saved_eid)?, b.frontage_t, i64::from(b.side), usize_to_i64(b.cell_x)?, usize_to_i64(b.cell_y as usize)?, zone_type_to_i64(b.zone_type), u32_to_i64(b.occupancy)?, usize_to_i64(b.width_cells as usize)?, usize_to_i64(b.depth_cells as usize)?, &b.asset_id, i64::from(b.level)])?;
+        bld_stmt.execute(params![
+            usize_to_i64(saved_bid)?,
+            usize_to_i64(saved_eid)?,
+            b.frontage_t,
+            i64::from(b.side),
+            usize_to_i64(b.cell_x)?,
+            usize_to_i64(b.cell_y as usize)?,
+            zone_type_to_i64(b.zone_type),
+            u32_to_i64(b.occupancy)?,
+            usize_to_i64(b.width_cells as usize)?,
+            usize_to_i64(b.depth_cells as usize)?,
+            &b.asset_id,
+            i64::from(b.level),
+            i64::from(if b.broken { 1 } else { 0 })
+        ])?;
     }
 
     Ok(())
@@ -98,13 +112,15 @@ pub(super) fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResu
     Ok(zoning)
 }
 
-pub(super) fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAllocator> {
+pub(super) fn load_buildings(conn: &Connection, registry: &crate::assets::AssetRegistry) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, asset_id, level FROM buildings ORDER BY building_id")?;
+    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, asset_id, level, broken FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
         if bid != allocator.buildings.len() { return Err(SaveLoadError::custom("non-contiguous building ids")); }
+        let asset_id: String = row.get(10)?;
+        let broken = (row.get::<_, i64>(12)? != 0) || registry.get(&asset_id).is_none();
         allocator.buildings.push(Building {
             center_x: 0.0, center_y: 0.0,
             width_cells: i64_to_usize(row.get(8)?)? as u16,
@@ -115,8 +131,9 @@ pub(super) fn load_buildings(conn: &Connection) -> SaveLoadResult<BuildingAlloca
             cell_x: i64_to_usize(row.get(4)?)?,
             cell_y: i64_to_usize(row.get(5)?)? as u16,
             occupancy: i64_to_u32(row.get(7)?)?,
-            asset_id: row.get(10)?,
+            asset_id,
             level: row.get::<_, i64>(11)?.clamp(1, 255) as u8,
+            broken,
         });
     }
     Ok(allocator)

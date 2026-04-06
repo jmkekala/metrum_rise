@@ -48,6 +48,9 @@ pub struct Building {
     pub asset_id: String,
     /// Current growth tier, derived from the manifest at placement and incremented on upgrade.
     pub level: u8,
+    /// If true, the asset referenced by `asset_id` was not found in the registry during load.
+    /// Broken buildings render as a magenta error mesh and have 0 capacity.
+    pub broken: bool,
 }
 
 /// Manages the full lifecycle of [`Building`]s: placement, removal, and immigrant spawning.
@@ -430,6 +433,7 @@ impl BuildingAllocator {
                         occupancy: 0,
                         asset_id,
                         level: initial_level,
+                        broken: false,
                         abandoned_timer: 0,
                     });
 
@@ -494,7 +498,9 @@ impl BuildingAllocator {
             .iter()
             .filter(|b| b.zone_type == ZoneType::Residential || b.zone_type == ZoneType::Mixed)
             .fold(0, |acc, b| {
-                let cap = self.registry.capacity(&b.asset_id).max(1) as usize;
+                if b.broken { return acc; }
+                let cap = self.registry.capacity(&b.asset_id);
+                let cap = if cap == 0 { 6 } else { cap } as usize;
                 acc + cap.saturating_sub(b.occupancy as usize)
             });
 
@@ -684,7 +690,9 @@ impl BuildingAllocator {
     /// Returns the occupant capacity for a building, from its registered manifest.
     /// Falls back to 6 if the asset is not registered (legacy / unknown assets).
     fn building_capacity(&self, building_idx: usize) -> u32 {
-        let cap = self.registry.capacity(&self.buildings[building_idx].asset_id);
+        let b = &self.buildings[building_idx];
+        if b.broken { return 0; }
+        let cap = self.registry.capacity(&b.asset_id);
         if cap == 0 { 6 } else { cap }
     }
 
