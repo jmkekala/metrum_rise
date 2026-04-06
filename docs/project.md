@@ -388,10 +388,12 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **R14. De-duplicate road-path conditioning in `godot/scripts/road_tool.gd` (431 lines)** — `_draw_blueprint()` and `_get_processed_points()` consolidated into a single `_get_conditioned_geometry()` helper. This ensures that terrain sampling, Taubin smoothing, and slope/altitude validation are applied consistently to both the preview and the committed road segment, preventing geometric drift.
 
+[DONE] **R15. Split `nodes/simulation_node.rs` (1,182 lines)** — Final Godot bridge cleanup. Modularized into specialized sub-modules within `nodes/sim/bridge/` (agents, assets, network). This refactor decouples Godot-facing data formatting (PackedFloat32Array/VarDictionary assembly) from the central simulation node, isolating the GDExtension boilerplate and clarifying the bridge architecture.
+
 **Top 3 project tasks to do next (2026-04-06):**
-1. **R15. Split `nodes/simulation_node.rs` (1,182 lines)** — Final Godot bridge cleanup.
-2. **E1. Economy — Need-level satisfaction & NiFi-like "Controllers" (Item 60/61)** — Transition activity selection from RNG to utility scoring driven by the "Controller" model (Shelter/Rest focus).
-3. **E2. Economy — Truck-based Supply Chain (Item 64 Rework)** — Implement initial truck logistics (Production -> Stock -> Truck Agent -> Delivery).
+1. **E1. Economy — Need-level satisfaction & NiFi-like "Controllers" (Item 60/61)** — Transition activity selection from RNG to utility scoring driven by the "Controller" model (Shelter/Rest focus).
+2. **E2. Economy — Truck-based Supply Chain (Item 64 Rework)** — Implement initial truck logistics (Production -> Stock -> Truck Agent -> Delivery).
+3. **E3. Building — `stock` and `revenue` data fields** — Add per-building economic state to Support the NiFi data flow.
 
 ### v0.1 — Economy Foundation
 

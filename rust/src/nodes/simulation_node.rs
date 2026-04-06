@@ -385,23 +385,15 @@ impl SimulationNode {
     /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.
     #[func]
     pub fn get_agent_transforms(&self) -> VarDictionary {
-        let snap = self.snapshot.read().unwrap();
-        let mut dict = VarDictionary::new();
-        for (&k, v) in &snap.pedestrian_transforms {
-            dict.set(k as i32, PackedFloat32Array::from_iter(v.iter().cloned()));
-        }
-        dict
+        use super::sim::bridge::agents::get_agent_transforms;
+        get_agent_transforms(&self.snapshot.read().unwrap())
     }
 
     /// Returns a Dictionary of packed transforms for visible car agents, keyed by vehicle type.
     #[func]
     pub fn get_car_transforms(&self) -> VarDictionary {
-        let snap = self.snapshot.read().unwrap();
-        let mut dict = VarDictionary::new();
-        for (&k, v) in &snap.car_transforms {
-            dict.set(k as i32, PackedFloat32Array::from_iter(v.iter().cloned()));
-        }
-        dict
+        use super::sim::bridge::agents::get_car_transforms;
+        get_car_transforms(&self.snapshot.read().unwrap())
     }
 
     /// Returns debug path geometry for active agents.
@@ -436,32 +428,10 @@ impl SimulationNode {
     }
 
     /// Scans a native filesystem directory for content packs and registers all valid assets.
-    ///
-    /// Scans `dir_path` for content packs and registers only those whose `pack_id` appears
-    /// in `enabled_pack_ids` (comma-separated). Pass an empty string to load all packs.
-    /// `dir_path` must be an absolute native path (`ProjectSettings.globalize_path("user://mods/")`).
-    /// Returns a newline-separated string of warnings (empty = clean load).
     #[func]
     pub fn load_asset_packs(&mut self, dir_path: GString, enabled_pack_ids: GString) -> GString {
-        use crate::assets::scan_pack_dir;
-        use std::path::Path;
-        let filter_str = enabled_pack_ids.to_string();
-        let filter: Vec<&str> = if filter_str.is_empty() {
-            vec![]
-        } else {
-            filter_str.split(',').map(str::trim).collect()
-        };
-        let result = scan_pack_dir(Path::new(&dir_path.to_string()));
-        let mut core = self.lock_core();
-        for pack in result.packs {
-            if !filter.is_empty() && !filter.contains(&pack.pack.pack_id.as_str()) {
-                continue;
-            }
-            for (asset, asset_dir) in pack.assets {
-                core.allocator.registry.register(&pack.pack.pack_id, asset, asset_dir);
-            }
-        }
-        GString::from(result.warnings.join("\n").as_str())
+        use super::sim::bridge::assets::load_asset_packs;
+        load_asset_packs(&mut self.lock_core(), dir_path, enabled_pack_ids)
     }
 
     /// Returns all qualified asset IDs (`"pack_id:asset_id"`) currently in the registry.
@@ -483,20 +453,10 @@ impl SimulationNode {
     }
 
     /// Returns the native filesystem path to the LOD0 mesh file for a registered asset.
-    ///
-    /// Returns an empty string if the asset is not registered or has no LODs.
-    /// Godot uses this to load the correct GLB/FBX rather than guessing a path convention.
     #[func]
     pub fn get_lod0_native_path(&self, qualified_id: GString) -> GString {
-        let core = self.lock_core();
-        let qid = qualified_id.to_string();
-        if let Some(entry) = core.allocator.registry.get(&qid) {
-            if let Some(lod) = entry.manifest.lods.first() {
-                let path = std::path::Path::new(&entry.asset_dir).join(&lod.file);
-                return GString::from(path.to_string_lossy().as_ref());
-            }
-        }
-        GString::new()
+        use super::sim::bridge::assets::get_lod0_native_path;
+        get_lod0_native_path(&self.lock_core(), qualified_id)
     }
 
     /// Returns the packed 12-float transforms for all placed buildings with the given asset ID.
@@ -761,60 +721,23 @@ impl SimulationNode {
     }
 
     /// Returns ghost guide data for the road-tool overlay.
-    ///
-    /// Flat array `[ax, az, dx, dz, ...]` — one quad (4 floats) per non-deleted edge endpoint.
-    /// `(ax, az)` is the world-XZ anchor (endpoint position); `(dx, dz)` is the outward unit
-    /// tangent of the edge at that endpoint. GDScript extends each entry as a ray from the
-    /// anchor in direction `(dx, dz)` to form a visual reference grid.
-    ///
-    /// Non-blocking: returns an empty array if the SimCore mutex is contended.
     #[func]
     pub fn get_road_ghost_guides(&self) -> PackedFloat32Array {
-        let core = match self.try_lock_core() {
-            Some(c) => c,
-            None => return PackedFloat32Array::new(),
-        };
-        let graph = &core.region_graph;
-        let mut out = PackedFloat32Array::new();
-        for edge in graph.edges().iter().filter(|e| !e.deleted && e.physical_geometry.len() >= 2) {
-            let geom = &edge.physical_geometry;
-            let n = geom.len();
-            // Start endpoint — tangent points outward (away from edge interior)
-            let t0 = (geom[0] - geom[1]).normalized();
-            out.push(geom[0].x); out.push(geom[0].z);
-            out.push(t0.x);      out.push(t0.z);
-            // End endpoint — tangent points outward
-            let t1 = (geom[n - 1] - geom[n - 2]).normalized();
-            out.push(geom[n - 1].x); out.push(geom[n - 1].z);
-            out.push(t1.x);          out.push(t1.z);
+        use super::sim::bridge::network::get_road_ghost_guides;
+        match self.try_lock_core() {
+            Some(core) => get_road_ghost_guides(&core),
+            None => PackedFloat32Array::new(),
         }
-        out
     }
 
     /// Returns the full physical geometry of every non-deleted road edge.
-    ///
-    /// Format: `[N, x0, z0, x1, z1, ..., x_{N-1}, z_{N-1}, N, ...]` where `N` is the
-    /// number of points in the polyline. Used by the road-tool ghost overlay to draw
-    /// parallel offset curves that follow road curvature (spline roads included).
-    ///
-    /// Non-blocking: returns an empty array if the SimCore mutex is contended.
     #[func]
     pub fn get_road_edge_polylines(&self) -> PackedFloat32Array {
-        let core = match self.try_lock_core() {
-            Some(c) => c,
-            None => return PackedFloat32Array::new(),
-        };
-        let graph = &core.region_graph;
-        let mut out = PackedFloat32Array::new();
-        for edge in graph.edges().iter().filter(|e| !e.deleted && e.physical_geometry.len() >= 2) {
-            let geom = &edge.physical_geometry;
-            out.push(geom.len() as f32);
-            for p in geom {
-                out.push(p.x);
-                out.push(p.z);
-            }
+        use super::sim::bridge::network::get_road_edge_polylines;
+        match self.try_lock_core() {
+            Some(core) => get_road_edge_polylines(&core),
+            None => PackedFloat32Array::new(),
         }
-        out
     }
 
     /// Returns the tangent direction of the road whose endpoint is nearest to `pos`
@@ -831,42 +754,14 @@ impl SimulationNode {
     /// Returns `Vector2(0, 1)` (world +Z) if no road is within range.
     ///
     /// Non-blocking: returns `Vector2(0, 1)` if the SimCore mutex is contended.
+    /// Returns the road tangent direction closest to `pos` within `max_dist` metres.
     #[func]
     pub fn get_road_tangent_at(&self, pos: Vector3, max_dist: f32) -> Vector2 {
-        let core = match self.try_lock_core() {
-            Some(c) => c,
-            None => return Vector2::new(0.0, 1.0),
-        };
-        let graph = &core.region_graph;
-        let mut best_dist_sq = max_dist * max_dist;
-        let mut best_tangent = Vector2::new(0.0, 1.0); // fallback: world +Z (north)
-
-        for edge in graph.edges().iter().filter(|e| !e.deleted && e.physical_geometry.len() >= 2) {
-            let geom = &edge.physical_geometry;
-            // Walk each segment of the polyline and find the closest point on it.
-            for seg in geom.windows(2) {
-                let a = seg[0];
-                let b = seg[1];
-                let abx = b.x - a.x;
-                let abz = b.z - a.z;
-                let len_sq = abx * abx + abz * abz;
-                if len_sq < 1e-6 { continue; }
-                // Project pos onto segment, clamped to [0,1].
-                let t = ((pos.x - a.x) * abx + (pos.z - a.z) * abz) / len_sq;
-                let t = t.clamp(0.0, 1.0);
-                let cx = a.x + t * abx;
-                let cz = a.z + t * abz;
-                let dx = pos.x - cx;
-                let dz = pos.z - cz;
-                let dist_sq = dx * dx + dz * dz;
-                if dist_sq < best_dist_sq {
-                    best_dist_sq = dist_sq;
-                    let inv_len = 1.0 / len_sq.sqrt();
-                    best_tangent = Vector2::new(abx * inv_len, abz * inv_len);
-                }
-            }
+        use super::sim::bridge::network::get_road_tangent_at;
+        match self.try_lock_core() {
+            Some(core) => get_road_tangent_at(&core, pos, max_dist),
+            None => Vector2::new(0.0, 1.0),
         }
-        best_tangent
     }
 
     /// Configures a lane connection rule at a junction.
