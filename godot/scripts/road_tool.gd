@@ -177,85 +177,12 @@ func _update_preview():
 	_draw_blueprint()
 
 func _draw_blueprint():
-	var preview_verts = _get_processed_points()
+	var conditioned = _get_conditioned_geometry()
+	var preview_verts = conditioned.points
+	is_valid = conditioned.is_valid
+	
 	if preview_verts.size() > 1:
-		var slope_too_steep = false
-		
-		# HARMONIC CONFORMANCE PREVIEW (Laplacian Smoothing)
-		var start_h = preview_verts[0].y
-		var end_h = preview_verts[-1].y
-		
-		var start_terrain = simulation_node.get_height_at(Vector2(preview_verts[0].x, preview_verts[0].z))
-		var end_terrain = simulation_node.get_height_at(Vector2(preview_verts[-1].x, preview_verts[-1].z))
-		
-		var is_bridge_or_tunnel = abs(start_h - start_terrain) > 0.5 or abs(end_h - end_terrain) > 0.5 or (altitude_offset != 0.0)
-
-		# 1. Sample raw terrain for all points ONLY if grounded
-		if not is_bridge_or_tunnel:
-			for i in range(preview_verts.size()):
-				preview_verts[i].y = simulation_node.get_height_at(Vector2(preview_verts[i].x, preview_verts[i].z))
-				
-		# 2. Taubin Smoothing (Iron out bumps without volume shrinkage)
-		# Skip if bridge (already smooth from spline) or follow terrain logic
-		var iters = 50
-		var num_verts = preview_verts.size()
-		if num_verts > 2 and not is_bridge_or_tunnel:
-			var temp_h = []
-			temp_h.resize(num_verts)
-			var lambda_val = 0.5
-			var mu_val = -0.53
-			for it in range(iters):
-				# Positive Pass (Shrink/Smooth)
-				for i in range(1, num_verts - 1):
-					var laplacian = 0.5 * (preview_verts[i-1].y + preview_verts[i+1].y) - preview_verts[i].y
-					temp_h[i] = preview_verts[i].y + lambda_val * laplacian
-				for i in range(1, num_verts - 1):
-					preview_verts[i].y = temp_h[i]
-					
-				# Negative Pass (Inflate/Restore Volume)
-				for i in range(1, num_verts - 1):
-					var laplacian = 0.5 * (preview_verts[i-1].y + preview_verts[i+1].y) - preview_verts[i].y
-					temp_h[i] = preview_verts[i].y + mu_val * laplacian
-				for i in range(1, num_verts - 1):
-					preview_verts[i].y = temp_h[i]
-		elif num_verts > 2 and is_bridge_or_tunnel:
-			# Linear interpolation of height for bridges across the spline
-			for i in range(1, num_verts - 1):
-				var t = float(i) / (num_verts - 1)
-				preview_verts[i].y = lerp(start_h, end_h, t)
-		
-		# 3. Apply vertical offset and slope checks
-		for i in range(preview_verts.size()):
-			var p = preview_verts[i]
-			var check_y = p.y
-			p.y += 0.05 # purely for visibility in preview
-			
-			if i > 0:
-				var prev_p = preview_verts[i-1]
-				# We calculate slope based on the true geometry, not the visually shifted one
-				var prev_check_y = prev_p.y - 0.05
-				var dist = Vector2(p.x, p.z).distance_to(Vector2(prev_p.x, prev_p.z))
-				if dist > 0.01:
-					var slope = abs(check_y - prev_check_y) / dist
-					if slope > 0.41:
-						slope_too_steep = true
-			
-			preview_verts[i] = p
-		
-		if slope_too_steep:
-			is_valid = false
-			
-		# 4. Bridge/Tunnel Height Validation
-		if is_bridge_or_tunnel and num_verts > 2:
-			var mid_idx = num_verts / 2
-			var terrain_mid_h = simulation_node.get_height_at(Vector2(preview_verts[mid_idx].x, preview_verts[mid_idx].z))
-			if altitude_offset > 0.5: # Bridge
-				if preview_verts[mid_idx].y < terrain_mid_h + 1.0:
-					is_valid = false # Bridge is too low at midpoint
-			elif altitude_offset < -0.5: # Tunnel
-				if preview_verts[mid_idx].y > terrain_mid_h - 1.0:
-					is_valid = false # Tunnel is too high at midpoint
-			
+		# Draw the ribbon mesh
 		var arr_mesh = ArrayMesh.new()
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -266,11 +193,14 @@ func _draw_blueprint():
 		var ribbon_verts = PackedVector3Array()
 		for i in range(preview_verts.size()):
 			var p = preview_verts[i]
+			# Apply visual lift purely for preview visibility to prevent depth-fight with terrain
+			p.y += 0.05
+			
 			var tangent
 			if i < preview_verts.size() - 1:
-				tangent = (preview_verts[i+1] - p).normalized()
+				tangent = (preview_verts[i+1] - preview_verts[i]).normalized()
 			else:
-				tangent = (p - preview_verts[i-1]).normalized()
+				tangent = (preview_verts[i] - preview_verts[i-1]).normalized()
 				
 			if tangent.length() < 0.001:
 				tangent = Vector3(0, 0, 1)
@@ -323,8 +253,9 @@ func _draw_blueprint():
 func _commit_segment(end_pos):
 	if not is_valid: return
 
-	var points = _get_processed_points()
-	if points.size() > 1:
+	var conditioned = _get_conditioned_geometry()
+	var points = conditioned.points
+	if points.size() > 1 and conditioned.is_valid:
 		simulation_node.add_road(points, fwd_lanes, bkw_lanes)
 		# Do NOT call flatten_terrain_for_roads / update_main_mesh here — the road
 		# is queued to the sim thread and is not in the graph yet.  _process polls
@@ -562,27 +493,37 @@ func _snap_to_map_border(pos: Vector3, half_w: float, half_h: float) -> Vector3:
 		pos.z = half_h
 	return pos
 
-func _get_processed_points() -> PackedVector3Array:
-	if current_path == null: return PackedVector3Array()
-	var preview_verts = current_path.curve.get_baked_points()
-	if preview_verts.size() <= 1: return preview_verts
+## Returns conditioned geometry for both preview and commit.
+## Applies terrain sampling, Taubin smoothing, and slope/altitude validation.
+func _get_conditioned_geometry() -> Dictionary:
+	var result = {
+		"points": PackedVector3Array(),
+		"is_valid": true,
+		"is_bridge": false
+	}
+	if current_path == null: return result
+	var points = current_path.curve.get_baked_points()
+	if points.size() <= 1:
+		result.points = points
+		return result
 	
-	var start_h = preview_verts[0].y
-	var end_h = preview_verts[-1].y
+	var start_h = points[0].y
+	var end_h = points[-1].y
 	
-	var start_terrain = simulation_node.get_height_at(Vector2(preview_verts[0].x, preview_verts[0].z))
-	var end_terrain = simulation_node.get_height_at(Vector2(preview_verts[-1].x, preview_verts[-1].z))
+	var start_terrain = simulation_node.get_height_at(Vector2(points[0].x, points[0].z))
+	var end_terrain = simulation_node.get_height_at(Vector2(points[-1].x, points[-1].z))
 	
 	var is_bridge_or_tunnel = abs(start_h - start_terrain) > 0.5 or abs(end_h - end_terrain) > 0.5 or (altitude_offset != 0.0)
+	result.is_bridge = is_bridge_or_tunnel
 
 	# 1. Sample raw terrain for all points ONLY if grounded
 	if not is_bridge_or_tunnel:
-		for i in range(preview_verts.size()):
-			preview_verts[i].y = simulation_node.get_height_at(Vector2(preview_verts[i].x, preview_verts[i].z))
+		for i in range(points.size()):
+			points[i].y = simulation_node.get_height_at(Vector2(points[i].x, points[i].z))
 			
 	# 2. Taubin Smoothing
 	var iters = 50
-	var num_verts = preview_verts.size()
+	var num_verts = points.size()
 	if num_verts > 2 and not is_bridge_or_tunnel:
 		var temp_h = []
 		temp_h.resize(num_verts)
@@ -590,21 +531,42 @@ func _get_processed_points() -> PackedVector3Array:
 		var mu_val = -0.53
 		for it in range(iters):
 			for i in range(1, num_verts - 1):
-				var laplacian = 0.5 * (preview_verts[i-1].y + preview_verts[i+1].y) - preview_verts[i].y
-				temp_h[i] = preview_verts[i].y + lambda_val * laplacian
+				var laplacian = 0.5 * (points[i-1].y + points[i+1].y) - points[i].y
+				temp_h[i] = points[i].y + lambda_val * laplacian
 			for i in range(1, num_verts - 1):
-				preview_verts[i].y = temp_h[i]
+				points[i].y = temp_h[i]
 			for i in range(1, num_verts - 1):
-				var laplacian = 0.5 * (preview_verts[i-1].y + preview_verts[i+1].y) - preview_verts[i].y
-				temp_h[i] = preview_verts[i].y + mu_val * laplacian
+				var laplacian = 0.5 * (points[i-1].y + points[i+1].y) - points[i].y
+				temp_h[i] = points[i].y + mu_val * laplacian
 			for i in range(1, num_verts - 1):
-				preview_verts[i].y = temp_h[i]
+				points[i].y = temp_h[i]
 	elif num_verts > 2 and is_bridge_or_tunnel:
 		for i in range(1, num_verts - 1):
 			var t = float(i) / (num_verts - 1)
-			preview_verts[i].y = lerp(start_h, end_h, t)
+			points[i].y = lerp(start_h, end_h, t)
 	
-	return preview_verts
+	# 3. Slope Validation
+	for i in range(1, points.size()):
+		var dist = Vector2(points[i].x, points[i].z).distance_to(Vector2(points[i-1].x, points[i-1].z))
+		if dist > 0.01:
+			var slope = abs(points[i].y - points[i-1].y) / dist
+			if slope > 0.41:
+				result.is_valid = false
+				break
+	
+	# 4. Bridge/Tunnel Height Validation
+	if result.is_valid and is_bridge_or_tunnel and num_verts > 2:
+		var mid_idx = num_verts / 2
+		var terrain_mid_h = simulation_node.get_height_at(Vector2(points[mid_idx].x, points[mid_idx].z))
+		if altitude_offset > 0.5: # Bridge
+			if points[mid_idx].y < terrain_mid_h + 1.0:
+				result.is_valid = false
+		elif altitude_offset < -0.5: # Tunnel
+			if points[mid_idx].y > terrain_mid_h - 1.0:
+				result.is_valid = false
+	
+	result.points = points
+	return result
 
 # ── Ghost guide lines ────────────────────────────────────────────────────────
 

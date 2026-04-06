@@ -386,13 +386,9 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **R13. Split `nodes/sim/query.rs` (937 lines)** — terrain raycasts, edge projection math, hovered-edge selection, lane/node inspection, border-node queries, and city stats are decoupled into `nodes/sim/query/` sub-modules. This split clarifies the distinction between low-level geometric math (terrain/network) and high-level simulation state inspection (stats/lanes).
 
+[DONE] **R14. De-duplicate road-path conditioning in `godot/scripts/road_tool.gd` (431 lines)** — `_draw_blueprint()` and `_get_processed_points()` consolidated into a single `_get_conditioned_geometry()` helper. This ensures that terrain sampling, Taubin smoothing, and slope/altitude validation are applied consistently to both the preview and the committed road segment, preventing geometric drift.
+
 **Top 3 code refactors to do next (2026-04-06 follow-up):**
-
-**Target: before adding more editor-side inspection tools (junction editor, asset editor integration, richer lane debugging).** This is the next Godot bridge file at risk of becoming an unreviewable grab-bag.
-
-**R14. De-duplicate road-path conditioning in `godot/scripts/road_tool.gd` (431 lines)** — `_draw_blueprint()` and `_get_processed_points()` both sample terrain and run the same Taubin smoothing pass. Any future change to bridge/tunnel rules, slope guards, or height smoothing can silently make preview and committed geometry diverge. Refactor to one shared helper that returns processed points plus validation flags, then let both preview and commit consume the same result.
-
-**Target: before touching bridge/tunnel placement or border snapping again.** This is small compared with the other items, but it protects one of the most user-visible tools from drift.
 
 ### v0.1 — Economy Foundation
 
