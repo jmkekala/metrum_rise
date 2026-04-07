@@ -180,7 +180,7 @@ impl SimCore {
     pub fn simulate_tick_internal(&mut self) {
         let tick_start = Instant::now();
 
-        self.demand.tick();
+        self.demand.recalculate(&self.allocator, &self.households);
         self.allocator.tick(
             &mut self.demand,
             &mut self.zoning,
@@ -215,6 +215,7 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
         );
+        self.demand.recalculate(&self.allocator, &self.households);
         self.agents.daily_update(&self.pollution, &self.config);
         self.agents
             .pathfind_count

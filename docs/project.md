@@ -198,6 +198,7 @@ The old probabilistic `Home -> Work -> Shop` essentials loop is gone from the li
 - The first pass is still daily-cadence, not sub-hourly schedule-window simulation.
 - `OWA` fallback is still the active utility backstop and the external import source for ordinary goods when no local supplier can fill a bounded request.
 - Freight is represented by delayed shipment jobs rather than by dedicated visible freight vehicles, so congestion from economy freight is not yet expressed through separate road agents.
+- `DemandSystem` is still a temporary zoning-growth scaffold, but it is now rebuilt from household stock pressure, commercial/industrial stock pressure, job pressure, and housing fill instead of from blind organic growth.
 
 ### Pathfinding
 - `simulation/pathing/astar.rs` — binary-heap A* with `(node, incoming_edge)` state key (mandatory for correct turn-restriction enforcement at `Node::lane_connections`).
@@ -208,7 +209,7 @@ The old probabilistic `Home -> Work -> Shop` essentials loop is gone from the li
 - **Unit tests** (`simulation/pathing/tests.rs`): `test_slope_cost_calculation` (50% grade edge receives a 7.25× cost multiplier vs a flat edge of equal length), `test_pathing_avoids_steep_slope` (router selects the longer flat detour A→C→B over the steep direct A→B). **Known geometry inconsistency in `test_pathing_avoids_steep_slope`**: `edge_ab`'s geometry endpoint is `(100, 50, 0)` but node `n_b` is placed at `(100, 0, 0)`. `CostCalculator` reads `edge.geometry`, so the slope penalty is computed correctly and the test passes, but the endpoint violates the invariant that edge geometry must start and end at the node positions. Fix: place `n_b` at `(100, 50, 0)`, or represent the slope with an intermediate waypoint while keeping the geometry endpoint at `n_b`'s flat position.
 
 ### Demand
-- `simulation/economy/demand.rs` — global R/C/I demand counters still drive zoning-based building growth and immigration pressure. This remains a temporary city-growth scaffold while the richer authored economy loop and construction logic catch up.
+- `simulation/economy/demand.rs` — global R/C/I demand counters still drive zoning-based building growth and immigration pressure, but they are now rebuilt from live economy pressure instead of from blind organic growth. Residential demand reflects job pressure plus housing fill, commercial demand reflects household and store stock pressure, and industrial demand reflects downstream store pressure plus supplier stock pressure. This remains a temporary city-growth scaffold while the richer authored economy loop and construction logic catch up.
 
 ### Flow Fields (item 18)
 - **`simulation/pathing/flow_field.rs`** — `FlowField` (per-zone-type reverse Dijkstra result) and `FlowFieldSystem` (one `FlowField` per zone × mode, lazy rebuild via `dirty: [bool; 6]`).
