@@ -3,7 +3,6 @@
 pub mod terrain;
 pub mod network;
 pub mod lanes;
-pub mod stats;
 
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::*;

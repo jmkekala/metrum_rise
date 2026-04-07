@@ -1,7 +1,7 @@
 ## Agent renderer — streams agent positions from Rust into a MultiMeshInstance3D each frame.
 ##
-## Rust methods called: get_agent_transforms(), get_agent_paths_debug(), get_city_demographics(),
-##   get_demand_stats()
+## Rust methods called: get_agent_transforms(), get_agent_paths_debug(),
+##   get_agent_cull_far_m(), get_agent_cull_padding_m(), set_camera_aabb()
 ## Agent transforms arrive as a flat PackedFloat32Array of 12 floats per agent:
 ##   [basis.x(3), basis.y(3), basis.z(3), origin(3)] — matches Godot's Transform3D memory layout.
 ## Path debug lines (toggled with P key) arrive as a PackedVector3Array of point pairs.
@@ -17,18 +17,6 @@ var car_mmis: Dictionary = {}
 var debug_mesh_instance: MeshInstance3D
 var debug_mesh: ImmediateMesh
 var show_paths = false
-
-var ui_layer: CanvasLayer
-var pop_label: Label
-var emp_label: Label
-var hap_label: Label
-var wealth_label: Label
-var res_bar: ProgressBar
-var com_bar: ProgressBar
-var ind_bar: ProgressBar
-var res_val: Label
-var com_val: Label
-var ind_val: Label
 
 func _ready():
 	# --- Walker MultiMeshes — VAT (Vertex Animation Texture) pipeline ---
@@ -162,101 +150,6 @@ func _ready():
 	debug_mesh_instance.mesh = debug_mesh
 	add_child(debug_mesh_instance)
 
-	# --- Demographics Floating HUD ---
-	ui_layer = CanvasLayer.new()
-	add_child(ui_layer)
-	
-	var margin = MarginContainer.new()
-	margin.set_anchors_preset(Control.PRESET_TOP_LEFT)
-	margin.add_theme_constant_override("margin_top", 20)
-	margin.add_theme_constant_override("margin_left", 20)
-	ui_layer.add_child(margin)
-	
-	var panel = PanelContainer.new()
-	var style = StyleBoxFlat.new()
-	style.bg_color = Color(0.1, 0.1, 0.1, 0.9) # Darker
-	style.set_corner_radius_all(8)
-	style.content_margin_left = 20
-	style.content_margin_right = 20
-	style.content_margin_top = 20
-	style.content_margin_bottom = 20
-	panel.add_theme_stylebox_override("panel", style)
-	margin.add_child(panel)
-	
-	var vbox = VBoxContainer.new()
-	vbox.add_theme_constant_override("separation", 10)
-	panel.add_child(vbox)
-	
-	var title = Label.new()
-	title.text = "City Demographics"
-	title.add_theme_font_size_override("font_size", 22)
-	vbox.add_child(title)
-	
-	var sep = HSeparator.new()
-	vbox.add_child(sep)
-	
-	pop_label = Label.new()
-	pop_label.text = "Population: 0 citizens"
-	vbox.add_child(pop_label)
-	
-	emp_label = Label.new()
-	emp_label.text = "Employment: 0.0 %"
-	vbox.add_child(emp_label)
-	
-	hap_label = Label.new()
-	hap_label.text = "Avg Happiness: 0.0"
-	vbox.add_child(hap_label)
-
-	wealth_label = Label.new()
-	wealth_label.text = "Avg Wealth: $ 0.0"
-	vbox.add_child(wealth_label)
-
-	var sep2 = HSeparator.new()
-	vbox.add_child(sep2)
-
-	var demand_title = Label.new()
-	demand_title.text = "Demand"
-	demand_title.add_theme_font_size_override("font_size", 16)
-	vbox.add_child(demand_title)
-
-	for entry in [["Residential", "res_bar"], ["Commercial", "com_bar"], ["Industrial", "ind_bar"]]:
-		var row = VBoxContainer.new()
-		row.add_theme_constant_override("separation", 2)
-		vbox.add_child(row)
-
-		var lbl = Label.new()
-		lbl.text = entry[0]
-		row.add_child(lbl)
-
-		var hbox = HBoxContainer.new()
-		hbox.add_theme_constant_override("separation", 6)
-		row.add_child(hbox)
-
-		var bar = ProgressBar.new()
-		bar.min_value = -100.0
-		bar.max_value = 100.0
-		bar.value = 0.0
-		bar.custom_minimum_size = Vector2(200, 16)
-		bar.show_percentage = false
-		bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		hbox.add_child(bar)
-
-		var val_lbl = Label.new()
-		val_lbl.text = "0"
-		val_lbl.custom_minimum_size = Vector2(40, 0)
-		val_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-		hbox.add_child(val_lbl)
-
-		if entry[1] == "res_bar":
-			res_bar = bar
-			res_val = val_lbl
-		elif entry[1] == "com_bar":
-			com_bar = bar
-			com_val = val_lbl
-		else:
-			ind_bar = bar
-			ind_val = val_lbl
-
 
 func _process(delta):
 	_update_camera_aabb()
@@ -339,22 +232,6 @@ func update_swarm():
 					debug_mesh.surface_set_color(colors[i])
 				debug_mesh.surface_add_vertex(points[i])
 			debug_mesh.surface_end()
-
-	# Update UI Demographics once per second
-	if Engine.get_frames_drawn() % 60 == 0:
-		var stats = simulation_node.get_city_demographics()
-		pop_label.text = "Population: %d citizens" % stats.get("population", 0)
-		emp_label.text = "Employment: %.1f %%" % stats.get("employment_rate", 0.0)
-		hap_label.text = "Avg Happiness: %.1f" % stats.get("average_happiness", 100.0)
-		wealth_label.text = "Avg Wealth: $ %.1f" % stats.get("average_wealth", 0.0)
-
-		var demand = simulation_node.get_demand_stats()
-		var r = demand.get("residential", 0.0)
-		var c = demand.get("commercial", 0.0)
-		var i = demand.get("industrial", 0.0)
-		res_bar.value = r; res_val.text = "%d" % r
-		com_bar.value = c; com_val.text = "%d" % c
-		ind_bar.value = i; ind_val.text = "%d" % i
 
 # Builds a car-shaped ArrayMesh from two boxes (body + cabin). No mesh files required.
 # Car faces along local -Z (Godot forward). Origin at bottom-centre of body.

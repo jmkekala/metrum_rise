@@ -3,7 +3,7 @@
 //! The v0.1 foundation keeps households explicit, lightweight, and tied to
 //! residential buildings without reviving per-agent grocery trips. This module
 //! owns household stock/budget state, simple building-side economic updates,
-//! and daily work/home planning that replaces the old probabilistic essentials loop.
+//! daily replenishment requests, and decision-utility-driven work/home planning.
 
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IDLE};

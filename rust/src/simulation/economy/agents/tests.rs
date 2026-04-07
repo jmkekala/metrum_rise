@@ -231,7 +231,7 @@ fn test_parallel_tick_produces_same_positions_as_sequential() {
 }
 
 #[test]
-fn test_agent_fsm_lifecycle() {
+fn test_agent_fsm_planned_departure_lifecycle() {
     let mut g = RegionGraph::new();
     let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n1 = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);

@@ -116,7 +116,7 @@ Runtime-spawned tools:
 | `main_ui.gd` | `get_no_building_spawn()`, `get_edge_class()`, `get_edge_geometry_3d()`, `get_height_at()` |
 | `terrain.gd` | `get_heightmap_size()`, `get_heightmap_data()`, `intersect_terrain()`, `sculpt_terrain()`, `flatten_terrain_for_roads()`, `load_heightmap_data()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
 | `water.gd` | `get_heightmap_size()`, `get_water_data()`, `get_water_velocity_data()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
-| `agents.gd` | `get_agent_cull_far_m()`, `get_agent_cull_padding_m()`, `set_camera_aabb()`, `get_agent_transforms()`, `get_car_transforms()`, `get_agent_paths_debug()`, `get_city_demographics()`, `get_demand_stats()` |
+| `agents.gd` | `get_agent_cull_far_m()`, `get_agent_cull_padding_m()`, `set_camera_aabb()`, `get_agent_transforms()`, `get_car_transforms()`, `get_agent_paths_debug()` |
 | `buildings.gd` | `load_asset_packs()`, `get_registered_asset_ids()`, `get_lod0_native_path()`, `get_building_transforms_for_asset()`, `get_building_plot_transforms()` |
 | `network_tool.gd` | `intersect_terrain()`, `add_road()`, `get_closest_network_point()`, `get_closest_node()`, `get_road_mesh_data()`, `get_network_nodes()`, `get_node_pos()`, `get_height_at()`, `get_road_ghost_guides()` |
 | `road_tool.gd` | inherited `NetworkTool` methods, plus `check_border_candidate()` and `set_border_connection()` through deferred border checks |

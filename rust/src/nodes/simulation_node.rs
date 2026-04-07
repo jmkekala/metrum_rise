@@ -36,8 +36,6 @@
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
 //! | | `get_car_transforms` | `agent_renderer.gd` |
 //! | | `set_camera_aabb` | `agents.gd` (culling update) |
-//! | **Stats** | `get_city_demographics` | `hud.gd` |
-//! | | `get_demand_stats` | `hud.gd` |
 
 use godot::classes::{INode3D, Node3D};
 use godot::prelude::*;
@@ -402,20 +400,6 @@ impl SimulationNode {
     #[func]
     pub fn get_agent_paths_debug(&self) -> VarDictionary {
         self.lock_core().get_agent_paths_debug_internal()
-    }
-
-    // ── Stats ──
-
-    /// Returns city demographic statistics.
-    #[func]
-    pub fn get_city_demographics(&self) -> VarDictionary {
-        self.lock_core().get_city_demographics_internal()
-    }
-
-    /// Returns current residential, commercial, and industrial demand values (-100 to 100).
-    #[func]
-    pub fn get_demand_stats(&self) -> VarDictionary {
-        self.lock_core().get_demand_stats_internal()
     }
 
     // ── Buildings ──
