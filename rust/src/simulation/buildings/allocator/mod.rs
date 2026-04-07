@@ -69,6 +69,8 @@ pub struct Building {
     pub operating_budget: f32,
     /// Whether the building has resolved utility availability for the current daily pass.
     pub utility_service_available: bool,
+    /// Remaining daily cooldown steps before this building may open another freight request.
+    pub shipment_cooldown_days: u8,
 }
 
 /// Manages the full lifecycle of [`Building`]s.
@@ -154,12 +156,13 @@ impl BuildingAllocator {
         desirability: &crate::simulation::grid::desirability::DesirabilitySystem,
         _noise: &crate::simulation::grid::noise::NoiseSystem,
         agents: &mut crate::simulation::economy::agents::AgentSystem,
+        logistics: &mut crate::simulation::economy::logistics::ShipmentSystem,
         network: &mut crate::simulation::network::TransitNetwork,
         graph: &mut RegionGraph,
         config: &crate::simulation::core::config::MapConfig,
     ) {
         // 1. Stale building cleanup.
-        self.cleanup_stale_buildings(zoning, agents, graph);
+        self.cleanup_stale_buildings(zoning, agents, logistics, graph);
 
         // 2. Growth logic.
         self.spawn_new_buildings(demand, zoning, desirability, graph, config);

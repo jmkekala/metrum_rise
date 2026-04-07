@@ -18,6 +18,7 @@ use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::HouseholdSystem;
+use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -69,6 +70,8 @@ pub struct SimCore {
     pub agents: AgentSystem,
     /// Explicit household runtime records and first-pass daily economy logic.
     pub households: HouseholdSystem,
+    /// Active building-level freight reservations and delayed deliveries.
+    pub logistics: ShipmentSystem,
     /// Map configuration (dimensions, cell sizes).
     pub config: MapConfig,
     /// Undo/redo stack — kept in SimCore so all mutations are co-located.
@@ -184,6 +187,7 @@ impl SimCore {
             &self.desirability,
             &self.noise,
             &mut self.agents,
+            &mut self.logistics,
             &mut self.transit_network,
             &mut self.region_graph,
             &self.config,
@@ -204,8 +208,13 @@ impl SimCore {
         self.pollution.tick(&self.allocator, &self.config);
         self.noise.tick(&self.allocator, &self.region_graph, &self.config);
         self.desirability.tick(&self.zoning, &self.pollution, &self.noise);
-        self.households
-            .daily_tick(&mut self.agents, &mut self.allocator);
+        self.households.daily_tick(
+            &mut self.agents,
+            &mut self.allocator,
+            &mut self.logistics,
+            &self.transit_network,
+            &self.region_graph,
+        );
         self.agents.daily_update(&self.pollution, &self.config);
         self.agents
             .pathfind_count

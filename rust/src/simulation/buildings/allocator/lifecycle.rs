@@ -3,6 +3,7 @@
 use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::types::NodeType;
@@ -14,6 +15,7 @@ impl BuildingAllocator {
         &mut self,
         zoning: &mut ZoningSystem,
         agents: &mut AgentSystem,
+        logistics: &mut ShipmentSystem,
         graph: &RegionGraph,
     ) {
         let zone_cell_m = zoning.config.zone_cell_m;
@@ -60,12 +62,14 @@ impl BuildingAllocator {
                     if b_cell_x < slot.len() { slot[b_cell_x] = false; }
                 }
 
+                logistics.invalidate_building(i, self);
                 let last_idx = self.buildings.len() - 1;
                 if i < last_idx {
                     self.dirty_zones[self.buildings[last_idx].zone_type as usize] = true;
                     let mut mapping = std::collections::HashMap::new();
                     mapping.insert(last_idx, i);
                     agents.remap_building_indices(&mapping);
+                    logistics.remap_building_indices(&mapping);
                 }
 
                 self.buildings.swap_remove(i);

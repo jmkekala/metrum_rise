@@ -179,8 +179,15 @@ The old probabilistic `Home -> Work -> Shop` essentials loop is gone from the li
 
 **Building-centric daily economy pass**:
 - `SimCore::simulate_tick_internal()` now runs a household/building economy pass once per simulation day before the old pollution/happiness update.
-- Buildings now persist first-pass economic state directly on the `Building` struct: `worker_count`, `stock`, `revenue`, `operating_budget`, and resolved `utility_service_available`.
-- Commercial and mixed buildings maintain a simple `household_supplies` stock buffer with `OWA` restock fallback, households consume stock daily and replenish from nearby commercial buildings, and wages are paid into household budgets from building operating budgets.
+- Buildings now persist first-pass economic state directly on the `Building` struct: `worker_count`, `stock`, `revenue`, `operating_budget`, resolved `utility_service_available`, and `shipment_cooldown_days`.
+- Industrial buildings now produce stock into on-site buffers and only recognize revenue when stock is actually shipped and sold instead of at production time.
+- Households still consume stock daily and replenish from nearby commercial buildings, and wages are paid into household budgets from building operating budgets.
+
+**Reservation-based freight jobs** (`simulation/economy/logistics.rs`):
+- `ShipmentSystem` now owns active freight jobs for `household_supplies`, with one bounded inbound request per commercial destination at a time.
+- Commercial and mixed buildings restock through delayed truck jobs instead of direct stock teleports. Supplier search is bounded by the existing chunk index and limited candidate counts.
+- Local suppliers reserve stock until delivery, and `OWA` fallback imports now originate from connected border nodes rather than from instant store-side refill.
+- Freight jobs are currently simulated as delayed building-level truck shipments, not yet as dedicated visible freight agents on the road network.
 
 **Decision-utility planning**:
 - The `TRANSIT_IDLE` branch no longer rolls RNG for daily essentials.
@@ -189,8 +196,8 @@ The old probabilistic `Home -> Work -> Shop` essentials loop is gone from the li
 
 **Current limits of the foundation slice**:
 - The first pass is still daily-cadence, not sub-hourly schedule-window simulation.
-- `OWA` fallback is currently the active utility and store-restock backstop; local utility producers/processors and trucked supply chains are the next layer, not yet the shipping default.
-- Internal truck logistics are still pending under item 64, so building stock movement is not yet represented by physical freight agents.
+- `OWA` fallback is still the active utility backstop and the external import source for ordinary goods when no local supplier can fill a bounded request.
+- Freight is represented by delayed shipment jobs rather than by dedicated visible freight vehicles, so congestion from economy freight is not yet expressed through separate road agents.
 
 ### Pathfinding
 - `simulation/pathing/astar.rs` — binary-heap A* with `(node, incoming_edge)` state key (mandatory for correct turn-restriction enforcement at `Node::lane_connections`).
@@ -396,10 +403,12 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **E1. v0.1 Economy Foundation (Item 60)** — added explicit household runtime records, per-building economy state (`worker_count`, `stock`, `revenue`, `operating_budget`, `utility_service_available`), daily household stock consumption and replenishment against nearby commercial stock, first-pass `OWA` utility/store fallback, household-budget wage payments, and decision-utility-driven work/home planning in place of the old probabilistic essentials loop. State is now persisted through SQLite save/load.
 
-**Top 3 project tasks to do next (2026-04-06):**
-1. **E2. Economy — Truck-based Supply Chain (Item 64 Rework)** — Connect the new building stock buffers to real batched truck logistics instead of direct store-side fallback.
-2. **E3. Economy — Legacy cleanup against final spec (Item 65)** — remove remaining demand-primary and pre-spec economy assumptions from code, UI, and docs.
-3. **E4. Economy editor shell (Item 62)** — start the developer-facing graph/inspector/validation workflow so the runtime stops depending on hardcoded starter-chain defaults.
+[DONE] **E2. Economy — Reservation-based Freight Jobs (Item 64 Rework)** — added `ShipmentSystem`-owned freight jobs for `household_supplies`, bounded supplier search against nearby industrial buildings, deterministic stock reservation and delayed delivery, `OWA` border-node fallback imports for ordinary goods, shipment persistence through SQLite save/load, and removal of the old direct commercial restock shortcut.
+
+**Top 3 project tasks to do next (2026-04-07):**
+1. **E3. Economy — Legacy cleanup against final spec (Item 65)** — remove remaining demand-primary and pre-spec economy assumptions from code, UI, and docs.
+2. **E4. Economy editor shell (Item 62)** — start the developer-facing graph/inspector/validation workflow so the runtime stops depending on hardcoded starter-chain defaults.
+3. **E5. Asset editor economy-profile integration (Item 63)** — wire the shipped economy profile catalog into the asset editor so buildings stop relying on ad hoc hardcoded starter-chain assumptions.
 
 ### v0.1 — Economy Foundation
 
@@ -410,8 +419,6 @@ Target: a closed, building-centric economic loop with decision-utility scoring a
 62. **Economy editor shell**: build a dedicated developer-facing balancing and validation tool for resource chains, controller definitions, scenario overrides, and economy debugging. The main workflow must be UI-driven rather than raw file editing. This is not a gameplay feature. Scope for the first pass: graph canvas, inspector, validation panel, and small sandbox playback using compiled economy definitions from [`docs/economy.md`](economy.md).
 
 63. **Asset editor economy-profile integration**: extend the building importer/inspector so `economy_profile` is chosen from the shipped baseline economy profile catalog or the latest exported profile list, not typed ad hoc. The asset editor should validate the selected profile against current economy data, warn clearly when the local catalog is missing or stale, and degrade gracefully instead of blocking general asset import work. Asset creators do not define new economy profiles in the asset editor; they select from existing economy data. Prerequisites: item 62 and item 57 Step 5.
-
-64. **Economy — Truck-based Supply Chain (rework)**: implement the `docs/economy.md` freight model rather than the older placeholder `LogisticsController` idea. The first pass should use building-level stock buffers, batched reservation-based truck deliveries, bounded supplier search, `OWA` border freight for ordinary goods, and explicit pickup-side household replenishment instead of per-agent shopping logistics. Prerequisite: item 60.
 
 65. **Economy — Legacy cleanup against final spec**: audit code, tests, editor plans, and docs for economy assumptions replaced by [`docs/economy.md`](economy.md). Remove or rewrite legacy references to probabilistic `Home -> Work -> Shop` essentials loops, global-demand-as-primary-economy logic, `ADS` in `v0.1`, district-scoped economy-editor views, free-floating local price or wage response in `v0.1`, abstract external throughput-budget trade, utilities as freight or free background access, auto-spawned city-owned facilities, and city-grant startup funding. Keep `docs/project.md` and `docs/reference.md` aligned as cleanup lands.
 

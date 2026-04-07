@@ -22,6 +22,7 @@ impl SimCore {
                 demand: &self.demand,
                 allocator: &self.allocator,
                 households: &self.households,
+                logistics: &self.logistics,
                 agents: &self.agents,
                 network: &self.transit_network,
             },
@@ -52,6 +53,7 @@ impl SimCore {
         std::mem::swap(&mut new_allocator.registry, &mut self.allocator.registry);
         self.allocator = new_allocator;
         self.households = loaded.households;
+        self.logistics = loaded.logistics;
         self.agents = loaded.agents;
         self.transit_network.flow_fields.mark_all_dirty();
         self.undo_stack.clear();

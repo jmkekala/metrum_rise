@@ -240,6 +240,7 @@ mod tests {
                 revenue: 0.0,
                 operating_budget: 500.0,
                 utility_service_available: false,
+                shipment_cooldown_days: 0,
             });
 
         // 3. Create a split node at 40m

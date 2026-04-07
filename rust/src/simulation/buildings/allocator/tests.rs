@@ -5,6 +5,7 @@ use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
 use crate::assets::AssetManifest;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use godot::prelude::Vector2;
 use rand::SeedableRng;
@@ -70,6 +71,7 @@ fn test_zone_index_consistency() {
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: false,
+            shipment_cooldown_days: 0,
         });
     }
     allocator.dirty_index = true;
@@ -128,6 +130,7 @@ fn test_vacancy_index_consistency() {
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: false,
+            shipment_cooldown_days: 0,
         });
     }
     allocator.rebuild_zone_index();
@@ -213,6 +216,7 @@ fn test_building_placement_demand_subtraction() {
     let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut network = TransitNetwork::new();
+    let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
 
     network.add_road(
@@ -232,6 +236,7 @@ fn test_building_placement_demand_subtraction() {
         &desirability,
         &noise,
         &mut agents,
+        &mut logistics,
         &mut network,
         &mut graph,
         &map_cfg,
@@ -271,6 +276,7 @@ fn test_building_placement_desirability_gate() {
     let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut network = TransitNetwork::new();
+    let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
 
     network.add_road(
@@ -290,6 +296,7 @@ fn test_building_placement_desirability_gate() {
         &desirability,
         &noise,
         &mut agents,
+        &mut logistics,
         &mut network,
         &mut graph,
         &map_cfg,
@@ -320,6 +327,7 @@ fn test_building_removal_clears_zoning_occupancy() {
     let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut network = TransitNetwork::new();
+    let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
 
     network.add_road(
@@ -354,6 +362,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: false,
+        shipment_cooldown_days: 0,
     });
     zoning.mark_occupied_rect(5.0, 10.0, godot::prelude::Vector2::new(0.0, 1.0), 30.0, 30.0, true);
 
@@ -363,6 +372,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         &desirability,
         &noise,
         &mut agents,
+        &mut logistics,
         &mut network,
         &mut graph,
         &map_cfg,
@@ -400,6 +410,7 @@ fn test_immigration_claims_vacant_home() {
     let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut network = TransitNetwork::new();
+    let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
 
     demand.residential = 100.0;
@@ -439,6 +450,7 @@ fn test_immigration_claims_vacant_home() {
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: false,
+        shipment_cooldown_days: 0,
     });
     allocator.rebuild_zone_index();
 
@@ -448,6 +460,7 @@ fn test_immigration_claims_vacant_home() {
         &desirability,
         &noise,
         &mut agents,
+        &mut logistics,
         &mut network,
         &mut graph,
         &map_cfg,

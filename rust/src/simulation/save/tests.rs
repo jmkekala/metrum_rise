@@ -4,6 +4,7 @@ use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::{MODE_CAR, MODE_WALK, TRANSIT_ON_ROAD};
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::{Household, HouseholdSystem, REPLENISHMENT_STABLE};
+use crate::simulation::economy::logistics::{Shipment, ShipmentSystem, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_OWA, CARRIER_TRUCK, RESOURCE_HOUSEHOLD_SUPPLIES};
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
@@ -53,7 +54,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         center_x: 0.0, center_y: 0.0, width_cells: 3, depth_cells: 3, zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0), frontage_t: 0.5, side_offset: 1.0, abandoned_timer: 0,
         edge_idx: edge_id, side: 1, cell_x: 0, cell_y: 0, occupancy: 2, worker_count: 0, asset_id: String::new(), level: 1,
-        broken: false, stock: 0.0, revenue: 0.0, operating_budget: 500.0, utility_service_available: false,
+        broken: false, stock: 0.0, revenue: 0.0, operating_budget: 500.0, utility_service_available: false, shipment_cooldown_days: 0,
     });
     allocator.recompute_derived_transforms(&graph, &zoning).expect("transforms");
     world::repaint_building_occupancy(&mut zoning, &allocator).expect("occupancy");
@@ -68,6 +69,19 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         stock_days: 1.5,
         replenishment_state: REPLENISHMENT_STABLE,
         cooldown_days: 0,
+    });
+    let mut logistics = ShipmentSystem::new();
+    logistics.shipments.push(Shipment {
+        resource_type: RESOURCE_HOUSEHOLD_SUPPLIES,
+        amount: 80.0,
+        source_kind: SHIPMENT_SOURCE_OWA,
+        source_building_id: usize::MAX,
+        source_border_node: 0,
+        destination_building_id: 0,
+        carrier_class: CARRIER_TRUCK,
+        status: SHIPMENT_IN_TRANSIT,
+        total_cost: 640.0,
+        eta_days: 1,
     });
     let mut agents_sys = AgentSystem::new();
     agents_sys.sim_time = 42.0;
@@ -90,7 +104,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let path = temp_path("round_trip");
     save_to_sqlite(&path, SaveGameView {
         config: &config, time: &time, terrain: &terrain, water: &water, graph: &graph, zoning: &zoning,
-        pollution: &pollution, noise: &noise, demand: &demand, allocator: &allocator, households: &households, agents: &agents_sys, network: &network_sys,
+        pollution: &pollution, noise: &noise, demand: &demand, allocator: &allocator, households: &households, logistics: &logistics, agents: &agents_sys, network: &network_sys,
     }).expect("save");
     let loaded = load_from_sqlite(&path, &allocator.registry).expect("load");
     fs::remove_file(&path).ok();
@@ -109,4 +123,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
     assert_eq!(loaded.agents.sim_time, agents_sys.sim_time);
     assert_eq!(loaded.allocator.buildings[0].frontage_t, 0.5);
+    assert_eq!(loaded.logistics.shipments.len(), 1);
+    assert_eq!(loaded.logistics.shipments[0].destination_building_id, 0);
 }

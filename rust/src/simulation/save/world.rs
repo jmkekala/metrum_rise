@@ -4,6 +4,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::{Household, HouseholdSystem};
+use crate::simulation::economy::logistics::{Shipment, ShipmentSystem};
 use crate::simulation::grid::data_grid::DataGrid;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -18,7 +19,7 @@ use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::schema::*;
 use super::{db_to_optional_usize, i64_to_u8, i64_to_u32, i64_to_usize, optional_building_to_db, pack_f32_slice, pack_flux_slice, u32_to_i64, unpack_f32_blob, unpack_flux_blob, usize_to_i64};
 
-pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &WaterSystem, zoning: &ZoningSystem, buildings: &BuildingAllocator, households: &HouseholdSystem, demand: &DemandSystem, pollution: &PollutionSystem, noise: &NoiseSystem, maps: &SnapshotMaps) -> SaveLoadResult<()> {
+pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &WaterSystem, zoning: &ZoningSystem, buildings: &BuildingAllocator, households: &HouseholdSystem, logistics: &ShipmentSystem, demand: &DemandSystem, pollution: &PollutionSystem, noise: &NoiseSystem, maps: &SnapshotMaps) -> SaveLoadResult<()> {
     // Terrain
     tx.execute("INSERT INTO terrain_state(width, height, height_blob_f32_le) VALUES (?1, ?2, ?3)", params![usize_to_i64(terrain.width)?, usize_to_i64(terrain.height)?, pack_f32_slice(&terrain.source_data)])?;
 
@@ -44,7 +45,7 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, width, depth, asset_id, level, broken) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, shipment_cooldown_days, width, depth, asset_id, level, broken) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?;
     for (old_bid, b) in buildings.buildings.iter().enumerate() {
         let saved_bid = maps.building_old_to_new.get(&old_bid).copied().ok_or_else(|| SaveLoadError::custom("missing building mapping"))?;
         let saved_eid = maps.edge_old_to_new.get(&b.edge_idx).copied().ok_or_else(|| SaveLoadError::custom("missing building edge mapping"))?;
@@ -62,6 +63,7 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
             b.revenue,
             b.operating_budget,
             i64::from(if b.utility_service_available { 1 } else { 0 }),
+            i64::from(b.shipment_cooldown_days),
             usize_to_i64(b.width_cells as usize)?,
             usize_to_i64(b.depth_cells as usize)?,
             &b.asset_id,
@@ -82,6 +84,32 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
             household.stock_days,
             i64::from(household.replenishment_state),
             i64::from(household.cooldown_days),
+        ])?;
+    }
+
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_type, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
+    for (shipment_id, shipment) in logistics.shipments.iter().enumerate() {
+        shipment_stmt.execute(params![
+            usize_to_i64(shipment_id)?,
+            i64::from(shipment.resource_type),
+            shipment.amount,
+            i64::from(shipment.source_kind),
+            optional_building_to_db(shipment.source_building_id, maps)?,
+            if shipment.source_border_node == u32::MAX {
+                NONE_REF
+            } else {
+                let saved_node = maps
+                    .node_old_to_new
+                    .get(&shipment.source_border_node)
+                    .copied()
+                    .ok_or_else(|| SaveLoadError::custom("missing shipment border-node mapping"))?;
+                usize_to_i64(saved_node as usize)?
+            },
+            optional_building_to_db(shipment.destination_building_id, maps)?,
+            i64::from(shipment.carrier_class),
+            i64::from(shipment.status),
+            shipment.total_cost,
+            i64::from(shipment.eta_days),
         ])?;
     }
 
@@ -135,17 +163,17 @@ pub(super) fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResu
 
 pub(super) fn load_buildings(conn: &Connection, registry: &crate::assets::AssetRegistry) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, width, depth, asset_id, level, broken FROM buildings ORDER BY building_id")?;
+    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, shipment_cooldown_days, width, depth, asset_id, level, broken FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
         if bid != allocator.buildings.len() { return Err(SaveLoadError::custom("non-contiguous building ids")); }
-        let asset_id: String = row.get(15)?;
-        let broken = (row.get::<_, i64>(17)? != 0) || registry.get(&asset_id).is_none();
+        let asset_id: String = row.get(16)?;
+        let broken = (row.get::<_, i64>(18)? != 0) || registry.get(&asset_id).is_none();
         allocator.buildings.push(Building {
             center_x: 0.0, center_y: 0.0,
-            width_cells: i64_to_usize(row.get(13)?)? as u16,
-            depth_cells: i64_to_usize(row.get(14)?)? as u16,
+            width_cells: i64_to_usize(row.get(14)?)? as u16,
+            depth_cells: i64_to_usize(row.get(15)?)? as u16,
             zone_type: zone_type_from_i64(row.get(6)?)?, facing_dir: Vector2::ZERO, frontage_t: row.get(2)?,
             side_offset: 0.0, abandoned_timer: 0,
             edge_idx: i64_to_usize(row.get(1)?)?, side: (row.get::<_, i64>(3)?) as i8,
@@ -154,12 +182,13 @@ pub(super) fn load_buildings(conn: &Connection, registry: &crate::assets::AssetR
             occupancy: i64_to_u32(row.get(7)?)?,
             worker_count: i64_to_u32(row.get(8)?)?,
             asset_id,
-            level: row.get::<_, i64>(16)?.clamp(1, 255) as u8,
-            broken,
             stock: row.get(9)?,
             revenue: row.get(10)?,
             operating_budget: row.get(11)?,
             utility_service_available: row.get::<_, i64>(12)? != 0,
+            shipment_cooldown_days: i64_to_u8(row.get(13)?)?,
+            level: row.get::<_, i64>(17)?.clamp(1, 255) as u8,
+            broken,
         });
     }
     Ok(allocator)
@@ -186,6 +215,36 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
         });
     }
     Ok(households)
+}
+
+pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem> {
+    let mut logistics = ShipmentSystem::new();
+    let mut stmt = conn.prepare("SELECT shipment_id, resource_type, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_days FROM shipments ORDER BY shipment_id")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let shipment_id = i64_to_usize(row.get(0)?)?;
+        if shipment_id != logistics.shipments.len() {
+            return Err(SaveLoadError::custom("non-contiguous shipment ids"));
+        }
+        let raw_border: i64 = row.get(5)?;
+        logistics.shipments.push(Shipment {
+            resource_type: i64_to_u8(row.get(1)?)?,
+            amount: row.get(2)?,
+            source_kind: i64_to_u8(row.get(3)?)?,
+            source_building_id: db_to_optional_usize(row.get(4)?)?,
+            source_border_node: if raw_border == NONE_REF {
+                u32::MAX
+            } else {
+                i64_to_u32(raw_border)?
+            },
+            destination_building_id: db_to_optional_usize(row.get(6)?)?,
+            carrier_class: i64_to_u8(row.get(7)?)?,
+            status: i64_to_u8(row.get(8)?)?,
+            total_cost: row.get(9)?,
+            eta_days: i64_to_u8(row.get(10)?)?,
+        });
+    }
+    Ok(logistics)
 }
 
 pub(super) fn repaint_building_occupancy(zoning: &mut ZoningSystem, allocator: &BuildingAllocator) -> SaveLoadResult<()> {
