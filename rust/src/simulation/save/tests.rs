@@ -69,6 +69,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         stock_days: 1.5,
         replenishment_state: REPLENISHMENT_STABLE,
         cooldown_days: 0,
+        reserved_store_building_id: 0,
+        reserved_amount: 2.5,
+        reserved_total_cost: 15.0,
+        pickup_eta_days: 1,
     });
     let mut logistics = ShipmentSystem::new();
     logistics.shipments.push(Shipment {
@@ -119,6 +123,11 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.graph.edge_count(), 1);
     assert_eq!(loaded.zoning.get_zone_world(0.0, 0.0), ZoneType::Residential);
     assert_eq!(loaded.allocator.buildings.len(), 1);
+    assert_eq!(loaded.households.households.len(), 1);
+    assert_eq!(loaded.households.households[0].reserved_store_building_id, 0);
+    assert_eq!(loaded.households.households[0].reserved_amount, 2.5);
+    assert_eq!(loaded.households.households[0].reserved_total_cost, 15.0);
+    assert_eq!(loaded.households.households[0].pickup_eta_days, 1);
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
     assert_eq!(loaded.agents.sim_time, agents_sys.sim_time);

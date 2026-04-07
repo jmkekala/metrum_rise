@@ -196,6 +196,10 @@ mod tests {
             stock_days: 0.25,
             replenishment_state: REPLENISHMENT_STABLE,
             cooldown_days: 0,
+            reserved_store_building_id: usize::MAX,
+            reserved_amount: 0.0,
+            reserved_total_cost: 0.0,
+            pickup_eta_days: 0,
         });
 
         let mut demand = DemandSystem::new();
@@ -223,6 +227,10 @@ mod tests {
                 stock_days: 3.0,
                 replenishment_state: REPLENISHMENT_STABLE,
                 cooldown_days: 0,
+                reserved_store_building_id: usize::MAX,
+                reserved_amount: 0.0,
+                reserved_total_cost: 0.0,
+                pickup_eta_days: 0,
             });
         }
 

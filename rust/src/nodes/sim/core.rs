@@ -187,6 +187,7 @@ impl SimCore {
             &self.desirability,
             &self.noise,
             &mut self.agents,
+            &mut self.households,
             &mut self.logistics,
             &mut self.transit_network,
             &mut self.region_graph,

@@ -5,6 +5,7 @@ use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
 use crate::assets::AssetManifest;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use godot::prelude::Vector2;
@@ -215,6 +216,7 @@ fn test_building_placement_demand_subtraction() {
 
     let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
     let mut network = TransitNetwork::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
@@ -236,6 +238,7 @@ fn test_building_placement_demand_subtraction() {
         &desirability,
         &noise,
         &mut agents,
+        &mut households,
         &mut logistics,
         &mut network,
         &mut graph,
@@ -275,6 +278,7 @@ fn test_building_placement_desirability_gate() {
 
     let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
     let mut network = TransitNetwork::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
@@ -296,6 +300,7 @@ fn test_building_placement_desirability_gate() {
         &desirability,
         &noise,
         &mut agents,
+        &mut households,
         &mut logistics,
         &mut network,
         &mut graph,
@@ -326,6 +331,7 @@ fn test_building_removal_clears_zoning_occupancy() {
     let desirability = DesirabilitySystem::new(&map_cfg);
     let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
     let mut network = TransitNetwork::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
@@ -372,6 +378,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         &desirability,
         &noise,
         &mut agents,
+        &mut households,
         &mut logistics,
         &mut network,
         &mut graph,
@@ -409,6 +416,7 @@ fn test_immigration_claims_vacant_home() {
     let desirability = DesirabilitySystem::new(&map_cfg);
     let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
     let mut network = TransitNetwork::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
@@ -460,13 +468,14 @@ fn test_immigration_claims_vacant_home() {
         &desirability,
         &noise,
         &mut agents,
+        &mut households,
         &mut logistics,
         &mut network,
         &mut graph,
         &map_cfg,
     );
 
-    assert_eq!(agents.len(), 1, "Agent should have immigrated");
+    assert_eq!(agents.len(), 2, "One two-resident household should have immigrated");
     assert_eq!(
         agents.home_building[0], 0,
         "Immigrant should have claimed home index 0"
@@ -475,8 +484,11 @@ fn test_immigration_claims_vacant_home() {
         agents.target_building[0], 0,
         "Immigrant target_building should be set to home"
     );
+    assert_eq!(agents.household_id[0], agents.household_id[1]);
+    assert_eq!(households.households.len(), 1);
+    assert_eq!(households.households[0].member_count, 2);
     assert_eq!(
-        allocator.buildings[0].occupancy, 1,
-        "Building occupancy should be 1"
+        allocator.buildings[0].occupancy, 2,
+        "Building occupancy should match the admitted household size"
     );
 }

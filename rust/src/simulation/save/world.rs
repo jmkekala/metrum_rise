@@ -72,7 +72,7 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
         ])?;
     }
 
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")?;
     for (hid, household) in households.households.iter().enumerate() {
         household_stmt.execute(params![
             usize_to_i64(hid)?,
@@ -84,6 +84,10 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
             household.stock_days,
             i64::from(household.replenishment_state),
             i64::from(household.cooldown_days),
+            optional_building_to_db(household.reserved_store_building_id, maps)?,
+            household.reserved_amount,
+            household.reserved_total_cost,
+            i64::from(household.pickup_eta_days),
         ])?;
     }
 
@@ -196,7 +200,7 @@ pub(super) fn load_buildings(conn: &Connection, registry: &crate::assets::AssetR
 
 pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
-    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days FROM households ORDER BY household_id")?;
+    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_days FROM households ORDER BY household_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
@@ -212,6 +216,10 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             stock_days: row.get(6)?,
             replenishment_state: i64_to_u8(row.get(7)?)?,
             cooldown_days: i64_to_u8(row.get(8)?)?,
+            reserved_store_building_id: db_to_optional_usize(row.get(9)?)?,
+            reserved_amount: row.get(10)?,
+            reserved_total_cost: row.get(11)?,
+            pickup_eta_days: i64_to_u8(row.get(12)?)?,
         });
     }
     Ok(households)

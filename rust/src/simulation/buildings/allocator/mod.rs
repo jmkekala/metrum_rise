@@ -3,7 +3,7 @@
 //! [`BuildingAllocator::tick`] runs once per simulation tick. It:
 //! 1. Removes buildings whose zoning cell has been changed or whose road edge was deleted.
 //! 2. Scans zoned, unoccupied cells with sufficient demand and spawns new buildings.
-//! 3. Spawns immigrant agents up to the current residential capacity.
+//! 3. Admits immigrant households through connected border nodes up to current housing capacity.
 
 mod placement;
 mod lifecycle;
@@ -156,6 +156,7 @@ impl BuildingAllocator {
         desirability: &crate::simulation::grid::desirability::DesirabilitySystem,
         _noise: &crate::simulation::grid::noise::NoiseSystem,
         agents: &mut crate::simulation::economy::agents::AgentSystem,
+        households: &mut crate::simulation::economy::households::HouseholdSystem,
         logistics: &mut crate::simulation::economy::logistics::ShipmentSystem,
         network: &mut crate::simulation::network::TransitNetwork,
         graph: &mut RegionGraph,
@@ -177,7 +178,7 @@ impl BuildingAllocator {
         }
 
         // 4. Immigration logic.
-        self.spawn_immigrants(demand.residential, agents, graph);
+        self.spawn_immigrants(agents, households, graph);
 
         self.dirty = false;
     }

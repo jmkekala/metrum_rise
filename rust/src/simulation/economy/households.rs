@@ -17,16 +17,23 @@ pub const REPLENISHMENT_STABLE: u8 = 0;
 /// Household stock fell below the trigger and needs a restock attempt.
 pub const REPLENISHMENT_NEEDS: u8 = 1;
 /// Household stock was replenished on this economy pass.
-pub const REPLENISHMENT_FULFILLED: u8 = 2;
+pub const REPLENISHMENT_RESERVED: u8 = 2;
+/// Household has a reserved supply source and is waiting for pickup-side fulfillment.
+pub const REPLENISHMENT_PICKUP_PENDING: u8 = 3;
+/// Household stock was replenished on this economy pass.
+pub const REPLENISHMENT_FULFILLED: u8 = 4;
 /// Household is waiting before retrying another replenishment attempt.
-pub const REPLENISHMENT_COOLDOWN: u8 = 3;
+pub const REPLENISHMENT_COOLDOWN: u8 = 5;
 
 const HOUSEHOLD_CONSUMPTION_RATE: f32 = 1.0;
 const HOUSEHOLD_TARGET_STOCK_DAYS: f32 = 3.0;
 const HOUSEHOLD_TRIGGER_STOCK_DAYS: f32 = 1.5;
+const IMMIGRANT_STARTING_STOCK_DAYS: f32 = 1.0;
 const HOUSEHOLD_SUPPLY_UNIT_PRICE: f32 = 6.0;
 const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 2.0;
 const HOUSEHOLD_STARTING_BUDGET: f32 = 100.0;
+/// Default household size admitted by the first-pass immigration flow.
+pub const DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 2;
 
 const COMMERCIAL_BASE_RATE: f32 = 200.0;
 const INDUSTRIAL_BASE_RATE: f32 = 160.0;
@@ -51,6 +58,7 @@ const JOB_SEARCH_MAX_RING: i32 = 2;
 const JOB_SEARCH_CANDIDATES: usize = 8;
 const GROCERY_SEARCH_MAX_RING: i32 = 2;
 const GROCERY_SEARCH_CANDIDATES: usize = 8;
+const HOUSEHOLD_PICKUP_DELAY_DAYS: u8 = 1;
 
 /// Explicit household runtime record anchored to a residential building.
 #[derive(Clone, Debug)]
@@ -71,6 +79,14 @@ pub struct Household {
     pub replenishment_state: u8,
     /// Remaining daily cooldown steps before another replenishment retry.
     pub cooldown_days: u8,
+    /// Reserved source building for the current replenishment request, if any.
+    pub reserved_store_building_id: usize,
+    /// Reserved amount waiting for household pickup-side fulfillment.
+    pub reserved_amount: f32,
+    /// Reserved budget waiting to be transferred to the supplying store.
+    pub reserved_total_cost: f32,
+    /// Remaining daily steps before the reserved pickup completes.
+    pub pickup_eta_days: u8,
 }
 
 /// Collection of explicit household records for the live simulation.
@@ -89,6 +105,32 @@ impl HouseholdSystem {
     /// Clears all households.
     pub fn clear(&mut self) {
         self.households.clear();
+    }
+
+    /// Creates one immigrant household with shared starter savings and stock.
+    pub fn admit_immigrant_household(
+        &mut self,
+        home_building_id: usize,
+        member_count: u16,
+    ) -> usize {
+        let member_count = member_count.max(1);
+        self.households.push(Household {
+            home_building_id,
+            budget: HOUSEHOLD_STARTING_BUDGET * member_count as f32,
+            stock: member_count as f32
+                * HOUSEHOLD_CONSUMPTION_RATE
+                * IMMIGRANT_STARTING_STOCK_DAYS,
+            member_count,
+            consumption_rate: HOUSEHOLD_CONSUMPTION_RATE,
+            stock_days: IMMIGRANT_STARTING_STOCK_DAYS,
+            replenishment_state: REPLENISHMENT_STABLE,
+            cooldown_days: 0,
+            reserved_store_building_id: usize::MAX,
+            reserved_amount: 0.0,
+            reserved_total_cost: 0.0,
+            pickup_eta_days: 0,
+        });
+        self.households.len() - 1
     }
 
     /// Runs the first-pass daily economy update.
@@ -136,6 +178,10 @@ impl HouseholdSystem {
                     stock_days: HOUSEHOLD_TARGET_STOCK_DAYS,
                     replenishment_state: REPLENISHMENT_STABLE,
                     cooldown_days: 0,
+                    reserved_store_building_id: usize::MAX,
+                    reserved_amount: 0.0,
+                    reserved_total_cost: 0.0,
+                    pickup_eta_days: 0,
                 });
                 agents.household_id[i] = self.households.len() - 1;
             }
@@ -157,8 +203,7 @@ impl HouseholdSystem {
         for household in &mut self.households {
             household.stock_days = stock_days(household.stock, household.member_count, household.consumption_rate);
             if household.member_count == 0 {
-                household.replenishment_state = REPLENISHMENT_STABLE;
-                household.cooldown_days = 0;
+                clear_replenishment_request(household);
             }
         }
     }
@@ -265,7 +310,17 @@ impl HouseholdSystem {
                 household.member_count,
                 household.consumption_rate,
             );
-            if household.cooldown_days > 0 {
+            if matches!(
+                household.replenishment_state,
+                REPLENISHMENT_RESERVED | REPLENISHMENT_PICKUP_PENDING
+            ) {
+                continue;
+            } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
+                if household.cooldown_days > 0 {
+                    household.cooldown_days -= 1;
+                }
+                household.replenishment_state = REPLENISHMENT_COOLDOWN;
+            } else if household.cooldown_days > 0 {
                 household.cooldown_days -= 1;
                 household.replenishment_state = REPLENISHMENT_COOLDOWN;
             } else if household.stock_days < HOUSEHOLD_TRIGGER_STOCK_DAYS {
@@ -285,6 +340,10 @@ impl HouseholdSystem {
     }
 
     fn run_household_replenishment(&mut self, allocator: &mut BuildingAllocator) {
+        for hid in 0..self.households.len() {
+            self.progress_household_replenishment(hid, allocator);
+        }
+
         for hid in 0..self.households.len() {
             let household = &self.households[hid];
             if household.member_count == 0
@@ -328,19 +387,56 @@ impl HouseholdSystem {
             if let Some((store_idx, amount, total_cost)) = found_sale {
                 let store = &mut allocator.buildings[store_idx];
                 store.stock -= amount;
-                store.revenue += total_cost;
-                store.operating_budget += total_cost;
-
                 household.budget -= total_cost;
-                household.stock += amount;
-                household.stock_days =
-                    stock_days(household.stock, household.member_count, household.consumption_rate);
-                household.replenishment_state = REPLENISHMENT_FULFILLED;
-                household.cooldown_days = 1;
+                household.reserved_store_building_id = store_idx;
+                household.reserved_amount = amount;
+                household.reserved_total_cost = total_cost;
+                household.pickup_eta_days = HOUSEHOLD_PICKUP_DELAY_DAYS;
+                household.replenishment_state = REPLENISHMENT_RESERVED;
             } else {
                 household.replenishment_state = REPLENISHMENT_COOLDOWN;
                 household.cooldown_days = 1;
             }
+        }
+    }
+
+    fn progress_household_replenishment(
+        &mut self,
+        hid: usize,
+        allocator: &mut BuildingAllocator,
+    ) {
+        let Some(household) = self.households.get_mut(hid) else { return; };
+        match household.replenishment_state {
+            REPLENISHMENT_RESERVED => {
+                if household.pickup_eta_days > 0 {
+                    household.pickup_eta_days -= 1;
+                }
+                household.replenishment_state = REPLENISHMENT_PICKUP_PENDING;
+            }
+            REPLENISHMENT_PICKUP_PENDING => {
+                let store_idx = household.reserved_store_building_id;
+                if store_idx == usize::MAX || store_idx >= allocator.buildings.len() {
+                    household.budget += household.reserved_total_cost;
+                    clear_replenishment_request(household);
+                    household.replenishment_state = REPLENISHMENT_COOLDOWN;
+                    household.cooldown_days = 1;
+                    return;
+                }
+
+                let store = &mut allocator.buildings[store_idx];
+                store.revenue += household.reserved_total_cost;
+                store.operating_budget += household.reserved_total_cost;
+                household.stock += household.reserved_amount;
+                household.stock_days =
+                    stock_days(household.stock, household.member_count, household.consumption_rate);
+                household.replenishment_state = REPLENISHMENT_FULFILLED;
+                household.cooldown_days = 1;
+                household.reserved_store_building_id = usize::MAX;
+                household.reserved_amount = 0.0;
+                household.reserved_total_cost = 0.0;
+                household.pickup_eta_days = 0;
+            }
+            _ => {}
         }
     }
 
@@ -513,6 +609,15 @@ fn stock_days(stock: f32, member_count: u16, consumption_rate: f32) -> f32 {
     }
 }
 
+fn clear_replenishment_request(household: &mut Household) {
+    household.replenishment_state = REPLENISHMENT_STABLE;
+    household.cooldown_days = 0;
+    household.reserved_store_building_id = usize::MAX;
+    household.reserved_amount = 0.0;
+    household.reserved_total_cost = 0.0;
+    household.pickup_eta_days = 0;
+}
+
 fn household_income_pressure(household: &Household) -> f32 {
     let daily_consumption = household.member_count.max(1) as f32 * household.consumption_rate;
     let reserve_target = daily_consumption * HOUSEHOLD_SUPPLY_UNIT_PRICE * HOUSEHOLD_TARGET_STOCK_DAYS
@@ -524,4 +629,78 @@ fn normalized_commute_penalty(home: &Building, work: &Building) -> f32 {
     let dx = home.center_x - work.center_x;
     let dy = home.center_y - work.center_y;
     ((dx * dx + dy * dy).sqrt() / 2000.0).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use godot::prelude::Vector2;
+
+    fn make_building(center_x: f32, zone_type: ZoneType, stock: f32, utility: bool) -> Building {
+        Building {
+            center_x,
+            center_y: 0.0,
+            width_cells: 2,
+            depth_cells: 2,
+            zone_type,
+            facing_dir: Vector2::new(0.0, 1.0),
+            frontage_t: 0.5,
+            side_offset: 1.0,
+            abandoned_timer: 0,
+            edge_idx: 0,
+            side: 1,
+            cell_x: 0,
+            cell_y: 0,
+            occupancy: 0,
+            worker_count: 0,
+            asset_id: String::new(),
+            level: 1,
+            broken: false,
+            stock,
+            revenue: 0.0,
+            operating_budget: 500.0,
+            utility_service_available: utility,
+            shipment_cooldown_days: 0,
+        }
+    }
+
+    #[test]
+    fn household_replenishment_flows_through_reserved_and_pickup_states() {
+        let mut households = HouseholdSystem::new();
+        households.households.push(Household {
+            home_building_id: 0,
+            budget: 200.0,
+            stock: 0.0,
+            member_count: 2,
+            consumption_rate: 1.0,
+            stock_days: 0.0,
+            replenishment_state: REPLENISHMENT_NEEDS,
+            cooldown_days: 0,
+            reserved_store_building_id: usize::MAX,
+            reserved_amount: 0.0,
+            reserved_total_cost: 0.0,
+            pickup_eta_days: 0,
+        });
+
+        let mut allocator = BuildingAllocator::new();
+        allocator.buildings.push(make_building(0.0, ZoneType::Residential, 0.0, true));
+        allocator.buildings.push(make_building(20.0, ZoneType::Commercial, 50.0, true));
+        allocator.rebuild_zone_index();
+
+        households.run_household_replenishment(&mut allocator);
+        assert_eq!(households.households[0].replenishment_state, REPLENISHMENT_RESERVED);
+        assert_eq!(allocator.buildings[1].stock, 44.0);
+        assert_eq!(households.households[0].budget, 164.0);
+
+        households.run_household_replenishment(&mut allocator);
+        assert_eq!(
+            households.households[0].replenishment_state,
+            REPLENISHMENT_PICKUP_PENDING
+        );
+
+        households.run_household_replenishment(&mut allocator);
+        assert_eq!(households.households[0].replenishment_state, REPLENISHMENT_FULFILLED);
+        assert_eq!(households.households[0].stock, 6.0);
+        assert_eq!(allocator.buildings[1].revenue, 36.0);
+    }
 }

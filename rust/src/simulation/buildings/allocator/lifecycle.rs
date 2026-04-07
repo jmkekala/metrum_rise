@@ -3,11 +3,18 @@
 use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::households::{
+    HouseholdSystem, DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE,
+};
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
+
+const IMMIGRATION_BASE_INFLOW: f32 = 1.0;
+const MAX_IMMIGRANT_HOUSEHOLDS_PER_DAY: usize = 4;
+const HOME_PICK_SAMPLE_ATTEMPTS: usize = 8;
 
 impl BuildingAllocator {
     /// Removes buildings if their zone category has changed or their road edge no longer exists.
@@ -80,14 +87,14 @@ impl BuildingAllocator {
         }
     }
 
-    /// Spawns immigrant agents at border nodes and assigns them to available homes.
+    /// Admits immigrant households through border nodes and assigns them to available homes.
     pub(super) fn spawn_immigrants(
         &mut self,
-        demand_residential: f32,
         agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
         graph: &RegionGraph,
     ) {
-        let total_capacity: usize = self
+        let vacant_resident_slots: usize = self
             .buildings
             .iter()
             .enumerate()
@@ -99,64 +106,141 @@ impl BuildingAllocator {
                 acc + cap.saturating_sub(b.occupancy as usize)
             });
 
-        if agents.len() < total_capacity {
-            let demand_factor = (demand_residential / 100.0).max(0.0).min(1.0);
-            let gap = total_capacity - agents.len();
-            let num_to_spawn = ((gap as f32 * 0.2 * demand_factor) as usize).max(1).min(10);
+        if vacant_resident_slots == 0 {
+            return;
+        }
 
-            let border_nodes: Vec<u32> = graph
-                .nodes()
-                .iter()
-                .enumerate()
-                .filter_map(|(i, node)| {
-                    if node.node_type != NodeType::Border {
-                        return None;
-                    }
-                    let connected = graph
-                        .node_adjacency(i as u32)
-                        .iter().any(|&e| !graph.edge(e).deleted);
-                    if connected { Some(i as u32) } else { None }
-                })
-                .collect();
-
-            if !border_nodes.is_empty() {
-                let mut rng = rand::thread_rng();
-                for _ in 0..num_to_spawn {
-                    if let Some(home_idx) = agents.find_available_home(self) {
-                        let spawn_node =
-                            border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
-                        let mut spawn_pos = graph.node(spawn_node).pos;
-                        
-                        if let Some(&edge_idx) = graph.node_adjacency(spawn_node).get(0) {
-                            let edge = graph.edge(edge_idx);
-                            if edge.physical_geometry.len() >= 2 {
-                                let dir = if edge.start_node == spawn_node {
-                                    (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
-                                } else {
-                                    (edge.physical_geometry[edge.physical_geometry.len()-2] - edge.physical_geometry[edge.physical_geometry.len()-1]).normalized()
-                                };
-                                let side_mul = if crate::config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
-                                let normal = godot::prelude::Vector3::new(-dir.z, 0.0, dir.x);
-                                spawn_pos += normal * (crate::config::LANE_WIDTH * 0.5 * side_mul);
-                            }
-                        }
-
-                        let home_bldg = &self.buildings[home_idx];
-                        let home_node = building_depart_node(home_bldg, graph);
-
-                        agents.spawn_agent(
-                            home_idx,
-                            home_node,
-                            0.0,
-                            0.0,
-                            spawn_node,
-                            spawn_pos.x,
-                            spawn_pos.z,
-                        );
-                    } else {
-                        break;
-                    }
+        let border_nodes: Vec<u32> = graph
+            .nodes()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, node)| {
+                if node.node_type != NodeType::Border {
+                    return None;
                 }
+                let connected = graph
+                    .node_adjacency(i as u32)
+                    .iter().any(|&e| !graph.edge(e).deleted);
+                if connected { Some(i as u32) } else { None }
+            })
+            .collect();
+        if border_nodes.is_empty() {
+            return;
+        }
+
+        let resident_count: f32 = households
+            .households
+            .iter()
+            .filter(|household| household.member_count > 0)
+            .map(|household| household.member_count as f32)
+            .sum();
+        let open_job_slots: f32 = self
+            .buildings
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| {
+                !b.broken
+                    && matches!(
+                        b.zone_type,
+                        ZoneType::Commercial
+                            | ZoneType::Industrial
+                            | ZoneType::Office
+                            | ZoneType::Mixed
+                    )
+            })
+            .map(|(idx, building)| {
+                self.worker_capacity(idx)
+                    .saturating_sub(building.worker_count) as f32
+            })
+            .sum();
+
+        let housing_factor = (vacant_resident_slots as f32
+            / (vacant_resident_slots as f32 + resident_count.max(1.0)))
+            .clamp(0.0, 1.0);
+        let job_factor = if resident_count == 0.0 {
+            1.0
+        } else {
+            (open_job_slots
+                / (open_job_slots + DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as f32))
+                .clamp(0.0, 1.0)
+        };
+
+        let mut stock_stability_sum = 0.0;
+        let mut utility_stability_sum = 0.0;
+        let mut active_households = 0.0;
+        for household in &households.households {
+            if household.member_count == 0 {
+                continue;
+            }
+            stock_stability_sum += (household.stock_days / 3.0).clamp(0.0, 1.0);
+            let utility_ok = household.home_building_id < self.buildings.len()
+                && self.buildings[household.home_building_id].utility_service_available;
+            utility_stability_sum += if utility_ok { 1.0 } else { 0.0 };
+            active_households += 1.0;
+        }
+        let city_stability_factor = if active_households > 0.0 {
+            (0.6 * (stock_stability_sum / active_households)
+                + 0.4 * (utility_stability_sum / active_households))
+                .clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        let households_to_spawn = (IMMIGRATION_BASE_INFLOW
+            * housing_factor
+            * job_factor
+            * city_stability_factor)
+            .round() as usize;
+        if households_to_spawn == 0 {
+            return;
+        }
+
+        let households_to_spawn = households_to_spawn
+            .min(MAX_IMMIGRANT_HOUSEHOLDS_PER_DAY)
+            .min(vacant_resident_slots);
+
+        let mut rng = rand::thread_rng();
+        for _ in 0..households_to_spawn {
+            let Some((home_idx, household_size)) =
+                self.claim_home_for_household(DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as u32, &mut rng)
+            else {
+                break;
+            };
+            let spawn_node = border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
+            let mut spawn_pos = graph.node(spawn_node).pos;
+
+            if let Some(&edge_idx) = graph.node_adjacency(spawn_node).get(0) {
+                let edge = graph.edge(edge_idx);
+                if edge.physical_geometry.len() >= 2 {
+                    let dir = if edge.start_node == spawn_node {
+                        (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
+                    } else {
+                        (edge.physical_geometry[edge.physical_geometry.len() - 2]
+                            - edge.physical_geometry[edge.physical_geometry.len() - 1])
+                            .normalized()
+                    };
+                    let side_mul = if crate::config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+                    let normal = godot::prelude::Vector3::new(-dir.z, 0.0, dir.x);
+                    spawn_pos += normal * (crate::config::LANE_WIDTH * 0.5 * side_mul);
+                }
+            }
+
+            let home_bldg = &self.buildings[home_idx];
+            let home_node = building_depart_node(home_bldg, graph);
+            let household_id =
+                households.admit_immigrant_household(home_idx, household_size);
+
+            for _ in 0..household_size {
+                let agent_idx = agents.spawn_agent(
+                    home_idx,
+                    home_node,
+                    0.0,
+                    0.0,
+                    spawn_node,
+                    spawn_pos.x,
+                    spawn_pos.z,
+                );
+                agents.household_id[agent_idx] = household_id;
             }
         }
     }
@@ -208,5 +292,73 @@ impl BuildingAllocator {
 
         self.dirty = true;
         Ok(())
+    }
+}
+
+impl BuildingAllocator {
+    fn claim_home_for_household(
+        &mut self,
+        desired_size: u32,
+        rng: &mut impl rand::Rng,
+    ) -> Option<(usize, u16)> {
+        let target_zones = [ZoneType::Residential, ZoneType::Mixed];
+        let total_candidates: usize = target_zones
+            .iter()
+            .map(|&zone| self.vacancy_index[zone as usize].len())
+            .sum();
+        if total_candidates == 0 {
+            return None;
+        }
+
+        for _ in 0..HOME_PICK_SAMPLE_ATTEMPTS {
+            let mut pick = rng.gen_range(0..total_candidates);
+            let mut building_idx = usize::MAX;
+            for &zone in &target_zones {
+                let list = &self.vacancy_index[zone as usize];
+                if pick < list.len() {
+                    building_idx = list[pick];
+                    break;
+                }
+                pick -= list.len();
+            }
+            if building_idx == usize::MAX {
+                continue;
+            }
+
+            let free_slots = self
+                .resident_capacity(building_idx)
+                .saturating_sub(self.buildings[building_idx].occupancy);
+            if free_slots == 0 {
+                continue;
+            }
+            let admitted_size = free_slots.min(desired_size).max(1) as u16;
+            for _ in 0..admitted_size {
+                self.claim_vacancy(building_idx);
+            }
+            return Some((building_idx, admitted_size));
+        }
+
+        let mut fallback_idx = usize::MAX;
+        let mut fallback_size = 0_u16;
+        'fallback: for &zone in &target_zones {
+            for &building_idx in &self.vacancy_index[zone as usize] {
+                let free_slots = self
+                    .resident_capacity(building_idx)
+                    .saturating_sub(self.buildings[building_idx].occupancy);
+                if free_slots == 0 {
+                    continue;
+                }
+                fallback_idx = building_idx;
+                fallback_size = free_slots.min(desired_size).max(1) as u16;
+                break 'fallback;
+            }
+        }
+        if fallback_idx == usize::MAX {
+            return None;
+        }
+        for _ in 0..fallback_size {
+            self.claim_vacancy(fallback_idx);
+        }
+        Some((fallback_idx, fallback_size))
     }
 }

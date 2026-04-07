@@ -175,7 +175,7 @@ The old probabilistic `Home -> Work -> Shop` essentials loop is gone from the li
 **Household runtime foundation** (`simulation/economy/households.rs`):
 - Explicit `HouseholdSystem` owns household budget, stock, stock-days, and replenishment state.
 - Agents now carry `household_id` and the daily economy pass rebuilds household membership from linked resident agents.
-- First-pass assignment currently creates one explicit household per housed agent unless a save already links multiple agents to the same household. That keeps household records explicit and deterministic now, while richer household grouping can be added later without reintroducing anonymous building-wide stock pools.
+- First-pass assignment still keeps legacy already-housed residents simple, but immigration now admits shared multi-resident households with one explicit `household_id` instead of spawning unrelated residents one by one.
 
 **Building-centric daily economy pass**:
 - `SimCore::simulate_tick_internal()` now runs a household/building economy pass once per simulation day before the old pollution/happiness update.
@@ -198,6 +198,7 @@ The old probabilistic `Home -> Work -> Shop` essentials loop is gone from the li
 - The first pass is still daily-cadence, not sub-hourly schedule-window simulation.
 - `OWA` fallback is still the active utility backstop and the external import source for ordinary goods when no local supplier can fill a bounded request.
 - Freight is represented by delayed shipment jobs rather than by dedicated visible freight vehicles, so congestion from economy freight is not yet expressed through separate road agents.
+- Emigration and richer household regrouping are still later work; the live migration slice currently covers household-level immigration only.
 - `DemandSystem` is still a temporary zoning-growth scaffold, but it is now rebuilt from household stock pressure, commercial/industrial stock pressure, job pressure, and housing fill instead of from blind organic growth.
 
 ### Pathfinding
@@ -406,10 +407,12 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **E2. Economy — Reservation-based Freight Jobs (Item 64 Rework)** — added `ShipmentSystem`-owned freight jobs for `household_supplies`, bounded supplier search against nearby industrial buildings, deterministic stock reservation and delayed delivery, `OWA` border-node fallback imports for ordinary goods, shipment persistence through SQLite save/load, and removal of the old direct commercial restock shortcut.
 
+[DONE] **E3. Economy — Household-level Immigration and Household-State Persistence** — immigration now admits explicit multi-resident households through connected border nodes instead of one unrelated resident at a time, with shared `household_id`, starter savings, and shared home assignment. Household replenishment reservation state now also persists through SQLite save/load.
+
 **Top 3 project tasks to do next (2026-04-07):**
-1. **E3. Economy — Legacy cleanup against final spec (Item 65)** — remove remaining demand-primary and pre-spec economy assumptions from code, UI, and docs.
-2. **E4. Economy editor shell (Item 62)** — start the developer-facing graph/inspector/validation workflow so the runtime stops depending on hardcoded starter-chain defaults.
-3. **E5. Asset editor economy-profile integration (Item 63)** — wire the shipped economy profile catalog into the asset editor so buildings stop relying on ad hoc hardcoded starter-chain assumptions.
+1. **E4. Economy — Legacy cleanup against final spec (Item 65)** — remove remaining demand-primary and pre-spec economy assumptions from code, UI, and docs.
+2. **E5. Economy editor shell (Item 62)** — start the developer-facing graph/inspector/validation workflow so the runtime stops depending on hardcoded starter-chain defaults.
+3. **E6. Asset editor economy-profile integration (Item 63)** — wire the shipped economy profile catalog into the asset editor so buildings stop relying on ad hoc hardcoded starter-chain assumptions.
 
 ### v0.1 — Economy Foundation
 
