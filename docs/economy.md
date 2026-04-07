@@ -153,6 +153,7 @@ Useful schedule fields:
 - `active_work_windows`
 - `shift_change_windows`
 - `departure_spread_minutes`
+- `reliability_buffer_minutes`
 - `freight_timing_profile`
 
 These windows should be stored as minute ranges from midnight on the operational clock.
@@ -180,9 +181,18 @@ This gives the simulation:
 
 Planned departure should follow the rule:
 
-- `planned_departure = target_arrival - estimated_travel_time - reliability_buffer`
+- `planned_departure = target_arrival - estimated_travel_time - reliability_buffer_minutes`
 
 So the clock defines when an arrival is desired, while routing and traffic determine how early departure must happen.
+
+For `v0.1`, `reliability_buffer_minutes` is an authored constant on the relevant schedule or trip-purpose profile rather than a dynamic variance model.
+
+Recommended first-pass seed values:
+
+- office or daytime work: `15` minutes
+- school: `10` minutes
+- three-shift industrial work: `10` minutes
+- freight pickup or delivery runs: `20` minutes
 
 Implementation note:
 
@@ -401,6 +411,26 @@ This prevents the economy from deadlocking on day one when no households, produc
 
 Bootstrap immigration should taper gradually as the city develops. It should not use a fixed hard cap such as "stop after N agents." The slowdown should be driven by household count and city conditions instead.
 
+Recommended `v0.1` immigration taper rule:
+
+```text
+immigration_attempts_per_day =
+    base_inflow
+  * housing_factor
+  * job_factor
+  * city_stability_factor
+```
+
+Where:
+
+- all factors are clamped to `0.0..1.0`
+- `housing_factor` is derived from vacant housing capacity or vacant household slots
+- `job_factor` is derived from reachable open jobs relative to incoming worker demand
+- `city_stability_factor` is derived from household supply stability, utility-service stability, and other broad city-condition signals
+- actual admitted households are still capped by real vacant housing capacity
+
+This makes immigration slow automatically as housing fills, job surplus shrinks, or city conditions deteriorate, without using a magic population cap.
+
 ### Outside World Exchange (`OWA`)
 
 For `v0.1`, the outside world should be represented by an `Outside World Exchange` (`OWA`) rather than by goods appearing magically inside city inventories.
@@ -512,6 +542,8 @@ The decisions system should resolve choices made by agents, households, and buil
 - whether replenishment uses shop pickup in `v0.1`, with future delivery modes added later if the design expands
 - which supplier or route is selected
 - which schedule window a workplace is currently filling
+
+In `v0.1`, household replenishment should be represented as a household-side economy/request state flow rather than as a new `TRANSIT_*` state in the agent FSM.
 
 This layer operates on the operational clock and consumes the pressures produced by the demand system.
 
@@ -727,6 +759,10 @@ Rules:
 - most ordinary utility consumers do not need those utility ports repeated explicitly on every profile unless they have a documented special case
 - households still do not own `economy_profile`, but occupied residential households consume utility service and generate `sewage` load as a runtime consequence of occupancy and activity
 - local utility service must first be satisfied by local utility-producing or utility-processing buildings connected through this utility layer
+- `v0.1` utility service is aggregate-capacity-bounded, not a pure on/off existence check and not a detailed line-by-line grid simulation
+- each local utility-producing or utility-processing building contributes authored production or processing capacity to an aggregate local pool for the relevant utility resource
+- connected building and household demand draws against that aggregate pool, and connected `sewage` load draws against aggregate processing capacity
+- once this utility layer resolves whether a given building's required service is satisfied, the downstream production formula may treat that resolved result as a binary building-level gate in `v0.1`
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
 - residential utility and sewage charges post to household budgets in `v0.1`
@@ -741,7 +777,7 @@ Rules:
 - these utility-deficit purchases are not trucked freight and do not use the normal shipment-delivery model
 - `sewage` must clear through the utility layer rather than remaining inside the building forever
 - if a building lacks required utility service, or if generated `sewage` cannot clear, its normal operation should be blocked or degraded
-- this baseline utility layer is a connected-service model, not a trucked-goods model, in `v0.1`
+- this baseline utility layer is a connected-service, aggregate-capacity model rather than a trucked-goods model in `v0.1`
 - if no local utility producer or processor exists yet, the player may place a city-owned utility building or rely on `OWA` fallback until local provision exists
 - city-owned utility buildings do not auto-spawn; only private companies may spawn new utility operators through simulation rules
 - later versions may add explicit utility-network capacity, outages, or service-quality simulation
@@ -903,6 +939,12 @@ This keeps labor supply, school demand, housing occupancy, migration, and househ
 
 This is still an aggregated model. It does **not** require a deep family tree, detailed relationship simulation, or one complex AI object per household. The runtime household record should stay as small and data-oriented as possible.
 
+Household consumption rule for `v0.1`:
+
+- `consumption_rate` is expressed in `household_supplies / day / resident`
+- a household's daily baseline consumption is `member_count * consumption_rate`
+- `stock_days` should therefore be computed against that household-level daily consumption rather than against a flat per-household constant
+
 For performance:
 
 - household logic should run on coarse economy cadence, not every render frame
@@ -977,6 +1019,41 @@ Early decision-utility inputs can stay simple:
 - commute cost
 - job availability
 
+Recommended `v0.1` work-decision formula:
+
+```text
+work_score =
+    w_income  * income_pressure
+  + w_stock   * household_stock_pressure
+  + w_job     * job_availability_score
+  - w_commute * commute_penalty
+```
+
+Where:
+
+- all factors are normalized to `0.0..1.0` before weighting
+- `income_pressure` is derived from the current household budget or reserve target
+- `household_stock_pressure` is derived from current `stock_days` at home
+- `job_availability_score` is `0.0` when no valid reachable open job exists and otherwise reflects the best currently available work option
+- `commute_penalty` is derived from expected travel cost or time for the candidate job
+
+Recommended seed weights for the first implementation:
+
+- `w_income = 0.35`
+- `w_stock = 0.35`
+- `w_job = 0.20`
+- `w_commute = 0.10`
+- `go_to_work_threshold = 0.45`
+
+Selection rule for `v0.1`:
+
+- evaluate the score for reachable valid job options only
+- choose the highest-scoring reachable job
+- if the best score is at least `go_to_work_threshold`, the agent departs for work
+- otherwise the agent stays in its non-work state for that decision pass
+
+This keeps the first pass deterministic, bounded, and easy to debug. Richer nonlinear or probabilistic choice models can be added later if the design needs them.
+
 ### Building throughput depends on staffing
 
 Production should derive from a bounded formula based on:
@@ -985,6 +1062,26 @@ Production should derive from a bounded formula based on:
 - input availability
 - required utility service availability through the `Utility Service Layer`, including `power`, `water`, and `sewage` clearance where relevant
 - controller modifiers
+
+Recommended `v0.1` formula:
+
+```text
+throughput = base_rate
+           * staffing_factor
+           * input_factor
+           * utility_factor
+           * controller_factor
+```
+
+Where:
+
+- `base_rate` is the authored full-capacity output rate for the building or recipe
+- `staffing_factor = clamp(filled_workers / worker_capacity, 0.0..1.0)`
+- `input_factor` is the limiting required-input coverage for the current production step, clamped to `0.0..1.0`
+- `utility_factor = 1.0` when the `Utility Service Layer` has resolved that required utility service is satisfied and generated `sewage` can clear for that building; otherwise `0.0` in the `v0.1` baseline
+- `controller_factor` is a bounded multiplier from allowed controller effects
+
+This keeps the first pass linear and readable. Hard minimum-staff step functions are not part of the baseline formula; if they are ever added later, they should be explicit profile-side rules rather than hidden default behavior.
 
 This gives the player a meaningful connection between zoning, staffing, transit, and output without requiring arbitrary micromanagement.
 
@@ -1094,8 +1191,11 @@ Supplier resolution must stay bounded.
 
 Rules:
 
-- a consumer request should search only a limited shortlist of compatible suppliers
-- nearby or already-preferred suppliers should be checked first
+- runtime supplier search should start from a compatible-supplier index keyed by resource type and supplier class rather than by scanning all buildings
+- candidate suppliers should then be gathered from nearby spatial chunks around the consumer first, reusing the project's existing bounded spatial-query patterns instead of introducing unbounded global scans
+- nearby or already-preferred suppliers should be checked first inside that candidate list
+- search should stop after a bounded chunk radius, a bounded candidate count, or both
+- candidates that lack stock, fail authored compatibility rules, or fail route feasibility should be rejected before reservation
 - for ordinary shipped goods, if no local supplier is valid, the system may fall back to the `OWA` when the economy rules allow it
 - no request should perform an unbounded city-wide best-price scan
 
@@ -1119,6 +1219,23 @@ This prevents retry storms and makes debugging easier.
 Household replenishment in `v0.1` should use one fulfillment mode:
 
 - periodic shopping or pickup, represented as an occasional household-level replenishment action rather than one trip per resident
+
+Rules:
+
+- replenishment is driven by the household stock system on coarse economy cadence, not by adding a new baseline `TRANSIT_*` movement state
+- when stock falls below the household's replenishment threshold, the household creates a replenishment request
+- that request reserves a valid supply source and then waits for pickup-side fulfillment
+- on successful fulfillment, household stock increases and the request enters cooldown
+- if fulfillment fails, the request follows the same bounded retry and cooldown rules as other economy requests
+
+Useful first-pass household replenishment states are:
+
+- `stable`
+- `needs_replenishment`
+- `reserved`
+- `pickup_pending`
+- `fulfilled`
+- `cooldown`
 
 This keeps the first household loop simple while still avoiding daily per-agent shopping.
 
@@ -1343,7 +1460,7 @@ A good starter chain for both simulation and developer-tool tuning is:
   - outputs: `household_supplies`
 - `household_demand_sink`
   - inputs: `household_supplies`
-  - runtime variables: `household_size`, `stock_days`, `consumption_rate`, `replenishment_mode`
+  - runtime variables: `household_size`, `stock_days`, `consumption_rate` (`household_supplies / day / resident`), `replenishment_mode`
 
 In this starter chain, baseline `power`, `water`, and `sewage` behavior comes from the `Utility Service Layer` unless a building is meant to define a documented special-case utility rule explicitly.
 
@@ -1364,6 +1481,55 @@ Later extensions may add richer controller effects to the same chain, for exampl
 Replenishment for this chain should happen through periodic shopping or pickup in `v0.1`. `ADS` is a later extension, not part of the first implementation scope.
 
 This example is intentionally broad. It avoids modeling "one loaf of bread per person per day" while still creating meaningful logistics, staffing, and shortage gameplay.
+
+### Seed values for first implementation
+
+The first playable implementation should ship with a small shared seed-balance set so the example chain is runnable before the economy editor is heavily used for tuning.
+
+These are implementation defaults, not final balance targets:
+
+- household `consumption_rate`: `1.0 household_supplies / day / resident`
+- household replenishment target: `3.0 days` of stock
+- household replenishment trigger: below `1.5 days` of stock
+- household replenishment check cadence: every `6` in-game hours
+- `food_processor` `base_rate`: `160 staple_food / day`
+- `food_processor` worker capacity: `4`
+- `food_processor` wage band: `90-110 currency / workday`
+- `grocery` or `distribution_center` throughput target: `200 household_supplies / day`
+- `grocery` worker capacity: `3`
+- `grocery` wage band: `80-100 currency / workday`
+- grocery stock target: `3.0 days` of supply
+- grocery reorder threshold: `2.0 days` of supply
+- grocery critical threshold: `0.5 days` of supply
+- grocery minimum shipment size: `40 household_supplies`
+- local base price for `staple_food`: `4 currency / unit`
+- local base price for `household_supplies`: `6 currency / unit`
+- initial `OWA import_ask` for `staple_food`: `7 currency / unit`
+- initial `OWA import_ask` for `household_supplies`: `8 currency / unit`
+- initial `OWA export_bid` for `staple_food`: `3 currency / unit`
+
+These numbers are only a bootstrap reference pack. They should ship in the first editable economy data so all implementations and test scenarios start from the same baseline before the editor-driven balancing pass diverges.
+
+## Legacy Cleanup Targets
+
+As implementation starts, remove or refactor any code, tests, editor UX, or helper structures that still assume the older economy model rather than this spec.
+
+The current spec replaces these legacy assumptions:
+
+- per-agent daily shopping or `Home -> Work -> Shop -> Home` loops as the baseline essentials model
+- implicit or aggregated household representation instead of explicit household runtime records
+- global demand counters as the primary economy loop rather than as one coarse pressure layer
+- probabilistic or RNG-driven activity selection instead of decision-utility scoring plus authored schedule profiles
+- `ADS` or household home delivery as a `v0.1` baseline feature
+- free-floating local price response or wage response in `v0.1`
+- abstract external-market or throughput-budget trade models instead of `OWA` plus physical border freight for ordinary goods
+- utilities as trucked goods or free background access instead of the `Utility Service Layer`
+- `district` or gameplay-area-scoped economy-editor workflows in `v0.1`
+- player-facing raw controller editing instead of a separate bounded policy layer
+- auto-spawned city-owned facilities instead of explicit player placement for city-owned buildings
+- city-grant startup funding for private businesses instead of private startup float or owner equity
+
+This section is the cleanup checklist for retiring pre-spec economy assumptions during implementation.
 
 ## Summary
 

@@ -391,21 +391,25 @@ This refactor improved maintainability and is a prerequisite for independently t
 [DONE] **R15. Split `nodes/simulation_node.rs` (1,182 lines)** — Final Godot bridge cleanup. Modularized into specialized sub-modules within `nodes/sim/bridge/` (agents, assets, network). This refactor decouples Godot-facing data formatting (PackedFloat32Array/VarDictionary assembly) from the central simulation node, isolating the GDExtension boilerplate and clarifying the bridge architecture.
 
 **Top 3 project tasks to do next (2026-04-06):**
-1. **E1. Economy — Need-level satisfaction & controller model (Item 60/61)** — Transition activity selection from RNG to utility scoring driven by the authored controller model (Shelter/Rest focus).
+1. **E1. Economy — Need-level satisfaction & controller model (Item 60/61)** — Transition activity selection from RNG to decision-utility scoring driven by the authored controller model (Shelter/Rest focus).
 2. **E2. Economy — Truck-based Supply Chain (Item 64 Rework)** — Implement initial truck logistics (Production -> Stock -> Truck Agent -> Delivery).
 3. **E3. Building — `stock` and `revenue` data fields** — Add per-building economic state to support the building-centric supply model.
 
 ### v0.1 — Economy Foundation
 
-Target: a closed, utility-driven economic loop at 1,000,000 agents as specified in [`docs/economy.md`](economy.md).
+Target: a closed, building-centric economic loop with decision-utility scoring at 1,000,000 agents as specified in [`docs/economy.md`](economy.md).
 
-60. **Implement v0.1 Economy Foundation**: complete the closed, utility-driven economic loop. This includes adding `stock` and `revenue` to buildings, implementing the `LogisticsController` for physical truck deliveries, and transitioning agent `TRANSIT_IDLE` selection to utility-based scoring (Shelter/Rest focus). Prerequisite: item 59.
+60. **Implement v0.1 Economy Foundation**: complete the closed, building-centric economy loop. This includes adding `stock` and `revenue` to buildings, explicit household stock and budget records, the baseline `Utility Service Layer`, and transitioning agent `TRANSIT_IDLE` selection to decision-utility scoring (Shelter/Rest focus). Prerequisite: item 59.
 
 61. **Service buildings — coverage model**: police, fire, and medical stations emit influence onto grids that feed directly into `stability_sat`. No individual dispatch — static coverage remains the primary model to ensure O(1) per-tick cost at the 1M-agent target.
 
-62. **Economy editor shell**: build a dedicated developer-facing balancing and validation tool for resource chains, controller definitions, district overrides, and economy debugging. The main workflow must be UI-driven rather than raw file editing. This is not a gameplay feature. Scope for the first pass: graph canvas, inspector, district-scoping view, validation panel, and small sandbox playback using compiled economy definitions from [`docs/economy.md`](economy.md).
+62. **Economy editor shell**: build a dedicated developer-facing balancing and validation tool for resource chains, controller definitions, scenario overrides, and economy debugging. The main workflow must be UI-driven rather than raw file editing. This is not a gameplay feature. Scope for the first pass: graph canvas, inspector, validation panel, and small sandbox playback using compiled economy definitions from [`docs/economy.md`](economy.md).
 
 63. **Asset editor economy-profile integration**: extend the building importer/inspector so `economy_profile` is chosen from the shipped baseline economy profile catalog or the latest exported profile list, not typed ad hoc. The asset editor should validate the selected profile against current economy data, warn clearly when the local catalog is missing or stale, and degrade gracefully instead of blocking general asset import work. Asset creators do not define new economy profiles in the asset editor; they select from existing economy data. Prerequisites: item 62 and item 57 Step 5.
+
+64. **Economy — Truck-based Supply Chain (rework)**: implement the `docs/economy.md` freight model rather than the older placeholder `LogisticsController` idea. The first pass should use building-level stock buffers, batched reservation-based truck deliveries, bounded supplier search, `OWA` border freight for ordinary goods, and explicit pickup-side household replenishment instead of per-agent shopping logistics. Prerequisite: item 60.
+
+65. **Economy — Legacy cleanup against final spec**: audit code, tests, editor plans, and docs for economy assumptions replaced by [`docs/economy.md`](economy.md). Remove or rewrite legacy references to probabilistic `Home -> Work -> Shop` essentials loops, global-demand-as-primary-economy logic, `ADS` in `v0.1`, district-scoped economy-editor views, free-floating local price or wage response in `v0.1`, abstract external throughput-budget trade, utilities as freight or free background access, auto-spawned city-owned facilities, and city-grant startup funding. Keep `docs/project.md` and `docs/reference.md` aligned as cleanup lands.
 
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 
