@@ -1,159 +1,220 @@
-//! Explicit player-driven building placement logic.
+//! One-time founding bootstrap placement and frontage-slot resolution.
 
+use crate::assets::ZoneClass;
 use crate::debug_log;
+use crate::simulation::buildings::allocator::{
+    Building, BuildingAllocator, EdgeOccupancy, zone_class_to_zone_type,
+};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::buildings::allocator::{
-    BuildingAllocator, Building, EdgeOccupancy, zone_class_to_zone_type,
-};
+use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
 
-const MAX_EXPLICIT_PLACE_EDGE_DISTANCE_M: f32 = 40.0;
+const FOUNDING_RESIDENTIAL_ZONE: ZoneClass = ZoneClass::Residential;
+const FOUNDING_COMMERCIAL_ZONE: ZoneClass = ZoneClass::Commercial;
 
 impl BuildingAllocator {
-    /// Places one explicit player-requested building on valid zoned frontage near `world_pos`.
-    pub fn place_explicit_building_near_world_pos(
+    /// Places the one-time founding bootstrap when the city has a border
+    /// connection plus valid residential and commercial zoned frontage.
+    pub fn place_founding_bootstrap_if_ready(
         &mut self,
-        asset_id: &str,
-        world_pos: Vector2,
         zoning: &mut ZoningSystem,
         graph: &RegionGraph,
-    ) -> Result<usize, String> {
-        let (zone_type, dw, dh, initial_level) = {
-            let Some(entry) = self.registry.get(asset_id) else {
-                return Err(format!("unknown building asset '{asset_id}'"));
-            };
-            let Some(building_data) = entry.manifest.building.as_ref() else {
-                return Err(format!("asset '{asset_id}' is not a building"));
-            };
-            (
-                zone_class_to_zone_type(building_data.zone_type),
-                building_data.lot_width_cells as usize,
-                building_data.lot_depth_cells as usize,
-                building_data.level,
-            )
+    ) {
+        if self.founding_bootstrap_consumed {
+            return;
+        }
+
+        if !self.buildings.is_empty() {
+            self.founding_bootstrap_consumed = true;
+            debug_log!(
+                "economy",
+                "founding bootstrap skipped permanently: city already has {} building(s)",
+                self.buildings.len()
+            );
+            return;
+        }
+
+        if !has_connected_border_node(graph) {
+            debug_log!(
+                "economy",
+                "founding bootstrap waiting: no connected external Border node"
+            );
+            return;
+        }
+
+        let Some(residential_asset_id) = self.preferred_founding_asset_id(FOUNDING_RESIDENTIAL_ZONE) else {
+            debug_log!(
+                "economy",
+                "founding bootstrap blocked: no registered residential building asset"
+            );
+            return;
+        };
+        let Some(commercial_asset_id) = self.preferred_founding_asset_id(FOUNDING_COMMERCIAL_ZONE) else {
+            debug_log!(
+                "economy",
+                "founding bootstrap blocked: no registered commercial building asset"
+            );
+            return;
         };
 
-        let Some((edge_idx, projection)) = closest_placeable_edge(graph, world_pos) else {
-            return Err("no nearby road frontage found".to_owned());
+        let Some(residential_slot) =
+            self.resolve_first_valid_slot_for_asset(&residential_asset_id, zoning, graph)
+        else {
+            debug_log!(
+                "economy",
+                "founding bootstrap waiting: no valid residential zoned frontage for '{}'",
+                residential_asset_id
+            );
+            return;
         };
-        if projection.dist_from_road > MAX_EXPLICIT_PLACE_EDGE_DISTANCE_M {
-            return Err("cursor is too far from a buildable road frontage".to_owned());
-        }
+        let Some(commercial_slot) =
+            self.resolve_first_valid_slot_for_asset(&commercial_asset_id, zoning, graph)
+        else {
+            debug_log!(
+                "economy",
+                "founding bootstrap waiting: no valid commercial zoned frontage for '{}'",
+                commercial_asset_id
+            );
+            return;
+        };
 
-        let edge = graph.edge(edge_idx);
-        let edge_len = edge.physical_length;
-        let cells_long = (edge_len / zoning.config.zone_cell_m).floor() as usize;
-        if cells_long == 0 || dw > cells_long {
-            return Err("selected road frontage is too short for that asset".to_owned());
-        }
+        let residential_idx = self.commit_resolved_slot(residential_slot, zoning);
+        let commercial_idx = self.commit_resolved_slot(commercial_slot, zoning);
+        self.founding_bootstrap_consumed = true;
 
-        let preferred_x = ((projection.t * edge_len) / zoning.config.zone_cell_m).floor() as isize;
-        let max_leading = cells_long.saturating_sub(dw) as isize;
-        let preferred_x = preferred_x.clamp(0, max_leading);
+        debug_log!(
+            "economy",
+            "founding bootstrap placed residential_idx={} commercial_idx={} and is now consumed",
+            residential_idx,
+            commercial_idx
+        );
+    }
 
-        let mut side_order = vec![projection.side];
-        if projection.side != -projection.side {
-            side_order.push(-projection.side);
-        }
+    fn preferred_founding_asset_id(&self, zone_class: ZoneClass) -> Option<String> {
+        self.registry
+            .buildings_for_zone(zone_class)
+            .iter()
+            .find(|qualified_id| {
+                self.registry
+                    .get(qualified_id.as_str())
+                    .and_then(|entry| entry.manifest.building.as_ref())
+                    .map(|building| building.level == 1)
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .or_else(|| self.registry.buildings_for_zone(zone_class).first().cloned())
+    }
 
-        for side in side_order {
-            for x in leading_column_candidates(preferred_x, max_leading) {
-                if let Some(building_idx) = self.try_place_explicit_on_slot(
-                    asset_id,
-                    zone_type,
-                    initial_level,
-                    edge_idx,
-                    side,
-                    x,
-                    dw,
-                    dh,
-                    zoning,
-                    graph,
-                ) {
-                    return Ok(building_idx);
+    fn resolve_first_valid_slot_for_asset(
+        &self,
+        asset_id: &str,
+        zoning: &ZoningSystem,
+        graph: &RegionGraph,
+    ) -> Option<ResolvedPlacement> {
+        let params = self.asset_placement_params(asset_id)?;
+
+        for edge_idx in 0..graph.edge_count() {
+            let edge = graph.edge(edge_idx);
+            if edge.deleted
+                || edge.no_building_spawn
+                || edge.physical_length < 0.1
+                || edge.physical_geometry.len() < 2
+            {
+                continue;
+            }
+
+            let zone_cell_m = zoning.config.zone_cell_m;
+            let cells_long = (edge.physical_length / zone_cell_m).floor() as usize;
+            if cells_long == 0 || params.width_cells > cells_long {
+                continue;
+            }
+            let max_leading = cells_long.saturating_sub(params.width_cells);
+
+            for side in [1_i8, -1_i8] {
+                for cell_x in 0..=max_leading {
+                    if let Some(resolved) =
+                        self.resolve_slot(asset_id, &params, edge_idx, side, cell_x, zoning, graph)
+                    {
+                        return Some(resolved);
+                    }
                 }
             }
         }
 
-        Err(format!(
-            "no valid {:?} frontage slot was found on the selected road for '{}'",
-            zone_type, asset_id
-        ))
+        None
     }
 
-    fn try_place_explicit_on_slot(
-        &mut self,
+    fn asset_placement_params(&self, asset_id: &str) -> Option<AssetPlacementParams> {
+        let entry = self.registry.get(asset_id)?;
+        let building = entry.manifest.building.as_ref()?;
+        Some(AssetPlacementParams {
+            zone_type: zone_class_to_zone_type(building.zone_type),
+            width_cells: building.lot_width_cells as usize,
+            depth_cells: building.lot_depth_cells as usize,
+            initial_level: building.level,
+        })
+    }
+
+    fn resolve_slot(
+        &self,
         asset_id: &str,
-        zone_type: ZoneType,
-        initial_level: u8,
+        params: &AssetPlacementParams,
         edge_idx: usize,
         side: i8,
-        x: usize,
-        dw: usize,
-        dh: usize,
-        zoning: &mut ZoningSystem,
+        cell_x: usize,
+        zoning: &ZoningSystem,
         graph: &RegionGraph,
-    ) -> Option<usize> {
+    ) -> Option<ResolvedPlacement> {
         let edge = graph.edge(edge_idx);
-        if edge.deleted || edge.no_building_spawn || edge.physical_length < 0.1 || edge.physical_geometry.len() < 2 {
-            return None;
-        }
-
         let edge_len = edge.physical_length;
         let edge_width = edge.width;
         let zone_cell_m = zoning.config.zone_cell_m;
         let cells_long = (edge_len / zone_cell_m).floor() as usize;
-        if cells_long == 0 || x + dw > cells_long {
+        if cells_long == 0 || cell_x + params.width_cells > cells_long {
             return None;
         }
 
         if let Some(occ) = self.edge_occupancy.get(&edge_idx) {
             let slot = if side > 0 { &occ.left } else { &occ.right };
-            if x < slot.len() && slot[x] {
+            if cell_x < slot.len() && slot[cell_x] {
                 return None;
             }
         }
 
-        let t_col = (x as f32 + 0.5) * zone_cell_m / edge_len;
-        let world_pos = self.get_pos_on_edge(graph, edge_idx, t_col);
-        let tangent = self.get_tangent_on_edge(graph, edge_idx, t_col);
-        let normal = Vector2::new(tangent.y, -tangent.x) * (side as f32);
         let curb_dist = edge_width * 0.5 + crate::config::SIDEWALK_WIDTH;
-        let frontage_center = world_pos + normal * (curb_dist + zone_cell_m * 0.5);
-
-        let z_type = zoning.get_zone_world(frontage_center.x, frontage_center.y);
-        if z_type != zone_type {
+        let t_col = (cell_x as f32 + 0.5) * zone_cell_m / edge_len;
+        let frontage_pos = self.get_pos_on_edge(graph, edge_idx, t_col);
+        let frontage_tangent = self.get_tangent_on_edge(graph, edge_idx, t_col);
+        let frontage_normal = Vector2::new(frontage_tangent.y, -frontage_tangent.x) * side as f32;
+        let frontage_center = frontage_pos + frontage_normal * (curb_dist + zone_cell_m * 0.5);
+        if zoning.get_zone_world(frontage_center.x, frontage_center.y) != params.zone_type {
             return None;
         }
 
-        let t_center = (x as f32 + dw as f32 * 0.5) * zone_cell_m / edge_len;
+        let t_center = (cell_x as f32 + params.width_cells as f32 * 0.5) * zone_cell_m / edge_len;
         let world_pos_on_edge = Self::sample_pos_on_edge(graph, edge_idx, t_center);
         let tangent_c = Self::sample_tangent_on_edge(graph, edge_idx, t_center);
-        let normal_c = Vector2::new(tangent_c.y, -tangent_c.x) * (side as f32);
-        let depth_offset = crate::config::SIDEWALK_WIDTH + (dh as f32 * 0.5) * zone_cell_m;
+        let normal_c = Vector2::new(tangent_c.y, -tangent_c.x) * side as f32;
+        let depth_offset =
+            crate::config::SIDEWALK_WIDTH + (params.depth_cells as f32 * 0.5) * zone_cell_m;
         let center_2d = world_pos_on_edge + normal_c * (edge_width * 0.5 + depth_offset);
 
-        let mut can_build = true;
-        'zone_check: for dx in 0..dw {
-            let t_dx = (x as f32 + dx as f32 + 0.5) * zone_cell_m / edge_len;
+        for dx in 0..params.width_cells {
+            let t_dx = (cell_x as f32 + dx as f32 + 0.5) * zone_cell_m / edge_len;
             let wp = Self::sample_pos_on_edge(graph, edge_idx, t_dx);
             let td = Self::sample_tangent_on_edge(graph, edge_idx, t_dx);
-            let nd = Vector2::new(td.y, -td.x) * (side as f32);
-            for dy in 0..dh {
+            let nd = Vector2::new(td.y, -td.x) * side as f32;
+            for dy in 0..params.depth_cells {
                 let cell_center = wp + nd * (curb_dist + (dy as f32 + 0.5) * zone_cell_m);
-                if zoning.get_zone_world(cell_center.x, cell_center.y) != zone_type {
-                    can_build = false;
-                    break 'zone_check;
+                if zoning.get_zone_world(cell_center.x, cell_center.y) != params.zone_type {
+                    return None;
                 }
             }
         }
-        if !can_build {
-            return None;
-        }
 
-        let width_m = dw as f32 * zone_cell_m;
-        let depth_m = dh as f32 * zone_cell_m;
+        let width_m = params.width_cells as f32 * zone_cell_m;
+        let depth_m = params.depth_cells as f32 * zone_cell_m;
         if zoning.is_rect_occupied(center_2d.x, center_2d.y, tangent_c, width_m, depth_m) {
             return None;
         }
@@ -164,82 +225,101 @@ impl BuildingAllocator {
             return None;
         }
 
-        zoning.mark_occupied_rect(center_2d.x, center_2d.y, tangent_c, width_m, depth_m, true);
-
-        let occ = self.edge_occupancy.entry(edge_idx).or_insert_with(|| EdgeOccupancy {
-            cells_long,
-            left: vec![false; cells_long],
-            right: vec![false; cells_long],
-        });
-        let slot = if side > 0 { &mut occ.left } else { &mut occ.right };
-        if x < slot.len() {
-            slot[x] = true;
-        }
-
-        let building_idx = self.place_building_instance(
-            asset_id.to_owned(),
-            zone_type,
-            initial_level,
-            edge_idx,
-            side,
-            x,
-            dw,
-            dh,
-            center_2d,
-            normal_c,
-            t_center,
-            edge_width,
-        );
-        self.dirty = true;
-        self.dirty_index = true;
-        self.dirty_zones[zone_type as usize] = true;
-        debug_log!(
-            "economy",
-            "player placed startup building idx={} asset_id={} zone={:?} edge={} cell=({}, {}) center=({:.1}, {:.1})",
-            building_idx,
-            asset_id,
-            zone_type,
-            edge_idx,
-            x,
-            0,
-            center_2d.x,
-            center_2d.y
-        );
-        Some(building_idx)
-    }
-
-    fn place_building_instance(
-        &mut self,
-        asset_id: String,
-        zone_type: ZoneType,
-        initial_level: u8,
-        edge_idx: usize,
-        side: i8,
-        cell_x: usize,
-        width_cells: usize,
-        depth_cells: usize,
-        center_2d: Vector2,
-        facing_dir: Vector2,
-        frontage_t: f32,
-        edge_width: f32,
-    ) -> usize {
-        self.buildings.push(Building {
-            zone_type,
-            facing_dir,
-            frontage_t,
-            side_offset: edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
-            center_x: center_2d.x,
-            center_y: center_2d.y,
+        Some(ResolvedPlacement {
+            asset_id: asset_id.to_owned(),
+            zone_type: params.zone_type,
+            initial_level: params.initial_level,
             edge_idx,
             side,
             cell_x,
+            cells_long,
+            width_cells: params.width_cells,
+            depth_cells: params.depth_cells,
+            center_2d,
+            facing_dir: normal_c,
+            frontage_t: t_center,
+            edge_width,
+        })
+    }
+
+    fn commit_resolved_slot(
+        &mut self,
+        placement: ResolvedPlacement,
+        zoning: &mut ZoningSystem,
+    ) -> usize {
+        let zone_cell_m = zoning.config.zone_cell_m;
+        let tangent = Vector2::new(-placement.facing_dir.y, placement.facing_dir.x);
+        let width_m = placement.width_cells as f32 * zone_cell_m;
+        let depth_m = placement.depth_cells as f32 * zone_cell_m;
+        zoning.mark_occupied_rect(
+            placement.center_2d.x,
+            placement.center_2d.y,
+            tangent,
+            width_m,
+            depth_m,
+            true,
+        );
+
+        let occ = self
+            .edge_occupancy
+            .entry(placement.edge_idx)
+            .or_insert_with(|| EdgeOccupancy {
+                cells_long: placement.cells_long,
+                left: vec![false; placement.cells_long],
+                right: vec![false; placement.cells_long],
+            });
+        let required_cells = placement.cell_x + placement.width_cells;
+        if occ.cells_long < required_cells {
+            occ.left.resize(required_cells, false);
+            occ.right.resize(required_cells, false);
+            occ.cells_long = required_cells;
+        }
+        let slot = if placement.side > 0 {
+            &mut occ.left
+        } else {
+            &mut occ.right
+        };
+        if placement.cell_x < slot.len() {
+            slot[placement.cell_x] = true;
+        }
+
+        let building_idx = self.place_building_instance(placement);
+        self.dirty = true;
+        self.dirty_index = true;
+        self.dirty_zones[self.buildings[building_idx].zone_type as usize] = true;
+        debug_log!(
+            "economy",
+            "founding bootstrap placed building idx={} asset_id={} zone={:?} edge={} cell=({}, {}) center=({:.1}, {:.1})",
+            building_idx,
+            self.buildings[building_idx].asset_id,
+            self.buildings[building_idx].zone_type,
+            self.buildings[building_idx].edge_idx,
+            self.buildings[building_idx].cell_x,
+            self.buildings[building_idx].cell_y,
+            self.buildings[building_idx].center_x,
+            self.buildings[building_idx].center_y
+        );
+        building_idx
+    }
+
+    fn place_building_instance(&mut self, placement: ResolvedPlacement) -> usize {
+        self.buildings.push(Building {
+            zone_type: placement.zone_type,
+            facing_dir: placement.facing_dir,
+            frontage_t: placement.frontage_t,
+            side_offset: placement.edge_width * 0.5 + crate::config::SIDEWALK_WIDTH,
+            center_x: placement.center_2d.x,
+            center_y: placement.center_2d.y,
+            edge_idx: placement.edge_idx,
+            side: placement.side,
+            cell_x: placement.cell_x,
             cell_y: 0,
-            width_cells: width_cells as u16,
-            depth_cells: depth_cells as u16,
+            width_cells: placement.width_cells as u16,
+            depth_cells: placement.depth_cells as u16,
             occupancy: 0,
             worker_count: 0,
-            asset_id,
-            level: initial_level,
+            asset_id: placement.asset_id,
+            level: placement.initial_level,
             broken: false,
             stock: 0.0,
             revenue: 0.0,
@@ -250,90 +330,37 @@ impl BuildingAllocator {
         });
         self.buildings.len() - 1
     }
-
 }
 
-fn projection_on_edge(
-    graph: &RegionGraph,
+fn has_connected_border_node(graph: &RegionGraph) -> bool {
+    graph.nodes().iter().enumerate().any(|(i, node)| {
+        node.node_type == NodeType::Border
+            && graph
+                .node_adjacency(i as u32)
+                .iter()
+                .any(|&edge_idx| !graph.edge(edge_idx).deleted)
+    })
+}
+
+struct AssetPlacementParams {
+    zone_type: ZoneType,
+    width_cells: usize,
+    depth_cells: usize,
+    initial_level: u8,
+}
+
+struct ResolvedPlacement {
+    asset_id: String,
+    zone_type: ZoneType,
+    initial_level: u8,
     edge_idx: usize,
-    point: Vector2,
-) -> EdgeProjection {
-    let edge = graph.edge(edge_idx);
-    let mut best_dist_sq = f32::MAX;
-    let mut best_t = 0.0;
-    let mut best_side = 1i8;
-    let mut best_dist = f32::MAX;
-    let mut curr_l = 0.0;
-
-    for i in 0..edge.physical_geometry.len() - 1 {
-        let a = Vector2::new(edge.physical_geometry[i].x, edge.physical_geometry[i].z);
-        let b = Vector2::new(edge.physical_geometry[i + 1].x, edge.physical_geometry[i + 1].z);
-        let seg = b - a;
-        let len_sq = seg.length_squared();
-        if len_sq < 0.001 {
-            continue;
-        }
-
-        let local_t = ((point - a).dot(seg) / len_sq).clamp(0.0, 1.0);
-        let proj = a + seg * local_t;
-        let dist_sq = point.distance_squared_to(proj);
-        if dist_sq < best_dist_sq {
-            let seg_len = len_sq.sqrt();
-            best_dist_sq = dist_sq;
-            best_t = ((curr_l + local_t * seg_len) / edge.physical_length).clamp(0.0, 1.0);
-            let tangent = seg.normalized();
-            let normal = Vector2::new(tangent.y, -tangent.x);
-            best_side = if (point - proj).dot(normal) >= 0.0 { 1 } else { -1 };
-            best_dist = dist_sq.sqrt();
-        }
-        curr_l += len_sq.sqrt();
-    }
-
-    EdgeProjection {
-        t: best_t,
-        side: best_side,
-        dist_from_road: best_dist,
-    }
-}
-
-fn closest_placeable_edge(graph: &RegionGraph, point: Vector2) -> Option<(usize, EdgeProjection)> {
-    let mut best: Option<(usize, EdgeProjection)> = None;
-    let mut best_dist_sq = f32::MAX;
-
-    for edge_idx in 0..graph.edge_count() {
-        let edge = graph.edge(edge_idx);
-        if edge.deleted || edge.no_building_spawn || edge.physical_geometry.len() < 2 || edge.physical_length < 0.1 {
-            continue;
-        }
-        let projection = projection_on_edge(graph, edge_idx, point);
-        let dist_sq = projection.dist_from_road * projection.dist_from_road;
-        if dist_sq < best_dist_sq {
-            best_dist_sq = dist_sq;
-            best = Some((edge_idx, projection));
-        }
-    }
-
-    best
-}
-
-fn leading_column_candidates(preferred: isize, max_leading: isize) -> Vec<usize> {
-    let mut out = Vec::with_capacity(max_leading.saturating_add(1) as usize);
-    let mut seen = std::collections::HashSet::new();
-    for delta in 0..=max_leading {
-        for candidate in [preferred - delta, preferred + delta] {
-            if candidate < 0 || candidate > max_leading {
-                continue;
-            }
-            if seen.insert(candidate) {
-                out.push(candidate as usize);
-            }
-        }
-    }
-    out
-}
-
-struct EdgeProjection {
-    t: f32,
     side: i8,
-    dist_from_road: f32,
+    cell_x: usize,
+    cells_long: usize,
+    width_cells: usize,
+    depth_cells: usize,
+    center_2d: Vector2,
+    facing_dir: Vector2,
+    frontage_t: f32,
+    edge_width: f32,
 }

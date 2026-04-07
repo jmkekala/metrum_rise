@@ -508,26 +508,6 @@ impl SimulationNode {
         PackedStringArray::from_iter(ids)
     }
 
-    /// Returns all registered qualified asset IDs that contain building manifests.
-    #[func]
-    pub fn get_registered_building_asset_ids(&self) -> PackedStringArray {
-        let core = self.lock_core();
-        let ids: Vec<GString> = core
-            .allocator
-            .registry
-            .qualified_ids()
-            .filter(|qualified_id| {
-                core.allocator
-                    .registry
-                    .get(qualified_id)
-                    .and_then(|entry| entry.manifest.building.as_ref())
-                    .is_some()
-            })
-            .map(GString::from)
-            .collect();
-        PackedStringArray::from_iter(ids)
-    }
-
     /// Returns the native filesystem path to the LOD0 mesh file for a registered asset.
     #[func]
     pub fn get_lod0_native_path(&self, qualified_id: GString) -> GString {
@@ -663,20 +643,6 @@ impl SimulationNode {
     #[func]
     pub fn set_border_connection(&mut self, node_id: i32) {
         self.lock_core().set_border_connection_internal(node_id);
-    }
-
-    /// Places one explicit player-requested startup building near `world_pos`.
-    ///
-    /// Returns `""` on success or a human-readable failure reason otherwise.
-    #[func]
-    pub fn place_startup_building(&mut self, asset_id: GString, world_pos: Vector3) -> GString {
-        match self
-            .lock_core()
-            .place_startup_building_internal(&asset_id.to_string(), world_pos)
-        {
-            Ok(()) => GString::new(),
-            Err(err) => GString::from(err.as_str()),
-        }
     }
 
     /// Returns the world-space positions of all active border nodes as a flat float array.

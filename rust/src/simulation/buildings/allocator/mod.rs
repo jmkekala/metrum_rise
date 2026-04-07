@@ -2,8 +2,10 @@
 //!
 //! [`BuildingAllocator::tick`] runs once per simulation tick. It:
 //! 1. Removes buildings whose zoning cell has been changed or whose road edge was deleted.
-//! 2. Rebuilds derived indices and pathing after building mutations.
-//! 3. Admits immigrant households through connected border nodes up to current housing capacity.
+//! 2. Runs the one-time founding bootstrap when the player has provided valid
+//!    startup zoning and an external connection.
+//! 3. Rebuilds derived indices and pathing after building mutations.
+//! 4. Admits immigrant households through connected border nodes up to current housing capacity.
 
 mod placement;
 mod lifecycle;
@@ -94,6 +96,8 @@ pub struct BuildingAllocator {
     pub dirty_index: bool,
     /// Per-zone dirty flags set when buildings are spawned or removed.
     pub dirty_zones: [bool; 6],
+    /// Prevents the one-time founding bootstrap from running more than once.
+    pub founding_bootstrap_consumed: bool,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
 }
@@ -143,6 +147,7 @@ impl BuildingAllocator {
             building_chunks: HashMap::new(),
             dirty_index: true,
             dirty_zones: [false; 6],
+            founding_bootstrap_consumed: false,
             registry: AssetRegistry::new(),
         }
     }
@@ -160,13 +165,16 @@ impl BuildingAllocator {
         // 1. Stale building cleanup.
         self.cleanup_stale_buildings(zoning, agents, logistics, graph);
 
+        // 2. One-time founding bootstrap from zoning + border connection.
+        self.place_founding_bootstrap_if_ready(zoning, graph);
+
         network.rebuild_pathing_if_dirty(graph);
 
         if self.dirty_index {
             self.rebuild_zone_index();
         }
 
-        // 2. Immigration logic.
+        // 3. Immigration logic.
         self.spawn_immigrants(agents, households, graph);
 
         self.dirty = false;
@@ -208,6 +216,7 @@ impl BuildingAllocator {
         }
         self.vacancy_pos.clear();
         self.building_chunks.clear();
+        self.founding_bootstrap_consumed = false;
         self.dirty = false;
         self.dirty_index = false;
     }

@@ -231,20 +231,24 @@ fn test_tick_does_not_auto_spawn_private_buildings_from_zones() {
     assert_eq!(
         allocator.buildings.len(),
         0,
-        "Zoning alone should not create private buildings without explicit player action"
+        "Zoning alone should not create buildings when the founding prerequisites are incomplete"
     );
 }
 
 #[test]
-fn test_explicit_player_placement_works_with_zero_demand() {
+fn test_tick_runs_one_time_founding_bootstrap_from_border_and_zoning() {
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
     register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
+    register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
 
@@ -257,18 +261,52 @@ fn test_explicit_player_placement_works_with_zero_demand() {
         &mut zoning,
         &mut allocator,
     );
-    zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, ZoneType::Residential);
+    graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
+    zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
+    zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
 
-    let placed = allocator.place_explicit_building_near_world_pos(
-        "base:b.res.house",
-        Vector2::new(20.0, 12.0),
+    allocator.tick(
         &mut zoning,
-        &graph,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut network,
+        &mut graph,
     );
 
-    assert!(placed.is_ok(), "explicit player placement should not require hidden demand");
-    assert_eq!(allocator.buildings.len(), 1);
-    assert_eq!(allocator.buildings[0].asset_id, "base:b.res.house");
+    assert!(allocator.founding_bootstrap_consumed);
+    assert_eq!(allocator.buildings.len(), 2);
+    assert_eq!(
+        allocator
+            .buildings
+            .iter()
+            .filter(|building| building.zone_type == ZoneType::Residential)
+            .count(),
+        1
+    );
+    assert_eq!(
+        allocator
+            .buildings
+            .iter()
+            .filter(|building| building.zone_type == ZoneType::Commercial)
+            .count(),
+        1
+    );
+
+    allocator.tick(
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut network,
+        &mut graph,
+    );
+
+    assert_eq!(
+        allocator.buildings.len(),
+        2,
+        "Founding bootstrap should only seed one residential and one commercial building"
+    );
 }
 
 #[test]

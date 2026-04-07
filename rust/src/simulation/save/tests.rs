@@ -59,6 +59,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     allocator.recompute_derived_transforms(&graph, &zoning).expect("transforms");
     world::repaint_building_occupancy(&mut zoning, &allocator).expect("occupancy");
     allocator.rebuild_zone_index();
+    allocator.founding_bootstrap_consumed = true;
     let mut households = HouseholdSystem::new();
     households.households.push(Household {
         home_building_id: 0,
@@ -123,6 +124,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.graph.edge_count(), 1);
     assert_eq!(loaded.zoning.get_zone_world(0.0, 0.0), ZoneType::Residential);
     assert_eq!(loaded.allocator.buildings.len(), 1);
+    assert!(loaded.allocator.founding_bootstrap_consumed);
     assert_eq!(loaded.households.households.len(), 1);
     assert_eq!(loaded.households.households[0].reserved_store_building_id, 0);
     assert_eq!(loaded.households.households[0].reserved_amount, 2.5);

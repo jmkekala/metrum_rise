@@ -94,7 +94,6 @@ The asset editor and economy editor are separate launch modes inside the same Go
 | RoadTool | `Node3D` | `road_tool.gd` | Road authoring tool and road mesh owner. |
 | ZoningOverlay | `MeshInstance3D` | `zoning_overlay.gd` | Full-map zoning / occupancy / distance overlay. |
 | ZoningTool | `Node3D` | `zoning_tool.gd` | World-space zoning paint tool. |
-| FoundingTool | `Node3D` | `founding_tool.gd` | Explicit starter-building placement tool for player-seeded city startup. |
 | Buildings | `Node3D` | `buildings.gd` | One MultiMesh per registered asset ID, plus foundations by zone. |
 | Agents | `Node3D` | `agents.gd` | Per-type pedestrian and car MultiMesh renderers plus debug overlay. |
 | LaneTool | `Node3D` | `lane_tool.gd` | Junction lane-connection editor. |
@@ -108,14 +107,13 @@ Runtime-spawned tools:
 
 - `SelectTool` is instantiated by `InputManager` at runtime for road-edge selection, crosswalk toggles, and edge-class editing.
 - `CulDeSacTool` is instantiated by `InputManager` at runtime for dead-end cap toggles.
-- `FoundingTool` is instantiated by `InputManager` at runtime for explicit founding-building placement on zoned road frontage.
 
 ### Script → Rust Method Inventory
 
 | Script | `SimulationNode` methods called |
 |--------|---------------------------------|
 | `input_manager.gd` | `undo_action()`, `save_game()`, `load_game()`, `set_simulation_speed()` |
-| `main_ui.gd` | `get_registered_building_asset_ids()`, `get_no_building_spawn()`, `get_edge_class()`, `get_edge_geometry_3d()`, `get_height_at()` |
+| `main_ui.gd` | `get_no_building_spawn()`, `get_edge_class()`, `get_edge_geometry_3d()`, `get_height_at()` |
 | `terrain.gd` | `get_heightmap_size()`, `get_heightmap_data()`, `intersect_terrain()`, `sculpt_terrain()`, `flatten_terrain_for_roads()`, `load_heightmap_data()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
 | `water.gd` | `get_heightmap_size()`, `get_water_data()`, `get_water_velocity_data()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
 | `agents.gd` | `get_agent_cull_far_m()`, `get_agent_cull_padding_m()`, `set_camera_aabb()`, `get_agent_transforms()`, `get_car_transforms()`, `get_agent_paths_debug()` |
@@ -127,7 +125,6 @@ Runtime-spawned tools:
 | `network_renderer.gd` | `is_network_dirty()`, `flatten_terrain_for_roads()`, `clear_terrain_dirty()`, `clear_network_dirty()` |
 | `move_tool.gd` | `get_closest_network_point()`, `get_closest_node()`, `get_height_at()`, `move_network_node()` |
 | `lane_tool.gd` | `intersect_terrain()`, `get_closest_node()`, `get_node_lanes()`, `get_lane_connections_array()`, `set_lane_connection()`, `clear_lane_source()`, `clear_lane_connections()`, `get_node_pos()` |
-| `founding_tool.gd` | `intersect_terrain()`, `get_closest_network_point()`, `place_startup_building()` |
 | `zoning_tool.gd` | `intersect_terrain()`, `get_zone_subrect()`, `set_zone_rect()`, `set_zone_rect_raw()` |
 | `zoning_overlay.gd` | `get_zone_grid_size()`, `get_heightmap_size()`, `get_zone_texture_data()`, `get_distance_texture_data()`, `get_occupied_texture_data()`, `get_no_build_mask_texture_data()`, `get_no_building_spawn_edge_indices()`, `get_edge_geometry_3d()` |
 | `select_tool.gd` | `intersect_terrain()`, `get_closest_node()`, `get_node_lanes()`, `get_lane_connections_array()`, `get_node_pos()`, `has_crosswalk()`, `set_crosswalk_override()`, `set_lane_connection()`, `clear_lane_source()`, `clear_lane_connections()`, `get_edge_nodes()`, `get_hovered_edge()`, `set_edge_class()`, `set_no_building_spawn()`, `get_edge_geometry_3d()`, `get_edge_width()` |

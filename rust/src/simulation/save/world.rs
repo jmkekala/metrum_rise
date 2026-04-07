@@ -71,6 +71,10 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
             i64::from(if b.broken { 1 } else { 0 })
         ])?;
     }
+    tx.execute(
+        "INSERT INTO founding_state(bootstrap_consumed) VALUES (?1)",
+        params![i64::from(if buildings.founding_bootstrap_consumed { 1 } else { 0 })],
+    )?;
 
     let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")?;
     for (hid, household) in households.households.iter().enumerate() {
@@ -195,6 +199,11 @@ pub(super) fn load_buildings(conn: &Connection, registry: &crate::assets::AssetR
             broken,
         });
     }
+    allocator.founding_bootstrap_consumed = conn.query_row(
+        "SELECT bootstrap_consumed FROM founding_state LIMIT 1",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
     Ok(allocator)
 }
 

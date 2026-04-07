@@ -1,4 +1,4 @@
-//! Logic for modifying simulation state (road placement, terrain sculpt, zoning, founding placement).
+//! Logic for modifying simulation state (road placement, terrain sculpt, zoning, edge editing).
 
 use crate::debug_log;
 use crate::traffic_log;
@@ -11,24 +11,6 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 impl SimCore {
-    /// Places one explicit player-requested startup building near `world_pos`.
-    pub fn place_startup_building_internal(
-        &mut self,
-        asset_id: &str,
-        world_pos: Vector3,
-    ) -> Result<(), String> {
-        let building_idx = self.allocator.place_explicit_building_near_world_pos(
-            asset_id,
-            Vector2::new(world_pos.x, world_pos.z),
-            &mut self.zoning,
-            &self.region_graph,
-        )?;
-        self.transit_network.flow_fields.mark_zone_dirty(
-            self.allocator.buildings[building_idx].zone_type,
-        );
-        Ok(())
-    }
-
     /// Sculpts the terrain with a given radius and strength.
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.push_undo_state(true, false, true, false);
