@@ -1,16 +1,5 @@
 # Metrum Rise — Economy Design Spec
 
-## Open Issues For Next Session
-
-The following gaps and contradictions still need resolution before the economy design is implementation-ready:
-
-- **Bootstrap and external market rules are still too vague.** The outside world is the correct solution for starting an empty map, but the document does not yet define import pricing, export pricing, starter capital, border throughput, or why external supply should be intentionally worse than a healthy local chain. Without that, imports may either trivialize the economy or fail to solve the bootstrap deadlock.
-- **Operational clock state is not specified deeply enough.** The document defines day length and multiple clocks, but not the runtime state needed to support them cleanly. We still need explicit rules for hour-of-day, minute-of-day, schedule windows, departure windows, and how rush-hour timing is represented in data rather than only described conceptually.
-- **Household representation is still unresolved.** Households now matter for budgets, replenishment, migration, and consumption, but the document still leaves room for either true household objects or a more compressed representation inside residential buildings. This needs an explicit decision, because it affects save/load format, demand calculation, budgeting, and performance.
-- **Logistics anti-explosion rules are missing.** The document defines shipments and carriers, but it does not yet define batching thresholds, minimum shipment sizes, reservation rules, retry behavior, outstanding-job limits, or failure handling. At Metrum Rise scale, these are not optional details; they are core performance and correctness constraints.
-- **Pack churn and missing-profile failure modes need hard rules.** The new model is that assets carry an `economy_profile` reference while profile definitions live in economy data. The document still does not define what happens when an asset disappears, when a profile disappears, or when an asset references a profile that is not currently available. Since packs and economy data can change independently, this must be deterministic and visible to the user.
-- **The first-pass pricing model is still unclear.** A `price-response controller` exists in concept, but the document does not yet say whether `v0.1` uses fixed prices and wages or already supports dynamic local pricing. This should be decided explicitly so early implementation does not accidentally build more market complexity than intended.
-
 ## Purpose
 
 Metrum Rise needs an economy model that is believable enough to make sense, abstract enough to stay fun and usable, and efficient enough to scale. The system cannot live as a pile of hardcoded constants in Rust, and it also cannot depend on per-agent shopping behavior that explodes pathfinding and logistics cost.
@@ -27,7 +16,7 @@ This document defines a building-centric economy with the following design goals
 
 ### 1. Buildings are the primary economic actors
 
-Individual agents are not the main production graph nodes. Buildings, terminals, service facilities, and districts are.
+Individual agents are not the main production graph nodes. Buildings, terminals, service facilities, and other concrete runtime facilities are.
 
 Agents still matter, but mostly in three roles:
 
@@ -47,7 +36,7 @@ The default model is:
 - logistics carriers move goods to distribution nodes, warehouses, and shops
 - residential buildings host one or more households
 - each household holds one shared stock buffer for the whole household
-- that household stock is replenished by occasional shopping or later by an Automated Delivery System (`ADS`)
+- that household stock is replenished by occasional shopping or pickup in `v0.1`
 - residents consume from household stock while at home
 
 An agent's everyday need is therefore not "buy bread now" but "does my household have access to supplies at home."
@@ -55,6 +44,11 @@ An agent's everyday need is therefore not "buy bread now" but "does my household
 ### 3. Physical logistics matter
 
 Goods do not teleport through the economy. If a transfer is local and meaningful to gameplay, it should be represented by a physical movement job across the `RegionGraph`.
+
+Important exception for `v0.1`:
+
+- networked utilities such as `power`, `water`, and `sewage` should not behave like trucked goods in the first pass
+- they use the separate `Utility Service Layer` described later in this document
 
 This creates the intended feedback loop:
 
@@ -64,20 +58,22 @@ This creates the intended feedback loop:
 
 ### 4. Balancing and validation are visual; persistence is data-driven
 
-Developers should use a tool, not raw text files, to balance production chains, controllers, and developer-authored area or scenario rules.
+Developers should use a tool, not raw text files, to balance production chains, controllers, and developer-authored scenario rules.
 
 Persisted data files still exist for save/load, export, version control, and modding, but they are outputs of the economy tool rather than the primary authoring surface.
 
-Future player-facing fiscal controls such as income tax, property tax, real estate tax, tariffs, and subsidies are a separate gameplay policy layer. They must not be treated as raw access to the developer economy editor.
+Future player-facing fiscal controls such as income tax, property tax, real estate tax, value added tax (`VAT`), tariffs, and subsidies are a separate gameplay policy layer. They must not be treated as raw access to the developer economy editor.
 
-### 5. Runtime cost must scale by building, household, district, and shipment count
+### 5. Runtime cost must scale by building, household, policy scope, and shipment count
 
 The economy must scale primarily with:
 
 - number of active buildings
-- number of active households or equivalent aggregated household units
+- number of active households as the authoritative home-economy records
 - number of active logistics jobs
-- number of active districts or policy scopes
+- number of active policy scopes, if later gameplay or scenario systems add them
+
+Derived per-building or future per-policy-scope summaries may aggregate those households for UI and coarse analysis, but those summaries are not an alternative source of truth.
 
 It must not require per-tick per-agent inventory searches, market scans, or mandatory shopping trips.
 
@@ -100,11 +96,11 @@ These clocks must not be treated as the same thing.
 
 At `1.0x` speed, the target economy pacing is:
 
-- `1 in-game day = 20 real minutes`
-- `1 in-game hour = 50 real seconds`
-- `1 in-game minute = ~0.83 real seconds`
+- `1 in-game day = 24 real minutes`
+- `1 in-game hour = 60 real seconds`
+- `1 in-game minute = 1 real second`
 
-This is the design target for economy balancing. The current prototype clock may use a shorter placeholder value, but economy rules should not be authored against an ultra-compressed day.
+This is the design target for economy balancing. The current prototype clock may use a different placeholder value, but economy rules should not be authored against an ultra-compressed day.
 
 ### Why this scale is the target
 
@@ -134,11 +130,87 @@ Authoring units should follow this scale:
 - wages and operating costs: `currency/day` or `currency/workday`
 - prices: `currency/unit`
 
-### Rush hour uses the operational clock
+### Operational clock runtime state
 
-Rush hour belongs to the operational clock.
+The operational clock needs an explicit shared runtime representation so traffic, labor, deliveries, and schools all use the same time source.
 
-It should emerge from synchronized or semi-synchronized departures for:
+Recommended state:
+
+- `day_index`: current operational day
+- `minute_of_day`: current minute since operational midnight, in the range `0..1439` where `0 = 00:00`, `60 = 01:00`, `720 = 12:00`, and `1439 = 23:59`
+- optional sub-minute interpolation for smooth movement and rendering, without changing the authored minute-based schedule rules
+
+`minute_of_day` is the main authoring and debugging unit. Runtime code may advance smoothly between minute boundaries, but authored schedules should not depend on second-level precision.
+
+### Schedule windows and authored time data
+
+Operational schedules should be authored as windows, not as one exact timestamp.
+
+Useful schedule fields:
+
+- `arrival_windows`
+- `departure_windows`
+- `active_work_windows`
+- `shift_change_windows`
+- `departure_spread_minutes`
+- `freight_timing_profile`
+
+These windows should be stored as minute ranges from midnight on the operational clock.
+
+Examples:
+
+- office arrival window: `07:00-09:00`
+- school arrival window: `08:00-08:30`
+- factory shift changes: `06:00`, `14:00`, `22:00` with surrounding stagger windows
+- freight timing profiles such as `always_open`, `night_preferred`, `early_morning_preferred`, or `daytime_receive`
+
+This keeps authored data readable and avoids unrealistic one-frame mass departures. It also makes clear that freight timing should not be forced into the same daytime pattern as office or school travel.
+
+For `v0.1`, freight timing should usually be modeled as a soft preference profile rather than a strict accept/reject delivery window. A night-preferred or early-morning-preferred site should still be able to receive freight outside its preferred period, but with less favorable congestion, priority, or operating-cost characteristics.
+
+### Stable offsets and departure planning
+
+Workers, students, and similar repeated travelers should not choose a totally new random minute every day. They should receive a stable offset inside the relevant schedule window unless a strong reason forces a resample.
+
+This gives the simulation:
+
+- repeatable personal routines
+- natural stagger inside a shared schedule
+- fewer synchronized spikes than exact building-wide timestamps
+
+Planned departure should follow the rule:
+
+- `planned_departure = target_arrival - estimated_travel_time - reliability_buffer`
+
+So the clock defines when an arrival is desired, while routing and traffic determine how early departure must happen.
+
+Implementation note:
+
+- `estimated_travel_time` should be treated as a cached or periodically refreshed planning estimate, not as a mandatory fresh path query for every agent on every tick
+- exact destination travel should reuse the existing `CCH` pathfinding layer
+- shared-destination travel should reuse existing flow-field routing where that already fits the destination type
+- any per-agent planning state such as cached commute estimate, planned departure, or lateness should live in the existing agent SoA layout rather than in a parallel economy-only data structure
+
+The economy must not introduce a second routing stack. It should build on the pathing and agent-storage systems the project already has.
+
+### Traffic affects arrival reliability, not the clock itself
+
+Traffic is part of the operational timing problem, but it should not define schedules on its own.
+
+The correct relationship is:
+
+- the operational clock defines when work, school, and freight timing preferences occur
+- schedule profiles define when buildings expect arrivals or shift changes
+- traffic and pathing estimate how long the trip should take
+- actual congestion determines whether the trip arrives on time, late, or not at all
+
+This means traffic creates lateness, reduced staffed time, delayed deliveries, and missed replenishment windows. It should not create a separate special-purpose rush-hour clock.
+
+### Rush hour emerges from overlapping windows
+
+Rush hour belongs to the operational clock, but it should be represented as overlapping authored windows rather than as a hardcoded flag.
+
+It should emerge from synchronized or semi-synchronized departure and arrival windows for:
 
 - schools
 - offices
@@ -146,6 +218,15 @@ It should emerge from synchronized or semi-synchronized departures for:
 - any other workplace profile that clusters arrivals and departures into morning and evening windows
 
 Rush hour should not be treated as a universal rule for all labor. Some sectors will contribute strongly to the peak, while others operate across the whole day with flatter traffic demand.
+
+The runtime representation should therefore be:
+
+- one shared `minute_of_day`
+- schedule profiles authored as minute windows
+- stable entity offsets inside those windows
+- estimated and actual travel time layered on top of those windows
+
+That gives the city visible rush periods without a separate magic `rush_hour = true` system.
 
 ### Aging and education use the demographic clock
 
@@ -178,6 +259,8 @@ Households own the money used for essentials.
 
 - wages earned by workers flow into the shared household budget
 - household replenishment purchases are paid from that shared budget
+- household-side utility charges such as residential `power`, `water`, and sewage service may also draw from that shared budget in `v0.1`
+- those household utility charges are service payments to the utility operator rather than automatic city revenue by default
 - basic consumption should not require one separate wallet transaction per resident
 
 ### Buildings
@@ -186,9 +269,118 @@ Buildings own the money used for production and operations.
 
 - sellers receive revenue when households or other buildings buy goods
 - workplaces pay wages and operating costs
+- non-residential utility consumption and sewage-management charges should count as building operating cost in `v0.1`
+- utility-producing or utility-processing buildings are normal economic operators that earn service revenue from those utility charges
 - producers buy or reserve required inputs through the building-level economy
 
 This gives the simulation a readable money loop without requiring every essential purchase to be modeled as an individual per-agent checkout event.
+
+### City treasury
+
+The city owns one explicit treasury ledger.
+
+Rules:
+
+- the city treasury is a separate ledger from household budgets and building budgets
+- bootstrap treasury funds initialize that ledger at game start
+- income tax, property tax, real estate tax, `VAT`, tariffs, and similar city-owned fiscal inflows deposit into the city treasury
+- ordinary utility service payments do not deposit into the city treasury by default; only any tax portion or future city-owned utility revenue would do so
+- subsidies and other city-funded support measures withdraw from the city treasury
+- road building, infrastructure placement, and city-owned facility construction withdraw from the city treasury
+- roads and city-owned facilities also create recurring maintenance or operating costs that withdraw from the city treasury
+- `v0.1` should treat these as simple treasury costs rather than as a full construction-material or contractor simulation
+- future city systems such as deeper services simulation, public works, debt, or borrowing may also use this ledger, but those richer layers are outside the first economy pass
+
+This makes fiscal policy a real money flow instead of a pure abstract modifier layer.
+
+### Bootstrap funds
+
+The first economy pass should define explicit startup money instead of leaving early cash flow implicit.
+
+- immigrating households arrive with starter savings
+- the city starts with a modest bootstrap treasury for early construction and city-level obligations
+- newly created businesses begin with a small one-time startup float in their own building budget so they can purchase initial imported stock and cover the first wage cycle before local revenue stabilizes
+- this startup float is private bootstrap capital or owner equity, not a city grant and not a withdrawal from the city treasury
+
+These are bootstrap tuning values, not long-term substitutes for a functioning local economy.
+
+### Infrastructure costs
+
+Roads and civic infrastructure should not be free.
+
+Recommended `v0.1` rule:
+
+- placing a road or city-owned facility applies an immediate one-time capital cost to the city treasury
+- each road segment and city-owned facility also applies recurring maintenance or operating cost
+- recurring infrastructure upkeep posts on the normal daily fiscal settlement cadence
+- if treasury funds are insufficient, the city may still build or continue operating by going negative rather than by silently ignoring the cost
+
+This keeps infrastructure economically meaningful without requiring a full public-works supply chain in the first pass.
+
+### City-owned building placement and ownership
+
+City-owned buildings should be explicit player-built facilities, not spontaneous economy spawns.
+
+Rules:
+
+- when the player wants to add a city-owned facility, the player selects a buildable asset in the game UI and places it on the map at a valid location
+- roads, utility producers or processors, and other civic facilities follow this explicit player-placement rule
+- city-owned buildings do not spawn automatically through economy simulation
+- if a city-owned utility or service building earns operator revenue, that revenue deposits into the city treasury because the city is acting as the operator
+- private companies may establish or spawn businesses through simulation rules instead, using private startup capital rather than treasury-backed grants
+- the city treasury pays build cost and upkeep for city-owned facilities, but it does not fund the startup float of private companies by default
+
+### Fiscal settlement cadence
+
+`v0.1` should use simple periodic fiscal settlement rather than per-frame accounting.
+
+Rules:
+
+- fiscal ledgers settle once per operational day
+- taxes, tariffs, subsidies, and recurring city upkeep may accrue during the day, but they post to the city treasury on the daily fiscal settlement pass
+- this daily settlement updates household budgets, building budgets, and the city treasury in one deterministic step
+
+This keeps the first fiscal model understandable and consistent with the rest of the economy cadence.
+
+### Value Added Tax (`VAT`)
+
+`VAT` should be modeled as a buyer-paid consumption tax on goods purchases.
+
+Rules:
+
+- the budget-owning buyer pays `VAT` as part of the final purchase price
+- for baseline household essentials in `v0.1`, this effectively means the household budget pays the tax when buying goods
+- for business or operational purchases, the building budget pays the tax unless a later system introduces another explicit budget-owning buyer type
+- seller revenue is the pre-tax sale value; the `VAT` portion is city tax revenue rather than normal seller income
+- `VAT` liability may accrue during the day, but it settles into the city treasury on the daily fiscal pass
+
+This keeps `VAT` tied to actual consumption instead of treating it as a vague background modifier.
+
+### Treasury deficits
+
+The city treasury may go negative.
+
+Rules:
+
+- subsidies and other city obligations are not hard-blocked by a zero treasury balance
+- negative treasury is allowed as an explicit fiscal state rather than an invalid one
+- future debt, credit, or fiscal-stress systems may add consequences later, but the first economy pass only needs to preserve the negative balance deterministically
+
+This keeps the early city economy recoverable without needing a full public-finance simulation on day one.
+
+### v0.1 local pricing and wages
+
+The first internal pricing pass should stay intentionally simple.
+
+Rules for `v0.1`:
+
+- internal goods use fixed base prices authored in economy data
+- workplaces use fixed wage values or fixed wage bands authored by profile or building class
+- shortages should show up primarily through lower stock, delayed replenishment, reduced throughput, and unmet demand rather than through a fully dynamic local market
+- bounded modifiers such as subsidies or delivery-cost effects may still change effective paid cost where appropriate
+- free-floating local price response and free-floating wage response are out of scope for `v0.1`
+
+This keeps the first economy pass understandable and stable while still leaving room for later market complexity.
 
 ## Bootstrap, Migration, and Demand
 
@@ -199,14 +391,67 @@ An empty map cannot start with a fully self-contained local economy. The economy
 At the beginning of a new city:
 
 - the outside world acts as the initial source and sink for people, goods, and money
+- external trade and immigration require at least one connected border connection
 - immigration is stronger than emigration by default, as long as the city can accept new households
 - early households arrive with starter savings and immediately create household demand
-- early shops and workplaces may operate in import-backed mode until local supply chains exist
+- early shops and workplaces may operate in `OWA`-backed mode until local supply chains exist
 - surplus may later be exported, but exports are not required to bootstrap the city
 
 This prevents the economy from deadlocking on day one when no households, producers, or internal supply chains exist yet.
 
 Bootstrap immigration should taper gradually as the city develops. It should not use a fixed hard cap such as "stop after N agents." The slowdown should be driven by household count and city conditions instead.
+
+### Outside World Exchange (`OWA`)
+
+For `v0.1`, the outside world should be represented by an `Outside World Exchange` (`OWA`) rather than by goods appearing magically inside city inventories.
+
+Rules:
+
+- the `OWA` is an abstract external buyer and seller, not a normal local factory
+- imports and exports are available only when the city has at least one connected border connection
+- connected border connections act as the physical ingress and egress gateways of the `OWA`
+- the `OWA` may sell supported external goods without consuming local inputs and may buy exported city goods as an external sink
+- the `OWA` may also cover utility deficits such as imported `power`, imported `water`, or external `sewage` processing as paid external services
+- the `OWA` owns per-resource `import_ask` prices and `export_bid` prices rather than reusing local building prices directly
+- `import_ask` must always remain above `export_bid` for the same resource so trivial buy-and-sell arbitrage cannot exist
+- `OWA` price updates happen once per operational day with smoothing and bounded daily movement rather than instant per-order jumps
+- in `v0.1`, essential household goods are not exportable to the `OWA`
+- utility-deficit fallback through the `OWA` is an external service purchase, not a trucked-goods delivery
+- payments for `OWA` utility fallback leave the local economy as external service spend rather than becoming city treasury revenue
+- player tariffs may later modify effective trade cost, but tariffs do not replace the base `OWA` rules
+
+This gives the city a bootstrap source and a surplus sink without requiring a full intercity supply-chain simulation.
+
+### Border connections and physical freight
+
+External trade must be physically delivered through the city, not teleported into a warehouse or shop.
+
+This physical border-freight rule applies to ordinary imported and exported goods. It does not apply to `OWA` utility-deficit service purchases, which are handled through the `Utility Service Layer` instead.
+
+Recommended `v0.1` rule:
+
+- imported goods enter the city only through explicit border connections
+- when an import request is accepted, the corresponding freight is created or queued at a border connection and must travel physically to its destination
+- exported goods must be transported physically to a border connection before leaving the city
+- in `v0.1`, those border connections are the `OWA`'s border terminals
+- `OWA` border terminals use queueing, dispatch, and active-job limits rather than behaving like infinite instant-delivery portals
+- each border connection must cap queued external freight jobs and active dispatched external freight vehicles
+- congestion on the road network and border-terminal queues are the primary throughput limits for `v0.1`
+
+This keeps outside trade grounded in the same traffic and delivery logic as local freight.
+
+### Local advantage over permanent `OWA` reliance
+
+The outside world should keep the city alive, but it should not be the best long-term strategy.
+
+Local supply chains should usually beat permanent `OWA` dependence through:
+
+- lower effective unit cost once production and labor are stable
+- less exposure to border congestion and border-terminal queueing
+- less exposure to player tariffs and other trade penalties later
+- stronger local employment and tax base
+
+Exports should work as a safety valve for surplus, not as the default engine of city growth.
 
 ### Immigration and emigration
 
@@ -230,11 +475,22 @@ Early game rules should favor immigration so the city can start growing. Later, 
 - commute burden
 - service quality
 
+For `v0.1`, migration should use households as the decision unit rather than individual residents.
+
+Rules:
+
+- immigration creates or admits a whole household, not one unrelated person at a time
+- emigration removes a whole household, not isolated residents one by one
+- this does not mean households pop into existence from their destination building
+- arriving households should enter through a border connection or similar external entry path, with their member agents created as part of that household and then routed toward the assigned home
+- departing households should leave through the network and exit by the same border-facing external system
+- births and other within-household demographic change are later systems, not part of the `v0.1` migration model
+
 The intended behavior is a soft transition, not a magic population wall. Immigration should slow as the city becomes more established or less attractive, while emigration rises when city conditions deteriorate.
 
 ### Demand system and decisions system
 
-Yes, the long-term design should treat demand and decisions as separate simulation systems.
+The economy should separate aggregated demand tracking from concrete decisions made by agents, households, and buildings.
 
 #### Demand system
 
@@ -253,7 +509,7 @@ The decisions system should resolve choices made by agents, households, and buil
 
 - whether an agent goes to work
 - when a household replenishes stock
-- whether replenishment uses shop pickup or `ADS`
+- whether replenishment uses shop pickup in `v0.1`, with future delivery modes added later if the design expands
 - which supplier or route is selected
 - which schedule window a workplace is currently filling
 
@@ -272,19 +528,19 @@ Recommended shape:
 
 - `metrum_rise_game`: play and inspect a live city
 - `metrum_rise_asset_editor`: author assets and their economic interfaces
-- `metrum_rise_economy_editor`: internal balancing, validation, and debugging tool for production graphs, controllers, recipes, and district policies
+- `metrum_rise_economy_editor`: internal balancing, validation, and debugging tool for production graphs, controllers, recipes, and scenario overrides
 
 This may exist as a separate executable or as a developer-only launch mode inside one shared application family. The important part is the responsibility split, not the packaging name.
 
 The economy editor is not part of gameplay. Players should not be wiring production graphs or changing balancing variables from the live game UI.
 
-If area-based economy overrides are used, they are defined by developers in test scenarios, balancing maps, or authored content data. Players do not paint economy-policy areas when starting a new map.
+If a future gameplay policy system introduces player-painted areas, that should live in the game UI rather than in the core `v0.1` economy editor workflow.
 
 ### Why it should be a separate tool
 
 - The live game is too noisy for serious authoring. Traffic, weather, zoning churn, and population motion make systematic economy editing harder.
 - The asset editor already has a narrow job: import, validate, preview, and package content assets. Economy graph authoring is a cross-asset systems task, not per-asset metadata editing.
-- A dedicated developer tool can provide graph editing, scenario playback, bottleneck visualization, and district overlays without inheriting the full gameplay shell.
+- A dedicated developer tool can provide graph editing, scenario playback, and bottleneck visualization without inheriting the full gameplay shell.
 
 ### What still belongs in the game
 
@@ -293,7 +549,7 @@ The runtime game should still expose economy inspection tools:
 - stock and shortage overlays
 - route and shipment debugging
 - player policy summary, when a gameplay policy layer exists
-- building-level throughput and staffing inspectors
+- building-level throughput, staffing, and utility-service inspectors
 
 But the live game should remain read-only for developer-side economy tuning. It can expose inspection and diagnostics, and later a separate bounded policy UI, but not graph authoring or raw controller editing.
 
@@ -301,9 +557,9 @@ But the live game should remain read-only for developer-side economy tuning. It 
 
 To keep authoring and gameplay cleanly separated, the economy should use three distinct control layers.
 
-- `Developer authoring layer`: economy profiles, recipes, controller formulas, default coefficients, allowed policy ranges, and scenario or area overrides used for balancing and validation.
-- `Simulation-owned outcomes`: wages and labor prices, staffing pressure, production throughput, household demand, and delivery cost outcomes. These are calculated by the simulation and are not direct player inputs.
-- `Future player policy layer`: curated fiscal or trade levers such as income tax, property tax, real estate tax, tariffs, and subsidies. Players change bounded values or presets in gameplay UI, not raw controller graphs or balancing formulas.
+- `Developer authoring layer`: economy profiles, recipes, controller formulas, default coefficients, allowed policy ranges, and scenario overrides used for balancing and validation.
+- `Simulation-owned outcomes`: wages and labor prices, staffing pressure, production throughput, utility-service availability, household demand, and delivery cost outcomes. These are calculated by the simulation and are not direct player inputs.
+- `Future player policy layer`: curated fiscal or trade levers such as income tax, property tax, real estate tax, `VAT`, tariffs, and subsidies. Players change bounded values or presets in gameplay UI, not raw controller graphs or balancing formulas.
 
 If a future player policy is backed by a controller, the controller is still authored by developers. Gameplay should only expose named policy inputs and allowed ranges, never the full controller graph.
 
@@ -321,11 +577,13 @@ Examples:
 - lot size, service class, and similar building facts remain asset-authored metadata
 - those values may be derived from floor area or other building-shape logic inside the asset toolchain
 
-The asset editor does not define city-wide wiring, area policies, recipes, inputs, outputs, or economy balancing rules. It only stores the profile reference, not the profile definition itself.
+The asset editor does not define city-wide wiring, future gameplay policy geography, recipes, inputs, outputs, or economy balancing rules. It only stores the profile reference, not the profile definition itself.
 
 The asset editor should list or suggest currently available economy profiles from the live economy data. Asset importers should not be expected to invent new profile names ad hoc.
 
 The shipped game/editor should include a baseline economy profile catalog for asset creators. When new profiles are added, creators may need the latest exported profile list or a newer game/editor build to stay in sync. If the local profile catalog is missing or outdated, the asset editor should warn clearly and degrade gracefully rather than blocking general asset import work.
+
+If an asset references an unavailable `economy_profile`, the asset editor should mark that field as unresolved and surface a validation warning. It must not silently replace the missing reference with another profile name.
 
 ### Economy Editor
 
@@ -335,11 +593,13 @@ Examples:
 
 - which reusable economy profiles exist
 - which producer classes can supply which consumer classes
-- which controller formulas back wages, taxes, tariffs, subsidies, or household delivery rules
-- which area-specific scenario overrides apply in one place but not another
+- which controller formulas back wages, taxes, subsidies, later tariffs, or household replenishment rules
+- which scenario-specific overrides apply in one test setup but not another
 - which goods are required for household stability versus optional quality-of-life supply
 
 It is also the main developer surface for validating and debugging shortages, dead chains, impossible recipes, and other balance failures before those rules ship into gameplay. The economy editor is not a prototype player policy screen.
+
+If a profile is renamed or deleted while still referenced by assets or authored economy content, the economy editor should show reverse-reference warnings before export. It must not silently remap dependent assets to a different profile.
 
 ### Runtime Simulation
 
@@ -349,7 +609,8 @@ The runtime consumes exported economy definitions and simulates:
 - household stock buffers and replenishment state
 - staffing and labor demand
 - shipment creation and delivery
-- district modifiers
+- utility service availability, local utility production or processing, and `OWA` utility-service fallback
+- future policy-scope modifiers, if that layer is later added
 - household satisfaction from shared household stock
 
 The runtime should evaluate authored rules efficiently, not reinterpret a fully dynamic visual graph every tick.
@@ -378,6 +639,44 @@ Short version:
 - economy profiles define behavior
 - runtime building instances execute the combined result
 
+Ownership and placement rule:
+
+- city-owned buildings are created by explicit player placement in gameplay using valid buildable assets
+- private company buildings may be established by simulation-side spawning or development rules instead
+- both ownership paths still resolve through the same asset metadata plus `economy_profile` contract once the building exists in the world
+
+### Failure handling for missing assets and profiles
+
+Pack churn and economy-data churn are expected over the life of the project, so failure behavior must be explicit.
+
+Rules:
+
+- missing `asset_id` and missing `economy_profile` are different failure cases
+- neither case may silently remap to a different asset or a different economy profile
+- both cases must be visible in the asset editor, economy editor, runtime diagnostics, and save-load warnings
+
+#### Missing asset
+
+If a save references an asset whose pack is no longer available:
+
+- the placed building becomes a `broken asset`
+- placement data such as position, frontage attachment, and zone context are preserved
+- the building does not participate in staffing or the economy while broken
+- the runtime may use a visible fallback render such as the existing broken-building error mesh
+- if the missing asset returns later, the building can recover without being rebuilt from scratch
+
+#### Missing economy profile
+
+If an asset still exists but its referenced `economy_profile` cannot be resolved:
+
+- the placed building becomes `economy-broken`
+- the visual asset may remain visible, but economy behavior is disabled
+- the building does not produce, consume, hire, or satisfy household demand while `economy-broken`
+- the runtime and tools must report the unresolved profile explicitly
+- if the missing profile returns later, the building can recover automatically
+
+The important rule is visibility and determinism. Missing bindings should degrade to an explicit inert state, not to a hidden fallback profile.
+
 ## Economic Data Model
 
 The authoring model should use a small set of explicit object types.
@@ -394,6 +693,8 @@ Examples:
 - `household_supplies`
 - `fuel`
 - `power`
+- `water`
+- `sewage`
 - `construction_materials`
 
 Rules:
@@ -401,8 +702,51 @@ Rules:
 - keep the v0.1 set small and legible
 - prefer broad gameplay-relevant categories over excessive micro-goods
 - split a resource only when the distinction creates meaningful logistics or policy gameplay
+- not every resource type must use the same transport model
+- ordinary goods such as food, fuel, and materials use the normal shipment and logistics rules
+- utility resources such as `power`, `water`, and `sewage` use the separate `Utility Service Layer` rather than the normal freight-delivery rules in `v0.1`
 
-### 2. Economy Profiles
+### 2. Utility Service Layer
+
+Utilities are a baseline city-service layer, not ordinary freight-delivery goods, in `v0.1`.
+
+The first-pass utility layer includes:
+
+- `power`
+- `water`
+- `sewage`
+
+Rules:
+
+- a building connected to the road network is eligible for service through the baseline city utility grid in `v0.1`
+- access to the utility grid does not make service free
+- occupied residential, commercial, industrial, office, service, and utility-operation buildings require `power` and `water` by default unless a documented special-case rule explicitly says otherwise
+- `sewage` is a baseline generated utility load produced automatically by occupied buildings and households
+- utility-producing and utility-processing buildings such as power plants, water plants, pump stations, or wastewater-treatment facilities should use normal asset-backed `economy_profile` definitions
+- utility-producing and utility-processing buildings may be privately operated or city-owned
+- most ordinary utility consumers do not need those utility ports repeated explicitly on every profile unless they have a documented special case
+- households still do not own `economy_profile`, but occupied residential households consume utility service and generate `sewage` load as a runtime consequence of occupancy and activity
+- local utility service must first be satisfied by local utility-producing or utility-processing buildings connected through this utility layer
+- `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
+- `sewage` generation should create paid treatment or management cost rather than being a free passive output
+- residential utility and sewage charges post to household budgets in `v0.1`
+- non-residential utility and sewage charges post to building operating budgets in `v0.1`
+- those utility charges become revenue for the local utility operator or processor rather than for the city treasury
+- if the utility operator is city-owned, that operator revenue deposits into the city treasury instead of a private building budget
+- utility-producing and utility-processing buildings should therefore behave like ordinary economic buildings that sell a service rather than like invisible free infrastructure
+- any `VAT` or other future fiscal levy on utility service is separate from the operator's service revenue and follows the normal tax rules into the city treasury
+- if local utility supply is insufficient, `OWA` covers the deficit as an external service purchase
+- if local sewage processing is insufficient, `OWA` handles the overflow as an external processing purchase
+- `OWA` utility-deficit service should remain a paid fallback and should usually be more expensive than healthy local utility provision
+- these utility-deficit purchases are not trucked freight and do not use the normal shipment-delivery model
+- `sewage` must clear through the utility layer rather than remaining inside the building forever
+- if a building lacks required utility service, or if generated `sewage` cannot clear, its normal operation should be blocked or degraded
+- this baseline utility layer is a connected-service model, not a trucked-goods model, in `v0.1`
+- if no local utility producer or processor exists yet, the player may place a city-owned utility building or rely on `OWA` fallback until local provision exists
+- city-owned utility buildings do not auto-spawn; only private companies may spawn new utility operators through simulation rules
+- later versions may add explicit utility-network capacity, outages, or service-quality simulation
+
+### 3. Economy Profiles
 
 An economy profile is a reusable template owned by the economy editor and referenced by one or more assets.
 
@@ -418,13 +762,31 @@ It defines:
 Example:
 
 - `bakery_basic`
-  - inputs: `flour`, `power`, `labor`
+  - inputs: `flour`, `labor`
   - outputs: `staple_food`
   - variables: `base_cycle_time`, `input_buffer_cap`, `output_buffer_cap`, `schedule_profile`
 
 Base capacities such as `worker_capacity` or `residential_capacity` remain asset-authored metadata and are consumed by the profile rather than redefined inside it.
 
-### 3. Economy Profile References
+The baseline utility defaults from the `Utility Service Layer` apply unless a profile or building defines a documented special case.
+
+Utility-producing and utility-processing buildings are ordinary profile-bearing facilities in this model.
+
+Examples:
+
+- `power_plant_basic`
+- `water_plant_basic`
+- `wastewater_treatment_basic`
+
+Economy profiles belong to assets and runtime facilities, not to households themselves.
+
+Rules:
+
+- households are explicit runtime consumer records, not asset-authored profile owners
+- households do not store an `economy_profile`
+- if household demand must appear in economy-editor graphs, it should be represented as an abstract demand sink or consumer class rather than as a profile-bound asset
+
+### 4. Economy Profile References
 
 An economy profile reference lives on the asset side and points to one named economy profile.
 
@@ -436,9 +798,11 @@ Rules:
 - the shipped game/editor should provide a baseline profile catalog so asset creators have a stable starting set
 - when that local catalog is outdated, the editor should warn and allow refresh to a newer profile list or game/editor version
 - multiple assets from different asset sets may reference the same profile
+- unresolved profile references must remain explicit invalid states until the correct profile data is available again
+- no system should silently remap one profile reference to another profile
 - tags may help editor search and filtering, but they should not be the primary economy contract
 
-### 4. Economic Node Instances
+### 5. Economic Node Instances
 
 An economic node instance is one placed building or facility in the world.
 
@@ -451,7 +815,7 @@ It holds runtime state such as:
 - shipment reservations
 - current shortage flags
 
-### 5. Controllers
+### 6. Controllers
 
 Controllers are authored simulation rule objects that modify behavior across many nodes.
 
@@ -459,25 +823,30 @@ Examples:
 
 - wage-response controller
 - tax controller
-- tariff controller
 - price-response controller
 - subsidy controller
-- household delivery cost controller
+- household replenishment cost controller
 
 Controllers are not arbitrary scripts. They are bounded, inspectable systems with defined inputs, outputs, scope, and update cadence.
 
 Some controllers may later expose a small set of bounded parameters to the gameplay policy layer, but players do not edit controller graphs or formulas directly.
 
+`wage-response` and `price-response` are later extensions, not required for the `v0.1` baseline. The first pass can ship with fixed internal prices and fixed wage bands.
+
+`tariff` controllers belong to later trade-policy extensions and are not part of the `v0.1` baseline.
+
 Each controller definition should specify:
 
 - what it reads
 - what it writes
-- whether it is global, district-scoped, profile-scoped, or asset-category-scoped
+- whether it is global, future gameplay-area-scoped, profile-scoped, or asset-category-scoped
 - whether it affects authored preferences or runtime state
 
-### 6. Connections
+### 7. Connections
 
 A connection is an authored allowed relationship between node classes, resource types, or controller scopes.
+
+In `v0.1`, this section mainly applies to normal shipped economic flows rather than to baseline utilities, which use the separate `Utility Service Layer`.
 
 Important: a connection is usually not a literal per-unit hard route. In most cases it defines:
 
@@ -504,9 +873,43 @@ Rules:
 - `household_supplies` for baseline living stability
 - one stock buffer per household
 - single-family homes naturally map to one household
-- multi-unit residential buildings host multiple households or an equivalent aggregated per-unit representation, but never one stock buffer per resident
+- multi-unit residential buildings host multiple explicit household records, but never one stock buffer per resident
 
 Residents draw from their household buffer while at home.
+
+### Household runtime representation
+
+Households should be explicit lightweight runtime records anchored to residential buildings.
+
+This means:
+
+- each household has its own runtime record rather than being merged into one anonymous building-wide stock pool
+- each household record stores at least `home_building_id`, derived `member_count`, shared budget, household stock, and replenishment state
+- agents reference a `household_id` for home-life needs and shared household money
+- immigration, emigration, and move-in or move-out should default to household-level events rather than isolated individual moves, but the physical arrival and departure of those residents should still happen through the normal agent and border-entry systems rather than by silently spawning them from buildings
+- households may also contribute baseline utility load through the `Utility Service Layer`, but that load is a runtime consequence of occupancy and activity rather than something authored through a household `economy_profile`
+- residential buildings still own the physical location and capacity, but they do not become the source of truth for each household's budget or stock
+
+Source-of-truth rule for `v0.1`:
+
+- linked resident agents are the authoritative source of household membership
+- every resident belongs to exactly one household
+- every household member is represented by a linked agent in `v0.1`
+- `member_count` is derived from linked resident agents and may be cached for UI or save/load efficiency, but it is not authoritative
+- non-agent residents are not part of the `v0.1` model
+- if cached household population disagrees with linked agents, the linked agents win and the cache must be rebuilt
+
+This keeps labor supply, school demand, housing occupancy, migration, and household budgeting tied to one deterministic population model.
+
+This is still an aggregated model. It does **not** require a deep family tree, detailed relationship simulation, or one complex AI object per household. The runtime household record should stay as small and data-oriented as possible.
+
+For performance:
+
+- household logic should run on coarse economy cadence, not every render frame
+- per-building summaries may be derived from linked households for UI and fast aggregate checks
+- the authoritative source of truth for home stock, household money, and replenishment remains the household record itself
+
+This gives the game a clean unit for budgeting, migration, save/load, and replenishment without falling back to per-agent grocery logic or muddy building-wide averages.
 
 ### Agent Need Interpretation
 
@@ -527,7 +930,6 @@ Example:
 - `farm` or `food_industry` produces `staple_food`
 - `distribution_center` or `grocery` converts or forwards `staple_food` into `household_supplies`
 - households replenish from `grocery` or `distribution_center` in periodic batches rather than per-person daily errands
-- later, `ADS` may satisfy the same replenishment request through home delivery
 - `household` consumes `household_supplies`
 
 If that chain works, the broader economy architecture is sound enough to extend.
@@ -541,12 +943,14 @@ Labor should remain the main direct agent-to-building economic link.
 Workplaces expose:
 
 - open job slots
-- wage offer or wage band
+- fixed wage offer or wage band in `v0.1`
 - skill preference later if needed
 
 ### Work schedule profiles
 
 Workplaces should not all share one global workday. Each workplace asset type should declare a `schedule_profile` on the operational clock.
+
+That profile should compile to authored minute-based arrival, departure, active-work, and shift-change windows rather than to one exact building-wide timestamp.
 
 Useful first profiles:
 
@@ -564,9 +968,9 @@ Remote work may later exist for some high-skill office roles, but it is not part
 
 ### Agents supply labor
 
-Agents decide whether to travel to work based on utility scoring rather than a pure RNG cycle.
+Agents decide whether to travel to work based on decision-utility scoring rather than a pure RNG cycle.
 
-Early utility inputs can stay simple:
+Early decision-utility inputs can stay simple:
 
 - current money
 - household stock situation at home
@@ -579,7 +983,7 @@ Production should derive from a bounded formula based on:
 
 - filled worker count
 - input availability
-- power or utility availability if applicable
+- required utility service availability through the `Utility Service Layer`, including `power`, `water`, and `sewage` clearance where relevant
 - controller modifiers
 
 This gives the player a meaningful connection between zoning, staffing, transit, and output without requiring arbitrary micromanagement.
@@ -588,7 +992,7 @@ This gives the player a meaningful connection between zoning, staffing, transit,
 
 ### Shipment units
 
-The simulation should create shipments at the building or terminal level, not one tiny packet per household resident.
+The simulation should create shipments at the building or terminal level, not one tiny packet per household resident. In `v0.1`, the only terminal-like freight gateways are `OWA` border terminals.
 
 Each shipment should minimally contain:
 
@@ -615,7 +1019,61 @@ That means:
 
 - one truck may represent many households' worth of supplies
 - one train or ship represents many truckloads
-- terminals split bulk flows into last-mile deliveries when necessary
+- later internal bulk terminals split bulk flows into last-mile deliveries when necessary
+
+### Demand accumulation and reorder thresholds
+
+Shipments should not be created for every tiny consumption event.
+
+Rules:
+
+- destinations accumulate demand against a stock buffer rather than spawning a shipment immediately on every shortage
+- a normal shipment request is created only when stock falls below a reorder threshold or when accumulated unmet demand reaches a meaningful batch size
+- a smaller emergency shipment may be allowed below the normal batch threshold only when stock falls below a critical threshold
+- shipment creation should run on a coarse economy cadence, not every render frame
+- `reorder_threshold` is authored in `days_of_supply`
+- `critical_threshold` is authored in `days_of_supply`
+- UI may display equivalent percent-of-storage or absolute-unit values as derived information, but `days_of_supply` is the canonical authored format for stock urgency
+
+This keeps logistics driven by buffer state rather than by micro-events.
+
+### Minimum shipment size and carrier quantization
+
+Each resource flow should have a practical minimum shipment size.
+
+Rules:
+
+- requests below the minimum shipment size should wait and accumulate unless they qualify as a critical replenishment case
+- shipment sizes should be quantized to meaningful carrier loads rather than arbitrary tiny floating amounts
+- a carrier job should represent a useful batch, not a one-item delivery unless the system explicitly treats it as a premium exception
+- `minimum_shipment_size` is authored in absolute resource units, not percent-of-storage and not `days_of_supply`
+
+This prevents the simulation from creating large numbers of meaningless micro-shipments.
+
+### Outstanding request limits
+
+Destinations and suppliers need hard caps so backlog count stays bounded.
+
+Rules:
+
+- a destination may have at most one open normal shipment request per `resource_type`
+- an optional second request may exist only as an already assigned inbound shipment or an explicit emergency override
+- suppliers must also cap total pending outbound reservations so one stockpile cannot over-promise itself to unlimited consumers
+
+This keeps request count proportional to active economic nodes rather than to every individual stock tick.
+
+### Reservation rules
+
+Shipments must reserve both supply and demand explicitly.
+
+Rules:
+
+- when a shipment is created, the source reserves the promised stock immediately
+- the destination reserves the corresponding unmet demand immediately
+- reserved stock may not be sold twice, and reserved demand may not spawn duplicate requests
+- if a shipment fails, expires, or is canceled, both reservations must be released deterministically
+
+This prevents double-selling, phantom shortages, and duplicate jobs.
 
 ### Route creation
 
@@ -630,20 +1088,59 @@ The runtime then resolves:
 
 This keeps the simulation physical without forcing the editor graph to become a per-vehicle routing interface.
 
+### Bounded supplier search
+
+Supplier resolution must stay bounded.
+
+Rules:
+
+- a consumer request should search only a limited shortlist of compatible suppliers
+- nearby or already-preferred suppliers should be checked first
+- for ordinary shipped goods, if no local supplier is valid, the system may fall back to the `OWA` when the economy rules allow it
+- no request should perform an unbounded city-wide best-price scan
+
+This keeps supplier lookup compatible with city scale and makes authored preferences matter.
+
+### Retry cooldowns and failure states
+
+Failed logistics work must back off instead of retrying every tick.
+
+Rules:
+
+- a failed request enters cooldown before it may search again
+- retries should happen on coarse economy cadence or with explicit backoff, not every simulation tick
+- after repeated failures, the request should escalate to a visible shortage or unresolved-demand state rather than spamming the same search forever
+- every request should end in an explicit state such as `queued`, `reserved`, `in_transit`, `fulfilled`, `cooldown`, `expired`, or `failed_terminal`
+
+This prevents retry storms and makes debugging easier.
+
 ### Household replenishment
 
-Household replenishment should support two fulfillment modes:
+Household replenishment in `v0.1` should use one fulfillment mode:
 
 - periodic shopping or pickup, represented as an occasional household-level replenishment action rather than one trip per resident
-- `ADS`, which fulfills the same household demand through delivery jobs once the basics system is already stable
 
-`ADS` should be treated as a convenience layer:
+This keeps the first household loop simple while still avoiding daily per-agent shopping.
+
+If `ADS` is added later, it should be treated as a convenience layer:
 
 - more expensive than normal shopping
 - range-dependent carrier selection: nearby deliveries use pedestrians or bikes, while longer-distance deliveries use cars
 - distance-based pricing: the farther the delivery origin is from the household, the more expensive the order becomes
 - sensitive to congestion and local courier capacity
-- more viable in dense, high-service districts than in sparse rural areas
+- more viable in dense, high-service areas than in sparse rural areas
+
+### Household last-mile aggregation rule
+
+Long-haul logistics should stay building-level, while household demand only enters the system at the last mile.
+
+Rules:
+
+- producer-to-distribution and distribution-to-shop flows should be batched building-to-building shipments
+- households should trigger periodic replenishment demand, not one freight request per resident
+- any future `ADS` mode should fulfill household demand as an occasional household-level event rather than permanent micro-shipment spam
+
+This keeps household behavior believable without turning the freight model into a per-person courier simulator.
 
 ## Economy Editor UI
 
@@ -651,7 +1148,7 @@ The economy system must be balanced and validated visually. Adjusting key number
 
 ### Main views
 
-The developer tool should have at least three coordinated views.
+The developer tool should have at least two coordinated views.
 
 #### 1. Schema View
 
@@ -671,29 +1168,13 @@ Example:
 
 - the developer places a `food_processor` node with output `staple_food`
 - the developer places a `grocery` node with input `staple_food` and output `household_supplies`
-- the developer places a `household` node with input `household_supplies`
-- the developer places an `ADS cost controller` node that affects household replenishment
-- the graph then connects `food_processor -> grocery -> household`, with the controller linked to the household node
+- the developer places a `household_demand_sink` node with input `household_supplies`
+- the developer places a household stock or cost controller that affects replenishment pressure
+- the graph then connects `food_processor -> grocery -> household_demand_sink`, with the controller linked to the household demand sink
 
 At this stage the developer is defining the structure of the economy chain, not yet testing whether the numbers are balanced.
 
-#### 2. Area View
-
-A simple map view where developers define named economy areas on a test scenario or authored city layout.
-
-This is a developer-side balancing tool, not a player-facing map setup step.
-
-Use it to author scenario or authored-content overrides such as:
-
-- tax or tariff test modifiers
-- subsidy test overrides
-- service focus
-- `ADS` availability or delivery-cost modifiers
-- local bans or restrictions
-
-This keeps local balancing tied to geography without turning the whole economy into one unreadable giant cable graph.
-
-#### 3. Runtime Inspection View
+#### 2. Runtime Inspection View
 
 A debug view for scenario playback and diagnosis of the authored balance rules.
 
@@ -708,17 +1189,17 @@ Use it to inspect:
 
 Example:
 
-- the developer runs the `Shop vs ADS` test case for 30 simulated days
+- the developer runs the `Grocery Bottleneck` test case for 30 simulated days
 - the view shows that household stock drops below 1.0 days after day 12
-- the diagnostics panel reports that the grocery has enough goods, but bike couriers are saturated and car deliveries are too expensive at the current distance-cost multiplier
-- the controller panel highlights that `ADS` cost is pushing too many households back to shop pickup, which then causes grocery-side queueing
-- the developer can immediately see that the problem is not food production, but last-mile replenishment balance
+- the diagnostics panel reports that the grocery has enough goods, but pickup-side replenishment demand is arriving in bursts and shop-side queueing is too high
+- the controller panel highlights that household replenishment cadence and grocery throughput are misaligned
+- the developer can immediately see that the problem is not food production, but local pickup balance and store throughput
 
 ### UI layout recommendation
 
 Recommended shell:
 
-- center: graph canvas or district map, depending on mode
+- center: graph canvas
 - left: resource and asset-category browser
 - right: inspector for ports, variables, formulas, and controller settings
 - bottom: warnings, validation, simulation log, and bottleneck list
@@ -736,14 +1217,14 @@ The tool should allow a developer to:
 
 ### Example developer setup
 
-Example: `Shop vs ADS` test case
+Example: `Grocery Bottleneck` test case
 
-- Left panel: select the `Shop vs ADS` preset from a list of developer test cases.
-- Center graph: show `food_processor -> grocery -> household`, with an optional `ADS` controller connected to household replenishment.
-- Right inspector: expose values such as household count, household size, shop distance, `ADS` enabled, bike range, car fallback range, base delivery fee, and distance-cost multiplier.
-- Bottom diagnostics: show stock days, average household cost, replenishment mode split, shortage warnings, and whether any recipe or connection is invalid.
+- Left panel: select the `Grocery Bottleneck` preset from a list of developer test cases.
+- Center graph: show `food_processor -> grocery -> household_demand_sink`, with an optional replenishment-pressure controller connected to the household demand sink.
+- Right inspector: expose values such as household count, household size, shop distance, pickup cadence, grocery throughput, and stock target.
+- Bottom diagnostics: show stock days, average household cost, replenishment queue pressure, shortage warnings, and whether any recipe or connection is invalid.
 
-In this example the developer does not need to use `Area View` at all. The graph, inspector, and diagnostics are enough to test whether local shopping or `ADS` gives the intended balance result.
+In this example the graph, inspector, and diagnostics are enough to test whether local pickup and store throughput give the intended balance result.
 
 ### Validation requirements
 
@@ -752,8 +1233,10 @@ The tool must validate common design mistakes before export:
 - disconnected required inputs
 - impossible recipes
 - circular dependencies with no bootstrap supply
-- district policies that ban all legal suppliers
+- scenario overrides that ban all legal suppliers
 - throughput definitions that can never fill household demand
+- assets that reference missing economy profiles
+- profiles that are still referenced by assets or authored content but were renamed or removed
 
 ## Runtime Representation
 
@@ -777,17 +1260,19 @@ Manual editing is allowed. If a developer or modder wants to tweak the values in
 
 ### Suggested exported structure
 
-The exact filenames are still open, but the intended structure is:
+The exported economy structure is:
 
 ```text
 economy/
   profiles.toml        # economy profiles and recipe definitions
   controllers.toml     # controller definitions and parameters
-  areas.toml           # optional area-based overrides
+  scenarios.toml       # scenario overrides and test setups
   economy.index.bin    # optional derived cache
 ```
 
-The important rule is not the exact folder shape. The important rule is:
+These filenames and this top-level folder layout are the baseline contract for the first implementation.
+
+The important runtime rules are:
 
 - text files are authoritative
 - caches are derived
@@ -798,7 +1283,6 @@ Examples of compiled forms:
 - resource IDs
 - asset-type recipe tables
 - controller parameter blocks
-- district override tables
 - supplier-consumer compatibility lists
 
 This gives the tool freedom to be expressive while keeping the simulation runtime predictable.
@@ -812,11 +1296,15 @@ The first implementation should solve one closed loop well instead of sketching 
 Recommended v0.1 scope:
 
 - one essential household resource chain
+- lightweight explicit household records anchored to residential buildings
 - per-building production buffers and per-household stock buffers
 - household stock consumption
 - workplace labor demand
-- truck-based local delivery
-- utility-driven work/home decision logic
+- fixed internal base prices and fixed wage bands
+- simple city treasury-backed infrastructure build cost and daily maintenance
+- baseline `Utility Service Layer` with local utility producers/processors and `OWA` external-service fallback
+- truck-based local and border freight delivery with batched reservation-based shipment rules
+- utility-scored work/home decision logic
 - one dedicated economy editor shell with graph view, inspector, and validation
 
 ### v0.1 non-goals
@@ -825,6 +1313,7 @@ Do not make these blockers for the first pass:
 
 - personal retail trips as a daily need
 - deep commodity markets with dozens of goods
+- full dynamic local market pricing or wage response
 - arbitrary user scripting inside controllers
 - remote or hybrid work simulation
 - full multimodal freight from day one
@@ -834,12 +1323,12 @@ Do not make these blockers for the first pass:
 
 After the first household supply loop is stable, add:
 
-- terminals and bulk transfer
-- district-level policy differentiation
+- internal bulk terminals and bulk transfer
+- gameplay area-based policy differentiation
 - more resource classes
 - service economy layers
 - Automated Delivery System (`ADS`) home-delivery fulfillment
-- intercity import/export abstractions
+- richer regional trade layers beyond the `OWA`
 - additional transport modes for freight
 
 ## Example Chain
@@ -847,23 +1336,32 @@ After the first household supply loop is stable, add:
 A good starter chain for both simulation and developer-tool tuning is:
 
 - `food_processor`
-  - inputs: `labor`, `power`
+  - inputs: `labor`
   - outputs: `staple_food`
 - `grocery` or `distribution_center`
   - inputs: `staple_food`, `labor`
   - outputs: `household_supplies`
-- `household`
+- `household_demand_sink`
   - inputs: `household_supplies`
   - runtime variables: `household_size`, `stock_days`, `consumption_rate`, `replenishment_mode`
 
-Controllers that can modify this chain:
+In this starter chain, baseline `power`, `water`, and `sewage` behavior comes from the `Utility Service Layer` unless a building is meant to define a documented special-case utility rule explicitly.
 
-- wage pressure
-- local subsidy
-- household delivery cost
-- price response
+Controller layers that may affect this example chain:
 
-Replenishment for this chain can happen through periodic shopping first, with `ADS` added later as an alternative fulfillment path.
+These controllers do not add new buildings or shipment steps. They are cross-cutting simulation rules that can modify cost, viability, or effective household access across one or more parts of the chain.
+
+For `v0.1`, the example should stay within the fixed-price and fixed-wage baseline:
+
+- `local subsidy`: reduces cost or improves viability for targeted chain steps
+- `household replenishment cost`: changes the effective cost or friction households face when restocking supplies
+
+Later extensions may add richer controller effects to the same chain, for example:
+
+- `wage pressure`: changes labor-cost pressure at workplaces in the chain
+- `price response`: applies bounded price-pressure adjustments to relevant chain steps
+
+Replenishment for this chain should happen through periodic shopping or pickup in `v0.1`. `ADS` is a later extension, not part of the first implementation scope.
 
 This example is intentionally broad. It avoids modeling "one loaf of bread per person per day" while still creating meaningful logistics, staffing, and shortage gameplay.
 
@@ -874,10 +1372,15 @@ The economy should be balanced and validated through a visual, building-centric 
 The recommended design is:
 
 - assets define identity, base metadata, and an `economy_profile` reference
-- the economy editor lets developers tune graphs, controllers, and developer-only area or scenario overrides
+- the economy editor lets developers tune graphs, controllers, and developer-only scenario overrides
 - runtime simulation executes compiled building-level inventories, labor, and shipment rules
+- `v0.1` uses fixed internal base prices and fixed wage bands rather than a full dynamic local market
+- the city treasury covers simple road, infrastructure, and civic-facility build cost plus daily upkeep in the first pass
 - wages and labor prices remain simulation outcomes rather than direct player inputs
-- future player policies such as income tax, property tax, tariffs, and subsidies use a separate bounded gameplay UI
+- missing assets and missing economy profiles both degrade into explicit broken states rather than silent remaps
+- logistics uses batched, reservation-based shipment rules with bounded supplier search and cooldown-based failure handling
+- the `OWA` acts as an external buyer and seller, but all imported and exported goods still move through physical border freight
+- future player policies such as income tax, property tax, `VAT`, tariffs, and subsidies use a separate bounded gameplay UI
 - households consume shared household supply so agents do not need constant shopping trips
 
 That gives Metrum Rise a debuggable economy authoring workflow without violating the project's scale and performance constraints.

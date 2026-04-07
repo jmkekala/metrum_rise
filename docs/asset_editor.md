@@ -1,4 +1,4 @@
-# Asset Editor / Importer Design
+# Asset Editor / Importer Design Spec
 
 ## Purpose
 
