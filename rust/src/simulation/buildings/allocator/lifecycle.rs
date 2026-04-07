@@ -86,10 +86,11 @@ impl BuildingAllocator {
         let total_capacity: usize = self
             .buildings
             .iter()
-            .filter(|b| b.zone_type == ZoneType::Residential || b.zone_type == ZoneType::Mixed)
-            .fold(0, |acc, b| {
+            .enumerate()
+            .filter(|(_, b)| b.zone_type == ZoneType::Residential || b.zone_type == ZoneType::Mixed)
+            .fold(0, |acc, (idx, b)| {
                 if b.broken { return acc; }
-                let cap = self.registry.capacity(&b.asset_id);
+                let cap = self.resident_capacity(idx);
                 let cap = if cap == 0 { 6 } else { cap } as usize;
                 acc + cap.saturating_sub(b.occupancy as usize)
             });

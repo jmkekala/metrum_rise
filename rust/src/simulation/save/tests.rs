@@ -3,6 +3,7 @@ use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::{MODE_CAR, MODE_WALK, TRANSIT_ON_ROAD};
 use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::households::{Household, HouseholdSystem, REPLENISHMENT_STABLE};
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
@@ -51,23 +52,34 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     allocator.buildings.push(Building {
         center_x: 0.0, center_y: 0.0, width_cells: 3, depth_cells: 3, zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0), frontage_t: 0.5, side_offset: 1.0, abandoned_timer: 0,
-        edge_idx: edge_id, side: 1, cell_x: 0, cell_y: 0, occupancy: 2, asset_id: String::new(), level: 1,
-        broken: false,
+        edge_idx: edge_id, side: 1, cell_x: 0, cell_y: 0, occupancy: 2, worker_count: 0, asset_id: String::new(), level: 1,
+        broken: false, stock: 0.0, revenue: 0.0, operating_budget: 500.0, utility_service_available: false,
     });
     allocator.recompute_derived_transforms(&graph, &zoning).expect("transforms");
     world::repaint_building_occupancy(&mut zoning, &allocator).expect("occupancy");
     allocator.rebuild_zone_index();
+    let mut households = HouseholdSystem::new();
+    households.households.push(Household {
+        home_building_id: 0,
+        budget: 178.0,
+        stock: 3.0,
+        member_count: 2,
+        consumption_rate: 1.0,
+        stock_days: 1.5,
+        replenishment_state: REPLENISHMENT_STABLE,
+        cooldown_days: 0,
+    });
     let mut agents_sys = AgentSystem::new();
     agents_sys.sim_time = 42.0;
     agents::push_loaded_agent(&mut agents_sys, agents::LoadedAgentRecord {
-        home_building: 0, work_building: usize::MAX, current_building: usize::MAX, target_building: 0,
+        home_building: 0, household_id: 0, work_building: usize::MAX, current_building: usize::MAX, target_building: 0,
         current_node: n0, target_node: n1, current_edge: edge_id, current_lane_id: 0, lane_distance: 0.0,
         pos_x: -5.0, pos_y: 0.0, is_visible: true, activity: 1, transit: TRANSIT_ON_ROAD, transit_mode: MODE_CAR,
         happiness: 88.0, money: 123.0, journey_start_time: 12.5, has_car: true, vehicle_type: 0,
         current_path_index: 1, current_path: vec![n0, n1], pedestrian_type: 0, walk_phase: 0.0,
     });
     agents::push_loaded_agent(&mut agents_sys, agents::LoadedAgentRecord {
-        home_building: 0, work_building: usize::MAX, current_building: usize::MAX, target_building: 0,
+        home_building: 0, household_id: 0, work_building: usize::MAX, current_building: usize::MAX, target_building: 0,
         current_node: n1, target_node: n0, current_edge: usize::MAX, current_lane_id: -1, lane_distance: 0.0,
         pos_x: 5.0, pos_y: 0.0, is_visible: true, activity: 0, transit: TRANSIT_ON_ROAD, transit_mode: MODE_WALK,
         happiness: 77.0, money: 55.0, journey_start_time: 6.0, has_car: false, vehicle_type: 0,
@@ -78,7 +90,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let path = temp_path("round_trip");
     save_to_sqlite(&path, SaveGameView {
         config: &config, time: &time, terrain: &terrain, water: &water, graph: &graph, zoning: &zoning,
-        pollution: &pollution, noise: &noise, demand: &demand, allocator: &allocator, agents: &agents_sys, network: &network_sys,
+        pollution: &pollution, noise: &noise, demand: &demand, allocator: &allocator, households: &households, agents: &agents_sys, network: &network_sys,
     }).expect("save");
     let loaded = load_from_sqlite(&path, &allocator.registry).expect("load");
     fs::remove_file(&path).ok();

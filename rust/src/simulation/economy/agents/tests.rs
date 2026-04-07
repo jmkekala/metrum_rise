@@ -47,8 +47,13 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         cell_x: 0,
         cell_y: 0,
         occupancy: 0,
+        worker_count: 0,
         asset_id: String::new(), level: 1,
         broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 500.0,
+        utility_service_available: false,
     }
 }
 
@@ -245,6 +250,8 @@ fn test_agent_fsm_lifecycle() {
         agents.work_building[i] = 1;
         agents.current_building[i] = 0; // Start inside home building
         agents.transit[i] = 0;
+        agents.planned_activity[i] = 1;
+        agents.planned_target_building[i] = 1;
     }
     let mut transitioned = false;
     for _ in 0..1000 {

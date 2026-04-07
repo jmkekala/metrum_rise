@@ -176,9 +176,14 @@ impl BuildingAllocator {
                         width_cells: dw as u16,
                         depth_cells: dh as u16,
                         occupancy: 0,
+                        worker_count: 0,
                         asset_id,
                         level: initial_level,
                         broken: false,
+                        stock: 0.0,
+                        revenue: 0.0,
+                        operating_budget: 500.0,
+                        utility_service_available: false,
                         abandoned_timer: 0,
                     });
 

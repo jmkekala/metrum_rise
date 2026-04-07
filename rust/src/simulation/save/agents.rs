@@ -12,6 +12,7 @@ use super::{db_to_optional_usize, i64_to_u8, i64_to_usize, i64_to_u32, optional_
 
 pub(super) struct LoadedAgentRecord {
     pub home_building: usize,
+    pub household_id: usize,
     pub work_building: usize,
     pub current_building: usize,
     pub target_building: usize,
@@ -38,7 +39,7 @@ pub(super) struct LoadedAgentRecord {
 }
 
 pub(super) fn save_agents(tx: &Transaction, agents: &AgentSystem, graph: &RegionGraph, network: &TransitNetwork, maps: &SnapshotMaps) -> SaveLoadResult<()> {
-    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, work_building, current_building, target_building, current_node, target_node, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)")?;
+    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, work_building, current_building, target_building, current_node, target_node, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)")?;
     let mut path_stmt = tx.prepare("INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)")?;
 
     for i in 0..agents.len() {
@@ -48,7 +49,9 @@ pub(super) fn save_agents(tx: &Transaction, agents: &AgentSystem, graph: &Region
         let stn = maps.node_old_to_new.get(&tn).copied().ok_or_else(|| SaveLoadError::custom("missing target node"))?;
 
         stmt.execute(params![
-            usize_to_i64(i)?, optional_building_to_db(agents.home_building[i], maps)?, optional_building_to_db(agents.work_building[i], maps)?,
+            usize_to_i64(i)?, optional_building_to_db(agents.home_building[i], maps)?,
+            if agents.household_id[i] == usize::MAX { -1_i64 } else { usize_to_i64(agents.household_id[i])? },
+            optional_building_to_db(agents.work_building[i], maps)?,
             optional_building_to_db(agents.current_building[i], maps)?, optional_building_to_db(agents.target_building[i], maps)?,
             i64::from(scn), i64::from(stn), optional_edge_to_db(agents.current_edge[i], maps)?,
             if agents.current_lane_id[i] != usize::MAX { Some(network.lane_system.lanes[agents.current_lane_id[i]].lane_idx as i64) } else { Some(-1) },
@@ -80,20 +83,20 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
     let mut agents = AgentSystem::new();
     agents.sim_time = sim_time;
     {
-        let mut stmt = conn.prepare("SELECT agent_id, home_building, work_building, current_building, target_building, current_node, target_node, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index FROM agents ORDER BY agent_id")?;
+        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, work_building, current_building, target_building, current_node, target_node, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index FROM agents ORDER BY agent_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let aid = i64_to_usize(row.get(0)?)?;
             if aid != agents.len() { return Err(SaveLoadError::custom("non-contiguous agent ids")); }
             push_loaded_agent(&mut agents, LoadedAgentRecord {
-                home_building: db_to_optional_usize(row.get(1)?)?, work_building: db_to_optional_usize(row.get(2)?)?,
-                current_building: db_to_optional_usize(row.get(3)?)?, target_building: db_to_optional_usize(row.get(4)?)?,
-                current_node: i64_to_u32(row.get(5)?)?, target_node: i64_to_u32(row.get(6)?)?,
-                current_edge: db_to_optional_usize(row.get(7)?)?, current_lane_id: row.get(8)?,
-                lane_distance: row.get(9)?, pos_x: row.get(10)?, pos_y: row.get(11)?, is_visible: row.get(12)?,
-                activity: i64_to_u8(row.get(13)?)?, transit: i64_to_u8(row.get(14)?)?, transit_mode: i64_to_u8(row.get(15)?)?,
-                happiness: row.get(17)?, money: row.get(18)?, journey_start_time: row.get(19)?, has_car: row.get(20)?,
-                vehicle_type: i64_to_u8(row.get(21)?)?, current_path_index: i64_to_usize(row.get(22)?)?,
+                home_building: db_to_optional_usize(row.get(1)?)?, household_id: db_to_optional_usize(row.get(2)?)?, work_building: db_to_optional_usize(row.get(3)?)?,
+                current_building: db_to_optional_usize(row.get(4)?)?, target_building: db_to_optional_usize(row.get(5)?)?,
+                current_node: i64_to_u32(row.get(6)?)?, target_node: i64_to_u32(row.get(7)?)?,
+                current_edge: db_to_optional_usize(row.get(8)?)?, current_lane_id: row.get(9)?,
+                lane_distance: row.get(10)?, pos_x: row.get(11)?, pos_y: row.get(12)?, is_visible: row.get(13)?,
+                activity: i64_to_u8(row.get(14)?)?, transit: i64_to_u8(row.get(15)?)?, transit_mode: i64_to_u8(row.get(16)?)?,
+                happiness: row.get(18)?, money: row.get(19)?, journey_start_time: row.get(20)?, has_car: row.get(21)?,
+                vehicle_type: i64_to_u8(row.get(22)?)?, current_path_index: i64_to_usize(row.get(23)?)?,
                 current_path: car_paths.remove(&aid).unwrap_or_default(), pedestrian_type: 0, walk_phase: 0.0,
             });
         }
@@ -104,12 +107,12 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
 
 pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord) {
     agents.agents.push(Agent {
-        home_building: rec.home_building, work_building: rec.work_building, pos_x: rec.pos_x, pos_y: rec.pos_y,
+        home_building: rec.home_building, household_id: rec.household_id, work_building: rec.work_building, pos_x: rec.pos_x, pos_y: rec.pos_y,
         is_visible: rec.is_visible, activity: rec.activity, transit: rec.transit, happiness: rec.happiness,
         money: rec.money, journey_start_time: rec.journey_start_time, current_building: rec.current_building,
-        target_building: rec.target_building, current_node: rec.current_node, target_node: rec.target_node,
+        target_building: rec.target_building, planned_target_building: usize::MAX, current_node: rec.current_node, target_node: rec.target_node,
         current_edge: rec.current_edge, current_lane_id: rec.current_lane_id as usize, lane_distance: rec.lane_distance,
-        speed: if rec.transit_mode == MODE_CAR { 20.0 } else { 4.0 }, transit_mode: rec.transit_mode,
+        speed: if rec.transit_mode == MODE_CAR { 20.0 } else { 4.0 }, transit_mode: rec.transit_mode, planned_activity: 0,
         current_path: rec.current_path, current_path_index: rec.current_path_index, has_car: rec.has_car,
         vehicle_type: rec.vehicle_type, pedestrian_type: rec.pedestrian_type, walk_phase: rec.walk_phase,
     });

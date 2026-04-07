@@ -23,6 +23,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 pub struct Agent {
     /// Index into `BuildingAllocator::buildings` for the agent's home. `usize::MAX` = homeless (immigrating).
     pub home_building: usize,
+    /// Index into `HouseholdSystem::households` for the agent's shared household record.
+    pub household_id: usize,
     /// Index into `BuildingAllocator::buildings` for the agent's workplace. `usize::MAX` = unemployed.
     pub work_building: usize,
 
@@ -33,13 +35,13 @@ pub struct Agent {
     /// Whether the agent should be rendered this frame.
     pub is_visible: bool,
 
-    /// Current activity: `0` = Home, `1` = Work, `2` = Shop.
+    /// Current activity: `0` = Home, `1` = Work, `2` = other non-home stop.
     pub activity: u8,
     /// Current transit phase. One of the `TRANSIT_*` constants defined in this module.
     pub transit: u8,
     /// Agent wellbeing in `[0, 100]`.
     pub happiness: f32,
-    /// Agent cash balance. Initialised at 100 for immigrants.
+    /// Per-agent view of household money. Synced from the shared household budget.
     pub money: f32,
     /// Internal clock for journey duration calculation.
     pub journey_start_time: f32,
@@ -48,6 +50,8 @@ pub struct Agent {
     pub current_building: usize,
     /// Building the agent is travelling toward. `usize::MAX` = no active destination.
     pub target_building: usize,
+    /// Economy-selected destination building for the next idle departure.
+    pub planned_target_building: usize,
     /// Graph node the agent is currently at or most recently passed through.
     pub current_node: u32,
     /// Graph node the agent is navigating toward.
@@ -64,6 +68,8 @@ pub struct Agent {
     pub speed: f32,
     /// Current transit mode. One of the `MODE_*` constants.
     pub transit_mode: u8,
+    /// Economy-selected next activity to execute on the next idle departure.
+    pub planned_activity: u8,
 
     /// Sequence of node IDs forming the planned route.
     pub current_path: Vec<u32>,
@@ -160,6 +166,7 @@ impl AgentSystem {
         let mut rng = rand::thread_rng();
         let agent = Agent {
             home_building: home,
+            household_id: usize::MAX,
             work_building: usize::MAX,
             pos_x: init_x,
             pos_y: init_y,
@@ -171,6 +178,7 @@ impl AgentSystem {
             journey_start_time: self.sim_time,
             current_building: usize::MAX,
             target_building: home,
+            planned_target_building: usize::MAX,
             current_node: highway_node,
             target_node: home_node,
             current_edge: usize::MAX,
@@ -178,6 +186,7 @@ impl AgentSystem {
             lane_distance: 0.0,
             speed: 20.0,
             transit_mode: MODE_CAR,
+            planned_activity: 0,
             current_path: Vec::new(),
             current_path_index: 0,
             has_car: true,
@@ -278,6 +287,9 @@ impl AgentSystem {
             if let Some(&new_id) = mapping.get(&self.agents.target_building[i]) {
                 self.agents.target_building[i] = new_id;
             }
+            if let Some(&new_id) = mapping.get(&self.agents.planned_target_building[i]) {
+                self.agents.planned_target_building[i] = new_id;
+            }
         }
     }
 
@@ -289,6 +301,7 @@ impl AgentSystem {
             }
             if self.agents.home_building[i] == building_id {
                 self.agents.home_building[i] = usize::MAX; // Become Homeless
+                self.agents.household_id[i] = usize::MAX;
             }
             if self.agents.current_building[i] == building_id {
                 // Building collapsed while they were inside!
@@ -300,6 +313,7 @@ impl AgentSystem {
                 if self.agents.home_building[i] != usize::MAX {
                     // Target shop destroyed. Head back home!
                     self.agents.target_building[i] = self.agents.home_building[i];
+                    self.agents.planned_target_building[i] = self.agents.home_building[i];
                     self.agents.activity[i] = 0;
                 } else {
                     // Target destroyed, AND homeless! Become stranded on the street!
@@ -362,9 +376,6 @@ impl AgentSystem {
                 if self.agents.activity[i] == 0 {
                     // Home
                     self.agents.happiness[i] += 1.0;
-                } else if self.agents.activity[i] == 1 {
-                    // Work
-                    self.agents.money[i] += 10.0;
                 }
             }
 
@@ -502,26 +513,26 @@ mod tests {
         let mut sys = AgentSystem::new();
         // Spawn minimal agents and manually set their lane IDs.
         sys.agents.push(Agent {
-            home_building: usize::MAX, work_building: usize::MAX,
+            home_building: usize::MAX, household_id: usize::MAX, work_building: usize::MAX,
             pos_x: 0.0, pos_y: 0.0, is_visible: true,
             activity: 0, transit: TRANSIT_ON_ROAD,
             happiness: 50.0, money: 100.0, journey_start_time: 0.0,
-            current_building: usize::MAX, target_building: usize::MAX,
+            current_building: usize::MAX, target_building: usize::MAX, planned_target_building: usize::MAX,
             current_node: 0, target_node: 1,
             current_edge: 0, current_lane_id: e0_lane, lane_distance: 10.0,
-            speed: 10.0, transit_mode: MODE_CAR,
+            speed: 10.0, transit_mode: MODE_CAR, planned_activity: 0,
             current_path: vec![], current_path_index: 0,
             has_car: true, vehicle_type: 0, pedestrian_type: 0, walk_phase: 0.0,
         });
         sys.agents.push(Agent {
-            home_building: usize::MAX, work_building: usize::MAX,
+            home_building: usize::MAX, household_id: usize::MAX, work_building: usize::MAX,
             pos_x: 150.0, pos_y: 0.0, is_visible: true,
             activity: 0, transit: TRANSIT_ON_ROAD,
             happiness: 50.0, money: 100.0, journey_start_time: 0.0,
-            current_building: usize::MAX, target_building: usize::MAX,
+            current_building: usize::MAX, target_building: usize::MAX, planned_target_building: usize::MAX,
             current_node: 1, target_node: 2,
             current_edge: 1, current_lane_id: e1_lane, lane_distance: 10.0,
-            speed: 10.0, transit_mode: MODE_CAR,
+            speed: 10.0, transit_mode: MODE_CAR, planned_activity: 0,
             current_path: vec![], current_path_index: 0,
             has_car: true, vehicle_type: 0, pedestrian_type: 0, walk_phase: 0.0,
         });
@@ -550,14 +561,14 @@ mod tests {
 
         let mut sys = AgentSystem::new();
         sys.agents.push(Agent {
-            home_building: usize::MAX, work_building: usize::MAX,
+            home_building: usize::MAX, household_id: usize::MAX, work_building: usize::MAX,
             pos_x: 0.0, pos_y: 0.0, is_visible: false,
             activity: 0, transit: TRANSIT_IDLE,
             happiness: 50.0, money: 100.0, journey_start_time: 0.0,
-            current_building: 0, target_building: 0,
+            current_building: 0, target_building: 0, planned_target_building: usize::MAX,
             current_node: 0, target_node: 0,
             current_edge: usize::MAX, current_lane_id: usize::MAX, lane_distance: 0.0,
-            speed: 0.0, transit_mode: MODE_CAR,
+            speed: 0.0, transit_mode: MODE_CAR, planned_activity: 0,
             current_path: vec![], current_path_index: 0,
             has_car: false, vehicle_type: 0, pedestrian_type: 0, walk_phase: 0.0,
         });

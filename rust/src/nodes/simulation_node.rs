@@ -48,6 +48,7 @@ use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -971,6 +972,7 @@ impl INode3D for SimulationNode {
             demand: DemandSystem::new(),
             allocator: BuildingAllocator::new(),
             agents: AgentSystem::new(),
+            households: HouseholdSystem::new(),
             config,
             undo_stack: VecDeque::new(),
             terrain_dirty: true,

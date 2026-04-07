@@ -159,6 +159,7 @@ impl SimCore {
             let node_pos = self.region_graph.node(current_node).pos;
             self.agents.agents.push(Agent {
                 home_building: usize::MAX,
+                household_id: usize::MAX,
                 work_building: usize::MAX,
                 pos_x: node_pos.x,
                 pos_y: node_pos.z,
@@ -170,6 +171,7 @@ impl SimCore {
                 journey_start_time: 0.0,
                 current_building: usize::MAX,
                 target_building: usize::MAX,
+                planned_target_building: usize::MAX,
                 current_node,
                 target_node,
                 current_edge: usize::MAX,
@@ -177,6 +179,7 @@ impl SimCore {
                 lane_distance: 0.0,
                 speed: 20.0,
                 transit_mode: MODE_CAR,
+                planned_activity: 0,
                 current_path: route,
                 current_path_index: (start_idx + 1).min(path_len - 1),
                 has_car: true,

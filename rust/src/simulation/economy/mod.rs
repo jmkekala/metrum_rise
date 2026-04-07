@@ -1,9 +1,13 @@
-//! Economic simulation: agent state machines, global demand tracking, and immigration.
+//! Economic simulation foundations: explicit households, agent movement, and
+//! temporary city-growth demand counters.
 //!
-//! [`agents::AgentSystem`] is the core of this module — it owns all agent state in SoA layout
-//! and drives the Home→Work→Shop activity cycle each tick.
+//! [`agents::AgentSystem`] owns movement and transit state in Structure-of-Arrays
+//! form. [`households::HouseholdSystem`] owns the first-pass building-centric
+//! household economy loop that replaces the old probabilistic daily shopping cycle.
 //!
-//! [`demand::DemandSystem`] tracks global R/C/I demand counters consumed by the building allocator.
+//! [`demand::DemandSystem`] remains temporarily in place for zoning-driven building
+//! growth until the full economy-authored construction loop replaces it.
 
 pub mod agents;
 pub mod demand;
+pub mod households;

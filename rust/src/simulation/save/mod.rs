@@ -5,6 +5,7 @@ use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::grid::desirability::DesirabilitySystem;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -42,6 +43,7 @@ pub(crate) struct SaveGameView<'a> {
     pub noise: &'a NoiseSystem,
     pub demand: &'a DemandSystem,
     pub allocator: &'a BuildingAllocator,
+    pub households: &'a HouseholdSystem,
     pub agents: &'a AgentSystem,
     pub network: &'a TransitNetwork,
 }
@@ -60,6 +62,7 @@ pub(crate) struct LoadedSimulation {
     pub desirability: DesirabilitySystem,
     pub demand: DemandSystem,
     pub allocator: BuildingAllocator,
+    pub households: HouseholdSystem,
     pub agents: AgentSystem,
 }
 
@@ -97,7 +100,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
     tx.execute("INSERT INTO map_config(width_m, height_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4)", params![view.config.width_m, view.config.height_m, view.config.env_cell_m, view.config.zone_cell_m])?;
     tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, current_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.current_day), view.time.seconds_per_day, view.agents.sim_time])?;
 
-    world::save_world(&tx, view.terrain, view.water, view.zoning, view.allocator, view.demand, view.pollution, view.noise, &maps)?;
+    world::save_world(&tx, view.terrain, view.water, view.zoning, view.allocator, view.households, view.demand, view.pollution, view.noise, &maps)?;
     network::save_network(&tx, view.graph, &maps)?;
     agents::save_agents(&tx, view.agents, view.graph, view.network, &maps)?;
 
@@ -123,6 +126,7 @@ pub(crate) fn load_from_sqlite(path: &Path, registry: &crate::assets::AssetRegis
     let mut graph = network::load_graph(&conn)?;
     let mut zoning = world::load_zoning(&conn, &config)?;
     let mut allocator = world::load_buildings(&conn, registry)?;
+    let households = world::load_households(&conn)?;
     let mut agents = agents::load_agents(&conn, time_r.4)?;
 
     let mut transit_network = TransitNetwork::new();
@@ -148,7 +152,7 @@ pub(crate) fn load_from_sqlite(path: &Path, registry: &crate::assets::AssetRegis
     let mut desirability = DesirabilitySystem::new(&config);
     desirability.tick(&zoning, &pollution, &noise);
 
-    Ok(LoadedSimulation { config, time, terrain, water, graph, transit_network, zoning, pollution, noise, desirability, demand, allocator, agents })
+    Ok(LoadedSimulation { config, time, terrain, water, graph, transit_network, zoning, pollution, noise, desirability, demand, allocator, households, agents })
 }
 
 fn build_snapshot_maps(graph: &RegionGraph, allocator: &BuildingAllocator, agents: &AgentSystem) -> SaveLoadResult<SnapshotMaps> {

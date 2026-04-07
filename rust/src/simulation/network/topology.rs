@@ -872,8 +872,13 @@ mod tests {
             cell_x: 8,
             cell_y: 0,
             occupancy: 0,
+            worker_count: 0,
             asset_id: String::new(), level: 1,
             broken: false,
+            stock: 0.0,
+            revenue: 0.0,
+            operating_budget: 500.0,
+            utility_service_available: false,
         });
 
         // Split the road exactly at 50m (cell 5).

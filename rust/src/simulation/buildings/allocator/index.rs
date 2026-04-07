@@ -3,6 +3,7 @@
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
 use crate::simulation::network::graph::RegionGraph;
+use godot::prelude::Vector3;
 
 impl BuildingAllocator {
     /// Repopulates the internal zone and vacancy indices (Bug B16/B16a fix).
@@ -15,12 +16,17 @@ impl BuildingAllocator {
         }
         self.vacancy_pos.clear();
         self.vacancy_pos.resize(self.buildings.len(), usize::MAX);
+        self.building_chunks.clear();
 
         for (idx, b) in self.buildings.iter().enumerate() {
             let zi = b.zone_type as usize;
             if zi < 6 {
                 self.zone_index[zi].push(idx);
-                if b.occupancy < self.building_capacity(idx) {
+                let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
+                self.building_chunks.entry(chunk).or_default().push(idx);
+
+                let resident_cap = self.resident_capacity(idx);
+                if resident_cap > 0 && b.occupancy < resident_cap {
                     let v_idx = self.vacancy_index[zi].len();
                     self.vacancy_index[zi].push(idx);
                     self.vacancy_pos[idx] = v_idx;
@@ -35,7 +41,7 @@ impl BuildingAllocator {
         if building_idx >= self.buildings.len() {
             return;
         }
-        let cap = self.building_capacity(building_idx);
+        let cap = self.resident_capacity(building_idx);
         let b = &mut self.buildings[building_idx];
         b.occupancy += 1;
 
@@ -58,7 +64,7 @@ impl BuildingAllocator {
         if building_idx >= self.buildings.len() {
             return;
         }
-        let cap = self.building_capacity(building_idx);
+        let cap = self.resident_capacity(building_idx);
         let b = &mut self.buildings[building_idx];
         b.occupancy = b.occupancy.saturating_sub(1);
 

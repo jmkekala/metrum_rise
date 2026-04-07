@@ -63,8 +63,13 @@ fn test_zone_index_consistency() {
             cell_x: i,
             cell_y: 0,
             occupancy: 0,
+            worker_count: 0,
             asset_id: String::new(), level: 1,
             broken: false,
+            stock: 0.0,
+            revenue: 0.0,
+            operating_budget: 500.0,
+            utility_service_available: false,
         });
     }
     allocator.dirty_index = true;
@@ -116,8 +121,13 @@ fn test_vacancy_index_consistency() {
             cell_x: i,
             cell_y: 0,
             occupancy: 0,
+            worker_count: 0,
             asset_id: String::new(), level: 1,
             broken: false,
+            stock: 0.0,
+            revenue: 0.0,
+            operating_budget: 500.0,
+            utility_service_available: false,
         });
     }
     allocator.rebuild_zone_index();
@@ -337,8 +347,13 @@ fn test_building_removal_clears_zoning_occupancy() {
         cell_x: 0,
         cell_y: 0,
         occupancy: 0,
+        worker_count: 0,
         asset_id: String::new(), level: 1,
         broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 500.0,
+        utility_service_available: false,
     });
     zoning.mark_occupied_rect(5.0, 10.0, godot::prelude::Vector2::new(0.0, 1.0), 30.0, 30.0, true);
 
@@ -417,8 +432,13 @@ fn test_immigration_claims_vacant_home() {
         cell_x: 0,
         cell_y: 0,
         occupancy: 0,
+        worker_count: 0,
         asset_id: String::new(), level: 1,
         broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 500.0,
+        utility_service_available: false,
     });
     allocator.rebuild_zone_index();
 

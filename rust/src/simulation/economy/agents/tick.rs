@@ -6,7 +6,6 @@ use super::{
     TRANSIT_INTERSECTION, TRANSIT_ON_ROAD,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
 use crate::simulation::network::TransitNetwork;
@@ -115,16 +114,17 @@ pub(crate) struct MovementSlices {
     activity: RawSlice<u8>,
     transit: RawSlice<u8>,
     happiness: RawSlice<f32>,
-    money: RawSlice<f32>,
     jstart: RawSlice<f32>,
     cur_b: RawSlice<usize>,
     tgt_b: RawSlice<usize>,
+    planned_tgt_b: RawSlice<usize>,
     cur_n: RawSlice<u32>,
     tgt_n: RawSlice<u32>,
     cur_e: RawSlice<usize>,
     lane_id: RawSlice<usize>,
     lane_d: RawSlice<f32>,
     tmode: RawSlice<u8>,
+    planned_activity: RawSlice<u8>,
     path: RawSlice<Vec<u32>>,
     path_idx: RawSlice<usize>,
     has_car: RawSlice<bool>,
@@ -156,6 +156,7 @@ impl AgentSystem {
         let s_work     = RawSlice::new(&mut self.agents.work_building);
         let s_cur_b    = RawSlice::new(&mut self.agents.current_building);
         let s_tgt_b    = RawSlice::new(&mut self.agents.target_building);
+        let s_plan_b   = RawSlice::new(&mut self.agents.planned_target_building);
         let s_transit  = RawSlice::new(&mut self.agents.transit);
         let s_visible  = RawSlice::new(&mut self.agents.is_visible);
 
@@ -180,6 +181,10 @@ impl AgentSystem {
                     *s_tgt_b.get_mut(i) = usize::MAX;
                     *s_transit.get_mut(i) = TRANSIT_ARRIVING;
                 }
+            }
+            let planned = *s_plan_b.get(i);
+            if planned != usize::MAX && planned >= bldg_count {
+                *s_plan_b.get_mut(i) = usize::MAX;
             }
         });
 
@@ -292,16 +297,17 @@ impl AgentSystem {
             activity: RawSlice::new(&mut self.agents.activity),
             transit: RawSlice::new(&mut self.agents.transit),
             happiness: RawSlice::new(&mut self.agents.happiness),
-            money: RawSlice::new(&mut self.agents.money),
             jstart: RawSlice::new(&mut self.agents.journey_start_time),
             cur_b: RawSlice::new(&mut self.agents.current_building),
             tgt_b: RawSlice::new(&mut self.agents.target_building),
+            planned_tgt_b: RawSlice::new(&mut self.agents.planned_target_building),
             cur_n: RawSlice::new(&mut self.agents.current_node),
             tgt_n: RawSlice::new(&mut self.agents.target_node),
             cur_e: RawSlice::new(&mut self.agents.current_edge),
             lane_id: RawSlice::new(&mut self.agents.current_lane_id),
             lane_d: RawSlice::new(&mut self.agents.lane_distance),
             tmode: RawSlice::new(&mut self.agents.transit_mode),
+            planned_activity: RawSlice::new(&mut self.agents.planned_activity),
             path: RawSlice::new(&mut self.agents.current_path),
             path_idx: RawSlice::new(&mut self.agents.current_path_index),
             has_car: RawSlice::new(&mut self.agents.has_car),
@@ -428,11 +434,11 @@ impl AgentSystem {
             let s_walk_phase = &slices.walk_phase;
             let s_transit    = &slices.transit;
             let s_activity   = &slices.activity;
-            let s_money      = &slices.money;
             let s_work       = &slices.work;
             let s_home       = &slices.home;
             let s_cur_b      = &slices.cur_b;
             let s_tgt_b      = &slices.tgt_b;
+            let s_plan_b     = &slices.planned_tgt_b;
             let s_has_car    = &slices.has_car;
             let s_jstart     = &slices.jstart;
             let s_path       = &slices.path;
@@ -444,6 +450,7 @@ impl AgentSystem {
             let s_pos_y      = &slices.pos_y;
             let s_cur_e      = &slices.cur_e;
             let s_happiness  = &slices.happiness;
+            let s_plan_act   = &slices.planned_activity;
 
             *s_cur_n.get_mut(i) = graph.get_valid_node(*s_cur_n.get(i));
             *s_tgt_n.get_mut(i) = graph.get_valid_node(*s_tgt_n.get(i));
@@ -458,125 +465,103 @@ impl AgentSystem {
 
             match *s_transit.get(i) {
                 TRANSIT_IDLE => {
-                    if rng.gen_bool((0.05 * delta) as f64) {
-                        let mut next_act = *s_activity.get(i);
-                        let mut next_bldg = usize::MAX;
+                    let next_bldg = *s_plan_b.get(i);
+                    let next_act = *s_plan_act.get(i);
+                    let curr_bldg = *s_cur_b.get(i);
+                    if next_bldg != usize::MAX
+                        && next_bldg < allocator.buildings.len()
+                        && curr_bldg != usize::MAX
+                        && curr_bldg < allocator.buildings.len()
+                    {
+                        let origin_node =
+                            crate::simulation::buildings::allocator::building_depart_node(
+                                &allocator.buildings[curr_bldg],
+                                graph,
+                            );
+                        let target_node =
+                            crate::simulation::buildings::allocator::building_depart_node(
+                                &allocator.buildings[next_bldg],
+                                graph,
+                            );
+                        *s_cur_n.get_mut(i) = origin_node;
+                        *s_tgt_n.get_mut(i) = target_node;
 
-                        if *s_activity.get(i) == 0 {
-                            if *s_money.get(i) >= 20.0 && rng.gen_bool(0.4) {
-                                if let Some(h) = allocator.get_random_building_by_zone(
-                                    ZoneType::Commercial, &mut rng,
-                                ) {
-                                    next_bldg = h;
-                                    next_act = 2;
-                                }
+                        let has_car = *s_has_car.get(i);
+                        let mode = if has_car { MODE_CAR } else { MODE_WALK };
+                        let search_flags = if has_car {
+                            TransitFlags::CAR
+                        } else {
+                            TransitFlags::FOOT
+                        };
+
+                        let target_zone = if next_act == 1 {
+                            Some(allocator.buildings[next_bldg].zone_type)
+                        } else {
+                            None
+                        };
+                        let ff: Option<&FlowField> = target_zone.and_then(|z| {
+                            if has_car {
+                                transit_network.flow_fields.car(z)
                             } else {
-                                if *s_work.get(i) == usize::MAX {
-                                    if let Some(h) = allocator.get_random_building_by_zones(
-                                        &[ZoneType::Industrial, ZoneType::Commercial],
-                                        &mut rng,
-                                    ) {
-                                        *s_work.get_mut(i) = h;
-                                    }
-                                }
-                                if *s_work.get(i) != usize::MAX {
-                                    next_bldg = *s_work.get(i);
-                                    next_act = 1;
-                                }
+                                transit_network.flow_fields.foot(z)
                             }
-                        } else if *s_home.get(i) != usize::MAX {
-                            next_bldg = *s_home.get(i);
-                            next_act = 0;
-                        }
+                        });
 
-                        let curr_bldg = *s_cur_b.get(i);
-                        if next_bldg != usize::MAX
-                            && next_bldg < allocator.buildings.len()
-                            && curr_bldg != usize::MAX
-                            && curr_bldg < allocator.buildings.len()
-                        {
-                            let origin_node = crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[curr_bldg], graph);
-                            let target_node = crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[next_bldg], graph);
-                            *s_cur_n.get_mut(i) = origin_node;
-                            *s_tgt_n.get_mut(i) = target_node;
-
-                            let has_car = *s_has_car.get(i);
-                            let mode = if has_car { MODE_CAR } else { MODE_WALK };
-                            let search_flags = if has_car { TransitFlags::CAR } else { TransitFlags::FOOT };
-
-                            // Try flow field first (O(path_len) chain walk, no Dijkstra).
-                            // Flow fields route to the nearest building of the target zone;
-                            // they are only used for work/shop trips (next_act != 0).
-                            // Home trips (next_act == 0) use CCH since home is a specific building.
-                            let target_zone = if next_act == 1 {
-                                Some(allocator.buildings[next_bldg].zone_type)
-                            } else {
-                                None // shop or home — flow field valid for shop too
-                            };
-                            let ff: Option<&FlowField> = target_zone.and_then(|z| {
-                                if has_car {
-                                    transit_network.flow_fields.car(z)
-                                } else {
-                                    transit_network.flow_fields.foot(z)
-                                }
+                        let path_opt: Option<Vec<u32>> = ff
+                            .and_then(|f| f.build_path(origin_node, graph.node_count() + 1))
+                            .filter(|p| crate::simulation::pathing::cch::CchGraph::path_has_valid_turns(p, graph))
+                            .or_else(|| {
+                                pathfind_count.fetch_add(1, Ordering::Relaxed);
+                                transit_network
+                                    .cch_graph
+                                    .find_path(origin_node, target_node, usize::MAX, graph, search_flags)
+                                    .map(|(_, _, p)| p)
                             });
 
-                            let path_opt: Option<Vec<u32>> = ff
-                                .and_then(|f| f.build_path(origin_node, graph.node_count() + 1))
-                                // Discard flow-field paths that cross a restricted turn:
-                                // flow fields have no turn-restriction awareness, so an agent
-                                // following such a path would get stuck at the junction.
-                                .filter(|p| crate::simulation::pathing::cch::CchGraph::path_has_valid_turns(p, graph))
-                                .or_else(|| {
-                                    // Fall back to CCH for home trips, novel destinations,
-                                    // or when flow field is not yet built.
-                                    pathfind_count.fetch_add(1, Ordering::Relaxed);
-                                    transit_network.cch_graph
-                                        .find_path(origin_node, target_node, usize::MAX, graph, search_flags)
-                                        .map(|(_, _, p)| p)
-                                });
-
-                            if let Some(path) = path_opt {
-                                // Update target_building to match where the flow field actually leads.
-                                let effective_tgt = if let Some(f) = ff {
-                                    let dest_node = path.last().copied().unwrap_or(target_node);
-                                    let nearest = f.nearest_building[origin_node as usize];
-                                    if nearest != usize::MAX
-                                        && crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[nearest], graph) == dest_node
-                                    {
-                                        nearest
-                                    } else {
-                                        next_bldg
-                                    }
+                        if let Some(path) = path_opt {
+                            let effective_tgt = if let Some(f) = ff {
+                                let dest_node = path.last().copied().unwrap_or(target_node);
+                                let nearest = f.nearest_building[origin_node as usize];
+                                if nearest != usize::MAX
+                                    && crate::simulation::buildings::allocator::building_depart_node(
+                                        &allocator.buildings[nearest],
+                                        graph,
+                                    ) == dest_node
+                                {
+                                    nearest
                                 } else {
                                     next_bldg
-                                };
-
-                                if path.len() > 1 {
-                                    *s_tgt_b.get_mut(i) = effective_tgt;
-                                    *s_activity.get_mut(i) = next_act;
-                                    *s_jstart.get_mut(i) = sim_time;
-                                    *s_tmode.get_mut(i) = mode;
-                                    *s_path.get_mut(i) = path;
-                                    *s_path_idx.get_mut(i) = 1;
-                                    *s_lane_id.get_mut(i) = usize::MAX;
-                                    *s_lane_d.get_mut(i) = 0.0;
-                                    *s_visible.get_mut(i) = true;
-                                    *s_transit.get_mut(i) = TRANSIT_DEPARTING;
-                                } else if origin_node == target_node {
-                                    *s_tgt_b.get_mut(i) = effective_tgt;
-                                    *s_activity.get_mut(i) = next_act;
-                                    *s_jstart.get_mut(i) = sim_time;
-                                    *s_tmode.get_mut(i) = MODE_WALK;
-                                    s_path.get_mut(i).clear();
-                                    *s_path_idx.get_mut(i) = 0;
-                                    *s_lane_id.get_mut(i) = usize::MAX;
-                                    *s_lane_d.get_mut(i) = 0.0;
-                                    *s_visible.get_mut(i) = true;
-                                    *s_transit.get_mut(i) = TRANSIT_ARRIVING;
                                 }
+                            } else {
+                                next_bldg
+                            };
+
+                            if path.len() > 1 {
+                                *s_tgt_b.get_mut(i) = effective_tgt;
+                                *s_activity.get_mut(i) = next_act;
+                                *s_jstart.get_mut(i) = sim_time;
+                                *s_tmode.get_mut(i) = mode;
+                                *s_path.get_mut(i) = path;
+                                *s_path_idx.get_mut(i) = 1;
+                                *s_lane_id.get_mut(i) = usize::MAX;
+                                *s_lane_d.get_mut(i) = 0.0;
+                                *s_visible.get_mut(i) = true;
+                                *s_transit.get_mut(i) = TRANSIT_DEPARTING;
+                            } else if origin_node == target_node {
+                                *s_tgt_b.get_mut(i) = effective_tgt;
+                                *s_activity.get_mut(i) = next_act;
+                                *s_jstart.get_mut(i) = sim_time;
+                                *s_tmode.get_mut(i) = MODE_WALK;
+                                s_path.get_mut(i).clear();
+                                *s_path_idx.get_mut(i) = 0;
+                                *s_lane_id.get_mut(i) = usize::MAX;
+                                *s_lane_d.get_mut(i) = 0.0;
+                                *s_visible.get_mut(i) = true;
+                                *s_transit.get_mut(i) = TRANSIT_ARRIVING;
                             }
                         }
+                        *s_plan_b.get_mut(i) = usize::MAX;
+                        *s_plan_act.get_mut(i) = 0;
                     }
                 }
 
@@ -929,7 +914,6 @@ impl AgentSystem {
                     let step = speed * delta;
 
                     if dist < step {
-                        let prev_activity = *s_activity.get(i);
                         *s_pos_x.get_mut(i) = center_vec.x;
                         *s_pos_y.get_mut(i) = center_vec.y;
                         *s_cur_b.get_mut(i) = b_id;
@@ -949,7 +933,6 @@ impl AgentSystem {
 
                         let commute_time = sim_time - *s_jstart.get(i);
                         *s_happiness.get_mut(i) = (*s_happiness.get(i) - commute_time / 60.0).clamp(0.0, 100.0);
-                        if prev_activity == 2 { *s_money.get_mut(i) = (*s_money.get(i) - 20.0).max(0.0); }
                     } else if dist > 0.0001 {
                         let mv = dir_to_center.normalized() * step;
                         *s_pos_x.get_mut(i) += mv.x;

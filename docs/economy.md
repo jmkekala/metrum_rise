@@ -441,12 +441,12 @@ Rules:
 - imports and exports are available only when the city has at least one connected border connection
 - connected border connections act as the physical ingress and egress gateways of the `OWA`
 - the `OWA` may sell supported external goods without consuming local inputs and may buy exported city goods as an external sink
-- the `OWA` may also cover utility deficits such as imported `power`, imported `water`, or external `sewage` processing as paid external services
+- the `OWA` may also provide missing utility service such as imported `power`, imported `water`, or external `sewage` processing as paid external services
 - the `OWA` owns per-resource `import_ask` prices and `export_bid` prices rather than reusing local building prices directly
 - `import_ask` must always remain above `export_bid` for the same resource so trivial buy-and-sell arbitrage cannot exist
 - `OWA` price updates happen once per operational day with smoothing and bounded daily movement rather than instant per-order jumps
 - in `v0.1`, essential household goods are not exportable to the `OWA`
-- utility-deficit fallback through the `OWA` is an external service purchase, not a trucked-goods delivery
+- utility fallback through the `OWA` is an external service purchase, not a trucked-goods delivery
 - payments for `OWA` utility fallback leave the local economy as external service spend rather than becoming city treasury revenue
 - player tariffs may later modify effective trade cost, but tariffs do not replace the base `OWA` rules
 
@@ -456,7 +456,7 @@ This gives the city a bootstrap source and a surplus sink without requiring a fu
 
 External trade must be physically delivered through the city, not teleported into a warehouse or shop.
 
-This physical border-freight rule applies to ordinary imported and exported goods. It does not apply to `OWA` utility-deficit service purchases, which are handled through the `Utility Service Layer` instead.
+This physical border-freight rule applies to ordinary imported and exported goods. It does not apply to `OWA` utility fallback service purchases, which are handled through the `Utility Service Layer` instead.
 
 Recommended `v0.1` rule:
 
@@ -759,10 +759,10 @@ Rules:
 - most ordinary utility consumers do not need those utility ports repeated explicitly on every profile unless they have a documented special case
 - households still do not own `economy_profile`, but occupied residential households consume utility service and generate `sewage` load as a runtime consequence of occupancy and activity
 - local utility service must first be satisfied by local utility-producing or utility-processing buildings connected through this utility layer
-- `v0.1` utility service is aggregate-capacity-bounded, not a pure on/off existence check and not a detailed line-by-line grid simulation
-- each local utility-producing or utility-processing building contributes authored production or processing capacity to an aggregate local pool for the relevant utility resource
-- connected building and household demand draws against that aggregate pool, and connected `sewage` load draws against aggregate processing capacity
-- once this utility layer resolves whether a given building's required service is satisfied, the downstream production formula may treat that resolved result as a binary building-level gate in `v0.1`
+- `v0.1` utility service is a connected-service on/off model, not an aggregate-capacity simulation and not a detailed line-by-line grid simulation
+- if a valid connected local utility producer or processor exists for the required service, that service is treated as locally available to eligible consumers in `v0.1`
+- if no valid connected local utility producer or processor exists, the service is unavailable locally and must either fall back to `OWA` or remain unserved
+- the downstream production formula therefore treats resolved utility service as a binary building-level gate in `v0.1`
 - `power` and `water` consumption should create paid utility service cost rather than behaving as free background access
 - `sewage` generation should create paid treatment or management cost rather than being a free passive output
 - residential utility and sewage charges post to household budgets in `v0.1`
@@ -771,13 +771,13 @@ Rules:
 - if the utility operator is city-owned, that operator revenue deposits into the city treasury instead of a private building budget
 - utility-producing and utility-processing buildings should therefore behave like ordinary economic buildings that sell a service rather than like invisible free infrastructure
 - any `VAT` or other future fiscal levy on utility service is separate from the operator's service revenue and follows the normal tax rules into the city treasury
-- if local utility supply is insufficient, `OWA` covers the deficit as an external service purchase
-- if local sewage processing is insufficient, `OWA` handles the overflow as an external processing purchase
-- `OWA` utility-deficit service should remain a paid fallback and should usually be more expensive than healthy local utility provision
-- these utility-deficit purchases are not trucked freight and do not use the normal shipment-delivery model
+- if no local utility service is available, `OWA` may provide that service as an external service purchase
+- if no local sewage processing is available, `OWA` may provide external sewage processing
+- `OWA` utility fallback should remain a paid fallback and should usually be more expensive than healthy local utility provision
+- these utility fallback purchases are not trucked freight and do not use the normal shipment-delivery model
 - `sewage` must clear through the utility layer rather than remaining inside the building forever
 - if a building lacks required utility service, or if generated `sewage` cannot clear, its normal operation should be blocked or degraded
-- this baseline utility layer is a connected-service, aggregate-capacity model rather than a trucked-goods model in `v0.1`
+- this baseline utility layer is a connected-service on/off model rather than a trucked-goods model in `v0.1`
 - if no local utility producer or processor exists yet, the player may place a city-owned utility building or rely on `OWA` fallback until local provision exists
 - city-owned utility buildings do not auto-spawn; only private companies may spawn new utility operators through simulation rules
 - later versions may add explicit utility-network capacity, outages, or service-quality simulation

@@ -49,13 +49,26 @@ pub struct Building {
     /// Depth offset of the building's leading cell (0 = frontage row).
     pub cell_y: u16,
     /// Total agents currently residing or working in this building.
+    ///
+    /// In the current foundation slice this is the residential occupant count
+    /// used for housing capacity and household anchoring.
     pub occupancy: u32,
+    /// Total workers currently assigned to this building.
+    pub worker_count: u32,
     /// Qualified asset ID identifying the model for this building.
     pub asset_id: String,
     /// Current growth tier.
     pub level: u8,
     /// If true, the asset was missing from the registry during load.
     pub broken: bool,
+    /// Current on-site stock buffer for the first-pass economy loop.
+    pub stock: f32,
+    /// Lifetime gross revenue collected by this building.
+    pub revenue: f32,
+    /// Current operating budget available for wages, utility fallback, and imports.
+    pub operating_budget: f32,
+    /// Whether the building has resolved utility availability for the current daily pass.
+    pub utility_service_available: bool,
 }
 
 /// Manages the full lifecycle of [`Building`]s.
@@ -73,6 +86,8 @@ pub struct BuildingAllocator {
     pub vacancy_index: [Vec<usize>; 6],
     /// Position of each building in its respective `vacancy_index` list for O(1) removal.
     pub vacancy_pos: Vec<usize>,
+    /// Coarse 512 m chunk index of building centers for bounded nearby-economy queries.
+    pub building_chunks: HashMap<(i32, i32), Vec<usize>>,
     /// Recalculates inverted indices if true.
     pub dirty_index: bool,
     /// Per-zone dirty flags set when buildings are spawned or removed.
@@ -124,6 +139,7 @@ impl BuildingAllocator {
             zone_index: [const { Vec::new() }; 6],
             vacancy_index: [const { Vec::new() }; 6],
             vacancy_pos: Vec::new(),
+            building_chunks: HashMap::new(),
             dirty_index: true,
             dirty_zones: [false; 6],
             registry: AssetRegistry::new(),
@@ -198,6 +214,7 @@ impl BuildingAllocator {
             list.clear();
         }
         self.vacancy_pos.clear();
+        self.building_chunks.clear();
         self.dirty = false;
         self.dirty_index = false;
     }
@@ -209,4 +226,86 @@ impl BuildingAllocator {
         let cap = self.registry.capacity(&b.asset_id);
         if cap == 0 { 6 } else { cap }
     }
+
+    /// Returns the residential capacity declared by a building asset.
+    pub fn resident_capacity(&self, building_idx: usize) -> u32 {
+        let Some(b) = self.buildings.get(building_idx) else { return 0; };
+        if b.broken {
+            return 0;
+        }
+        self.registry
+            .get(&b.asset_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .and_then(|building| building.residents_capacity)
+            .unwrap_or_else(|| if matches!(b.zone_type, ZoneType::Residential | ZoneType::Mixed) { 6 } else { 0 })
+    }
+
+    /// Returns the worker capacity declared by a building asset.
+    pub fn worker_capacity(&self, building_idx: usize) -> u32 {
+        let Some(b) = self.buildings.get(building_idx) else { return 0; };
+        if b.broken {
+            return 0;
+        }
+        self.registry
+            .get(&b.asset_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .and_then(|building| building.worker_capacity)
+            .unwrap_or_else(|| match b.zone_type {
+                ZoneType::Commercial => 3,
+                ZoneType::Industrial => 4,
+                ZoneType::Office => 3,
+                ZoneType::Mixed => 2,
+                _ => 0,
+            })
+    }
+
+    /// Returns a bounded nearby candidate list for the requested zones, sorted by distance.
+    pub fn find_nearby_buildings_by_zones(
+        &self,
+        origin_x: f32,
+        origin_y: f32,
+        zones: &[ZoneType],
+        max_chunk_radius: i32,
+        candidate_limit: usize,
+    ) -> Vec<usize> {
+        let mut candidates = Vec::with_capacity(candidate_limit);
+        let origin_chunk = RegionGraph::get_chunk_coords(godot::prelude::Vector3::new(origin_x, 0.0, origin_y));
+
+        'rings: for ring in 0..=max_chunk_radius {
+            for dx in -ring..=ring {
+                for dz in -ring..=ring {
+                    if ring > 0 && dx.abs() != ring && dz.abs() != ring {
+                        continue;
+                    }
+                    let chunk_key = (origin_chunk.0 + dx, origin_chunk.1 + dz);
+                    let Some(indices) = self.building_chunks.get(&chunk_key) else { continue; };
+                    for &idx in indices {
+                        if idx >= self.buildings.len() {
+                            continue;
+                        }
+                        if zones.contains(&self.buildings[idx].zone_type) {
+                            candidates.push(idx);
+                            if candidates.len() >= candidate_limit {
+                                break 'rings;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        candidates.sort_unstable_by(|&a, &b| {
+            let da = squared_distance(origin_x, origin_y, &self.buildings[a]);
+            let db = squared_distance(origin_x, origin_y, &self.buildings[b]);
+            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        candidates.truncate(candidate_limit);
+        candidates
+    }
+}
+
+fn squared_distance(origin_x: f32, origin_y: f32, building: &Building) -> f32 {
+    let dx = building.center_x - origin_x;
+    let dy = building.center_y - origin_y;
+    dx * dx + dy * dy
 }

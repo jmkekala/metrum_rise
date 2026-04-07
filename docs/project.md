@@ -170,23 +170,27 @@ Adding a new structure when an existing one fits is never neutral — it is a ma
 
 ### Economy
 
-Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activity selection) and `simulation/economy/agents/decisions.rs` (transit mode). The economic loop is partial — income and spending exist but the decision model is probabilistic and the transit mode selection is a hardcoded distance threshold.
+The old probabilistic `Home -> Work -> Shop` essentials loop is gone from the live runtime.
 
-**Activity cycle** (`TRANSIT_IDLE` branch in `tick.rs`):
-- Each idle agent has a **5% chance per second** of triggering an activity decision.
-- If `activity == 0` (at home): 40% chance to shop (if `money ≥ 20`), otherwise go to work.
-- If `activity != 0` (at work or shop): always return home.
-- Work building assigned lazily on first work trip — random Industrial or Commercial building; persists until destroyed.
+**Household runtime foundation** (`simulation/economy/households.rs`):
+- Explicit `HouseholdSystem` owns household budget, stock, stock-days, and replenishment state.
+- Agents now carry `household_id` and the daily economy pass rebuilds household membership from linked resident agents.
+- First-pass assignment currently creates one explicit household per housed agent unless a save already links multiple agents to the same household. That keeps household records explicit and deterministic now, while richer household grouping can be added later without reintroducing anonymous building-wide stock pools.
 
-**Economic state per agent** (SoA fields):
-- `money`: starts at $100 for immigrants; `+$10/day` while idle at work; `−$20` on shop arrival.
-- `happiness`: starts at 50; `+1/day` while idle at home; `−commute_time / 60` per trip; `−pollution × 0.1` per day. Clamped `[0, 100]`.
+**Building-centric daily economy pass**:
+- `SimCore::simulate_tick_internal()` now runs a household/building economy pass once per simulation day before the old pollution/happiness update.
+- Buildings now persist first-pass economic state directly on the `Building` struct: `worker_count`, `stock`, `revenue`, `operating_budget`, and resolved `utility_service_available`.
+- Commercial and mixed buildings maintain a simple `household_supplies` stock buffer with `OWA` restock fallback, households consume stock daily and replenish from nearby commercial buildings, and wages are paid into household budgets from building operating budgets.
 
-**Transit mode selection** (`decisions.rs`):
-- If pedestrian CCH distance > 500 m and agent has a car, attempt car path; otherwise walk.
-- `MODE_WALK`, `MODE_CAR`, `MODE_BIKE`, `MODE_BUS_PASSENGER`, `MODE_TRAIN_PASSENGER`, `MODE_TAXI_PASSENGER`, `MODE_SHIP_PASSENGER` constants are declared in `mod.rs`; only WALK and CAR are exercised.
+**Decision-utility planning**:
+- The `TRANSIT_IDLE` branch no longer rolls RNG for daily essentials.
+- The daily economy pass computes work/home plans using a bounded decision-utility score based on household budget pressure, household stock pressure, job availability, and commute penalty.
+- Agent movement still uses the existing road/pathing FSM, but departures now follow explicit economy plans (`planned_activity`, `planned_target_building`) instead of the old random trigger.
 
-**Planned** (see Backlog, v0.1 Economy): utility-based decision model, Maslow-inspired need hierarchy (physiological → safety → social → esteem), living standard as a derived aggregate, per-agent needs, supply chain, building economic actors.
+**Current limits of the foundation slice**:
+- The first pass is still daily-cadence, not sub-hourly schedule-window simulation.
+- `OWA` fallback is currently the active utility and store-restock backstop; local utility producers/processors and trucked supply chains are the next layer, not yet the shipping default.
+- Internal truck logistics are still pending under item 64, so building stock movement is not yet represented by physical freight agents.
 
 ### Pathfinding
 - `simulation/pathing/astar.rs` — binary-heap A* with `(node, incoming_edge)` state key (mandatory for correct turn-restriction enforcement at `Node::lane_connections`).
@@ -197,7 +201,7 @@ Current agent decision logic lives in `simulation/economy/agents/tick.rs` (activ
 - **Unit tests** (`simulation/pathing/tests.rs`): `test_slope_cost_calculation` (50% grade edge receives a 7.25× cost multiplier vs a flat edge of equal length), `test_pathing_avoids_steep_slope` (router selects the longer flat detour A→C→B over the steep direct A→B). **Known geometry inconsistency in `test_pathing_avoids_steep_slope`**: `edge_ab`'s geometry endpoint is `(100, 50, 0)` but node `n_b` is placed at `(100, 0, 0)`. `CostCalculator` reads `edge.geometry`, so the slope penalty is computed correctly and the test passes, but the endpoint violates the invariant that edge geometry must start and end at the node positions. Fix: place `n_b` at `(100, 50, 0)`, or represent the slope with an intermediate waypoint while keeping the geometry endpoint at `n_b`'s flat position.
 
 ### Demand
-- `simulation/economy/demand.rs` — global R/C/I demand counters. Demand increments globally; buildings consume it on spawn.
+- `simulation/economy/demand.rs` — global R/C/I demand counters still drive zoning-based building growth and immigration pressure. This remains a temporary city-growth scaffold while the richer authored economy loop and construction logic catch up.
 
 ### Flow Fields (item 18)
 - **`simulation/pathing/flow_field.rs`** — `FlowField` (per-zone-type reverse Dijkstra result) and `FlowFieldSystem` (one `FlowField` per zone × mode, lazy rebuild via `dirty: [bool; 6]`).
@@ -390,16 +394,16 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **R15. Split `nodes/simulation_node.rs` (1,182 lines)** — Final Godot bridge cleanup. Modularized into specialized sub-modules within `nodes/sim/bridge/` (agents, assets, network). This refactor decouples Godot-facing data formatting (PackedFloat32Array/VarDictionary assembly) from the central simulation node, isolating the GDExtension boilerplate and clarifying the bridge architecture.
 
+[DONE] **E1. v0.1 Economy Foundation (Item 60)** — added explicit household runtime records, per-building economy state (`worker_count`, `stock`, `revenue`, `operating_budget`, `utility_service_available`), daily household stock consumption and replenishment against nearby commercial stock, first-pass `OWA` utility/store fallback, household-budget wage payments, and decision-utility-driven work/home planning in place of the old probabilistic essentials loop. State is now persisted through SQLite save/load.
+
 **Top 3 project tasks to do next (2026-04-06):**
-1. **E1. Economy — Need-level satisfaction & controller model (Item 60/61)** — Transition activity selection from RNG to decision-utility scoring driven by the authored controller model (Shelter/Rest focus).
-2. **E2. Economy — Truck-based Supply Chain (Item 64 Rework)** — Implement initial truck logistics (Production -> Stock -> Truck Agent -> Delivery).
-3. **E3. Building — `stock` and `revenue` data fields** — Add per-building economic state to support the building-centric supply model.
+1. **E2. Economy — Truck-based Supply Chain (Item 64 Rework)** — Connect the new building stock buffers to real batched truck logistics instead of direct store-side fallback.
+2. **E3. Economy — Legacy cleanup against final spec (Item 65)** — remove remaining demand-primary and pre-spec economy assumptions from code, UI, and docs.
+3. **E4. Economy editor shell (Item 62)** — start the developer-facing graph/inspector/validation workflow so the runtime stops depending on hardcoded starter-chain defaults.
 
 ### v0.1 — Economy Foundation
 
 Target: a closed, building-centric economic loop with decision-utility scoring at 1,000,000 agents as specified in [`docs/economy.md`](economy.md).
-
-60. **Implement v0.1 Economy Foundation**: complete the closed, building-centric economy loop. This includes adding `stock` and `revenue` to buildings, explicit household stock and budget records, the baseline `Utility Service Layer`, and transitioning agent `TRANSIT_IDLE` selection to decision-utility scoring (Shelter/Rest focus). Prerequisite: item 59.
 
 61. **Service buildings — coverage model**: police, fire, and medical stations emit influence onto grids that feed directly into `stability_sat`. No individual dispatch — static coverage remains the primary model to ensure O(1) per-tick cost at the 1M-agent target.
 

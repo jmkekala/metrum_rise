@@ -3,6 +3,7 @@
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::economy::demand::DemandSystem;
+use crate::simulation::economy::households::{Household, HouseholdSystem};
 use crate::simulation::grid::data_grid::DataGrid;
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -15,9 +16,9 @@ use rusqlite::{Connection, Transaction, params};
 
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::schema::*;
-use super::{i64_to_u32, i64_to_usize, pack_f32_slice, pack_flux_slice, u32_to_i64, unpack_f32_blob, unpack_flux_blob, usize_to_i64};
+use super::{db_to_optional_usize, i64_to_u8, i64_to_u32, i64_to_usize, optional_building_to_db, pack_f32_slice, pack_flux_slice, u32_to_i64, unpack_f32_blob, unpack_flux_blob, usize_to_i64};
 
-pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &WaterSystem, zoning: &ZoningSystem, buildings: &BuildingAllocator, demand: &DemandSystem, pollution: &PollutionSystem, noise: &NoiseSystem, maps: &SnapshotMaps) -> SaveLoadResult<()> {
+pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &WaterSystem, zoning: &ZoningSystem, buildings: &BuildingAllocator, households: &HouseholdSystem, demand: &DemandSystem, pollution: &PollutionSystem, noise: &NoiseSystem, maps: &SnapshotMaps) -> SaveLoadResult<()> {
     // Terrain
     tx.execute("INSERT INTO terrain_state(width, height, height_blob_f32_le) VALUES (?1, ?2, ?3)", params![usize_to_i64(terrain.width)?, usize_to_i64(terrain.height)?, pack_f32_slice(&terrain.source_data)])?;
 
@@ -43,7 +44,7 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, asset_id, level, broken) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, width, depth, asset_id, level, broken) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)")?;
     for (old_bid, b) in buildings.buildings.iter().enumerate() {
         let saved_bid = maps.building_old_to_new.get(&old_bid).copied().ok_or_else(|| SaveLoadError::custom("missing building mapping"))?;
         let saved_eid = maps.edge_old_to_new.get(&b.edge_idx).copied().ok_or_else(|| SaveLoadError::custom("missing building edge mapping"))?;
@@ -56,11 +57,31 @@ pub(super) fn save_world(tx: &Transaction, terrain: &TerrainSystem, water: &Wate
             usize_to_i64(b.cell_y as usize)?,
             zone_type_to_i64(b.zone_type),
             u32_to_i64(b.occupancy)?,
+            u32_to_i64(b.worker_count)?,
+            b.stock,
+            b.revenue,
+            b.operating_budget,
+            i64::from(if b.utility_service_available { 1 } else { 0 }),
             usize_to_i64(b.width_cells as usize)?,
             usize_to_i64(b.depth_cells as usize)?,
             &b.asset_id,
             i64::from(b.level),
             i64::from(if b.broken { 1 } else { 0 })
+        ])?;
+    }
+
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)")?;
+    for (hid, household) in households.households.iter().enumerate() {
+        household_stmt.execute(params![
+            usize_to_i64(hid)?,
+            optional_building_to_db(household.home_building_id, maps)?,
+            household.budget,
+            household.stock,
+            i64::from(household.member_count),
+            household.consumption_rate,
+            household.stock_days,
+            i64::from(household.replenishment_state),
+            i64::from(household.cooldown_days),
         ])?;
     }
 
@@ -114,29 +135,57 @@ pub(super) fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResu
 
 pub(super) fn load_buildings(conn: &Connection, registry: &crate::assets::AssetRegistry) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, width, depth, asset_id, level, broken FROM buildings ORDER BY building_id")?;
+    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, width, depth, asset_id, level, broken FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
         if bid != allocator.buildings.len() { return Err(SaveLoadError::custom("non-contiguous building ids")); }
-        let asset_id: String = row.get(10)?;
-        let broken = (row.get::<_, i64>(12)? != 0) || registry.get(&asset_id).is_none();
+        let asset_id: String = row.get(15)?;
+        let broken = (row.get::<_, i64>(17)? != 0) || registry.get(&asset_id).is_none();
         allocator.buildings.push(Building {
             center_x: 0.0, center_y: 0.0,
-            width_cells: i64_to_usize(row.get(8)?)? as u16,
-            depth_cells: i64_to_usize(row.get(9)?)? as u16,
+            width_cells: i64_to_usize(row.get(13)?)? as u16,
+            depth_cells: i64_to_usize(row.get(14)?)? as u16,
             zone_type: zone_type_from_i64(row.get(6)?)?, facing_dir: Vector2::ZERO, frontage_t: row.get(2)?,
             side_offset: 0.0, abandoned_timer: 0,
             edge_idx: i64_to_usize(row.get(1)?)?, side: (row.get::<_, i64>(3)?) as i8,
             cell_x: i64_to_usize(row.get(4)?)?,
             cell_y: i64_to_usize(row.get(5)?)? as u16,
             occupancy: i64_to_u32(row.get(7)?)?,
+            worker_count: i64_to_u32(row.get(8)?)?,
             asset_id,
-            level: row.get::<_, i64>(11)?.clamp(1, 255) as u8,
+            level: row.get::<_, i64>(16)?.clamp(1, 255) as u8,
             broken,
+            stock: row.get(9)?,
+            revenue: row.get(10)?,
+            operating_budget: row.get(11)?,
+            utility_service_available: row.get::<_, i64>(12)? != 0,
         });
     }
     Ok(allocator)
+}
+
+pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
+    let mut households = HouseholdSystem::new();
+    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days FROM households ORDER BY household_id")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let hid = i64_to_usize(row.get(0)?)?;
+        if hid != households.households.len() {
+            return Err(SaveLoadError::custom("non-contiguous household ids"));
+        }
+        households.households.push(Household {
+            home_building_id: db_to_optional_usize(row.get(1)?)?,
+            budget: row.get(2)?,
+            stock: row.get(3)?,
+            member_count: i64_to_u32(row.get(4)?)? as u16,
+            consumption_rate: row.get(5)?,
+            stock_days: row.get(6)?,
+            replenishment_state: i64_to_u8(row.get(7)?)?,
+            cooldown_days: i64_to_u8(row.get(8)?)?,
+        });
+    }
+    Ok(households)
 }
 
 pub(super) fn repaint_building_occupancy(zoning: &mut ZoningSystem, allocator: &BuildingAllocator) -> SaveLoadResult<()> {
