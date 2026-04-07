@@ -861,7 +861,7 @@ Examples:
 - tax controller
 - price-response controller
 - subsidy controller
-- household replenishment cost controller
+- household restock cost controller
 
 Controllers are not arbitrary scripts. They are bounded, inspectable systems with defined inputs, outputs, scope, and update cadence.
 
@@ -1471,7 +1471,7 @@ These controllers do not add new buildings or shipment steps. They are cross-cut
 For `v0.1`, the example should stay within the fixed-price and fixed-wage baseline:
 
 - `local subsidy`: reduces cost or improves viability for targeted chain steps
-- `household replenishment cost`: changes the effective cost or friction households face when restocking supplies
+- `household restock cost`: changes the effective cost or friction households face when restocking supplies
 
 Later extensions may add richer controller effects to the same chain, for example:
 

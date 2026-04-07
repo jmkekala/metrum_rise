@@ -1,6 +1,7 @@
 ## Procedurally built HUD — all UI panels, buttons, and overlays constructed at runtime.
 ##
 ## Rust methods called: set_simulation_speed(), undo_action(),
+##   get_registered_building_asset_ids(),
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data()
 ## No scene file for the UI; every control is created in _ready() and helper functions.
 extends CanvasLayer
@@ -21,9 +22,12 @@ var road_sub_menu: HBoxContainer
 var road_options_menu: VBoxContainer
 var road_combined_hbox: HBoxContainer
 var zoning_main_btn: Button
+var founding_main_btn: Button
 
 var terrain_main_btn: Button
 var terrain_sub_menu: HBoxContainer
+var founding_sub_menu: HBoxContainer
+var founding_asset_picker: OptionButton
 
 # Road items
 var road_2l_btn: Button
@@ -202,7 +206,39 @@ func _build_ui():
 	hbox_terrain_sub_center.alignment = BoxContainer.ALIGNMENT_CENTER
 	hbox_terrain_sub_center.add_child(terrain_sub_margin)
 	vbox.add_child(hbox_terrain_sub_center)
-	
+
+	# --- Founding Sub Menu ---
+	founding_sub_menu = HBoxContainer.new()
+	founding_sub_menu.alignment = BoxContainer.ALIGNMENT_CENTER
+	founding_sub_menu.visible = false
+	var founding_panel = PanelContainer.new()
+	var founding_style = StyleBoxFlat.new()
+	founding_style.bg_color = Color(0.1, 0.1, 0.1, 0.8)
+	founding_style.set_corner_radius_all(15)
+	founding_panel.add_theme_stylebox_override("panel", founding_style)
+	var founding_padding = MarginContainer.new()
+	founding_padding.add_theme_constant_override("margin_left", 12)
+	founding_padding.add_theme_constant_override("margin_right", 12)
+	founding_padding.add_theme_constant_override("margin_top", 8)
+	founding_padding.add_theme_constant_override("margin_bottom", 8)
+	founding_panel.add_child(founding_padding)
+	var founding_row = HBoxContainer.new()
+	founding_row.add_theme_constant_override("separation", 10)
+	founding_padding.add_child(founding_row)
+	var founding_label = Label.new()
+	founding_label.text = "Choose a starter building, then click zoned road frontage."
+	founding_row.add_child(founding_label)
+	founding_asset_picker = OptionButton.new()
+	founding_asset_picker.custom_minimum_size = Vector2(320, 0)
+	founding_row.add_child(founding_asset_picker)
+	var founding_place_btn = Button.new()
+	founding_place_btn.text = "Place Selected"
+	founding_place_btn.pressed.connect(_on_place_selected_founding_asset_pressed)
+	founding_row.add_child(founding_place_btn)
+	founding_sub_menu.add_child(founding_panel)
+	vbox.add_child(founding_sub_menu)
+	vbox.move_child(founding_sub_menu, vbox.get_child_count() - 2)
+
 	# --- Combined Zoning Sub-Menu Row ---
 	zoning_combined_hbox = HBoxContainer.new()
 	zoning_combined_hbox.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -275,6 +311,12 @@ func _build_ui():
 	zoning_main_btn.custom_minimum_size = Vector2(100, 50)
 	zoning_main_btn.add_theme_stylebox_override("normal", style.duplicate())
 	main_toolbar.add_child(zoning_main_btn)
+
+	founding_main_btn = Button.new()
+	founding_main_btn.text = "Founding"
+	founding_main_btn.custom_minimum_size = Vector2(110, 50)
+	founding_main_btn.add_theme_stylebox_override("normal", style.duplicate())
+	main_toolbar.add_child(founding_main_btn)
 	
 	terrain_main_btn = Button.new()
 	terrain_main_btn.text = "Terrain"
@@ -380,6 +422,7 @@ func _connect_signals():
 	road_main_btn.pressed.connect(_on_road_main_pressed)
 	terrain_main_btn.pressed.connect(_on_terrain_main_pressed)
 	zoning_main_btn.pressed.connect(_on_zoning_main_pressed)
+	founding_main_btn.pressed.connect(_on_founding_main_pressed)
 	select_main_btn.pressed.connect(_on_select_main_pressed)
 	
 	road_2l_btn.pressed.connect(func(): _select_road_type(1, 1))
@@ -392,6 +435,7 @@ func _connect_signals():
 func _on_road_main_pressed():
 	terrain_sub_menu.visible = false
 	zoning_combined_hbox.visible = false
+	founding_sub_menu.visible = false
 	road_combined_hbox.visible = !road_combined_hbox.visible
 	if not road_combined_hbox.visible:
 		get_meta("options_panel").visible = false
@@ -401,6 +445,7 @@ func _on_road_main_pressed():
 func _on_terrain_main_pressed():
 	road_combined_hbox.visible = false
 	zoning_combined_hbox.visible = false
+	founding_sub_menu.visible = false
 	terrain_sub_menu.visible = !terrain_sub_menu.visible
 	if not terrain_sub_menu.visible:
 		input_manager._cancel_active_tool()
@@ -408,8 +453,19 @@ func _on_terrain_main_pressed():
 func _on_zoning_main_pressed():
 	road_combined_hbox.visible = false
 	terrain_sub_menu.visible = false
+	founding_sub_menu.visible = false
 	zoning_combined_hbox.visible = !zoning_combined_hbox.visible
 	input_manager._toggle_zoning_overlay()
+
+func _on_founding_main_pressed():
+	road_combined_hbox.visible = false
+	terrain_sub_menu.visible = false
+	zoning_combined_hbox.visible = false
+	founding_sub_menu.visible = not founding_sub_menu.visible
+	if founding_sub_menu.visible:
+		_refresh_founding_asset_picker()
+	else:
+		input_manager._cancel_active_tool()
 
 func _select_road_type(fwd: int, bkw: int):
 	# Show options panel and separator
@@ -448,7 +504,29 @@ func _on_select_main_pressed():
 	road_combined_hbox.visible = false
 	terrain_sub_menu.visible = false
 	zoning_combined_hbox.visible = false
+	founding_sub_menu.visible = false
 	input_manager._toggle_tool(InputManager.Tool.SELECT)
+
+func _refresh_founding_asset_picker():
+	if not founding_asset_picker:
+		return
+	founding_asset_picker.clear()
+	var asset_ids: PackedStringArray = simulation_node.get_registered_building_asset_ids()
+	for asset_id in asset_ids:
+		founding_asset_picker.add_item(asset_id)
+	if founding_asset_picker.item_count == 0:
+		founding_asset_picker.add_item("[No building assets loaded]")
+
+func _on_place_selected_founding_asset_pressed():
+	if not founding_asset_picker or founding_asset_picker.get_item_count() == 0:
+		return
+	var selected_idx = founding_asset_picker.selected
+	if selected_idx < 0:
+		return
+	var selected_text = founding_asset_picker.get_item_text(selected_idx)
+	if selected_text.begins_with("["):
+		return
+	input_manager.start_founding_placement(selected_text)
 
 ## Shows the road properties panel for one or more selected edges.
 ## When multiple edges are selected the warning is suppressed and the

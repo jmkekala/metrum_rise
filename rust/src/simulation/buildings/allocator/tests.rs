@@ -30,6 +30,7 @@ fn register_test_asset(allocator: &mut BuildingAllocator, pack_id: &str, asset_i
             residents_capacity: Some(6),
             worker_capacity: None,
             service_class: None,
+            economy_profile: None,
             preview_scale: None,
         }),
         prop: None,
@@ -191,30 +192,16 @@ fn test_vacancy_index_consistency() {
 }
 
 #[test]
-fn test_building_placement_demand_subtraction() {
-    use crate::simulation::economy::demand::DemandSystem;
-    use crate::simulation::grid::desirability::DesirabilitySystem;
-    use crate::simulation::grid::noise::NoiseSystem;
+fn test_tick_does_not_auto_spawn_private_buildings_from_zones() {
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
     register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
-    let mut demand = DemandSystem::new();
-    demand.residential = 100.0;
 
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
-    let mut desirability = DesirabilitySystem::new(&map_cfg);
-    let (env_w, env_h) = map_cfg.get_env_grid_size();
-    for x in 0..env_w {
-        for y in 0..env_h {
-            desirability.grid.set(x, y, 100.0);
-        }
-    }
-
-    let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
     let mut network = TransitNetwork::new();
@@ -230,106 +217,70 @@ fn test_building_placement_demand_subtraction() {
         &mut zoning,
         &mut allocator,
     );
-    zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, crate::simulation::grid::zoning::ZoneType::Residential);
+    zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, ZoneType::Residential);
 
     allocator.tick(
-        &mut demand,
         &mut zoning,
-        &desirability,
-        &noise,
         &mut agents,
         &mut households,
         &mut logistics,
         &mut network,
         &mut graph,
-        &map_cfg,
-    );
-
-    assert_eq!(allocator.buildings.len(), 1);
-    assert_eq!(
-        demand.residential, 95.0,
-        "Residential demand should decrease by 5.0 after placement"
-    );
-}
-
-#[test]
-fn test_building_placement_desirability_gate() {
-    use crate::simulation::economy::demand::DemandSystem;
-    use crate::simulation::grid::desirability::DesirabilitySystem;
-    use crate::simulation::grid::noise::NoiseSystem;
-    use crate::simulation::grid::zoning::ZoningSystem;
-    use crate::simulation::network::TransitNetwork;
-    use godot::prelude::Vector3;
-
-    let mut allocator = BuildingAllocator::new();
-    register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
-    let mut demand = DemandSystem::new();
-    demand.residential = 14.0;
-
-    let map_cfg = MapConfig::default();
-    let mut zoning = ZoningSystem::new(&map_cfg);
-    let mut desirability = DesirabilitySystem::new(&map_cfg);
-    let (env_w, env_h) = map_cfg.get_env_grid_size();
-    for x in 0..env_w {
-        for y in 0..env_h {
-            desirability.grid.set(x, y, 10.0);
-        }
-    }
-
-    let noise = NoiseSystem::new(&map_cfg);
-    let mut agents = AgentSystem::new();
-    let mut households = HouseholdSystem::new();
-    let mut network = TransitNetwork::new();
-    let mut logistics = ShipmentSystem::new();
-    let mut graph = RegionGraph::new();
-
-    network.add_road(
-        &mut graph,
-        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-        1,
-        1,
-        crate::simulation::network::types::EdgeClass::Standard,
-        &mut zoning,
-        &mut allocator,
-    );
-    zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, crate::simulation::grid::zoning::ZoneType::Residential);
-
-    allocator.tick(
-        &mut demand,
-        &mut zoning,
-        &desirability,
-        &noise,
-        &mut agents,
-        &mut households,
-        &mut logistics,
-        &mut network,
-        &mut graph,
-        &map_cfg,
     );
 
     assert_eq!(
         allocator.buildings.len(),
         0,
-        "No building should spawn when desirability is below 20.0"
+        "Zoning alone should not create private buildings without explicit player action"
     );
 }
 
 #[test]
-fn test_building_removal_clears_zoning_occupancy() {
-    use crate::simulation::economy::demand::DemandSystem;
-    use crate::simulation::grid::desirability::DesirabilitySystem;
-    use crate::simulation::grid::noise::NoiseSystem;
+fn test_explicit_player_placement_works_with_zero_demand() {
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
     register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
-    let mut demand = DemandSystem::new();
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
-    let desirability = DesirabilitySystem::new(&map_cfg);
-    let noise = NoiseSystem::new(&map_cfg);
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, ZoneType::Residential);
+
+    let placed = allocator.place_explicit_building_near_world_pos(
+        "base:b.res.house",
+        Vector2::new(20.0, 12.0),
+        &mut zoning,
+        &graph,
+    );
+
+    assert!(placed.is_ok(), "explicit player placement should not require hidden demand");
+    assert_eq!(allocator.buildings.len(), 1);
+    assert_eq!(allocator.buildings[0].asset_id, "base:b.res.house");
+}
+
+#[test]
+fn test_building_removal_clears_zoning_occupancy() {
+    use crate::simulation::grid::zoning::ZoningSystem;
+    use crate::simulation::network::TransitNetwork;
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
+    let map_cfg = MapConfig::default();
+    let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
     let mut network = TransitNetwork::new();
@@ -373,16 +324,12 @@ fn test_building_removal_clears_zoning_occupancy() {
     zoning.mark_occupied_rect(5.0, 10.0, godot::prelude::Vector2::new(0.0, 1.0), 30.0, 30.0, true);
 
     allocator.tick(
-        &mut demand,
         &mut zoning,
-        &desirability,
-        &noise,
         &mut agents,
         &mut households,
         &mut logistics,
         &mut network,
         &mut graph,
-        &map_cfg,
     );
 
     assert_eq!(
@@ -400,9 +347,6 @@ fn test_building_removal_clears_zoning_occupancy() {
 fn test_immigration_claims_vacant_home() {
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::economy::agents::AgentSystem;
-    use crate::simulation::economy::demand::DemandSystem;
-    use crate::simulation::grid::desirability::DesirabilitySystem;
-    use crate::simulation::grid::noise::NoiseSystem;
     use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::TransitNetwork;
@@ -410,18 +354,13 @@ fn test_immigration_claims_vacant_home() {
 
     let mut allocator = BuildingAllocator::new();
     register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
-    let mut demand = DemandSystem::new();
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
-    let desirability = DesirabilitySystem::new(&map_cfg);
-    let noise = NoiseSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
     let mut network = TransitNetwork::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
-
-    demand.residential = 100.0;
 
     network.add_road(
         &mut graph,
@@ -463,16 +402,12 @@ fn test_immigration_claims_vacant_home() {
     allocator.rebuild_zone_index();
 
     allocator.tick(
-        &mut demand,
         &mut zoning,
-        &desirability,
-        &noise,
         &mut agents,
         &mut households,
         &mut logistics,
         &mut network,
         &mut graph,
-        &map_cfg,
     );
 
     assert_eq!(agents.len(), 2, "One two-resident household should have immigrated");
@@ -490,5 +425,98 @@ fn test_immigration_claims_vacant_home() {
     assert_eq!(
         allocator.buildings[0].occupancy, 2,
         "Building occupancy should match the admitted household size"
+    );
+}
+
+#[test]
+fn test_startup_immigration_floor_avoids_zero_rounding() {
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
+    register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut graph = RegionGraph::new();
+
+    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&MapConfig::default());
+    let mut network = crate::simulation::network::TransitNetwork::new();
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    let edge_id = graph.edge_count() - 1;
+    graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
+
+    allocator.buildings.push(Building {
+        center_x: 10.0,
+        center_y: 10.0,
+        width_cells: 2,
+        depth_cells: 2,
+        zone_type: ZoneType::Residential,
+        facing_dir: Vector2::new(0.0, 1.0),
+        frontage_t: 0.1,
+        side_offset: 1.0,
+        abandoned_timer: 0,
+        edge_idx: edge_id,
+        side: 1,
+        cell_x: 0,
+        cell_y: 0,
+        occupancy: 2,
+        worker_count: 0,
+        asset_id: "base:b.res.house".to_owned(),
+        level: 1,
+        broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 500.0,
+        utility_service_available: true,
+        shipment_cooldown_days: 0,
+    });
+    allocator.buildings.push(Building {
+        center_x: 40.0,
+        center_y: 10.0,
+        width_cells: 2,
+        depth_cells: 2,
+        zone_type: ZoneType::Commercial,
+        facing_dir: Vector2::new(0.0, 1.0),
+        frontage_t: 0.4,
+        side_offset: 1.0,
+        abandoned_timer: 0,
+        edge_idx: edge_id,
+        side: 1,
+        cell_x: 4,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        asset_id: "base:b.com.shop".to_owned(),
+        level: 1,
+        broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 500.0,
+        utility_service_available: true,
+        shipment_cooldown_days: 0,
+    });
+    allocator.rebuild_zone_index();
+
+    let household_id = households.admit_immigrant_household(0, 2);
+    for _ in 0..2 {
+        let idx = agents.spawn_agent(0, 1, 0.0, 0.0, 0, 0.0, 0.0);
+        agents.household_id[idx] = household_id;
+    }
+    households.households[household_id].stock = 0.0;
+    households.households[household_id].stock_days = 0.0;
+
+    allocator.spawn_immigrants(&mut agents, &mut households, &graph);
+
+    assert!(
+        households.households.len() >= 2,
+        "player-seeded startup city should admit another household even when the raw formula rounds to zero"
     );
 }

@@ -9,6 +9,10 @@
 //! | | `save_game` | `input_manager.gd`, `main.gd` |
 //! | | `load_game` | `input_manager.gd`, `main.gd` |
 //! | | `get_perf_stats` | `debug_panel.gd` |
+//! | **Economy Editor** | `is_economy_editor_mode` | `economy_editor.gd` |
+//! | | `load_economy_project` | `economy_editor.gd` |
+//! | | `export_economy_project` | `economy_editor.gd` |
+//! | | `run_economy_sandbox` | `economy_editor.gd` |
 //! | **Environment** | `get_pollution_image_data` | `overlay_manager.gd` |
 //! | | `get_noise_image_data` | `overlay_manager.gd` |
 //! | | `get_desirability_image_data` | `overlay_manager.gd` |
@@ -84,6 +88,9 @@ pub struct SimulationNode {
     /// True when launched with `--asset-editor`. Sim thread is not started;
     /// the node runs a 500 m sandbox for preview only.
     pub(crate) asset_editor_mode: bool,
+    /// True when launched with `--economy-editor`. Sim thread is not started;
+    /// the node only serves the authored-economy editor shell.
+    pub(crate) economy_editor_mode: bool,
     /// Incremented every Godot frame in benchmark mode.
     pub(crate) benchmark_tick_count: u32,
     /// Last day for which benchmark CSV has been written.
@@ -413,6 +420,69 @@ impl SimulationNode {
         self.asset_editor_mode
     }
 
+    /// Returns `true` when the node was launched with `--economy-editor`.
+    #[func]
+    pub fn is_economy_editor_mode(&self) -> bool {
+        self.economy_editor_mode
+    }
+
+    /// Loads the canonical authored economy folder and returns a JSON envelope
+    /// containing profiles, controllers, scenarios, and validation messages.
+    #[func]
+    pub fn load_economy_project(&self, dir_path: GString) -> GString {
+        use crate::simulation::economy::definitions::load_project_json;
+        match load_project_json(std::path::Path::new(&dir_path.to_string())) {
+            Ok(json) => GString::from(json.as_str()),
+            Err(err) => {
+                let payload = serde_json::json!({
+                    "ok": false,
+                    "error": err,
+                    "validation": [],
+                });
+                GString::from(payload.to_string().as_str())
+            }
+        }
+    }
+
+    /// Validates the authored economy JSON payload, writes the canonical TOML
+    /// files, and rebuilds the derived `economy.index.bin` cache.
+    #[func]
+    pub fn export_economy_project(&self, project_json: GString, dir_path: GString) -> GString {
+        use crate::simulation::economy::definitions::export_project_json;
+        match export_project_json(
+            &project_json.to_string(),
+            std::path::Path::new(&dir_path.to_string()),
+        ) {
+            Ok(json) => GString::from(json.as_str()),
+            Err(err) => {
+                let payload = serde_json::json!({
+                    "ok": false,
+                    "error": err,
+                    "validation": [],
+                });
+                GString::from(payload.to_string().as_str())
+            }
+        }
+    }
+
+    /// Runs the small authored-economy sandbox for the selected scenario and
+    /// returns daily series data plus summary bottleneck metrics as JSON.
+    #[func]
+    pub fn run_economy_sandbox(&self, project_json: GString, scenario_id: GString) -> GString {
+        use crate::simulation::economy::definitions::run_sandbox_json;
+        match run_sandbox_json(&project_json.to_string(), &scenario_id.to_string()) {
+            Ok(json) => GString::from(json.as_str()),
+            Err(err) => {
+                let payload = serde_json::json!({
+                    "ok": false,
+                    "error": err,
+                    "validation": [],
+                });
+                GString::from(payload.to_string().as_str())
+            }
+        }
+    }
+
     /// Scans a native filesystem directory for content packs and registers all valid assets.
     #[func]
     pub fn load_asset_packs(&mut self, dir_path: GString, enabled_pack_ids: GString) -> GString {
@@ -435,6 +505,26 @@ impl SimulationNode {
             ids.push(GString::from("broken:error"));
         }
         
+        PackedStringArray::from_iter(ids)
+    }
+
+    /// Returns all registered qualified asset IDs that contain building manifests.
+    #[func]
+    pub fn get_registered_building_asset_ids(&self) -> PackedStringArray {
+        let core = self.lock_core();
+        let ids: Vec<GString> = core
+            .allocator
+            .registry
+            .qualified_ids()
+            .filter(|qualified_id| {
+                core.allocator
+                    .registry
+                    .get(qualified_id)
+                    .and_then(|entry| entry.manifest.building.as_ref())
+                    .is_some()
+            })
+            .map(GString::from)
+            .collect();
         PackedStringArray::from_iter(ids)
     }
 
@@ -573,6 +663,20 @@ impl SimulationNode {
     #[func]
     pub fn set_border_connection(&mut self, node_id: i32) {
         self.lock_core().set_border_connection_internal(node_id);
+    }
+
+    /// Places one explicit player-requested startup building near `world_pos`.
+    ///
+    /// Returns `""` on success or a human-readable failure reason otherwise.
+    #[func]
+    pub fn place_startup_building(&mut self, asset_id: GString, world_pos: Vector3) -> GString {
+        match self
+            .lock_core()
+            .place_startup_building_internal(&asset_id.to_string(), world_pos)
+        {
+            Ok(()) => GString::new(),
+            Err(err) => GString::from(err.as_str()),
+        }
     }
 
     /// Returns the world-space positions of all active border nodes as a flat float array.
@@ -907,6 +1011,7 @@ impl INode3D for SimulationNode {
         let mut generate_benchmark = false;
         let mut run_benchmark = false;
         let mut asset_editor_mode = false;
+        let mut economy_editor_mode = false;
         for arg in args.as_slice() {
             match arg.to_string().as_str() {
                 "--huge-map" | "--benchmark" => {
@@ -923,12 +1028,16 @@ impl INode3D for SimulationNode {
                     // can follow export/validation output in the terminal.
                     crate::debug::ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                "--economy-editor" => {
+                    economy_editor_mode = true;
+                    crate::debug::ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
                 _ => {}
             }
         }
 
         let mut config = MapConfig::default();
-        if asset_editor_mode {
+        if asset_editor_mode || economy_editor_mode {
             config.width_m = 500.0;
             config.height_m = 500.0;
         } else if is_huge {
@@ -989,6 +1098,7 @@ impl INode3D for SimulationNode {
             cmd_rx: Some(cmd_rx),
             benchmark_mode,
             asset_editor_mode,
+            economy_editor_mode,
             benchmark_tick_count: 0,
             last_logged_day: 0,
             time_passed: 0.0,
@@ -1020,6 +1130,11 @@ impl INode3D for SimulationNode {
         if self.asset_editor_mode {
             godot_print!("[asset-editor] sandbox ready — 500 m map, no simulation thread");
             debug_log!("asset-editor", "sandbox ready");
+            return;
+        }
+        if self.economy_editor_mode {
+            godot_print!("[economy-editor] shell ready — authoritative economy data only, no simulation thread");
+            debug_log!("economy-editor", "shell ready");
             return;
         }
 

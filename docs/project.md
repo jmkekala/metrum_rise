@@ -199,7 +199,8 @@ The old probabilistic `Home -> Work -> Shop` essentials loop is gone from the li
 - `OWA` fallback is still the active utility backstop and the external import source for ordinary goods when no local supplier can fill a bounded request.
 - Freight is represented by delayed shipment jobs rather than by dedicated visible freight vehicles, so congestion from economy freight is not yet expressed through separate road agents.
 - Emigration and richer household regrouping are still later work; the live migration slice currently covers household-level immigration only.
-- `DemandSystem` is still a temporary zoning-growth scaffold, but it is now rebuilt from household stock pressure, commercial/industrial stock pressure, job pressure, and housing fill instead of from blind organic growth.
+- `DemandSystem` now acts only as a live economy-pressure signal and save-loaded telemetry layer. It is rebuilt from household stock pressure, commercial/industrial stock pressure, job pressure, and housing fill, but it no longer auto-spawns private buildings from zoned land.
+- The old hidden empty-city `50/25/25` demand floor is gone. New cities now start from zero pressure and rely on explicit player-seeded founding buildings plus border access instead of any hidden private-growth bootstrap.
 
 ### Pathfinding
 - `simulation/pathing/astar.rs` — binary-heap A* with `(node, incoming_edge)` state key (mandatory for correct turn-restriction enforcement at `Node::lane_connections`).
@@ -210,7 +211,7 @@ The old probabilistic `Home -> Work -> Shop` essentials loop is gone from the li
 - **Unit tests** (`simulation/pathing/tests.rs`): `test_slope_cost_calculation` (50% grade edge receives a 7.25× cost multiplier vs a flat edge of equal length), `test_pathing_avoids_steep_slope` (router selects the longer flat detour A→C→B over the steep direct A→B). **Known geometry inconsistency in `test_pathing_avoids_steep_slope`**: `edge_ab`'s geometry endpoint is `(100, 50, 0)` but node `n_b` is placed at `(100, 0, 0)`. `CostCalculator` reads `edge.geometry`, so the slope penalty is computed correctly and the test passes, but the endpoint violates the invariant that edge geometry must start and end at the node positions. Fix: place `n_b` at `(100, 50, 0)`, or represent the slope with an intermediate waypoint while keeping the geometry endpoint at `n_b`'s flat position.
 
 ### Demand
-- `simulation/economy/demand.rs` — global R/C/I demand counters still drive zoning-based building growth and immigration pressure, but they are now rebuilt from live economy pressure instead of from blind organic growth. Residential demand reflects job pressure plus housing fill, commercial demand reflects household and store stock pressure, and industrial demand reflects downstream store pressure plus supplier stock pressure. This remains a temporary city-growth scaffold while the richer authored economy loop and construction logic catch up.
+- `simulation/economy/demand.rs` — global R/C/I pressure counters are rebuilt from live economy pressure instead of from blind organic growth. Residential pressure reflects job pressure plus housing fill, commercial pressure reflects household and store stock pressure, and industrial pressure reflects downstream store pressure plus supplier stock pressure. These values now serve as save-loaded telemetry and future company-formation/construction inputs only; they no longer drive automatic private building spawn and they no longer carry a hidden empty-city bootstrap floor.
 
 ### Flow Fields (item 18)
 - **`simulation/pathing/flow_field.rs`** — `FlowField` (per-zone-type reverse Dijkstra result) and `FlowFieldSystem` (one `FlowField` per zone × mode, lazy rebuild via `dirty: [bool; 6]`).
@@ -411,20 +412,22 @@ This refactor improved maintainability and is a prerequisite for independently t
 
 [DONE] **E4. Economy — Legacy cleanup against final spec (Item 65)** — removed the remaining stale project/test references to the old `Home -> Work -> Shop` essentials loop and outdated immigrant behavior, rewrote the live agent-rule documentation to match the current household/building economy slice, and aligned the runtime module comments with the final `docs/economy.md` contract.
 
+[DONE] **E5. Economy editor shell (Item 62)** — added a dedicated `--economy-editor` launch mode plus `EconomyEditor.tscn` / `economy_editor.gd`, a lightweight authored-graph canvas with inspector editing, Rust-side TOML load/validate/export helpers for `economy/profiles.toml`, `economy/controllers.toml`, and `economy/scenarios.toml`, derived `economy.index.bin` cache rebuilding on export, and first-pass sandbox playback for the starter grocery chain.
+
+[DONE] **E6. Asset editor economy-profile integration (Item 63)** — added an `economy_profile` field to building asset manifests and the Rust asset export/import path, wired the asset editor to load the canonical economy profile catalog from `economy/`, exposed a catalog-backed picker with refresh, preserved unresolved profile IDs instead of silently replacing them, and surfaced non-blocking warnings when the local economy catalog is missing, stale, or does not contain the selected profile.
+
+[DONE] **E7. Player-focused founding bootstrap** — removed the hidden empty-city `50/25/25` demand floor, added explicit player startup placement for founding buildings through `FoundingTool` / `place_startup_building()`, removed the remaining automatic private-building scaffold that was still filling zoned frontage behind the player's back, kept `DemandSystem` only as live pressure telemetry instead of a construction trigger, allowed `OWA` import fallback to scale shipments down to what a startup store can actually afford, added an early-city immigration floor so the first player-seeded town no longer stalls after one household, and reduced founding-household starter savings so nearby jobs activate on the first real daily economy pass instead of idling for weeks.
+
 **Top 3 project tasks to do next (2026-04-07):**
-1. **E5. Economy editor shell (Item 62)** — start the developer-facing graph/inspector/validation workflow so the runtime stops depending on hardcoded starter-chain defaults.
-2. **E6. Asset editor economy-profile integration (Item 63)** — wire the shipped economy profile catalog into the asset editor so buildings stop relying on ad hoc hardcoded starter-chain assumptions.
-3. **61. Service buildings — coverage model** — add the first economy-adjacent civic-service slice so stability pressure stops being purely conceptual in the v0.1 loop.
+1. **61. Service buildings — coverage model** — add the first economy-adjacent civic-service slice so stability pressure stops being purely conceptual in the v0.1 loop.
+2. **30. Bicycle support** — continue the multi-modal path now that the first economy authoring tool exists and the v0.1 economy backlog has narrowed.
+3. **Pack manager UI (Option C)** — finish the in-game pack-management path so mod/content workflows stop relying on filesystem assumptions and editor-only refresh cycles.
 
 ### v0.1 — Economy Foundation
 
 Target: a closed, building-centric economic loop with decision-utility scoring at 1,000,000 agents as specified in [`docs/economy.md`](economy.md).
 
 61. **Service buildings — coverage model**: police, fire, and medical stations emit influence onto grids that feed directly into `stability_sat`. No individual dispatch — static coverage remains the primary model to ensure O(1) per-tick cost at the 1M-agent target.
-
-62. **Economy editor shell**: build a dedicated developer-facing balancing and validation tool for resource chains, controller definitions, scenario overrides, and economy debugging. The main workflow must be UI-driven rather than raw file editing. This is not a gameplay feature. Scope for the first pass: graph canvas, inspector, validation panel, and small sandbox playback using compiled economy definitions from [`docs/economy.md`](economy.md).
-
-63. **Asset editor economy-profile integration**: extend the building importer/inspector so `economy_profile` is chosen from the shipped baseline economy profile catalog or the latest exported profile list, not typed ad hoc. The asset editor should validate the selected profile against current economy data, warn clearly when the local catalog is missing or stale, and degrade gracefully instead of blocking general asset import work. Asset creators do not define new economy profiles in the asset editor; they select from existing economy data. Prerequisites: item 62 and item 57 Step 5.
 
 ### v0.2 — scaling baseline, multi-modal foundation, and multi-city region
 

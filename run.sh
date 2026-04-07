@@ -4,25 +4,42 @@
 RELEASE=0
 DEBUG=0
 DEBUG_TRAFFIC=0
+DEBUG_CATEGORY=""
 GODOT_ARGS=()
 export RUST_BACKTRACE=1
-prev_arg=""
-for arg in "$@"; do
+i=1
+while [ $i -le $# ]; do
+    arg="${!i}"
     if [ "$arg" = "--release" ]; then
         RELEASE=1
     elif [ "$arg" = "--debug" ]; then
         DEBUG=1
-    elif [ "$arg" = "traffic" ] && [ "$prev_arg" = "--debug" ]; then
-        DEBUG_TRAFFIC=1
+        next_index=$((i + 1))
+        if [ $next_index -le $# ]; then
+            next_arg="${!next_index}"
+            if [[ "$next_arg" != --* ]]; then
+                if [ "$next_arg" = "traffic" ]; then
+                    DEBUG_TRAFFIC=1
+                else
+                    DEBUG_CATEGORY="$next_arg"
+                fi
+                i=$((i + 1))
+            fi
+        fi
     else
         GODOT_ARGS+=("$arg")
     fi
-    prev_arg="$arg"
+    i=$((i + 1))
 done
 
 if [ $DEBUG -eq 1 ]; then
     export METRUM_DEBUG=1
-    echo "Debug logging enabled (output goes to stdout)"
+    if [ -n "$DEBUG_CATEGORY" ]; then
+        export METRUM_DEBUG_FILTER="$DEBUG_CATEGORY"
+        echo "Debug logging enabled for category '$DEBUG_CATEGORY' (output goes to stdout)"
+    else
+        echo "Debug logging enabled (output goes to stdout)"
+    fi
 fi
 if [ $DEBUG_TRAFFIC -eq 1 ]; then
     export METRUM_DEBUG_TRAFFIC=1

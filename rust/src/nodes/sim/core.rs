@@ -181,17 +181,23 @@ impl SimCore {
         let tick_start = Instant::now();
 
         self.demand.recalculate(&self.allocator, &self.households);
+        debug_log!(
+            "economy",
+            "daily tick start: buildings={} households={} agents={} demand=(R {:.1}, C {:.1}, I {:.1})",
+            self.allocator.buildings.len(),
+            self.households.households.iter().filter(|h| h.member_count > 0).count(),
+            self.agents.len(),
+            self.demand.residential,
+            self.demand.commercial,
+            self.demand.industrial
+        );
         self.allocator.tick(
-            &mut self.demand,
             &mut self.zoning,
-            &self.desirability,
-            &self.noise,
             &mut self.agents,
             &mut self.households,
             &mut self.logistics,
             &mut self.transit_network,
             &mut self.region_graph,
-            &self.config,
         );
         // Drain building dirty-zone flags → mark matching flow fields for rebuild.
         {
@@ -217,6 +223,16 @@ impl SimCore {
             &self.region_graph,
         );
         self.demand.recalculate(&self.allocator, &self.households);
+        debug_log!(
+            "economy",
+            "daily tick end: buildings={} households={} agents={} demand=(R {:.1}, C {:.1}, I {:.1})",
+            self.allocator.buildings.len(),
+            self.households.households.iter().filter(|h| h.member_count > 0).count(),
+            self.agents.len(),
+            self.demand.residential,
+            self.demand.commercial,
+            self.demand.industrial
+        );
         self.agents.daily_update(&self.pollution, &self.config);
         self.agents
             .pathfind_count

@@ -1,14 +1,15 @@
-//! Global R/C/I demand signals for zoning-driven growth.
+//! Global R/C/I pressure signals derived from the live economy state.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::grid::zoning::ZoneType;
 
-/// Tracks the global demand for Residential, Commercial, and Industrial zones.
+/// Tracks the global pressure for Residential, Commercial, and Industrial
+/// expansion.
 ///
-/// Demand is consumed by the building allocator when spawning new buildings
-/// and is currently derived from live economy pressure rather than from organic
-/// background growth.
+/// These counters are derived from live household, stock, and job pressure and
+/// persist through save/load as lightweight economy telemetry. They no longer
+/// directly trigger private building auto-spawn.
 pub struct DemandSystem {
     /// Residential demand (0-100).
     pub residential: f32,
@@ -19,16 +20,16 @@ pub struct DemandSystem {
 }
 
 impl DemandSystem {
-    /// Creates a new demand system with base starter values.
+    /// Creates a new demand system with no hidden startup floor.
     pub fn new() -> Self {
         Self {
-            residential: 50.0,
-            commercial: 25.0,
-            industrial: 25.0, // Base starter demand
+            residential: 0.0,
+            commercial: 0.0,
+            industrial: 0.0,
         }
     }
 
-    /// Rebuilds zoning demand from current household, job, and stock pressure.
+    /// Rebuilds economy pressure from current household, job, and stock state.
     pub fn recalculate(&mut self, allocator: &BuildingAllocator, households: &HouseholdSystem) {
         const HOUSEHOLD_TARGET_STOCK_DAYS: f32 = 3.0;
         const COMMERCIAL_TARGET_STOCK_UNITS: f32 = 600.0;
@@ -238,5 +239,18 @@ mod tests {
         demand.recalculate(&allocator, &households);
 
         assert!(demand.residential > 50.0);
+    }
+
+    #[test]
+    fn recalculate_keeps_empty_city_at_zero_demand() {
+        let allocator = BuildingAllocator::new();
+        let households = HouseholdSystem::new();
+        let mut demand = DemandSystem::new();
+
+        demand.recalculate(&allocator, &households);
+
+        assert_eq!(demand.residential, 0.0);
+        assert_eq!(demand.commercial, 0.0);
+        assert_eq!(demand.industrial, 0.0);
     }
 }

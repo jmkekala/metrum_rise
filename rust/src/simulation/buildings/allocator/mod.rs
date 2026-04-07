@@ -2,7 +2,7 @@
 //!
 //! [`BuildingAllocator::tick`] runs once per simulation tick. It:
 //! 1. Removes buildings whose zoning cell has been changed or whose road edge was deleted.
-//! 2. Scans zoned, unoccupied cells with sufficient demand and spawns new buildings.
+//! 2. Rebuilds derived indices and pathing after building mutations.
 //! 3. Admits immigrant households through connected border nodes up to current housing capacity.
 
 mod placement;
@@ -119,15 +119,14 @@ pub(crate) fn building_depart_node(building: &Building, graph: &RegionGraph) -> 
     }
 }
 
-/// Converts a simulation [`ZoneType`] to the corresponding [`ZoneClass`].
-pub(crate) fn zone_type_to_zone_class(zt: ZoneType) -> Option<ZoneClass> {
-    match zt {
-        ZoneType::Residential => Some(ZoneClass::Residential),
-        ZoneType::Commercial  => Some(ZoneClass::Commercial),
-        ZoneType::Industrial  => Some(ZoneClass::Industrial),
-        ZoneType::Office      => Some(ZoneClass::Office),
-        ZoneType::Mixed       => Some(ZoneClass::Mixed),
-        ZoneType::None        => None,
+/// Converts an asset-manifest [`ZoneClass`] to the matching simulation [`ZoneType`].
+pub(crate) fn zone_class_to_zone_type(zone: ZoneClass) -> ZoneType {
+    match zone {
+        ZoneClass::Residential => ZoneType::Residential,
+        ZoneClass::Commercial => ZoneType::Commercial,
+        ZoneClass::Industrial => ZoneType::Industrial,
+        ZoneClass::Office => ZoneType::Office,
+        ZoneClass::Mixed => ZoneType::Mixed,
     }
 }
 
@@ -151,25 +150,15 @@ impl BuildingAllocator {
     /// Advances the building lifecycle by one simulation tick.
     pub fn tick(
         &mut self,
-        demand: &mut crate::simulation::economy::demand::DemandSystem,
         zoning: &mut ZoningSystem,
-        desirability: &crate::simulation::grid::desirability::DesirabilitySystem,
-        _noise: &crate::simulation::grid::noise::NoiseSystem,
         agents: &mut crate::simulation::economy::agents::AgentSystem,
         households: &mut crate::simulation::economy::households::HouseholdSystem,
         logistics: &mut crate::simulation::economy::logistics::ShipmentSystem,
         network: &mut crate::simulation::network::TransitNetwork,
         graph: &mut RegionGraph,
-        config: &crate::simulation::core::config::MapConfig,
     ) {
         // 1. Stale building cleanup.
         self.cleanup_stale_buildings(zoning, agents, logistics, graph);
-
-        // 2. Growth logic.
-        self.spawn_new_buildings(demand, zoning, desirability, graph, config);
-
-        // 3. Upgrade pass.
-        self.update_building_levels(demand, desirability, config);
 
         network.rebuild_pathing_if_dirty(graph);
 
@@ -177,7 +166,7 @@ impl BuildingAllocator {
             self.rebuild_zone_index();
         }
 
-        // 4. Immigration logic.
+        // 2. Immigration logic.
         self.spawn_immigrants(agents, households, graph);
 
         self.dirty = false;

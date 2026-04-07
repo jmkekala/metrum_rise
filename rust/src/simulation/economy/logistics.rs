@@ -348,15 +348,17 @@ impl ShipmentSystem {
             return false;
         }
 
-        let amount = if desired_amount < COMMERCIAL_MIN_SHIPMENT_UNITS && allow_emergency {
+        let min_amount = if desired_amount < COMMERCIAL_MIN_SHIPMENT_UNITS && allow_emergency {
             desired_amount
         } else {
-            desired_amount.max(COMMERCIAL_MIN_SHIPMENT_UNITS)
+            COMMERCIAL_MIN_SHIPMENT_UNITS
         };
-        let total_cost = amount * OWA_IMPORT_ASK;
-        if allocator.buildings[dest_idx].operating_budget < total_cost {
+        let max_affordable_amount = allocator.buildings[dest_idx].operating_budget / OWA_IMPORT_ASK;
+        if max_affordable_amount < min_amount {
             return false;
         }
+        let amount = desired_amount.max(min_amount).min(max_affordable_amount);
+        let total_cost = amount * OWA_IMPORT_ASK;
 
         let dest_node = building_depart_node(&allocator.buildings[dest_idx], graph);
         let mut best_border = u32::MAX;
@@ -627,5 +629,30 @@ mod tests {
         shipments.daily_tick(&mut allocator, &network, &graph);
         assert!(shipments.shipments.is_empty());
         assert!(allocator.buildings[0].stock > 50.0);
+    }
+
+    #[test]
+    fn owa_border_fallback_scales_import_to_affordable_amount() {
+        let (graph, network, _industrial_edge, commercial_edge, _border_node) =
+            simple_graph_with_border();
+        let mut allocator = BuildingAllocator::new();
+        allocator.buildings.push(make_building(
+            50.0,
+            ZoneType::Commercial,
+            commercial_edge,
+            50.0,
+            500.0,
+            true,
+        ));
+        allocator.rebuild_zone_index();
+
+        let mut shipments = ShipmentSystem::new();
+        shipments.daily_tick(&mut allocator, &network, &graph);
+
+        assert_eq!(shipments.shipments.len(), 1);
+        assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_OWA);
+        assert!(shipments.shipments[0].amount >= COMMERCIAL_MIN_SHIPMENT_UNITS);
+        assert!(shipments.shipments[0].amount < COMMERCIAL_STOCK_TARGET_UNITS);
+        assert!(allocator.buildings[0].operating_budget <= 0.001);
     }
 }

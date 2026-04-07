@@ -1,7 +1,7 @@
 ## Centralized input orchestrator — owns tool activation state and global keyboard/mouse routing.
 ##
-## Routes input events to the active tool node (RoadTool, ZoningTool, MoveTool, LaneTool,
-## CulDeSacTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
+## Routes input events to the active tool node (RoadTool, ZoningTool, FoundingTool,
+## MoveTool, LaneTool, CulDeSacTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 extends Node
 
@@ -17,8 +17,9 @@ var cul_de_sac_tool: Node3D
 @onready var agents_node = $"../Agents"
 @onready var buildings_node = $"../Buildings"
 var select_tool: Node3D
+var founding_tool: Node3D
 
-enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
+enum Tool { NONE, ROAD, WALKWAY, ZONING, FOUNDING, MOVE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
 var current_tool: Tool = Tool.NONE
 
 func _ready():
@@ -35,6 +36,13 @@ func _ready():
 		st.set_script(load("res://scripts/select_tool.gd"))
 		get_parent().call_deferred("add_child", st)
 		select_tool = st
+
+	if not has_node("../FoundingTool"):
+		var ft = Node3D.new()
+		ft.name = "FoundingTool"
+		ft.set_script(load("res://scripts/founding_tool.gd"))
+		get_parent().call_deferred("add_child", ft)
+		founding_tool = ft
 	
 	# Hide overlay mesh if exists in cul-de-sac tool
 	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
@@ -78,6 +86,7 @@ func _unhandled_input(event):
 		match event.keycode:
 			KEY_M: _toggle_tool(Tool.MOVE)
 			KEY_R: _toggle_tool(Tool.ROAD)
+			KEY_B: _toggle_tool(Tool.FOUNDING)
 			KEY_X: _toggle_tool(Tool.WALKWAY)
 			KEY_Y: _toggle_tool(Tool.SCULPT)
 			KEY_K: _toggle_tool(Tool.WATER) # Moved from W to avoid WASD overlap
@@ -184,11 +193,20 @@ func _activate_tool_logic(tool_type: Tool, enabled: bool):
 		Tool.ZONING:
 			if zoning_tool: zoning_tool.active = enabled
 			if zoning_overlay: zoning_overlay.set_tool_active(enabled)
+		Tool.FOUNDING:
+			if founding_tool: founding_tool.active = enabled
 		Tool.SELECT:
 			if select_tool: select_tool.active = enabled
 
 func _toggle_zoning_overlay():
 	_toggle_tool(Tool.ZONING)
+
+func start_founding_placement(asset_id: String):
+	if not founding_tool:
+		return
+	founding_tool.selected_asset_id = asset_id
+	if current_tool != Tool.FOUNDING:
+		_toggle_tool(Tool.FOUNDING)
 
 func _handle_undo():
 	# Zoning tool maintains its own undo stack for zone paint operations.

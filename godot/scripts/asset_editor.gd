@@ -3,7 +3,8 @@
 ## 500 m sandbox with no agents, no demand simulation, and no background tick thread.
 ## Calls: sim.is_asset_editor_mode(), sim.load_asset_packs(dir, filter),
 ##        sim.get_registered_asset_ids(), sim.validate_and_export_asset(),
-##        sim.get_asset_manifest_json()
+##        sim.get_asset_manifest_json(), sim.get_pack_manifest_json(),
+##        sim.load_economy_project()
 extends Node3D
 
 const PANEL_LEFT_W  := 270
@@ -45,6 +46,8 @@ var _depth_spin: SpinBox
 var _level_spin: SpinBox
 var _residents_spin: SpinBox
 var _workers_spin: SpinBox
+var _economy_profile_btn: OptionButton
+var _economy_profile_status_lbl: Label
 var _lod_list: ItemList
 var _lod_source_paths: Array[String] = []  # parallel to _lod_list items
 var _frontage_lbl: Label  # shows current frontage forward vector
@@ -78,6 +81,11 @@ var _config: ConfigFile            # persistent editor preferences
 var _font_size_header:  int = 14   # section title labels ("Asset Browser", "Building Importer")
 var _font_size_section: int = 12   # sub-section labels ("Pack", "Asset", "Building", etc.)
 var _font_size_label:   int = 11   # spinbox labels and small info text
+var _economy_profile_ids: Array[String] = []
+var _unresolved_economy_profile_id: String = ""
+var _economy_catalog_loaded: bool = false
+var _economy_catalog_warning_count: int = 0
+var _economy_catalog_error: String = ""
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -98,6 +106,7 @@ func _ready() -> void:
 
 	_build_preview_node()
 	_build_ui()
+	_load_economy_profiles()
 	_load_packs()
 	_apply_template(0)
 
@@ -242,6 +251,21 @@ func _build_right_panel(parent: Control) -> void:
 	_level_spin    = _add_spinbox(vbox, "Level", 1, 255, 1)
 	_residents_spin = _add_spinbox(vbox, "Residents Capacity", 0, 9999, 0)
 	_workers_spin  = _add_spinbox(vbox, "Worker Capacity", 0, 9999, 0)
+	_add_label(vbox, "Economy Profile", _font_size_label)
+	var economy_row := HBoxContainer.new()
+	_economy_profile_btn = OptionButton.new()
+	_economy_profile_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_economy_profile_btn.item_selected.connect(_on_economy_profile_selected)
+	economy_row.add_child(_economy_profile_btn)
+	var refresh_profiles_btn := Button.new()
+	refresh_profiles_btn.text = "Refresh"
+	refresh_profiles_btn.pressed.connect(_load_economy_profiles)
+	economy_row.add_child(refresh_profiles_btn)
+	vbox.add_child(economy_row)
+	_economy_profile_status_lbl = Label.new()
+	_economy_profile_status_lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_economy_profile_status_lbl.add_theme_font_size_override("font_size", _font_size_label)
+	vbox.add_child(_economy_profile_status_lbl)
 	var suggest_btn := Button.new()
 	suggest_btn.text = "Suggest Capacity"
 	suggest_btn.pressed.connect(_suggest_capacity)
@@ -457,6 +481,7 @@ func _populate_inspector_from(data: Dictionary) -> void:
 	var dt: String = data.get("density", "low")
 	var di := DENSITY_TYPES.find(dt)
 	_density_btn.selected = maxi(0, di)
+	_set_economy_profile_selection(data.get("economy_profile", "") if data.get("economy_profile") != null else "")
 
 	_lod_list.clear()
 	_lod_source_paths.clear()
@@ -495,9 +520,179 @@ func _populate_inspector_from(data: Dictionary) -> void:
 
 func _on_zone_or_lot_changed(_idx) -> void:
 	_preview.set_lot_size(int(_width_spin.value), int(_depth_spin.value))
+	_update_economy_profile_status()
 
 func _on_asset_id_text_changed(_t: String) -> void:
 	_asset_id_auto = false
+
+func _load_economy_profiles() -> void:
+	if not _economy_profile_btn:
+		return
+
+	var current_id := _selected_economy_profile_id()
+	_economy_profile_ids.clear()
+	_economy_catalog_loaded = false
+	_economy_catalog_warning_count = 0
+	_economy_catalog_error = ""
+	_unresolved_economy_profile_id = ""
+
+	_economy_profile_btn.clear()
+	_economy_profile_btn.add_item("Unassigned")
+	_economy_profile_btn.set_item_metadata(0, "")
+	_economy_profile_btn.select(0)
+
+	var economy_dir := ProjectSettings.globalize_path("res://../economy")
+	if not DirAccess.dir_exists_absolute(economy_dir):
+		_economy_catalog_error = "catalog folder missing at %s" % economy_dir
+		_log("[color=yellow]Economy profile catalog missing at %s[/color]" % economy_dir)
+		_update_economy_profile_status()
+		_set_economy_profile_selection(current_id)
+		return
+
+	var payload = JSON.parse_string(sim.load_economy_project(economy_dir))
+	if not (payload is Dictionary):
+		_economy_catalog_error = "could not parse economy project JSON"
+		_log("[color=yellow]Economy profile catalog returned unreadable JSON.[/color]")
+		_update_economy_profile_status()
+		_set_economy_profile_selection(current_id)
+		return
+
+	if not payload.get("ok", false):
+		_economy_catalog_error = str(payload.get("error", "catalog load failed"))
+		_log("[color=yellow]Economy profile catalog unavailable: %s[/color]" % _economy_catalog_error)
+		_update_economy_profile_status()
+		_set_economy_profile_selection(current_id)
+		return
+
+	var project = payload.get("project", {})
+	var profiles: Array = project.get("profiles", [])
+	for profile in profiles:
+		if not (profile is Dictionary):
+			continue
+		var profile_id := str(profile.get("id", "")).strip_edges()
+		if profile_id.is_empty():
+			continue
+		var display_name := str(profile.get("display_name", "")).strip_edges()
+		var label := profile_id if display_name.is_empty() else "%s — %s" % [profile_id, display_name]
+		_economy_profile_btn.add_item(label)
+		var idx := _economy_profile_btn.get_item_count() - 1
+		_economy_profile_btn.set_item_metadata(idx, profile_id)
+		_economy_profile_ids.append(profile_id)
+
+	var validation: Array = payload.get("validation", [])
+	for message in validation:
+		if message is Dictionary and str(message.get("severity", "")) != "error":
+			_economy_catalog_warning_count += 1
+
+	_economy_catalog_loaded = true
+	_update_economy_profile_status()
+	_set_economy_profile_selection(current_id)
+
+func _selected_economy_profile_id() -> String:
+	if not _economy_profile_btn or _economy_profile_btn.get_item_count() == 0:
+		return ""
+	var idx := _economy_profile_btn.selected
+	if idx < 0 or idx >= _economy_profile_btn.get_item_count():
+		return ""
+	return str(_economy_profile_btn.get_item_metadata(idx)).strip_edges()
+
+func _set_economy_profile_selection(profile_id: String) -> void:
+	if not _economy_profile_btn:
+		return
+
+	var target_id := profile_id.strip_edges()
+	_remove_unresolved_economy_profile_item()
+	if target_id.is_empty():
+		_economy_profile_btn.select(0)
+		_update_economy_profile_status()
+		return
+
+	for i in range(_economy_profile_btn.get_item_count()):
+		if str(_economy_profile_btn.get_item_metadata(i)).strip_edges() == target_id:
+			_economy_profile_btn.select(i)
+			_update_economy_profile_status()
+			return
+
+	_unresolved_economy_profile_id = target_id
+	_economy_profile_btn.add_item("[Missing] %s" % target_id)
+	var missing_idx := _economy_profile_btn.get_item_count() - 1
+	_economy_profile_btn.set_item_metadata(missing_idx, target_id)
+	_economy_profile_btn.select(missing_idx)
+	_update_economy_profile_status()
+
+func _remove_unresolved_economy_profile_item() -> void:
+	if not _economy_profile_btn or _unresolved_economy_profile_id.is_empty():
+		return
+	for i in range(_economy_profile_btn.get_item_count()):
+		if str(_economy_profile_btn.get_item_metadata(i)).strip_edges() == _unresolved_economy_profile_id:
+			_economy_profile_btn.remove_item(i)
+			break
+	_unresolved_economy_profile_id = ""
+
+func _on_economy_profile_selected(_idx: int) -> void:
+	var selected_id := _selected_economy_profile_id()
+	if not _unresolved_economy_profile_id.is_empty() and selected_id != _unresolved_economy_profile_id:
+		_remove_unresolved_economy_profile_item()
+		for i in range(_economy_profile_btn.get_item_count()):
+			if str(_economy_profile_btn.get_item_metadata(i)).strip_edges() == selected_id:
+				_economy_profile_btn.select(i)
+				break
+	_update_economy_profile_status()
+
+func _update_economy_profile_status() -> void:
+	if not _economy_profile_status_lbl:
+		return
+
+	var selected_id := _selected_economy_profile_id()
+	var zone_type: String = ""
+	if _zone_type_btn:
+		zone_type = ZONE_TYPES[_zone_type_btn.selected]
+	if not _economy_catalog_loaded:
+		var msg := "Economy catalog unavailable."
+		if not _economy_catalog_error.is_empty():
+			msg = "Economy catalog unavailable: %s" % _economy_catalog_error
+		if not selected_id.is_empty():
+			msg += " Existing selection will be preserved on export."
+		_set_economy_profile_status(msg, Color(0.95, 0.78, 0.38))
+		return
+
+	if zone_type == "residential":
+		if selected_id.is_empty():
+			var residential_msg := "Residential buildings do not require an economy profile."
+			if _economy_catalog_warning_count > 0:
+				residential_msg += " Catalog has %d validation warning(s)." % _economy_catalog_warning_count
+			_set_economy_profile_status(residential_msg, Color(0.72, 0.92, 0.72))
+			return
+		_set_economy_profile_status(
+			"Residential buildings usually do not require an economy profile. Leave this unassigned unless a later system explicitly needs one.",
+			Color(0.95, 0.78, 0.38)
+		)
+		return
+
+	if not _unresolved_economy_profile_id.is_empty() and selected_id == _unresolved_economy_profile_id:
+		_set_economy_profile_status(
+			"Selected profile is missing from the current economy catalog and will be exported unchanged.",
+			Color(0.95, 0.78, 0.38)
+		)
+		return
+
+	if selected_id.is_empty():
+		var unassigned_msg := "No economy profile assigned."
+		if _economy_catalog_warning_count > 0:
+			unassigned_msg += " Catalog has %d validation warning(s)." % _economy_catalog_warning_count
+		_set_economy_profile_status(unassigned_msg, Color(0.72, 0.82, 0.92))
+		return
+
+	var selected_msg := "Selected economy profile: %s" % selected_id
+	if _economy_catalog_warning_count > 0:
+		selected_msg += " (catalog has %d validation warning(s))" % _economy_catalog_warning_count
+	_set_economy_profile_status(selected_msg, Color(0.72, 0.92, 0.72))
+
+func _set_economy_profile_status(message: String, color: Color) -> void:
+	if not _economy_profile_status_lbl:
+		return
+	_economy_profile_status_lbl.text = message
+	_economy_profile_status_lbl.add_theme_color_override("font_color", color)
 
 # Auto-fills the Asset ID field from zone type + display name, but only while
 # the user has not manually edited the field.
@@ -660,6 +855,7 @@ func _on_export_pressed() -> void:
 				tags.append(trimmed)
 
 	var asset_set_val = _asset_set_edit.text.strip_edges()
+	var economy_profile_id := _selected_economy_profile_id()
 
 	var params := {
 		"pack_id":          pack_id,
@@ -675,6 +871,7 @@ func _on_export_pressed() -> void:
 		"lot_width_cells":   int(_width_spin.value),
 		"lot_depth_cells":   int(_depth_spin.value),
 		"level":             int(_level_spin.value),
+		"economy_profile":   economy_profile_id if not economy_profile_id.is_empty() else null,
 		"preview_scale":     _preview_scale_spin.value,
 		"pivot_offset":      [_pivot_offset.x, _pivot_offset.y, _pivot_offset.z],
 		"residents_capacity": int(_residents_spin.value) if _residents_spin.value > 0 else null,

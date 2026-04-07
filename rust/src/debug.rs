@@ -3,11 +3,13 @@
 //! Controlled at runtime via environment variables:
 //! - `METRUM_DEBUG=1` — general debug logging (`./run.sh --debug`)
 //! - `METRUM_DEBUG_TRAFFIC=1` — traffic/routing debug (`./run.sh --debug traffic`)
+//! - `METRUM_DEBUG_FILTER=economy,border,...` — optional category filter for general debug logs
 //!
 //! Output goes to stdout so it appears in the terminal alongside Godot's output.
 //! Use [`debug_log!`] and [`traffic_log!`] throughout the codebase — both are
 //! no-ops when the respective flag is off, with only an atomic bool check overhead.
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// General debug flag — set once at startup by [`init`], read by [`debug_log!`].
@@ -16,6 +18,9 @@ pub static ENABLED: AtomicBool = AtomicBool::new(false);
 /// Traffic/routing debug flag — set by `METRUM_DEBUG_TRAFFIC=1` / `./run.sh --debug traffic`.
 pub static TRAFFIC_ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// Optional comma-separated category filter for general debug logs.
+static FILTER: OnceLock<Vec<String>> = OnceLock::new();
+
 /// Reads `METRUM_DEBUG` and `METRUM_DEBUG_TRAFFIC` from the environment and arms
 /// the global flags. Call once from the GDExtension init hook; safe to call multiple times.
 pub fn init() {
@@ -23,8 +28,26 @@ pub fn init() {
         .map(|v| !v.is_empty() && v != "0")
         .unwrap_or(false);
     ENABLED.store(on, Ordering::Relaxed);
+    let filter_value = std::env::var("METRUM_DEBUG_FILTER").ok();
+    let parsed_filter = filter_value
+        .as_deref()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(|entry| entry.to_ascii_lowercase())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let _ = FILTER.set(parsed_filter);
     if on {
-        println!("[DEBUG] Metrum Rise debug logging enabled (METRUM_DEBUG=1)");
+        match filter_value.as_deref() {
+            Some(raw) if !raw.trim().is_empty() => println!(
+                "[DEBUG] Metrum Rise debug logging enabled (METRUM_DEBUG=1, filter={})",
+                raw
+            ),
+            _ => println!("[DEBUG] Metrum Rise debug logging enabled (METRUM_DEBUG=1)"),
+        }
     }
 
     let traffic_on = std::env::var("METRUM_DEBUG_TRAFFIC")
@@ -42,6 +65,22 @@ pub fn is_enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
+/// Returns `true` if the given general-debug category should currently be emitted.
+#[inline(always)]
+pub fn category_enabled(category: &str) -> bool {
+    if !is_enabled() {
+        return false;
+    }
+    let Some(filter) = FILTER.get() else {
+        return true;
+    };
+    if filter.is_empty() {
+        return true;
+    }
+    let category = category.to_ascii_lowercase();
+    filter.iter().any(|entry| entry == &category)
+}
+
 /// Returns `true` if traffic/routing debug logging is currently enabled.
 #[inline(always)]
 pub fn is_traffic_enabled() -> bool {
@@ -57,7 +96,7 @@ pub fn is_traffic_enabled() -> bool {
 #[macro_export]
 macro_rules! debug_log {
     ($category:expr, $($arg:tt)*) => {
-        if $crate::debug::is_enabled() {
+        if $crate::debug::category_enabled($category) {
             println!("[DEBUG:{}] {}", $category, format!($($arg)*));
         }
     };

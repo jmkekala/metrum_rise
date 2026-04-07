@@ -90,6 +90,9 @@ pub struct ExportParams {
     /// Service class tag for civic buildings (e.g. `"fire_station"`).
     #[serde(default)]
     pub service_class: Option<String>,
+    /// Reference to an authored economy profile selected from the current economy catalog.
+    #[serde(default)]
+    pub economy_profile: Option<String>,
     /// Uniform scale applied in the asset preview viewport.
     #[serde(default)]
     pub preview_scale: Option<f32>,
@@ -156,6 +159,9 @@ fn build_asset_toml(p: &ExportParams) -> String {
             }
             if let Some(sc) = &p.service_class {
                 if !sc.is_empty() { out.push_str(&format!("service_class = \"{sc}\"\n")); }
+            }
+            if let Some(ep) = &p.economy_profile {
+                if !ep.is_empty() { out.push_str(&format!("economy_profile = \"{ep}\"\n")); }
             }
             if let Some(ps) = p.preview_scale {
                 if (ps - 1.0).abs() > 0.001 { out.push_str(&format!("preview_scale = {ps}\n")); }
@@ -314,6 +320,7 @@ pub fn get_asset_manifest_json_internal(
         obj["residents_capacity"] = serde_json::json!(b.residents_capacity);
         obj["worker_capacity"] = serde_json::json!(b.worker_capacity);
         obj["service_class"] = serde_json::json!(b.service_class);
+        obj["economy_profile"] = serde_json::json!(b.economy_profile);
         obj["preview_scale"] = serde_json::json!(b.preview_scale.unwrap_or(1.0));
     }
     if let Some(po) = m.pivot_offset {
@@ -450,5 +457,34 @@ mod tests {
 
         let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
         assert!(!result.is_empty(), "expected validation error for zero lot cells");
+    }
+
+    #[test]
+    fn export_writes_economy_profile_when_selected() {
+        let dir = std::env::temp_dir().join("metrum_export_economy_profile");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let json = serde_json::json!({
+            "pack_id": "test-pack",
+            "pack_name": "Test Pack",
+            "pack_author": "Tester",
+            "asset_class": "building",
+            "asset_id": "building.commercial.grocery_test",
+            "display_name": "Grocery Test",
+            "zone_type": "commercial",
+            "lot_width_cells": 2,
+            "lot_depth_cells": 2,
+            "worker_capacity": 8,
+            "economy_profile": "grocery_basic",
+            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
+        }).to_string();
+
+        let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
+        assert!(result.is_empty(), "expected success, got: {result}");
+
+        let asset_toml = std::fs::read_to_string(
+            dir.join("assets").join("building.commercial.grocery_test").join("asset.toml")
+        ).unwrap();
+        assert!(asset_toml.contains("economy_profile = \"grocery_basic\""));
     }
 }

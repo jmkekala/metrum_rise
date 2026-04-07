@@ -1,5 +1,5 @@
 //! Economic simulation foundations: explicit households, agent movement, and
-//! temporary city-growth demand counters.
+//! live economy-pressure counters.
 //!
 //! [`agents::AgentSystem`] owns movement and transit state in Structure-of-Arrays
 //! form. [`households::HouseholdSystem`] owns the first-pass building-centric
@@ -8,10 +8,13 @@
 //! freight reservations and delayed deliveries between suppliers, stores, and
 //! `OWA` border terminals.
 //!
-//! [`demand::DemandSystem`] remains temporarily in place for zoning-driven building
-//! growth until the full economy-authored construction loop replaces it.
+//! [`demand::DemandSystem`] remains temporarily in place as a lightweight
+//! pressure/telemetry layer and save-loaded runtime signal while the full
+//! authored company-formation and construction loop is built. It no longer
+//! auto-spawns private buildings from zoned land.
 
 pub mod agents;
 pub mod demand;
+pub mod definitions;
 pub mod households;
 pub mod logistics;

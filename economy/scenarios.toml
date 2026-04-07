@@ -1,0 +1,61 @@
+[[scenarios]]
+id = "grocery_bottleneck"
+display_name = "Grocery Bottleneck"
+description = "Starter playback case for the food processor, grocery, and household demand chain."
+duration_days = 30
+household_count = 130
+average_household_size = 2.0
+starting_household_stock_days = 3.0
+replenishment_target_days = 3.0
+replenishment_trigger_days = 1.5
+pickup_cadence_hours = 6.0
+
+[[scenarios.nodes]]
+id = "food_processor"
+ref_kind = "profile"
+ref_id = "food_processor_basic"
+position = [
+    120.0,
+    180.0,
+]
+
+[[scenarios.nodes]]
+id = "grocery"
+ref_kind = "profile"
+ref_id = "grocery_basic"
+position = [
+    460.0,
+    180.0,
+]
+
+[[scenarios.nodes]]
+id = "households"
+ref_kind = "profile"
+ref_id = "household_demand_sink"
+position = [
+    820.0,
+    180.0,
+]
+
+[[scenarios.nodes]]
+id = "replenishment_cost"
+ref_kind = "controller"
+ref_id = "household_restock_cost_basic"
+position = [
+    820.0,
+    40.0,
+]
+
+[[scenarios.edges]]
+from = "food_processor"
+to = "grocery"
+resource = "staple_food"
+
+[[scenarios.edges]]
+from = "grocery"
+to = "households"
+resource = "household_supplies"
+
+[[scenarios.controller_links]]
+controller_node_id = "replenishment_cost"
+target_node_id = "households"

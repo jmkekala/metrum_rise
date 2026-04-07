@@ -5,6 +5,7 @@
 //! owns household stock/budget state, simple building-side economic updates,
 //! daily replenishment requests, and decision-utility-driven work/home planning.
 
+use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IDLE};
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -28,7 +29,8 @@ pub const REPLENISHMENT_COOLDOWN: u8 = 5;
 const HOUSEHOLD_CONSUMPTION_RATE: f32 = 1.0;
 const HOUSEHOLD_TARGET_STOCK_DAYS: f32 = 3.0;
 const HOUSEHOLD_TRIGGER_STOCK_DAYS: f32 = 1.5;
-const IMMIGRANT_STARTING_STOCK_DAYS: f32 = 1.0;
+const IMMIGRANT_STARTING_STOCK_DAYS: f32 = 3.0;
+const IMMIGRANT_STARTING_BUDGET_PER_MEMBER: f32 = 12.0;
 const HOUSEHOLD_SUPPLY_UNIT_PRICE: f32 = 6.0;
 const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 2.0;
 const HOUSEHOLD_STARTING_BUDGET: f32 = 100.0;
@@ -116,7 +118,10 @@ impl HouseholdSystem {
         let member_count = member_count.max(1);
         self.households.push(Household {
             home_building_id,
-            budget: HOUSEHOLD_STARTING_BUDGET * member_count as f32,
+            // Founding households arrive with modest savings so the first town
+            // has a real incentive to take available jobs instead of idling on
+            // a large abstract cash cushion.
+            budget: IMMIGRANT_STARTING_BUDGET_PER_MEMBER * member_count as f32,
             stock: member_count as f32
                 * HOUSEHOLD_CONSUMPTION_RATE
                 * IMMIGRANT_STARTING_STOCK_DAYS,
@@ -548,6 +553,16 @@ impl HouseholdSystem {
                     reserved_workers[best_job] =
                         reserved_workers[best_job].saturating_add(1);
                     agents.work_building[i] = best_job;
+                    debug_log!(
+                        "economy",
+                        "agent_idx={} accepted job building={} zone={:?} score={:.2} income_pressure={:.2} stock_pressure={:.2}",
+                        i,
+                        best_job,
+                        allocator.buildings[best_job].zone_type,
+                        best_score,
+                        income_pressure,
+                        stock_pressure
+                    );
                 }
                 agents.planned_activity[i] = 1;
                 agents.planned_target_building[i] = best_job;
@@ -634,6 +649,7 @@ fn normalized_commute_penalty(home: &Building, work: &Building) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::economy::agents::TRANSIT_IDLE;
     use godot::prelude::Vector2;
 
     fn make_building(center_x: f32, zone_type: ZoneType, stock: f32, utility: bool) -> Building {
@@ -702,5 +718,36 @@ mod tests {
         assert_eq!(households.households[0].replenishment_state, REPLENISHMENT_FULFILLED);
         assert_eq!(households.households[0].stock, 6.0);
         assert_eq!(allocator.buildings[1].revenue, 36.0);
+    }
+
+    #[test]
+    fn immigrant_household_plans_nearby_work_during_founding() {
+        let mut households = HouseholdSystem::new();
+        let hid = households.admit_immigrant_household(0, 2);
+
+        let mut allocator = BuildingAllocator::new();
+        allocator.buildings.push(make_building(0.0, ZoneType::Residential, 0.0, true));
+        allocator.buildings.push(make_building(20.0, ZoneType::Industrial, 0.0, true));
+        allocator.rebuild_zone_index();
+
+        let mut agents = AgentSystem::new();
+        let a0 = agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        let a1 = agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        for a in [a0, a1] {
+            agents.household_id[a] = hid;
+            agents.transit[a] = TRANSIT_IDLE;
+            agents.current_building[a] = 0;
+            agents.target_building[a] = usize::MAX;
+            agents.current_node[a] = 0;
+            agents.target_node[a] = 0;
+            agents.has_car[a] = true;
+        }
+
+        households.consume_household_stock(&mut agents);
+        households.plan_agent_work_and_return_trips(&mut agents, &allocator);
+
+        assert_eq!(agents.planned_activity[a0], 1);
+        assert_eq!(agents.work_building[a0], 1);
+        assert_eq!(agents.planned_target_building[a0], 1);
     }
 }

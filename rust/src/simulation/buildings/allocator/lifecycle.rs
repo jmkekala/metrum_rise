@@ -1,5 +1,6 @@
 //! Building removal, immigration spawning, and coordinate restoration.
 
+use crate::debug_log;
 use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::economy::agents::AgentSystem;
@@ -15,6 +16,7 @@ use godot::prelude::Vector2;
 const IMMIGRATION_BASE_INFLOW: f32 = 1.0;
 const MAX_IMMIGRANT_HOUSEHOLDS_PER_DAY: usize = 4;
 const HOME_PICK_SAMPLE_ATTEMPTS: usize = 8;
+const PLAYER_STARTUP_POPULATION_TARGET: usize = 8;
 
 impl BuildingAllocator {
     /// Removes buildings if their zone category has changed or their road edge no longer exists.
@@ -107,6 +109,7 @@ impl BuildingAllocator {
             });
 
         if vacant_resident_slots == 0 {
+            debug_log!("economy", "immigration blocked: no vacant resident slots");
             return;
         }
 
@@ -125,6 +128,7 @@ impl BuildingAllocator {
             })
             .collect();
         if border_nodes.is_empty() {
+            debug_log!("economy", "immigration blocked: no connected Border nodes");
             return;
         }
 
@@ -186,24 +190,52 @@ impl BuildingAllocator {
             1.0
         };
 
-        let households_to_spawn = (IMMIGRATION_BASE_INFLOW
+        let mut households_to_spawn = (IMMIGRATION_BASE_INFLOW
             * housing_factor
             * job_factor
             * city_stability_factor)
             .round() as usize;
+        let startup_ready = resident_count < PLAYER_STARTUP_POPULATION_TARGET as f32
+            && vacant_resident_slots > 0
+            && open_job_slots > 0.0;
+        if startup_ready {
+            households_to_spawn = households_to_spawn.max(1);
+        }
         if households_to_spawn == 0 {
+            debug_log!(
+                "economy",
+                "immigration blocked: formula rounded to zero (housing_factor={:.2}, job_factor={:.2}, stability={:.2}, vacant_slots={}, border_nodes={})",
+                housing_factor,
+                job_factor,
+                city_stability_factor,
+                vacant_resident_slots,
+                border_nodes.len()
+            );
             return;
         }
 
         let households_to_spawn = households_to_spawn
             .min(MAX_IMMIGRANT_HOUSEHOLDS_PER_DAY)
             .min(vacant_resident_slots);
+        debug_log!(
+            "economy",
+            "immigration planning: households_to_spawn={} vacant_slots={} border_nodes={} resident_count={} open_job_slots={:.1} housing_factor={:.2} job_factor={:.2} stability={:.2}",
+            households_to_spawn,
+            vacant_resident_slots,
+            border_nodes.len(),
+            resident_count as usize,
+            open_job_slots,
+            housing_factor,
+            job_factor,
+            city_stability_factor
+        );
 
         let mut rng = rand::thread_rng();
         for _ in 0..households_to_spawn {
             let Some((home_idx, household_size)) =
                 self.claim_home_for_household(DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as u32, &mut rng)
             else {
+                debug_log!("economy", "immigration aborted mid-pass: could not claim a home from vacancy index");
                 break;
             };
             let spawn_node = border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
@@ -229,6 +261,15 @@ impl BuildingAllocator {
             let home_node = building_depart_node(home_bldg, graph);
             let household_id =
                 households.admit_immigrant_household(home_idx, household_size);
+            debug_log!(
+                "economy",
+                "immigration admitted household_id={} size={} home_building={} spawn_node={} home_node={}",
+                household_id,
+                household_size,
+                home_idx,
+                spawn_node,
+                home_node
+            );
 
             for _ in 0..household_size {
                 let agent_idx = agents.spawn_agent(
@@ -241,6 +282,16 @@ impl BuildingAllocator {
                     spawn_pos.z,
                 );
                 agents.household_id[agent_idx] = household_id;
+                debug_log!(
+                    "economy",
+                    "immigration spawned agent_idx={} household_id={} current_node={} target_node={} pos=({:.1}, {:.1})",
+                    agent_idx,
+                    household_id,
+                    spawn_node,
+                    home_node,
+                    spawn_pos.x,
+                    spawn_pos.z
+                );
             }
         }
     }

@@ -1,5 +1,6 @@
-//! Logic for modifying simulation state (road placement, terrain sculpt, zoning).
+//! Logic for modifying simulation state (road placement, terrain sculpt, zoning, founding placement).
 
+use crate::debug_log;
 use crate::traffic_log;
 use crate::config;
 use crate::nodes::sim::core::SimCore;
@@ -10,6 +11,24 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 impl SimCore {
+    /// Places one explicit player-requested startup building near `world_pos`.
+    pub fn place_startup_building_internal(
+        &mut self,
+        asset_id: &str,
+        world_pos: Vector3,
+    ) -> Result<(), String> {
+        let building_idx = self.allocator.place_explicit_building_near_world_pos(
+            asset_id,
+            Vector2::new(world_pos.x, world_pos.z),
+            &mut self.zoning,
+            &self.region_graph,
+        )?;
+        self.transit_network.flow_fields.mark_zone_dirty(
+            self.allocator.buildings[building_idx].zone_type,
+        );
+        Ok(())
+    }
+
     /// Sculpts the terrain with a given radius and strength.
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.push_undo_state(true, false, true, false);
@@ -373,19 +392,35 @@ impl SimCore {
             || pos.z > half_h - t;
 
         if !near_border {
+            debug_log!(
+                "economy",
+                "border candidate rejected at pos=({:.1}, {:.1}, {:.1}) because it is not near the map boundary",
+                pos.x,
+                pos.y,
+                pos.z
+            );
             return -1;
         }
 
         // Use a generous tolerance: the node was snapped during add_road so it should be
         // very close, but terrain raycast imprecision may add a few metres of offset.
-        match crate::simulation::network::interaction::get_closest_node(
+        let candidate = match crate::simulation::network::interaction::get_closest_node(
             &self.region_graph,
             pos,
             config::SNAP_TOLERANCE * 5.0,
         ) {
             Some(id) => id as i64,
             None => -1,
-        }
+        };
+        debug_log!(
+            "economy",
+            "border candidate check at pos=({:.1}, {:.1}, {:.1}) -> node_id={}",
+            pos.x,
+            pos.y,
+            pos.z,
+            candidate
+        );
+        candidate
     }
 
     /// Designates the node at `node_id` as an external border connection.
@@ -394,11 +429,21 @@ impl SimCore {
     /// immigrant spawn point by [`BuildingAllocator::tick`] as long as the road remains connected.
     pub fn set_border_connection_internal(&mut self, node_id: i32) {
         if node_id < 0 || (node_id as usize) >= self.region_graph.node_count() {
+            debug_log!("economy", "set_border_connection ignored for invalid node_id={}", node_id);
             return;
         }
+        let old_pos = self.region_graph.node(node_id as u32).pos;
 
         self.region_graph
             .set_node_type(node_id as u32, crate::simulation::network::types::NodeType::Border);
+        debug_log!(
+            "economy",
+            "border connection created at node_id={} pos=({:.1}, {:.1}, {:.1})",
+            node_id,
+            old_pos.x,
+            old_pos.y,
+            old_pos.z
+        );
 
         // Auto-extend it 10 meters further from the connecting road so agents spawn visually off-screen
         let mut rebuild_needed = false;
@@ -464,6 +509,15 @@ impl SimCore {
         if rebuild_needed {
             self.transit_network.lane_system.rebuild(&mut self.region_graph);
             self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+            let new_pos = self.region_graph.node(node_id as u32).pos;
+            debug_log!(
+                "economy",
+                "border connection lane/CCH rebuild complete for node_id={} new_pos=({:.1}, {:.1}, {:.1})",
+                node_id,
+                new_pos.x,
+                new_pos.y,
+                new_pos.z
+            );
         }
     }
 }

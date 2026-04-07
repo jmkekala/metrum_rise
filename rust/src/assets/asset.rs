@@ -102,6 +102,8 @@ pub struct BuildingData {
     pub worker_capacity: Option<u32>,
     /// Service tier label used by demand weighting (e.g. `"standard"`, `"premium"`).
     pub service_class: Option<String>,
+    /// Reference to an authored economy profile defined in the exported economy catalog.
+    pub economy_profile: Option<String>,
     /// Editor preview scale override. `1.0` if absent (no override).
     pub preview_scale: Option<f32>,
 }
@@ -417,6 +419,7 @@ lot_width_cells = 3
 lot_depth_cells = 3
 residents_capacity = 12
 service_class = "standard"
+economy_profile = "residential_basic"
 
 [[anchors]]
 type = "entrance"
@@ -446,6 +449,7 @@ distance_max_m = 600.0
         assert_eq!(b.lot_width_cells, 3);
         assert_eq!(b.lot_depth_cells, 3);
         assert_eq!(b.residents_capacity, Some(12));
+        assert_eq!(b.economy_profile.as_deref(), Some("residential_basic"));
         assert_eq!(m.lods.len(), 2);
         assert_eq!(m.anchors.len(), 1);
         assert_eq!(m.anchors[0].anchor_type, AnchorType::Entrance);

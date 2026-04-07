@@ -188,6 +188,7 @@ mod tests {
                 residents_capacity: None,
                 worker_capacity: None,
                 service_class: None,
+                economy_profile: None,
                 preview_scale: None,
             }),
             prop: None,
