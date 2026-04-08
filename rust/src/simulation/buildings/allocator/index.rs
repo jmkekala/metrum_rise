@@ -1,6 +1,6 @@
 //! Building search indices and vacancy management.
 
-use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
+use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector3;
@@ -93,14 +93,54 @@ impl BuildingAllocator {
         Some(list[rng.gen_range(0..list.len())])
     }
 
-    /// Returns `(depart_node, building_index)` pairs for all buildings of `zone`.
+    /// Returns `(endpoint_node, building_index)` pairs for all buildings of `zone`
+    /// that are legal destinations for the requested transit mode.
     ///
-    /// Used by [`FlowFieldSystem::rebuild_dirty`] to seed the multi-source Dijkstra.
-    pub fn get_sources_for_zone(&self, zone: ZoneType, graph: &RegionGraph) -> Vec<(u32, usize)> {
-        self.zone_index[zone as usize]
-            .iter()
-            .map(|&idx| (building_depart_node(&self.buildings[idx], graph), idx))
-            .collect()
+    /// Used by [`FlowFieldSystem::rebuild_dirty`] to seed the exact entrance-model
+    /// multi-source Dijkstra without falling back to legacy `building_depart_node()`.
+    pub fn get_sources_for_zone(
+        &self,
+        zone: ZoneType,
+        graph: &RegionGraph,
+        mode_flags: u8,
+    ) -> Vec<(u32, usize)> {
+        let mut sources = Vec::new();
+        let want_car = (mode_flags & crate::simulation::network::types::TransitFlags::CAR) != 0;
+        let want_foot = (mode_flags & crate::simulation::network::types::TransitFlags::FOOT) != 0;
+
+        for &idx in &self.zone_index[zone as usize] {
+            if idx >= self.buildings.len() || idx >= self.entrances.len() {
+                continue;
+            }
+            let building = &self.buildings[idx];
+            if building.edge_idx >= graph.edge_count() {
+                continue;
+            }
+            let edge = graph.edge(building.edge_idx);
+            if edge.deleted {
+                continue;
+            }
+
+            let entrance = &self.entrances[idx];
+            if want_foot {
+                if entrance.foot_lane_fwd != usize::MAX {
+                    sources.push((edge.start_node, idx));
+                }
+                if entrance.foot_lane_bkw != usize::MAX {
+                    sources.push((edge.end_node, idx));
+                }
+            }
+            if want_car {
+                if entrance.car_lane_fwd != usize::MAX {
+                    sources.push((edge.start_node, idx));
+                }
+                if entrance.car_lane_bkw != usize::MAX {
+                    sources.push((edge.end_node, idx));
+                }
+            }
+        }
+
+        sources
     }
 
     /// Pick a random building from any of the specified zone types. O(1).

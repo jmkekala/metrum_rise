@@ -73,6 +73,7 @@ impl FlowField {
         let mut dist = vec![f32::INFINITY; node_count];
         let mut next_node = vec![u32::MAX; node_count];
         let mut nearest_building = vec![usize::MAX; node_count];
+        let mut nearest_source_node = vec![u32::MAX; node_count];
 
         // Reverse adjacency: rev_adj[u] = [(v, cost)] meaning
         // "the original graph has edge v → u with this cost, so in the
@@ -101,19 +102,25 @@ impl FlowField {
 
         // Seed all source nodes at cost 0.
         let mut heap = BinaryHeap::new();
-        for &(frontage_node, building_idx) in sources {
-            let fn_idx = frontage_node as usize;
+        for &(source_node, building_idx) in sources {
+            let fn_idx = source_node as usize;
             if fn_idx >= node_count {
                 continue;
             }
-            if dist[fn_idx] == f32::INFINITY {
+            let better_source = 0.0 < dist[fn_idx]
+                || (dist[fn_idx] == 0.0
+                    && (building_idx < nearest_building[fn_idx]
+                        || (building_idx == nearest_building[fn_idx]
+                            && source_node < nearest_source_node[fn_idx])));
+            if better_source {
                 dist[fn_idx] = 0.0;
                 // At a source node: you're already there, no next hop needed.
-                next_node[fn_idx] = frontage_node;
+                next_node[fn_idx] = source_node;
                 nearest_building[fn_idx] = building_idx;
+                nearest_source_node[fn_idx] = source_node;
                 heap.push(HeapEntry {
                     cost_bits: 0f32.to_bits(),
-                    node: frontage_node,
+                    node: source_node,
                 });
             }
         }
@@ -127,11 +134,21 @@ impl FlowField {
             for &(v, cost) in &rev_adj[u as usize] {
                 let new_dist = d + cost;
                 let v_idx = v as usize;
-                if new_dist < dist[v_idx] {
+                let new_building = nearest_building[u as usize];
+                let new_source = nearest_source_node[u as usize];
+                let better = new_dist < dist[v_idx]
+                    || (new_dist == dist[v_idx]
+                        && (new_building < nearest_building[v_idx]
+                            || (new_building == nearest_building[v_idx]
+                                && (new_source < nearest_source_node[v_idx]
+                                    || (new_source == nearest_source_node[v_idx]
+                                        && u < next_node[v_idx])))));
+                if better {
                     dist[v_idx] = new_dist;
                     // From v, moving to u gets you closer to the destination.
                     next_node[v_idx] = u;
-                    nearest_building[v_idx] = nearest_building[u as usize];
+                    nearest_building[v_idx] = new_building;
+                    nearest_source_node[v_idx] = new_source;
                     heap.push(HeapEntry {
                         cost_bits: new_dist.to_bits(),
                         node: v,
@@ -251,15 +268,16 @@ impl FlowFieldSystem {
 
     /// Rebuilds flow fields for all dirty zone types.
     ///
-    /// `sources_fn(zone) -> Vec<(frontage_node, building_idx)>` is called once per
-    /// dirty zone to collect the current source buildings. Passing a closure keeps
-    /// this module free of a direct `BuildingAllocator` dependency.
+    /// `sources_fn(zone, mode_flags) -> Vec<(endpoint_node, building_idx)>` is called
+    /// once per dirty zone and transit mode to collect the current legal destination
+    /// endpoint nodes. Passing a closure keeps this module free of a direct
+    /// `BuildingAllocator` dependency.
     ///
     /// Complexity: O(dirty_zones × (V + E) log V).
     pub fn rebuild_dirty(
         &mut self,
         graph: &RegionGraph,
-        sources_fn: impl Fn(ZoneType) -> Vec<(u32, usize)>,
+        sources_fn: impl Fn(ZoneType, u8) -> Vec<(u32, usize)>,
     ) {
         for z in 1..ZONE_COUNT {
             // Skip ZoneType::None (index 0) — no buildings of type None.
@@ -274,14 +292,18 @@ impl FlowFieldSystem {
                 5 => ZoneType::Mixed,
                 _ => continue,
             };
-            let sources = sources_fn(zone);
-            if sources.is_empty() {
-                self.car_fields[z] = None;
-                self.foot_fields[z] = None;
+            let car_sources = sources_fn(zone, TransitFlags::CAR);
+            let foot_sources = sources_fn(zone, TransitFlags::FOOT);
+            self.car_fields[z] = if car_sources.is_empty() {
+                None
             } else {
-                self.car_fields[z] = Some(FlowField::build(&sources, graph, TransitFlags::CAR));
-                self.foot_fields[z] = Some(FlowField::build(&sources, graph, TransitFlags::FOOT));
-            }
+                Some(FlowField::build(&car_sources, graph, TransitFlags::CAR))
+            };
+            self.foot_fields[z] = if foot_sources.is_empty() {
+                None
+            } else {
+                Some(FlowField::build(&foot_sources, graph, TransitFlags::FOOT))
+            };
             self.dirty[z] = false;
         }
     }
@@ -395,6 +417,23 @@ mod tests {
         let ff = FlowField::build(&sources, &g, TransitFlags::CAR);
 
         // From n0, nearest is n2 (cost 2 vs cost 3).
+        assert_eq!(ff.nearest_building[n0 as usize], 0);
+        let path = ff.build_path(n0, 100).unwrap();
+        assert_eq!(*path.last().unwrap(), n2);
+    }
+
+    /// Equal-cost competing sources must break ties by lower building id first.
+    #[test]
+    fn test_flow_field_equal_cost_tie_breaks_by_building_id() {
+        let mut g = RegionGraph::new();
+        let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = g.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);
+        let n2 = g.add_node(Vector3::new(50.0, 0.0, 50.0), NodeType::Junction);
+        g.add_edge(make_edge(n0, n1, 1.0));
+        g.add_edge(make_edge(n0, n2, 1.0));
+        g.rebuild_adjacency_list();
+
+        let ff = FlowField::build(&[(n1, 1usize), (n2, 0usize)], &g, TransitFlags::CAR);
         assert_eq!(ff.nearest_building[n0 as usize], 0);
         let path = ff.build_path(n0, 100).unwrap();
         assert_eq!(*path.last().unwrap(), n2);

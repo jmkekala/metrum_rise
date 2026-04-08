@@ -1,4 +1,6 @@
 use super::*;
+use crate::assets::AssetManifest;
+use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
@@ -8,6 +10,52 @@ use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, Trans
 use crate::simulation::pathing::cch::CchGraph;
 use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
+
+fn register_test_asset(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    zone: ZoneClass,
+) -> String {
+    let manifest = AssetManifest {
+        asset_id: asset_id.to_owned(),
+        display_name: "Test".to_owned(),
+        asset_set: None,
+        tags: vec![],
+        thumbnail: None,
+        lods: vec![LodEntry {
+            file: "lod0.glb".to_owned(),
+            distance_min_m: 0.0,
+            distance_max_m: None,
+        }],
+        anchors: vec![Anchor {
+            anchor_type: AnchorType::Entrance,
+            name: "main".to_owned(),
+            position: [0.0, 0.0, 0.5],
+            forward: [0.0, 0.0, 1.0],
+        }],
+        building: Some(BuildingData {
+            zone_type: zone,
+            density: "low".to_owned(),
+            lot_width_cells: 1,
+            lot_depth_cells: 1,
+            level: 1,
+            residents_capacity: Some(6),
+            worker_capacity: None,
+            service_class: None,
+            economy_profile: None,
+            preview_scale: Some(1.0),
+        }),
+        prop: None,
+        vehicle: None,
+        character: None,
+        pivot_offset: None,
+    };
+    allocator
+        .registry
+        .register(pack_id, manifest, String::new());
+    format!("{pack_id}:{asset_id}")
+}
 
 fn create_test_edge(n0: u32, n1: u32) -> Edge {
     Edge {
@@ -275,9 +323,16 @@ fn test_agent_fsm_planned_departure_lifecycle() {
     network.lane_system.rebuild(&mut g);
     network.cch_graph = CchGraph::build(&g);
     let mut allocator = BuildingAllocator::new();
-    allocator.buildings.push(create_test_building(0, 1));
-    allocator.buildings.push(create_test_building(0, 1));
+    let home_asset = register_test_asset(&mut allocator, "test", "house", ZoneClass::Residential);
+    let work_asset = register_test_asset(&mut allocator, "test", "work", ZoneClass::Industrial);
+    let mut home = create_test_building(0, 1);
+    home.asset_id = home_asset;
+    let mut work = create_test_building(0, 1);
+    work.asset_id = work_asset;
+    allocator.buildings.push(home);
+    allocator.buildings.push(work);
     allocator.buildings[1].zone_type = ZoneType::Industrial;
+    allocator.rebuild_entrance_cache(&g, &network.lane_system);
     allocator.rebuild_zone_index();
     let mut agents = AgentSystem::new();
     for _ in 0..10 {
@@ -301,6 +356,69 @@ fn test_agent_fsm_planned_departure_lifecycle() {
 }
 
 #[test]
+fn test_planned_departure_populates_exact_trip_plan() {
+    let mut g = RegionGraph::new();
+    let n0 = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let n1 = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+    let n2 = g.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
+    g.add_edge(create_test_edge(n0, n1));
+    g.add_edge(Edge {
+        geometry: vec![Vector3::new(100.0, 0.0, 0.0), Vector3::new(200.0, 0.0, 0.0)],
+        physical_geometry: vec![Vector3::new(100.0, 0.0, 0.0), Vector3::new(200.0, 0.0, 0.0)],
+        ..create_test_edge(n1, n2)
+    });
+    g.rebuild_adjacency_list();
+
+    let mut network = TransitNetwork::new();
+    network.lane_system.rebuild(&mut g);
+    network.cch_graph = CchGraph::build(&g);
+
+    let mut allocator = BuildingAllocator::new();
+    let home_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "phase5_house",
+        ZoneClass::Residential,
+    );
+    let work_asset =
+        register_test_asset(&mut allocator, "test", "phase5_work", ZoneClass::Industrial);
+    let mut home = create_test_building(0, 1);
+    home.center_x = 50.0;
+    home.center_y = -10.0;
+    home.asset_id = home_asset;
+    let mut work = create_test_building(1, 1);
+    work.center_x = 150.0;
+    work.center_y = -10.0;
+    work.asset_id = work_asset;
+    work.zone_type = ZoneType::Industrial;
+    allocator.buildings.push(home);
+    allocator.buildings.push(work);
+    allocator.rebuild_entrance_cache(&g, &network.lane_system);
+
+    let mut agents = AgentSystem::new();
+    let i = agents.spawn_agent(0, n0, 0.0, 0.0, n0, 50.0, -10.0);
+    agents.home_building[i] = 0;
+    agents.work_building[i] = 1;
+    agents.current_building[i] = 0;
+    agents.transit[i] = TRANSIT_IN_BUILDING;
+    agents.has_car[i] = true;
+    agents.planned_activity[i] = 1;
+    agents.planned_target_building[i] = 1;
+    agents.tick(&mut allocator, &mut network, &mut g, 0.1);
+
+    assert_eq!(agents.transit[i], TRANSIT_ACCESS_EGRESS);
+    assert_eq!(agents.target_building[i], 1);
+    assert!(agents.access_flags[i] & ACCESS_PLAN_VALID != 0);
+    assert_ne!(agents.planned_attach_node[i], u32::MAX);
+    assert_ne!(agents.planned_detach_node[i], u32::MAX);
+    assert_ne!(agents.planned_attach_lane_id[i], u32::MAX);
+    assert_ne!(agents.planned_detach_lane_id[i], u32::MAX);
+    assert_eq!(agents.target_node[i], agents.planned_detach_node[i]);
+    assert_eq!(agents.current_node[i], u32::MAX);
+    assert_eq!(agents.current_lane_id[i], usize::MAX);
+}
+
+#[test]
 fn test_vehicle_type_persistence() {
     let mut agents = AgentSystem::new();
     let _i0 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
@@ -321,6 +439,12 @@ fn test_border_spawn_movement() {
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let mut zoning = ZoningSystem::new(&MapConfig::default());
     let mut allocator = BuildingAllocator::new();
+    let asset_id = register_test_asset(
+        &mut allocator,
+        "test",
+        "immigrant_home",
+        ZoneClass::Residential,
+    );
     network.add_road(
         &mut graph,
         vec![Vector3::ZERO, Vector3::RIGHT * 100.0],
@@ -332,10 +456,27 @@ fn test_border_spawn_movement() {
     );
     network.cch_graph = CchGraph::build(&graph);
     let mut agents = AgentSystem::new();
-    allocator.buildings.push(create_test_building(0, 1));
+    let mut home = create_test_building(0, 1);
+    home.asset_id = asset_id;
+    allocator.buildings.push(home);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let agent_idx = agents.spawn_agent(0, n0, 0.0, 0.0, n1, 100.0, 0.0);
     agents.tick(&mut allocator, &mut network, &mut graph, 1.0);
-    assert!(agents.pos_x[agent_idx] < 100.0);
+    assert!(agents.access_flags[agent_idx] & ACCESS_PLAN_VALID != 0);
+    let mut reached_destination_ingress = false;
+    for _ in 0..16 {
+        agents.tick(&mut allocator, &mut network, &mut graph, 1.0);
+        if agents.transit[agent_idx] == TRANSIT_ACCESS_INGRESS
+            || (agents.transit[agent_idx] == TRANSIT_IN_BUILDING
+                && agents.current_building[agent_idx] == 0)
+        {
+            reached_destination_ingress = true;
+            break;
+        }
+    }
+    assert!(reached_destination_ingress);
+    assert!(agents.pos_x[agent_idx] < 60.0);
+    assert_eq!(agents.target_building[agent_idx], 0);
 }
 
 #[test]
