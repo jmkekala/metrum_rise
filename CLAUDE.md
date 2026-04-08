@@ -22,7 +22,7 @@ Current stack summary. For exact versions, check `rust/Cargo.toml` and the Godot
 - `rust/src/nodes/` contains the Godot bridge and runtime-facing APIs.
 - `rust/src/assets/` contains asset packs, registry, and validation.
 - `godot/scripts/` contains thin UI/input/render bridges.
-- `docs/` contains the implementation ledger and subsystem specs.
+- `docs/` contains the dashboard, roadmap, reference tables, subsystem specs, and archive.
 
 ## Building and Running
 
@@ -47,17 +47,20 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 
 ## Bugs and Backlog
 
-- `docs/project.md` is the implementation ledger: shipped behavior, known bugs, and milestone backlog. Keep it accurate.
-- Update it whenever a bug is fixed, a system changes materially, or backlog status changes.
-- Do not hide bugs behind workarounds. Fix the root cause and update the ledger.
-- Put backlog work in the earliest milestone where it becomes necessary; do not defer performance-critical work just because it is not yet visibly broken.
+- `docs/project.md` is the live dashboard: current status, current focus, recent changes, and links to the owning docs.
+- `docs/roadmap.md` is the live work tracker: stable IDs, active priorities, validated bugs, and later tracks.
+- Update the dashboard when a system changes materially, and update the roadmap when tracked work status changes.
+- Do not hide bugs behind workarounds. Fix the root cause and update the dashboard and roadmap as needed.
+- Use stable IDs in docs and notes. Do not introduce fresh positional references like `item 30`.
 
 ## Documentation Practices
 
-- **`docs/project.md`** — current implementation ledger for what is shipped, what is broken, and what is planned next. Keep it summary-first: status, bugs, backlog, and links out to subsystem docs. It must reflect the actual state of the code, not an aspirational state.
+- **`docs/README.md`** — docs index and ownership map. Start there when deciding where a change belongs.
+- **`docs/project.md`** — current dashboard for what is shipped, what is being focused on, and where the owning docs live. Keep it summary-first.
+- **`docs/roadmap.md`** — active tracked work, stable IDs, and later priorities. Do not use positional backlog numbering in new docs.
 - **Subsystem docs in `docs/`** — files such as `entrance_and_exit.md`, `economy.md`, `demand.md`, and `zoning.md` own the detailed design/spec contracts for their respective systems. When behavior changes, update both the subsystem spec and the relevant status note in `project.md`.
 - **`CLAUDE.md` / `AGENTS.md`** — contributor guidance, architectural invariants, workflow rules, and sharp edges for coding agents. Keep this file focused on stable guidance rather than exhaustive feature-by-feature implementation history.
-- **Do not create additional `*.md` files in `docs/`** unless they are truly standalone references that `project.md` links to. Prefer updating the owning subsystem document rather than piling more detail into `project.md`.
+- **Do not create additional `*.md` files in `docs/`** unless they have a durable distinct role and are linked from `docs/README.md`. Prefer updating the owning subsystem document rather than piling more detail into `project.md`.
 - **Do not create standalone `*.md` files outside `docs/`** (except `CLAUDE.md` and `README`).
 
 ## AI Behaviour Guidelines

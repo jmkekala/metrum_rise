@@ -1,6 +1,6 @@
 # Metrum Rise — Reference
 
-Stable lookup tables for architecture constants, Godot bridge API, and data formats. Update this file when specs change. For current implementation status, bugs, and backlog see [`project.md`](project.md).
+Stable lookup tables for architecture constants, Godot bridge API, and data formats. Update this file when specs change. For current status see [`project.md`](project.md); for active tracked work see [`roadmap.md`](roadmap.md); for doc ownership see [`README.md`](README.md).
 
 ---
 
@@ -30,11 +30,11 @@ Stable lookup tables for architecture constants, Godot bridge API, and data form
 |------|-------|--------|-------|
 | Walking | `4.0 m/s` (`14.4 km/h`) | Implemented | Used by pedestrian agents. |
 | Driving (car) | `20.0 m/s` (`72 km/h`) | Implemented | Current free-flow / target value for civilian cars. |
-| Bicycle | `5.5 m/s` (`20 km/h`) | Planned (item 30) | First post-car transport mode. |
-| Bus | `10–15 m/s` (`36–54 km/h`) | Planned (item 42) | Lower effective speed due to stops and dwell time. |
-| Train / Metro | `20–40 m/s` (`72–144 km/h`) | Planned (item 43) | Metro at lower end, intercity rail at higher end. |
-| Ship / Ferry | `5–10 m/s` (`18–36 km/h`) | Planned (item 44) | Harbor-to-harbor routing. |
-| Airplane | `~200 m/s` (`720 km/h`) | Planned (item 45) | Near-teleport at city scale. |
+| Bicycle | `5.5 m/s` (`20 km/h`) | Planned | First post-car transport mode; see `MOB-01` in [`roadmap.md`](roadmap.md). |
+| Bus | `10–15 m/s` (`36–54 km/h`) | Planned | Lower effective speed due to stops and dwell time; see `TRANSIT-01` in [`roadmap.md`](roadmap.md). |
+| Train / Metro | `20–40 m/s` (`72–144 km/h`) | Planned | Metro at lower end, intercity rail at higher end; see `TRANSIT-02` in [`roadmap.md`](roadmap.md). |
+| Ship / Ferry | `5–10 m/s` (`18–36 km/h`) | Planned | Harbor-to-harbor routing; see `TRANSIT-03` in [`roadmap.md`](roadmap.md). |
+| Airplane | `~200 m/s` (`720 km/h`) | Planned | Near-teleport at city scale; see `TRANSIT-04` in [`roadmap.md`](roadmap.md). |
 
 ### Key Design Patterns
 

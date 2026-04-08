@@ -1,7 +1,7 @@
 # Zoning System — Implementation Reference
 
-This document describes the zoning system **as implemented** (items 80–82, all `[DONE]`).
-Update it when the implementation changes; update `docs/project.md` when backlog status changes.
+This document describes the zoning system **as implemented** after the world-space zoning rewrite and overlay/tooling pass.
+Update it when the implementation changes; update [`project.md`](project.md) and [`roadmap.md`](roadmap.md) when tracked status changes.
 
 ---
 

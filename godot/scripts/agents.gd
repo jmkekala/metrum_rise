@@ -340,7 +340,6 @@ func _extract_mesh(root_node: Node, uv_shift: float = 0.0, target_height: float 
 # Used for VAT rest-pose meshes which are already in Godot Y-up space.
 func _extract_first_mesh(root: Node) -> Mesh:
 	if root is MeshInstance3D and root.mesh:
-		print("DEBUG MESH AABB: ", root.mesh.get_aabb())
 		return root.mesh
 	for child in root.get_children():
 		var m = _extract_first_mesh(child)
