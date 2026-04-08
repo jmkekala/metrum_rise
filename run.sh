@@ -13,7 +13,6 @@ while [ $i -le $# ]; do
     if [ "$arg" = "--release" ]; then
         RELEASE=1
     elif [ "$arg" = "--debug" ]; then
-        DEBUG=1
         next_index=$((i + 1))
         if [ $next_index -le $# ]; then
             next_arg="${!next_index}"
@@ -21,10 +20,15 @@ while [ $i -le $# ]; do
                 if [ "$next_arg" = "traffic" ]; then
                     DEBUG_TRAFFIC=1
                 else
+                    DEBUG=1
                     DEBUG_CATEGORY="$next_arg"
                 fi
                 i=$((i + 1))
+            else
+                DEBUG=1
             fi
+        else
+            DEBUG=1
         fi
     else
         GODOT_ARGS+=("$arg")

@@ -417,13 +417,109 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
 }
 
 #[test]
+fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale() {
+    use crate::simulation::grid::zoning::ZoningSystem;
+    use crate::simulation::network::TransitNetwork;
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    let manifest = AssetManifest {
+        asset_id: "b.res.anchor_units".to_owned(),
+        display_name: "Anchor Units".to_owned(),
+        asset_set: None,
+        tags: vec![],
+        thumbnail: None,
+        lods: vec![LodEntry {
+            file: "lod0.glb".to_owned(),
+            distance_min_m: 0.0,
+            distance_max_m: None,
+        }],
+        anchors: vec![Anchor {
+            anchor_type: AnchorType::Entrance,
+            name: "main".to_owned(),
+            position: [1.0, 0.0, 0.5],
+            forward: [0.0, 0.0, 1.0],
+        }],
+        building: Some(BuildingData {
+            zone_type: ZoneClass::Residential,
+            density: "low".to_owned(),
+            lot_width_cells: 1,
+            lot_depth_cells: 1,
+            level: 1,
+            residents_capacity: Some(6),
+            worker_capacity: None,
+            service_class: None,
+            economy_profile: None,
+            preview_scale: Some(7.18),
+        }),
+        prop: None,
+        vehicle: None,
+        character: None,
+        pivot_offset: Some([4.0, 0.0, -3.0]),
+    };
+    allocator.registry.register("base", manifest, String::new());
+
+    let map_cfg = MapConfig::default();
+    let mut zoning = ZoningSystem::new(&map_cfg);
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    network.lane_system.rebuild(&mut graph);
+
+    allocator.buildings.push(Building {
+        center_x: 10.0,
+        center_y: -10.0,
+        width_cells: 1,
+        depth_cells: 1,
+        zone_type: ZoneType::Residential,
+        facing_dir: Vector2::new(0.0, -1.0),
+        frontage_t: 0.5,
+        side_offset: 1.0,
+        abandoned_timer: 0,
+        edge_idx: 0,
+        side: 1,
+        cell_x: 1,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        asset_id: "base:b.res.anchor_units".to_owned(),
+        level: 1,
+        broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 0.0,
+        utility_service_available: false,
+        shipment_cooldown_days: 0,
+    });
+
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    let entrance = &allocator.entrances[0];
+    assert_eq!(
+        entrance.door_pos,
+        Vector2::new(9.0, -10.5),
+        "authored entrance anchors are stored in lot-space meters and must not be scaled or shifted by mesh preview settings"
+    );
+    assert!(entrance.curb_pos.y > entrance.door_pos.y);
+}
+
+#[test]
 fn test_building_removal_clears_zoning_occupancy() {
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
-    register_test_asset(
+    let asset_id = register_test_asset(
         &mut allocator,
         "base",
         "b.res.house",
@@ -463,7 +559,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
-        asset_id: String::new(),
+        asset_id,
         level: 1,
         broken: false,
         stock: 0.0,
@@ -584,9 +680,22 @@ fn test_immigration_claims_vacant_home() {
         "Immigrant should have claimed home index 0"
     );
     assert_eq!(
-        agents.target_building[0], 0,
-        "Immigrant target_building should be set to home"
+        agents.target_building[0],
+        usize::MAX,
+        "Directly admitted immigrants should not carry a bootstrap target_building trip"
     );
+    assert_eq!(
+        agents.transit[0],
+        crate::simulation::economy::agents::TRANSIT_IN_BUILDING,
+        "Immigrant household members should now spawn directly inside their claimed home"
+    );
+    assert_eq!(agents.current_building[0], 0);
+    assert_eq!(agents.current_node[0], u32::MAX);
+    assert_eq!(agents.current_lane_id[0], usize::MAX);
+    assert_eq!(agents.access_flags[0], 0);
+    let expected_door = allocator.entrances[0].door_pos;
+    assert!((agents.pos_x[0] - expected_door.x).abs() < 1e-4);
+    assert!((agents.pos_y[0] - expected_door.y).abs() < 1e-4);
     assert_eq!(agents.household_id[0], agents.household_id[1]);
     assert_eq!(households.households.len(), 1);
     assert_eq!(households.households[0].member_count, 2);
@@ -676,6 +785,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         utility_service_available: true,
         shipment_cooldown_days: 0,
     });
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();
 
     let household_id = households.admit_immigrant_household(0, 2);

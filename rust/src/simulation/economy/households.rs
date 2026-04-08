@@ -772,7 +772,6 @@ mod tests {
             agents.current_building[a] = 0;
             agents.target_building[a] = usize::MAX;
             agents.current_node[a] = 0;
-            agents.target_node[a] = 0;
             agents.has_car[a] = true;
         }
 

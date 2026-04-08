@@ -158,7 +158,6 @@ impl SimCore {
             let path_len = route.len();
             let start_idx = (i * path_len / agent_count).min(path_len.saturating_sub(2));
             let current_node = route[start_idx];
-            let target_node = *route.last().unwrap();
             let node_pos = self.region_graph.node(current_node).pos;
             self.agents.agents.push(Agent {
                 home_building: usize::MAX,
@@ -166,7 +165,6 @@ impl SimCore {
                 work_building: usize::MAX,
                 pos_x: node_pos.x,
                 pos_y: node_pos.z,
-                is_visible: true,
                 activity: 0,
                 transit: TRANSIT_NETWORK,
                 happiness: 50.0,
@@ -176,7 +174,6 @@ impl SimCore {
                 target_building: usize::MAX,
                 planned_target_building: usize::MAX,
                 current_node,
-                target_node,
                 planned_attach_node: u32::MAX,
                 planned_detach_node: u32::MAX,
                 planned_attach_lane_id: u32::MAX,

@@ -12,8 +12,8 @@ use std::collections::HashMap;
 
 use super::{SaveLoadError, SaveLoadResult, SnapshotMaps};
 use super::{
-    db_to_optional_usize, i64_to_u8, i64_to_u32, i64_to_usize, optional_building_to_db,
-    optional_edge_to_db, u32_to_i64, usize_to_i64,
+    db_to_optional_u32, db_to_optional_usize, i64_to_u8, i64_to_u32, i64_to_usize,
+    optional_building_to_db, optional_edge_to_db, optional_node_to_db, u32_to_i64, usize_to_i64,
 };
 
 pub(super) struct LoadedAgentRecord {
@@ -23,7 +23,6 @@ pub(super) struct LoadedAgentRecord {
     pub current_building: usize,
     pub target_building: usize,
     pub current_node: u32,
-    pub target_node: u32,
     pub planned_attach_node: u32,
     pub planned_detach_node: u32,
     pub planned_attach_lane_id: u32,
@@ -37,7 +36,6 @@ pub(super) struct LoadedAgentRecord {
     pub lane_distance: f32,
     pub pos_x: f32,
     pub pos_y: f32,
-    pub is_visible: bool,
     pub activity: u8,
     pub transit: u8,
     pub transit_mode: u8,
@@ -59,24 +57,12 @@ pub(super) fn save_agents(
     network: &TransitNetwork,
     maps: &SnapshotMaps,
 ) -> SaveLoadResult<()> {
-    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, work_building, current_building, target_building, current_node, target_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32)")?;
+    let mut stmt = tx.prepare("INSERT INTO agents(agent_id, home_building, household_id, work_building, current_building, target_building, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)")?;
     let mut path_stmt = tx.prepare(
         "INSERT INTO agent_path_nodes(agent_id, step_index, node_id) VALUES (?1, ?2, ?3)",
     )?;
 
     for i in 0..agents.len() {
-        let cn = super::network::canonical_existing_node(graph, agents.current_node[i])?;
-        let tn = super::network::canonical_existing_node(graph, agents.target_node[i])?;
-        let scn = maps
-            .node_old_to_new
-            .get(&cn)
-            .copied()
-            .ok_or_else(|| SaveLoadError::custom("missing current node"))?;
-        let stn = maps
-            .node_old_to_new
-            .get(&tn)
-            .copied()
-            .ok_or_else(|| SaveLoadError::custom("missing target node"))?;
         let span = if agents.planned_attach_node[i] != u32::MAX {
             let canon =
                 super::network::canonical_existing_node(graph, agents.planned_attach_node[i])?;
@@ -109,8 +95,7 @@ pub(super) fn save_agents(
             optional_building_to_db(agents.work_building[i], maps)?,
             optional_building_to_db(agents.current_building[i], maps)?,
             optional_building_to_db(agents.target_building[i], maps)?,
-            i64::from(scn),
-            i64::from(stn),
+            optional_node_to_db(graph, agents.current_node[i], maps)?,
             u32_to_i64(span)?,
             u32_to_i64(spdn)?,
             u32_to_i64(agents.planned_attach_lane_id[i])?,
@@ -128,7 +113,6 @@ pub(super) fn save_agents(
             agents.lane_distance[i],
             agents.pos_x[i],
             agents.pos_y[i],
-            agents.is_visible[i],
             i64::from(agents.activity[i]),
             i64::from(agents.transit[i]),
             i64::from(agents.transit_mode[i]),
@@ -159,39 +143,6 @@ pub(super) fn save_agents(
 }
 
 pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<AgentSystem> {
-    let _ = conn.execute(
-        "ALTER TABLE agents ADD COLUMN planned_attach_node INTEGER NOT NULL DEFAULT 4294967295",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE agents ADD COLUMN planned_detach_node INTEGER NOT NULL DEFAULT 4294967295",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE agents ADD COLUMN planned_attach_lane_id INTEGER NOT NULL DEFAULT 4294967295",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE agents ADD COLUMN planned_detach_lane_id INTEGER NOT NULL DEFAULT 4294967295",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE agents ADD COLUMN planned_attach_lane_d REAL NOT NULL DEFAULT 0.0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE agents ADD COLUMN planned_detach_lane_d REAL NOT NULL DEFAULT 0.0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE agents ADD COLUMN access_flags INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE agents ADD COLUMN next_replan_time REAL NOT NULL DEFAULT 0.0",
-        [],
-    );
-
     let mut car_paths = HashMap::new();
     {
         let mut stmt = conn.prepare("SELECT agent_id, step_index, node_id FROM agent_path_nodes ORDER BY agent_id, step_index")?;
@@ -208,7 +159,7 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
     let mut agents = AgentSystem::new();
     agents.sim_time = sim_time;
     {
-        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, work_building, current_building, target_building, current_node, target_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index FROM agents ORDER BY agent_id")?;
+        let mut stmt = conn.prepare("SELECT agent_id, home_building, household_id, work_building, current_building, target_building, current_node, planned_attach_node, planned_detach_node, planned_attach_lane_id, planned_detach_lane_id, planned_attach_lane_d, planned_detach_lane_d, access_flags, next_replan_time, current_edge, current_lane_id, lane_distance, pos_x, pos_y, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index FROM agents ORDER BY agent_id")?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let aid = i64_to_usize(row.get(0)?)?;
@@ -223,31 +174,29 @@ pub(super) fn load_agents(conn: &Connection, sim_time: f32) -> SaveLoadResult<Ag
                     work_building: db_to_optional_usize(row.get(3)?)?,
                     current_building: db_to_optional_usize(row.get(4)?)?,
                     target_building: db_to_optional_usize(row.get(5)?)?,
-                    current_node: i64_to_u32(row.get(6)?)?,
-                    target_node: i64_to_u32(row.get(7)?)?,
-                    planned_attach_node: i64_to_u32(row.get(8)?)?,
-                    planned_detach_node: i64_to_u32(row.get(9)?)?,
-                    planned_attach_lane_id: i64_to_u32(row.get(10)?)?,
-                    planned_detach_lane_id: i64_to_u32(row.get(11)?)?,
-                    planned_attach_lane_d: row.get(12)?,
-                    planned_detach_lane_d: row.get(13)?,
-                    access_flags: i64_to_u8(row.get(14)?)?,
-                    next_replan_time: row.get(15)?,
-                    current_edge: db_to_optional_usize(row.get(16)?)?,
-                    current_lane_id: row.get(17)?,
-                    lane_distance: row.get(18)?,
-                    pos_x: row.get(19)?,
-                    pos_y: row.get(20)?,
-                    is_visible: row.get(21)?,
-                    activity: i64_to_u8(row.get(22)?)?,
-                    transit: i64_to_u8(row.get(23)?)?,
-                    transit_mode: i64_to_u8(row.get(24)?)?,
-                    happiness: row.get(26)?,
-                    money: row.get(27)?,
-                    journey_start_time: row.get(28)?,
-                    has_car: row.get(29)?,
-                    vehicle_type: i64_to_u8(row.get(30)?)?,
-                    current_path_index: i64_to_usize(row.get(31)?)?,
+                    current_node: db_to_optional_u32(row.get(6)?)?,
+                    planned_attach_node: i64_to_u32(row.get(7)?)?,
+                    planned_detach_node: i64_to_u32(row.get(8)?)?,
+                    planned_attach_lane_id: i64_to_u32(row.get(9)?)?,
+                    planned_detach_lane_id: i64_to_u32(row.get(10)?)?,
+                    planned_attach_lane_d: row.get(11)?,
+                    planned_detach_lane_d: row.get(12)?,
+                    access_flags: i64_to_u8(row.get(13)?)?,
+                    next_replan_time: row.get(14)?,
+                    current_edge: db_to_optional_usize(row.get(15)?)?,
+                    current_lane_id: row.get(16)?,
+                    lane_distance: row.get(17)?,
+                    pos_x: row.get(18)?,
+                    pos_y: row.get(19)?,
+                    activity: i64_to_u8(row.get(20)?)?,
+                    transit: i64_to_u8(row.get(21)?)?,
+                    transit_mode: i64_to_u8(row.get(22)?)?,
+                    happiness: row.get(24)?,
+                    money: row.get(25)?,
+                    journey_start_time: row.get(26)?,
+                    has_car: row.get(27)?,
+                    vehicle_type: i64_to_u8(row.get(28)?)?,
+                    current_path_index: i64_to_usize(row.get(29)?)?,
                     current_path: car_paths.remove(&aid).unwrap_or_default(),
                     pedestrian_type: 0,
                     walk_phase: 0.0,
@@ -268,7 +217,6 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         work_building: rec.work_building,
         pos_x: rec.pos_x,
         pos_y: rec.pos_y,
-        is_visible: rec.is_visible,
         activity: rec.activity,
         transit: rec.transit,
         happiness: rec.happiness,
@@ -278,7 +226,6 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         target_building: rec.target_building,
         planned_target_building: usize::MAX,
         current_node: rec.current_node,
-        target_node: rec.target_node,
         planned_attach_node: rec.planned_attach_node,
         planned_detach_node: rec.planned_detach_node,
         planned_attach_lane_id: rec.planned_attach_lane_id,
@@ -312,8 +259,8 @@ pub(super) fn validate_loaded_agents(
     allocator: &BuildingAllocator,
 ) -> SaveLoadResult<()> {
     for i in 0..agents.len() {
-        if (agents.current_node[i] as usize) >= graph.node_count()
-            || (agents.target_node[i] as usize) >= graph.node_count()
+        if agents.current_node[i] != u32::MAX
+            && (agents.current_node[i] as usize) >= graph.node_count()
         {
             return Err(SaveLoadError::custom(format!("agent {} has bad node", i)));
         }

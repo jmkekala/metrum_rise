@@ -153,16 +153,6 @@ pub struct EdgeOccupancy {
     pub right: Vec<bool>,
 }
 
-/// Returns the road node an agent departing from `building` should walk toward.
-pub(crate) fn building_depart_node(building: &Building, graph: &RegionGraph) -> u32 {
-    let edge = graph.edge(building.edge_idx);
-    if building.frontage_t < 0.5 {
-        edge.start_node
-    } else {
-        edge.end_node
-    }
-}
-
 /// Converts an asset-manifest [`ZoneClass`] to the matching simulation [`ZoneType`].
 pub(crate) fn zone_class_to_zone_type(zone: ZoneClass) -> ZoneType {
     match zone {

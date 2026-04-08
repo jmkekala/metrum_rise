@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 
-use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
+use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
@@ -277,8 +277,10 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         reserved_outbound: &[f32],
     ) -> bool {
+        if dest_idx >= allocator.entrances.len() {
+            return false;
+        }
         let destination = &allocator.buildings[dest_idx];
-        let dest_node = building_depart_node(destination, graph);
         let candidates = allocator.find_nearby_buildings_by_zones(
             destination.center_x,
             destination.center_y,
@@ -312,13 +314,11 @@ impl ShipmentSystem {
                 continue;
             }
 
-            let source_node = building_depart_node(supplier, graph);
-            let Some((travel_seconds, _, _)) = transit_network.cch_graph.find_path(
-                source_node,
-                dest_node,
-                usize::MAX,
+            let Some(travel_seconds) = allocator.freight_car_eta_between_buildings(
+                candidate_idx,
+                dest_idx,
+                transit_network,
                 graph,
-                TransitFlags::CAR,
             ) else {
                 continue;
             };
@@ -369,7 +369,6 @@ impl ShipmentSystem {
         let amount = desired_amount.max(min_amount).min(max_affordable_amount);
         let total_cost = amount * OWA_IMPORT_ASK;
 
-        let dest_node = building_depart_node(&allocator.buildings[dest_idx], graph);
         let mut best_border = u32::MAX;
         let mut best_cost = f32::MAX;
         for &border_node in border_nodes {
@@ -378,12 +377,11 @@ impl ShipmentSystem {
             {
                 continue;
             }
-            let Some((travel_seconds, _, _)) = transit_network.cch_graph.find_path(
+            let Some(travel_seconds) = allocator.freight_car_eta_from_border_node(
                 border_node,
-                dest_node,
-                usize::MAX,
+                dest_idx,
+                transit_network,
                 graph,
-                TransitFlags::CAR,
             ) else {
                 continue;
             };
@@ -481,10 +479,58 @@ fn eta_days_from_travel_seconds(travel_seconds: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets::AssetManifest;
+    use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, ZoneClass};
     use crate::simulation::buildings::allocator::Building;
     use crate::simulation::network::graph::Edge;
     use crate::simulation::network::types::{EdgeClass, TransitType};
     use godot::prelude::{Vector2, Vector3};
+
+    fn register_test_asset(
+        allocator: &mut BuildingAllocator,
+        pack_id: &str,
+        asset_id: &str,
+        zone: ZoneClass,
+    ) -> String {
+        let manifest = AssetManifest {
+            asset_id: asset_id.to_owned(),
+            display_name: "Test".to_owned(),
+            asset_set: None,
+            tags: vec![],
+            thumbnail: None,
+            lods: vec![LodEntry {
+                file: "lod0.glb".to_owned(),
+                distance_min_m: 0.0,
+                distance_max_m: None,
+            }],
+            anchors: vec![Anchor {
+                anchor_type: AnchorType::Entrance,
+                name: "main".to_owned(),
+                position: [0.0, 0.0, 0.5],
+                forward: [0.0, 0.0, 1.0],
+            }],
+            building: Some(BuildingData {
+                zone_type: zone,
+                density: "low".to_owned(),
+                lot_width_cells: 1,
+                lot_depth_cells: 1,
+                level: 1,
+                residents_capacity: Some(6),
+                worker_capacity: None,
+                service_class: None,
+                economy_profile: None,
+                preview_scale: Some(1.0),
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+            pivot_offset: None,
+        };
+        allocator
+            .registry
+            .register(pack_id, manifest, String::new());
+        format!("{pack_id}:{asset_id}")
+    }
 
     fn make_building(
         center_x: f32,
@@ -496,7 +542,7 @@ mod tests {
     ) -> Building {
         Building {
             center_x,
-            center_y: 0.0,
+            center_y: 10.0,
             width_cells: 2,
             depth_cells: 2,
             zone_type,
@@ -573,6 +619,7 @@ mod tests {
         graph.rebuild_adjacency_list();
 
         let mut network = TransitNetwork::new();
+        network.lane_system.rebuild(&mut graph);
         network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&graph);
         (graph, network, e0, e1, n0)
     }
@@ -581,22 +628,39 @@ mod tests {
     fn local_supplier_creates_and_delivers_shipment() {
         let (graph, network, industrial_edge, commercial_edge, _) = simple_graph_with_border();
         let mut allocator = BuildingAllocator::new();
-        allocator.buildings.push(make_building(
+        let industrial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "logistics_industrial",
+            ZoneClass::Industrial,
+        );
+        let commercial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "logistics_commercial",
+            ZoneClass::Commercial,
+        );
+        let mut supplier = make_building(
             -50.0,
             ZoneType::Industrial,
             industrial_edge,
             300.0,
             0.0,
             true,
-        ));
-        allocator.buildings.push(make_building(
+        );
+        supplier.asset_id = industrial_asset;
+        let mut destination = make_building(
             50.0,
             ZoneType::Commercial,
             commercial_edge,
             100.0,
             2_000.0,
             true,
-        ));
+        );
+        destination.asset_id = commercial_asset;
+        allocator.buildings.push(supplier);
+        allocator.buildings.push(destination);
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
         allocator.rebuild_zone_index();
 
         let mut shipments = ShipmentSystem::new();
@@ -619,14 +683,23 @@ mod tests {
         let (graph, network, _industrial_edge, commercial_edge, border_node) =
             simple_graph_with_border();
         let mut allocator = BuildingAllocator::new();
-        allocator.buildings.push(make_building(
+        let commercial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "owa_commercial",
+            ZoneClass::Commercial,
+        );
+        let mut destination = make_building(
             50.0,
             ZoneType::Commercial,
             commercial_edge,
             50.0,
             5_000.0,
             true,
-        ));
+        );
+        destination.asset_id = commercial_asset;
+        allocator.buildings.push(destination);
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
         allocator.rebuild_zone_index();
 
         let mut shipments = ShipmentSystem::new();
@@ -646,14 +719,23 @@ mod tests {
         let (graph, network, _industrial_edge, commercial_edge, _border_node) =
             simple_graph_with_border();
         let mut allocator = BuildingAllocator::new();
-        allocator.buildings.push(make_building(
+        let commercial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "owa_affordable_commercial",
+            ZoneClass::Commercial,
+        );
+        let mut destination = make_building(
             50.0,
             ZoneType::Commercial,
             commercial_edge,
             50.0,
             500.0,
             true,
-        ));
+        );
+        destination.asset_id = commercial_asset;
+        allocator.buildings.push(destination);
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
         allocator.rebuild_zone_index();
 
         let mut shipments = ShipmentSystem::new();

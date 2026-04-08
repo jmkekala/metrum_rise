@@ -4,7 +4,7 @@
 
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::agents::MODE_CAR;
+use crate::simulation::economy::agents::{MODE_CAR, transit_is_visible};
 use godot::prelude::*;
 
 fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
@@ -43,7 +43,7 @@ impl SimCore {
         let hh = (h - 1.0) * 0.5;
 
         for i in 0..self.agents.len() {
-            if !self.agents.is_visible[i] {
+            if !transit_is_visible(self.agents.transit[i]) {
                 continue;
             }
             if self.agents.transit_mode[i] == MODE_CAR {
@@ -87,7 +87,7 @@ impl SimCore {
         let hh = (h - 1.0) * 0.5;
 
         for i in 0..self.agents.len() {
-            if !self.agents.is_visible[i] {
+            if !transit_is_visible(self.agents.transit[i]) {
                 continue;
             }
             if self.agents.transit_mode[i] != MODE_CAR {

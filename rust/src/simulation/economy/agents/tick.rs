@@ -10,11 +10,12 @@ use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntranc
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{TransitFlags, VehicleFrontageAccess};
+use crate::traffic_log;
 use godot::prelude::*;
 use rand::Rng;
 use rayon::prelude::*;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // ---------------------------------------------------------------------------
 // IDM (Intelligent Driver Model) constants — defined in config.rs.
@@ -34,6 +35,18 @@ fn idm_gap_bucket(bucket: &[(f32, usize)], my_dist: f32) -> f32 {
     } else {
         f32::MAX
     }
+}
+
+fn lane_attach_slot_clear(bucket: &[(f32, usize)], attach_d: f32) -> bool {
+    let min_sep = CAR_LENGTH + IDM_S_MIN;
+    let insert = bucket.partition_point(|entry| entry.0 < attach_d);
+    if insert > 0 && attach_d - bucket[insert - 1].0 < min_sep {
+        return false;
+    }
+    if insert < bucket.len() && bucket[insert].0 - attach_d < min_sep {
+        return false;
+    }
+    true
 }
 
 /// Dispatches `f` over `0..n` sequentially when `n < PAR_THRESHOLD`, otherwise in
@@ -127,6 +140,10 @@ fn transit_flags_for_mode(mode: u8) -> u8 {
     } else {
         TransitFlags::FOOT
     }
+}
+
+fn transit_mode_label(mode: u8) -> &'static str {
+    if mode == MODE_CAR { "car" } else { "foot" }
 }
 
 fn lane_origin_node(
@@ -251,6 +268,19 @@ fn entrance_allows_lane(mode: u8, entrance: &BuildingEntrance, lane_id: usize) -
     }
 }
 
+fn local_access_side_label(mode: u8, entrance: &BuildingEntrance, lane_id: usize) -> &'static str {
+    if mode != MODE_CAR {
+        return "curb";
+    }
+    if lane_id == same_side_car_lane(entrance) {
+        "same-side"
+    } else if lane_id == opposite_side_car_lane(entrance) {
+        "opposite-side"
+    } else {
+        "unknown-side"
+    }
+}
+
 fn planned_attach_is_legal(
     mode: u8,
     entrance: &BuildingEntrance,
@@ -357,6 +387,28 @@ fn point_on_segment(p: Vector2, a: Vector2, b: Vector2) -> bool {
     segment_distance(p, proj) <= 0.05
 }
 
+fn local_access_target_segment(current: Vector2, path: &LocalAccessPath) -> Option<usize> {
+    if path.count <= 1 {
+        return None;
+    }
+    if segment_distance(current, path.points[path.count - 1]) <= 0.05 {
+        return None;
+    }
+
+    for idx in (1..path.count).rev() {
+        let a = path.points[idx - 1];
+        let b = path.points[idx];
+        if segment_distance(current, b) <= 0.0001 {
+            continue;
+        }
+        if point_on_segment(current, a, b) || segment_distance(current, a) <= 0.05 {
+            return Some(idx);
+        }
+    }
+
+    None
+}
+
 fn advance_along_local_access_path(
     current: Vector2,
     path: &LocalAccessPath,
@@ -370,21 +422,15 @@ fn advance_along_local_access_path(
     let mut remaining = step.max(0.0);
 
     loop {
-        let mut target_idx = None;
-        for idx in 1..path.count {
-            let a = path.points[idx - 1];
+        while let Some(idx) = local_access_target_segment(pos, path) {
             let b = path.points[idx];
-            if segment_distance(pos, b) <= 0.0001 {
-                pos = b;
-                continue;
-            }
-            if point_on_segment(pos, a, b) || segment_distance(pos, a) <= 0.05 {
-                target_idx = Some(idx);
+            if segment_distance(pos, b) > 0.0001 {
                 break;
             }
+            pos = b;
         }
 
-        let Some(idx) = target_idx else {
+        let Some(idx) = local_access_target_segment(pos, path) else {
             return (path.points[path.count - 1], true);
         };
 
@@ -501,6 +547,45 @@ fn frontage_time_s(
     } else {
         lane_d / lane.length
     };
+    Some(free_flow_time + penalty_ratio.max(0.0) * lane.frontage_delay_penalty_s)
+}
+
+fn direct_frontage_segment_time_s(
+    mode: u8,
+    lane_id: usize,
+    start_lane_d: f32,
+    end_lane_d: f32,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+) -> Option<f32> {
+    let lane = transit_network.lane_system.lanes.get(lane_id)?;
+    if lane.edge_id == usize::MAX || lane.edge_id >= graph.edge_count() {
+        return None;
+    }
+    if end_lane_d + 1e-6 < start_lane_d {
+        return None;
+    }
+    let segment_distance = (end_lane_d - start_lane_d).max(0.0);
+    if segment_distance <= 1e-6 {
+        return Some(0.0);
+    }
+
+    let edge = graph.edge(lane.edge_id);
+    let travel_speed = if mode == MODE_CAR {
+        edge.speed_limit
+    } else {
+        AGENT_WALK_SPEED_MS
+    };
+    if !travel_speed.is_finite() || travel_speed <= 1e-6 {
+        return None;
+    }
+
+    let free_flow_time = segment_distance / travel_speed;
+    if mode == MODE_WALK || lane.length <= 1e-6 {
+        return Some(free_flow_time);
+    }
+
+    let penalty_ratio = segment_distance / lane.length;
     Some(free_flow_time + penalty_ratio.max(0.0) * lane.frontage_delay_penalty_s)
 }
 
@@ -622,43 +707,61 @@ fn evaluate_planned_trip_candidate(
         )?,
         mode,
     );
-    let origin_frontage_time_s = frontage_time_s(
-        mode,
-        planned_attach_lane_id,
-        planned_attach_lane_d,
-        true,
-        transit_network,
-        graph,
-    )?;
-    let destination_frontage_time_s = frontage_time_s(
-        mode,
-        planned_detach_lane_id,
-        planned_detach_lane_d,
-        false,
-        transit_network,
-        graph,
-    )?;
+    let same_lane_direct_frontage = mode == MODE_CAR
+        && origin_entrance.edge_idx == destination_entrance.edge_idx
+        && planned_attach_lane_id == planned_detach_lane_id
+        && planned_attach_lane_d <= planned_detach_lane_d + 1e-6;
 
-    let network_path_time_s = if planned_attach_node == planned_detach_node {
-        0.0
+    let total_cost_s = if same_lane_direct_frontage {
+        let direct_frontage_time_s = direct_frontage_segment_time_s(
+            mode,
+            planned_attach_lane_id,
+            planned_attach_lane_d,
+            planned_detach_lane_d,
+            transit_network,
+            graph,
+        )?;
+        egress_local_time_s + direct_frontage_time_s + ingress_local_time_s
     } else {
-        pathfind_count.fetch_add(1, Ordering::Relaxed);
-        transit_network
-            .cch_graph
-            .find_path(
-                planned_attach_node,
-                planned_detach_node,
-                usize::MAX,
-                graph,
-                transit_flags_for_mode(mode),
-            )
-            .map(|(travel_seconds, _, _)| travel_seconds)?
+        let origin_frontage_time_s = frontage_time_s(
+            mode,
+            planned_attach_lane_id,
+            planned_attach_lane_d,
+            true,
+            transit_network,
+            graph,
+        )?;
+        let destination_frontage_time_s = frontage_time_s(
+            mode,
+            planned_detach_lane_id,
+            planned_detach_lane_d,
+            false,
+            transit_network,
+            graph,
+        )?;
+
+        let network_path_time_s = if planned_attach_node == planned_detach_node {
+            0.0
+        } else {
+            pathfind_count.fetch_add(1, Ordering::Relaxed);
+            transit_network
+                .cch_graph
+                .find_path(
+                    planned_attach_node,
+                    planned_detach_node,
+                    usize::MAX,
+                    graph,
+                    transit_flags_for_mode(mode),
+                )
+                .map(|(travel_seconds, _, _)| travel_seconds)?
+        };
+
+        egress_local_time_s
+            + origin_frontage_time_s
+            + network_path_time_s
+            + destination_frontage_time_s
+            + ingress_local_time_s
     };
-    let total_cost_s = egress_local_time_s
-        + origin_frontage_time_s
-        + network_path_time_s
-        + destination_frontage_time_s
-        + ingress_local_time_s;
     if !total_cost_s.is_finite() {
         return None;
     }
@@ -685,6 +788,14 @@ fn build_exact_path_for_candidate(
     graph: &RegionGraph,
     pathfind_count: &AtomicU32,
 ) -> Option<(Vec<u32>, u8)> {
+    let direct_same_lane_frontage = candidate.mode == MODE_CAR
+        && candidate.planned_attach_lane_id == candidate.planned_detach_lane_id
+        && candidate.planned_attach_lane_id != usize::MAX
+        && candidate.planned_attach_lane_d <= candidate.planned_detach_lane_d + 1e-6;
+    if direct_same_lane_frontage {
+        return Some((Vec::new(), ACCESS_PLAN_VALID));
+    }
+
     if candidate.planned_attach_node == candidate.planned_detach_node {
         return Some((Vec::new(), ACCESS_PLAN_VALID | ACCESS_ZERO_HOP_NODE_PATH));
     }
@@ -1150,7 +1261,6 @@ pub(crate) struct MovementSlices {
     work: RawSlice<usize>,
     pos_x: RawSlice<f32>,
     pos_y: RawSlice<f32>,
-    visible: RawSlice<bool>,
     activity: RawSlice<u8>,
     transit: RawSlice<u8>,
     happiness: RawSlice<f32>,
@@ -1159,7 +1269,6 @@ pub(crate) struct MovementSlices {
     tgt_b: RawSlice<usize>,
     planned_tgt_b: RawSlice<usize>,
     cur_n: RawSlice<u32>,
-    tgt_n: RawSlice<u32>,
     planned_attach_n: RawSlice<u32>,
     planned_detach_n: RawSlice<u32>,
     planned_attach_lane: RawSlice<u32>,
@@ -1207,7 +1316,6 @@ impl AgentSystem {
         let s_tgt_b = RawSlice::new(&mut self.agents.target_building);
         let s_plan_b = RawSlice::new(&mut self.agents.planned_target_building);
         let s_transit = RawSlice::new(&mut self.agents.transit);
-        let s_visible = RawSlice::new(&mut self.agents.is_visible);
 
         dispatch_agents(n, |i| unsafe {
             if *s_home.get(i) != usize::MAX && *s_home.get(i) >= bldg_count {
@@ -1219,7 +1327,6 @@ impl AgentSystem {
             if *s_cur_b.get(i) != usize::MAX && *s_cur_b.get(i) >= bldg_count {
                 *s_cur_b.get_mut(i) = usize::MAX;
                 *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
-                *s_visible.get_mut(i) = true;
             }
             let tgt = *s_tgt_b.get(i);
             if tgt != usize::MAX && tgt >= bldg_count {
@@ -1285,6 +1392,13 @@ impl AgentSystem {
 
         // Build junction gate snapshot.
         self.build_conn_occupied_snapshot(lane_count);
+        if self.lane_attach_claimed.len() < lane_count {
+            self.lane_attach_claimed
+                .resize_with(lane_count, || AtomicBool::new(false));
+        }
+        for claimed in &self.lane_attach_claimed {
+            claimed.store(false, Ordering::Relaxed);
+        }
 
         // -----------------------------------------------------------------------
         // 3. IDM speed update — parallel.
@@ -1343,7 +1457,6 @@ impl AgentSystem {
             work: RawSlice::new(&mut self.agents.work_building),
             pos_x: RawSlice::new(&mut self.agents.pos_x),
             pos_y: RawSlice::new(&mut self.agents.pos_y),
-            visible: RawSlice::new(&mut self.agents.is_visible),
             activity: RawSlice::new(&mut self.agents.activity),
             transit: RawSlice::new(&mut self.agents.transit),
             happiness: RawSlice::new(&mut self.agents.happiness),
@@ -1352,7 +1465,6 @@ impl AgentSystem {
             tgt_b: RawSlice::new(&mut self.agents.target_building),
             planned_tgt_b: RawSlice::new(&mut self.agents.planned_target_building),
             cur_n: RawSlice::new(&mut self.agents.current_node),
-            tgt_n: RawSlice::new(&mut self.agents.target_node),
             planned_attach_n: RawSlice::new(&mut self.agents.planned_attach_node),
             planned_detach_n: RawSlice::new(&mut self.agents.planned_detach_node),
             planned_attach_lane: RawSlice::new(&mut self.agents.planned_attach_lane_id),
@@ -1374,6 +1486,8 @@ impl AgentSystem {
         };
 
         let conn_occupied = &self.conn_occupied;
+        let lane_buckets = &self.lane_buckets;
+        let lane_attach_claimed = &self.lane_attach_claimed;
         let sim_time = self.sim_time;
 
         dispatch_agents(n, |i| unsafe {
@@ -1386,6 +1500,8 @@ impl AgentSystem {
                 graph,
                 &self.pathfind_count,
                 conn_occupied,
+                lane_buckets,
+                lane_attach_claimed,
                 &slices,
             );
         });
@@ -1549,6 +1665,8 @@ impl AgentSystem {
         graph: &RegionGraph,
         pathfind_count: &AtomicU32,
         conn_occupied: &Vec<bool>,
+        lane_buckets: &Vec<Vec<(f32, usize)>>,
+        lane_attach_claimed: &Vec<AtomicBool>,
         slices: &MovementSlices,
     ) {
         let mut rng = rand::thread_rng();
@@ -1556,7 +1674,6 @@ impl AgentSystem {
         // Safety: index i is unique to this thread via par_iter.
         unsafe {
             let s_cur_n = &slices.cur_n;
-            let s_tgt_n = &slices.tgt_n;
             let s_tmode = &slices.tmode;
             let s_speed = &slices.speed;
             let s_walk_phase = &slices.walk_phase;
@@ -1581,7 +1698,6 @@ impl AgentSystem {
             let s_next_replan_time = &slices.next_replan_time;
             let s_lane_id = &slices.lane_id;
             let s_lane_d = &slices.lane_d;
-            let s_visible = &slices.visible;
             let s_pos_x = &slices.pos_x;
             let s_pos_y = &slices.pos_y;
             let s_cur_e = &slices.cur_e;
@@ -1589,7 +1705,6 @@ impl AgentSystem {
             let s_plan_act = &slices.planned_activity;
 
             *s_cur_n.get_mut(i) = graph.get_valid_node(*s_cur_n.get(i));
-            *s_tgt_n.get_mut(i) = graph.get_valid_node(*s_tgt_n.get(i));
 
             // Update walk animation phase if not in a vehicle.
             if *s_tmode.get(i) != MODE_CAR {
@@ -1627,7 +1742,6 @@ impl AgentSystem {
                         *s_activity.get_mut(i) = plan.activity;
                         *s_jstart.get_mut(i) = sim_time;
                         *s_tmode.get_mut(i) = plan.mode;
-                        *s_tgt_n.get_mut(i) = plan.planned_detach_node;
                         *s_plan_attach_n.get_mut(i) = plan.planned_attach_node;
                         *s_plan_detach_n.get_mut(i) = plan.planned_detach_node;
                         *s_plan_attach_lane.get_mut(i) = plan.planned_attach_lane_id as u32;
@@ -1643,12 +1757,45 @@ impl AgentSystem {
                         *s_speed.get_mut(i) = 0.0;
                         *s_pos_x.get_mut(i) = origin_entrance.door_pos.x;
                         *s_pos_y.get_mut(i) = origin_entrance.door_pos.y;
-                        *s_visible.get_mut(i) = true;
                         *s_transit.get_mut(i) = TRANSIT_ACCESS_EGRESS;
                         *s_path.get_mut(i) = plan.current_path;
                         *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
                         *s_plan_b.get_mut(i) = usize::MAX;
                         *s_plan_act.get_mut(i) = 0;
+                        if crate::debug::is_traffic_enabled() {
+                            let target_entrance = allocator.entrances.get(plan.target_building);
+                            let attach_side = local_access_side_label(
+                                plan.mode,
+                                origin_entrance,
+                                plan.planned_attach_lane_id,
+                            );
+                            let detach_side = target_entrance
+                                .map(|entrance| {
+                                    local_access_side_label(
+                                        plan.mode,
+                                        entrance,
+                                        plan.planned_detach_lane_id,
+                                    )
+                                })
+                                .unwrap_or("unknown-target");
+                            traffic_log!(
+                                "[ACCESS_PLAN] agent={} mode={} origin_bldg={} target_bldg={} attach_lane={}({}) attach_d={:.2} attach_node={} detach_lane={}({}) detach_d={:.2} detach_node={} flags=0x{:02x} node_path={:?}",
+                                i,
+                                transit_mode_label(plan.mode),
+                                curr_bldg,
+                                plan.target_building,
+                                plan.planned_attach_lane_id,
+                                attach_side,
+                                plan.planned_attach_lane_d,
+                                plan.planned_attach_node,
+                                plan.planned_detach_lane_id,
+                                detach_side,
+                                plan.planned_detach_lane_d,
+                                plan.planned_detach_node,
+                                plan.access_flags,
+                                s_path.get(i),
+                            );
+                        }
                     } else {
                         *s_access_flags.get_mut(i) = 0;
                         *s_plan_attach_n.get_mut(i) = u32::MAX;
@@ -1665,7 +1812,6 @@ impl AgentSystem {
                     let b_id = *s_cur_b.get(i);
                     if b_id == usize::MAX || b_id >= allocator.buildings.len() {
                         *s_tgt_b.get_mut(i) = usize::MAX;
-                        *s_tgt_n.get_mut(i) = u32::MAX;
                         *s_access_flags.get_mut(i) = 0;
                         *s_plan_attach_n.get_mut(i) = u32::MAX;
                         *s_plan_detach_n.get_mut(i) = u32::MAX;
@@ -1678,14 +1824,12 @@ impl AgentSystem {
                         *s_lane_id.get_mut(i) = usize::MAX;
                         *s_lane_d.get_mut(i) = 0.0;
                         *s_speed.get_mut(i) = 0.0;
-                        *s_visible.get_mut(i) = false;
                         *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                         return;
                     }
                     let b = &allocator.buildings[b_id];
                     if b.edge_idx >= graph.edge_count() || graph.edge(b.edge_idx).deleted {
                         *s_tgt_b.get_mut(i) = usize::MAX;
-                        *s_tgt_n.get_mut(i) = u32::MAX;
                         *s_access_flags.get_mut(i) = 0;
                         *s_plan_attach_n.get_mut(i) = u32::MAX;
                         *s_plan_detach_n.get_mut(i) = u32::MAX;
@@ -1699,7 +1843,6 @@ impl AgentSystem {
                         *s_lane_d.get_mut(i) = 0.0;
                         *s_speed.get_mut(i) = 0.0;
                         *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
-                        *s_visible.get_mut(i) = false;
                         *s_next_replan_time.get_mut(i) = sim_time + BUILDING_REPLAN_DELAY_S;
                         return;
                     }
@@ -1715,7 +1858,6 @@ impl AgentSystem {
                         *s_pos_y.get_mut(i) = origin_door.y;
                         *s_cur_b.get_mut(i) = b_id;
                         *s_tgt_b.get_mut(i) = usize::MAX;
-                        *s_tgt_n.get_mut(i) = u32::MAX;
                         s_path.get_mut(i).clear();
                         *s_path_idx.get_mut(i) = 0;
                         *s_cur_n.get_mut(i) = u32::MAX;
@@ -1730,7 +1872,6 @@ impl AgentSystem {
                         *s_plan_attach_lane_d.get_mut(i) = 0.0;
                         *s_plan_detach_lane_d.get_mut(i) = 0.0;
                         *s_access_flags.get_mut(i) = 0;
-                        *s_visible.get_mut(i) = false;
                         *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                         *s_next_replan_time.get_mut(i) = sim_time + BUILDING_REPLAN_DELAY_S;
                         return;
@@ -1776,7 +1917,70 @@ impl AgentSystem {
                             advance_along_local_access_path(current, &path, step);
                         *s_pos_x.get_mut(i) = next_pos.x;
                         *s_pos_y.get_mut(i) = next_pos.y;
+                        if crate::debug::is_traffic_enabled() {
+                            let seg_before = local_access_target_segment(current, &path);
+                            let seg_after = local_access_target_segment(next_pos, &path);
+                            traffic_log!(
+                                "[ACCESS_EGRESS_STEP] agent={} bldg={} mode={} lane={}({}) lane_d={:.2} seg_before={:?} seg_after={:?} reached_handoff={} current=({:.2},{:.2}) next=({:.2},{:.2}) p0=({:.2},{:.2}) p1=({:.2},{:.2}) p2=({:.2},{:.2}) p3=({:.2},{:.2}) count={}",
+                                i,
+                                b_id,
+                                transit_mode_label(*s_tmode.get(i)),
+                                attach_lane_id,
+                                local_access_side_label(*s_tmode.get(i), entrance, attach_lane_id),
+                                attach_lane_d,
+                                seg_before,
+                                seg_after,
+                                reached_handoff,
+                                current.x,
+                                current.y,
+                                next_pos.x,
+                                next_pos.y,
+                                path.points[0].x,
+                                path.points[0].y,
+                                path.points[1].x,
+                                path.points[1].y,
+                                path.points[2].x,
+                                path.points[2].y,
+                                path.points[3].x,
+                                path.points[3].y,
+                                path.count,
+                            );
+                        }
                         if reached_handoff {
+                            let attach_allowed = if *s_tmode.get(i) == MODE_CAR {
+                                lane_buckets
+                                    .get(attach_lane_id)
+                                    .map(|bucket| lane_attach_slot_clear(bucket, attach_lane_d))
+                                    .unwrap_or(false)
+                                    && lane_attach_claimed
+                                        .get(attach_lane_id)
+                                        .map(|claimed| !claimed.swap(true, Ordering::AcqRel))
+                                        .unwrap_or(false)
+                            } else {
+                                true
+                            };
+                            if !attach_allowed {
+                                if crate::debug::is_traffic_enabled() {
+                                    traffic_log!(
+                                        "[ACCESS_EGRESS_WAIT] agent={} bldg={} lane={}({}) lane_d={:.2} pos=({:.2},{:.2}) reason=attach-slot-busy",
+                                        i,
+                                        b_id,
+                                        attach_lane_id,
+                                        local_access_side_label(
+                                            *s_tmode.get(i),
+                                            entrance,
+                                            attach_lane_id
+                                        ),
+                                        attach_lane_d,
+                                        path.points[path.count - 1].x,
+                                        path.points[path.count - 1].y,
+                                    );
+                                }
+                                *s_pos_x.get_mut(i) = path.points[path.count - 1].x;
+                                *s_pos_y.get_mut(i) = path.points[path.count - 1].y;
+                                *s_speed.get_mut(i) = 0.0;
+                                return;
+                            }
                             let parent_edge =
                                 transit_network.lane_system.lanes[attach_lane_id].edge_id;
                             *s_pos_x.get_mut(i) = path.points[path.count - 1].x;
@@ -1794,15 +1998,45 @@ impl AgentSystem {
                             } else {
                                 0.0
                             };
+                            if crate::debug::is_traffic_enabled() {
+                                traffic_log!(
+                                    "[ACCESS_EGRESS_ATTACH] agent={} bldg={} lane={}({}) lane_d={:.2} origin_node={} edge={} pos=({:.2},{:.2})",
+                                    i,
+                                    b_id,
+                                    attach_lane_id,
+                                    local_access_side_label(
+                                        *s_tmode.get(i),
+                                        entrance,
+                                        attach_lane_id
+                                    ),
+                                    attach_lane_d,
+                                    origin_node,
+                                    parent_edge,
+                                    path.points[path.count - 1].x,
+                                    path.points[path.count - 1].y,
+                                );
+                            }
                             *s_transit.get_mut(i) = TRANSIT_NETWORK;
                         }
                     } else {
+                        if crate::debug::is_traffic_enabled() {
+                            traffic_log!(
+                                "[ACCESS_EGRESS_ABORT] agent={} bldg={} mode={} lane={} lane_d={:.2} legal_attach={} exact_path={} reason=invalid-egress-plan flags=0x{:02x}",
+                                i,
+                                b_id,
+                                transit_mode_label(*s_tmode.get(i)),
+                                attach_lane_id,
+                                attach_lane_d,
+                                legal_attach,
+                                exact_path.is_some(),
+                                *s_access_flags.get(i),
+                            );
+                        }
                         let origin_door = entrance.door_pos;
                         *s_pos_x.get_mut(i) = origin_door.x;
                         *s_pos_y.get_mut(i) = origin_door.y;
                         *s_cur_b.get_mut(i) = b_id;
                         *s_tgt_b.get_mut(i) = usize::MAX;
-                        *s_tgt_n.get_mut(i) = u32::MAX;
                         s_path.get_mut(i).clear();
                         *s_path_idx.get_mut(i) = 0;
                         *s_cur_n.get_mut(i) = u32::MAX;
@@ -1817,7 +2051,6 @@ impl AgentSystem {
                         *s_plan_attach_lane_d.get_mut(i) = 0.0;
                         *s_plan_detach_lane_d.get_mut(i) = 0.0;
                         *s_access_flags.get_mut(i) = 0;
-                        *s_visible.get_mut(i) = false;
                         *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                         *s_next_replan_time.get_mut(i) = sim_time + BUILDING_REPLAN_DELAY_S;
                     }
@@ -1840,7 +2073,6 @@ impl AgentSystem {
                             ) {
                                 *s_tmode.get_mut(i) = MODE_CAR;
                                 *s_tgt_b.get_mut(i) = plan.target_building;
-                                *s_tgt_n.get_mut(i) = plan.planned_detach_node;
                                 *s_plan_attach_n.get_mut(i) = plan.planned_attach_node;
                                 *s_plan_detach_n.get_mut(i) = plan.planned_detach_node;
                                 *s_plan_attach_lane.get_mut(i) = u32::MAX;
@@ -1910,7 +2142,6 @@ impl AgentSystem {
                         ) {
                             *s_path.get_mut(i) = replan.current_path;
                             *s_path_idx.get_mut(i) = if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                            *s_tgt_n.get_mut(i) = replan.planned_detach_node;
                             *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
                             *s_plan_detach_lane.get_mut(i) = replan.planned_detach_lane_id as u32;
                             *s_plan_detach_lane_d.get_mut(i) = replan.planned_detach_lane_d;
@@ -1969,7 +2200,6 @@ impl AgentSystem {
                                         *s_path.get_mut(i) = replan.current_path;
                                         *s_path_idx.get_mut(i) =
                                             if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                                        *s_tgt_n.get_mut(i) = replan.planned_detach_node;
                                         *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
                                         *s_plan_detach_lane.get_mut(i) =
                                             replan.planned_detach_lane_id as u32;
@@ -2078,7 +2308,6 @@ impl AgentSystem {
                                     *s_path.get_mut(i) = replan.current_path;
                                     *s_path_idx.get_mut(i) =
                                         if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                                    *s_tgt_n.get_mut(i) = replan.planned_detach_node;
                                     *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
                                     *s_plan_detach_lane.get_mut(i) =
                                         replan.planned_detach_lane_id as u32;
@@ -2195,27 +2424,83 @@ impl AgentSystem {
                                 && lane_id == planned_detach_lane_id
                                 && *s_lane_d.get(i) >= *s_plan_detach_lane_d.get(i)
                             {
-                                let t_bldg_idx = *s_tgt_b.get(i);
-                                if t_bldg_idx < allocator.entrances.len() {
-                                    if let Some(ingress_origin) = local_access_point(
-                                        *s_tmode.get(i),
-                                        &allocator.entrances[t_bldg_idx],
-                                        planned_detach_lane_id,
-                                        *s_plan_detach_lane_d.get(i),
-                                        transit_network,
-                                    ) {
-                                        *s_pos_x.get_mut(i) = ingress_origin.x;
-                                        *s_pos_y.get_mut(i) = ingress_origin.y;
-                                        s_path.get_mut(i).clear();
-                                        *s_path_idx.get_mut(i) = 0;
-                                        *s_cur_n.get_mut(i) = u32::MAX;
-                                        *s_cur_e.get_mut(i) = usize::MAX;
-                                        *s_lane_id.get_mut(i) = usize::MAX;
-                                        *s_lane_d.get_mut(i) = 0.0;
-                                        *s_speed.get_mut(i) = 0.0;
-                                        *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
-                                        break;
+                                let detach_d = *s_plan_detach_lane_d.get(i);
+                                let detach_allowed = if *s_tmode.get(i) == MODE_CAR {
+                                    lane_attach_claimed
+                                        .get(planned_detach_lane_id)
+                                        .map(|claimed| !claimed.swap(true, Ordering::AcqRel))
+                                        .unwrap_or(false)
+                                } else {
+                                    true
+                                };
+                                if detach_allowed {
+                                    let t_bldg_idx = *s_tgt_b.get(i);
+                                    if t_bldg_idx < allocator.entrances.len() {
+                                        if let Some(ingress_origin) = local_access_point(
+                                            *s_tmode.get(i),
+                                            &allocator.entrances[t_bldg_idx],
+                                            planned_detach_lane_id,
+                                            detach_d,
+                                            transit_network,
+                                        ) {
+                                            *s_pos_x.get_mut(i) = ingress_origin.x;
+                                            *s_pos_y.get_mut(i) = ingress_origin.y;
+                                            s_path.get_mut(i).clear();
+                                            *s_path_idx.get_mut(i) = 0;
+                                            *s_cur_n.get_mut(i) = u32::MAX;
+                                            *s_cur_e.get_mut(i) = usize::MAX;
+                                            *s_lane_id.get_mut(i) = usize::MAX;
+                                            *s_lane_d.get_mut(i) = 0.0;
+                                            *s_speed.get_mut(i) = 0.0;
+                                            *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
+                                            if crate::debug::is_traffic_enabled() {
+                                                let entrance = &allocator.entrances[t_bldg_idx];
+                                                traffic_log!(
+                                                    "[ACCESS_INGRESS_DETACH] agent={} target_bldg={} lane={}({}) lane_d={:.2} ingress_origin=({:.2},{:.2}) detach_node={} path_count={} flags=0x{:02x}",
+                                                    i,
+                                                    t_bldg_idx,
+                                                    planned_detach_lane_id,
+                                                    local_access_side_label(
+                                                        *s_tmode.get(i),
+                                                        entrance,
+                                                        planned_detach_lane_id,
+                                                    ),
+                                                    detach_d,
+                                                    ingress_origin.x,
+                                                    ingress_origin.y,
+                                                    *s_plan_detach_n.get(i),
+                                                    s_path.get(i).len(),
+                                                    *s_access_flags.get(i),
+                                                );
+                                            }
+                                            break;
+                                        }
                                     }
+                                } else {
+                                    if crate::debug::is_traffic_enabled() {
+                                        let target_entrance =
+                                            allocator.entrances.get(*s_tgt_b.get(i));
+                                        let side = target_entrance
+                                            .map(|entrance| {
+                                                local_access_side_label(
+                                                    *s_tmode.get(i),
+                                                    entrance,
+                                                    planned_detach_lane_id,
+                                                )
+                                            })
+                                            .unwrap_or("unknown-target");
+                                        traffic_log!(
+                                            "[ACCESS_INGRESS_WAIT] agent={} target_bldg={} lane={}({}) lane_d={:.2} reason=detach-slot-busy",
+                                            i,
+                                            *s_tgt_b.get(i),
+                                            planned_detach_lane_id,
+                                            side,
+                                            detach_d,
+                                        );
+                                    }
+                                    *s_lane_d.get_mut(i) = detach_d;
+                                    *s_speed.get_mut(i) = 0.0;
+                                    break;
                                 }
                             }
                         } else {
@@ -2355,7 +2640,6 @@ impl AgentSystem {
                                                 *s_path.get_mut(i) = replan.current_path;
                                                 *s_path_idx.get_mut(i) =
                                                     if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                                                *s_tgt_n.get_mut(i) = replan.planned_detach_node;
                                                 *s_plan_detach_n.get_mut(i) =
                                                     replan.planned_detach_node;
                                                 *s_plan_detach_lane.get_mut(i) =
@@ -2444,7 +2728,6 @@ impl AgentSystem {
                     let b_id = *s_tgt_b.get(i);
                     if b_id == usize::MAX || b_id >= allocator.buildings.len() {
                         *s_tgt_b.get_mut(i) = usize::MAX;
-                        *s_tgt_n.get_mut(i) = u32::MAX;
                         *s_access_flags.get_mut(i) = 0;
                         *s_plan_attach_n.get_mut(i) = u32::MAX;
                         *s_plan_detach_n.get_mut(i) = u32::MAX;
@@ -2472,8 +2755,6 @@ impl AgentSystem {
                         *s_pos_y.get_mut(i) = ingress_target.y;
                         *s_cur_b.get_mut(i) = b_id;
                         *s_tgt_b.get_mut(i) = usize::MAX;
-                        *s_tgt_n.get_mut(i) = u32::MAX;
-                        *s_visible.get_mut(i) = false;
                         *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                         let home = *s_home.get(i);
                         let work = *s_work.get(i);
@@ -2541,14 +2822,52 @@ impl AgentSystem {
                             advance_along_local_access_path(current, &path, step);
                         *s_pos_x.get_mut(i) = next_pos.x;
                         *s_pos_y.get_mut(i) = next_pos.y;
+                        if crate::debug::is_traffic_enabled() {
+                            let seg_before = local_access_target_segment(current, &path);
+                            let seg_after = local_access_target_segment(next_pos, &path);
+                            traffic_log!(
+                                "[ACCESS_INGRESS_STEP] agent={} bldg={} mode={} lane={}({}) lane_d={:.2} seg_before={:?} seg_after={:?} reached_door={} current=({:.2},{:.2}) next=({:.2},{:.2}) p0=({:.2},{:.2}) p1=({:.2},{:.2}) p2=({:.2},{:.2}) p3=({:.2},{:.2}) count={}",
+                                i,
+                                b_id,
+                                transit_mode_label(*s_tmode.get(i)),
+                                detach_lane_id,
+                                local_access_side_label(*s_tmode.get(i), entrance, detach_lane_id),
+                                detach_lane_d,
+                                seg_before,
+                                seg_after,
+                                reached_door,
+                                current.x,
+                                current.y,
+                                next_pos.x,
+                                next_pos.y,
+                                path.points[0].x,
+                                path.points[0].y,
+                                path.points[1].x,
+                                path.points[1].y,
+                                path.points[2].x,
+                                path.points[2].y,
+                                path.points[3].x,
+                                path.points[3].y,
+                                path.count,
+                            );
+                        }
                         if reached_door {
                             let ingress_target = path.points[path.count - 1];
+                            if crate::debug::is_traffic_enabled() {
+                                traffic_log!(
+                                    "[ACCESS_INGRESS_DONE] agent={} bldg={} pos=({:.2},{:.2}) activity_before={} flags=0x{:02x}",
+                                    i,
+                                    b_id,
+                                    ingress_target.x,
+                                    ingress_target.y,
+                                    *s_activity.get(i),
+                                    *s_access_flags.get(i),
+                                );
+                            }
                             *s_pos_x.get_mut(i) = ingress_target.x;
                             *s_pos_y.get_mut(i) = ingress_target.y;
                             *s_cur_b.get_mut(i) = b_id;
                             *s_tgt_b.get_mut(i) = usize::MAX;
-                            *s_tgt_n.get_mut(i) = u32::MAX;
-                            *s_visible.get_mut(i) = false;
                             *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                             let home = *s_home.get(i);
                             let work = *s_work.get(i);
@@ -2599,6 +2918,21 @@ impl AgentSystem {
                         *s_lane_d.get_mut(i) = detach_lane_d;
                         *s_speed.get_mut(i) = 0.0;
                         s_path.get_mut(i).clear();
+                        if crate::debug::is_traffic_enabled() {
+                            traffic_log!(
+                                "[ACCESS_INGRESS_ABORT] agent={} bldg={} mode={} lane={} lane_d={:.2} legal_detach={} exact_path={} ingress_origin=({:.2},{:.2}) reason=invalid-ingress-plan flags=0x{:02x}",
+                                i,
+                                b_id,
+                                transit_mode_label(*s_tmode.get(i)),
+                                detach_lane_id,
+                                detach_lane_d,
+                                legal_detach,
+                                exact_path.is_some(),
+                                ingress_origin.x,
+                                ingress_origin.y,
+                                *s_access_flags.get(i),
+                            );
+                        }
                         *s_path_idx.get_mut(i) = 0;
                         *s_transit.get_mut(i) = TRANSIT_NETWORK;
                         if sim_time >= *s_next_replan_time.get(i) {
@@ -2616,7 +2950,6 @@ impl AgentSystem {
                                 *s_path.get_mut(i) = replan.current_path;
                                 *s_path_idx.get_mut(i) =
                                     if s_path.get(i).len() >= 2 { 1 } else { 0 };
-                                *s_tgt_n.get_mut(i) = replan.planned_detach_node;
                                 *s_plan_detach_n.get_mut(i) = replan.planned_detach_node;
                                 *s_plan_detach_lane.get_mut(i) =
                                     replan.planned_detach_lane_id as u32;
@@ -2667,7 +3000,8 @@ impl AgentSystem {
 
 #[cfg(test)]
 mod tests {
-    use super::dispatch_agents;
+    use super::{LocalAccessPath, advance_along_local_access_path, dispatch_agents};
+    use godot::prelude::Vector2;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// Verifies that `dispatch_agents` visits every index in `0..n` exactly once,
@@ -2688,5 +3022,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_opposite_side_car_egress_finishes_when_already_at_lane_endpoint() {
+        let path = LocalAccessPath {
+            points: [
+                Vector2::new(173.14, -47.41),
+                Vector2::new(177.24, -47.41),
+                Vector2::new(184.24, -47.41),
+                Vector2::new(182.49, -47.41),
+            ],
+            count: 4,
+        };
+
+        let current = path.points[3];
+        let (next, reached_handoff) = advance_along_local_access_path(current, &path, 0.05);
+
+        assert!(
+            reached_handoff,
+            "opposite-side egress should complete at the exact lane endpoint instead of backtracking onto the crossover segment"
+        );
+        assert_eq!(next, path.points[3]);
     }
 }

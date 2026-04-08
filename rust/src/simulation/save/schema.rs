@@ -5,7 +5,7 @@ use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 12;
+pub const SAVE_VERSION: i64 = 13;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -176,7 +176,6 @@ CREATE TABLE agents(
     current_building INTEGER NOT NULL,
     target_building INTEGER NOT NULL,
     current_node INTEGER NOT NULL,
-    target_node INTEGER NOT NULL,
     planned_attach_node INTEGER NOT NULL DEFAULT 4294967295,
     planned_detach_node INTEGER NOT NULL DEFAULT 4294967295,
     planned_attach_lane_id INTEGER NOT NULL DEFAULT 4294967295,
@@ -190,7 +189,6 @@ CREATE TABLE agents(
     lane_distance REAL NOT NULL,
     pos_x REAL NOT NULL,
     pos_y REAL NOT NULL,
-    is_visible INTEGER NOT NULL,
     activity INTEGER NOT NULL,
     transit INTEGER NOT NULL,
     transit_mode INTEGER NOT NULL,

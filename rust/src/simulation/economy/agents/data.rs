@@ -15,7 +15,7 @@ use rand::Rng;
 use soa_derive::StructOfArray;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Single agent data structure used for SoA generation.
 #[derive(StructOfArray)]
@@ -32,8 +32,6 @@ pub struct Agent {
     pub pos_x: f32,
     /// World-space Z position (metres, Godot forward axis).
     pub pos_y: f32,
-    /// Whether the agent should be rendered this frame.
-    pub is_visible: bool,
 
     /// Current activity: `0` = Home, `1` = Work, `2` = other non-home stop.
     pub activity: u8,
@@ -54,8 +52,6 @@ pub struct Agent {
     pub planned_target_building: usize,
     /// Graph node the agent is currently at or most recently passed through.
     pub current_node: u32,
-    /// Graph node the agent is navigating toward.
-    pub target_node: u32,
     /// Planned road-graph endpoint that the origin frontage leg routes toward.
     pub planned_attach_node: u32,
     /// Planned road-graph endpoint from which the destination frontage leg begins.
@@ -132,6 +128,10 @@ pub struct AgentSystem {
     /// Built sequentially before the parallel movement pass; shared as a read-only
     /// reference during it so no synchronisation is needed.
     pub conn_occupied: Vec<bool>,
+    /// Scratch buffer: one-tick local-access handoff claims for car lane attach/detach.
+    /// Prevents multiple cars from claiming the same exact frontage handoff on the same lane
+    /// in a single tick when households or workplaces release or receive several agents at once.
+    pub lane_attach_claimed: Vec<AtomicBool>,
     /// Scratch buffer: per-edge speed sum for congestion calculation, indexed by edge ID.
     pub edge_speed_sum: Vec<f32>,
     /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
@@ -167,6 +167,7 @@ impl AgentSystem {
             dirty_lanes: Vec::new(),
             new_speed: Vec::new(),
             conn_occupied: Vec::new(),
+            lane_attach_claimed: Vec::new(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),
             lane_speed_sum: Vec::new(),
@@ -178,7 +179,7 @@ impl AgentSystem {
     pub fn spawn_agent(
         &mut self,
         home: usize,
-        home_node: u32,
+        _home_node: u32,
         _target_x: f32,
         _target_y: f32,
         highway_node: u32,
@@ -192,7 +193,6 @@ impl AgentSystem {
             work_building: usize::MAX,
             pos_x: init_x,
             pos_y: init_y,
-            is_visible: true,
             activity: 0, // Heading Home
             transit: TRANSIT_IMMIGRATING,
             happiness: 50.0,
@@ -202,7 +202,6 @@ impl AgentSystem {
             target_building: home,
             planned_target_building: usize::MAX,
             current_node: highway_node,
-            target_node: home_node,
             planned_attach_node: u32::MAX,
             planned_detach_node: u32::MAX,
             planned_attach_lane_id: u32::MAX,
@@ -245,14 +244,12 @@ impl AgentSystem {
 
         for _ in 0..count {
             let home_idx = rng.gen_range(0..bldg_count);
-            let b = &allocator.buildings[home_idx];
-            let home_node = crate::simulation::buildings::allocator::building_depart_node(b, graph);
             let start_node = rng.gen_range(0..graph.node_count()) as u32;
             let start_pos = graph.node(start_node).pos;
 
             self.spawn_agent(
                 home_idx,
-                home_node,
+                u32::MAX,
                 0.0,
                 0.0,
                 start_node,
@@ -338,7 +335,6 @@ impl AgentSystem {
                 self.agents.current_building[i] = usize::MAX;
                 self.agents.target_building[i] = usize::MAX;
                 self.agents.transit[i] = TRANSIT_ACCESS_INGRESS; // Dump them physically onto the sidewalk/rubble
-                self.agents.is_visible[i] = true;
             } else if self.agents.target_building[i] == building_id {
                 if self.agents.home_building[i] != usize::MAX {
                     // Target shop destroyed. Head back home!
@@ -349,7 +345,6 @@ impl AgentSystem {
                     // Target destroyed, AND homeless! Become stranded on the street!
                     self.agents.target_building[i] = usize::MAX;
                     self.agents.transit[i] = TRANSIT_ACCESS_INGRESS;
-                    self.agents.is_visible[i] = true;
                 }
             }
         }
@@ -577,7 +572,6 @@ mod tests {
             work_building: usize::MAX,
             pos_x: 0.0,
             pos_y: 0.0,
-            is_visible: true,
             activity: 0,
             transit: TRANSIT_NETWORK,
             happiness: 50.0,
@@ -587,7 +581,6 @@ mod tests {
             target_building: usize::MAX,
             planned_target_building: usize::MAX,
             current_node: 0,
-            target_node: 1,
             planned_attach_node: u32::MAX,
             planned_detach_node: u32::MAX,
             planned_attach_lane_id: u32::MAX,
@@ -615,7 +608,6 @@ mod tests {
             work_building: usize::MAX,
             pos_x: 150.0,
             pos_y: 0.0,
-            is_visible: true,
             activity: 0,
             transit: TRANSIT_NETWORK,
             happiness: 50.0,
@@ -625,7 +617,6 @@ mod tests {
             target_building: usize::MAX,
             planned_target_building: usize::MAX,
             current_node: 1,
-            target_node: 2,
             planned_attach_node: u32::MAX,
             planned_detach_node: u32::MAX,
             planned_attach_lane_id: u32::MAX,
@@ -684,7 +675,6 @@ mod tests {
             work_building: usize::MAX,
             pos_x: 0.0,
             pos_y: 0.0,
-            is_visible: false,
             activity: 0,
             transit: TRANSIT_IN_BUILDING,
             happiness: 50.0,
@@ -694,7 +684,6 @@ mod tests {
             target_building: 0,
             planned_target_building: usize::MAX,
             current_node: 0,
-            target_node: 0,
             planned_attach_node: u32::MAX,
             planned_detach_node: u32::MAX,
             planned_attach_lane_id: u32::MAX,

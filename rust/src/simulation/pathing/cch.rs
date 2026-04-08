@@ -568,7 +568,7 @@ impl CchGraph {
                                 );
                             } else if cost + b_cost < min_total_cost {
                                 traffic_log!(
-                                    "[CCH_ACCEPT] fwd meeting at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})"
+                                    "[DEBUG:CCH_ACCEPT] fwd meeting at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})"
                                 );
                                 min_total_cost = cost + b_cost;
                                 meeting_node = node;

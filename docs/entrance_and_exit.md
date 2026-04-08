@@ -2,7 +2,7 @@
 
 This document describes the current building entrance/exit behavior in the Rust simulation, why it has become brittle, and the recommended replacement architecture.
 
-The target audience is future work on `simulation/economy/agents/` and `simulation/buildings/allocator/`. This is a standalone reference linked from `docs/project.md`; that file remains the single source of truth for what is implemented.
+The target audience is future work on `simulation/economy/agents/` and `simulation/buildings/allocator/`. This is a standalone reference linked from `docs/project.md`; `project.md` tracks implementation status, while this file owns the detailed entrance/exit design and implementation spec.
 
 This document is now intended to be a deterministic implementation spec for the entrance/exit rewrite. If the implementation changes, update this file and `docs/project.md` together so they stay aligned.
 
@@ -266,27 +266,24 @@ Use this exact rule:
    - `VehicleFrontageAccess::BothSides = 1`
 2. Store `vehicle_frontage_access: VehicleFrontageAccess` directly on `network::graph::Edge`.
 3. `BuildingEntrance.vehicle_frontage_access` is a derived cache copy of `edge.vehicle_frontage_access` only. It must never be saved independently.
-4. New edge creation initializes the field from the road tool or road template that created the edge.
-   - once road templates/presets expose this policy, the chosen template value is copied directly onto the new edge
-   - until that fuller road-template system exists, legacy road creation defaults are:
+4. New edge creation initializes the field from the road tool that created the edge.
+   - current road creation defaults are:
      - `TransitType::Road` => `BothSides`
      - `TransitType::Foot` => `SameSideOnly`, though car access remains invalid on those edges regardless
 5. Geometry-only edge edits preserve the existing `vehicle_frontage_access` value.
 6. Split operations copy the source edge value to every produced child edge.
-7. Copy/paste, duplication, undo, and redo preserve the exact per-edge value.
-8. Road-template swaps or explicit road-upgrade operations overwrite the field from the newly chosen road template/preset.
-9. Automatic merge/replacement of adjacent edge segments is allowed to preserve `vehicle_frontage_access` only when all merged source edges share the same value.
+7. Existing edit-history and state-restoration flows must preserve the exact per-edge value.
+8. Automatic merge/replacement of adjacent edge segments is allowed to preserve `vehicle_frontage_access` only when all merged source edges share the same value.
    - if merged source edges disagree, do not silently invent a merged value
-   - either keep the edit boundary, or require the editing operation to choose a new explicit road preset/template value for the result
-10. Persist the field directly in `network_edges.vehicle_frontage_access`.
+   - keep the edit boundary instead
+9. Persist the field directly in `network_edges.vehicle_frontage_access`.
     - save as the integer enum value above
     - load by decoding that integer back into `VehicleFrontageAccess`
-11. Save migration for older snapshots is exact:
+10. Save migration for older snapshots is exact:
     - if `network_edges.vehicle_frontage_access` is absent, add it with default value `BothSides`
     - this is the compatibility default for pre-frontage-policy saves
-12. After load and after any road edit that changes or recreates an edge, rebuild the derived `BuildingEntrance` cache before agent planning resumes.
-13. This field belongs to the road/network editor, not the v1 asset editor.
-    - road assets/templates may author the default later
+11. After load and after any road edit that changes or recreates an edge, rebuild the derived `BuildingEntrance` cache before agent planning resumes.
+12. This field belongs to the road/network editor, not the v1 asset editor.
     - the building asset pipeline does not own frontage-crossing legality
 
 ##### Deterministic derivation rules
@@ -860,13 +857,21 @@ No midpoint heuristics are needed here.
 - The network leg starts from the exact planned attach point, not from a guessed endpoint-only abstraction.
 - The network leg owns the origin frontage-lane travel from the exact attach point on `planned_attach_lane_id` at `planned_attach_lane_d` to `planned_attach_node`.
 - The network leg also owns the destination frontage-lane travel from `planned_detach_node` to the exact detach point on `planned_detach_lane_id` at `planned_detach_lane_d`.
+- For `MODE_CAR`, a same-edge direct frontage candidate is also valid when all of these are true:
+  - `planned_attach_lane_id == planned_detach_lane_id`
+  - `planned_attach_lane_d <= planned_detach_lane_d`
+  - both buildings use that same legal frontage lane
+  - in that case, the network leg is the direct lane segment from `planned_attach_lane_d` to `planned_detach_lane_d` on that lane, with no endpoint wrap
+  - the node-path portion of `current_path` is intentionally empty even though `planned_attach_node != planned_detach_node`
 - If `planned_attach_node == planned_detach_node`, the trip has a zero-hop network leg:
   - the node-path portion of `current_path` is intentionally empty
   - this is not a planning failure
   - the agent still enters `NETWORK` after the origin-side handoff and follows any remaining planned frontage/network segments for that trip
 - Replanning is checked at the start of the tick, before movement.
 - A `NETWORK` replan is triggered only when one of these becomes true:
-  - `current_path` is empty before the trip has reached its detach target, unless this is the valid zero-hop case with `planned_attach_node == planned_detach_node`
+  - `current_path` is empty before the trip has reached its detach target, unless this is either:
+    - the valid zero-hop case with `planned_attach_node == planned_detach_node`
+    - the valid same-edge direct frontage case where the agent is already attached to `planned_detach_lane_id` and still has not reached `planned_detach_lane_d`
   - the next unread path hop references a deleted or non-adjacent graph element
   - the current lane or current node anchor is no longer valid
   - the destination entrance cache no longer provides the planned detach lane/node
@@ -1088,6 +1093,15 @@ Use these exact rules:
    - `origin_frontage_time_s = origin_frontage_free_flow_time_s + origin_frontage_penalty_time_s`
    - `destination_frontage_time_s = destination_frontage_free_flow_time_s + destination_frontage_penalty_time_s`
 12. A candidate with an invalid lane id is illegal and must be skipped before cost comparison.
+13. `MODE_CAR` has one additional same-edge direct frontage candidate:
+   - if `planned_attach_lane_id == planned_detach_lane_id`
+   - and `planned_attach_lane_d <= planned_detach_lane_d`
+   - then do not price that candidate as `(lane.length - planned_attach_lane_d) + planned_detach_lane_d` plus a node-path between endpoints
+   - instead price the live network segment directly as `planned_detach_lane_d - planned_attach_lane_d`
+   - free-flow direct frontage time is `(planned_detach_lane_d - planned_attach_lane_d) / edge.speed_limit`
+   - direct frontage penalty time is `((planned_detach_lane_d - planned_attach_lane_d) / lane.length) * lane.frontage_delay_penalty_s` when `lane.length > 1e-6`; otherwise `0.0`
+   - the node-path portion of `current_path` for that candidate is empty, but `ACCESS_ZERO_HOP_NODE_PATH` remains clear because `planned_attach_node != planned_detach_node`
+   - this rule exists to allow same-edge same-lane travel between the exact attach and detach points without forcing a fake endpoint wrap
 
 ##### Exact frontage congestion-penalty cache
 
@@ -1368,7 +1382,7 @@ What should remain:
 - Add the required `entrance` anchor named `main` to every building asset and make runtime asset lookup expose it as authoritative entry metadata.
 - Add `vehicle_frontage_access: VehicleFrontageAccess` to `network::graph::Edge`.
 - Persist `vehicle_frontage_access` through save/load with the documented migration default for older saves.
-- Make road creation, split/merge, copy/paste, undo/redo, and road-upgrade flows preserve or overwrite `vehicle_frontage_access` exactly as specified.
+- Make road creation, split/merge, save/load, and existing editor/history flows preserve `vehicle_frontage_access` exactly as specified.
 
 Goal: make the two authoritative inputs to the entrance model real before any derived cache or planner depends on them.
 
@@ -1431,8 +1445,12 @@ Goal: one coherent trip from door to door.
 - Rewrite or delete the legacy departure/arrival tests that assume heuristic curb insertion from `current_node`, `target_node`, or frontage-node shortcuts; replace them with exact entrance-cache and planned-lane assertions.
 - Remove direct-line render/debug assumptions that still treat egress as "current position -> current node" or ingress as "current position -> building center" once `ACCESS_EGRESS` and `ACCESS_INGRESS` use the exact planned local handoff points.
 - Simplify tests around deterministic entrance access instead of heuristics.
+- Keep non-agent systems on the same entrance-cache abstraction as ordinary trips. Freight/shipment ETA, supplier choice, `OWA` border-terminal choice, and helper-path spawning should continue to use exact entrance-side car access rather than regressing to any edge-endpoint proxy.
+- `TRANSIT_IMMIGRATING` should stay transport-layer-only if retained. Ownership of whether the city admits households belongs to `docs/demand.md`; `docs/economy.md` owns the admitted household record; this document owns only the movement semantics for an optional border-origin transport trip.
+- Write a dedicated destruction/eviction contract for agents whose current or target building disappears, then remove the out-of-band `TRANSIT_ACCESS_INGRESS` "dump onto rubble/street" behavior from `AgentSystem::evict_building()`.
+- Audit any remaining debug logs, tests, and tooling helpers that still speak in terms of legacy "home_node" or edge-endpoint semantics even though ordinary trips now run on entrance-cache plans.
 
-Goal: no ghost legacy behavior left in the movement loop.
+Goal: no ghost legacy behavior left in the movement loop or its adjacent helper, exceptional, and tooling paths.
 
 ### Phase 8 - Remove redundant SoA fields
 

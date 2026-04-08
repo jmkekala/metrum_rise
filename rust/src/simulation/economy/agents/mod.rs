@@ -18,10 +18,22 @@ pub const TRANSIT_ACCESS_EGRESS: u8 = 1;
 pub const TRANSIT_NETWORK: u8 = 2;
 /// Agent is traversing the short local segment from the network into the destination building.
 pub const TRANSIT_ACCESS_INGRESS: u8 = 3;
-/// Newly spawned agent travelling from a highway border node to their first home — has no current building.
+/// Reserved border-spawn transport state for exceptional/manual arrivals; daily household immigration no longer uses it.
 pub const TRANSIT_IMMIGRATING: u8 = 4;
 /// Agent is traversing a bezier curve through a road intersection (lane-change phase).
 pub const TRANSIT_INTERSECTION: u8 = 5;
+
+/// Returns whether an agent in `transit` should be rendered in the live world.
+pub(crate) fn transit_is_visible(transit: u8) -> bool {
+    matches!(
+        transit,
+        TRANSIT_ACCESS_EGRESS
+            | TRANSIT_NETWORK
+            | TRANSIT_ACCESS_INGRESS
+            | TRANSIT_IMMIGRATING
+            | TRANSIT_INTERSECTION
+    )
+}
 
 /// Trip-plan bit: the `planned_*` scalars contain a valid authoritative access/network plan.
 pub const ACCESS_PLAN_VALID: u8 = 0x01;

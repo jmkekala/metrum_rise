@@ -1,8 +1,8 @@
-//! Building removal, immigration spawning, and coordinate restoration.
+//! Building removal, immigration admission, and coordinate restoration.
 
 use crate::debug_log;
-use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
-use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::{AgentSystem, MODE_WALK, TRANSIT_IN_BUILDING};
 use crate::simulation::economy::households::{DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE, HouseholdSystem};
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
@@ -101,7 +101,7 @@ impl BuildingAllocator {
         }
     }
 
-    /// Admits immigrant households through border nodes and assigns them to available homes.
+    /// Admits immigrant households through external border connectivity and assigns them to homes.
     pub(super) fn spawn_immigrants(
         &mut self,
         agents: &mut AgentSystem,
@@ -253,62 +253,60 @@ impl BuildingAllocator {
                 );
                 break;
             };
-            let spawn_node = border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
-            let mut spawn_pos = graph.node(spawn_node).pos;
-
-            if let Some(&edge_idx) = graph.node_adjacency(spawn_node).get(0) {
-                let edge = graph.edge(edge_idx);
-                if edge.physical_geometry.len() >= 2 {
-                    let dir = if edge.start_node == spawn_node {
-                        (edge.physical_geometry[1] - edge.physical_geometry[0]).normalized()
-                    } else {
-                        (edge.physical_geometry[edge.physical_geometry.len() - 2]
-                            - edge.physical_geometry[edge.physical_geometry.len() - 1])
-                            .normalized()
-                    };
-                    let side_mul = if crate::config::DRIVE_ON_LEFT {
-                        -1.0
-                    } else {
-                        1.0
-                    };
-                    let normal = godot::prelude::Vector3::new(-dir.z, 0.0, dir.x);
-                    spawn_pos += normal * (crate::config::LANE_WIDTH * 0.5 * side_mul);
-                }
-            }
-
-            let home_bldg = &self.buildings[home_idx];
-            let home_node = building_depart_node(home_bldg, graph);
+            let home_door = self.entrances[home_idx].door_pos;
             let household_id = households.admit_immigrant_household(home_idx, household_size);
             debug_log!(
                 "economy",
-                "immigration admitted household_id={} size={} home_building={} spawn_node={} home_node={}",
+                "immigration admitted household_id={} size={} home_building={} border_connections={}",
                 household_id,
                 household_size,
                 home_idx,
-                spawn_node,
-                home_node
+                border_nodes.len()
             );
 
             for _ in 0..household_size {
                 let agent_idx = agents.spawn_agent(
                     home_idx,
-                    home_node,
+                    u32::MAX,
                     0.0,
                     0.0,
-                    spawn_node,
-                    spawn_pos.x,
-                    spawn_pos.z,
+                    u32::MAX,
+                    home_door.x,
+                    home_door.y,
                 );
                 agents.household_id[agent_idx] = household_id;
+                agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
+                agents.transit_mode[agent_idx] = MODE_WALK;
+                agents.current_building[agent_idx] = home_idx;
+                agents.target_building[agent_idx] = usize::MAX;
+                agents.planned_target_building[agent_idx] = usize::MAX;
+                agents.current_node[agent_idx] = u32::MAX;
+                agents.planned_attach_node[agent_idx] = u32::MAX;
+                agents.planned_detach_node[agent_idx] = u32::MAX;
+                agents.planned_attach_lane_id[agent_idx] = u32::MAX;
+                agents.planned_detach_lane_id[agent_idx] = u32::MAX;
+                agents.planned_attach_lane_d[agent_idx] = 0.0;
+                agents.planned_detach_lane_d[agent_idx] = 0.0;
+                agents.access_flags[agent_idx] = 0;
+                agents.next_replan_time[agent_idx] = 0.0;
+                agents.current_edge[agent_idx] = usize::MAX;
+                agents.current_lane_id[agent_idx] = usize::MAX;
+                agents.lane_distance[agent_idx] = 0.0;
+                agents.speed[agent_idx] = 0.0;
+                agents.pos_x[agent_idx] = home_door.x;
+                agents.pos_y[agent_idx] = home_door.y;
+                agents.activity[agent_idx] = 0;
+                agents.planned_activity[agent_idx] = 0;
+                agents.current_path[agent_idx].clear();
+                agents.current_path_index[agent_idx] = 0;
                 debug_log!(
                     "economy",
-                    "immigration spawned agent_idx={} household_id={} current_node={} target_node={} pos=({:.1}, {:.1})",
+                    "immigration housed agent_idx={} household_id={} current_building={} pos=({:.1}, {:.1})",
                     agent_idx,
                     household_id,
-                    spawn_node,
-                    home_node,
-                    spawn_pos.x,
-                    spawn_pos.z
+                    home_idx,
+                    home_door.x,
+                    home_door.y
                 );
             }
         }

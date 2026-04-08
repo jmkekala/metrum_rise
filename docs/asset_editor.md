@@ -1285,7 +1285,6 @@ Minimum quality-of-life features:
 
 - autosave of editor state
 - recovery of unsaved drafts after crash or forced close
-- undo / redo for metadata changes, prop placement, and transform edits
 - one-click revalidate / rebuild for the current asset or whole pack
 
 Thumbnail generation rules:

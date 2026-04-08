@@ -268,14 +268,12 @@ fn build_snapshot_maps(
         saved_nodes.insert(network::canonical_existing_node(graph, edge.end_node)?);
     }
     for i in 0..agents.len() {
-        saved_nodes.insert(network::canonical_existing_node(
-            graph,
-            agents.current_node[i],
-        )?);
-        saved_nodes.insert(network::canonical_existing_node(
-            graph,
-            agents.target_node[i],
-        )?);
+        if agents.current_node[i] != u32::MAX {
+            saved_nodes.insert(network::canonical_existing_node(
+                graph,
+                agents.current_node[i],
+            )?);
+        }
         if agents.planned_attach_node[i] != u32::MAX {
             saved_nodes.insert(network::canonical_existing_node(
                 graph,
@@ -376,11 +374,34 @@ pub(super) fn optional_edge_to_db(v: usize, m: &SnapshotMaps) -> SaveLoadResult<
         )
     }
 }
+pub(super) fn optional_node_to_db(
+    graph: &RegionGraph,
+    v: u32,
+    m: &SnapshotMaps,
+) -> SaveLoadResult<i64> {
+    if v == u32::MAX {
+        Ok(NONE_REF)
+    } else {
+        Ok(i64::from(
+            m.node_old_to_new
+                .get(&network::canonical_existing_node(graph, v)?)
+                .copied()
+                .ok_or_else(|| SaveLoadError::custom("missing node map"))?,
+        ))
+    }
+}
 pub(super) fn db_to_optional_usize(v: i64) -> SaveLoadResult<usize> {
     if v == NONE_REF {
         Ok(usize::MAX)
     } else {
         i64_to_usize(v)
+    }
+}
+pub(super) fn db_to_optional_u32(v: i64) -> SaveLoadResult<u32> {
+    if v == NONE_REF {
+        Ok(u32::MAX)
+    } else {
+        i64_to_u32(v)
     }
 }
 pub(super) fn usize_to_i64(v: usize) -> SaveLoadResult<i64> {

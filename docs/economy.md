@@ -511,12 +511,11 @@ Rules:
 
 - immigration creates or admits a whole household, not one unrelated person at a time
 - emigration removes a whole household, not isolated residents one by one
-- this does not mean households pop into existence from their destination building
-- arriving households should enter through a border connection or similar external entry path, with their member agents created as part of that household and then routed toward the assigned home
-- departing households should leave through the network and exit by the same border-facing external system
+- the economy spec does not require a physically simulated household bootstrap path through border-entry agents in `v0.1`
+- household admission and household removal are economy-layer events; whether a later transport layer visualizes those moves through border spawns or border exits is a separate system decision
 - births and other within-household demographic change are later systems, not part of the `v0.1` migration model
 
-The intended behavior is a soft transition, not a magic population wall. Immigration should slow as the city becomes more established or less attractive, while emigration rises when city conditions deteriorate.
+Whether the city should admit or lose households belongs to [`docs/demand.md`](demand.md). This document owns what a household is and what runtime state it receives once the city has already decided to admit it.
 
 ### Demand system and decisions system
 
@@ -531,7 +530,7 @@ The demand system should track aggregated pressures such as:
 - unmet goods or service demand
 - city attractiveness for immigration and risk factors for emigration
 
-This layer should operate mostly on coarse aggregate data rather than per-agent decision logic.
+This layer should operate mostly on coarse aggregate data rather than per-agent decision logic. The detailed city-growth and migration-pressure contract belongs in [`docs/demand.md`](demand.md).
 
 #### Decisions system
 
@@ -922,7 +921,7 @@ This means:
 - each household has its own runtime record rather than being merged into one anonymous building-wide stock pool
 - each household record stores at least `home_building_id`, derived `member_count`, shared budget, household stock, and replenishment state
 - agents reference a `household_id` for home-life needs and shared household money
-- immigration, emigration, and move-in or move-out should default to household-level events rather than isolated individual moves, but the physical arrival and departure of those residents should still happen through the normal agent and border-entry systems rather than by silently spawning them from buildings
+- immigration, emigration, and move-in or move-out should default to household-level events rather than isolated individual moves; the economy spec does not require a separate border-entry bootstrap choreography for those members in `v0.1`
 - households may also contribute baseline utility load through the `Utility Service Layer`, but that load is a runtime consequence of occupancy and activity rather than something authored through a household `economy_profile`
 - residential buildings still own the physical location and capacity, but they do not become the source of truth for each household's budget or stock
 
@@ -1182,8 +1181,16 @@ The runtime then resolves:
 - which consumer has demand
 - whether a shipment is worth spawning
 - which network path and carrier type to use
+- the shipment ETA and border-terminal choice using the building entrance/access abstraction rather than a legacy edge-endpoint proxy
 
 This keeps the simulation physical without forcing the editor graph to become a per-vehicle routing interface.
+
+For ordinary trucked goods in `v0.1`, route cost and ETA must use the same exact car-access abstraction as the entrance cache:
+
+- source and destination buildings are attached through their legal car frontage lanes, not through `building_depart_node()` or another one-endpoint shortcut
+- same-edge direct frontage travel is valid when the exact attach and exact detach points lie in forward order on the same legal lane
+- `OWA` / border fallback still uses a real border node as the external gateway, but the building side of that route must still use exact destination-side car access
+- future freight/service systems may prefer authored `service` anchors, but until that extension exists the generic building entrance cache is the authoritative building-side freight attachment model
 
 ### Bounded supplier search
 
@@ -1510,135 +1517,6 @@ These are implementation defaults, not final balance targets:
 
 These numbers are only a bootstrap reference pack. They should ship in the first editable economy data so all implementations and test scenarios start from the same baseline before the editor-driven balancing pass diverges.
 
-## Private Development
-
-The one-time founding bootstrap is only the city start. It must not turn into a hidden ongoing building-spam system.
-
-After the founding bootstrap has been consumed, all additional private buildings should follow explicit private-development rules.
-
-### What zoning means
-
-Zoning marks legal development capacity. Zoning alone is not an order to spawn a building immediately.
-
-Rules:
-
-- zoned frontage makes a location eligible for future private development
-- valid zoning does not guarantee that a building appears
-- new private buildings should appear only when the city has both demand pressure and a plausible business case
-- city-owned buildings still follow explicit player placement and do not use the private-development path
-
-### Development phases
-
-The first pass should separate city growth into two phases:
-
-- `founding phase`: the one-time startup bootstrap places exactly one residential building and one commercial building once the player has an external connection plus valid residential and commercial zoning
-- `private development phase`: any later private residential, commercial, industrial, office, or mixed building must pass the private-development rules below
-
-The founding phase is not a repeating fallback. Once consumed, it stays consumed.
-
-### Private development cadence
-
-Private development should be evaluated on a coarse cadence rather than every render frame.
-
-Recommended `v0.1` rule:
-
-- evaluate private development once per operational day
-- create at most one new private building per daily evaluation pass
-- if no candidate passes all viability gates, build nothing that day
-
-This keeps growth readable and prevents the simulation from spamming empty buildings faster than households, workers, or freight can absorb them.
-
-### Development inputs
-
-Private development should consume the coarse pressure signals from the demand system, but zoning demand alone is not enough.
-
-The private-development pass should evaluate:
-
-- demand pressure for the relevant building class
-- current usage of existing buildings in that class
-- staffing and labor availability
-- household stock pressure and commercial stock pressure where relevant
-- vacant housing capacity for residential growth
-- border connectivity and `OWA` availability for startup trade support
-- utility-service availability or utility fallback viability
-- whether at least one valid zoned frontage slot exists for the selected asset class
-
-### Basic viability gates
-
-The main rule is simple: do not create a new building when the city is still under-using the buildings it already has.
-
-Recommended `v0.1` gates:
-
-- `residential`:
-  - only develop when housing is meaningfully full or immigration is being blocked by lack of vacant resident slots
-  - do not add more housing while substantial residential vacancy already exists
-- `commercial`:
-  - only develop when households are creating sustained restock pressure and existing stores are not keeping up
-  - do not add more commercial buildings while current stores are badly underused or mostly unstaffed
-- `industrial`:
-  - only develop when downstream commercial buildings show sustained inbound stock pressure and current suppliers cannot keep them stocked
-  - do not add more industrial buildings while existing suppliers have large idle stock and weak staffing
-- `office`:
-  - only develop when later gameplay or profile data gives offices a real service role and current office capacity is actually needed
-
-Short version:
-
-- shortage plus usage may create development pressure
-- vacancy plus underuse should suppress development pressure
-
-### Candidate selection
-
-If a class passes the viability gates, the runtime should choose one concrete asset to develop.
-
-Recommended rule:
-
-- gather assets whose zoning class matches the selected development class
-- require a valid `economy_profile` for non-residential private development unless the building is a documented special case
-- prefer level `1` starter assets in `v0.1`
-- prefer assets whose profile role matches the shortage being addressed
-- if several candidates are still valid, choose deterministically rather than by hidden uncontrolled RNG
-
-This keeps development debuggable and prevents one shortage from spawning arbitrary mismatched buildings.
-
-### Building disappearance and failure
-
-Private development also needs a deterministic way for buildings to fail, abandon, or leave the city.
-
-Recommended first-pass rule:
-
-- buildings do not disappear instantly because one day went badly
-- each private building tracks a simple `viability` or `abandonment` timer
-- the timer worsens when the building cannot maintain staffing, sales, throughput, or occupied use for a sustained period
-- the timer recovers when the building returns to healthy use
-
-Suggested first-pass failure conditions:
-
-- `residential`:
-  - prolonged zero occupancy while the city has weak immigration demand or excess vacant housing
-- `commercial`:
-  - prolonged low staffing plus low sales plus low household usage
-- `industrial`:
-  - prolonged low staffing plus unsold stock or no useful downstream demand
-- `office`:
-  - prolonged low staffing plus no meaningful service demand
-
-When the timer crosses the failure threshold:
-
-- the building becomes abandoned or inactive first
-- later cleanup or replacement may remove it entirely if the city still does not need it
-
-This is intentionally slower and more legible than instant spawn-despawn churn.
-
-### Anti-spam rule
-
-The spec should be explicit here:
-
-- the game must not fill every zoned frontage automatically
-- the game must not keep spawning empty homes, empty stores, or empty factories just because zoning exists
-- a new building should appear only when the city is actually ready to use it
-
-That rule is more important than matching any one historical city-builder convention.
-
 ## Legacy Cleanup Targets
 
 As implementation starts, remove or refactor any code, tests, editor UX, or helper structures that still assume the older economy model rather than this spec.
@@ -1680,69 +1558,3 @@ The recommended design is:
 - founding bootstrap and later private development are separate systems, and zoning alone must not spam empty buildings
 
 That gives Metrum Rise a debuggable economy authoring workflow without violating the project's scale and performance constraints.
-
-## Current Implementation Status
-
-This section is an honesty check against the live game implementation. It is not a design goal section.
-
-### Implemented cleanly enough to count as real
-
-- explicit household runtime records exist in `rust/src/simulation/economy/households.rs`: `Household`, `HouseholdSystem`, `admit_immigrant_household`, `ensure_agent_households`, and `rebuild_household_membership` now maintain shared household budget, stock, stock-days, and replenishment state as real simulation data
-- household replenishment is household-side rather than a mandatory per-agent daily shopping loop: `rust/src/simulation/economy/households.rs::run_household_replenishment` and `progress_household_replenishment` move households through explicit replenishment states and reserve stock against stores without reviving the old always-shopping agent loop
-- household-level immigration enters through explicit border connections and claims real vacant housing: `rust/src/simulation/buildings/allocator/lifecycle.rs::spawn_immigrants` only uses connected `Border` nodes, checks real vacant resident slots, and assigns admitted households into actual homes before spawning agents
-- `OWA` ordinary-goods fallback uses connected border nodes and delayed freight jobs rather than instant stock teleportation: `rust/src/simulation/economy/logistics.rs::ShipmentSystem::daily_tick`, `request_restock_shipments`, and `try_owa_fallback` create explicit in-transit shipments from border nodes into destination buildings
-- coarse `DemandSystem` pressure is derived from live household, stock, and job conditions rather than acting as the main economy loop: `rust/src/simulation/economy/demand.rs::DemandSystem::recalculate` derives `R/C/I` pressure from current housing fill, worker fill, and stock state, and `rust/src/nodes/sim/core.rs` calls that recalculation during the normal economy tick
-- the economy editor shell exists and exports canonical `profiles.toml`, `controllers.toml`, `scenarios.toml`, and `economy.index.bin`: `godot/scripts/economy_editor.gd` drives the tool UI, while `rust/src/nodes/simulation_node.rs::load_economy_project`, `export_economy_project`, and `run_economy_sandbox` back the canonical load/export/sandbox workflow
-- the asset editor can reference canonical `economy_profile` IDs from the exported economy catalog: `godot/scripts/asset_editor.gd::_load_economy_profiles` reads the authored project, the picker stores the selected profile in the asset data, and `rust/src/nodes/sim/asset_export.rs` plus `rust/src/assets/asset.rs` persist `economy_profile` through `asset.toml`
-- the one-time founding bootstrap exists and is now separated from the old ongoing auto-growth scaffold: `rust/src/simulation/buildings/allocator/placement.rs::place_founding_bootstrap_if_ready` seeds the initial residential and commercial pair once, while the old recurring zoned auto-spawn path has been removed from normal city growth
-
-### Implemented only as rough first-pass approximations
-
-- the live runtime still uses many hardcoded economy constants instead of consuming most behavior from exported economy profiles: `rust/src/simulation/economy/households.rs` still hardcodes `HOUSEHOLD_*`, `COMMERCIAL_BASE_RATE`, `INDUSTRIAL_BASE_RATE`, `WAGE_*`, `UTILITY_COST_*`, and the work-score weights, while `rust/src/simulation/economy/logistics.rs` still hardcodes `COMMERCIAL_*`, `WHOLESALE_UNIT_PRICE`, and `OWA_IMPORT_ASK`
-- building throughput, wages, stock targets, and price-like values are still mostly Rust-authored first-pass defaults rather than profile-driven runtime data: `rust/src/simulation/economy/households.rs::run_building_economy` and `pay_daily_wages` still derive output and wages from zone type plus local constants, and `rust/src/simulation/economy/logistics.rs::request_restock_shipments` still uses fixed reorder targets and shipment minimums
-- utility handling is still a simplified boolean-and-cost approximation rather than a fuller `power` / `water` / `sewage` operator model from this spec: `rust/src/simulation/economy/households.rs::resolve_building_utilities` currently assigns flat per-zone costs and flips `utility_service_available`, while `rust/src/simulation/economy/households.rs::consume_household_stock` separately charges households a flat `HOUSEHOLD_UTILITY_COST_PER_MEMBER`
-- utility handling is also still split across overlapping approximations instead of one unified service layer: non-residential buildings are debited in `rust/src/simulation/economy/households.rs::resolve_building_utilities`, households are debited again in `rust/src/simulation/economy/households.rs::consume_household_stock`, and residential buildings are effectively treated as utility-served through the coarse `utility_service_available` flag rather than a shared operator/service resolution step
-- decision-utility planning currently covers only a simple work/home loop, not the fuller authored minute-window schedule model described earlier in this document: `rust/src/simulation/economy/households.rs` computes a weighted work score and writes `planned_activity` / `planned_target_building`, and `rust/src/simulation/economy/agents/tick.rs` then follows that simple plan, but the authored `minute_of_day`, `planned_departure`, `target_arrival`, and `reliability_buffer_minutes` model is not yet live
-- `OWA` and local logistics currently cover only the starter essential-goods loop cleanly: `rust/src/simulation/economy/logistics.rs::request_restock_shipments`, `try_local_supplier`, and `try_owa_fallback` currently operate only on `RESOURCE_HOUSEHOLD_SUPPLIES` for commercial restock, while broader resource classes and richer supplier classes remain future work
-- the founding bootstrap is live, but the proper post-founding private-development system described above is not yet implemented: `rust/src/simulation/buildings/allocator/placement.rs::place_founding_bootstrap_if_ready` can seed the first residential and commercial buildings, but there is not yet a deterministic runtime path for later private companies to add or remove buildings based on the `Private Development` rules in this spec
-- startup behavior is still spread across several first-pass slices rather than one fully unified founding-state model: founding placement lives in `rust/src/simulation/buildings/allocator/placement.rs::place_founding_bootstrap_if_ready`, immigration floor tuning lives in `rust/src/simulation/buildings/allocator/lifecycle.rs::spawn_immigrants` plus `IMMIGRATION_BASE_INFLOW` / `PLAYER_STARTUP_POPULATION_TARGET`, startup household money and stock live in `rust/src/simulation/economy/households.rs` (`IMMIGRANT_STARTING_BUDGET_PER_MEMBER`, `IMMIGRANT_STARTING_STOCK_DAYS`), startup building float lives in `rust/src/simulation/economy/households.rs::ensure_building_startup_float`, and `OWA` startup affordability lives in `rust/src/simulation/economy/logistics.rs::try_owa_fallback`
-
-### Not yet implemented in the live game
-
-- deterministic post-founding private business development and abandonment rules
-- runtime execution of most exported profile, controller, and scenario data in the normal city simulation
-- the city treasury, taxes, `VAT`, tariffs, subsidies, and the broader fiscal layer
-- fuller utility ownership and operator-revenue behavior beyond the current first-pass approximation
-- household-level emigration and richer household regrouping
-- authored schedule windows, `minute_of_day` labor timing, and the broader operational-clock behavior described in this spec
-
-### Legacy cleanup still owed
-
-The old biggest competing systems are gone, but some transitional and duplicate behavior still remains and should be cleaned up explicitly.
-
-- the exported economy pack and the live city runtime are still partly separate sources of truth: the canonical project load path already exists at `rust/src/nodes/simulation_node.rs::load_economy_project`, and the tools consume it from `godot/scripts/economy_editor.gd::_load_project` and `godot/scripts/asset_editor.gd::_load_economy_profiles`, but the live simulation still runs mostly on hardcoded first-pass constants in `rust/src/simulation/economy/households.rs` (`HOUSEHOLD_*`, `COMMERCIAL_BASE_RATE`, `ensure_building_startup_float`, `resolve_building_utilities`, `run_building_economy`), `rust/src/simulation/economy/logistics.rs` (`COMMERCIAL_*`, `OWA_IMPORT_ASK`, `try_owa_fallback`), and `rust/src/simulation/economy/demand.rs::recalculate`
-- there are still stale legacy references in code comments and helper structures that should be cleaned up explicitly: `rust/src/simulation/pathing/flow_field.rs` still describes `work/shop trips`, `rust/src/simulation/economy/agents/data.rs` still reserves `activity = 2` for an `other non-home stop`, `rust/src/simulation/economy/agents/data.rs::evict_building` still says `Target shop destroyed`, and `rust/src/simulation/economy/agents/mod.rs` / `rust/src/simulation/economy/agents/decisions.rs` still carry the old empty `decisions` module shell
-- the Godot tool layer still duplicates project-loading and JSON-parsing work instead of sharing one thin helper path: `godot/scripts/economy_editor.gd::_load_project`, `_export_project`, `_run_sandbox`, and `_parse_json` overlap with `godot/scripts/asset_editor.gd::_load_economy_profiles`, which currently reparses the same `sim.load_economy_project(...)` payload on its own
-- some older random-building helper APIs still remain in the codebase even though the active gameplay path no longer uses random building picks for city growth: `rust/src/simulation/buildings/allocator/index.rs::get_random_building_by_zone` and `rust/src/simulation/buildings/allocator/index.rs::get_random_building_by_zones`
-
-### Current reality
-
-The live game follows the direction of this spec, but not yet the full contract.
-
-The foundations are now largely correct:
-
-- households are explicit
-- `OWA` and border freight exist
-- the old hidden empty-city demand floor is gone
-- the old endless zoned-building spam scaffold is gone
-
-There is not currently a huge amount of fully active competing legacy economy logic left.
-
-The bigger problem now is transitional duplication:
-
-- the runtime is still only partially data-driven
-- the utility layer is still only approximated
-- the founding/startup rules are still fragmented
-- the real private-development system after founding still does not exist
-
-So the remaining cleanup work is now less about removing one giant old system and more about finishing the spec-driven replacement cleanly.

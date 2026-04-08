@@ -15,8 +15,7 @@ use godot::prelude::{Vector3, godot_error};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
-use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::agents::MODE_CAR;
+use crate::simulation::economy::agents::{AgentSystem, MODE_CAR, transit_is_visible};
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -50,7 +49,7 @@ fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option
     }
 }
 
-/// A snapshot of simulation state for undo/redo purposes.
+/// A snapshot of simulation state for undo history.
 pub struct SimulationSnapshot {
     /// Terrain heightmap data.
     pub terrain: Option<Vec<f32>>,
@@ -97,7 +96,7 @@ pub struct SimCore {
     pub logistics: ShipmentSystem,
     /// Map configuration (dimensions, cell sizes).
     pub config: MapConfig,
-    /// Undo/redo stack — kept in SimCore so all mutations are co-located.
+    /// Undo history stack — kept in SimCore so all mutations are co-located.
     pub undo_stack: VecDeque<SimulationSnapshot>,
     /// Set by terrain mutations; cleared by the Godot render layer.
     pub terrain_dirty: bool,
@@ -299,7 +298,7 @@ impl SimCore {
         let cull = aabb_x_min < aabb_x_max; // false when default "show all"
 
         for i in 0..self.agents.len() {
-            if !self.agents.is_visible[i] {
+            if !transit_is_visible(self.agents.transit[i]) {
                 continue;
             }
 

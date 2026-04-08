@@ -160,7 +160,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             current_building: usize::MAX,
             target_building: 0,
             current_node: n0,
-            target_node: n1,
             planned_attach_node: n0,
             planned_detach_node: n1,
             planned_attach_lane_id: planned_lane_id,
@@ -174,7 +173,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             lane_distance: 0.0,
             pos_x: -5.0,
             pos_y: 0.0,
-            is_visible: true,
             activity: 1,
             transit: TRANSIT_NETWORK,
             transit_mode: MODE_CAR,
@@ -198,7 +196,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             current_building: usize::MAX,
             target_building: 0,
             current_node: n1,
-            target_node: n0,
             planned_attach_node: u32::MAX,
             planned_detach_node: u32::MAX,
             planned_attach_lane_id: u32::MAX,
@@ -212,7 +209,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             lane_distance: 0.0,
             pos_x: 5.0,
             pos_y: 0.0,
-            is_visible: true,
             activity: 0,
             transit: TRANSIT_NETWORK,
             transit_mode: MODE_WALK,
@@ -386,64 +382,4 @@ fn load_graph_migrates_missing_vehicle_frontage_access_column_to_bothsides() {
         VehicleFrontageAccess::BothSides
     );
     assert!(!graph.edge(0).no_building_spawn);
-}
-
-#[test]
-fn load_agents_migrates_missing_access_plan_columns_to_invalid_defaults() {
-    let conn = Connection::open_in_memory().expect("in-memory sqlite");
-    conn.execute_batch(
-        r#"
-        CREATE TABLE agents(
-            agent_id INTEGER PRIMARY KEY,
-            home_building INTEGER NOT NULL,
-            household_id INTEGER NOT NULL,
-            work_building INTEGER NOT NULL,
-            current_building INTEGER NOT NULL,
-            target_building INTEGER NOT NULL,
-            current_node INTEGER NOT NULL,
-            target_node INTEGER NOT NULL,
-            current_edge INTEGER NOT NULL,
-            current_lane_id INTEGER NOT NULL,
-            lane_distance REAL NOT NULL,
-            pos_x REAL NOT NULL,
-            pos_y REAL NOT NULL,
-            is_visible INTEGER NOT NULL,
-            activity INTEGER NOT NULL,
-            transit INTEGER NOT NULL,
-            transit_mode INTEGER NOT NULL,
-            pedestrian_side INTEGER NOT NULL,
-            happiness REAL NOT NULL,
-            money REAL NOT NULL,
-            journey_start_time REAL NOT NULL,
-            has_car INTEGER NOT NULL,
-            vehicle_type INTEGER NOT NULL,
-            current_path_index INTEGER NOT NULL
-        );
-        CREATE TABLE agent_path_nodes(
-            agent_id INTEGER NOT NULL,
-            step_index INTEGER NOT NULL,
-            node_id INTEGER NOT NULL,
-            PRIMARY KEY(agent_id, step_index)
-        );
-        "#,
-    )
-    .expect("legacy agent schema");
-
-    conn.execute(
-        "INSERT INTO agents(agent_id, home_building, household_id, work_building, current_building, target_building, current_node, target_node, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index)
-         VALUES (0, -1, -1, -1, -1, -1, 0, 1, -1, -1, 0.0, 1.0, 2.0, 1, 0, 2, 1, 0, 50.0, 100.0, 0.0, 1, 0, 0)",
-        [],
-    )
-    .expect("legacy agent row");
-
-    let agents = agents::load_agents(&conn, 12.0).expect("migrated load");
-    assert_eq!(agents.len(), 1);
-    assert_eq!(agents.planned_attach_node[0], u32::MAX);
-    assert_eq!(agents.planned_detach_node[0], u32::MAX);
-    assert_eq!(agents.planned_attach_lane_id[0], u32::MAX);
-    assert_eq!(agents.planned_detach_lane_id[0], u32::MAX);
-    assert_eq!(agents.planned_attach_lane_d[0], 0.0);
-    assert_eq!(agents.planned_detach_lane_d[0], 0.0);
-    assert_eq!(agents.access_flags[0], 0);
-    assert_eq!(agents.next_replan_time[0], 0.0);
 }
