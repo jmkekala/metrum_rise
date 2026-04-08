@@ -11,6 +11,11 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 impl SimCore {
+    fn rebuild_building_entrances_internal(&mut self) {
+        self.allocator
+            .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
+    }
+
     /// Sculpts the terrain with a given radius and strength.
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.push_undo_state(true, false, true, false);
@@ -90,6 +95,7 @@ impl SimCore {
             .no_building_spawn = enabled;
         self.zoning.update_no_build_mask(&self.region_graph);
         self.allocator.dirty = true;
+        self.rebuild_building_entrances_internal();
     }
 
     /// Sets the frontage-access policy of an edge by integer enum code.
@@ -108,6 +114,7 @@ impl SimCore {
             .edge_mut(edge_idx as usize)
             .vehicle_frontage_access = access;
         self.allocator.dirty = true;
+        self.rebuild_building_entrances_internal();
     }
 
     /// Sets the classification of an edge by integer class code.
@@ -127,6 +134,7 @@ impl SimCore {
             edge.class = class;
         }
 
+        self.rebuild_building_entrances_internal();
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
     }
@@ -199,24 +207,32 @@ impl SimCore {
     /// Repositions a network node in world space.
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) {
         if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() {
-            self.region_graph.move_node(node_id as u32, pos);
-            self.region_graph.rebuild_intersection_clips();
-            self.push_undo_state(false, false, true, false);
-
-            // Recalculate zoning for all affected edges
-            let affected_edges: Vec<usize> = self
+            let affected_edges: HashSet<usize> = self
                 .region_graph
-                .edges()
+                .node_adjacency(node_id as u32)
                 .iter()
-                .enumerate()
-                .filter(|(_, e)| {
-                    !e.deleted && (e.start_node == node_id as u32 || e.end_node == node_id as u32)
-                })
-                .map(|(i, _)| i)
+                .copied()
                 .collect();
 
-            // Zone lookup is now world-grid based; no per-edge recalculation needed.
-            let _ = affected_edges;
+            self.region_graph.move_node(node_id as u32, pos);
+            for &edge_idx in &affected_edges {
+                let length = self
+                    .region_graph
+                    .calculate_length(&self.region_graph.edge(edge_idx).physical_geometry);
+                self.region_graph.edge_mut(edge_idx).physical_length = length;
+            }
+            self.region_graph.rebuild_intersection_clips();
+            self.push_undo_state(false, false, true, false);
+            self.agents
+                .invalidate_lane_ids_for_edges(&affected_edges, &self.transit_network.lane_system);
+            self.transit_network
+                .lane_system
+                .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
+            self.rebuild_building_entrances_internal();
+            self.transit_network.cch_graph =
+                crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+            self.transit_network.flow_fields.mark_all_dirty();
+            self.network_dirty = true;
         }
     }
 
@@ -258,6 +274,7 @@ impl SimCore {
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.rebuild_building_entrances_internal();
         if crate::debug::is_traffic_enabled() {
             if (node_id as usize) < self.region_graph.node_count() {
                 let conns = &self.region_graph.node(node_id).lane_connections;
@@ -307,6 +324,7 @@ impl SimCore {
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.rebuild_building_entrances_internal();
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
         self.transit_network.flow_fields.mark_all_dirty();
@@ -337,6 +355,7 @@ impl SimCore {
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.rebuild_building_entrances_internal();
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
         self.transit_network.flow_fields.mark_all_dirty();
@@ -366,6 +385,7 @@ impl SimCore {
         self.transit_network
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.rebuild_building_entrances_internal();
         if (node_id as usize) < self.region_graph.node_count() {
             let pos = self.region_graph.node(node_id).pos;
             self.transit_network.mark_point_dirty(pos);
@@ -391,6 +411,7 @@ impl SimCore {
         );
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
+        self.rebuild_building_entrances_internal();
         self.terrain_dirty = true;
     }
 

@@ -216,6 +216,7 @@ pub(crate) fn load_from_sqlite(
     }
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
+    allocator.rebuild_entrance_cache(&graph, &transit_network.lane_system);
     world::repaint_building_occupancy(&mut zoning, &allocator)?;
     allocator.rebuild_zone_index();
     allocator.dirty = true;

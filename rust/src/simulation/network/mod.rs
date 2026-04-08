@@ -79,11 +79,13 @@ impl TransitNetwork {
         &mut self,
         graph: &mut RegionGraph,
         zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+        allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) -> HashSet<usize> {
         self.bulk_load = false;
         graph.rebuild_intersection_clips();
         let dirty = std::mem::take(&mut self.bulk_dirty_edges);
         self.lane_system.rebuild_edges_incremental(graph, &dirty);
+        allocator.rebuild_entrance_cache(graph, &self.lane_system);
         zoning.update_distance_to_road(graph);
         dirty
     }

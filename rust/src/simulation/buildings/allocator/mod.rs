@@ -7,6 +7,7 @@
 //! 3. Rebuilds derived indices and pathing after building mutations.
 //! 4. Admits immigrant households through connected border nodes up to current housing capacity.
 
+mod entrance;
 mod geometry;
 mod index;
 mod lifecycle;
@@ -18,6 +19,7 @@ mod tests;
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::types::VehicleFrontageAccess;
 use godot::prelude::Vector2;
 use std::collections::HashMap;
 
@@ -75,6 +77,40 @@ pub struct Building {
     pub shipment_cooldown_days: u8,
 }
 
+#[derive(Clone)]
+pub(crate) struct BuildingEntrance {
+    pub edge_idx: usize,
+    #[allow(dead_code)]
+    pub side: i8,
+    pub vehicle_frontage_access: VehicleFrontageAccess,
+    pub entrance_s_m: f32,
+    pub door_pos: Vector2,
+    pub curb_pos: Vector2,
+    pub foot_lane_fwd: usize,
+    pub foot_lane_bkw: usize,
+    pub car_lane_fwd: usize,
+    pub car_lane_bkw: usize,
+    pub flags: u8,
+}
+
+impl Default for BuildingEntrance {
+    fn default() -> Self {
+        Self {
+            edge_idx: usize::MAX,
+            side: 0,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+            entrance_s_m: 0.0,
+            door_pos: Vector2::ZERO,
+            curb_pos: Vector2::ZERO,
+            foot_lane_fwd: usize::MAX,
+            foot_lane_bkw: usize::MAX,
+            car_lane_fwd: usize::MAX,
+            car_lane_bkw: usize::MAX,
+            flags: 0,
+        }
+    }
+}
+
 /// Manages the full lifecycle of [`Building`]s.
 #[derive(Clone)]
 pub struct BuildingAllocator {
@@ -98,8 +134,12 @@ pub struct BuildingAllocator {
     pub dirty_zones: [bool; 6],
     /// Prevents the one-time founding bootstrap from running more than once.
     pub founding_bootstrap_consumed: bool,
+    /// True when the derived entrance cache must be rebuilt before use.
+    pub(crate) entrances_dirty: bool,
     /// Registry of all loaded pack assets.
     pub registry: AssetRegistry,
+    /// Derived building entrance/access cache keyed by building index.
+    pub(crate) entrances: Vec<BuildingEntrance>,
 }
 
 /// Tracks which frontage columns along a road edge are claimed by placed buildings.
@@ -148,7 +188,9 @@ impl BuildingAllocator {
             dirty_index: true,
             dirty_zones: [false; 6],
             founding_bootstrap_consumed: false,
+            entrances_dirty: false,
             registry: AssetRegistry::new(),
+            entrances: Vec::new(),
         }
     }
 
@@ -163,12 +205,16 @@ impl BuildingAllocator {
         graph: &mut RegionGraph,
     ) {
         // 1. Stale building cleanup.
-        self.cleanup_stale_buildings(zoning, agents, logistics, graph);
+        self.cleanup_stale_buildings(zoning, agents, logistics, graph, &network.lane_system);
 
         // 2. One-time founding bootstrap from zoning + border connection.
-        self.place_founding_bootstrap_if_ready(zoning, graph);
+        self.place_founding_bootstrap_if_ready(zoning, graph, &network.lane_system);
 
         network.rebuild_pathing_if_dirty(graph);
+
+        if self.entrances_dirty || self.entrances.len() != self.buildings.len() {
+            self.rebuild_entrance_cache(graph, &network.lane_system);
+        }
 
         if self.dirty_index {
             self.rebuild_zone_index();
@@ -195,6 +241,8 @@ impl BuildingAllocator {
             self.dirty = true;
             self.dirty_index = true;
         }
+        self.entrances.clear();
+        self.entrances_dirty = true;
         let mut new_occ = HashMap::new();
         for (old_idx, occ) in self.edge_occupancy.drain() {
             if let Some(&new_id) = mapping.get(&old_idx) {
@@ -219,6 +267,8 @@ impl BuildingAllocator {
         self.founding_bootstrap_consumed = false;
         self.dirty = false;
         self.dirty_index = false;
+        self.entrances.clear();
+        self.entrances_dirty = false;
     }
 
     /// Returns the occupant capacity for a building, from its registered manifest.

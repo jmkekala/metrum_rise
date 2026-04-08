@@ -575,6 +575,10 @@ pub fn run_sim_thread(
                             .lane_system
                             .rebuild_edges_incremental(&mut c.region_graph, &dirty);
                         let dt_lanes_us = t_lanes.elapsed().as_micros();
+                        c.allocator.rebuild_entrance_cache(
+                            &c.region_graph,
+                            &c.transit_network.lane_system,
+                        );
 
                         // Zone flush is deferred to the next simulate_tick_internal call
                         // so it does not block road placement. zoning_dirty_edges accumulates.

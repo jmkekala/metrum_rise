@@ -8,6 +8,7 @@ use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
 
@@ -24,8 +25,10 @@ impl BuildingAllocator {
         agents: &mut AgentSystem,
         logistics: &mut ShipmentSystem,
         graph: &RegionGraph,
+        lanes: &LaneSystem,
     ) {
         let zone_cell_m = zoning.config.zone_cell_m;
+        let mut removed_any = false;
         let mut i = 0;
         while i < self.buildings.len() {
             let b = &self.buildings[i];
@@ -87,9 +90,14 @@ impl BuildingAllocator {
 
                 self.buildings.swap_remove(i);
                 self.dirty_index = true;
+                self.entrances_dirty = true;
+                removed_any = true;
             } else {
                 i += 1;
             }
+        }
+        if removed_any {
+            self.rebuild_entrance_cache(graph, lanes);
         }
     }
 

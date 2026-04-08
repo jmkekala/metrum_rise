@@ -7,6 +7,7 @@ use crate::simulation::buildings::allocator::{
 };
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
+use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
 
@@ -20,6 +21,7 @@ impl BuildingAllocator {
         &mut self,
         zoning: &mut ZoningSystem,
         graph: &RegionGraph,
+        lanes: &LaneSystem,
     ) {
         if self.founding_bootstrap_consumed {
             return;
@@ -84,6 +86,7 @@ impl BuildingAllocator {
 
         let residential_idx = self.commit_resolved_slot(residential_slot, zoning);
         let commercial_idx = self.commit_resolved_slot(commercial_slot, zoning);
+        self.rebuild_entrance_cache(graph, lanes);
         self.founding_bootstrap_consumed = true;
 
         debug_log!(
@@ -294,6 +297,7 @@ impl BuildingAllocator {
         let building_idx = self.place_building_instance(placement);
         self.dirty = true;
         self.dirty_index = true;
+        self.entrances_dirty = true;
         self.dirty_zones[self.buildings[building_idx].zone_type as usize] = true;
         debug_log!(
             "economy",

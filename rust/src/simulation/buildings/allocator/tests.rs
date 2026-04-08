@@ -2,12 +2,13 @@
 
 use super::*;
 use crate::assets::AssetManifest;
-use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
+use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, ZoneClass};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
+use crate::simulation::network::types::VehicleFrontageAccess;
 use godot::prelude::Vector2;
 use rand::SeedableRng;
 
@@ -17,7 +18,7 @@ fn register_test_asset(
     pack_id: &str,
     asset_id: &str,
     zone: ZoneClass,
-) {
+) -> String {
     let manifest = AssetManifest {
         asset_id: asset_id.to_owned(),
         display_name: "Test".to_owned(),
@@ -29,7 +30,12 @@ fn register_test_asset(
             distance_min_m: 0.0,
             distance_max_m: None,
         }],
-        anchors: vec![],
+        anchors: vec![Anchor {
+            anchor_type: AnchorType::Entrance,
+            name: "main".to_owned(),
+            position: [0.0, 0.0, 0.5],
+            forward: [0.0, 0.0, 1.0],
+        }],
         building: Some(BuildingData {
             zone_type: zone,
             density: "low".to_owned(),
@@ -40,7 +46,7 @@ fn register_test_asset(
             worker_capacity: None,
             service_class: None,
             economy_profile: None,
-            preview_scale: None,
+            preview_scale: Some(1.0),
         }),
         prop: None,
         vehicle: None,
@@ -50,6 +56,7 @@ fn register_test_asset(
     allocator
         .registry
         .register(pack_id, manifest, String::new());
+    format!("{pack_id}:{asset_id}")
 }
 
 #[test]
@@ -330,6 +337,83 @@ fn test_tick_runs_one_time_founding_bootstrap_from_border_and_zoning() {
         2,
         "Founding bootstrap should only seed one residential and one commercial building"
     );
+}
+
+#[test]
+fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
+    use crate::simulation::grid::zoning::ZoningSystem;
+    use crate::simulation::network::TransitNetwork;
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    let asset_id = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.entrance_cache",
+        ZoneClass::Residential,
+    );
+
+    let map_cfg = MapConfig::default();
+    let mut zoning = ZoningSystem::new(&map_cfg);
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    graph.edge_mut(0).vehicle_frontage_access = VehicleFrontageAccess::BothSides;
+    network.lane_system.rebuild(&mut graph);
+
+    allocator.buildings.push(Building {
+        center_x: 10.0,
+        center_y: -10.0,
+        width_cells: 1,
+        depth_cells: 1,
+        zone_type: ZoneType::Residential,
+        facing_dir: Vector2::new(0.0, -1.0),
+        frontage_t: 0.5,
+        side_offset: 1.0,
+        abandoned_timer: 0,
+        edge_idx: 0,
+        side: 1,
+        cell_x: 1,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        asset_id,
+        level: 1,
+        broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 0.0,
+        utility_service_available: false,
+        shipment_cooldown_days: 0,
+    });
+
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    assert_eq!(allocator.entrances.len(), 1);
+    let entrance = &allocator.entrances[0];
+    assert_eq!(
+        entrance.vehicle_frontage_access,
+        VehicleFrontageAccess::BothSides
+    );
+    assert!(entrance.flags & 0x01 != 0, "foot access should be valid");
+    assert!(entrance.flags & 0x02 != 0, "car access should be valid");
+    assert_ne!(entrance.foot_lane_fwd, usize::MAX);
+    assert_ne!(entrance.foot_lane_bkw, usize::MAX);
+    assert_ne!(entrance.car_lane_fwd, usize::MAX);
+    assert_ne!(entrance.car_lane_bkw, usize::MAX);
+    assert_eq!(entrance.door_pos, Vector2::new(10.0, -10.5));
+    assert_ne!(entrance.curb_pos, entrance.door_pos);
+    assert!(entrance.entrance_s_m >= 0.0);
+    assert!(entrance.entrance_s_m <= graph.edge(0).physical_length);
 }
 
 #[test]
