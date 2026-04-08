@@ -56,3 +56,4 @@ Priority values:
 
 - The old numbered backlog and bug table are archived in [`archive/project_legacy_2026-04-09.md`](archive/project_legacy_2026-04-09.md).
 - New work should never introduce fresh `item N` references. Use stable IDs instead.
+- The Criterion microbenchmark suite was expanded to cover `ACCESS_EGRESS` and `ACCESS_INGRESS`. Benchmark deltas against older saved results may therefore reflect a changed suite shape, not only a runtime regression.

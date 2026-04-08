@@ -15,6 +15,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Road network and routing**: modular `RegionGraph`, lane system, CCH pathfinding, road rendering, border nodes, and roadway editing are all live.
 - **Zoning and buildings**: world-space zoning grid, occupancy tracking, building placement, vacancy indexing, and no-build edge flags are live.
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
+- **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
 - **Economy foundation**: household records, building-centric daily economy, freight jobs, `OWA` fallback, and exact entrance-side freight ETA are live. See [`economy.md`](economy.md).
 - **Demand telemetry**: demand is rebuilt from live pressure rather than blindly spawning private buildings, and now owns immigration/displacement cleanup direction. See [`demand.md`](demand.md).
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live.
@@ -50,6 +51,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `roadmap.md` now owns active tracked work through stable IDs instead of positional numbering.
 - `README.md` now serves as the docs index and ownership map.
 - The legacy numbered backlog and bug table were preserved in the archive rather than kept half-live in the dashboard.
+- `rust/benches/agent_benchmark.rs` now includes access-phase microbenchmarks for `ACCESS_EGRESS` and `ACCESS_INGRESS`, so old Criterion result history is no longer strictly apples-to-apples with the updated suite.
 
 ## Reference
 

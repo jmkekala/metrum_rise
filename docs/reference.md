@@ -56,6 +56,21 @@ The type vocabulary for current and planned transport modes lives in `simulation
 | `NodeType` | `Junction, Station, Harbor, Airport, Transfer, Border` |
 | `MODE_*` constants | `WALK=0, CAR=1, BIKE=2, BUS_PASSENGER=3, TRAIN_PASSENGER=4, TAXI_PASSENGER=5, SHIP_PASSENGER=6` |
 
+### Benchmark Reference
+
+| Surface | Command / coverage | Notes |
+|---------|---------------------|-------|
+| Criterion microbenchmarks | `cd rust && cargo bench` | Runs `rust/benches/agent_benchmark.rs`. |
+| Pure road movement | `AgentSystem::tick/on_road/*` | Measures pre-pathed `TRANSIT_NETWORK` throughput. |
+| Idle SoA scan cost | `AgentSystem::tick/idle_scaling/*` | Measures idle/no-trip scan overhead. |
+| Access egress | `AgentSystem::tick_access/access_egress_car/*` | Measures the live `ACCESS_EGRESS` car path using a real entrance cache and lane handoff. |
+| Access ingress | `AgentSystem::tick_access/access_ingress_car/*` | Measures the live `ACCESS_INGRESS` car path using a real entrance cache and lane detach/door approach. |
+
+Benchmark-history rule:
+
+- treat older Criterion results as a different baseline if they were captured before the access-phase benchmarks were added or before the benchmark setup was reshaped
+- only call something a regression when the compared runs use the same benchmark family and the same benchmark setup shape
+
 ### Memory Budget (Default 20 km Map)
 
 | Resource | Size | Notes |
