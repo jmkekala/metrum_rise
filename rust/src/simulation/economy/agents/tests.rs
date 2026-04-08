@@ -112,9 +112,6 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
 
 #[test]
 fn test_agent_departure_sidewalk_selection() {
-    // Two nodes and one edge: n0 --(edge 0)--> n1.
-    // Building fronts edge 0, frontage_t=0.5 → frontage_node = n1.
-    // Agent departs from building (pos = 0,0) toward n1, then walks n1→n0 on road.
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
@@ -124,20 +121,40 @@ fn test_agent_departure_sidewalk_selection() {
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     let mut allocator = BuildingAllocator::new();
-    // frontage_t = 0.5 → end_node = n1
-    allocator.buildings.push(create_test_building(edge_idx, 1));
+    let asset_id = register_test_asset(
+        &mut allocator,
+        "test",
+        "walk_departure",
+        ZoneClass::Residential,
+    );
+    let mut building = create_test_building(edge_idx, 1);
+    building.asset_id = asset_id;
+    allocator.buildings.push(building);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let entrance = allocator.entrances[0].clone();
+    let lane_id = entrance.foot_lane_bkw;
+    let lane = &network.lane_system.lanes[lane_id];
+    let planned_attach_node = if lane.is_fwd { n1 } else { n0 };
     let mut agents = AgentSystem::new();
     agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
     let a_id = 0;
     agents.transit[a_id] = TRANSIT_ACCESS_EGRESS;
     agents.transit_mode[a_id] = MODE_WALK;
-    agents.current_node[a_id] = n1;
     agents.current_building[a_id] = 0;
-    agents.target_building[a_id] = 0;
-    // Path: n1 → n0 (the agent departs from frontage_node=n1 and walks to n0)
-    agents.current_path[a_id] = vec![n1, n0];
-    agents.current_path_index[a_id] = 1;
-    // Tick until ON_ROAD or max iterations
+    agents.pos_x[a_id] = entrance.door_pos.x;
+    agents.pos_y[a_id] = entrance.door_pos.y;
+    agents.planned_attach_node[a_id] = planned_attach_node;
+    agents.planned_attach_lane_id[a_id] = lane_id as u32;
+    agents.planned_attach_lane_d[a_id] =
+        crate::simulation::buildings::allocator::BuildingAllocator::project_point_to_polyline_s(
+            &lane.geometry,
+            crate::simulation::buildings::allocator::BuildingAllocator::sample_pos_on_edge(
+                &graph,
+                edge_idx,
+                entrance.entrance_s_m / graph.edge(edge_idx).physical_length,
+            ),
+        );
+    agents.access_flags[a_id] = ACCESS_PLAN_VALID;
     for _ in 0..500 {
         agents.tick(&mut allocator, &mut network, &mut graph, 0.1);
         if agents.transit[a_id] == TRANSIT_NETWORK {
@@ -145,14 +162,11 @@ fn test_agent_departure_sidewalk_selection() {
         }
     }
     assert_eq!(agents.transit[a_id], TRANSIT_NETWORK);
-    // One extra tick so the ON_ROAD branch can initialise the lane.
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1);
-    let lane_id = agents.current_lane_id[a_id];
     assert!(
-        lane_id != usize::MAX,
+        agents.current_lane_id[a_id] != usize::MAX,
         "Expected a valid lane after reaching the road"
     );
-    let lane = &network.lane_system.lanes[lane_id];
+    let lane = &network.lane_system.lanes[agents.current_lane_id[a_id]];
     assert_eq!(
         lane.lane_type,
         crate::simulation::network::lanes::LaneType::Foot
@@ -161,9 +175,6 @@ fn test_agent_departure_sidewalk_selection() {
 
 #[test]
 fn test_agent_departure_car_selection() {
-    // Two nodes and one edge: n0 --(edge 0)--> n1.
-    // Building fronts edge 0, frontage_t=0.5 → frontage_node = n1.
-    // Agent departs from building toward n1, then drives n1→n0 on road.
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
@@ -173,20 +184,40 @@ fn test_agent_departure_car_selection() {
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     let mut allocator = BuildingAllocator::new();
-    // frontage_t = 0.5 → end_node = n1
-    allocator.buildings.push(create_test_building(edge_idx, 1));
+    let asset_id = register_test_asset(
+        &mut allocator,
+        "test",
+        "car_departure",
+        ZoneClass::Residential,
+    );
+    let mut building = create_test_building(edge_idx, 1);
+    building.asset_id = asset_id;
+    allocator.buildings.push(building);
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+    let entrance = allocator.entrances[0].clone();
+    let lane_id = entrance.car_lane_bkw;
+    let lane = &network.lane_system.lanes[lane_id];
+    let planned_attach_node = if lane.is_fwd { n1 } else { n0 };
     let mut agents = AgentSystem::new();
     agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
     let a_id = 0;
     agents.transit[a_id] = TRANSIT_ACCESS_EGRESS;
     agents.transit_mode[a_id] = MODE_CAR;
-    agents.current_node[a_id] = n1;
     agents.current_building[a_id] = 0;
-    agents.target_building[a_id] = 0;
-    // Path: n1 → n0 (the agent departs from frontage_node=n1 and drives to n0)
-    agents.current_path[a_id] = vec![n1, n0];
-    agents.current_path_index[a_id] = 1;
-    // Tick until ON_ROAD or max iterations
+    agents.pos_x[a_id] = entrance.door_pos.x;
+    agents.pos_y[a_id] = entrance.door_pos.y;
+    agents.planned_attach_node[a_id] = planned_attach_node;
+    agents.planned_attach_lane_id[a_id] = lane_id as u32;
+    agents.planned_attach_lane_d[a_id] =
+        crate::simulation::buildings::allocator::BuildingAllocator::project_point_to_polyline_s(
+            &lane.geometry,
+            crate::simulation::buildings::allocator::BuildingAllocator::sample_pos_on_edge(
+                &graph,
+                edge_idx,
+                entrance.entrance_s_m / graph.edge(edge_idx).physical_length,
+            ),
+        );
+    agents.access_flags[a_id] = ACCESS_PLAN_VALID;
     for _ in 0..500 {
         agents.tick(&mut allocator, &mut network, &mut graph, 0.1);
         if agents.transit[a_id] == TRANSIT_NETWORK {
@@ -194,14 +225,11 @@ fn test_agent_departure_car_selection() {
         }
     }
     assert_eq!(agents.transit[a_id], TRANSIT_NETWORK);
-    // One extra tick so the ON_ROAD branch can initialise the lane.
-    agents.tick(&mut allocator, &mut network, &mut graph, 0.1);
-    let lane_id = agents.current_lane_id[a_id];
     assert!(
-        lane_id != usize::MAX,
+        agents.current_lane_id[a_id] != usize::MAX,
         "Expected a valid lane after reaching the road"
     );
-    let lane = &network.lane_system.lanes[lane_id];
+    let lane = &network.lane_system.lanes[agents.current_lane_id[a_id]];
     assert_eq!(
         lane.lane_type,
         crate::simulation::network::lanes::LaneType::Vehicle
