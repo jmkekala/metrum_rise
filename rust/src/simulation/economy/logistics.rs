@@ -545,6 +545,8 @@ mod tests {
             physical_geometry: vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
         let e1 = graph.add_edge(Edge {
             start_node: n1,
@@ -565,6 +567,8 @@ mod tests {
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
         graph.rebuild_adjacency_list();
 

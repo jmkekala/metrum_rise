@@ -2,10 +2,10 @@
 
 use super::SaveLoadError;
 use crate::simulation::grid::zoning::ZoneType;
-use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
+use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 11;
+pub const SAVE_VERSION: i64 = 12;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -84,7 +84,8 @@ CREATE TABLE network_edges(
     current_congestion REAL NOT NULL,
     start_clip REAL NOT NULL,
     end_clip REAL NOT NULL,
-    no_building_spawn INTEGER NOT NULL DEFAULT 0
+    no_building_spawn INTEGER NOT NULL DEFAULT 0,
+    vehicle_frontage_access INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE network_edge_geometry(
     edge_id INTEGER NOT NULL,
@@ -274,6 +275,26 @@ pub fn edge_class_from_i64(value: i64) -> Result<EdgeClass, SaveLoadError> {
         2 => Ok(EdgeClass::Tunnel),
         _ => Err(SaveLoadError::custom(format!(
             "unknown EdgeClass value {}",
+            value
+        ))),
+    }
+}
+
+pub fn vehicle_frontage_access_to_i64(value: VehicleFrontageAccess) -> i64 {
+    match value {
+        VehicleFrontageAccess::SameSideOnly => 0,
+        VehicleFrontageAccess::BothSides => 1,
+    }
+}
+
+pub fn vehicle_frontage_access_from_i64(
+    value: i64,
+) -> Result<VehicleFrontageAccess, SaveLoadError> {
+    match value {
+        0 => Ok(VehicleFrontageAccess::SameSideOnly),
+        1 => Ok(VehicleFrontageAccess::BothSides),
+        _ => Err(SaveLoadError::custom(format!(
+            "unknown VehicleFrontageAccess value {}",
             value
         ))),
     }

@@ -92,6 +92,24 @@ impl SimCore {
         self.allocator.dirty = true;
     }
 
+    /// Sets the frontage-access policy of an edge by integer enum code.
+    pub fn set_vehicle_frontage_access_internal(&mut self, edge_idx: i32, access_int: u8) {
+        if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
+            return;
+        }
+
+        let access = match access_int {
+            0 => crate::simulation::network::types::VehicleFrontageAccess::SameSideOnly,
+            1 => crate::simulation::network::types::VehicleFrontageAccess::BothSides,
+            _ => return,
+        };
+
+        self.region_graph
+            .edge_mut(edge_idx as usize)
+            .vehicle_frontage_access = access;
+        self.allocator.dirty = true;
+    }
+
     /// Sets the classification of an edge by integer class code.
     pub fn set_edge_class_internal(&mut self, edge_idx: i32, class_int: u8) {
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {

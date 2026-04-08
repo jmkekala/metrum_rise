@@ -173,6 +173,8 @@ mod tests {
             ],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
 
         // 2. Tick once - source cells should be positive
@@ -250,6 +252,8 @@ mod tests {
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
 
         let n1_h = graph_high.add_node(Vector3::ZERO, NodeType::Junction);
@@ -273,6 +277,8 @@ mod tests {
             physical_geometry: vec![Vector3::ZERO, Vector3::new(10.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
 
         noise_low.tick(&allocator, &graph_low, &config);

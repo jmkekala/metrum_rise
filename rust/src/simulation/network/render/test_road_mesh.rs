@@ -45,6 +45,8 @@ mod tests {
             physical_geometry: vec![p1, p2],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         }
     }
 

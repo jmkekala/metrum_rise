@@ -29,6 +29,8 @@ fn test_lane_geometry_and_length() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
     graph.rebuild_adjacency_list();
 
@@ -88,6 +90,8 @@ fn test_highway_no_sidewalks() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
     graph.rebuild_adjacency_list();
 
@@ -130,6 +134,8 @@ fn test_dedicated_footpath_centering() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
     graph.rebuild_adjacency_list();
 
@@ -178,6 +184,8 @@ fn test_junction_pedestrian_connectivity() {
             physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
     }
     graph.rebuild_adjacency_list();
@@ -232,6 +240,8 @@ fn test_rht_lane_offsets() {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
     graph.rebuild_adjacency_list();
 
@@ -295,6 +305,8 @@ fn test_crosswalk_counts() {
             physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
     }
     graph.rebuild_adjacency_list();
@@ -369,6 +381,8 @@ fn test_vehicle_connections() {
             ],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
     }
     graph.rebuild_adjacency_list();
@@ -425,6 +439,8 @@ fn build_t_junction() -> (RegionGraph, u32, usize, usize, usize) {
             physical_geometry: vec![p0, p1],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         })
     };
 
@@ -602,6 +618,8 @@ fn add_road_edge(graph: &mut RegionGraph, s: u32, e: u32) -> usize {
         physical_geometry: vec![p0, p1],
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     })
 }
 

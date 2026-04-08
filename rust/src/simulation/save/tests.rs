@@ -15,7 +15,9 @@ use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+use crate::simulation::network::types::{
+    EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+};
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use godot::prelude::{Vector2, Vector3};
@@ -70,6 +72,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         physical_geometry: vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access: VehicleFrontageAccess::BothSides,
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     let mut zoning = ZoningSystem::new(&config);
@@ -238,6 +241,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.pollution.grid.data, pollution.grid.data);
     assert_eq!(loaded.noise.grid.data, noise.grid.data);
     assert_eq!(loaded.graph.edge_count(), 1);
+    assert_eq!(
+        loaded.graph.edge(0).vehicle_frontage_access,
+        VehicleFrontageAccess::BothSides
+    );
     assert_eq!(
         loaded.zoning.get_zone_world(0.0, 0.0),
         ZoneType::Residential

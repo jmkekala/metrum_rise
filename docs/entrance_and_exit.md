@@ -6,10 +6,6 @@ The target audience is future work on `simulation/economy/agents/` and `simulati
 
 This document is now intended to be a deterministic implementation spec for the entrance/exit rewrite. If the implementation changes, update this file and `docs/project.md` together so they stay aligned.
 
-## Determinism Status
-
-The rules below are intended to be complete and deterministic. If a future edit introduces ambiguity, add the unresolved rule here before implementation begins.
-
 ## Current System
 
 ### Core data model

@@ -38,6 +38,8 @@ mod tests {
             class: EdgeClass::Standard,
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
         // Edge 1: Center to Right (0 to +X) (Horizontal Main Road Part 2)
         g.add_edge(Edge {
@@ -63,6 +65,8 @@ mod tests {
             class: EdgeClass::Standard,
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
         // Edge 2: Bot to Center (+Z to 0) (Vertical Road connecting)
         g.add_edge(Edge {
@@ -88,6 +92,8 @@ mod tests {
             class: EdgeClass::Standard,
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
 
         g.rebuild_intersection_clips();

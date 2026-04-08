@@ -702,6 +702,15 @@ impl SimulationNode {
             .set_no_building_spawn_internal(edge_idx, enabled);
     }
 
+    /// Sets the vehicle frontage-access policy on an edge.
+    ///
+    /// `0 = SameSideOnly`, `1 = BothSides`. Invalid values are ignored.
+    #[func]
+    pub fn set_vehicle_frontage_access(&mut self, edge_idx: i32, access_int: u8) {
+        self.lock_core()
+            .set_vehicle_frontage_access_internal(edge_idx, access_int);
+    }
+
     /// Returns true if the given edge has the no-building-spawn flag set.
     #[func]
     pub fn get_no_building_spawn(&self, edge_idx: i32) -> bool {
@@ -710,6 +719,25 @@ impl SimulationNode {
             return false;
         }
         core.region_graph.edge(edge_idx as usize).no_building_spawn
+    }
+
+    /// Returns the vehicle frontage-access policy on an edge.
+    ///
+    /// Returns `1` (`BothSides`) if the edge index is invalid.
+    #[func]
+    pub fn get_vehicle_frontage_access(&self, edge_idx: i32) -> u8 {
+        let core = self.lock_core();
+        if edge_idx < 0 || edge_idx as usize >= core.region_graph.edge_count() {
+            return 1;
+        }
+        match core
+            .region_graph
+            .edge(edge_idx as usize)
+            .vehicle_frontage_access
+        {
+            crate::simulation::network::types::VehicleFrontageAccess::SameSideOnly => 0,
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides => 1,
+        }
     }
 
     /// Returns the start and end node indices of an edge as `Vector2i(start, end)`.

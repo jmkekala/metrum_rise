@@ -94,6 +94,8 @@ pub struct Edge {
     /// When `true` the building allocator will not place buildings along this edge.
     /// Auto-set for roads with `speed_limit ≥ 80 km/h`; player-toggleable in the road inspector.
     pub no_building_spawn: bool,
+    /// Controls whether buildings along this edge may directly use only same-side lanes or both carriageways for car access.
+    pub vehicle_frontage_access: VehicleFrontageAccess,
 }
 
 impl Edge {

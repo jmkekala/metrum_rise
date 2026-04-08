@@ -25,6 +25,8 @@ fn test_slope_cost_calculation() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     };
 
     let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
@@ -81,6 +83,8 @@ fn test_pathing_avoids_steep_slope() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     };
     let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);
     edge_ab.base_cost = cost_ab;
@@ -108,6 +112,8 @@ fn test_pathing_avoids_steep_slope() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     };
     let (cost_ac, dist_ac) = cost::CostCalculator::calculate_costs(&edge_ac);
     edge_ac.base_cost = cost_ac;
@@ -140,6 +146,8 @@ fn test_pathing_avoids_steep_slope() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     };
     let (cost_cb, dist_cb) = cost::CostCalculator::calculate_costs(&edge_cb);
     edge_cb.base_cost = cost_cb;
@@ -188,6 +196,8 @@ fn test_bidirectional_walkway_pathing() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
 
     let cch = CchGraph::build(&graph);
@@ -237,6 +247,8 @@ fn test_car_uturn_allowed() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
 
     let cch = CchGraph::build(&graph);
@@ -292,6 +304,8 @@ fn test_car_avoids_walkway_shortcut() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
     graph.add_edge(Edge {
         start_node: n1,
@@ -312,6 +326,8 @@ fn test_car_avoids_walkway_shortcut() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
 
     // Walkway shortcut n0 -> n2 directly
@@ -334,6 +350,8 @@ fn test_car_avoids_walkway_shortcut() {
         class: EdgeClass::Standard,
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     });
 
     let cch = cch::CchGraph::build(&graph);
@@ -408,6 +426,8 @@ fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize
             physical_geometry: vec![p0, p1],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         })
     };
 

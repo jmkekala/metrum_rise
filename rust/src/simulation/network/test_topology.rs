@@ -4,8 +4,10 @@ mod tests {
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
-    use crate::simulation::network::graph::RegionGraph;
-    use crate::simulation::network::types::NodeType;
+    use crate::simulation::network::graph::{Edge, RegionGraph};
+    use crate::simulation::network::types::{
+        EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+    };
     use godot::prelude::Vector3;
 
     #[test]
@@ -265,5 +267,49 @@ mod tests {
         );
 
         assert_eq!(graph.edges.iter().filter(|e| !e.deleted).count(), 2);
+    }
+
+    #[test]
+    fn test_remove_node_and_merge_edges_refuses_conflicting_vehicle_frontage_access() {
+        let mut graph = RegionGraph::new();
+        let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+        let n2 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+
+        let common = Edge {
+            start_node: n0,
+            end_node: n1,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 10.0,
+            physical_length: 10.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        };
+
+        let e0 = graph.add_edge(common.clone());
+        let e1 = graph.add_edge(Edge {
+            start_node: n1,
+            end_node: n2,
+            geometry: vec![Vector3::new(10.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(10.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+            vehicle_frontage_access: VehicleFrontageAccess::SameSideOnly,
+            ..common
+        });
+
+        assert_eq!(graph.remove_node_and_merge_edges(n1), None);
+        assert!(!graph.edge(e0).deleted);
+        assert!(!graph.edge(e1).deleted);
     }
 }

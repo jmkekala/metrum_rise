@@ -330,6 +330,8 @@ mod tests {
             physical_geometry: vec![Vector3::ZERO, Vector3::new(cost * 50.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         }
     }
 

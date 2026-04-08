@@ -29,6 +29,8 @@ fn create_test_edge(n0: u32, n1: u32) -> Edge {
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     }
 }
 
@@ -549,6 +551,8 @@ fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGraph, Vec<us
         physical_geometry: vec![Vector3::new(x0, 0.0, 0.0), Vector3::new(x1, 0.0, 0.0)],
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     };
     graph.add_edge(make(n0, n1, 0.0, 100.0));
     graph.add_edge(make(n1, n2, 100.0, 200.0));
@@ -589,6 +593,8 @@ fn build_4way_junction(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGraph, [Vec<u
         physical_geometry: vec![Vector3::new(sx, 0.0, sz), Vector3::new(ex, 0.0, ez)],
         deleted: false,
         no_building_spawn: false,
+        vehicle_frontage_access:
+            crate::simulation::network::types::VehicleFrontageAccess::BothSides,
     };
     let ew = graph.add_edge(arm(nw, nc, -100.0, 0.0, 0.0, 0.0));
     let ee = graph.add_edge(arm(ne, nc, 100.0, 0.0, 0.0, 0.0));
@@ -1096,6 +1102,8 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             physical_geometry: vec![Vector3::new(x, 0.0, 0.0), Vector3::new(x + 100.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         };
         edges.push(graph.add_edge(e));
     }

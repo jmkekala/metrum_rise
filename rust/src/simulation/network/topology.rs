@@ -186,7 +186,10 @@ impl RegionGraph {
             let (_target_end_node, mid_node, target_start_node) = {
                 let e1 = self.edge(i1);
                 let e2 = self.edge(i2);
-                if e1.primary_type != e2.primary_type || e1.width != e2.width {
+                if e1.primary_type != e2.primary_type
+                    || e1.width != e2.width
+                    || e1.vehicle_frontage_access != e2.vehicle_frontage_access
+                {
                     return None;
                 }
 
@@ -740,6 +743,7 @@ pub fn split_edge(
     let current_congestion = old_edge.current_congestion;
     let class = old_edge.class;
     let no_building_spawn = old_edge.no_building_spawn;
+    let vehicle_frontage_access = old_edge.vehicle_frontage_access;
 
     let old_end_node = graph.edges[edge_id].end_node;
 
@@ -780,6 +784,7 @@ pub fn split_edge(
         class,
         deleted: false,
         no_building_spawn,
+        vehicle_frontage_access,
     };
     let (cost_new, length_new) =
         crate::simulation::pathing::cost::CostCalculator::calculate_costs(&new_edge);

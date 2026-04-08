@@ -66,3 +66,13 @@ pub enum EdgeClass {
     /// Underground or covered road.
     Tunnel,
 }
+
+/// Determines which vehicle lane groups along a road edge may directly serve building frontage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VehicleFrontageAccess {
+    /// Cars may only attach to or detach from the lane group on the building's own frontage side.
+    SameSideOnly,
+    /// Cars may use either same-side or opposite-side frontage lanes when the entrance model allows it.
+    #[default]
+    BothSides,
+}

@@ -34,6 +34,8 @@ mod tests {
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 deleted: false,
                 no_building_spawn: false,
+                vehicle_frontage_access:
+                    crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             });
         }
         graph.rebuild_adjacency_list();
@@ -111,6 +113,8 @@ mod tests {
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 deleted: false,
                 no_building_spawn: false,
+                vehicle_frontage_access:
+                    crate::simulation::network::types::VehicleFrontageAccess::BothSides,
             });
         }
         graph.rebuild_adjacency_list();
@@ -170,6 +174,8 @@ mod tests {
             physical_geometry: vec![graph.nodes[n0 as usize].pos, graph.nodes[n1 as usize].pos],
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         });
         graph.rebuild_adjacency_list();
         let mut lanes = LaneSystem::new();

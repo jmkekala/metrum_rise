@@ -233,6 +233,11 @@ impl TransitNetwork {
         if is_walkway || fwd > 0 || bkw > 0 {
             allowed_types |= TransitFlags::FOOT;
         }
+        let vehicle_frontage_access = if is_walkway {
+            VehicleFrontageAccess::SameSideOnly
+        } else {
+            VehicleFrontageAccess::BothSides
+        };
 
         let edge_id = graph.add_edge(graph::Edge {
             start_node: start,
@@ -257,6 +262,7 @@ impl TransitNetwork {
             physical_geometry: points,
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access,
         });
 
         let (cost, length) =

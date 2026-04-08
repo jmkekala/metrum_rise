@@ -145,6 +145,8 @@ mod tests {
             physical_geometry: Vec::new(),
             deleted: false,
             no_building_spawn: false,
+            vehicle_frontage_access:
+                crate::simulation::network::types::VehicleFrontageAccess::BothSides,
         };
 
         graph.edges = vec![
