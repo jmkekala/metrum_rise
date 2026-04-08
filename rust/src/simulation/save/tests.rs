@@ -21,6 +21,7 @@ use crate::simulation::network::types::{
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use godot::prelude::{Vector2, Vector3};
+use rusqlite::Connection;
 use std::fs;
 
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -265,4 +266,99 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.allocator.buildings[0].frontage_t, 0.5);
     assert_eq!(loaded.logistics.shipments.len(), 1);
     assert_eq!(loaded.logistics.shipments[0].destination_building_id, 0);
+}
+
+#[test]
+fn load_graph_migrates_missing_vehicle_frontage_access_column_to_bothsides() {
+    let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE network_nodes(
+            node_id INTEGER PRIMARY KEY,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            z REAL NOT NULL,
+            node_type INTEGER NOT NULL
+        );
+        CREATE TABLE network_edges(
+            edge_id INTEGER PRIMARY KEY,
+            start_node INTEGER NOT NULL,
+            end_node INTEGER NOT NULL,
+            primary_type INTEGER NOT NULL,
+            allowed_types INTEGER NOT NULL,
+            class INTEGER NOT NULL,
+            width REAL NOT NULL,
+            fwd_lanes INTEGER NOT NULL,
+            bkw_lanes INTEGER NOT NULL,
+            speed_limit REAL NOT NULL,
+            base_cost REAL NOT NULL,
+            physical_length REAL NOT NULL,
+            current_congestion REAL NOT NULL,
+            start_clip REAL NOT NULL,
+            end_clip REAL NOT NULL
+        );
+        CREATE TABLE network_edge_geometry(
+            edge_id INTEGER NOT NULL,
+            point_index INTEGER NOT NULL,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            z REAL NOT NULL,
+            physical INTEGER NOT NULL,
+            PRIMARY KEY(edge_id, physical, point_index)
+        );
+        CREATE TABLE lane_connections(
+            node_id INTEGER NOT NULL,
+            from_edge INTEGER NOT NULL,
+            from_lane INTEGER NOT NULL,
+            to_edge INTEGER NOT NULL,
+            to_lane INTEGER NOT NULL
+        );
+        "#,
+    )
+    .expect("legacy schema");
+
+    conn.execute(
+        "INSERT INTO network_nodes(node_id, x, y, z, node_type) VALUES (0, 0.0, 0.0, 0.0, 1)",
+        [],
+    )
+    .expect("node 0");
+    conn.execute(
+        "INSERT INTO network_nodes(node_id, x, y, z, node_type) VALUES (1, 10.0, 0.0, 0.0, 1)",
+        [],
+    )
+    .expect("node 1");
+    conn.execute(
+        "INSERT INTO network_edges(edge_id, start_node, end_node, primary_type, allowed_types, class, width, fwd_lanes, bkw_lanes, speed_limit, base_cost, physical_length, current_congestion, start_clip, end_clip)
+         VALUES (0, 0, 1, 1, 3, 0, 7.0, 1, 1, 50.0, 10.0, 10.0, 0.0, 0.0, 0.0)",
+        [],
+    )
+    .expect("edge");
+    conn.execute(
+        "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (0, 0, 0.0, 0.0, 0.0, 0)",
+        [],
+    )
+    .expect("geom 0");
+    conn.execute(
+        "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (0, 1, 10.0, 0.0, 0.0, 0)",
+        [],
+    )
+    .expect("geom 1");
+    conn.execute(
+        "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (0, 0, 0.0, 0.0, 0.0, 1)",
+        [],
+    )
+    .expect("phys geom 0");
+    conn.execute(
+        "INSERT INTO network_edge_geometry(edge_id, point_index, x, y, z, physical) VALUES (0, 1, 10.0, 0.0, 0.0, 1)",
+        [],
+    )
+    .expect("phys geom 1");
+
+    let graph = network::load_graph(&conn).expect("migrated graph");
+    assert_eq!(graph.edge_count(), 1);
+    assert_eq!(
+        graph.edge(0).vehicle_frontage_access,
+        VehicleFrontageAccess::BothSides
+    );
+    assert!(!graph.edge(0).no_building_spawn);
 }

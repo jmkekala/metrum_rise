@@ -220,6 +220,7 @@ mod tests {
         assert_eq!(graph.edges.len(), 1);
         let old_edge_id = 0;
         let _old_length = graph.edges[old_edge_id].physical_length;
+        graph.edge_mut(old_edge_id).vehicle_frontage_access = VehicleFrontageAccess::SameSideOnly;
 
         // 2. Add a building
         allocator
@@ -267,6 +268,12 @@ mod tests {
         );
 
         assert_eq!(graph.edges.iter().filter(|e| !e.deleted).count(), 2);
+        for edge in graph.edges.iter().filter(|edge| !edge.deleted) {
+            assert_eq!(
+                edge.vehicle_frontage_access,
+                VehicleFrontageAccess::SameSideOnly
+            );
+        }
     }
 
     #[test]

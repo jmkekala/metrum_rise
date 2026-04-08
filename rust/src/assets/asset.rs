@@ -554,6 +554,31 @@ forward = [0.0, 0.0, -1.0]
         assert!(AssetManifest::from_str(toml).is_err());
     }
 
+    #[test]
+    fn building_rejects_duplicate_main_entrance_anchor() {
+        let toml = r#"
+asset_id = "building.residential.bad"
+display_name = "Bad"
+[building]
+zone_type = "residential"
+lot_width_cells = 2
+lot_depth_cells = 2
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, 2.0]
+forward = [0.0, 0.0, 1.0]
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, -2.0]
+forward = [0.0, 0.0, -1.0]
+"#;
+        assert!(AssetManifest::from_str(toml).is_err());
+    }
+
     // ── Prop ─────────────────────────────────────────��──────────────────────���─
 
     const PROP_TOML: &str = r#"

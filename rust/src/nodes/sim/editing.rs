@@ -581,3 +581,104 @@ impl SimCore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SimCore;
+    use crate::simulation::buildings::allocator::BuildingAllocator;
+    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::time::TimeSystem;
+    use crate::simulation::economy::agents::AgentSystem;
+    use crate::simulation::economy::demand::DemandSystem;
+    use crate::simulation::economy::households::HouseholdSystem;
+    use crate::simulation::economy::logistics::ShipmentSystem;
+    use crate::simulation::grid::desirability::DesirabilitySystem;
+    use crate::simulation::grid::noise::NoiseSystem;
+    use crate::simulation::grid::pollution::PollutionSystem;
+    use crate::simulation::grid::zoning::ZoningSystem;
+    use crate::simulation::network::TransitNetwork;
+    use crate::simulation::network::graph::{Edge, RegionGraph};
+    use crate::simulation::network::types::{
+        EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+    };
+    use crate::simulation::terrain::TerrainSystem;
+    use crate::simulation::water::WaterSystem;
+    use godot::prelude::Vector3;
+    use std::collections::VecDeque;
+
+    fn test_core() -> SimCore {
+        let config = MapConfig::default();
+        let w = config.zone_grid_width();
+        let h = config.zone_grid_height();
+        SimCore {
+            time: TimeSystem::new(),
+            heightmap: TerrainSystem::new(w, h),
+            watermap: WaterSystem::new(w, h),
+            region_graph: RegionGraph::new(),
+            transit_network: TransitNetwork::new(),
+            zoning: ZoningSystem::new(&config),
+            pollution: PollutionSystem::new(&config),
+            noise: NoiseSystem::new(&config),
+            desirability: DesirabilitySystem::new(&config),
+            demand: DemandSystem::new(),
+            allocator: BuildingAllocator::new(),
+            agents: AgentSystem::new(),
+            households: HouseholdSystem::new(),
+            logistics: ShipmentSystem::new(),
+            config,
+            undo_stack: VecDeque::new(),
+            terrain_dirty: false,
+            water_dirty: false,
+            network_dirty: false,
+            benchmark_mode: true,
+            last_tick_duration: 0.0,
+            last_agent_tick_us: 0,
+            last_road_timing: String::new(),
+            camera_aabb: (0.0, 0.0, 0.0, 0.0),
+        }
+    }
+
+    #[test]
+    fn set_vehicle_frontage_access_internal_updates_edge_and_ignores_invalid_codes() {
+        let mut core = test_core();
+        let n0 = core
+            .region_graph
+            .add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = core
+            .region_graph
+            .add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
+        core.region_graph.add_edge(Edge {
+            start_node: n0,
+            end_node: n1,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 10.0,
+            physical_length: 10.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+
+        core.set_vehicle_frontage_access_internal(0, 0);
+        assert_eq!(
+            core.region_graph.edge(0).vehicle_frontage_access,
+            VehicleFrontageAccess::SameSideOnly
+        );
+
+        core.set_vehicle_frontage_access_internal(0, 9);
+        assert_eq!(
+            core.region_graph.edge(0).vehicle_frontage_access,
+            VehicleFrontageAccess::SameSideOnly
+        );
+    }
+}
