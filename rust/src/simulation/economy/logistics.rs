@@ -75,7 +75,9 @@ pub struct ShipmentSystem {
 impl ShipmentSystem {
     /// Creates an empty shipment system.
     pub fn new() -> Self {
-        Self { shipments: Vec::new() }
+        Self {
+            shipments: Vec::new(),
+        }
     }
 
     /// Clears all active shipments.
@@ -98,7 +100,11 @@ impl ShipmentSystem {
     }
 
     /// Cancels any shipment touching the removed building before swap-remove happens.
-    pub fn invalidate_building(&mut self, removed_building: usize, allocator: &mut BuildingAllocator) {
+    pub fn invalidate_building(
+        &mut self,
+        removed_building: usize,
+        allocator: &mut BuildingAllocator,
+    ) {
         self.shipments.retain(|shipment| {
             let touches_removed = shipment.destination_building_id == removed_building
                 || (shipment.source_kind == SHIPMENT_SOURCE_LOCAL
@@ -307,10 +313,13 @@ impl ShipmentSystem {
             }
 
             let source_node = building_depart_node(supplier, graph);
-            let Some((travel_seconds, _, _)) = transit_network
-                .cch_graph
-                .find_path(source_node, dest_node, usize::MAX, graph, TransitFlags::CAR)
-            else {
+            let Some((travel_seconds, _, _)) = transit_network.cch_graph.find_path(
+                source_node,
+                dest_node,
+                usize::MAX,
+                graph,
+                TransitFlags::CAR,
+            ) else {
                 continue;
             };
 
@@ -364,14 +373,18 @@ impl ShipmentSystem {
         let mut best_border = u32::MAX;
         let mut best_cost = f32::MAX;
         for &border_node in border_nodes {
-            if border_job_counts.get(&border_node).copied().unwrap_or(0) >= BORDER_ACTIVE_JOBS_PER_NODE
+            if border_job_counts.get(&border_node).copied().unwrap_or(0)
+                >= BORDER_ACTIVE_JOBS_PER_NODE
             {
                 continue;
             }
-            let Some((travel_seconds, _, _)) = transit_network
-                .cch_graph
-                .find_path(border_node, dest_node, usize::MAX, graph, TransitFlags::CAR)
-            else {
+            let Some((travel_seconds, _, _)) = transit_network.cch_graph.find_path(
+                border_node,
+                dest_node,
+                usize::MAX,
+                graph,
+                TransitFlags::CAR,
+            ) else {
                 continue;
             };
             if travel_seconds < best_cost {
@@ -428,7 +441,9 @@ impl ShipmentSystem {
                 reserved_outbound[shipment.source_building_id] += shipment.amount;
             }
             if shipment.source_kind == SHIPMENT_SOURCE_OWA {
-                *border_job_counts.entry(shipment.source_border_node).or_insert(0) += 1;
+                *border_job_counts
+                    .entry(shipment.source_border_node)
+                    .or_insert(0) += 1;
             }
         }
 
@@ -454,11 +469,7 @@ fn connected_border_nodes(graph: &RegionGraph) -> Vec<u32> {
                 .node_adjacency(idx as u32)
                 .iter()
                 .any(|&edge_idx| !graph.edge(edge_idx).deleted);
-            if connected {
-                Some(idx as u32)
-            } else {
-                None
-            }
+            if connected { Some(idx as u32) } else { None }
         })
         .collect()
 }
@@ -531,10 +542,7 @@ mod tests {
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
-            physical_geometry: vec![
-                Vector3::new(-100.0, 0.0, 0.0),
-                Vector3::new(0.0, 0.0, 0.0),
-            ],
+            physical_geometry: vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
         });
@@ -554,10 +562,7 @@ mod tests {
             start_clip: 0.0,
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            physical_geometry: vec![
-                Vector3::new(0.0, 0.0, 0.0),
-                Vector3::new(100.0, 0.0, 0.0),
-            ],
+            physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             deleted: false,
             no_building_spawn: false,
         });
@@ -607,7 +612,8 @@ mod tests {
 
     #[test]
     fn owa_border_fallback_creates_import_shipment() {
-        let (graph, network, _industrial_edge, commercial_edge, border_node) = simple_graph_with_border();
+        let (graph, network, _industrial_edge, commercial_edge, border_node) =
+            simple_graph_with_border();
         let mut allocator = BuildingAllocator::new();
         allocator.buildings.push(make_building(
             50.0,

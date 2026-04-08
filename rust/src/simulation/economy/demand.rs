@@ -63,15 +63,15 @@ impl DemandSystem {
 
             match building.zone_type {
                 ZoneType::Commercial | ZoneType::Mixed => {
-                    commercial_stock_pressure_sum +=
-                        (1.0 - (building.stock / COMMERCIAL_TARGET_STOCK_UNITS).clamp(0.0, 1.0))
-                            .clamp(0.0, 1.0);
+                    commercial_stock_pressure_sum += (1.0
+                        - (building.stock / COMMERCIAL_TARGET_STOCK_UNITS).clamp(0.0, 1.0))
+                    .clamp(0.0, 1.0);
                     commercial_count += 1.0;
                 }
                 ZoneType::Industrial => {
-                    industrial_stock_pressure_sum +=
-                        (1.0 - (building.stock / INDUSTRIAL_TARGET_STOCK_UNITS).clamp(0.0, 1.0))
-                            .clamp(0.0, 1.0);
+                    industrial_stock_pressure_sum += (1.0
+                        - (building.stock / INDUSTRIAL_TARGET_STOCK_UNITS).clamp(0.0, 1.0))
+                    .clamp(0.0, 1.0);
                     industrial_count += 1.0;
                 }
                 _ => {}
@@ -91,16 +91,14 @@ impl DemandSystem {
             if household.member_count == 0 {
                 continue;
             }
-            household_stock_pressure_sum +=
-                (1.0 - (household.stock_days / HOUSEHOLD_TARGET_STOCK_DAYS).clamp(0.0, 1.0))
-                    .clamp(0.0, 1.0);
+            household_stock_pressure_sum += (1.0
+                - (household.stock_days / HOUSEHOLD_TARGET_STOCK_DAYS).clamp(0.0, 1.0))
+            .clamp(0.0, 1.0);
             active_households += 1.0;
         }
 
-        let household_stock_pressure = average_or_zero(
-            household_stock_pressure_sum,
-            active_households,
-        );
+        let household_stock_pressure =
+            average_or_zero(household_stock_pressure_sum, active_households);
         let commercial_stock_pressure =
             average_or_zero(commercial_stock_pressure_sum, commercial_count);
         let industrial_stock_pressure =
@@ -144,15 +142,12 @@ fn to_percent(v: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+    use crate::simulation::economy::households::{
+        Household, HouseholdSystem, REPLENISHMENT_STABLE,
+    };
     use godot::prelude::Vector2;
-    use crate::simulation::economy::households::{Household, HouseholdSystem, REPLENISHMENT_STABLE};
 
-    fn building(
-        zone_type: ZoneType,
-        stock: f32,
-        occupancy: u32,
-        worker_count: u32,
-    ) -> Building {
+    fn building(zone_type: ZoneType, stock: f32, occupancy: u32, worker_count: u32) -> Building {
         Building {
             center_x: 0.0,
             center_y: 0.0,
@@ -183,9 +178,15 @@ mod tests {
     #[test]
     fn recalculate_raises_commercial_and_industrial_pressure_on_shortages() {
         let mut allocator = BuildingAllocator::new();
-        allocator.buildings.push(building(ZoneType::Industrial, 20.0, 0, 1));
-        allocator.buildings.push(building(ZoneType::Commercial, 80.0, 0, 1));
-        allocator.buildings.push(building(ZoneType::Residential, 0.0, 0, 0));
+        allocator
+            .buildings
+            .push(building(ZoneType::Industrial, 20.0, 0, 1));
+        allocator
+            .buildings
+            .push(building(ZoneType::Commercial, 80.0, 0, 1));
+        allocator
+            .buildings
+            .push(building(ZoneType::Residential, 0.0, 0, 0));
 
         let mut households = HouseholdSystem::new();
         households.households.push(Household {
@@ -213,9 +214,15 @@ mod tests {
     #[test]
     fn recalculate_raises_residential_demand_when_jobs_outrun_housing() {
         let mut allocator = BuildingAllocator::new();
-        allocator.buildings.push(building(ZoneType::Industrial, 300.0, 0, 1));
-        allocator.buildings.push(building(ZoneType::Commercial, 500.0, 0, 1));
-        allocator.buildings.push(building(ZoneType::Residential, 0.0, 0, 0));
+        allocator
+            .buildings
+            .push(building(ZoneType::Industrial, 300.0, 0, 1));
+        allocator
+            .buildings
+            .push(building(ZoneType::Commercial, 500.0, 0, 1));
+        allocator
+            .buildings
+            .push(building(ZoneType::Residential, 0.0, 0, 0));
 
         let mut households = HouseholdSystem::new();
         for _ in 0..5 {

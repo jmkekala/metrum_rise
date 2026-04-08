@@ -1,12 +1,14 @@
 #[cfg(test)]
 mod tests {
-    use crate::simulation::economy::agents::{AgentSystem, TRANSIT_DEPARTING, TRANSIT_ON_ROAD, MODE_WALK};
-    use crate::simulation::network::graph::{RegionGraph, Edge};
-    use crate::simulation::network::types::{NodeType, TransitType, TransitFlags, EdgeClass};
-    use crate::simulation::network::lanes::LaneType;
-    use crate::simulation::network::TransitNetwork;
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+    use crate::simulation::economy::agents::{
+        AgentSystem, MODE_WALK, TRANSIT_DEPARTING, TRANSIT_ON_ROAD,
+    };
     use crate::simulation::grid::zoning::ZoneType;
+    use crate::simulation::network::TransitNetwork;
+    use crate::simulation::network::graph::{Edge, RegionGraph};
+    use crate::simulation::network::lanes::LaneType;
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use crate::simulation::pathing::cch::CchGraph;
     use godot::prelude::{Vector2, Vector3};
 
@@ -30,7 +32,8 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-            deleted: false, no_building_spawn: false,
+            deleted: false,
+            no_building_spawn: false,
         }
     }
 
@@ -51,7 +54,8 @@ mod tests {
             cell_y: 0,
             occupancy: 0,
             worker_count: 0,
-            asset_id: String::new(), level: 1,
+            asset_id: String::new(),
+            level: 1,
             broken: false,
             stock: 0.0,
             revenue: 0.0,
@@ -68,7 +72,13 @@ mod tests {
     //   LEFT sidewalk  → lane_idx =  100
     //   RIGHT sidewalk → lane_idx = -100
     // (See lanes.rs `build_lane` calls at the sidewalk section.)
-    fn check_departure_side(fwd: u8, bkw: u8, building_side: i8, expected_lane_idx: i8, label: &str) {
+    fn check_departure_side(
+        fwd: u8,
+        bkw: u8,
+        building_side: i8,
+        expected_lane_idx: i8,
+        label: &str,
+    ) {
         let mut graph = RegionGraph::new();
         let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
         let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
@@ -80,7 +90,9 @@ mod tests {
         network.cch_graph = CchGraph::build(&graph);
 
         let mut allocator = BuildingAllocator::new();
-        allocator.buildings.push(create_test_building(edge_idx, building_side));
+        allocator
+            .buildings
+            .push(create_test_building(edge_idx, building_side));
 
         let mut agents = AgentSystem::new();
         let a_id = agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
@@ -96,22 +108,32 @@ mod tests {
             test_agents.agents = agents.agents.clone();
             for _ in 0..50 {
                 test_agents.tick(&mut allocator, &network, &mut graph, 0.1);
-                if test_agents.transit[a_id] == TRANSIT_ON_ROAD { break; }
+                if test_agents.transit[a_id] == TRANSIT_ON_ROAD {
+                    break;
+                }
             }
 
-            assert_eq!(test_agents.transit[a_id], TRANSIT_ON_ROAD,
-                "[{label}] agent never reached ON_ROAD");
+            assert_eq!(
+                test_agents.transit[a_id], TRANSIT_ON_ROAD,
+                "[{label}] agent never reached ON_ROAD"
+            );
             // One extra tick to initialize the lane in the ON_ROAD state.
             test_agents.tick(&mut allocator, &network, &mut graph, 0.1);
 
             let lane_id = test_agents.current_lane_id[a_id];
             let lane = &network.lane_system.lanes[lane_id];
 
-            assert_eq!(lane.lane_type, LaneType::Foot,
-                "[{label}] side={building_side}: agent should be on a Foot lane, found {:?}", lane.lane_type);
-            assert_eq!(lane.lane_idx, expected_lane_idx,
+            assert_eq!(
+                lane.lane_type,
+                LaneType::Foot,
+                "[{label}] side={building_side}: agent should be on a Foot lane, found {:?}",
+                lane.lane_type
+            );
+            assert_eq!(
+                lane.lane_idx, expected_lane_idx,
                 "[{label}] side={building_side}: expected lane_idx={expected_lane_idx} but found {}",
-                lane.lane_idx);
+                lane.lane_idx
+            );
         }
     }
 

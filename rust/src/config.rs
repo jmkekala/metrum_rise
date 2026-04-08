@@ -85,6 +85,14 @@ pub const IDM_S_MIN: f32 = 0.1;
 /// representative average; adjust if packing feels too tight or loose.
 pub const CAR_LENGTH: f32 = 2.6;
 
+/// Walking speed for agents on foot (m/s). Used for driveway/building-entry phases.
+/// 1.4 m/s is a realistic pedestrian pace (~5 km/h).
+pub const AGENT_WALK_SPEED_MS: f32 = 1.4;
+
+/// Speed for agents traversing a driveway in a car (m/s).
+/// 3.0 m/s ≈ 11 km/h — appropriate for a private driveway or car park.
+pub const AGENT_DRIVEWAY_SPEED_MS: f32 = 3.0;
+
 /// Minimum distance (metres) between a building's frontage node and a junction.
 /// If a building is closer, its frontage will snap to the nearest junction node.
 /// This prevents road segments that are too short for stable junction clipping.

@@ -91,14 +91,16 @@ impl SimCore {
             let mut world_y = terrain_y;
 
             let current_lane = self.agents.current_lane_id[i];
-            if current_lane != usize::MAX && current_lane < self.transit_network.lane_system.lanes.len() {
+            if current_lane != usize::MAX
+                && current_lane < self.transit_network.lane_system.lanes.len()
+            {
                 let l = &self.transit_network.lane_system.lanes[current_lane];
                 let dist = self.agents.lane_distance[i];
                 if l.geometry.len() >= 2 {
                     let mut curr = 0.0;
                     for j in 0..l.geometry.len() - 1 {
                         let p0 = l.geometry[j];
-                        let p1 = l.geometry[j+1];
+                        let p1 = l.geometry[j + 1];
                         let d = p0.distance_to(p1);
                         if curr + d >= dist || j == l.geometry.len() - 2 {
                             let t = if d > 1e-5 { (dist - curr) / d } else { 0.0 };
@@ -230,7 +232,8 @@ impl SimCore {
                         // Segment from current position to the next node in the path
                         let next_node_idx = path[idx] as usize;
                         if next_node_idx < self.region_graph.node_count() {
-                            let next_node_pos = get_h(self.region_graph.node(next_node_idx as u32).pos);
+                            let next_node_pos =
+                                get_h(self.region_graph.node(next_node_idx as u32).pos);
                             points.push(current_pos);
                             points.push(next_node_pos);
                             colors.push(color_path);
@@ -259,7 +262,7 @@ impl SimCore {
                 }
             }
         }
-        
+
         let mut dict = VarDictionary::new();
         dict.set("points", PackedVector3Array::from_iter(points));
         dict.set("colors", PackedColorArray::from_iter(colors));

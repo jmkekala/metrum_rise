@@ -86,7 +86,14 @@ impl AssetRegistry {
             }
         }
 
-        self.entries.insert(qid, AssetEntry { manifest, pack_id: pack_id.to_owned(), asset_dir });
+        self.entries.insert(
+            qid,
+            AssetEntry {
+                manifest,
+                pack_id: pack_id.to_owned(),
+                asset_dir,
+            },
+        );
     }
 
     /// Returns the qualified ID of the next upgrade tier for the given asset, or `None`.
@@ -108,8 +115,12 @@ impl AssetRegistry {
     /// assets this is `worker_capacity`; for mixed assets this is the sum of both.
     /// Returns `0` if the asset is not a building or has no declared capacity.
     pub fn capacity(&self, qualified_id: &str) -> u32 {
-        let Some(entry) = self.entries.get(qualified_id) else { return 0; };
-        let Some(bd) = &entry.manifest.building else { return 0; };
+        let Some(entry) = self.entries.get(qualified_id) else {
+            return 0;
+        };
+        let Some(bd) = &entry.manifest.building else {
+            return 0;
+        };
         bd.residents_capacity.unwrap_or(0) + bd.worker_capacity.unwrap_or(0)
     }
 
@@ -124,7 +135,11 @@ impl AssetRegistry {
     /// Returns an empty slice if the zone has no registered building assets.
     pub fn buildings_for_zone(&self, zone_class: ZoneClass) -> &[String] {
         let zi = zone_class as usize;
-        if zi < self.by_zone.len() { &self.by_zone[zi] } else { &[] }
+        if zi < self.by_zone.len() {
+            &self.by_zone[zi]
+        } else {
+            &[]
+        }
     }
 
     /// Returns the lot footprint in zoning grid cells `(width, depth)` for an asset.
@@ -167,8 +182,8 @@ impl AssetRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
     use crate::assets::AssetManifest;
+    use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
 
     fn make_building_manifest(asset_id: &str, zone: ZoneClass, w: u16, d: u16) -> AssetManifest {
         AssetManifest {
@@ -177,7 +192,11 @@ mod tests {
             asset_set: None,
             tags: vec![],
             thumbnail: None,
-            lods: vec![LodEntry { file: "lod0.glb".to_owned(), distance_min_m: 0.0, distance_max_m: None }],
+            lods: vec![LodEntry {
+                file: "lod0.glb".to_owned(),
+                distance_min_m: 0.0,
+                distance_max_m: None,
+            }],
             anchors: vec![],
             building: Some(BuildingData {
                 zone_type: zone,
@@ -204,7 +223,9 @@ mod tests {
         let m = make_building_manifest("building.residential.house", ZoneClass::Residential, 3, 2);
         reg.register("base", m.clone(), String::new());
 
-        let entry = reg.get("base:building.residential.house").expect("should be registered");
+        let entry = reg
+            .get("base:building.residential.house")
+            .expect("should be registered");
         assert_eq!(entry.pack_id, "base");
         assert_eq!(entry.manifest.asset_id, "building.residential.house");
     }
@@ -212,7 +233,11 @@ mod tests {
     #[test]
     fn lot_size_returns_manifest_dimensions() {
         let mut reg = AssetRegistry::new();
-        reg.register("base", make_building_manifest("b.res.big", ZoneClass::Residential, 5, 4), String::new());
+        reg.register(
+            "base",
+            make_building_manifest("b.res.big", ZoneClass::Residential, 5, 4),
+            String::new(),
+        );
         assert_eq!(reg.lot_size("base:b.res.big"), (5, 4));
     }
 
@@ -225,10 +250,26 @@ mod tests {
     #[test]
     fn buildings_for_zone_returns_sorted_ids() {
         let mut reg = AssetRegistry::new();
-        reg.register("base", make_building_manifest("b.res.c", ZoneClass::Residential, 1, 1), String::new());
-        reg.register("base", make_building_manifest("b.res.a", ZoneClass::Residential, 2, 1), String::new());
-        reg.register("base", make_building_manifest("b.res.b", ZoneClass::Residential, 1, 2), String::new());
-        reg.register("base", make_building_manifest("b.com.x", ZoneClass::Commercial,  1, 1), String::new());
+        reg.register(
+            "base",
+            make_building_manifest("b.res.c", ZoneClass::Residential, 1, 1),
+            String::new(),
+        );
+        reg.register(
+            "base",
+            make_building_manifest("b.res.a", ZoneClass::Residential, 2, 1),
+            String::new(),
+        );
+        reg.register(
+            "base",
+            make_building_manifest("b.res.b", ZoneClass::Residential, 1, 2),
+            String::new(),
+        );
+        reg.register(
+            "base",
+            make_building_manifest("b.com.x", ZoneClass::Commercial, 1, 1),
+            String::new(),
+        );
 
         let res = reg.buildings_for_zone(ZoneClass::Residential);
         assert_eq!(res, ["base:b.res.a", "base:b.res.b", "base:b.res.c"]);
@@ -243,8 +284,16 @@ mod tests {
     #[test]
     fn register_replaces_existing_entry() {
         let mut reg = AssetRegistry::new();
-        reg.register("base", make_building_manifest("b.res.house", ZoneClass::Residential, 1, 1), String::new());
-        reg.register("base", make_building_manifest("b.res.house", ZoneClass::Residential, 4, 3), String::new());
+        reg.register(
+            "base",
+            make_building_manifest("b.res.house", ZoneClass::Residential, 1, 1),
+            String::new(),
+        );
+        reg.register(
+            "base",
+            make_building_manifest("b.res.house", ZoneClass::Residential, 4, 3),
+            String::new(),
+        );
         // Only one entry, no duplicates in zone list.
         assert_eq!(reg.len(), 1);
         assert_eq!(reg.buildings_for_zone(ZoneClass::Residential).len(), 1);
@@ -255,7 +304,11 @@ mod tests {
     fn len_and_is_empty() {
         let mut reg = AssetRegistry::new();
         assert!(reg.is_empty());
-        reg.register("base", make_building_manifest("b.res.x", ZoneClass::Residential, 1, 1), String::new());
+        reg.register(
+            "base",
+            make_building_manifest("b.res.x", ZoneClass::Residential, 1, 1),
+            String::new(),
+        );
         assert!(!reg.is_empty());
         assert_eq!(reg.len(), 1);
     }
@@ -263,7 +316,11 @@ mod tests {
     #[test]
     fn clear_empties_registry_and_indices() {
         let mut reg = AssetRegistry::new();
-        reg.register("base", make_building_manifest("b.res.x", ZoneClass::Residential, 1, 1), String::new());
+        reg.register(
+            "base",
+            make_building_manifest("b.res.x", ZoneClass::Residential, 1, 1),
+            String::new(),
+        );
         reg.clear();
         assert!(reg.is_empty());
         assert!(reg.buildings_for_zone(ZoneClass::Residential).is_empty());

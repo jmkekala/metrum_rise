@@ -1,8 +1,8 @@
+use super::super::graph::RegionGraph;
+use super::geometry::build_cum_dist;
+use super::{Lane, LaneType};
 use godot::prelude::*;
 use std::collections::HashMap;
-use super::super::graph::RegionGraph;
-use super::{Lane, LaneType};
-use super::geometry::build_cum_dist;
 
 /// Builds vehicle intersection connection lanes at a single node.
 pub fn build_vehicle_connections_at_node(
@@ -17,7 +17,9 @@ pub fn build_vehicle_connections_at_node(
 
     for &e_idx in graph.node_adjacency(node_id as u32) {
         let edge = graph.edge(e_idx);
-        if edge.deleted { continue; }
+        if edge.deleted {
+            continue;
+        }
 
         if edge.start_node as usize == node_id {
             for l in 0..edge.fwd_lanes {
@@ -50,15 +52,16 @@ pub fn build_vehicle_connections_at_node(
     let node_deg = graph.node_adjacency_count_at(node_id as u32);
 
     for &(in_edge_id, in_lane_idx, in_lane_id) in &inbound {
-        let mut allowed: Option<Vec<(usize, i8)>> = lane_conns.get(&(in_edge_id, in_lane_idx)).cloned();
+        let mut allowed: Option<Vec<(usize, i8)>> =
+            lane_conns.get(&(in_edge_id, in_lane_idx)).cloned();
 
         // Global whitelist mode: if the node has ANY user vehicle connection (lane_idx ≠ ±100),
         // ALL unspecified turns are blocked. Only explicitly listed turns are permitted.
         // Nodes with no user connections remain fully open (allow all non-U-turns).
         if allowed.is_none() {
-            let node_has_any_conn = lane_conns.keys().any(|&(_, lane_idx)| {
-                lane_idx != 100 && lane_idx != -100
-            });
+            let node_has_any_conn = lane_conns
+                .keys()
+                .any(|&(_, lane_idx)| lane_idx != 100 && lane_idx != -100);
             if !node_has_any_conn {
                 // Open node: allow all non-U-turn outbound lanes.
                 let mut defaults = Vec::new();
@@ -67,7 +70,9 @@ pub fn build_vehicle_connections_at_node(
                         defaults.push((out_edge_id, out_lane_idx));
                     }
                 }
-                if !defaults.is_empty() { allowed = Some(defaults); }
+                if !defaults.is_empty() {
+                    allowed = Some(defaults);
+                }
             }
             // If node_has_any_conn but this arm has no explicit connection, allowed stays
             // None → no junction connection lanes created → turn is blocked.
@@ -87,17 +92,29 @@ pub fn build_vehicle_connections_at_node(
             let p1_base = {
                 let g = &lanes[in_lane_id].geometry;
                 if g.len() >= 2 {
-                    let d = g[g.len()-1] - g[g.len()-2];
-                    if d.length_squared() > 0.00001 { d.normalized() } else { Vector3::new(1.0,0.0,0.0) }
-                } else { Vector3::new(1.0,0.0,0.0) }
+                    let d = g[g.len() - 1] - g[g.len() - 2];
+                    if d.length_squared() > 0.00001 {
+                        d.normalized()
+                    } else {
+                        Vector3::new(1.0, 0.0, 0.0)
+                    }
+                } else {
+                    Vector3::new(1.0, 0.0, 0.0)
+                }
             };
             let p3 = lanes[out_lid].geometry[0];
             let p2_base = {
                 let g = &lanes[out_lid].geometry;
                 if g.len() >= 2 {
                     let d = g[1] - g[0];
-                    if d.length_squared() > 0.00001 { d.normalized() } else { Vector3::new(1.0,0.0,0.0) }
-                } else { Vector3::new(1.0,0.0,0.0) }
+                    if d.length_squared() > 0.00001 {
+                        d.normalized()
+                    } else {
+                        Vector3::new(1.0, 0.0, 0.0)
+                    }
+                } else {
+                    Vector3::new(1.0, 0.0, 0.0)
+                }
             };
 
             let dist = p0.distance_to(p3);
@@ -110,11 +127,15 @@ pub fn build_vehicle_connections_at_node(
             let mut conn_len = 0.0;
             for k in 0..=steps {
                 let t = k as f32 / steps as f32;
-                let mut p = (1.0-t).powi(3)*p0 + 3.0*(1.0-t).powi(2)*t*p1
-                    + 3.0*(1.0-t)*t.powi(2)*p2 + t.powi(3)*p3;
+                let mut p = (1.0 - t).powi(3) * p0
+                    + 3.0 * (1.0 - t).powi(2) * t * p1
+                    + 3.0 * (1.0 - t) * t.powi(2) * p2
+                    + t.powi(3) * p3;
                 p.y = p0.y + (p3.y - p0.y) * t;
                 conn_geom.push(p);
-                if k > 0 { conn_len += conn_geom[k-1].distance_to(p); }
+                if k > 0 {
+                    conn_len += conn_geom[k - 1].distance_to(p);
+                }
             }
 
             let conn_cum = build_cum_dist(&conn_geom);

@@ -13,10 +13,10 @@ pub mod render;
 pub mod types;
 pub use render::NetworkMeshData;
 pub mod interaction;
-pub mod terrain;
-pub mod topology;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
+pub mod terrain;
+pub mod topology;
 use crate::config;
 use std::collections::HashSet;
 
@@ -259,9 +259,8 @@ impl TransitNetwork {
             no_building_spawn: false,
         });
 
-        let (cost, length) = crate::simulation::pathing::cost::CostCalculator::calculate_costs(
-            graph.edge(edge_id),
-        );
+        let (cost, length) =
+            crate::simulation::pathing::cost::CostCalculator::calculate_costs(graph.edge(edge_id));
         graph.edges[edge_id].base_cost = cost;
         graph.edges[edge_id].physical_length = length;
         // Auto-flag high-speed roads: speed_limit is stored in km/h.
@@ -305,7 +304,8 @@ impl TransitNetwork {
                 }
             }
             graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
-            self.lane_system.rebuild_edges_incremental(graph, &affected_edges);
+            self.lane_system
+                .rebuild_edges_incremental(graph, &affected_edges);
         }
 
         // Mark chunks as dirty
@@ -402,11 +402,11 @@ impl TransitNetwork {
 pub mod test_clips;
 /// Automated tests for graph edge compaction.
 pub mod test_compaction;
-/// Automated tests for topology operations (add/split/merge).
-pub mod test_topology;
-/// Automated tests for graph verification and structural integrity.
-pub mod test_verify;
-/// Automated tests for vehicle U-turn constraints.
-pub mod test_uturn;
 /// Automated tests for pedestrian movement through junctions.
 pub mod test_ped_junction;
+/// Automated tests for topology operations (add/split/merge).
+pub mod test_topology;
+/// Automated tests for vehicle U-turn constraints.
+pub mod test_uturn;
+/// Automated tests for graph verification and structural integrity.
+pub mod test_verify;

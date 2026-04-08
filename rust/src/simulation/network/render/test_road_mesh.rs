@@ -43,7 +43,8 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![p1, p2],
             physical_geometry: vec![p1, p2],
-            deleted: false, no_building_spawn: false,
+            deleted: false,
+            no_building_spawn: false,
         }
     }
 
@@ -739,11 +740,10 @@ mod tests {
         let east = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
 
         // Bend (2 arms)
-        let (_graph, mesh_data, _terrain) =
-            generate_editor_mesh(&[(&north, 1, 1), (&east, 1, 1)]);
+        let (_graph, mesh_data, _terrain) = generate_editor_mesh(&[(&north, 1, 1), (&east, 1, 1)]);
 
         validate_mesh(&mesh_data, 40.0);
-        
+
         println!("Marking vertices: {}", mesh_data.marking_vertices.len());
         // ...
 

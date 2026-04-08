@@ -6,9 +6,9 @@ use super::{
     TRANSIT_INTERSECTION, TRANSIT_ON_ROAD,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::TransitFlags;
-use crate::simulation::network::TransitNetwork;
 use crate::simulation::pathing::flow_field::FlowField;
 use godot::prelude::*;
 use rand::Rng;
@@ -20,7 +20,10 @@ use std::sync::atomic::{AtomicU32, Ordering};
 // IDM (Intelligent Driver Model) constants — defined in config.rs.
 // ---------------------------------------------------------------------------
 
-use crate::config::{CAR_LENGTH, IDM_A_MAX, IDM_S_MIN, IDM_T_HEAD};
+use crate::config::{
+    AGENT_DRIVEWAY_SPEED_MS, AGENT_WALK_SPEED_MS, CAR_LENGTH, IDM_A_MAX, IDM_S_MIN, IDM_T_HEAD,
+};
+use crate::simulation::network::lanes::LaneType;
 
 /// Returns the bumper-to-bumper gap to the nearest vehicle ahead in a pre-sorted
 /// per-lane bucket. `bucket` must be sorted ascending by distance.
@@ -53,7 +56,7 @@ fn dispatch_agents<F: Fn(usize) + Send + Sync>(n: usize, f: F) {
 /// added once per-agent `v_lead` tracking is in place.
 fn idm_new_speed(v: f32, v_max: f32, gap: f32, dt: f32) -> f32 {
     let free = (v / v_max.max(0.1)).powi(4);
-    let acc  = if gap < f32::MAX / 2.0 {
+    let acc = if gap < f32::MAX / 2.0 {
         let s_star = IDM_S_MIN + v * IDM_T_HEAD;
         IDM_A_MAX * (1.0 - free - (s_star / gap).powi(2))
     } else {
@@ -90,7 +93,10 @@ unsafe impl<T: Send> Sync for RawSlice<T> {}
 
 impl<T> RawSlice<T> {
     fn new(v: &mut Vec<T>) -> Self {
-        Self { ptr: v.as_mut_ptr(), len: v.len() }
+        Self {
+            ptr: v.as_mut_ptr(),
+            len: v.len(),
+        }
     }
     #[inline(always)]
     unsafe fn get(&self, i: usize) -> &T {
@@ -152,13 +158,13 @@ impl AgentSystem {
         // -----------------------------------------------------------------------
         // 1. Safety Scrub — parallel, each agent is independent.
         // -----------------------------------------------------------------------
-        let s_home     = RawSlice::new(&mut self.agents.home_building);
-        let s_work     = RawSlice::new(&mut self.agents.work_building);
-        let s_cur_b    = RawSlice::new(&mut self.agents.current_building);
-        let s_tgt_b    = RawSlice::new(&mut self.agents.target_building);
-        let s_plan_b   = RawSlice::new(&mut self.agents.planned_target_building);
-        let s_transit  = RawSlice::new(&mut self.agents.transit);
-        let s_visible  = RawSlice::new(&mut self.agents.is_visible);
+        let s_home = RawSlice::new(&mut self.agents.home_building);
+        let s_work = RawSlice::new(&mut self.agents.work_building);
+        let s_cur_b = RawSlice::new(&mut self.agents.current_building);
+        let s_tgt_b = RawSlice::new(&mut self.agents.target_building);
+        let s_plan_b = RawSlice::new(&mut self.agents.planned_target_building);
+        let s_transit = RawSlice::new(&mut self.agents.transit);
+        let s_visible = RawSlice::new(&mut self.agents.is_visible);
 
         dispatch_agents(n, |i| unsafe {
             if *s_home.get(i) != usize::MAX && *s_home.get(i) >= bldg_count {
@@ -243,42 +249,43 @@ impl AgentSystem {
         self.new_speed.resize(n, 0.0_f32);
         {
             let s_transit_idm = RawSlice::new(&mut self.agents.transit);
-            let s_tmode_idm   = RawSlice::new(&mut self.agents.transit_mode);
-            let s_lane_idm    = RawSlice::new(&mut self.agents.current_lane_id);
-            let s_lane_d_idm  = RawSlice::new(&mut self.agents.lane_distance);
-            let s_cur_e_idm   = RawSlice::new(&mut self.agents.current_edge);
-            let s_speed_idm   = RawSlice::new(&mut self.agents.speed);
-            let new_spd_raw   = RawSlice { ptr: self.new_speed.as_mut_ptr(), len: n };
+            let s_tmode_idm = RawSlice::new(&mut self.agents.transit_mode);
+            let s_lane_idm = RawSlice::new(&mut self.agents.current_lane_id);
+            let s_lane_d_idm = RawSlice::new(&mut self.agents.lane_distance);
+            let s_cur_e_idm = RawSlice::new(&mut self.agents.current_edge);
+            let s_speed_idm = RawSlice::new(&mut self.agents.speed);
+            let new_spd_raw = RawSlice {
+                ptr: self.new_speed.as_mut_ptr(),
+                len: n,
+            };
             let buckets: &Vec<Vec<(f32, usize)>> = &self.lane_buckets;
 
-            dispatch_agents(n, |i| {
-                unsafe {
-                    let cur_spd = *s_speed_idm.get(i);
-                    let transit = *s_transit_idm.get(i);
-                    let tmode   = *s_tmode_idm.get(i);
+            dispatch_agents(n, |i| unsafe {
+                let cur_spd = *s_speed_idm.get(i);
+                let transit = *s_transit_idm.get(i);
+                let tmode = *s_tmode_idm.get(i);
 
-                    if transit != TRANSIT_ON_ROAD || tmode != MODE_CAR {
-                        *new_spd_raw.get_mut(i) = cur_spd;
-                        return;
-                    }
-
-                    let lid  = *s_lane_idm.get(i);
-                    let my_d = *s_lane_d_idm.get(i);
-                    let eid  = *s_cur_e_idm.get(i);
-
-                    let v_max = if eid != usize::MAX && eid < graph.edge_count() {
-                        graph.edge(eid).speed_limit
-                    } else {
-                        20.0_f32
-                    };
-
-                    let gap = if lid < buckets.len() {
-                        idm_gap_bucket(&buckets[lid], my_d)
-                    } else {
-                        f32::MAX
-                    };
-                    *new_spd_raw.get_mut(i) = idm_new_speed(cur_spd, v_max, gap, delta);
+                if transit != TRANSIT_ON_ROAD || tmode != MODE_CAR {
+                    *new_spd_raw.get_mut(i) = cur_spd;
+                    return;
                 }
+
+                let lid = *s_lane_idm.get(i);
+                let my_d = *s_lane_d_idm.get(i);
+                let eid = *s_cur_e_idm.get(i);
+
+                let v_max = if eid != usize::MAX && eid < graph.edge_count() {
+                    graph.edge(eid).speed_limit
+                } else {
+                    20.0_f32
+                };
+
+                let gap = if lid < buckets.len() {
+                    idm_gap_bucket(&buckets[lid], my_d)
+                } else {
+                    f32::MAX
+                };
+                *new_spd_raw.get_mut(i) = idm_new_speed(cur_spd, v_max, gap, delta);
             });
         }
         for i in 0..n {
@@ -427,30 +434,30 @@ impl AgentSystem {
 
         // Safety: index i is unique to this thread via par_iter.
         unsafe {
-            let s_cur_n      = &slices.cur_n;
-            let s_tgt_n      = &slices.tgt_n;
-            let s_tmode      = &slices.tmode;
-            let s_speed      = &slices.speed;
+            let s_cur_n = &slices.cur_n;
+            let s_tgt_n = &slices.tgt_n;
+            let s_tmode = &slices.tmode;
+            let s_speed = &slices.speed;
             let s_walk_phase = &slices.walk_phase;
-            let s_transit    = &slices.transit;
-            let s_activity   = &slices.activity;
-            let s_work       = &slices.work;
-            let s_home       = &slices.home;
-            let s_cur_b      = &slices.cur_b;
-            let s_tgt_b      = &slices.tgt_b;
-            let s_plan_b     = &slices.planned_tgt_b;
-            let s_has_car    = &slices.has_car;
-            let s_jstart     = &slices.jstart;
-            let s_path       = &slices.path;
-            let s_path_idx   = &slices.path_idx;
-            let s_lane_id    = &slices.lane_id;
-            let s_lane_d     = &slices.lane_d;
-            let s_visible    = &slices.visible;
-            let s_pos_x      = &slices.pos_x;
-            let s_pos_y      = &slices.pos_y;
-            let s_cur_e      = &slices.cur_e;
-            let s_happiness  = &slices.happiness;
-            let s_plan_act   = &slices.planned_activity;
+            let s_transit = &slices.transit;
+            let s_activity = &slices.activity;
+            let s_work = &slices.work;
+            let s_home = &slices.home;
+            let s_cur_b = &slices.cur_b;
+            let s_tgt_b = &slices.tgt_b;
+            let s_plan_b = &slices.planned_tgt_b;
+            let s_has_car = &slices.has_car;
+            let s_jstart = &slices.jstart;
+            let s_path = &slices.path;
+            let s_path_idx = &slices.path_idx;
+            let s_lane_id = &slices.lane_id;
+            let s_lane_d = &slices.lane_d;
+            let s_visible = &slices.visible;
+            let s_pos_x = &slices.pos_x;
+            let s_pos_y = &slices.pos_y;
+            let s_cur_e = &slices.cur_e;
+            let s_happiness = &slices.happiness;
+            let s_plan_act = &slices.planned_activity;
 
             *s_cur_n.get_mut(i) = graph.get_valid_node(*s_cur_n.get(i));
             *s_tgt_n.get_mut(i) = graph.get_valid_node(*s_tgt_n.get(i));
@@ -509,12 +516,22 @@ impl AgentSystem {
 
                         let path_opt: Option<Vec<u32>> = ff
                             .and_then(|f| f.build_path(origin_node, graph.node_count() + 1))
-                            .filter(|p| crate::simulation::pathing::cch::CchGraph::path_has_valid_turns(p, graph))
+                            .filter(|p| {
+                                crate::simulation::pathing::cch::CchGraph::path_has_valid_turns(
+                                    p, graph,
+                                )
+                            })
                             .or_else(|| {
                                 pathfind_count.fetch_add(1, Ordering::Relaxed);
                                 transit_network
                                     .cch_graph
-                                    .find_path(origin_node, target_node, usize::MAX, graph, search_flags)
+                                    .find_path(
+                                        origin_node,
+                                        target_node,
+                                        usize::MAX,
+                                        graph,
+                                        search_flags,
+                                    )
                                     .map(|(_, _, p)| p)
                             });
 
@@ -571,26 +588,109 @@ impl AgentSystem {
                         *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
                         return;
                     }
-                    let frontage_node = crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[b_id], graph);
-                    if frontage_node as usize >= graph.node_count() {
+                    let b = &allocator.buildings[b_id];
+                    if b.edge_idx >= graph.edge_count() || graph.edge(b.edge_idx).deleted {
                         *s_transit.get_mut(i) = TRANSIT_IDLE;
                         *s_visible.get_mut(i) = false;
                         return;
                     }
-                    let node_pos = graph.node(frontage_node).pos;
-                    let target_vec = Vector2::new(node_pos.x, node_pos.z);
-                    let dir = target_vec - Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
+                    // Kerb point: road-edge position at frontage_t, offset by side_offset
+                    // toward the building. Maximum off-road distance equals the building setback
+                    // (depth_cells * 0.5 * zone_cell_m, typically 4–16 m).
+                    let kerb_road = allocator.get_pos_on_edge(graph, b.edge_idx, b.frontage_t);
+                    let kerb = kerb_road + b.facing_dir * b.side_offset;
+                    let dir = kerb - Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
                     let dist = dir.length();
-                    let speed = if *s_tmode.get(i) == MODE_CAR { 10.0 } else { 4.0 };
+                    let speed = if *s_tmode.get(i) == MODE_CAR {
+                        AGENT_DRIVEWAY_SPEED_MS
+                    } else {
+                        AGENT_WALK_SPEED_MS
+                    };
                     let step = speed * delta;
                     if dist < step {
-                        *s_pos_x.get_mut(i) = target_vec.x;
-                        *s_pos_y.get_mut(i) = target_vec.y;
-                        *s_cur_n.get_mut(i) = frontage_node;
-                        *s_cur_e.get_mut(i) = usize::MAX;
-                        *s_lane_id.get_mut(i) = usize::MAX;
-                        *s_lane_d.get_mut(i) = 0.0;
-                        *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
+                        // Reached kerb — insert mid-edge into the lane on the frontage edge so
+                        // the agent is immediately IDM-visible. lane_distance is set to the
+                        // agent's position along the lane, leaving only the remaining segment
+                        // to the exit node before the CCH path begins.
+                        *s_pos_x.get_mut(i) = kerb.x;
+                        *s_pos_y.get_mut(i) = kerb.y;
+                        let edge_idx = b.edge_idx;
+                        // Forward lane (start→end) when frontage_t >= 0.5; backward otherwise.
+                        let is_fwd = b.frontage_t >= 0.5;
+                        let edge = graph.edge(edge_idx);
+                        let behind_node = if is_fwd {
+                            edge.start_node
+                        } else {
+                            edge.end_node
+                        };
+                        let is_walk = *s_tmode.get(i) == MODE_WALK;
+                        let b_side = b.side;
+
+                        let chosen_lane = transit_network
+                            .lane_system
+                            .edge_lanes
+                            .get(&edge_idx)
+                            .and_then(|edge_lanes| {
+                                edge_lanes.iter().find_map(|&l_id| {
+                                    let lane = &transit_network.lane_system.lanes[l_id];
+                                    if lane.is_fwd != is_fwd {
+                                        return None;
+                                    }
+                                    if is_walk {
+                                        if lane.lane_type == LaneType::Foot {
+                                            let lane_side: i8 =
+                                                if lane.lane_idx > 0 { 1 } else { -1 };
+                                            if lane_side == b_side {
+                                                Some(l_id)
+                                            } else {
+                                                None
+                                            }
+                                        } else {
+                                            None
+                                        }
+                                    } else if lane.lane_type == LaneType::Vehicle {
+                                        Some(l_id)
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+
+                        if let Some(lane_id) = chosen_lane {
+                            let lane_len = transit_network.lane_system.lanes[lane_id].length;
+                            // Place agent at frontage_t along the lane length. For the backward
+                            // lane (end→start direction) this is (1 − frontage_t) from the lane
+                            // origin (end_node).
+                            let lane_d = if is_fwd {
+                                b.frontage_t * lane_len
+                            } else {
+                                (1.0 - b.frontage_t) * lane_len
+                            };
+                            *s_cur_n.get_mut(i) = behind_node;
+                            *s_cur_e.get_mut(i) = edge_idx;
+                            *s_lane_id.get_mut(i) = lane_id;
+                            *s_lane_d.get_mut(i) = lane_d;
+                            // Reset to 0: the frontage lane counts as the first path segment.
+                            // path_idx increments to 1 when the lane ends, landing on the first
+                            // CCH node correctly (origin_node = path[0]).
+                            *s_path_idx.get_mut(i) = 0;
+                            *s_cur_b.get_mut(i) = usize::MAX;
+                            if *s_speed.get(i) == 0.0 {
+                                *s_speed.get_mut(i) = graph.edge(edge_idx).speed_limit;
+                            }
+                            *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
+                        } else {
+                            // No matching lane — fall back to node-based entry.
+                            let frontage_node =
+                                crate::simulation::buildings::allocator::building_depart_node(
+                                    b, graph,
+                                );
+                            *s_cur_n.get_mut(i) = frontage_node;
+                            *s_cur_e.get_mut(i) = usize::MAX;
+                            *s_lane_id.get_mut(i) = usize::MAX;
+                            *s_lane_d.get_mut(i) = 0.0;
+                            *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
+                        }
                     } else {
                         let mv = dir.normalized() * step;
                         *s_pos_x.get_mut(i) += mv.x;
@@ -617,22 +717,25 @@ impl AgentSystem {
                             let cur_n = *s_cur_n.get(i);
                             let tgt_n = *s_tgt_n.get(i);
                             let is_walk = *s_tmode.get(i) == MODE_WALK;
-                            let search_flags = if is_walk { TransitFlags::FOOT } else { TransitFlags::CAR };
+                            let search_flags = if is_walk {
+                                TransitFlags::FOOT
+                            } else {
+                                TransitFlags::CAR
+                            };
 
                             // Try flow field: look up by target building's zone type.
                             let t_bldg = *s_tgt_b.get(i);
-                            let ff: Option<&FlowField> = if t_bldg != usize::MAX
-                                && t_bldg < allocator.buildings.len()
-                            {
-                                let zone = allocator.buildings[t_bldg].zone_type;
-                                if is_walk {
-                                    transit_network.flow_fields.foot(zone)
+                            let ff: Option<&FlowField> =
+                                if t_bldg != usize::MAX && t_bldg < allocator.buildings.len() {
+                                    let zone = allocator.buildings[t_bldg].zone_type;
+                                    if is_walk {
+                                        transit_network.flow_fields.foot(zone)
+                                    } else {
+                                        transit_network.flow_fields.car(zone)
+                                    }
                                 } else {
-                                    transit_network.flow_fields.car(zone)
-                                }
-                            } else {
-                                None
-                            };
+                                    None
+                                };
 
                             // If the agent has a known incoming edge at the current node,
                             // the flow field cannot account for turn restrictions — skip it
@@ -668,10 +771,14 @@ impl AgentSystem {
                             let idx = *s_path_idx.get(i);
                             if idx < path.len() {
                                 let next_node = path[idx];
-                                if let Some(best_e) = graph.get_edge_between_nodes(*s_cur_n.get(i), next_node) {
+                                if let Some(best_e) =
+                                    graph.get_edge_between_nodes(*s_cur_n.get(i), next_node)
+                                {
                                     let edge = graph.edge(best_e);
                                     let is_fwd = edge.start_node == *s_cur_n.get(i);
-                                    if let Some(edge_lanes) = transit_network.lane_system.edge_lanes.get(&best_e) {
+                                    if let Some(edge_lanes) =
+                                        transit_network.lane_system.edge_lanes.get(&best_e)
+                                    {
                                         VALID_LANES.with(|v| {
                                             let mut valid_lanes = v.borrow_mut();
                                             valid_lanes.clear();
@@ -711,7 +818,9 @@ impl AgentSystem {
                                                 s_path.get_mut(i).clear();
                                             }
                                         });
-                                        if s_path.get(i).is_empty() { break; }
+                                        if s_path.get(i).is_empty() {
+                                            break;
+                                        }
                                     } else {
                                         s_path.get_mut(i).clear();
                                         break;
@@ -755,7 +864,19 @@ impl AgentSystem {
                                     let side_matches = *s_tmode.get(i) != MODE_WALK
                                         || lane.lane_idx == (b.side as i8) * 100
                                         || lane.lane_idx == 0;
-                                    if side_matches && (agent_prog - (b.frontage_t * tgt_len)).abs() < 4.0 {
+                                    if side_matches
+                                        && (agent_prog - (b.frontage_t * tgt_len)).abs() < 4.0
+                                    {
+                                        // Snap to kerb point so ARRIVING walks kerb→center
+                                        // rather than floating from an arbitrary road position.
+                                        let kerb_road = allocator.get_pos_on_edge(
+                                            graph,
+                                            b.edge_idx,
+                                            b.frontage_t,
+                                        );
+                                        let kerb = kerb_road + b.facing_dir * b.side_offset;
+                                        *s_pos_x.get_mut(i) = kerb.x;
+                                        *s_pos_y.get_mut(i) = kerb.y;
                                         *s_transit.get_mut(i) = TRANSIT_ARRIVING;
                                         *s_tmode.get_mut(i) = MODE_WALK;
                                         *s_lane_id.get_mut(i) = usize::MAX;
@@ -781,25 +902,39 @@ impl AgentSystem {
 
                                 if path_idx < path_len {
                                     let next_node = s_path.get(i)[path_idx];
-                                    if let Some(best_e) = graph.get_edge_between_nodes(*s_cur_n.get(i), next_node) {
+                                    if let Some(best_e) =
+                                        graph.get_edge_between_nodes(*s_cur_n.get(i), next_node)
+                                    {
                                         let mut wait_for_gap = false;
                                         let cur_node_idx = *s_cur_n.get(i) as usize;
-                                        let is_junction = graph.node_adjacency(cur_node_idx as u32).len() >= 3;
+                                        let is_junction =
+                                            graph.node_adjacency(cur_node_idx as u32).len() >= 3;
                                         VALID_CONNS.with(|v| {
                                             let mut valid_conns = v.borrow_mut();
                                             valid_conns.clear();
                                             let mut any_routing_valid = false;
                                             for &c_id in &lane.next_lanes {
                                                 if c_id < transit_network.lane_system.lanes.len() {
-                                                    let conn_lane = &transit_network.lane_system.lanes[c_id];
+                                                    let conn_lane =
+                                                        &transit_network.lane_system.lanes[c_id];
                                                     if !conn_lane.next_lanes.is_empty() {
                                                         let tgt_road_lane = conn_lane.next_lanes[0];
-                                                        if tgt_road_lane < transit_network.lane_system.lanes.len()
-                                                            && transit_network.lane_system.lanes[tgt_road_lane].edge_id == best_e
+                                                        if tgt_road_lane
+                                                            < transit_network
+                                                                .lane_system
+                                                                .lanes
+                                                                .len()
+                                                            && transit_network.lane_system.lanes
+                                                                [tgt_road_lane]
+                                                                .edge_id
+                                                                == best_e
                                                         {
                                                             any_routing_valid = true;
                                                             let occupied = is_junction
-                                                                && conn_occupied.get(c_id).copied().unwrap_or(false);
+                                                                && conn_occupied
+                                                                    .get(c_id)
+                                                                    .copied()
+                                                                    .unwrap_or(false);
                                                             if !occupied {
                                                                 valid_conns.push(c_id);
                                                             }
@@ -808,7 +943,8 @@ impl AgentSystem {
                                                 }
                                             }
                                             if !valid_conns.is_empty() {
-                                                *s_lane_id.get_mut(i) = valid_conns[rng.gen_range(0..valid_conns.len())];
+                                                *s_lane_id.get_mut(i) = valid_conns
+                                                    [rng.gen_range(0..valid_conns.len())];
                                                 *s_lane_d.get_mut(i) = 0.0;
                                                 *s_transit.get_mut(i) = TRANSIT_INTERSECTION;
                                                 *s_cur_e.get_mut(i) = usize::MAX;
@@ -828,7 +964,9 @@ impl AgentSystem {
                                         if wait_for_gap {
                                             break;
                                         }
-                                        if s_path.get(i).is_empty() { break; }
+                                        if s_path.get(i).is_empty() {
+                                            break;
+                                        }
                                     } else {
                                         s_path.get_mut(i).clear();
                                         *s_lane_id.get_mut(i) = usize::MAX;
@@ -839,10 +977,81 @@ impl AgentSystem {
                                     *s_lane_id.get_mut(i) = usize::MAX;
                                     let t_bldg = *s_tgt_b.get(i);
                                     if t_bldg != usize::MAX && t_bldg < allocator.buildings.len() {
-                                        let frontage = crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[t_bldg], graph);
-                                        if *s_cur_n.get(i) == frontage {
-                                            *s_transit.get_mut(i) = TRANSIT_ARRIVING;
-                                            *s_tmode.get_mut(i) = MODE_WALK;
+                                        let frontage_node = crate::simulation::buildings::allocator::building_depart_node(&allocator.buildings[t_bldg], graph);
+                                        if *s_cur_n.get(i) == frontage_node {
+                                            let b = &allocator.buildings[t_bldg];
+                                            // Agent reached the frontage node but frontage_t is
+                                            // mid-edge. Insert onto the frontage edge in the
+                                            // direction toward frontage_t so the midway arrival
+                                            // check fires naturally — no teleport.
+                                            //
+                                            // Direction: frontage_t < 0.5 → frontage_node is
+                                            // start_node → travel forward to reach frontage_t.
+                                            // frontage_t >= 0.5 → frontage_node is end_node →
+                                            // travel backward.
+                                            let arrival_fwd = b.frontage_t < 0.5;
+                                            let is_walk = *s_tmode.get(i) == MODE_WALK;
+                                            let b_side = b.side;
+                                            let edge_idx = b.edge_idx;
+
+                                            let arrival_lane = transit_network
+                                                .lane_system
+                                                .edge_lanes
+                                                .get(&edge_idx)
+                                                .and_then(|edge_lanes| {
+                                                    edge_lanes.iter().find_map(|&l_id| {
+                                                        let lane = &transit_network
+                                                            .lane_system
+                                                            .lanes[l_id];
+                                                        if lane.is_fwd != arrival_fwd {
+                                                            return None;
+                                                        }
+                                                        if is_walk {
+                                                            if lane.lane_type == LaneType::Foot {
+                                                                let lane_side: i8 =
+                                                                    if lane.lane_idx > 0 {
+                                                                        1
+                                                                    } else {
+                                                                        -1
+                                                                    };
+                                                                if lane_side == b_side {
+                                                                    Some(l_id)
+                                                                } else {
+                                                                    None
+                                                                }
+                                                            } else {
+                                                                None
+                                                            }
+                                                        } else if lane.lane_type
+                                                            == LaneType::Vehicle
+                                                        {
+                                                            Some(l_id)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    })
+                                                });
+
+                                            if let Some(lane_id) = arrival_lane {
+                                                *s_cur_n.get_mut(i) = frontage_node;
+                                                *s_cur_e.get_mut(i) = edge_idx;
+                                                *s_lane_id.get_mut(i) = lane_id;
+                                                *s_lane_d.get_mut(i) = 0.0;
+                                                // Stay ON_ROAD — midway check handles ARRIVING.
+                                            } else {
+                                                // No lane on frontage edge — snap to kerb as
+                                                // a last-resort fallback.
+                                                let kerb_road = allocator.get_pos_on_edge(
+                                                    graph,
+                                                    edge_idx,
+                                                    b.frontage_t,
+                                                );
+                                                let kerb = kerb_road + b.facing_dir * b.side_offset;
+                                                *s_pos_x.get_mut(i) = kerb.x;
+                                                *s_pos_y.get_mut(i) = kerb.y;
+                                                *s_transit.get_mut(i) = TRANSIT_ARRIVING;
+                                                *s_tmode.get_mut(i) = MODE_WALK;
+                                            }
                                         }
                                     }
                                     break;
@@ -854,7 +1063,9 @@ impl AgentSystem {
                                         *s_lane_id.get_mut(i) = tgt_road_lane;
                                         *s_lane_d.get_mut(i) = 0.0;
                                         *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
-                                        *s_cur_e.get_mut(i) = transit_network.lane_system.lanes[tgt_road_lane].edge_id;
+                                        *s_cur_e.get_mut(i) = transit_network.lane_system.lanes
+                                            [tgt_road_lane]
+                                            .edge_id;
                                     } else {
                                         s_path.get_mut(i).clear();
                                         *s_lane_id.get_mut(i) = usize::MAX;
@@ -870,7 +1081,9 @@ impl AgentSystem {
                     }
 
                     let current_lane = *s_lane_id.get(i);
-                    if current_lane != usize::MAX && current_lane < transit_network.lane_system.lanes.len() {
+                    if current_lane != usize::MAX
+                        && current_lane < transit_network.lane_system.lanes.len()
+                    {
                         let l = &transit_network.lane_system.lanes[current_lane];
                         let dist = *s_lane_d.get(i);
                         if dist <= 0.0 && !l.geometry.is_empty() {
@@ -886,12 +1099,17 @@ impl AgentSystem {
                             let p0 = l.geometry[seg];
                             let p1 = l.geometry[seg + 1];
                             let seg_len = l.cum_dist[seg + 1] - l.cum_dist[seg];
-                            let t = if seg_len > 1e-5 { (dist - l.cum_dist[seg]) / seg_len } else { 0.0 };
+                            let t = if seg_len > 1e-5 {
+                                (dist - l.cum_dist[seg]) / seg_len
+                            } else {
+                                0.0
+                            };
                             let mut out = p0.lerp(p1, t.clamp(0.0, 1.0));
                             if *s_tmode.get(i) == MODE_WALK && seg_len > 1e-5 {
                                 let tangent = (p1 - p0) / seg_len;
                                 let normal = Vector3::new(-tangent.z, 0.0, tangent.x);
-                                let jitter = (f32::sin(i as f32 * 4.0) + f32::cos(i as f32 * 7.0)) * 0.7;
+                                let jitter =
+                                    (f32::sin(i as f32 * 4.0) + f32::cos(i as f32 * 7.0)) * 0.7;
                                 out += normal * jitter;
                             }
                             *s_pos_x.get_mut(i) = out.x;
@@ -910,7 +1128,9 @@ impl AgentSystem {
                     let center_vec = Vector2::new(b.center_x, b.center_y);
                     let dir_to_center = center_vec - Vector2::new(*s_pos_x.get(i), *s_pos_y.get(i));
                     let dist = dir_to_center.length();
-                    let speed = if *s_tmode.get(i) == MODE_CAR { 10.0 } else { 4.0 };
+                    // tmode is always MODE_WALK here (set on ARRIVING entry), but
+                    // use AGENT_WALK_SPEED_MS explicitly for clarity.
+                    let speed = AGENT_WALK_SPEED_MS;
                     let step = speed * delta;
 
                     if dist < step {
@@ -921,9 +1141,13 @@ impl AgentSystem {
                         *s_transit.get_mut(i) = TRANSIT_IDLE;
                         let home = *s_home.get(i);
                         let work = *s_work.get(i);
-                        if b_id == home { *s_activity.get_mut(i) = 0; }
-                        else if b_id == work { *s_activity.get_mut(i) = 1; }
-                        else { *s_activity.get_mut(i) = 2; }
+                        if b_id == home {
+                            *s_activity.get_mut(i) = 0;
+                        } else if b_id == work {
+                            *s_activity.get_mut(i) = 1;
+                        } else {
+                            *s_activity.get_mut(i) = 2;
+                        }
                         *s_tmode.get_mut(i) = MODE_WALK;
                         *s_cur_e.get_mut(i) = usize::MAX;
                         *s_lane_id.get_mut(i) = usize::MAX;
@@ -932,14 +1156,17 @@ impl AgentSystem {
                         *s_path_idx.get_mut(i) = 0;
 
                         let commute_time = sim_time - *s_jstart.get(i);
-                        *s_happiness.get_mut(i) = (*s_happiness.get(i) - commute_time / 60.0).clamp(0.0, 100.0);
+                        *s_happiness.get_mut(i) =
+                            (*s_happiness.get(i) - commute_time / 60.0).clamp(0.0, 100.0);
                     } else if dist > 0.0001 {
                         let mv = dir_to_center.normalized() * step;
                         *s_pos_x.get_mut(i) += mv.x;
                         *s_pos_y.get_mut(i) += mv.y;
                     }
                 }
-                _ => { *s_transit.get_mut(i) = TRANSIT_IDLE; }
+                _ => {
+                    *s_transit.get_mut(i) = TRANSIT_IDLE;
+                }
             }
         }
     }
@@ -961,7 +1188,6 @@ impl AgentSystem {
             }
         }
     }
-
 }
 
 #[cfg(test)]

@@ -23,7 +23,8 @@ fn test_slope_cost_calculation() {
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     };
 
     let (flat_cost, _) = cost::CostCalculator::calculate_costs(&edge);
@@ -78,7 +79,8 @@ fn test_pathing_avoids_steep_slope() {
             Vector3::new(100.0, 0.0, 0.0),
         ],
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     };
     let (cost_ab, dist_ab) = cost::CostCalculator::calculate_costs(&edge_ab);
     edge_ab.base_cost = cost_ab;
@@ -104,7 +106,8 @@ fn test_pathing_avoids_steep_slope() {
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(50.0, 0.0, 100.0)],
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     };
     let (cost_ac, dist_ac) = cost::CostCalculator::calculate_costs(&edge_ac);
     edge_ac.base_cost = cost_ac;
@@ -135,7 +138,8 @@ fn test_pathing_avoids_steep_slope() {
             Vector3::new(100.0, 0.0, 0.0),
         ],
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     };
     let (cost_cb, dist_cb) = cost::CostCalculator::calculate_costs(&edge_cb);
     edge_cb.base_cost = cost_cb;
@@ -182,7 +186,8 @@ fn test_bidirectional_walkway_pathing() {
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     });
 
     let cch = CchGraph::build(&graph);
@@ -230,7 +235,8 @@ fn test_car_uturn_allowed() {
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(10.0, 0.0, 0.0)],
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     });
 
     let cch = CchGraph::build(&graph);
@@ -284,7 +290,8 @@ fn test_car_avoids_walkway_shortcut() {
         geometry: vec![],
         physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 100.0],
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     });
     graph.add_edge(Edge {
         start_node: n1,
@@ -303,7 +310,8 @@ fn test_car_avoids_walkway_shortcut() {
         geometry: vec![],
         physical_geometry: vec![Vector3::RIGHT * 100.0, Vector3::RIGHT * 200.0],
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     });
 
     // Walkway shortcut n0 -> n2 directly
@@ -324,7 +332,8 @@ fn test_car_avoids_walkway_shortcut() {
         geometry: vec![],
         physical_geometry: vec![Vector3::ZERO, Vector3::RIGHT * 200.0],
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     });
 
     let cch = cch::CchGraph::build(&graph);
@@ -370,40 +379,48 @@ fn test_car_avoids_walkway_shortcut() {
 /// The only way to reach n_north is  east_border → south_node → n_north.
 fn build_loop_with_restriction() -> (RegionGraph, u32, u32, u32, u32, u32, usize, usize, usize) {
     let mut g = RegionGraph::new();
-    let n_east  = g.add_node(Vector3::new(-200.0, 0.0,  0.0), NodeType::Junction);
-    let n_jct   = g.add_node(Vector3::new(   0.0, 0.0,  0.0), NodeType::Junction);
-    let n_west  = g.add_node(Vector3::new( 200.0, 0.0,  0.0), NodeType::Junction);
-    let n_north = g.add_node(Vector3::new(   0.0, 0.0, -200.0), NodeType::Junction);
-    let n_south = g.add_node(Vector3::new(   0.0, 0.0,  200.0), NodeType::Junction);
+    let n_east = g.add_node(Vector3::new(-200.0, 0.0, 0.0), NodeType::Junction);
+    let n_jct = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let n_west = g.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
+    let n_north = g.add_node(Vector3::new(0.0, 0.0, -200.0), NodeType::Junction);
+    let n_south = g.add_node(Vector3::new(0.0, 0.0, 200.0), NodeType::Junction);
 
     let mk = |s: u32, e: u32, g: &mut RegionGraph| -> usize {
         let p0 = g.nodes()[s as usize].pos;
         let p1 = g.nodes()[e as usize].pos;
         let len = p0.distance_to(p1);
         g.add_edge(Edge {
-            start_node: s, end_node: e,
+            start_node: s,
+            end_node: e,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR,
             class: EdgeClass::Standard,
-            width: 7.0, fwd_lanes: 1, bkw_lanes: 1,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
             speed_limit: 50.0,
             base_cost: len / (50.0 / 3.6),
             physical_length: len,
-            current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
             geometry: vec![p0, p1],
             physical_geometry: vec![p0, p1],
-            deleted: false, no_building_spawn: false,
+            deleted: false,
+            no_building_spawn: false,
         })
     };
 
-    let e_ew_e = mk(n_east,  n_jct,   &mut g); // east → junction
-    let e_ew_w = mk(n_jct,   n_west,  &mut g); // junction → west
-    let e_n    = mk(n_jct,   n_north, &mut g); // junction → north (blocked right turn)
-    let _e_es  = mk(n_east,  n_south, &mut g); // east → south
-    let _e_sw  = mk(n_south, n_west,  &mut g); // south → west
-    let _e_sn  = mk(n_south, n_north, &mut g); // south → north (alternate route)
+    let e_ew_e = mk(n_east, n_jct, &mut g); // east → junction
+    let e_ew_w = mk(n_jct, n_west, &mut g); // junction → west
+    let e_n = mk(n_jct, n_north, &mut g); // junction → north (blocked right turn)
+    let _e_es = mk(n_east, n_south, &mut g); // east → south
+    let _e_sw = mk(n_south, n_west, &mut g); // south → west
+    let _e_sn = mk(n_south, n_north, &mut g); // south → north (alternate route)
     g.rebuild_adjacency_list();
-    (g, n_east, n_jct, n_west, n_north, n_south, e_ew_e, e_ew_w, e_n)
+    (
+        g, n_east, n_jct, n_west, n_north, n_south, e_ew_e, e_ew_w, e_n,
+    )
 }
 
 /// Without any restrictions the direct path east → jct → north should be found.
@@ -434,15 +451,18 @@ fn test_cch_reroutes_around_turn_restriction() {
     let cch = CchGraph::build(&mut g);
     let result = cch.find_path(n_east, n_north, usize::MAX, &g, TransitFlags::CAR);
 
-    assert!(result.is_some(), "Should still find a path via southern loop");
+    assert!(
+        result.is_some(),
+        "Should still find a path via southern loop"
+    );
     let (_, _, nodes) = result.unwrap();
 
-    assert_eq!(nodes.first(), Some(&n_east),  "path must start at east");
-    assert_eq!(nodes.last(),  Some(&n_north), "path must end at north");
+    assert_eq!(nodes.first(), Some(&n_east), "path must start at east");
+    assert_eq!(nodes.last(), Some(&n_north), "path must end at north");
 
     // The path must NOT route east → jct → north (blocked right turn).
     // Either n_jct is absent from the path, or n_south is the detour point.
-    let jct_idx   = nodes.iter().position(|&n| n == n_jct);
+    let jct_idx = nodes.iter().position(|&n| n == n_jct);
     let _north_idx = nodes.iter().position(|&n| n == n_north).unwrap();
     if let Some(ji) = jct_idx {
         // If jct appears, it must NOT be immediately followed by north.

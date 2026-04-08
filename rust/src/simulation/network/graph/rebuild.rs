@@ -356,9 +356,13 @@ impl RegionGraph {
                 if affected_nodes.contains(&node) {
                     *connection_counts.entry(node).or_insert(0) += 1;
                     let max_w = node_max_width.entry(node).or_insert(0.0_f32);
-                    if w > *max_w { *max_w = w; }
+                    if w > *max_w {
+                        *max_w = w;
+                    }
                     let min_w = node_min_width.entry(node).or_insert(f32::MAX);
-                    if w < *min_w { *min_w = w; }
+                    if w < *min_w {
+                        *min_w = w;
+                    }
                 }
             }
         }

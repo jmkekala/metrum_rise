@@ -16,13 +16,13 @@ pub mod registry;
 pub mod scanner;
 
 pub use asset::{
-    AnchorType, ArchetypeFamily, AssetClass, AssetManifest, BuildingData, CharacterData,
-    ColorVariant, LodEntry, Anchor, PropData, SkinVariant, SnapMode, TerrainBehavior,
-    VehicleClass, VehicleData, VehicleFamily, ZoneClass,
+    Anchor, AnchorType, ArchetypeFamily, AssetClass, AssetManifest, BuildingData, CharacterData,
+    ColorVariant, LodEntry, PropData, SkinVariant, SnapMode, TerrainBehavior, VehicleClass,
+    VehicleData, VehicleFamily, ZoneClass,
 };
 pub use pack::PackManifest;
 pub use registry::{AssetEntry, AssetRegistry};
-pub use scanner::{scan_pack_dir, ScannedPack, ScanResult};
+pub use scanner::{ScanResult, ScannedPack, scan_pack_dir};
 
 use std::fmt;
 
@@ -42,7 +42,7 @@ pub enum ManifestError {
 impl fmt::Display for ManifestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::TomlParse(e)    => write!(f, "TOML parse error: {e}"),
+            Self::TomlParse(e) => write!(f, "TOML parse error: {e}"),
             Self::Validation(msg) => write!(f, "manifest validation error: {msg}"),
         }
     }
@@ -68,8 +68,12 @@ pub fn is_valid_pack_id(s: &str) -> bool {
 /// each containing only ASCII lowercase letters, digits, and underscores.
 pub fn is_valid_asset_id(s: &str) -> bool {
     !s.is_empty()
-        && s.split('.')
-            .all(|seg| !seg.is_empty() && seg.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+        && s.split('.').all(|seg| {
+            !seg.is_empty()
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        })
 }
 
 #[cfg(test)]
@@ -86,10 +90,10 @@ mod tests {
     #[test]
     fn invalid_pack_ids() {
         assert!(!is_valid_pack_id(""));
-        assert!(!is_valid_pack_id("Kenney"));        // uppercase
-        assert!(!is_valid_pack_id("my_pack"));       // underscore not allowed
+        assert!(!is_valid_pack_id("Kenney")); // uppercase
+        assert!(!is_valid_pack_id("my_pack")); // underscore not allowed
         assert!(!is_valid_pack_id("-leading-dash")); // leading hyphen
-        assert!(!is_valid_pack_id("trailing-"));     // trailing hyphen
+        assert!(!is_valid_pack_id("trailing-")); // trailing hyphen
     }
 
     #[test]

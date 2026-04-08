@@ -3,8 +3,8 @@
 //! Every content pack ships exactly one `pack.toml` at the pack root.
 //! It records the pack's stable identity, display metadata, and authorship.
 
+use super::{CURRENT_SCHEMA_VERSION, ManifestError, is_valid_pack_id};
 use serde::Deserialize;
-use super::{ManifestError, is_valid_pack_id, CURRENT_SCHEMA_VERSION};
 
 /// Top-level pack manifest deserialized from `pack.toml`.
 ///

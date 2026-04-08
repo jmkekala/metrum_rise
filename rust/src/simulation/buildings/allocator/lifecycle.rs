@@ -1,15 +1,13 @@
 //! Building removal, immigration spawning, and coordinate restoration.
 
 use crate::debug_log;
+use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
+use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::households::{DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE, HouseholdSystem};
+use crate::simulation::economy::logistics::ShipmentSystem;
+use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::households::{
-    HouseholdSystem, DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE,
-};
-use crate::simulation::economy::logistics::ShipmentSystem;
-use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
 
@@ -62,13 +60,19 @@ impl BuildingAllocator {
                 self.dirty_zones[b_zone as usize] = true;
 
                 let tangent = Vector2::new(-b_facing.y, b_facing.x);
-                let width_m  = b_width as f32 * zone_cell_m;
-                let depth_m  = b_depth as f32 * zone_cell_m;
+                let width_m = b_width as f32 * zone_cell_m;
+                let depth_m = b_depth as f32 * zone_cell_m;
                 zoning.mark_occupied_rect(b_center_x, b_center_y, tangent, width_m, depth_m, false);
 
                 if let Some(occ) = self.edge_occupancy.get_mut(&b_edge_idx) {
-                    let slot = if b_side > 0 { &mut occ.left } else { &mut occ.right };
-                    if b_cell_x < slot.len() { slot[b_cell_x] = false; }
+                    let slot = if b_side > 0 {
+                        &mut occ.left
+                    } else {
+                        &mut occ.right
+                    };
+                    if b_cell_x < slot.len() {
+                        slot[b_cell_x] = false;
+                    }
                 }
 
                 logistics.invalidate_building(i, self);
@@ -102,7 +106,9 @@ impl BuildingAllocator {
             .enumerate()
             .filter(|(_, b)| b.zone_type == ZoneType::Residential || b.zone_type == ZoneType::Mixed)
             .fold(0, |acc, (idx, b)| {
-                if b.broken { return acc; }
+                if b.broken {
+                    return acc;
+                }
                 let cap = self.resident_capacity(idx);
                 let cap = if cap == 0 { 6 } else { cap } as usize;
                 acc + cap.saturating_sub(b.occupancy as usize)
@@ -123,7 +129,8 @@ impl BuildingAllocator {
                 }
                 let connected = graph
                     .node_adjacency(i as u32)
-                    .iter().any(|&e| !graph.edge(e).deleted);
+                    .iter()
+                    .any(|&e| !graph.edge(e).deleted);
                 if connected { Some(i as u32) } else { None }
             })
             .collect();
@@ -160,12 +167,11 @@ impl BuildingAllocator {
 
         let housing_factor = (vacant_resident_slots as f32
             / (vacant_resident_slots as f32 + resident_count.max(1.0)))
-            .clamp(0.0, 1.0);
+        .clamp(0.0, 1.0);
         let job_factor = if resident_count == 0.0 {
             1.0
         } else {
-            (open_job_slots
-                / (open_job_slots + DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as f32))
+            (open_job_slots / (open_job_slots + DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as f32))
                 .clamp(0.0, 1.0)
         };
 
@@ -190,11 +196,9 @@ impl BuildingAllocator {
             1.0
         };
 
-        let mut households_to_spawn = (IMMIGRATION_BASE_INFLOW
-            * housing_factor
-            * job_factor
-            * city_stability_factor)
-            .round() as usize;
+        let mut households_to_spawn =
+            (IMMIGRATION_BASE_INFLOW * housing_factor * job_factor * city_stability_factor).round()
+                as usize;
         let startup_ready = resident_count < PLAYER_STARTUP_POPULATION_TARGET as f32
             && vacant_resident_slots > 0
             && open_job_slots > 0.0;
@@ -235,7 +239,10 @@ impl BuildingAllocator {
             let Some((home_idx, household_size)) =
                 self.claim_home_for_household(DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as u32, &mut rng)
             else {
-                debug_log!("economy", "immigration aborted mid-pass: could not claim a home from vacancy index");
+                debug_log!(
+                    "economy",
+                    "immigration aborted mid-pass: could not claim a home from vacancy index"
+                );
                 break;
             };
             let spawn_node = border_nodes[rand::Rng::gen_range(&mut rng, 0..border_nodes.len())];
@@ -251,7 +258,11 @@ impl BuildingAllocator {
                             - edge.physical_geometry[edge.physical_geometry.len() - 1])
                             .normalized()
                     };
-                    let side_mul = if crate::config::DRIVE_ON_LEFT { -1.0 } else { 1.0 };
+                    let side_mul = if crate::config::DRIVE_ON_LEFT {
+                        -1.0
+                    } else {
+                        1.0
+                    };
                     let normal = godot::prelude::Vector3::new(-dir.z, 0.0, dir.x);
                     spawn_pos += normal * (crate::config::LANE_WIDTH * 0.5 * side_mul);
                 }
@@ -259,8 +270,7 @@ impl BuildingAllocator {
 
             let home_bldg = &self.buildings[home_idx];
             let home_node = building_depart_node(home_bldg, graph);
-            let household_id =
-                households.admit_immigrant_household(home_idx, household_size);
+            let household_id = households.admit_immigrant_household(home_idx, household_size);
             debug_log!(
                 "economy",
                 "immigration admitted household_id={} size={} home_building={} spawn_node={} home_node={}",

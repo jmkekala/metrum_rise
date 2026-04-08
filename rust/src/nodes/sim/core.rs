@@ -9,8 +9,8 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use godot::prelude::{godot_error, Vector3};
 use crate::debug_log;
+use godot::prelude::{Vector3, godot_error};
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
@@ -185,7 +185,11 @@ impl SimCore {
             "economy",
             "daily tick start: buildings={} households={} agents={} demand=(R {:.1}, C {:.1}, I {:.1})",
             self.allocator.buildings.len(),
-            self.households.households.iter().filter(|h| h.member_count > 0).count(),
+            self.households
+                .households
+                .iter()
+                .filter(|h| h.member_count > 0)
+                .count(),
             self.agents.len(),
             self.demand.residential,
             self.demand.commercial,
@@ -202,8 +206,14 @@ impl SimCore {
         // Drain building dirty-zone flags → mark matching flow fields for rebuild.
         {
             use crate::simulation::grid::zoning::ZoneType;
-            let zones = [ZoneType::None, ZoneType::Residential, ZoneType::Commercial,
-                         ZoneType::Industrial, ZoneType::Office, ZoneType::Mixed];
+            let zones = [
+                ZoneType::None,
+                ZoneType::Residential,
+                ZoneType::Commercial,
+                ZoneType::Industrial,
+                ZoneType::Office,
+                ZoneType::Mixed,
+            ];
             for (z, zone) in zones.iter().enumerate() {
                 if self.allocator.dirty_zones[z] {
                     self.allocator.dirty_zones[z] = false;
@@ -213,8 +223,10 @@ impl SimCore {
         }
 
         self.pollution.tick(&self.allocator, &self.config);
-        self.noise.tick(&self.allocator, &self.region_graph, &self.config);
-        self.desirability.tick(&self.zoning, &self.pollution, &self.noise);
+        self.noise
+            .tick(&self.allocator, &self.region_graph, &self.config);
+        self.desirability
+            .tick(&self.zoning, &self.pollution, &self.noise);
         self.households.daily_tick(
             &mut self.agents,
             &mut self.allocator,
@@ -227,7 +239,11 @@ impl SimCore {
             "economy",
             "daily tick end: buildings={} households={} agents={} demand=(R {:.1}, C {:.1}, I {:.1})",
             self.allocator.buildings.len(),
-            self.households.households.iter().filter(|h| h.member_count > 0).count(),
+            self.households
+                .households
+                .iter()
+                .filter(|h| h.member_count > 0)
+                .count(),
             self.agents.len(),
             self.demand.residential,
             self.demand.commercial,
@@ -373,9 +389,7 @@ impl SimCore {
                 let mut world_y = terrain_y + 0.02;
 
                 let lane_id = self.agents.current_lane_id[i];
-                if lane_id != usize::MAX
-                    && lane_id < self.transit_network.lane_system.lanes.len()
-                {
+                if lane_id != usize::MAX && lane_id < self.transit_network.lane_system.lanes.len() {
                     let l = &self.transit_network.lane_system.lanes[lane_id];
                     let dist = self.agents.lane_distance[i];
                     if l.geometry.len() >= 2 {
@@ -471,7 +485,8 @@ impl SimCore {
             current_day: self.time.current_day,
             last_tick_ms: self.last_tick_duration,
             last_agent_tick_us: self.last_agent_tick_us,
-            pathfind_count: self.agents
+            pathfind_count: self
+                .agents
                 .pathfind_count
                 .load(std::sync::atomic::Ordering::Relaxed),
             agent_count: self.agents.len() as i32,
@@ -513,7 +528,11 @@ pub fn run_sim_thread(
                 Ok(SimCommand::SetCameraAabb(x0, x1, z0, z1)) => {
                     core.lock().unwrap().camera_aabb = (x0, x1, z0, z1);
                 }
-                Ok(SimCommand::AddRoad { points, fwd_lanes, bkw_lanes }) => {
+                Ok(SimCommand::AddRoad {
+                    points,
+                    fwd_lanes,
+                    bkw_lanes,
+                }) => {
                     let road_total = Instant::now();
                     let mut c = core.lock().unwrap();
                     // Bulk-load defers per-edge rebuilds until finalization.
@@ -531,7 +550,9 @@ pub fn run_sim_thread(
                         // Collect nodes touched by the new/split edges.
                         let mut affected_nodes = std::collections::HashSet::new();
                         for &e_id in &dirty {
-                            if e_id < c.region_graph.edge_count() && !c.region_graph.edge(e_id).deleted {
+                            if e_id < c.region_graph.edge_count()
+                                && !c.region_graph.edge(e_id).deleted
+                            {
                                 let e = c.region_graph.edge(e_id);
                                 affected_nodes.insert(c.region_graph.get_valid_node(e.start_node));
                                 affected_nodes.insert(c.region_graph.get_valid_node(e.end_node));
@@ -539,22 +560,20 @@ pub fn run_sim_thread(
                         }
 
                         let t_clips = Instant::now();
-                        c.region_graph.rebuild_intersection_clips_for_nodes(&affected_nodes);
+                        c.region_graph
+                            .rebuild_intersection_clips_for_nodes(&affected_nodes);
                         let dt_clips_us = t_clips.elapsed().as_micros();
 
                         let t_inv = Instant::now();
                         // Invalidate agents BEFORE lane rebuild so old lane IDs are still valid.
-                        c.agents.invalidate_lane_ids_for_edges(
-                            &dirty,
-                            &c.transit_network.lane_system,
-                        );
+                        c.agents
+                            .invalidate_lane_ids_for_edges(&dirty, &c.transit_network.lane_system);
                         let dt_inv_us = t_inv.elapsed().as_micros();
 
                         let t_lanes = Instant::now();
-                        c.transit_network.lane_system.rebuild_edges_incremental(
-                            &mut c.region_graph,
-                            &dirty,
-                        );
+                        c.transit_network
+                            .lane_system
+                            .rebuild_edges_incremental(&mut c.region_graph, &dirty);
                         let dt_lanes_us = t_lanes.elapsed().as_micros();
 
                         // Zone flush is deferred to the next simulate_tick_internal call
@@ -563,7 +582,12 @@ pub fn run_sim_thread(
                         let total_us = road_total.elapsed().as_micros();
                         let msg = format!(
                             "TOTAL={}µs  {}  clips={}µs  lanes={}µs({}e)  invalidate={}µs",
-                            total_us, c.last_road_timing, dt_clips_us, dt_lanes_us, dirty_count, dt_inv_us
+                            total_us,
+                            c.last_road_timing,
+                            dt_clips_us,
+                            dt_lanes_us,
+                            dirty_count,
+                            dt_inv_us
                         );
                         debug_log!("road", "{}", msg);
                         c.last_road_timing = msg;
@@ -602,9 +626,9 @@ pub fn run_sim_thread(
                 {
                     let alloc = &c.allocator;
                     let graph = &c.region_graph;
-                    c.transit_network.flow_fields.rebuild_dirty(graph, |zone| {
-                        alloc.get_sources_for_zone(zone, graph)
-                    });
+                    c.transit_network
+                        .flow_fields
+                        .rebuild_dirty(graph, |zone| alloc.get_sources_for_zone(zone, graph));
                 }
 
                 let dt = (TARGET_DT * speed as f64) as f32;
@@ -633,9 +657,10 @@ pub fn run_sim_thread(
                     // Wrap daily tick so a panic here does not poison the mutex.
                     // Without this, the first daily-tick panic would permanently
                     // crash every subsequent Godot main-thread lock().unwrap() call.
-                    let daily_result = std::panic::catch_unwind(
-                        std::panic::AssertUnwindSafe(|| core.simulate_tick_internal()),
-                    );
+                    let daily_result =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            core.simulate_tick_internal()
+                        }));
                     if let Err(e) = daily_result {
                         let msg = e
                             .downcast_ref::<&str>()
@@ -649,9 +674,8 @@ pub fn run_sim_thread(
 
             // build_snapshot only reads state; wrap anyway so a panic here does
             // not poison the mutex and kill the render thread.
-            let snap_result = std::panic::catch_unwind(
-                std::panic::AssertUnwindSafe(|| core.build_snapshot()),
-            );
+            let snap_result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| core.build_snapshot()));
             match snap_result {
                 Ok(s) => s,
                 Err(e) => {

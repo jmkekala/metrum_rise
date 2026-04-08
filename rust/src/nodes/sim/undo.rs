@@ -65,7 +65,9 @@ impl SimCore {
             if sync_trans_graph {
                 // Rebuild lane topology from the restored graph so crosswalk geometry
                 // and junction connections match the reverted road network.
-                self.transit_network.lane_system.rebuild(&mut self.region_graph);
+                self.transit_network
+                    .lane_system
+                    .rebuild(&mut self.region_graph);
                 self.transit_network.cch_graph =
                     crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
             }

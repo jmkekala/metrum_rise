@@ -7,8 +7,8 @@
 //! The active asset class is identified by which of the optional class tables is present
 //! (`[building]`, `[prop]`, `[vehicle]`, `[character]`). Exactly one must be populated.
 
-use serde::Deserialize;
 use super::{ManifestError, is_valid_asset_id};
+use serde::Deserialize;
 
 // ── Shared sub-types ──────────────────────���────────────────────��──────────────
 
@@ -108,8 +108,12 @@ pub struct BuildingData {
     pub preview_scale: Option<f32>,
 }
 
-fn default_level() -> u8 { 1 }
-fn default_density() -> String { "low".to_string() }
+fn default_level() -> u8 {
+    1
+}
+fn default_density() -> String {
+    "low".to_string()
+}
 
 // ── Prop ────────────────────────────────────────────────────���─────────────────
 
@@ -330,10 +334,10 @@ impl AssetManifest {
             self.vehicle.is_some(),
             self.character.is_some(),
         ) {
-            (true,  false, false, false) => Ok(AssetClass::Building),
-            (false, true,  false, false) => Ok(AssetClass::Prop),
-            (false, false, true,  false) => Ok(AssetClass::Vehicle),
-            (false, false, false, true)  => Ok(AssetClass::Character),
+            (true, false, false, false) => Ok(AssetClass::Building),
+            (false, true, false, false) => Ok(AssetClass::Prop),
+            (false, false, true, false) => Ok(AssetClass::Vehicle),
+            (false, false, false, true) => Ok(AssetClass::Character),
             _ => Err(ManifestError::Validation(format!(
                 "asset_id '{}': exactly one class section required \
                  ([building], [prop], [vehicle], or [character])",
@@ -383,6 +387,40 @@ impl AssetManifest {
             if b.level == 0 {
                 return Err(ManifestError::Validation(format!(
                     "asset_id '{}': level must be >= 1",
+                    self.asset_id
+                )));
+            }
+
+            let mut main_entrance_count = 0usize;
+            for anchor in &self.anchors {
+                match anchor.anchor_type {
+                    AnchorType::Entrance if anchor.name == "main" => {
+                        main_entrance_count += 1;
+                    }
+                    AnchorType::Entrance => {
+                        return Err(ManifestError::Validation(format!(
+                            "asset_id '{}': additional entrance anchor '{}' is not allowed on building assets; use type = \"service\" for secondary access points",
+                            self.asset_id, anchor.name
+                        )));
+                    }
+                    AnchorType::Service | AnchorType::PropSocket => {}
+                    AnchorType::Wheel => {
+                        return Err(ManifestError::Validation(format!(
+                            "asset_id '{}': anchor '{}' uses type = \"wheel\", which is not valid for building assets",
+                            self.asset_id, anchor.name
+                        )));
+                    }
+                    AnchorType::Light => {
+                        return Err(ManifestError::Validation(format!(
+                            "asset_id '{}': anchor '{}' uses type = \"light\", which is not valid for building assets",
+                            self.asset_id, anchor.name
+                        )));
+                    }
+                }
+            }
+            if main_entrance_count != 1 {
+                return Err(ManifestError::Validation(format!(
+                    "asset_id '{}': building assets require exactly one [[anchors]] entry with type = \"entrance\" and name = \"main\"",
                     self.asset_id
                 )));
             }
@@ -474,6 +512,44 @@ display_name = "Bad"
 zone_type = "residential"
 lot_width_cells = 0
 lot_depth_cells = 3
+"#;
+        assert!(AssetManifest::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn building_rejects_missing_main_entrance() {
+        let toml = r#"
+asset_id = "building.residential.bad"
+display_name = "Bad"
+[building]
+zone_type = "residential"
+lot_width_cells = 2
+lot_depth_cells = 2
+"#;
+        assert!(AssetManifest::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn building_rejects_secondary_entrance_anchor() {
+        let toml = r#"
+asset_id = "building.residential.bad"
+display_name = "Bad"
+[building]
+zone_type = "residential"
+lot_width_cells = 2
+lot_depth_cells = 2
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, 2.0]
+forward = [0.0, 0.0, 1.0]
+
+[[anchors]]
+type = "entrance"
+name = "rear"
+position = [0.0, 0.0, -2.0]
+forward = [0.0, 0.0, -1.0]
 "#;
         assert!(AssetManifest::from_str(toml).is_err());
     }

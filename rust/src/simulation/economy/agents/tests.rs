@@ -1,10 +1,10 @@
 use super::*;
-use crate::simulation::network::graph::{Edge, RegionGraph};
-use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
-use crate::simulation::network::TransitNetwork;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
+use crate::simulation::network::TransitNetwork;
+use crate::simulation::network::graph::{Edge, RegionGraph};
+use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
 use crate::simulation::pathing::cch::CchGraph;
 use godot::prelude::{Vector2, Vector3};
 use std::collections::HashSet;
@@ -27,7 +27,8 @@ fn create_test_edge(n0: u32, n1: u32) -> Edge {
         end_clip: 0.0,
         geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     }
 }
 
@@ -48,7 +49,8 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
-        asset_id: String::new(), level: 1,
+        asset_id: String::new(),
+        level: 1,
         broken: false,
         stock: 0.0,
         revenue: 0.0,
@@ -96,9 +98,15 @@ fn test_agent_departure_sidewalk_selection() {
     // One extra tick so the ON_ROAD branch can initialise the lane.
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
     let lane_id = agents.current_lane_id[a_id];
-    assert!(lane_id != usize::MAX, "Expected a valid lane after reaching the road");
+    assert!(
+        lane_id != usize::MAX,
+        "Expected a valid lane after reaching the road"
+    );
     let lane = &network.lane_system.lanes[lane_id];
-    assert_eq!(lane.lane_type, crate::simulation::network::lanes::LaneType::Foot);
+    assert_eq!(
+        lane.lane_type,
+        crate::simulation::network::lanes::LaneType::Foot
+    );
 }
 
 #[test]
@@ -139,9 +147,15 @@ fn test_agent_departure_car_selection() {
     // One extra tick so the ON_ROAD branch can initialise the lane.
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
     let lane_id = agents.current_lane_id[a_id];
-    assert!(lane_id != usize::MAX, "Expected a valid lane after reaching the road");
+    assert!(
+        lane_id != usize::MAX,
+        "Expected a valid lane after reaching the road"
+    );
     let lane = &network.lane_system.lanes[lane_id];
-    assert_eq!(lane.lane_type, crate::simulation::network::lanes::LaneType::Vehicle);
+    assert_eq!(
+        lane.lane_type,
+        crate::simulation::network::lanes::LaneType::Vehicle
+    );
 }
 
 #[test]
@@ -151,14 +165,24 @@ fn test_car_avoids_walkway() {
     let n1 = g.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
     let n2 = g.add_node(Vector3::new(5.0, 0.0, 10.0), NodeType::Junction);
     g.add_edge(Edge {
-        start_node: n0, end_node: n1, primary_type: TransitType::Foot, allowed_types: TransitFlags::FOOT,
-        width: 2.0, fwd_lanes: 0, bkw_lanes: 0, speed_limit: 5.0, base_cost: 10.0, physical_length: 10.0,
+        start_node: n0,
+        end_node: n1,
+        primary_type: TransitType::Foot,
+        allowed_types: TransitFlags::FOOT,
+        width: 2.0,
+        fwd_lanes: 0,
+        bkw_lanes: 0,
+        speed_limit: 5.0,
+        base_cost: 10.0,
+        physical_length: 10.0,
         ..create_test_edge(n0, n1)
     });
     g.add_edge(create_test_edge(n0, n2));
     g.add_edge(create_test_edge(n2, n1));
     let cch = CchGraph::build(&g);
-    let (_, _, p) = cch.find_path(n0, n1, usize::MAX, &g, TransitFlags::CAR).expect("Car should find a path");
+    let (_, _, p) = cch
+        .find_path(n0, n1, usize::MAX, &g, TransitFlags::CAR)
+        .expect("Car should find a path");
     assert_eq!(p.len(), 3);
 }
 
@@ -169,16 +193,25 @@ fn test_pedestrian_prefers_walkway() {
     let n1 = g.add_node(Vector3::new(10.0, 0.0, 0.0), NodeType::Junction);
     let n2 = g.add_node(Vector3::new(5.0, 0.0, 1.0), NodeType::Junction);
     g.add_edge(Edge {
-        base_cost: 2.0, ..create_test_edge(n0, n1)
+        base_cost: 2.0,
+        ..create_test_edge(n0, n1)
     });
     g.add_edge(Edge {
-        primary_type: TransitType::Foot, allowed_types: TransitFlags::FOOT, base_cost: 0.5, ..create_test_edge(n0, n2)
+        primary_type: TransitType::Foot,
+        allowed_types: TransitFlags::FOOT,
+        base_cost: 0.5,
+        ..create_test_edge(n0, n2)
     });
     g.add_edge(Edge {
-        primary_type: TransitType::Foot, allowed_types: TransitFlags::FOOT, base_cost: 0.5, ..create_test_edge(n2, n1)
+        primary_type: TransitType::Foot,
+        allowed_types: TransitFlags::FOOT,
+        base_cost: 0.5,
+        ..create_test_edge(n2, n1)
     });
     let cch = CchGraph::build(&g);
-    let (_, _, p) = cch.find_path(n0, n1, usize::MAX, &g, TransitFlags::FOOT).unwrap();
+    let (_, _, p) = cch
+        .find_path(n0, n1, usize::MAX, &g, TransitFlags::FOOT)
+        .unwrap();
     assert_eq!(p.len(), 3);
 }
 
@@ -209,7 +242,7 @@ fn test_parallel_tick_produces_same_positions_as_sequential() {
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     let allocator = BuildingAllocator::new();
-    use crate::simulation::economy::agents::{TRANSIT_ON_ROAD, MODE_CAR};
+    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_ON_ROAD};
     let mut agents = AgentSystem::new();
     let i = agents.spawn_agent(usize::MAX, n0, 0.0, 0.0, n0, 0.0, 0.0);
     agents.transit[i] = TRANSIT_ON_ROAD;
@@ -257,7 +290,10 @@ fn test_agent_fsm_planned_departure_lifecycle() {
     let mut transitioned = false;
     for _ in 0..1000 {
         agents.tick(&mut allocator, &network, &mut g, 1.0);
-        if agents.transit.iter().any(|&t| t != 0) { transitioned = true; break; }
+        if agents.transit.iter().any(|&t| t != 0) {
+            transitioned = true;
+            break;
+        }
     }
     assert!(transitioned);
 }
@@ -283,7 +319,15 @@ fn test_border_spawn_movement() {
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let mut zoning = ZoningSystem::new(&MapConfig::default());
     let mut allocator = BuildingAllocator::new();
-    network.add_road(&mut graph, vec![Vector3::ZERO, Vector3::RIGHT * 100.0], 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
+    network.add_road(
+        &mut graph,
+        vec![Vector3::ZERO, Vector3::RIGHT * 100.0],
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
     network.cch_graph = CchGraph::build(&graph);
     let mut agents = AgentSystem::new();
     allocator.buildings.push(create_test_building(0, 1));
@@ -301,8 +345,24 @@ fn test_pedestrian_crosses_junction() {
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let mut zoning = ZoningSystem::new(&MapConfig::default());
     let mut allocator = BuildingAllocator::new();
-    network.add_road(&mut graph, vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::ZERO], 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
-    network.add_road(&mut graph, vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)], 1, 1, EdgeClass::Standard, &mut zoning, &mut allocator);
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(-100.0, 0.0, 0.0), Vector3::ZERO],
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    network.add_road(
+        &mut graph,
+        vec![Vector3::ZERO, Vector3::new(100.0, 0.0, 0.0)],
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     allocator.buildings.push(create_test_building(0, 1));
@@ -314,7 +374,9 @@ fn test_pedestrian_crosses_junction() {
     agents.transit[i] = TRANSIT_DEPARTING;
     for _ in 0..5000 {
         agents.tick(&mut allocator, &network, &mut graph, 0.1);
-        if agents.transit[i] == 0 { break; }
+        if agents.transit[i] == 0 {
+            break;
+        }
     }
     assert!(agents.transit[i] == 0);
 }
@@ -330,8 +392,11 @@ fn setup_straight_road() -> (TransitNetwork, RegionGraph, usize, usize) {
     network.add_road(
         &mut graph,
         vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(500.0, 0.0, 0.0)],
-        1, 1, EdgeClass::Standard,
-        &mut zoning, &mut allocator,
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
     );
     network.cch_graph = CchGraph::build(&graph);
     let edge_idx = 0;
@@ -373,7 +438,10 @@ fn test_idm_free_road_accelerates() {
     let mut allocator = BuildingAllocator::new();
     let i = place_on_lane(&mut agents, edge_idx, fwd_lane, 10.0, 0.0);
     agents.tick(&mut allocator, &network, &mut graph, 1.0);
-    assert!(agents.speed[i] > 0.0, "stopped car should accelerate on free road");
+    assert!(
+        agents.speed[i] > 0.0,
+        "stopped car should accelerate on free road"
+    );
 }
 
 #[test]
@@ -411,7 +479,7 @@ fn test_overlap_correction_separates_cars() {
     let mut agents = AgentSystem::new();
     let mut allocator = BuildingAllocator::new();
     let front = place_on_lane(&mut agents, edge_idx, fwd_lane, 20.0, 10.0);
-    let rear  = place_on_lane(&mut agents, edge_idx, fwd_lane, 19.5, 10.0); // 0.5 m apart < CAR_LENGTH
+    let rear = place_on_lane(&mut agents, edge_idx, fwd_lane, 19.5, 10.0); // 0.5 m apart < CAR_LENGTH
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
     let gap = agents.lane_distance[front] - agents.lane_distance[rear];
     assert!(
@@ -438,7 +506,6 @@ fn test_edge_congestion_written_after_tick() {
     );
 }
 
-
 use crate::simulation::LANE_CONFIGS;
 
 // ── Shared network builders ───────────────────────────────────────────────────
@@ -464,16 +531,24 @@ fn build_two_edge_road(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGraph, Vec<us
     let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(200.0, 0.0, 0.0), NodeType::Junction);
     let make = |s: u32, e: u32, x0: f32, x1: f32| Edge {
-        start_node: s, end_node: e,
+        start_node: s,
+        end_node: e,
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
-        width, fwd_lanes: fwd, bkw_lanes: bkw,
-        speed_limit: 14.0, base_cost: 1.0, physical_length: 100.0,
-        current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        width,
+        fwd_lanes: fwd,
+        bkw_lanes: bkw,
+        speed_limit: 14.0,
+        base_cost: 1.0,
+        physical_length: 100.0,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
         geometry: vec![Vector3::new(x0, 0.0, 0.0), Vector3::new(x1, 0.0, 0.0)],
         physical_geometry: vec![Vector3::new(x0, 0.0, 0.0), Vector3::new(x1, 0.0, 0.0)],
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     };
     graph.add_edge(make(n0, n1, 0.0, 100.0));
     graph.add_edge(make(n1, n2, 100.0, 200.0));
@@ -492,25 +567,33 @@ fn build_4way_junction(fwd: u8, bkw: u8) -> (TransitNetwork, RegionGraph, [Vec<u
     let mut graph = RegionGraph::new();
     let nc = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let nw = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
-    let ne = graph.add_node(Vector3::new( 100.0, 0.0, 0.0), NodeType::Junction);
+    let ne = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
     let nn = graph.add_node(Vector3::new(0.0, 0.0, -100.0), NodeType::Junction);
-    let ns = graph.add_node(Vector3::new(0.0, 0.0,  100.0), NodeType::Junction);
+    let ns = graph.add_node(Vector3::new(0.0, 0.0, 100.0), NodeType::Junction);
     let arm = |s: u32, e: u32, sx: f32, sz: f32, ex: f32, ez: f32| Edge {
-        start_node: s, end_node: e,
+        start_node: s,
+        end_node: e,
         primary_type: TransitType::Road,
         allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
         class: EdgeClass::Standard,
-        width, fwd_lanes: fwd, bkw_lanes: bkw,
-        speed_limit: 14.0, base_cost: 1.0, physical_length: 100.0,
-        current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+        width,
+        fwd_lanes: fwd,
+        bkw_lanes: bkw,
+        speed_limit: 14.0,
+        base_cost: 1.0,
+        physical_length: 100.0,
+        current_congestion: 0.0,
+        start_clip: 0.0,
+        end_clip: 0.0,
         geometry: vec![Vector3::new(sx, 0.0, sz), Vector3::new(ex, 0.0, ez)],
         physical_geometry: vec![Vector3::new(sx, 0.0, sz), Vector3::new(ex, 0.0, ez)],
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     };
     let ew = graph.add_edge(arm(nw, nc, -100.0, 0.0, 0.0, 0.0));
-    let ee = graph.add_edge(arm(ne, nc,  100.0, 0.0, 0.0, 0.0));
+    let ee = graph.add_edge(arm(ne, nc, 100.0, 0.0, 0.0, 0.0));
     let en = graph.add_edge(arm(nn, nc, 0.0, -100.0, 0.0, 0.0));
-    let es = graph.add_edge(arm(ns, nc, 0.0,  100.0, 0.0, 0.0));
+    let es = graph.add_edge(arm(ns, nc, 0.0, 100.0, 0.0, 0.0));
     graph.rebuild_adjacency_list();
     let mut network = TransitNetwork::new();
     network.lane_system.rebuild(&mut graph);
@@ -557,9 +640,13 @@ fn check_no_stacking_two_edge(fwd: u8, bkw: u8, label: &str) {
         agents.tick(&mut allocator, &network, &mut graph, 0.1);
         let mut in_use = HashSet::new();
         for i in 0..agents.len() {
-            if agents.transit[i] != TRANSIT_INTERSECTION { continue; }
+            if agents.transit[i] != TRANSIT_INTERSECTION {
+                continue;
+            }
             let lid = agents.current_lane_id[i];
-            if lid == usize::MAX || lid >= lane_count { continue; }
+            if lid == usize::MAX || lid >= lane_count {
+                continue;
+            }
             if network.lane_system.lanes[lid].edge_id == usize::MAX {
                 assert!(
                     in_use.insert(lid),
@@ -579,7 +666,7 @@ fn check_no_stacking_4way(fwd: u8, bkw: u8, label: &str) {
     let mut allocator = BuildingAllocator::new();
     let nc = 0u32;
     let arm_nodes = [1u32, 2u32, 3u32, 4u32];
-    let arm_edges  = [0usize, 1usize, 2usize, 3usize];
+    let arm_edges = [0usize, 1usize, 2usize, 3usize];
 
     for (k, lanes) in arm_lanes.iter().enumerate() {
         for &lane_id in lanes {
@@ -602,9 +689,13 @@ fn check_no_stacking_4way(fwd: u8, bkw: u8, label: &str) {
         agents.tick(&mut allocator, &network, &mut graph, 0.1);
         let mut in_use = HashSet::new();
         for i in 0..agents.len() {
-            if agents.transit[i] != TRANSIT_INTERSECTION { continue; }
+            if agents.transit[i] != TRANSIT_INTERSECTION {
+                continue;
+            }
             let lid = agents.current_lane_id[i];
-            if lid == usize::MAX || lid >= lane_count { continue; }
+            if lid == usize::MAX || lid >= lane_count {
+                continue;
+            }
             if network.lane_system.lanes[lid].edge_id == usize::MAX {
                 assert!(
                     in_use.insert(lid),
@@ -667,7 +758,9 @@ fn test_junction_gate_prevents_stacking() {
 #[test]
 fn test_frontage_node_no_uturn() {
     for &(fwd, bkw, label) in LANE_CONFIGS {
-        if fwd > 0 { check_no_uturn_at_frontage(fwd, bkw, label); }
+        if fwd > 0 {
+            check_no_uturn_at_frontage(fwd, bkw, label);
+        }
     }
 }
 
@@ -728,7 +821,10 @@ fn test_lane_bucket_sorted_order() {
         s.sort_by(|x, y| x.partial_cmp(y).unwrap());
         s
     };
-    assert_eq!(dists, sorted, "lane distances must be monotone ascending after ticks");
+    assert_eq!(
+        dists, sorted,
+        "lane distances must be monotone ascending after ticks"
+    );
 
     // Each adjacent pair must respect minimum separation.
     let min_sep = CAR_LENGTH + IDM_S_MIN;
@@ -850,8 +946,15 @@ fn test_lane_bucket_dirty_lanes_no_duplicates() {
 
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
 
-    let count = agents.dirty_lanes.iter().filter(|&&l| l == fwd_lane).count();
-    assert_eq!(count, 1, "lane {fwd_lane} must appear in dirty_lanes exactly once, found {count}");
+    let count = agents
+        .dirty_lanes
+        .iter()
+        .filter(|&&l| l == fwd_lane)
+        .count();
+    assert_eq!(
+        count, 1,
+        "lane {fwd_lane} must appear in dirty_lanes exactly once, found {count}"
+    );
 }
 
 /// An agent at exactly `speed_limit` must produce zero congestion.
@@ -867,7 +970,8 @@ fn test_congestion_zero_at_free_flow_speed() {
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
 
     assert_eq!(
-        graph.edge(edge_idx).current_congestion, 0.0,
+        graph.edge(edge_idx).current_congestion,
+        0.0,
         "agent at speed_limit must produce zero congestion"
     );
 }
@@ -904,7 +1008,15 @@ fn test_overlap_correction_stable_over_many_ticks() {
 
     let min_sep = CAR_LENGTH + IDM_S_MIN;
     let indices: Vec<usize> = (0..4)
-        .map(|k| place_on_lane(&mut agents, edge_idx, fwd_lane, 20.0 + k as f32 * (min_sep + 1.0), 5.0))
+        .map(|k| {
+            place_on_lane(
+                &mut agents,
+                edge_idx,
+                fwd_lane,
+                20.0 + k as f32 * (min_sep + 1.0),
+                5.0,
+            )
+        })
         .collect();
 
     for _ in 0..30 {
@@ -922,7 +1034,10 @@ fn test_overlap_correction_stable_over_many_ticks() {
         );
     }
     // No agent should be pushed to or past zero.
-    assert!(dists[0] >= 0.0, "rear agent must not be pushed behind start");
+    assert!(
+        dists[0] >= 0.0,
+        "rear agent must not be pushed behind start"
+    );
 }
 
 /// An agent that transitions to a new edge must not appear in its old lane's
@@ -963,16 +1078,24 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
         let na = graph.add_node(Vector3::new(x, 0.0, 0.0), NodeType::Junction);
         let nb = graph.add_node(Vector3::new(x + 100.0, 0.0, 0.0), NodeType::Junction);
         let e = Edge {
-            start_node: na, end_node: nb,
+            start_node: na,
+            end_node: nb,
             primary_type: TransitType::Road,
             allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
             class: EdgeClass::Standard,
-            width: 7.0, fwd_lanes: 1, bkw_lanes: 1,
-            speed_limit: 14.0, base_cost: 1.0, physical_length: 100.0,
-            current_congestion: 0.0, start_clip: 0.0, end_clip: 0.0,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 14.0,
+            base_cost: 1.0,
+            physical_length: 100.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
             geometry: vec![Vector3::new(x, 0.0, 0.0), Vector3::new(x + 100.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::new(x, 0.0, 0.0), Vector3::new(x + 100.0, 0.0, 0.0)],
-            deleted: false, no_building_spawn: false,
+            deleted: false,
+            no_building_spawn: false,
         };
         edges.push(graph.add_edge(e));
     }
@@ -1013,13 +1136,15 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
     // Every agent that remains on-road must have lane_distance >= the agent
     // behind it within the same lane. Collect per-lane distances and check.
     let lane_count = network.lane_system.lanes.len();
-    let mut per_lane: std::collections::HashMap<usize, Vec<f32>> =
-        std::collections::HashMap::new();
+    let mut per_lane: std::collections::HashMap<usize, Vec<f32>> = std::collections::HashMap::new();
     for i in 0..agents.agents.len() {
         if agents.transit[i] == TRANSIT_ON_ROAD {
             let lid = agents.current_lane_id[i];
             if lid != usize::MAX && lid < lane_count {
-                per_lane.entry(lid).or_default().push(agents.lane_distance[i]);
+                per_lane
+                    .entry(lid)
+                    .or_default()
+                    .push(agents.lane_distance[i]);
             }
         }
     }
@@ -1029,7 +1154,8 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
             assert!(
                 pair[1] >= pair[0] - 0.01,
                 "lane {lid}: distances not monotone after parallel sort: {:.3} > {:.3}",
-                pair[0], pair[1]
+                pair[0],
+                pair[1]
             );
         }
     }

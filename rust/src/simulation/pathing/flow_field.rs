@@ -33,7 +33,10 @@ struct HeapEntry {
 impl Ord for HeapEntry {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         // Reversed for min-heap.
-        other.cost_bits.cmp(&self.cost_bits).then(self.node.cmp(&other.node))
+        other
+            .cost_bits
+            .cmp(&self.cost_bits)
+            .then(self.node.cmp(&other.node))
     }
 }
 
@@ -65,11 +68,7 @@ impl FlowField {
     /// per building of the target zone type. All sources start at cost 0.
     ///
     /// Complexity: O((V + E) log V).
-    pub fn build(
-        sources: &[(u32, usize)],
-        graph: &RegionGraph,
-        flags: u8,
-    ) -> Self {
+    pub fn build(sources: &[(u32, usize)], graph: &RegionGraph, flags: u8) -> Self {
         let node_count = graph.node_count();
         let mut dist = vec![f32::INFINITY; node_count];
         let mut next_node = vec![u32::MAX; node_count];
@@ -141,13 +140,19 @@ impl FlowField {
             }
         }
 
-        Self { next_node, nearest_building }
+        Self {
+            next_node,
+            nearest_building,
+        }
     }
 
     /// Returns the next node to move to from `node`, or `u32::MAX` if unreachable.
     #[inline]
     pub fn next_hop(&self, node: u32) -> u32 {
-        self.next_node.get(node as usize).copied().unwrap_or(u32::MAX)
+        self.next_node
+            .get(node as usize)
+            .copied()
+            .unwrap_or(u32::MAX)
     }
 
     /// Builds a path `Vec<u32>` from `from_node` to the nearest destination by
@@ -188,7 +193,11 @@ impl FlowField {
         let mut result = Vec::with_capacity(hops);
         let mut current = node;
         for _ in 0..hops {
-            let next = self.next_node.get(current as usize).copied().unwrap_or(u32::MAX);
+            let next = self
+                .next_node
+                .get(current as usize)
+                .copied()
+                .unwrap_or(u32::MAX);
             if next == u32::MAX || next == current {
                 break;
             }
@@ -272,7 +281,6 @@ impl FlowFieldSystem {
             } else {
                 self.car_fields[z] = Some(FlowField::build(&sources, graph, TransitFlags::CAR));
                 self.foot_fields[z] = Some(FlowField::build(&sources, graph, TransitFlags::FOOT));
-
             }
             self.dirty[z] = false;
         }
@@ -299,9 +307,7 @@ impl FlowFieldSystem {
 mod tests {
     use super::*;
     use crate::simulation::network::graph::{Edge, RegionGraph};
-    use crate::simulation::network::types::{
-        EdgeClass, NodeType, TransitFlags, TransitType,
-    };
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
 
     fn make_edge(s: u32, e: u32, cost: f32) -> Edge {
@@ -322,7 +328,8 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![Vector3::ZERO, Vector3::new(cost * 50.0, 0.0, 0.0)],
             physical_geometry: vec![Vector3::ZERO, Vector3::new(cost * 50.0, 0.0, 0.0)],
-            deleted: false, no_building_spawn: false,
+            deleted: false,
+            no_building_spawn: false,
         }
     }
 

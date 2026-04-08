@@ -1,6 +1,7 @@
 ## Manages the 3D preview for the building importer.
 ## Handles the imported GLB mesh, lot rectangle wireframe, frontage arrow,
-## ground grid, human-scale reference figure, and ghost comparison mesh.
+## main entrance anchor sphere/gizmo, ground grid, human-scale reference figure,
+## and ghost comparison mesh.
 extends Node3D
 
 ## Emitted after a GLB mesh is successfully loaded.
@@ -9,10 +10,13 @@ signal mesh_loaded(aabb: AABB)
 
 # Zone cell size in metres — must match the sandbox MapConfig (zone_cell_m = 10.0).
 const CELL_M := 10.0
+const ENTRANCE_SPHERE_RADIUS_M := 0.35
 
 var _mesh_instance: MeshInstance3D
 var _lot_overlay: MeshInstance3D
 var _frontage_arrow: MeshInstance3D
+var _entrance_gizmo: MeshInstance3D
+var _entrance_sphere: MeshInstance3D
 var _ground_grid: MeshInstance3D
 var _human_figure: MeshInstance3D  # 1.8 m reference capsule
 
@@ -25,6 +29,8 @@ var _depth_cells: int = 1
 
 var preview_scale: float = 1.0
 var frontage_forward: Vector3 = Vector3.FORWARD
+var entrance_anchor_local: Vector3 = Vector3(0.0, 0.0, CELL_M * 0.5)
+var entrance_anchor_forward: Vector3 = Vector3.FORWARD
 var _show_human: bool = false
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -45,6 +51,12 @@ func _ready() -> void:
 
 	_frontage_arrow = MeshInstance3D.new()
 	add_child(_frontage_arrow)
+
+	_entrance_gizmo = MeshInstance3D.new()
+	add_child(_entrance_gizmo)
+
+	_entrance_sphere = MeshInstance3D.new()
+	add_child(_entrance_sphere)
 
 	_human_figure = MeshInstance3D.new()
 	add_child(_human_figure)
@@ -103,6 +115,16 @@ func set_frontage_forward(fwd: Vector3) -> void:
 	frontage_forward = fwd.normalized()
 	_rebuild_overlays()
 
+## Update the previewed main entrance anchor.
+func set_entrance_anchor(position: Vector3, forward: Vector3) -> void:
+	entrance_anchor_local = position
+	entrance_anchor_forward = forward.normalized()
+	_rebuild_entrance_visuals()
+
+## Returns the current main entrance anchor in world space for mouse picking.
+func get_entrance_anchor_world_position() -> Vector3:
+	return to_global(entrance_anchor_local)
+
 ## Show or hide the 1.8 m human reference figure.
 func set_show_human(visible: bool) -> void:
 	_show_human = visible
@@ -119,6 +141,8 @@ func clear() -> void:
 	clear_ghost()
 	_lot_overlay.mesh = null
 	_frontage_arrow.mesh = null
+	_entrance_gizmo.mesh = null
+	_entrance_sphere.mesh = null
 	_human_figure.mesh = null
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -223,7 +247,12 @@ func _rebuild_overlays() -> void:
 	_build_ground_grid()
 	_build_lot_wireframe()
 	_build_frontage_arrow()
+	_rebuild_entrance_visuals()
 	_build_human_figure()
+
+func _rebuild_entrance_visuals() -> void:
+	_build_entrance_gizmo()
+	_build_entrance_sphere()
 
 func _build_ground_grid() -> void:
 	var lot_half_w := _width_cells * CELL_M * 0.5
@@ -355,3 +384,53 @@ func _build_frontage_arrow() -> void:
 	mat.vertex_color_use_as_albedo = true
 	im.surface_set_material(0, mat)
 	_frontage_arrow.mesh = im
+
+func _build_entrance_gizmo() -> void:
+	var base := entrance_anchor_local + Vector3(0.0, 0.08, 0.0)
+	var forward := Vector3(entrance_anchor_forward.x, 0.0, entrance_anchor_forward.z)
+	if forward.length_squared() < 0.001:
+		forward = Vector3.FORWARD
+	forward = forward.normalized()
+	var side := Vector3(-forward.z, 0.0, forward.x)
+
+	var arrow_len := CELL_M * 0.35
+	var cross_len := CELL_M * 0.18
+	var head_len := CELL_M * 0.12
+	var head_w := CELL_M * 0.10
+
+	var im := ImmediateMesh.new()
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	im.surface_set_color(Color(1.0, 0.95, 0.2, 1.0))
+
+	im.surface_add_vertex(base - side * cross_len)
+	im.surface_add_vertex(base + side * cross_len)
+	im.surface_add_vertex(base - Vector3(0.0, cross_len * 0.5, 0.0))
+	im.surface_add_vertex(base + Vector3(0.0, cross_len * 0.5, 0.0))
+
+	var tail := base - forward * (CELL_M * 0.08)
+	var tip := base + forward * arrow_len
+	im.surface_add_vertex(tail)
+	im.surface_add_vertex(tip)
+	im.surface_add_vertex(tip)
+	im.surface_add_vertex(tip - forward * head_len + side * head_w)
+	im.surface_add_vertex(tip)
+	im.surface_add_vertex(tip - forward * head_len - side * head_w)
+	im.surface_end()
+
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.vertex_color_use_as_albedo = true
+	im.surface_set_material(0, mat)
+	_entrance_gizmo.mesh = im
+
+func _build_entrance_sphere() -> void:
+	if _entrance_sphere.mesh == null:
+		var sphere := SphereMesh.new()
+		sphere.radius = ENTRANCE_SPHERE_RADIUS_M
+		var mat := StandardMaterial3D.new()
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.albedo_color = Color(1.0, 0.88, 0.15, 0.85)
+		sphere.surface_set_material(0, mat)
+		_entrance_sphere.mesh = sphere
+	_entrance_sphere.position = entrance_anchor_local

@@ -280,10 +280,7 @@ impl SimulationNode {
             godot::classes::Engine::singleton().get_frames_per_second(),
         );
         // cell_size requires locking core — only needed for debug, do it cheaply.
-        let _ = dict.insert(
-            "cell_size",
-            self.core.lock().unwrap().config.zone_cell_m,
-        );
+        let _ = dict.insert("cell_size", self.core.lock().unwrap().config.zone_cell_m);
         dict
     }
 

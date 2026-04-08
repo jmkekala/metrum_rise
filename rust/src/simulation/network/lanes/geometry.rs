@@ -1,8 +1,8 @@
-use godot::prelude::*;
-use std::collections::HashMap;
 use super::super::graph::Edge;
 use super::{Lane, LaneType};
 use crate::config;
+use godot::prelude::*;
+use std::collections::HashMap;
 
 /// Builds the cumulative-distance prefix sum for a lane's geometry.
 pub fn build_cum_dist(geometry: &[Vector3]) -> Vec<f32> {
@@ -57,7 +57,11 @@ pub fn build_one_lane(
 
     let mut dir0 = pts[1] - pts[0];
     dir0.y = 0.0;
-    let t0 = if dir0.length() > 1e-5 { dir0.normalized() } else { Vector3::new(1.0, 0.0, 0.0) };
+    let t0 = if dir0.length() > 1e-5 {
+        dir0.normalized()
+    } else {
+        Vector3::new(1.0, 0.0, 0.0)
+    };
     let n0 = Vector3::new(-t0.z, 0.0, t0.x);
     geometry.push(pts[0] + n0 * lane_offset);
 
@@ -66,8 +70,16 @@ pub fn build_one_lane(
         let mut d2 = pts[j + 1] - pts[j];
         d1.y = 0.0;
         d2.y = 0.0;
-        let t1 = if d1.length() > 1e-5 { d1.normalized() } else { t0 };
-        let t2 = if d2.length() > 1e-5 { d2.normalized() } else { t1 };
+        let t1 = if d1.length() > 1e-5 {
+            d1.normalized()
+        } else {
+            t0
+        };
+        let t2 = if d2.length() > 1e-5 {
+            d2.normalized()
+        } else {
+            t1
+        };
         let n1 = Vector3::new(-t1.z, 0.0, t1.x);
         let n2 = Vector3::new(-t2.z, 0.0, t2.x);
         let bisect = (n1 + n2).normalized();
@@ -77,7 +89,11 @@ pub fn build_one_lane(
 
     let mut d_last = pts[pts.len() - 1] - pts[pts.len() - 2];
     d_last.y = 0.0;
-    let t_last = if d_last.length() > 1e-5 { d_last.normalized() } else { t0 };
+    let t_last = if d_last.length() > 1e-5 {
+        d_last.normalized()
+    } else {
+        t0
+    };
     let n_last = Vector3::new(-t_last.z, 0.0, t_last.x);
     geometry.push(pts[pts.len() - 1] + n_last * lane_offset);
 

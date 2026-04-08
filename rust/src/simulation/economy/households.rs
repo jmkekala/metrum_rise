@@ -101,7 +101,9 @@ pub struct HouseholdSystem {
 impl HouseholdSystem {
     /// Creates an empty household system.
     pub fn new() -> Self {
-        Self { households: Vec::new() }
+        Self {
+            households: Vec::new(),
+        }
     }
 
     /// Clears all households.
@@ -122,9 +124,7 @@ impl HouseholdSystem {
             // has a real incentive to take available jobs instead of idling on
             // a large abstract cash cushion.
             budget: IMMIGRANT_STARTING_BUDGET_PER_MEMBER * member_count as f32,
-            stock: member_count as f32
-                * HOUSEHOLD_CONSUMPTION_RATE
-                * IMMIGRANT_STARTING_STOCK_DAYS,
+            stock: member_count as f32 * HOUSEHOLD_CONSUMPTION_RATE * IMMIGRANT_STARTING_STOCK_DAYS,
             member_count,
             consumption_rate: HOUSEHOLD_CONSUMPTION_RATE,
             stock_days: IMMIGRANT_STARTING_STOCK_DAYS,
@@ -206,14 +206,22 @@ impl HouseholdSystem {
             }
         }
         for household in &mut self.households {
-            household.stock_days = stock_days(household.stock, household.member_count, household.consumption_rate);
+            household.stock_days = stock_days(
+                household.stock,
+                household.member_count,
+                household.consumption_rate,
+            );
             if household.member_count == 0 {
                 clear_replenishment_request(household);
             }
         }
     }
 
-    fn recount_worker_assignments(&mut self, agents: &AgentSystem, allocator: &mut BuildingAllocator) {
+    fn recount_worker_assignments(
+        &mut self,
+        agents: &AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
         for building in &mut allocator.buildings {
             building.worker_count = 0;
         }
@@ -228,7 +236,10 @@ impl HouseholdSystem {
 
     fn ensure_building_startup_float(&mut self, allocator: &mut BuildingAllocator) {
         for building in &mut allocator.buildings {
-            if !matches!(building.zone_type, ZoneType::Commercial | ZoneType::Industrial | ZoneType::Office | ZoneType::Mixed) {
+            if !matches!(
+                building.zone_type,
+                ZoneType::Commercial | ZoneType::Industrial | ZoneType::Office | ZoneType::Mixed
+            ) {
                 continue;
             }
             if building.operating_budget == 0.0 && building.revenue == 0.0 {
@@ -266,8 +277,9 @@ impl HouseholdSystem {
         for idx in 0..allocator.buildings.len() {
             let zone = allocator.buildings[idx].zone_type;
             let worker_capacity = allocator.worker_capacity(idx).max(1);
-            let staffing_factor =
-                (allocator.buildings[idx].worker_count as f32 / worker_capacity as f32).clamp(0.0, 1.0);
+            let staffing_factor = (allocator.buildings[idx].worker_count as f32
+                / worker_capacity as f32)
+                .clamp(0.0, 1.0);
             let utility_factor = if allocator.buildings[idx].utility_service_available {
                 1.0
             } else {
@@ -304,11 +316,9 @@ impl HouseholdSystem {
             if household.member_count == 0 {
                 continue;
             }
-            let daily_consumption =
-                household.member_count as f32 * household.consumption_rate;
+            let daily_consumption = household.member_count as f32 * household.consumption_rate;
             household.stock = (household.stock - daily_consumption).max(0.0);
-            let utility_cost =
-                household.member_count as f32 * HOUSEHOLD_UTILITY_COST_PER_MEMBER;
+            let utility_cost = household.member_count as f32 * HOUSEHOLD_UTILITY_COST_PER_MEMBER;
             household.budget = (household.budget - utility_cost).max(0.0);
             household.stock_days = stock_days(
                 household.stock,
@@ -368,8 +378,7 @@ impl HouseholdSystem {
                 GROCERY_SEARCH_CANDIDATES,
             );
 
-            let daily_consumption =
-                household.member_count as f32 * household.consumption_rate;
+            let daily_consumption = household.member_count as f32 * household.consumption_rate;
             let target_stock = HOUSEHOLD_TARGET_STOCK_DAYS * daily_consumption;
             let mut desired_amount = (target_stock - household.stock).max(0.0);
             let mut found_sale = None;
@@ -405,12 +414,10 @@ impl HouseholdSystem {
         }
     }
 
-    fn progress_household_replenishment(
-        &mut self,
-        hid: usize,
-        allocator: &mut BuildingAllocator,
-    ) {
-        let Some(household) = self.households.get_mut(hid) else { return; };
+    fn progress_household_replenishment(&mut self, hid: usize, allocator: &mut BuildingAllocator) {
+        let Some(household) = self.households.get_mut(hid) else {
+            return;
+        };
         match household.replenishment_state {
             REPLENISHMENT_RESERVED => {
                 if household.pickup_eta_days > 0 {
@@ -432,8 +439,11 @@ impl HouseholdSystem {
                 store.revenue += household.reserved_total_cost;
                 store.operating_budget += household.reserved_total_cost;
                 household.stock += household.reserved_amount;
-                household.stock_days =
-                    stock_days(household.stock, household.member_count, household.consumption_rate);
+                household.stock_days = stock_days(
+                    household.stock,
+                    household.member_count,
+                    household.consumption_rate,
+                );
                 household.replenishment_state = REPLENISHMENT_FULFILLED;
                 household.cooldown_days = 1;
                 household.reserved_store_building_id = usize::MAX;
@@ -490,18 +500,25 @@ impl HouseholdSystem {
             let mut candidates = allocator.find_nearby_buildings_by_zones(
                 home.center_x,
                 home.center_y,
-                &[ZoneType::Industrial, ZoneType::Commercial, ZoneType::Office, ZoneType::Mixed],
+                &[
+                    ZoneType::Industrial,
+                    ZoneType::Commercial,
+                    ZoneType::Office,
+                    ZoneType::Mixed,
+                ],
                 JOB_SEARCH_MAX_RING,
                 JOB_SEARCH_CANDIDATES,
             );
-            if agents.work_building[i] != usize::MAX && !candidates.contains(&agents.work_building[i]) {
+            if agents.work_building[i] != usize::MAX
+                && !candidates.contains(&agents.work_building[i])
+            {
                 candidates.push(agents.work_building[i]);
             }
 
             let income_pressure = household_income_pressure(household);
-            let stock_pressure =
-                (1.0 - (household.stock_days / HOUSEHOLD_TARGET_STOCK_DAYS).clamp(0.0, 1.0))
-                    .clamp(0.0, 1.0);
+            let stock_pressure = (1.0
+                - (household.stock_days / HOUSEHOLD_TARGET_STOCK_DAYS).clamp(0.0, 1.0))
+            .clamp(0.0, 1.0);
 
             let mut best_job = usize::MAX;
             let mut best_score = 0.0;
@@ -512,7 +529,10 @@ impl HouseholdSystem {
                 let building = &allocator.buildings[candidate];
                 if !matches!(
                     building.zone_type,
-                    ZoneType::Industrial | ZoneType::Commercial | ZoneType::Office | ZoneType::Mixed
+                    ZoneType::Industrial
+                        | ZoneType::Commercial
+                        | ZoneType::Office
+                        | ZoneType::Mixed
                 ) {
                     continue;
                 }
@@ -533,9 +553,7 @@ impl HouseholdSystem {
                 }
 
                 let commute_penalty = normalized_commute_penalty(home, building);
-                let score = W_INCOME * income_pressure
-                    + W_STOCK * stock_pressure
-                    + W_JOB * 1.0
+                let score = W_INCOME * income_pressure + W_STOCK * stock_pressure + W_JOB * 1.0
                     - W_COMMUTE * commute_penalty;
                 if score > best_score {
                     best_score = score;
@@ -547,11 +565,9 @@ impl HouseholdSystem {
                 let old_job = agents.work_building[i];
                 if old_job != best_job {
                     if old_job != usize::MAX && old_job < reserved_workers.len() {
-                        reserved_workers[old_job] =
-                            reserved_workers[old_job].saturating_sub(1);
+                        reserved_workers[old_job] = reserved_workers[old_job].saturating_sub(1);
                     }
-                    reserved_workers[best_job] =
-                        reserved_workers[best_job].saturating_add(1);
+                    reserved_workers[best_job] = reserved_workers[best_job].saturating_add(1);
                     agents.work_building[i] = best_job;
                     debug_log!(
                         "economy",
@@ -635,8 +651,11 @@ fn clear_replenishment_request(household: &mut Household) {
 
 fn household_income_pressure(household: &Household) -> f32 {
     let daily_consumption = household.member_count.max(1) as f32 * household.consumption_rate;
-    let reserve_target = daily_consumption * HOUSEHOLD_SUPPLY_UNIT_PRICE * HOUSEHOLD_TARGET_STOCK_DAYS
-        + household.member_count.max(1) as f32 * HOUSEHOLD_UTILITY_COST_PER_MEMBER * HOUSEHOLD_TARGET_STOCK_DAYS;
+    let reserve_target =
+        daily_consumption * HOUSEHOLD_SUPPLY_UNIT_PRICE * HOUSEHOLD_TARGET_STOCK_DAYS
+            + household.member_count.max(1) as f32
+                * HOUSEHOLD_UTILITY_COST_PER_MEMBER
+                * HOUSEHOLD_TARGET_STOCK_DAYS;
     (1.0 - (household.budget / reserve_target.max(1.0)).clamp(0.0, 1.0)).clamp(0.0, 1.0)
 }
 
@@ -699,12 +718,19 @@ mod tests {
         });
 
         let mut allocator = BuildingAllocator::new();
-        allocator.buildings.push(make_building(0.0, ZoneType::Residential, 0.0, true));
-        allocator.buildings.push(make_building(20.0, ZoneType::Commercial, 50.0, true));
+        allocator
+            .buildings
+            .push(make_building(0.0, ZoneType::Residential, 0.0, true));
+        allocator
+            .buildings
+            .push(make_building(20.0, ZoneType::Commercial, 50.0, true));
         allocator.rebuild_zone_index();
 
         households.run_household_replenishment(&mut allocator);
-        assert_eq!(households.households[0].replenishment_state, REPLENISHMENT_RESERVED);
+        assert_eq!(
+            households.households[0].replenishment_state,
+            REPLENISHMENT_RESERVED
+        );
         assert_eq!(allocator.buildings[1].stock, 44.0);
         assert_eq!(households.households[0].budget, 164.0);
 
@@ -715,7 +741,10 @@ mod tests {
         );
 
         households.run_household_replenishment(&mut allocator);
-        assert_eq!(households.households[0].replenishment_state, REPLENISHMENT_FULFILLED);
+        assert_eq!(
+            households.households[0].replenishment_state,
+            REPLENISHMENT_FULFILLED
+        );
         assert_eq!(households.households[0].stock, 6.0);
         assert_eq!(allocator.buildings[1].revenue, 36.0);
     }
@@ -726,8 +755,12 @@ mod tests {
         let hid = households.admit_immigrant_household(0, 2);
 
         let mut allocator = BuildingAllocator::new();
-        allocator.buildings.push(make_building(0.0, ZoneType::Residential, 0.0, true));
-        allocator.buildings.push(make_building(20.0, ZoneType::Industrial, 0.0, true));
+        allocator
+            .buildings
+            .push(make_building(0.0, ZoneType::Residential, 0.0, true));
+        allocator
+            .buildings
+            .push(make_building(20.0, ZoneType::Industrial, 0.0, true));
         allocator.rebuild_zone_index();
 
         let mut agents = AgentSystem::new();

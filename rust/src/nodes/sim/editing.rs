@@ -1,11 +1,11 @@
 //! Logic for modifying simulation state (road placement, terrain sculpt, zoning, edge editing).
 
-use crate::debug_log;
-use crate::traffic_log;
 use crate::config;
+use crate::debug_log;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::terrain::TerrainSystem;
+use crate::traffic_log;
 use godot::prelude::*;
 use std::collections::HashSet;
 use std::time::Instant;
@@ -49,7 +49,8 @@ impl SimCore {
     ) {
         self.push_undo_state(false, false, false, true);
         let zone_type = ZoneType::from_u8(zone_type_int);
-        self.zoning.set_zone_rect(x_min, z_min, x_max, z_max, zone_type);
+        self.zoning
+            .set_zone_rect(x_min, z_min, x_max, z_max, zone_type);
         self.allocator.dirty = true;
     }
 
@@ -62,7 +63,8 @@ impl SimCore {
         z_max: f32,
         bytes: Vec<u8>,
     ) {
-        self.zoning.set_zone_rect_raw(x_min, z_min, x_max, z_max, &bytes);
+        self.zoning
+            .set_zone_rect_raw(x_min, z_min, x_max, z_max, &bytes);
         self.allocator.dirty = true;
     }
 
@@ -77,14 +79,15 @@ impl SimCore {
         self.zoning.get_zone_subrect(x_min, z_min, x_max, z_max)
     }
 
-
     /// Sets the classification of an edge.
     /// Sets or clears the no-building-spawn flag on an edge.
     pub fn set_no_building_spawn_internal(&mut self, edge_idx: i32, enabled: bool) {
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return;
         }
-        self.region_graph.edge_mut(edge_idx as usize).no_building_spawn = enabled;
+        self.region_graph
+            .edge_mut(edge_idx as usize)
+            .no_building_spawn = enabled;
         self.zoning.update_no_build_mask(&self.region_graph);
         self.allocator.dirty = true;
     }
@@ -172,10 +175,7 @@ impl SimCore {
         // invalidate_zoning_near_edge (125 m radius) for every new/split edge.
         // The AddRoad handler calls flush_zoning_updates once after lane rebuild,
         // batching all dirty edges into a single pass instead of N separate passes.
-        self.last_road_timing = format!(
-            "undo={}µs topo={}µs",
-            dt_undo_ms, dt_topo_us
-        );
+        self.last_road_timing = format!("undo={}µs topo={}µs", dt_undo_ms, dt_topo_us);
     }
 
     /// Repositions a network node in world space.
@@ -212,34 +212,46 @@ impl SimCore {
         to_lane: i32,
     ) {
         self.push_undo_state(false, false, true, false);
-        traffic_log!("[LANE_EDIT] set_lane_connection: node={node_id} from_edge={from_edge} from_lane={from_lane} to_edge={to_edge} to_lane={to_lane}");
+        traffic_log!(
+            "[LANE_EDIT] set_lane_connection: node={node_id} from_edge={from_edge} from_lane={from_lane} to_edge={to_edge} to_lane={to_lane}"
+        );
         if (node_id as usize) < self.region_graph.node_count() {
             let key = (from_edge as usize, from_lane as i8);
             let target = (to_edge as usize, to_lane as i8);
-            let already = self.region_graph.node(node_id)
+            let already = self
+                .region_graph
+                .node(node_id)
                 .lane_connections
                 .get(&key)
                 .map_or(false, |v| v.contains(&target));
             if !already {
-                self.region_graph.add_lane_connection(node_id, key.0, key.1, target.0, target.1);
+                self.region_graph
+                    .add_lane_connection(node_id, key.0, key.1, target.0, target.1);
             }
         }
-        let affected: HashSet<usize> = self.region_graph
+        let affected: HashSet<usize> = self
+            .region_graph
             .node_adjacency(node_id)
             .iter()
             .copied()
             .collect();
-        self.agents.invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
-        self.transit_network.lane_system.rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.agents
+            .invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.transit_network
+            .lane_system
+            .rebuild_edges_incremental(&mut self.region_graph, &affected);
         if crate::debug::is_traffic_enabled() {
             if (node_id as usize) < self.region_graph.node_count() {
                 let conns = &self.region_graph.node(node_id).lane_connections;
-                let mut entries: Vec<_> = conns.iter()
+                let mut entries: Vec<_> = conns
+                    .iter()
                     .map(|(&(e, l), targets)| format!("  (edge={e},lane={l}) -> {:?}", targets))
                     .collect();
                 entries.sort();
                 eprintln!("[LANE_EDIT] node={node_id} lane_connections after rebuild:");
-                for s in &entries { eprintln!("{s}"); }
+                for s in &entries {
+                    eprintln!("{s}");
+                }
             }
         }
         self.transit_network.cch_graph =
@@ -255,18 +267,28 @@ impl SimCore {
     pub fn clear_lane_connections_internal(&mut self, node_id: u32) {
         self.push_undo_state(false, false, true, false);
         if (node_id as usize) < self.region_graph.node_count() {
-            let keys: Vec<_> = self.region_graph.node(node_id).lane_connections.keys().copied().collect();
+            let keys: Vec<_> = self
+                .region_graph
+                .node(node_id)
+                .lane_connections
+                .keys()
+                .copied()
+                .collect();
             for key in keys {
                 self.region_graph.remove_lane_connection(node_id, key);
             }
         }
-        let affected: HashSet<usize> = self.region_graph
+        let affected: HashSet<usize> = self
+            .region_graph
             .node_adjacency(node_id)
             .iter()
             .copied()
             .collect();
-        self.agents.invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
-        self.transit_network.lane_system.rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.agents
+            .invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.transit_network
+            .lane_system
+            .rebuild_edges_incremental(&mut self.region_graph, &affected);
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
         self.transit_network.flow_fields.mark_all_dirty();
@@ -286,13 +308,17 @@ impl SimCore {
         self.region_graph
             .remove_lane_connection(node_id, (from_edge as usize, from_lane as i8));
 
-        let affected: HashSet<usize> = self.region_graph
+        let affected: HashSet<usize> = self
+            .region_graph
             .node_adjacency(node_id)
             .iter()
             .copied()
             .collect();
-        self.agents.invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
-        self.transit_network.lane_system.rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.agents
+            .invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.transit_network
+            .lane_system
+            .rebuild_edges_incremental(&mut self.region_graph, &affected);
         self.transit_network.cch_graph =
             crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
         self.transit_network.flow_fields.mark_all_dirty();
@@ -308,15 +334,20 @@ impl SimCore {
             return;
         }
         self.push_undo_state(false, false, true, false);
-        self.region_graph.set_crosswalk_override(node_id, edge_id as usize, enabled);
-        
-        let affected: HashSet<usize> = self.region_graph
+        self.region_graph
+            .set_crosswalk_override(node_id, edge_id as usize, enabled);
+
+        let affected: HashSet<usize> = self
+            .region_graph
             .node_adjacency(node_id)
             .iter()
             .copied()
             .collect();
-        self.agents.invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
-        self.transit_network.lane_system.rebuild_edges_incremental(&mut self.region_graph, &affected);
+        self.agents
+            .invalidate_lane_ids_for_edges(&affected, &self.transit_network.lane_system);
+        self.transit_network
+            .lane_system
+            .rebuild_edges_incremental(&mut self.region_graph, &affected);
         if (node_id as usize) < self.region_graph.node_count() {
             let pos = self.region_graph.node(node_id).pos;
             self.transit_network.mark_point_dirty(pos);
@@ -368,10 +399,8 @@ impl SimCore {
         let half_h = (self.heightmap.height as f32 - 1.0) * 0.5;
         let t = config::BORDER_DETECTION_THRESHOLD;
 
-        let near_border = pos.x < -half_w + t
-            || pos.x > half_w - t
-            || pos.z < -half_h + t
-            || pos.z > half_h - t;
+        let near_border =
+            pos.x < -half_w + t || pos.x > half_w - t || pos.z < -half_h + t || pos.z > half_h - t;
 
         if !near_border {
             debug_log!(
@@ -411,13 +440,19 @@ impl SimCore {
     /// immigrant spawn point by [`BuildingAllocator::tick`] as long as the road remains connected.
     pub fn set_border_connection_internal(&mut self, node_id: i32) {
         if node_id < 0 || (node_id as usize) >= self.region_graph.node_count() {
-            debug_log!("economy", "set_border_connection ignored for invalid node_id={}", node_id);
+            debug_log!(
+                "economy",
+                "set_border_connection ignored for invalid node_id={}",
+                node_id
+            );
             return;
         }
         let old_pos = self.region_graph.node(node_id as u32).pos;
 
-        self.region_graph
-            .set_node_type(node_id as u32, crate::simulation::network::types::NodeType::Border);
+        self.region_graph.set_node_type(
+            node_id as u32,
+            crate::simulation::network::types::NodeType::Border,
+        );
         debug_log!(
             "economy",
             "border connection created at node_id={} pos=({:.1}, {:.1}, {:.1})",
@@ -482,15 +517,19 @@ impl SimCore {
                         new_len += (dx * dx + dz * dz).sqrt();
                     }
                     edge.physical_length = new_len;
-                    edge.base_cost = crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge).0;
+                    edge.base_cost =
+                        crate::simulation::pathing::cost::CostCalculator::calculate_costs(edge).0;
                     rebuild_needed = true;
                 }
             }
         }
 
         if rebuild_needed {
-            self.transit_network.lane_system.rebuild(&mut self.region_graph);
-            self.transit_network.cch_graph = crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+            self.transit_network
+                .lane_system
+                .rebuild(&mut self.region_graph);
+            self.transit_network.cch_graph =
+                crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
             let new_pos = self.region_graph.node(node_id as u32).pos;
             debug_log!(
                 "economy",

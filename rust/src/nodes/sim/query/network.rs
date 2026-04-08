@@ -1,10 +1,10 @@
 //! Road-network spatial queries (closest-point identification, edge projection).
 
+use super::{get_closest_canonical_node, is_canonical_node};
 use crate::config::DEFAULT_ZONING_DEPTH;
 use crate::nodes::sim::core::SimCore;
 use crate::simulation::network::interaction;
 use godot::prelude::*;
-use super::{is_canonical_node, get_closest_canonical_node};
 
 impl SimCore {
     /// Projects a world position onto a road edge.

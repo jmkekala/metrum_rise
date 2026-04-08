@@ -3,14 +3,12 @@ use std::collections::HashMap;
 
 /// Lane geometry generation and offset calculations.
 pub mod geometry;
-/// High-level logic for vehicle connections at junctions.
-pub mod vehicle_junctions;
 /// Pedestrian sidewalk and crosswalk connection logic.
 pub mod pedestrian_junctions;
 /// Full and incremental lane system rebuild orchestration.
 pub mod rebuild;
-
-
+/// High-level logic for vehicle connections at junctions.
+pub mod vehicle_junctions;
 
 /// Types of travel lanes supported by the network.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -94,7 +92,10 @@ impl LaneSystem {
     /// Retrieve the global `lane_id` given an `edge_idx` and a local `lane_idx`.
     pub fn get_lane_id(&self, edge_idx: usize, lane_idx: usize) -> Option<usize> {
         self.edge_lanes.get(&edge_idx).and_then(|lanes| {
-            lanes.iter().find(|&&id| self.lanes[id].lane_idx == lane_idx as i8).copied()
+            lanes
+                .iter()
+                .find(|&&id| self.lanes[id].lane_idx == lane_idx as i8)
+                .copied()
         })
     }
 }

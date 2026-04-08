@@ -7,10 +7,10 @@
 //! 3. Rebuilds derived indices and pathing after building mutations.
 //! 4. Admits immigrant households through connected border nodes up to current housing capacity.
 
-mod placement;
-mod lifecycle;
-mod index;
 mod geometry;
+mod index;
+mod lifecycle;
+mod placement;
 
 #[cfg(test)]
 mod tests;
@@ -224,14 +224,18 @@ impl BuildingAllocator {
     /// Returns the occupant capacity for a building, from its registered manifest.
     pub fn building_capacity(&self, building_idx: usize) -> u32 {
         let b = &self.buildings[building_idx];
-        if b.broken { return 0; }
+        if b.broken {
+            return 0;
+        }
         let cap = self.registry.capacity(&b.asset_id);
         if cap == 0 { 6 } else { cap }
     }
 
     /// Returns the residential capacity declared by a building asset.
     pub fn resident_capacity(&self, building_idx: usize) -> u32 {
-        let Some(b) = self.buildings.get(building_idx) else { return 0; };
+        let Some(b) = self.buildings.get(building_idx) else {
+            return 0;
+        };
         if b.broken {
             return 0;
         }
@@ -239,12 +243,20 @@ impl BuildingAllocator {
             .get(&b.asset_id)
             .and_then(|entry| entry.manifest.building.as_ref())
             .and_then(|building| building.residents_capacity)
-            .unwrap_or_else(|| if matches!(b.zone_type, ZoneType::Residential | ZoneType::Mixed) { 6 } else { 0 })
+            .unwrap_or_else(|| {
+                if matches!(b.zone_type, ZoneType::Residential | ZoneType::Mixed) {
+                    6
+                } else {
+                    0
+                }
+            })
     }
 
     /// Returns the worker capacity declared by a building asset.
     pub fn worker_capacity(&self, building_idx: usize) -> u32 {
-        let Some(b) = self.buildings.get(building_idx) else { return 0; };
+        let Some(b) = self.buildings.get(building_idx) else {
+            return 0;
+        };
         if b.broken {
             return 0;
         }
@@ -271,7 +283,8 @@ impl BuildingAllocator {
         candidate_limit: usize,
     ) -> Vec<usize> {
         let mut candidates = Vec::with_capacity(candidate_limit);
-        let origin_chunk = RegionGraph::get_chunk_coords(godot::prelude::Vector3::new(origin_x, 0.0, origin_y));
+        let origin_chunk =
+            RegionGraph::get_chunk_coords(godot::prelude::Vector3::new(origin_x, 0.0, origin_y));
 
         'rings: for ring in 0..=max_chunk_radius {
             for dx in -ring..=ring {
@@ -280,7 +293,9 @@ impl BuildingAllocator {
                         continue;
                     }
                     let chunk_key = (origin_chunk.0 + dx, origin_chunk.1 + dz);
-                    let Some(indices) = self.building_chunks.get(&chunk_key) else { continue; };
+                    let Some(indices) = self.building_chunks.get(&chunk_key) else {
+                        continue;
+                    };
                     for &idx in indices {
                         if idx >= self.buildings.len() {
                             continue;

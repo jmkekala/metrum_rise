@@ -1,8 +1,8 @@
 //! Modular query sub-modules for spatial and simulation state inspection (Item R13).
 
-pub mod terrain;
-pub mod network;
 pub mod lanes;
+pub mod network;
+pub mod terrain;
 
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::*;

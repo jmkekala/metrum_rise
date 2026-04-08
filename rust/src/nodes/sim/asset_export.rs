@@ -5,10 +5,10 @@
 //! validation, and writes the output files. Pack TOML is only written when the file does
 //! not already exist, so re-exporting individual assets never overwrites pack metadata.
 
-use std::path::Path;
-use serde::Deserialize;
-use crate::assets::{AssetManifest, PackManifest, CURRENT_SCHEMA_VERSION};
+use crate::assets::{AssetManifest, CURRENT_SCHEMA_VERSION, PackManifest};
 use crate::debug_log;
+use serde::Deserialize;
+use std::path::Path;
 
 // ── Input structs (JSON from GDScript) ───────────────────────────────────────
 
@@ -108,9 +108,15 @@ pub struct ExportParams {
     pub anchors: Vec<AnchorParams>,
 }
 
-fn default_version() -> String { "0.1.0".to_owned() }
-fn default_license() -> String { "CC0".to_owned() }
-fn default_level() -> u8 { 1 }
+fn default_version() -> String {
+    "0.1.0".to_owned()
+}
+fn default_license() -> String {
+    "CC0".to_owned()
+}
+fn default_level() -> u8 {
+    1
+}
 
 // ── TOML generation ───────────────────────────────────────────────────────────
 
@@ -118,7 +124,13 @@ fn build_pack_toml(p: &ExportParams) -> String {
     let desc_line = format!("description = \"\"\n");
     format!(
         "pack_id = \"{}\"\nschema_version = {}\ndisplay_name = \"{}\"\nversion = \"{}\"\nauthor = \"{}\"\nlicense = \"{}\"\n{}",
-        p.pack_id, CURRENT_SCHEMA_VERSION, p.pack_name, p.pack_version, p.pack_author, p.pack_license, desc_line
+        p.pack_id,
+        CURRENT_SCHEMA_VERSION,
+        p.pack_name,
+        p.pack_version,
+        p.pack_author,
+        p.pack_license,
+        desc_line
     )
 }
 
@@ -135,7 +147,12 @@ fn build_asset_toml(p: &ExportParams) -> String {
     }
 
     if !p.tags.is_empty() {
-        let tag_list = p.tags.iter().map(|t| format!("\"{t}\"")).collect::<Vec<_>>().join(", ");
+        let tag_list = p
+            .tags
+            .iter()
+            .map(|t| format!("\"{t}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
         out.push_str(&format!("tags = [{tag_list}]\n"));
     }
 
@@ -152,19 +169,29 @@ fn build_asset_toml(p: &ExportParams) -> String {
             out.push_str(&format!("lot_depth_cells = {}\n", p.lot_depth_cells));
             out.push_str(&format!("level = {}\n", p.level));
             if let Some(r) = p.residents_capacity {
-                if r > 0 { out.push_str(&format!("residents_capacity = {r}\n")); }
+                if r > 0 {
+                    out.push_str(&format!("residents_capacity = {r}\n"));
+                }
             }
             if let Some(w) = p.worker_capacity {
-                if w > 0 { out.push_str(&format!("worker_capacity = {w}\n")); }
+                if w > 0 {
+                    out.push_str(&format!("worker_capacity = {w}\n"));
+                }
             }
             if let Some(sc) = &p.service_class {
-                if !sc.is_empty() { out.push_str(&format!("service_class = \"{sc}\"\n")); }
+                if !sc.is_empty() {
+                    out.push_str(&format!("service_class = \"{sc}\"\n"));
+                }
             }
             if let Some(ep) = &p.economy_profile {
-                if !ep.is_empty() { out.push_str(&format!("economy_profile = \"{ep}\"\n")); }
+                if !ep.is_empty() {
+                    out.push_str(&format!("economy_profile = \"{ep}\"\n"));
+                }
             }
             if let Some(ps) = p.preview_scale {
-                if (ps - 1.0).abs() > 0.001 { out.push_str(&format!("preview_scale = {ps}\n")); }
+                if (ps - 1.0).abs() > 0.001 {
+                    out.push_str(&format!("preview_scale = {ps}\n"));
+                }
             }
             if let Some([px, py, pz]) = p.pivot_offset {
                 if px.abs() > 1e-4 || py.abs() > 1e-4 || pz.abs() > 1e-4 {
@@ -214,10 +241,19 @@ pub fn validate_and_export_asset_internal(params_json: &str, output_dir: &str) -
         }
     };
 
-    debug_log!("asset-editor", "export requested: class={} asset_id={} pack={}", params.asset_class, params.asset_id, params.pack_id);
+    debug_log!(
+        "asset-editor",
+        "export requested: class={} asset_id={} pack={}",
+        params.asset_class,
+        params.asset_id,
+        params.pack_id
+    );
 
     if params.asset_class != "building" {
-        let msg = format!("unsupported asset_class '{}' (Step 5 handles buildings only)", params.asset_class);
+        let msg = format!(
+            "unsupported asset_class '{}' (Step 5 handles buildings only)",
+            params.asset_class
+        );
         debug_log!("asset-editor", "{msg}");
         return msg;
     }
@@ -285,10 +321,18 @@ pub fn get_asset_manifest_json_internal(
     qualified_id: &str,
 ) -> String {
     let Some(entry) = registry.get(qualified_id) else {
-        debug_log!("asset-editor", "get_asset_manifest_json: '{}' not found", qualified_id);
+        debug_log!(
+            "asset-editor",
+            "get_asset_manifest_json: '{}' not found",
+            qualified_id
+        );
         return String::new();
     };
-    debug_log!("asset-editor", "get_asset_manifest_json: loading '{}'", qualified_id);
+    debug_log!(
+        "asset-editor",
+        "get_asset_manifest_json: loading '{}'",
+        qualified_id
+    );
     let m = &entry.manifest;
 
     let mut obj = serde_json::json!({
@@ -337,7 +381,11 @@ pub fn get_pack_manifest_json_internal(pack_dir: &str) -> String {
     let toml_str = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(_) => {
-            debug_log!("asset-editor", "get_pack_manifest_json: no pack.toml at {}", path.display());
+            debug_log!(
+                "asset-editor",
+                "get_pack_manifest_json: no pack.toml at {}",
+                path.display()
+            );
             return String::new();
         }
     };
@@ -384,7 +432,8 @@ mod tests {
                 "position": [0.0, 0.0, 2.0],
                 "forward": [0.0, 0.0, 1.0]
             }]
-        }).to_string()
+        })
+        .to_string()
     }
 
     #[test]
@@ -399,7 +448,12 @@ mod tests {
         assert!(result.is_empty(), "expected success, got: {result}");
 
         assert!(dir.join("pack.toml").exists());
-        assert!(dir.join("assets").join("building.residential.house").join("asset.toml").exists());
+        assert!(
+            dir.join("assets")
+                .join("building.residential.house")
+                .join("asset.toml")
+                .exists()
+        );
     }
 
     #[test]
@@ -433,7 +487,8 @@ mod tests {
             "lot_width_cells": 2,
             "lot_depth_cells": 2,
             "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
-        }).to_string();
+        })
+        .to_string();
 
         let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
         assert!(!result.is_empty(), "expected validation error");
@@ -453,10 +508,14 @@ mod tests {
             "lot_width_cells": 0,
             "lot_depth_cells": 2,
             "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
-        }).to_string();
+        })
+        .to_string();
 
         let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
-        assert!(!result.is_empty(), "expected validation error for zero lot cells");
+        assert!(
+            !result.is_empty(),
+            "expected validation error for zero lot cells"
+        );
     }
 
     #[test]
@@ -477,14 +536,18 @@ mod tests {
             "worker_capacity": 8,
             "economy_profile": "grocery_basic",
             "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
-        }).to_string();
+        })
+        .to_string();
 
         let result = validate_and_export_asset_internal(&json, dir.to_str().unwrap());
         assert!(result.is_empty(), "expected success, got: {result}");
 
         let asset_toml = std::fs::read_to_string(
-            dir.join("assets").join("building.commercial.grocery_test").join("asset.toml")
-        ).unwrap();
+            dir.join("assets")
+                .join("building.commercial.grocery_test")
+                .join("asset.toml"),
+        )
+        .unwrap();
         assert!(asset_toml.contains("economy_profile = \"grocery_basic\""));
     }
 }

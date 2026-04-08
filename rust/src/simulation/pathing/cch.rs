@@ -3,9 +3,9 @@
 //! Provides fast queries and O(E) metric customization for dynamic traffic.
 //! Replaces HPA* as the primary routing engine for agents.
 
-use crate::traffic_log;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{TransitFlags, TransitType};
+use crate::traffic_log;
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
@@ -199,12 +199,17 @@ impl CchGraph {
         if crate::debug::is_traffic_enabled() {
             for i in 0..n {
                 let node = graph.node(i as u32);
-                let vehicle_conns: Vec<_> = node.lane_connections.iter()
+                let vehicle_conns: Vec<_> = node
+                    .lane_connections
+                    .iter()
                     .filter(|((_, lane_idx), _)| *lane_idx != 100 && *lane_idx != -100)
                     .map(|((e, l), targets)| format!("(edge={e},lane={l})->{targets:?}"))
                     .collect();
                 if !vehicle_conns.is_empty() {
-                    eprintln!("[CCH_BUILD] node={i} has user vehicle connections: {}", vehicle_conns.join(", "));
+                    eprintln!(
+                        "[CCH_BUILD] node={i} has user vehicle connections: {}",
+                        vehicle_conns.join(", ")
+                    );
                 }
             }
         }
@@ -251,16 +256,28 @@ impl CchGraph {
 
             // Deduplicate (start, target) pairs within this contraction step to prevent
             // exponential shortcut growth. Only one compound shortcut per node-pair is needed.
-            if crate::debug::is_traffic_enabled() && (!neighbors_in.is_empty() || !neighbors_out.is_empty()) {
-                let ni: Vec<_> = neighbors_in.iter().map(|&i| {
-                    let s = &self.shortcuts[i];
-                    format!("{}→{}(e{})", s.start_node, s.target_node, s.last_edge)
-                }).collect();
-                let no: Vec<_> = neighbors_out.iter().map(|&i| {
-                    let s = &self.shortcuts[i];
-                    format!("{}→{}(e{})", s.start_node, s.target_node, s.first_edge)
-                }).collect();
-                eprintln!("[CCH_CONTRACT] contracting node={u} rank={u_rank} neighbors_in=[{}] neighbors_out=[{}]", ni.join(","), no.join(","));
+            if crate::debug::is_traffic_enabled()
+                && (!neighbors_in.is_empty() || !neighbors_out.is_empty())
+            {
+                let ni: Vec<_> = neighbors_in
+                    .iter()
+                    .map(|&i| {
+                        let s = &self.shortcuts[i];
+                        format!("{}→{}(e{})", s.start_node, s.target_node, s.last_edge)
+                    })
+                    .collect();
+                let no: Vec<_> = neighbors_out
+                    .iter()
+                    .map(|&i| {
+                        let s = &self.shortcuts[i];
+                        format!("{}→{}(e{})", s.start_node, s.target_node, s.first_edge)
+                    })
+                    .collect();
+                eprintln!(
+                    "[CCH_CONTRACT] contracting node={u} rank={u_rank} neighbors_in=[{}] neighbors_out=[{}]",
+                    ni.join(","),
+                    no.join(",")
+                );
             }
             let mut added_pairs: HashSet<(u32, u32)> = HashSet::new();
 
@@ -277,32 +294,44 @@ impl CchGraph {
                     };
 
                     if s_in_start == s_out_target {
-                        traffic_log!("[CCH_CONTRACT] node={u} skip U-turn {s_in_start}↔{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})");
+                        traffic_log!(
+                            "[CCH_CONTRACT] node={u} skip U-turn {s_in_start}↔{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})"
+                        );
                         continue;
                     }
 
                     // Skip if we already have any shortcut (direct or compound) for this pair
                     if added_pairs.contains(&(s_in_start, s_out_target)) {
-                        traffic_log!("[CCH_CONTRACT] node={u} skip already-added {s_in_start}→{s_out_target}");
+                        traffic_log!(
+                            "[CCH_CONTRACT] node={u} skip already-added {s_in_start}→{s_out_target}"
+                        );
                         continue;
                     }
                     // Also skip if a direct shortcut between these nodes already exists
                     if self.shortcuts_by_start[s_in_start as usize]
                         .iter()
-                        .any(|&i| self.shortcuts[i].target_node == s_out_target
-                            && self.shortcuts[i].base_edge != usize::MAX)
+                        .any(|&i| {
+                            self.shortcuts[i].target_node == s_out_target
+                                && self.shortcuts[i].base_edge != usize::MAX
+                        })
                     {
-                        traffic_log!("[CCH_CONTRACT] node={u} skip direct-exists {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})");
+                        traffic_log!(
+                            "[CCH_CONTRACT] node={u} skip direct-exists {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})"
+                        );
                         added_pairs.insert((s_in_start, s_out_target));
                         continue;
                     }
 
                     if !Self::vehicle_turn_allowed(graph.node(u), s_in_last, s_out_first) {
-                        traffic_log!("[CCH_BUILD] blocked shortcut: {s_in_start}→{u}→{s_out_target} (in_edge={s_in_last}, out_edge={s_out_first})");
+                        traffic_log!(
+                            "[CCH_BUILD] blocked shortcut: {s_in_start}→{u}→{s_out_target} (in_edge={s_in_last}, out_edge={s_out_first})"
+                        );
                         continue;
                     }
 
-                    traffic_log!("[CCH_CONTRACT] node={u} create shortcut {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})");
+                    traffic_log!(
+                        "[CCH_CONTRACT] node={u} create shortcut {s_in_start}→{s_out_target} (in_edge={s_in_last} out_edge={s_out_first})"
+                    );
                     added_pairs.insert((s_in_start, s_out_target));
                     self.add_compound_shortcut(
                         s_in_start,
@@ -534,9 +563,13 @@ impl CchGraph {
                         if b_node == node {
                             let allowed = self.is_turn_allowed(node, l_edge, b_out_edge, graph);
                             if !allowed {
-                                traffic_log!("[CCH_REJECT] fwd meeting blocked at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})");
+                                traffic_log!(
+                                    "[CCH_REJECT] fwd meeting blocked at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})"
+                                );
                             } else if cost + b_cost < min_total_cost {
-                                traffic_log!("[CCH_ACCEPT] fwd meeting at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})");
+                                traffic_log!(
+                                    "[CCH_ACCEPT] fwd meeting at node={node} in_edge={l_edge} out_edge={b_out_edge} (query {start}→{end})"
+                                );
                                 min_total_cost = cost + b_cost;
                                 meeting_node = node;
                                 meeting_f_edge = l_edge;
@@ -692,11 +725,16 @@ impl CchGraph {
             let prev_gen = LAST_GEN.swap(self.build_generation, Ordering::Relaxed);
             if prev_gen != self.build_generation {
                 PATH_LOG_COUNT.store(0, Ordering::Relaxed);
-                eprintln!("[CCH_QUERY] --- new CCH generation {} ---", self.build_generation);
+                eprintln!(
+                    "[CCH_QUERY] --- new CCH generation {} ---",
+                    self.build_generation
+                );
             }
             let count = PATH_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
             if count < 20 {
-                eprintln!("[CCH_QUERY] find_path {start}→{end}: nodes={nodes:?} edges={full_edges:?}");
+                eprintln!(
+                    "[CCH_QUERY] find_path {start}→{end}: nodes={nodes:?} edges={full_edges:?}"
+                );
             }
             if count == 20 {
                 eprintln!("[CCH_QUERY] (further path logs suppressed for this generation)");
@@ -737,9 +775,10 @@ impl CchGraph {
     ) -> bool {
         // Global whitelist: if the node has any user vehicle connection, all unspecified
         // turns are blocked. If the node has no user connections, all turns are open.
-        let node_has_any_conn = node_data.lane_connections.keys().any(|&(_, lane_idx)| {
-            lane_idx != 100 && lane_idx != -100
-        });
+        let node_has_any_conn = node_data
+            .lane_connections
+            .keys()
+            .any(|&(_, lane_idx)| lane_idx != 100 && lane_idx != -100);
         if !node_has_any_conn {
             return true; // open node
         }
@@ -747,12 +786,16 @@ impl CchGraph {
         for (&(e_from, lane_idx), targets) in &node_data.lane_connections {
             if lane_idx != 100 && lane_idx != -100 && e_from == in_edge {
                 if targets.iter().any(|&(e_to, _)| e_to == out_edge) {
-                    traffic_log!("[TURN_ALLOWED] in_edge={in_edge} out_edge={out_edge} -> TRUE (explicit connection)");
+                    traffic_log!(
+                        "[TURN_ALLOWED] in_edge={in_edge} out_edge={out_edge} -> TRUE (explicit connection)"
+                    );
                     return true;
                 }
             }
         }
-        traffic_log!("[TURN_BLOCKED] in_edge={in_edge} out_edge={out_edge} (whitelist active, no match)");
+        traffic_log!(
+            "[TURN_BLOCKED] in_edge={in_edge} out_edge={out_edge} (whitelist active, no match)"
+        );
         false
     }
 
@@ -887,7 +930,8 @@ mod tests {
             geometry: Vec::new(),
             physical_geometry: Vec::new(),
             class: EdgeClass::Standard,
-            deleted: false, no_building_spawn: false,
+            deleted: false,
+            no_building_spawn: false,
         };
 
         let edges = vec![

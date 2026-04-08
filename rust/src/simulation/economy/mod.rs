@@ -14,7 +14,7 @@
 //! auto-spawns private buildings from zoned land.
 
 pub mod agents;
-pub mod demand;
 pub mod definitions;
+pub mod demand;
 pub mod households;
 pub mod logistics;

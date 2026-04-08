@@ -46,6 +46,7 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{RenderSnapshot, SimCommand, SimCore, run_sim_thread};
+use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
@@ -59,7 +60,6 @@ use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
-use crate::simulation::buildings::allocator::BuildingAllocator;
 
 use crate::debug_log;
 use std::collections::VecDeque;
@@ -140,7 +140,6 @@ impl SimulationNode {
         Vector2::new(core.heightmap.width as f32, core.heightmap.height as f32)
     }
 
-
     /// Spawns the background simulation thread.
     fn start_sim_thread(&mut self) {
         if let Some(rx) = self.cmd_rx.take() {
@@ -156,7 +155,6 @@ impl SimulationNode {
 #[godot_api]
 impl SimulationNode {
     // ── Environment ──
-
 
     /// Returns the pollution image data as a PackedByteArray (RGBA8).
     #[func]
@@ -189,7 +187,8 @@ impl SimulationNode {
     /// Sculpts the terrain heightmap.
     #[func]
     pub fn sculpt_terrain(&mut self, pos: Vector2, radius: f32, strength: f32) {
-        self.lock_core().sculpt_terrain_internal(pos, radius, strength);
+        self.lock_core()
+            .sculpt_terrain_internal(pos, radius, strength);
     }
 
     /// Adds a volume of water at a specific grid position.
@@ -262,9 +261,7 @@ impl SimulationNode {
     /// Returns the raw water velocity data.
     #[func]
     pub fn get_water_velocity_data(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(
-            self.lock_core().watermap.velocity.iter().cloned(),
-        )
+        PackedFloat32Array::from_iter(self.lock_core().watermap.velocity.iter().cloned())
     }
 
     /// Returns the dimensions of the heightmap.
@@ -277,20 +274,45 @@ impl SimulationNode {
 
     /// Paints a world-space rectangle with the given zone type. `zone_type_int` 0 = erase.
     #[func]
-    pub fn set_zone_rect(&mut self, x_min: f32, z_min: f32, x_max: f32, z_max: f32, zone_type_int: u8) {
-        self.lock_core().set_zone_rect_internal(x_min, z_min, x_max, z_max, zone_type_int);
+    pub fn set_zone_rect(
+        &mut self,
+        x_min: f32,
+        z_min: f32,
+        x_max: f32,
+        z_max: f32,
+        zone_type_int: u8,
+    ) {
+        self.lock_core()
+            .set_zone_rect_internal(x_min, z_min, x_max, z_max, zone_type_int);
     }
 
     /// Restores a raw zone sub-rectangle (GDScript undo path).
     #[func]
-    pub fn set_zone_rect_raw(&mut self, x_min: f32, z_min: f32, x_max: f32, z_max: f32, bytes: PackedByteArray) {
-        self.lock_core().set_zone_rect_raw_internal(x_min, z_min, x_max, z_max, bytes.to_vec());
+    pub fn set_zone_rect_raw(
+        &mut self,
+        x_min: f32,
+        z_min: f32,
+        x_max: f32,
+        z_max: f32,
+        bytes: PackedByteArray,
+    ) {
+        self.lock_core()
+            .set_zone_rect_raw_internal(x_min, z_min, x_max, z_max, bytes.to_vec());
     }
 
     /// Captures the zone bytes of a sub-rectangle (call before painting for undo state).
     #[func]
-    pub fn get_zone_subrect(&self, x_min: f32, z_min: f32, x_max: f32, z_max: f32) -> PackedByteArray {
-        PackedByteArray::from_iter(self.lock_core().get_zone_subrect_internal(x_min, z_min, x_max, z_max))
+    pub fn get_zone_subrect(
+        &self,
+        x_min: f32,
+        z_min: f32,
+        x_max: f32,
+        z_max: f32,
+    ) -> PackedByteArray {
+        PackedByteArray::from_iter(
+            self.lock_core()
+                .get_zone_subrect_internal(x_min, z_min, x_max, z_max),
+        )
     }
 
     /// Returns the full zone-type grid as a flat byte array for R8 texture upload.
@@ -336,9 +358,8 @@ impl SimulationNode {
         dir_z: f32,
         max_search: f32,
     ) -> f32 {
-        self.lock_core().get_max_polygon_depth_internal(
-            origin_x, origin_z, dir_x, dir_z, max_search,
-        )
+        self.lock_core()
+            .get_max_polygon_depth_internal(origin_x, origin_z, dir_x, dir_z, max_search)
     }
 
     // ── Simulation ──
@@ -496,15 +517,18 @@ impl SimulationNode {
     #[func]
     pub fn get_registered_asset_ids(&self) -> PackedStringArray {
         let core = self.lock_core();
-        let mut ids: Vec<GString> = core.allocator.registry.qualified_ids()
+        let mut ids: Vec<GString> = core
+            .allocator
+            .registry
+            .qualified_ids()
             .map(GString::from)
             .collect();
-        
+
         let has_broken = core.allocator.buildings.iter().any(|b| b.broken);
         if has_broken {
             ids.push(GString::from("broken:error"));
         }
-        
+
         PackedStringArray::from_iter(ids)
     }
 
@@ -518,13 +542,15 @@ impl SimulationNode {
     /// Returns the packed 12-float transforms for all placed buildings with the given asset ID.
     #[func]
     pub fn get_building_transforms_for_asset(&self, asset_id: GString) -> PackedFloat32Array {
-        self.lock_core().get_building_transforms_for_asset_internal(&asset_id.to_string())
+        self.lock_core()
+            .get_building_transforms_for_asset_internal(&asset_id.to_string())
     }
 
     /// Returns the packed transforms for building plots/foundations of a specific zone type.
     #[func]
     pub fn get_building_plot_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {
-        self.lock_core().get_building_plot_transforms_internal(zone_type_int)
+        self.lock_core()
+            .get_building_plot_transforms_internal(zone_type_int)
     }
 
     /// Validates the JSON export params, writes `pack.toml` (if absent) and
@@ -536,10 +562,8 @@ impl SimulationNode {
     #[func]
     pub fn validate_and_export_asset(&self, params_json: GString, output_dir: GString) -> GString {
         use crate::nodes::sim::asset_export::validate_and_export_asset_internal;
-        let result = validate_and_export_asset_internal(
-            &params_json.to_string(),
-            &output_dir.to_string(),
-        );
+        let result =
+            validate_and_export_asset_internal(&params_json.to_string(), &output_dir.to_string());
         GString::from(result.as_str())
     }
 
@@ -551,10 +575,8 @@ impl SimulationNode {
     pub fn get_asset_manifest_json(&self, qualified_id: GString) -> GString {
         use crate::nodes::sim::asset_export::get_asset_manifest_json_internal;
         let core = self.lock_core();
-        let result = get_asset_manifest_json_internal(
-            &core.allocator.registry,
-            &qualified_id.to_string(),
-        );
+        let result =
+            get_asset_manifest_json_internal(&core.allocator.registry, &qualified_id.to_string());
         GString::from(result.as_str())
     }
 
@@ -574,7 +596,8 @@ impl SimulationNode {
     /// Returns the closest boundary point on a road edge to the given position.
     #[func]
     pub fn get_closest_point_on_edge(&self, edge_idx: i32, point_x: f32, point_y: f32) -> Vector2 {
-        self.lock_core().get_closest_point_on_edge_internal(edge_idx, point_x, point_y)
+        self.lock_core()
+            .get_closest_point_on_edge_internal(edge_idx, point_x, point_y)
     }
 
     /// Returns the physical segment geometry for a road edge.
@@ -612,25 +635,23 @@ impl SimulationNode {
         start_p: Vector2,
         end_p: Vector2,
     ) -> PackedVector2Array {
-        self.lock_core().get_curved_frontage_internal(edge_idx, start_p, end_p)
+        self.lock_core()
+            .get_curved_frontage_internal(edge_idx, start_p, end_p)
     }
 
     /// Adds a new road segment to the network.
     #[func]
-    pub fn add_road(
-        &mut self,
-        points: PackedVector3Array,
-        fwd_lanes: i32,
-        bkw_lanes: i32,
-    ) {
+    pub fn add_road(&mut self, points: PackedVector3Array, fwd_lanes: i32, bkw_lanes: i32) {
         // Send to the background thread so the Godot main thread is never blocked
         // by the expensive lane-rebuild and zoning-obstruction passes (~500 ms).
         // The road appears on the next sim tick (~16 ms later) — imperceptible delay.
-        let _ = self.cmd_tx.send(crate::nodes::sim::core::SimCommand::AddRoad {
-            points: points.to_vec(),
-            fwd_lanes,
-            bkw_lanes,
-        });
+        let _ = self
+            .cmd_tx
+            .send(crate::nodes::sim::core::SimCommand::AddRoad {
+                points: points.to_vec(),
+                fwd_lanes,
+                bkw_lanes,
+            });
     }
 
     /// Returns the node ID of the nearest graph node near the border, or -1.
@@ -669,14 +690,16 @@ impl SimulationNode {
     /// Sets the classification of an edge (Standard, Bridge, Tunnel).
     #[func]
     pub fn set_edge_class(&mut self, edge_idx: i32, class_int: u8) {
-        self.lock_core().set_edge_class_internal(edge_idx, class_int);
+        self.lock_core()
+            .set_edge_class_internal(edge_idx, class_int);
     }
 
     /// Sets or clears the no-building-spawn flag on an edge. When true the building
     /// allocator skips this edge. Player-toggleable; also auto-set for speed ≥ 80 km/h.
     #[func]
     pub fn set_no_building_spawn(&mut self, edge_idx: i32, enabled: bool) {
-        self.lock_core().set_no_building_spawn_internal(edge_idx, enabled);
+        self.lock_core()
+            .set_no_building_spawn_internal(edge_idx, enabled);
     }
 
     /// Returns true if the given edge has the no-building-spawn flag set.
@@ -740,7 +763,8 @@ impl SimulationNode {
     /// Returns the ID of the closest network node.
     #[func]
     pub fn get_closest_node(&self, world_pos: Vector3, max_dist: f32) -> i32 {
-        self.lock_core().get_closest_node_internal(world_pos, max_dist)
+        self.lock_core()
+            .get_closest_node_internal(world_pos, max_dist)
     }
 
     /// Placeholder for cul-de-sac tools.
@@ -771,9 +795,7 @@ impl SimulationNode {
     /// would stall the Godot main thread while `add_road_internal` holds the lock.
     #[func]
     pub fn get_network_nodes(&self) -> PackedVector3Array {
-        PackedVector3Array::from_iter(
-            self.snapshot.read().unwrap().node_positions.iter().copied(),
-        )
+        PackedVector3Array::from_iter(self.snapshot.read().unwrap().node_positions.iter().copied())
     }
 
     /// Returns ghost guide data for the road-tool overlay.
@@ -830,9 +852,8 @@ impl SimulationNode {
         to_edge: i32,
         to_lane: i32,
     ) {
-        self.lock_core().set_lane_connection_internal(
-            node_id, from_edge, from_lane, to_edge, to_lane,
-        );
+        self.lock_core()
+            .set_lane_connection_internal(node_id, from_edge, from_lane, to_edge, to_lane);
     }
 
     /// Clears all lane rules at a junction node.
@@ -844,7 +865,8 @@ impl SimulationNode {
     /// Toggles a user override for a crosswalk at a specific road mouth.
     #[func]
     pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: i32, enabled: bool) {
-        self.lock_core().set_crosswalk_override_internal(node_id, edge_id, enabled);
+        self.lock_core()
+            .set_crosswalk_override_internal(node_id, edge_id, enabled);
     }
 
     /// Returns true if a crosswalk exists natively or by user override.
@@ -868,19 +890,22 @@ impl SimulationNode {
     /// Returns an array of current lane turn restrictions at a node.
     #[func]
     pub fn get_lane_connections_array(&self, node_id: u32) -> VarArray {
-        self.lock_core().get_lane_connections_array_internal(node_id)
+        self.lock_core()
+            .get_lane_connections_array_internal(node_id)
     }
 
     /// Clears lane rules for a specific source lane.
     #[func]
     pub fn clear_lane_source(&mut self, node_id: u32, from_edge: i32, from_lane: i32) {
-        self.lock_core().clear_lane_source_internal(node_id, from_edge, from_lane);
+        self.lock_core()
+            .clear_lane_source_internal(node_id, from_edge, from_lane);
     }
 
     /// Returns the average network direction at a given point.
     #[func]
     pub fn get_network_direction_at_point(&self, pos: Vector3) -> Vector3 {
-        self.lock_core().get_network_direction_at_point_internal(pos)
+        self.lock_core()
+            .get_network_direction_at_point_internal(pos)
     }
 
     /// Snap terrain to road levels.
@@ -950,7 +975,8 @@ impl SimulationNode {
     /// High-level city setup for performance testing.
     #[func]
     pub fn setup_benchmark_city(&mut self, grid_size: i32, agent_count: i32) {
-        self.lock_core().setup_benchmark_city_internal(grid_size, agent_count);
+        self.lock_core()
+            .setup_benchmark_city_internal(grid_size, agent_count);
     }
 
     /// Returns performance stats (ms, FPS, agents).
@@ -963,7 +989,10 @@ impl SimulationNode {
     #[func]
     pub fn get_zone_grid_size(&self) -> Vector2i {
         let core = self.lock_core();
-        Vector2i::new(core.zoning.grid.width as i32, core.zoning.grid.height as i32)
+        Vector2i::new(
+            core.zoning.grid.width as i32,
+            core.zoning.grid.height as i32,
+        )
     }
 }
 
@@ -1073,17 +1102,17 @@ impl INode3D for SimulationNode {
     }
 
     fn ready(&mut self) {
-        godot::classes::Engine::singleton()
-            .set_max_fps(crate::config::TARGET_FPS as i32);
+        godot::classes::Engine::singleton().set_max_fps(crate::config::TARGET_FPS as i32);
 
         let args = godot::classes::Os::singleton().get_cmdline_user_args();
         let generate = args
             .as_slice()
             .iter()
             .any(|a| a.to_string() == "--generate-benchmark");
-        let run = args.as_slice().iter().any(|a| {
-            matches!(a.to_string().as_str(), "--benchmark" | "--huge-map")
-        });
+        let run = args
+            .as_slice()
+            .iter()
+            .any(|a| matches!(a.to_string().as_str(), "--benchmark" | "--huge-map"));
 
         if generate {
             self.generate_benchmark_map();
@@ -1099,7 +1128,9 @@ impl INode3D for SimulationNode {
             return;
         }
         if self.economy_editor_mode {
-            godot_print!("[economy-editor] shell ready — authoritative economy data only, no simulation thread");
+            godot_print!(
+                "[economy-editor] shell ready — authoritative economy data only, no simulation thread"
+            );
             debug_log!("economy-editor", "shell ready");
             return;
         }

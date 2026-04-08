@@ -126,10 +126,7 @@ impl ZoningSystem {
     fn cell_to_world(&self, cx: usize, cy: usize) -> (f32, f32) {
         let hw = (self.grid.width as f32 - 1.0) * 0.5;
         let hh = (self.grid.height as f32 - 1.0) * 0.5;
-        (
-            cx as f32 - hw,
-            cy as f32 - hh,
-        )
+        (cx as f32 - hw, cy as f32 - hh)
     }
 
     // ── Zone read / write ───────────────────────────────────────────────────
@@ -154,7 +151,14 @@ impl ZoningSystem {
     /// Paints a world-space rectangle with `zone_type`.
     ///
     /// Cell boundaries are determined by snapping to the nearest 10 m boundary.
-    pub fn set_zone_rect(&mut self, x_min: f32, z_min: f32, x_max: f32, z_max: f32, zone: ZoneType) {
+    pub fn set_zone_rect(
+        &mut self,
+        x_min: f32,
+        z_min: f32,
+        x_max: f32,
+        z_max: f32,
+        zone: ZoneType,
+    ) {
         let (cx_min, cy_min) = self.world_to_cell_clamped(x_min.min(x_max), z_min.min(z_max));
         let (cx_max, cy_max) = self.world_to_cell_clamped(x_min.max(x_max), z_min.max(z_max));
         let gw = self.grid.width;
@@ -191,13 +195,7 @@ impl ZoningSystem {
     }
 
     /// Captures the raw zone bytes of a sub-rectangle. Called before each paint for undo.
-    pub fn get_zone_subrect(
-        &self,
-        x_min: f32,
-        z_min: f32,
-        x_max: f32,
-        z_max: f32,
-    ) -> Vec<u8> {
+    pub fn get_zone_subrect(&self, x_min: f32, z_min: f32, x_max: f32, z_max: f32) -> Vec<u8> {
         let (cx_min, cy_min) = self.world_to_cell_clamped(x_min.min(x_max), z_min.min(z_max));
         let (cx_max, cy_max) = self.world_to_cell_clamped(x_min.max(x_max), z_min.max(z_max));
         let gw = self.grid.width;
@@ -220,7 +218,11 @@ impl ZoningSystem {
 
     /// Returns the occupancy grid as a flat `u8` byte array (0 or 1 per cell).
     pub fn get_occupied_texture_data(&self) -> Vec<u8> {
-        self.occupied.data.iter().map(|&b| if b { 255 } else { 0 }).collect()
+        self.occupied
+            .data
+            .iter()
+            .map(|&b| if b { 255 } else { 0 })
+            .collect()
     }
 
     /// Returns the distance-to-road grid as a flat `u8` byte array.
@@ -230,7 +232,11 @@ impl ZoningSystem {
 
     /// Returns the no-build mask as a flat `u8` byte array (0 or 255 per cell).
     pub fn get_no_build_mask_texture_data(&self) -> Vec<u8> {
-        self.no_build_mask.data.iter().map(|&b| if b { 255 } else { 0 }).collect()
+        self.no_build_mask
+            .data
+            .iter()
+            .map(|&b| if b { 255 } else { 0 })
+            .collect()
     }
 
     // ── Occupancy (rotated-rect helpers) ────────────────────────────────────
@@ -254,8 +260,10 @@ impl ZoningSystem {
         let normal = Vector2::new(-tangent.y, tangent.x);
         // AABB padding: worst-case rotation adds half_w + half_d to each axis.
         let aabb_half = half_w + half_d + cell;
-        let (ax_min, az_min) = self.world_to_cell_clamped(center_x - aabb_half, center_z - aabb_half);
-        let (ax_max, az_max) = self.world_to_cell_clamped(center_x + aabb_half, center_z + aabb_half);
+        let (ax_min, az_min) =
+            self.world_to_cell_clamped(center_x - aabb_half, center_z - aabb_half);
+        let (ax_max, az_max) =
+            self.world_to_cell_clamped(center_x + aabb_half, center_z + aabb_half);
         let gw = self.occupied.width;
         let gh = self.occupied.height;
         for cy in az_min..=az_max.min(gh.saturating_sub(1)) {
@@ -264,7 +272,7 @@ impl ZoningSystem {
                 let dx = wx - center_x;
                 let dz = wz - center_z;
                 let along = dx * tangent.x + dz * tangent.y;
-                let perp  = dx * normal.x  + dz * normal.y;
+                let perp = dx * normal.x + dz * normal.y;
                 if along.abs() <= half_w && perp.abs() <= half_d {
                     self.occupied.set(cx, cy, val);
                 }
@@ -286,8 +294,10 @@ impl ZoningSystem {
         let cell = self.config.zone_cell_m;
         let normal = Vector2::new(-tangent.y, tangent.x);
         let aabb_half = half_w + half_d + cell;
-        let (ax_min, az_min) = self.world_to_cell_clamped(center_x - aabb_half, center_z - aabb_half);
-        let (ax_max, az_max) = self.world_to_cell_clamped(center_x + aabb_half, center_z + aabb_half);
+        let (ax_min, az_min) =
+            self.world_to_cell_clamped(center_x - aabb_half, center_z - aabb_half);
+        let (ax_max, az_max) =
+            self.world_to_cell_clamped(center_x + aabb_half, center_z + aabb_half);
         let gw = self.occupied.width;
         let gh = self.occupied.height;
         for cy in az_min..=az_max.min(gh.saturating_sub(1)) {
@@ -296,7 +306,7 @@ impl ZoningSystem {
                 let dx = wx - center_x;
                 let dz = wz - center_z;
                 let along = dx * tangent.x + dz * tangent.y;
-                let perp  = dx * normal.x  + dz * normal.y;
+                let perp = dx * normal.x + dz * normal.y;
                 if along.abs() <= half_w && perp.abs() <= half_d {
                     if *self.occupied.get(cx, cy).unwrap_or(&false) {
                         return true;
@@ -325,9 +335,9 @@ impl ZoningSystem {
             .filter(|e| !e.deleted)
             .flat_map(|e| {
                 let hw = e.width * 0.5;
-                e.physical_geometry.windows(2).map(move |w| {
-                    (w[0].x, w[0].z, w[1].x, w[1].z, hw)
-                })
+                e.physical_geometry
+                    .windows(2)
+                    .map(move |w| (w[0].x, w[0].z, w[1].x, w[1].z, hw))
             })
             .collect();
 
@@ -383,10 +393,7 @@ impl ZoningSystem {
     ///
     /// Call whenever the `no_building_spawn` flag changes on any edge (in addition to the
     /// automatic call at the end of `update_distance_to_road`).
-    pub fn update_no_build_mask(
-        &mut self,
-        graph: &crate::simulation::network::graph::RegionGraph,
-    ) {
+    pub fn update_no_build_mask(&mut self, graph: &crate::simulation::network::graph::RegionGraph) {
         // Distance from road surface (carriageway edge) within which zone tint is suppressed.
         // Covers SIDEWALK_WIDTH (1.5 m) + 3 plot rows (30 m) = 31.5 m → use 32 m.
         const SUPPRESS_M: f32 = 32.0;
@@ -397,9 +404,9 @@ impl ZoningSystem {
             .filter(|e| !e.deleted && e.no_building_spawn)
             .flat_map(|e| {
                 let hw = e.width * 0.5;
-                e.physical_geometry.windows(2).map(move |w| {
-                    (w[0].x, w[0].z, w[1].x, w[1].z, hw)
-                })
+                e.physical_geometry
+                    .windows(2)
+                    .map(move |w| (w[0].x, w[0].z, w[1].x, w[1].z, hw))
             })
             .collect();
 

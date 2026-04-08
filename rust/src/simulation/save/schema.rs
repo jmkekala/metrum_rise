@@ -1,8 +1,8 @@
 //! SQLite schema and enum mapping for persistent storage.
 
+use super::SaveLoadError;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType};
-use super::SaveLoadError;
 
 /// Current save format version.
 pub const SAVE_VERSION: i64 = 11;

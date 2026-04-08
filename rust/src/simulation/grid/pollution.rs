@@ -40,7 +40,6 @@ impl PollutionSystem {
         let w = self.grid.width;
         let h = self.grid.height;
 
-
         // 1. Emission (Sequential as building count is small compared to grid)
         for b in &allocator.buildings {
             if b.zone_type == ZoneType::Industrial {
@@ -136,7 +135,8 @@ mod tests {
             cell_y: 0,
             occupancy: 0,
             worker_count: 0,
-            asset_id: String::new(), level: 1,
+            asset_id: String::new(),
+            level: 1,
             broken: false,
             stock: 0.0,
             revenue: 0.0,

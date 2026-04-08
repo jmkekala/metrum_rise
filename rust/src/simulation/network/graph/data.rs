@@ -131,7 +131,12 @@ impl Edge {
             }
             curr_dist += d;
         }
-        (self.physical_geometry.last().unwrap().clone(), (self.physical_geometry.last().unwrap().clone() - self.physical_geometry[self.physical_geometry.len()-2]).normalized())
+        (
+            self.physical_geometry.last().unwrap().clone(),
+            (self.physical_geometry.last().unwrap().clone()
+                - self.physical_geometry[self.physical_geometry.len() - 2])
+                .normalized(),
+        )
     }
 
     /// Returns the normalized 2D tangent (X, Z) at a given T-coordinate.
@@ -281,8 +286,12 @@ impl RegionGraph {
 
     /// Sets a user override for a crosswalk at a specific road mouth.
     pub fn set_crosswalk_override(&mut self, node_id: u32, edge_id: usize, enabled: bool) {
-        if node_id as usize >= self.nodes.len() { return; }
-        self.nodes[node_id as usize].crosswalk_overrides.insert(edge_id, enabled);
+        if node_id as usize >= self.nodes.len() {
+            return;
+        }
+        self.nodes[node_id as usize]
+            .crosswalk_overrides
+            .insert(edge_id, enabled);
     }
 
     /// Returns a mutable iterator over all edge slots (including soft-deleted ones).

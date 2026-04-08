@@ -43,14 +43,17 @@ impl BuildingAllocator {
             return;
         }
 
-        let Some(residential_asset_id) = self.preferred_founding_asset_id(FOUNDING_RESIDENTIAL_ZONE) else {
+        let Some(residential_asset_id) =
+            self.preferred_founding_asset_id(FOUNDING_RESIDENTIAL_ZONE)
+        else {
             debug_log!(
                 "economy",
                 "founding bootstrap blocked: no registered residential building asset"
             );
             return;
         };
-        let Some(commercial_asset_id) = self.preferred_founding_asset_id(FOUNDING_COMMERCIAL_ZONE) else {
+        let Some(commercial_asset_id) = self.preferred_founding_asset_id(FOUNDING_COMMERCIAL_ZONE)
+        else {
             debug_log!(
                 "economy",
                 "founding bootstrap blocked: no registered commercial building asset"
@@ -103,7 +106,12 @@ impl BuildingAllocator {
                     .unwrap_or(false)
             })
             .cloned()
-            .or_else(|| self.registry.buildings_for_zone(zone_class).first().cloned())
+            .or_else(|| {
+                self.registry
+                    .buildings_for_zone(zone_class)
+                    .first()
+                    .cloned()
+            })
     }
 
     fn resolve_first_valid_slot_for_asset(

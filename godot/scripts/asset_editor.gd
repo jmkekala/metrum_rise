@@ -10,6 +10,7 @@ extends Node3D
 const PANEL_LEFT_W  := 270
 const PANEL_RIGHT_W := 300
 const PANEL_BOT_H   := 140
+const MAIN_ENTRANCE_PICK_RADIUS_PX := 18.0
 
 const TEMPLATES := [
 	"Flat Studio",
@@ -51,6 +52,9 @@ var _economy_profile_status_lbl: Label
 var _lod_list: ItemList
 var _lod_source_paths: Array[String] = []  # parallel to _lod_list items
 var _frontage_lbl: Label  # shows current frontage forward vector
+var _entrance_x_spin: SpinBox
+var _entrance_y_spin: SpinBox
+var _entrance_z_spin: SpinBox
 var _glb_path: String = ""
 
 # 3D preview node
@@ -86,6 +90,12 @@ var _unresolved_economy_profile_id: String = ""
 var _economy_catalog_loaded: bool = false
 var _economy_catalog_warning_count: int = 0
 var _economy_catalog_error: String = ""
+var _log_plain_lines: Array[String] = []
+var _bbcode_strip_regex: RegEx
+var _main_entrance_auto: bool = true
+var _updating_main_entrance_fields: bool = false
+var _extra_anchors: Array[Dictionary] = []
+var _dragging_main_entrance: bool = false
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -106,6 +116,10 @@ func _ready() -> void:
 
 	_build_preview_node()
 	_build_ui()
+	_bbcode_strip_regex = RegEx.new()
+	_bbcode_strip_regex.compile("\\[/?[^\\]]+\\]")
+	_set_frontage_forward(_frontage_fwd)
+	_set_main_entrance_position(_default_main_entrance_position(), true)
 	_load_economy_profiles()
 	_load_packs()
 	_apply_template(0)
@@ -332,6 +346,25 @@ func _build_right_panel(parent: Control) -> void:
 	set_front_btn.text = "Set Front From View"
 	set_front_btn.pressed.connect(_on_set_front_from_view)
 	vbox.add_child(set_front_btn)
+	_add_label(vbox, "Main Entrance (local)", _font_size_label)
+	_entrance_x_spin = _add_spinbox(vbox, "X (m)", -500.0, 500.0, 0.0)
+	_entrance_y_spin = _add_spinbox(vbox, "Y (m)", -500.0, 500.0, 0.0)
+	_entrance_z_spin = _add_spinbox(vbox, "Z (m)", -500.0, 500.0, 10.0)
+	_entrance_x_spin.step = 0.1
+	_entrance_y_spin.step = 0.1
+	_entrance_z_spin.step = 0.1
+	_entrance_x_spin.value_changed.connect(_on_main_entrance_changed)
+	_entrance_y_spin.value_changed.connect(_on_main_entrance_changed)
+	_entrance_z_spin.value_changed.connect(_on_main_entrance_changed)
+	var reset_entrance_btn := Button.new()
+	reset_entrance_btn.text = "Reset Entrance To Frontage"
+	reset_entrance_btn.pressed.connect(_on_reset_main_entrance_pressed)
+	vbox.add_child(reset_entrance_btn)
+	var entrance_hint := Label.new()
+	entrance_hint.text = "Drag the yellow sphere in the viewport to move X/Z. Use Y for height."
+	entrance_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	entrance_hint.add_theme_font_size_override("font_size", _font_size_label)
+	vbox.add_child(entrance_hint)
 
 	vbox.add_child(HSeparator.new())
 	var export_btn := Button.new()
@@ -349,11 +382,24 @@ func _build_bottom_panel(parent: Control) -> void:
 	vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	panel.add_child(vbox)
 
-	_add_label(vbox, "Import Log", _font_size_section)
+	var header := HBoxContainer.new()
+	vbox.add_child(header)
+	var title := Label.new()
+	title.text = "Import Log"
+	title.add_theme_font_size_override("font_size", _font_size_section)
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	header.add_child(title)
+	var copy_btn := Button.new()
+	copy_btn.text = "Copy All"
+	copy_btn.pressed.connect(_on_copy_log_pressed)
+	header.add_child(copy_btn)
 	_log_label = RichTextLabel.new()
 	_log_label.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	_log_label.scroll_following = true
 	_log_label.bbcode_enabled = true
+	_log_label.selection_enabled = true
+	_log_label.context_menu_enabled = true
+	_log_label.focus_mode = Control.FOCUS_CLICK
 	vbox.add_child(_log_label)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -482,6 +528,34 @@ func _populate_inspector_from(data: Dictionary) -> void:
 	var di := DENSITY_TYPES.find(dt)
 	_density_btn.selected = maxi(0, di)
 	_set_economy_profile_selection(data.get("economy_profile", "") if data.get("economy_profile") != null else "")
+	_extra_anchors.clear()
+
+	var main_anchor_pos := _default_main_entrance_position()
+	var main_anchor_fwd := Vector3.FORWARD
+	var has_main_anchor := false
+	for anchor in data.get("anchors", []):
+		if not (anchor is Dictionary):
+			continue
+		var anchor_dict: Dictionary = anchor
+		var anchor_type := str(anchor_dict.get("anchor_type", "")).strip_edges()
+		var anchor_name := str(anchor_dict.get("name", "")).strip_edges()
+		if anchor_type == "entrance" and anchor_name == "main" and not has_main_anchor:
+			var pos = anchor_dict.get("position", [])
+			if pos is Array and pos.size() == 3:
+				main_anchor_pos = Vector3(float(pos[0]), float(pos[1]), float(pos[2]))
+			var fwd = anchor_dict.get("forward", [])
+			if fwd is Array and fwd.size() == 3:
+				main_anchor_fwd = Vector3(float(fwd[0]), float(fwd[1]), float(fwd[2]))
+			has_main_anchor = true
+			continue
+		_extra_anchors.append(anchor_dict.duplicate(true))
+
+	_set_frontage_forward(main_anchor_fwd if has_main_anchor else Vector3.FORWARD)
+	if has_main_anchor:
+		_set_main_entrance_position(main_anchor_pos, false)
+	else:
+		_set_main_entrance_position(_default_main_entrance_position(), true)
+		_log("[color=yellow]Loaded asset has no 'entrance/main' anchor; using frontage default.[/color]")
 
 	_lod_list.clear()
 	_lod_source_paths.clear()
@@ -520,6 +594,10 @@ func _populate_inspector_from(data: Dictionary) -> void:
 
 func _on_zone_or_lot_changed(_idx) -> void:
 	_preview.set_lot_size(int(_width_spin.value), int(_depth_spin.value))
+	if _main_entrance_auto:
+		_set_main_entrance_position(_default_main_entrance_position(), true)
+	else:
+		_update_main_entrance_preview()
 	_update_economy_profile_status()
 
 func _on_asset_id_text_changed(_t: String) -> void:
@@ -801,9 +879,9 @@ func _on_set_front_from_view() -> void:
 	if horizontal.length_squared() < 0.001:
 		_log("[color=yellow]Camera is directly above — frontage unchanged.[/color]")
 		return
-	_frontage_fwd = horizontal
-	_frontage_lbl.text = "Forward: (%.2f, 0, %.2f)" % [horizontal.x, horizontal.z]
-	_preview.set_frontage_forward(_frontage_fwd)
+	_set_frontage_forward(horizontal)
+	if _main_entrance_auto:
+		_set_main_entrance_position(_default_main_entrance_position(), true)
 	_log("Frontage set: front face points toward camera.")
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -838,13 +916,19 @@ func _on_export_pressed() -> void:
 
 	# Build entrance anchor from frontage forward.
 	var fwd := _frontage_fwd
-	var depth_m: float = _depth_spin.value * 10.0
+	var entrance_pos := _get_main_entrance_position()
 	var anchors := [{
 		"anchor_type": "entrance",
 		"name": "main",
-		"position": [0.0, 0.0, snappedf(depth_m * 0.5, 0.01)],
+		"position": [
+			snappedf(entrance_pos.x, 0.01),
+			snappedf(entrance_pos.y, 0.01),
+			snappedf(entrance_pos.z, 0.01),
+		],
 		"forward": [snappedf(fwd.x, 0.001), 0.0, snappedf(fwd.z, 0.001)],
 	}]
+	for anchor in _extra_anchors:
+		anchors.append(anchor.duplicate(true))
 
 	var tags_raw: String = _tags_edit.text.strip_edges()
 	var tags: Array = []
@@ -1066,6 +1150,52 @@ func _add_spinbox(parent: Control, label: String, min_val: float, max_val: float
 	parent.add_child(sb)
 	return sb
 
+func _set_frontage_forward(fwd: Vector3) -> void:
+	var resolved := fwd
+	if resolved.length_squared() < 0.001:
+		resolved = Vector3.FORWARD
+	_frontage_fwd = resolved.normalized()
+	_frontage_lbl.text = "Forward: (%.2f, 0, %.2f)" % [_frontage_fwd.x, _frontage_fwd.z]
+	_preview.set_frontage_forward(_frontage_fwd)
+	_update_main_entrance_preview()
+
+func _on_main_entrance_changed(_value: float) -> void:
+	if _updating_main_entrance_fields:
+		return
+	_main_entrance_auto = false
+	_update_main_entrance_preview()
+
+func _on_reset_main_entrance_pressed() -> void:
+	_set_main_entrance_position(_default_main_entrance_position(), true)
+	_log("Main entrance reset to the current frontage edge.")
+
+func _get_main_entrance_position() -> Vector3:
+	return Vector3(_entrance_x_spin.value, _entrance_y_spin.value, _entrance_z_spin.value)
+
+func _default_main_entrance_position() -> Vector3:
+	var lot_half_w := _width_spin.value * 10.0 * 0.5
+	var lot_half_d := _depth_spin.value * 10.0 * 0.5
+	var fwd := _frontage_fwd
+	if fwd.length_squared() < 0.001:
+		fwd = Vector3.FORWARD
+	if absf(fwd.x) >= absf(fwd.z):
+		return Vector3((1.0 if fwd.x >= 0.0 else -1.0) * lot_half_w, 0.0, 0.0)
+	return Vector3(0.0, 0.0, (1.0 if fwd.z >= 0.0 else -1.0) * lot_half_d)
+
+func _set_main_entrance_position(pos: Vector3, auto_anchor: bool) -> void:
+	_main_entrance_auto = auto_anchor
+	_updating_main_entrance_fields = true
+	_entrance_x_spin.value = pos.x
+	_entrance_y_spin.value = pos.y
+	_entrance_z_spin.value = pos.z
+	_updating_main_entrance_fields = false
+	_update_main_entrance_preview()
+
+func _update_main_entrance_preview() -> void:
+	if not _preview or not _entrance_x_spin or not _entrance_y_spin or not _entrance_z_spin:
+		return
+	_preview.set_entrance_anchor(_get_main_entrance_position(), _frontage_fwd)
+
 func _on_mesh_loaded(aabb: AABB) -> void:
 	_mesh_aabb = aabb
 	# Compute pivot offset: centre XZ, ground Y (bottom face → Y=0).
@@ -1176,35 +1306,85 @@ func _on_clear_ghost_pressed() -> void:
 	_preview.clear_ghost()
 
 func _input(event: InputEvent) -> void:
-	if not _human_visible:
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.button_index != MOUSE_BUTTON_LEFT:
+			return
+		if mb.pressed:
+			if not _is_mouse_in_3d_area():
+				return
+			var mouse_pos := get_viewport().get_mouse_position()
+			if _try_begin_main_entrance_drag(mouse_pos):
+				get_viewport().set_input_as_handled()
+				return
+			if _human_visible and _place_human_from_mouse(mouse_pos):
+				get_viewport().set_input_as_handled()
+			return
+		if _dragging_main_entrance:
+			_dragging_main_entrance = false
+			get_viewport().set_input_as_handled()
 		return
-	if not (event is InputEventMouseButton):
-		return
-	var mb := event as InputEventMouseButton
-	if mb.button_index != MOUSE_BUTTON_LEFT or not mb.pressed:
-		return
-	# Only act when the click is inside the 3D viewport area.
+
+	if event is InputEventMouseMotion and _dragging_main_entrance:
+		if _drag_main_entrance_from_mouse(get_viewport().get_mouse_position()):
+			get_viewport().set_input_as_handled()
+
+func _is_mouse_in_3d_area() -> bool:
 	var mouse_pos := get_viewport().get_mouse_position()
 	var vp_size   := get_viewport().get_visible_rect().size
-	var in_3d := (mouse_pos.x > PANEL_LEFT_W and
-				  mouse_pos.x < vp_size.x - PANEL_RIGHT_W and
-				  mouse_pos.y < vp_size.y - PANEL_BOT_H)
-	if not in_3d:
-		return
-	# Project ray onto the y=0 ground plane.
+	return (mouse_pos.x > PANEL_LEFT_W and
+			mouse_pos.x < vp_size.x - PANEL_RIGHT_W and
+			mouse_pos.y < vp_size.y - PANEL_BOT_H)
+
+func _try_begin_main_entrance_drag(mouse_pos: Vector2) -> bool:
+	if not _preview:
+		return false
 	var cam := get_viewport().get_camera_3d()
 	if not cam:
-		return
-	var origin := cam.project_ray_origin(mouse_pos)
-	var dir    := cam.project_ray_normal(mouse_pos)
-	if absf(dir.y) < 0.0001:
-		return  # ray is parallel to ground
-	var t := -origin.y / dir.y
-	if t < 0.0:
-		return  # intersection is behind the camera
-	var hit := origin + dir * t
+		return false
+	var anchor_world: Vector3 = _preview.get_entrance_anchor_world_position()
+	if cam.is_position_behind(anchor_world):
+		return false
+	var anchor_screen: Vector2 = cam.unproject_position(anchor_world)
+	if anchor_screen.distance_to(mouse_pos) > MAIN_ENTRANCE_PICK_RADIUS_PX:
+		return false
+	_dragging_main_entrance = true
+	_main_entrance_auto = false
+	return _drag_main_entrance_from_mouse(mouse_pos)
+
+func _drag_main_entrance_from_mouse(mouse_pos: Vector2) -> bool:
+	var anchor_pos := _get_main_entrance_position()
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, anchor_pos.y)
+	if hit == null:
+		return false
+	_set_main_entrance_position(Vector3(hit.x, anchor_pos.y, hit.z), false)
+	return true
+
+func _place_human_from_mouse(mouse_pos: Vector2) -> bool:
+	var hit = _project_mouse_to_horizontal_plane(mouse_pos, 0.0)
+	if hit == null:
+		return false
 	_preview.place_human_at(hit.x, hit.z)
-	get_viewport().set_input_as_handled()
+	return true
+
+func _project_mouse_to_horizontal_plane(mouse_pos: Vector2, plane_y: float):
+	var cam := get_viewport().get_camera_3d()
+	if not cam:
+		return null
+	var origin := cam.project_ray_origin(mouse_pos)
+	var dir := cam.project_ray_normal(mouse_pos)
+	if absf(dir.y) < 0.0001:
+		return null
+	var t := (plane_y - origin.y) / dir.y
+	if t < 0.0:
+		return null
+	return origin + dir * t
+
+func _on_copy_log_pressed() -> void:
+	if _log_plain_lines.is_empty():
+		DisplayServer.clipboard_set("")
+		return
+	DisplayServer.clipboard_set("\n".join(_log_plain_lines))
 
 func _on_autofit_pressed() -> void:
 	if _mesh_aabb.size.length() < 0.001:
@@ -1235,3 +1415,9 @@ func _on_autofit_pressed() -> void:
 func _log(msg: String) -> void:
 	if _log_label:
 		_log_label.append_text(msg + "\n")
+	_log_plain_lines.append(_strip_bbcode(msg))
+
+func _strip_bbcode(text: String) -> String:
+	if _bbcode_strip_regex:
+		return _bbcode_strip_regex.sub(text, "", true)
+	return text

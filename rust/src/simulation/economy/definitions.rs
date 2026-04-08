@@ -25,7 +25,8 @@ pub fn load_project_json(dir_path: &Path) -> Result<String, String> {
         "project": project,
         "validation": validation,
     });
-    serde_json::to_string(&payload).map_err(|err| format!("could not encode economy project JSON: {err}"))
+    serde_json::to_string(&payload)
+        .map_err(|err| format!("could not encode economy project JSON: {err}"))
 }
 
 /// Validates and exports an authored economy project back to canonical TOML
@@ -44,18 +45,31 @@ pub fn export_project_json(project_json: &str, dir_path: &Path) -> Result<String
             .map_err(|err| format!("could not encode failed export JSON: {err}"));
     }
 
-    std::fs::create_dir_all(dir_path)
-        .map_err(|err| format!("could not create economy dir '{}': {err}", dir_path.display()))?;
+    std::fs::create_dir_all(dir_path).map_err(|err| {
+        format!(
+            "could not create economy dir '{}': {err}",
+            dir_path.display()
+        )
+    })?;
 
-    write_pretty_toml(&dir_path.join(PROFILES_FILE), &ProfilesFile {
-        profiles: project.profiles.clone(),
-    })?;
-    write_pretty_toml(&dir_path.join(CONTROLLERS_FILE), &ControllersFile {
-        controllers: project.controllers.clone(),
-    })?;
-    write_pretty_toml(&dir_path.join(SCENARIOS_FILE), &ScenariosFile {
-        scenarios: project.scenarios.clone(),
-    })?;
+    write_pretty_toml(
+        &dir_path.join(PROFILES_FILE),
+        &ProfilesFile {
+            profiles: project.profiles.clone(),
+        },
+    )?;
+    write_pretty_toml(
+        &dir_path.join(CONTROLLERS_FILE),
+        &ControllersFile {
+            controllers: project.controllers.clone(),
+        },
+    )?;
+    write_pretty_toml(
+        &dir_path.join(SCENARIOS_FILE),
+        &ScenariosFile {
+            scenarios: project.scenarios.clone(),
+        },
+    )?;
 
     let compiled = build_index(&project);
     let compiled_bytes = serde_json::to_vec(&compiled)
@@ -168,7 +182,10 @@ struct EconomyScenario {
     display_name: String,
     #[serde(default)]
     description: String,
-    #[serde(default = "default_duration_days", deserialize_with = "deserialize_u32_from_number")]
+    #[serde(
+        default = "default_duration_days",
+        deserialize_with = "deserialize_u32_from_number"
+    )]
     duration_days: u32,
     #[serde(default, deserialize_with = "deserialize_u32_from_number")]
     household_count: u32,
@@ -296,21 +313,28 @@ where
                     .map_err(|_| serde::de::Error::custom("numeric value exceeds u32 range"));
             }
             if let Some(signed) = number.as_i64() {
-                return u32::try_from(signed)
-                    .map_err(|_| serde::de::Error::custom("numeric value must be >= 0 and within u32 range"));
+                return u32::try_from(signed).map_err(|_| {
+                    serde::de::Error::custom("numeric value must be >= 0 and within u32 range")
+                });
             }
             if let Some(float) = number.as_f64() {
                 if !float.is_finite() || float < 0.0 {
-                    return Err(serde::de::Error::custom("numeric value must be finite and >= 0"));
+                    return Err(serde::de::Error::custom(
+                        "numeric value must be finite and >= 0",
+                    ));
                 }
                 let rounded = float.round();
                 if (float - rounded).abs() > f64::EPSILON {
-                    return Err(serde::de::Error::custom("numeric value must be a whole number"));
+                    return Err(serde::de::Error::custom(
+                        "numeric value must be a whole number",
+                    ));
                 }
                 return u32::try_from(rounded as i64)
                     .map_err(|_| serde::de::Error::custom("numeric value exceeds u32 range"));
             }
-            Err(serde::de::Error::custom("unsupported numeric representation"))
+            Err(serde::de::Error::custom(
+                "unsupported numeric representation",
+            ))
         }
         serde_json::Value::Null => Ok(0),
         other => Err(serde::de::Error::custom(format!(
@@ -354,7 +378,12 @@ fn validate_project(project: &EconomyProject) -> Vec<ValidationMessage> {
         ));
     }
 
-    let controller_ids = duplicate_ids(project.controllers.iter().map(|controller| controller.id.as_str()));
+    let controller_ids = duplicate_ids(
+        project
+            .controllers
+            .iter()
+            .map(|controller| controller.id.as_str()),
+    );
     for duplicate in controller_ids {
         messages.push(error(
             "duplicate_controller_id",
@@ -363,7 +392,12 @@ fn validate_project(project: &EconomyProject) -> Vec<ValidationMessage> {
         ));
     }
 
-    let scenario_ids = duplicate_ids(project.scenarios.iter().map(|scenario| scenario.id.as_str()));
+    let scenario_ids = duplicate_ids(
+        project
+            .scenarios
+            .iter()
+            .map(|scenario| scenario.id.as_str()),
+    );
     for duplicate in scenario_ids {
         messages.push(error(
             "duplicate_scenario_id",
@@ -418,12 +452,7 @@ fn validate_project(project: &EconomyProject) -> Vec<ValidationMessage> {
     }
 
     for scenario in &project.scenarios {
-        validate_scenario(
-            scenario,
-            &profile_map,
-            &controller_map,
-            &mut messages,
-        );
+        validate_scenario(scenario, &profile_map, &controller_map, &mut messages);
     }
 
     messages
@@ -480,14 +509,19 @@ fn validate_scenario(
                     messages.push(error(
                         "missing_controller_ref",
                         format!("scenario.{}.node.{}", scenario.id, node.id),
-                        format!("scenario node references missing controller '{}'", node.ref_id),
+                        format!(
+                            "scenario node references missing controller '{}'",
+                            node.ref_id
+                        ),
                     ));
                 }
             }
             other => messages.push(error(
                 "invalid_node_kind",
                 format!("scenario.{}.node.{}", scenario.id, node.id),
-                format!("scenario node kind '{other}' is invalid; expected 'profile' or 'controller'"),
+                format!(
+                    "scenario node kind '{other}' is invalid; expected 'profile' or 'controller'"
+                ),
             )),
         }
     }
@@ -502,7 +536,8 @@ fn validate_scenario(
         messages.push(warning(
             "multiple_demand_sinks",
             format!("scenario.{}", scenario.id),
-            "scenario includes multiple demand sinks; sandbox playback uses the first one".to_owned(),
+            "scenario includes multiple demand sinks; sandbox playback uses the first one"
+                .to_owned(),
         ));
     }
 
@@ -573,8 +608,12 @@ fn validate_scenario(
             .entry(edge.from.as_str())
             .or_default()
             .insert(edge.to.as_str());
-        *profile_graph_incoming_degree.entry(edge.to.as_str()).or_insert(0) += 1;
-        profile_graph_incoming_degree.entry(edge.from.as_str()).or_insert(0);
+        *profile_graph_incoming_degree
+            .entry(edge.to.as_str())
+            .or_insert(0) += 1;
+        profile_graph_incoming_degree
+            .entry(edge.from.as_str())
+            .or_insert(0);
     }
 
     for node in &scenario.nodes {
@@ -607,7 +646,10 @@ fn validate_scenario(
                     "scenario.{}.controller_link.{}->{}",
                     scenario.id, link.controller_node_id, link.target_node_id
                 ),
-                format!("controller node '{}' does not exist", link.controller_node_id),
+                format!(
+                    "controller node '{}' does not exist",
+                    link.controller_node_id
+                ),
             ));
             continue;
         };
@@ -644,12 +686,17 @@ fn validate_scenario(
         }
     }
 
-    let cycle_detected = has_profile_cycle(&scenario.nodes, &profile_graph_outgoing, &profile_graph_incoming_degree);
+    let cycle_detected = has_profile_cycle(
+        &scenario.nodes,
+        &profile_graph_outgoing,
+        &profile_graph_incoming_degree,
+    );
     if cycle_detected {
         messages.push(error(
             "cyclic_scenario_graph",
             format!("scenario.{}", scenario.id),
-            "scenario graph contains a cycle; bootstrap playback requires an acyclic profile chain".to_owned(),
+            "scenario graph contains a cycle; bootstrap playback requires an acyclic profile chain"
+                .to_owned(),
         ));
     }
 }
@@ -691,14 +738,19 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
     let demand_sink_profile = profile_map
         .get(demand_sink_node.ref_id.as_str())
         .copied()
-        .ok_or_else(|| format!("demand sink profile '{}' is missing", demand_sink_node.ref_id))?;
+        .ok_or_else(|| {
+            format!(
+                "demand sink profile '{}' is missing",
+                demand_sink_node.ref_id
+            )
+        })?;
 
-    let household_demand_per_day =
-        scenario.household_count as f32
+    let household_demand_per_day = scenario.household_count as f32
         * scenario.average_household_size
         * demand_sink_profile.consumption_rate_per_resident.max(0.0);
 
-    let mut household_stock_units = household_demand_per_day * scenario.starting_household_stock_days.max(0.0);
+    let mut household_stock_units =
+        household_demand_per_day * scenario.starting_household_stock_days.max(0.0);
     let mut lowest_stock_days = if household_demand_per_day > 0.0 {
         household_stock_units / household_demand_per_day
     } else {
@@ -724,27 +776,36 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
         let mut household_cost_today = 0.0;
 
         for node_id in &topo_order {
-            let node = node_map
-                .get(node_id.as_str())
-                .copied()
-                .ok_or_else(|| format!("scenario node '{}' missing during sandbox playback", node_id))?;
+            let node = node_map.get(node_id.as_str()).copied().ok_or_else(|| {
+                format!(
+                    "scenario node '{}' missing during sandbox playback",
+                    node_id
+                )
+            })?;
             let profile = profile_map
                 .get(node.ref_id.as_str())
                 .copied()
-                .ok_or_else(|| format!("profile '{}' missing during sandbox playback", node.ref_id))?;
+                .ok_or_else(|| {
+                    format!("profile '{}' missing during sandbox playback", node.ref_id)
+                })?;
 
             if profile.kind == "demand_sink" {
-                let delivered_to_sink = take_all_incoming_stock(
-                    &mut inventories,
-                    node.id.as_str(),
-                    &profile.inputs,
-                );
+                let delivered_to_sink =
+                    take_all_incoming_stock(&mut inventories, node.id.as_str(), &profile.inputs);
                 delivered_today += delivered_to_sink;
                 household_stock_units += delivered_to_sink;
                 let consumed = household_stock_units.min(household_demand_per_day);
                 unmet_today = household_demand_per_day - consumed;
                 household_stock_units -= consumed;
-                household_cost_today += delivered_to_sink * inferred_unit_price(scenario, node.id.as_str(), &outgoing_edges, &node_map, &profile_map) * household_price_multiplier;
+                household_cost_today += delivered_to_sink
+                    * inferred_unit_price(
+                        scenario,
+                        node.id.as_str(),
+                        &outgoing_edges,
+                        &node_map,
+                        &profile_map,
+                    )
+                    * household_price_multiplier;
                 continue;
             }
 
@@ -753,8 +814,18 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
                 add_outputs_to_inventory(&mut inventories, node.id.as_str(), &profile.outputs, 1.0);
             } else if throughput > 0.0 && profile.base_rate_units_per_day > 0.0 {
                 let scale = throughput / profile.base_rate_units_per_day;
-                consume_inputs_from_inventory(&mut inventories, node.id.as_str(), &profile.inputs, scale);
-                add_outputs_to_inventory(&mut inventories, node.id.as_str(), &profile.outputs, scale);
+                consume_inputs_from_inventory(
+                    &mut inventories,
+                    node.id.as_str(),
+                    &profile.inputs,
+                    scale,
+                );
+                add_outputs_to_inventory(
+                    &mut inventories,
+                    node.id.as_str(),
+                    &profile.outputs,
+                    scale,
+                );
             }
 
             transfer_outgoing_stock(
@@ -802,8 +873,7 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
     if total_unmet_units > 0.0 {
         bottlenecks.push(format!(
             "Sandbox leaves {:.1} household_supplies units unmet across {} days.",
-            total_unmet_units,
-            scenario.duration_days
+            total_unmet_units, scenario.duration_days
         ));
     }
     if bottlenecks.is_empty() {
@@ -819,7 +889,9 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
         lowest_household_stock_days: lowest_stock_days,
         total_delivered_units,
         total_unmet_units,
-        average_household_cost_per_day: if scenario.duration_days > 0 && scenario.household_count > 0 {
+        average_household_cost_per_day: if scenario.duration_days > 0
+            && scenario.household_count > 0
+        {
             total_household_cost / (scenario.duration_days as f32 * scenario.household_count as f32)
         } else {
             0.0
@@ -850,14 +922,28 @@ fn build_index(project: &EconomyProject) -> CompiledEconomyIndex {
     }
 
     CompiledEconomyIndex {
-        profile_ids: project.profiles.iter().map(|profile| profile.id.clone()).collect(),
-        controller_ids: project.controllers.iter().map(|controller| controller.id.clone()).collect(),
-        scenario_ids: project.scenarios.iter().map(|scenario| scenario.id.clone()).collect(),
+        profile_ids: project
+            .profiles
+            .iter()
+            .map(|profile| profile.id.clone())
+            .collect(),
+        controller_ids: project
+            .controllers
+            .iter()
+            .map(|controller| controller.id.clone())
+            .collect(),
+        scenario_ids: project
+            .scenarios
+            .iter()
+            .map(|scenario| scenario.id.clone())
+            .collect(),
         compatibility,
     }
 }
 
-fn build_outgoing_edges<'a>(scenario: &'a EconomyScenario) -> BTreeMap<&'a str, Vec<&'a ScenarioEdge>> {
+fn build_outgoing_edges<'a>(
+    scenario: &'a EconomyScenario,
+) -> BTreeMap<&'a str, Vec<&'a ScenarioEdge>> {
     let mut outgoing: BTreeMap<&str, Vec<&ScenarioEdge>> = BTreeMap::new();
     for edge in &scenario.edges {
         outgoing.entry(edge.from.as_str()).or_default().push(edge);
@@ -888,7 +974,8 @@ fn household_cost_multiplier(
             continue;
         }
         let t = controller.default_weight.clamp(0.0, 1.0);
-        return controller.min_multiplier + (controller.max_multiplier - controller.min_multiplier) * t;
+        return controller.min_multiplier
+            + (controller.max_multiplier - controller.min_multiplier) * t;
     }
     1.0
 }
@@ -1045,7 +1132,10 @@ fn topological_profile_node_order(scenario: &EconomyScenario) -> Result<Vec<Stri
         .collect();
 
     for edge in &scenario.edges {
-        outgoing.entry(edge.from.as_str()).or_default().push(edge.to.as_str());
+        outgoing
+            .entry(edge.from.as_str())
+            .or_default()
+            .push(edge.to.as_str());
         *indegree.entry(edge.to.as_str()).or_insert(0) += 1;
     }
 
@@ -1072,7 +1162,10 @@ fn topological_profile_node_order(scenario: &EconomyScenario) -> Result<Vec<Stri
     }
 
     if ordered.len() != indegree.len() {
-        return Err(format!("scenario '{}' contains a profile-cycle", scenario.id));
+        return Err(format!(
+            "scenario '{}' contains a profile-cycle",
+            scenario.id
+        ));
     }
 
     Ok(ordered)
@@ -1083,7 +1176,10 @@ fn has_profile_cycle(
     outgoing: &BTreeMap<&str, BTreeSet<&str>>,
     indegree: &BTreeMap<&str, u32>,
 ) -> bool {
-    let profile_node_count = nodes.iter().filter(|node| node.ref_kind == "profile").count();
+    let profile_node_count = nodes
+        .iter()
+        .filter(|node| node.ref_kind == "profile")
+        .count();
     if profile_node_count == 0 {
         return false;
     }
@@ -1129,7 +1225,11 @@ fn port_exists(ports: &[ResourcePort], resource: &str) -> bool {
     ports.iter().any(|port| port.resource == resource)
 }
 
-fn error(code: &'static str, scope: impl Into<String>, message: impl Into<String>) -> ValidationMessage {
+fn error(
+    code: &'static str,
+    scope: impl Into<String>,
+    message: impl Into<String>,
+) -> ValidationMessage {
     ValidationMessage {
         severity: "error",
         code,
@@ -1138,7 +1238,11 @@ fn error(code: &'static str, scope: impl Into<String>, message: impl Into<String
     }
 }
 
-fn warning(code: &'static str, scope: impl Into<String>, message: impl Into<String>) -> ValidationMessage {
+fn warning(
+    code: &'static str,
+    scope: impl Into<String>,
+    message: impl Into<String>,
+) -> ValidationMessage {
     ValidationMessage {
         severity: "warning",
         code,
@@ -1304,7 +1408,10 @@ target_node_id = "households"
         let _ = std::fs::remove_dir_all(&dir);
         write_fixture_project(&dir);
         let loaded = load_project_json(&dir).unwrap();
-        let project_json = serde_json::to_string(&serde_json::from_str::<serde_json::Value>(&loaded).unwrap()["project"]).unwrap();
+        let project_json = serde_json::to_string(
+            &serde_json::from_str::<serde_json::Value>(&loaded).unwrap()["project"],
+        )
+        .unwrap();
 
         let out_dir = project_dir("metrum_economy_editor_export_out");
         let _ = std::fs::remove_dir_all(&out_dir);
@@ -1330,7 +1437,12 @@ target_node_id = "households"
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(parsed["ok"].as_bool().unwrap());
         assert_eq!(parsed["result"]["daily"].as_array().unwrap().len(), 30);
-        assert!(parsed["result"]["final_household_stock_days"].as_f64().unwrap() >= 0.0);
+        assert!(
+            parsed["result"]["final_household_stock_days"]
+                .as_f64()
+                .unwrap()
+                >= 0.0
+        );
     }
 
     #[test]

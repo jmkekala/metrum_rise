@@ -1,6 +1,6 @@
 //! Godot-Rust bridge helpers for agent renderer data formatting.
-use godot::prelude::*;
 use crate::nodes::sim::core::RenderSnapshot;
+use godot::prelude::*;
 
 /// Returns a Dictionary of packed transforms for visible agents, keyed by type.
 pub fn get_agent_transforms(snapshot: &RenderSnapshot) -> VarDictionary {

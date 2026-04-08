@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::simulation::network::graph::{RegionGraph, Edge};
-    use crate::simulation::network::types::{NodeType, TransitType, TransitFlags, EdgeClass};
+    use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::lanes::{LaneSystem, LaneType};
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
 
     use crate::simulation::LANE_CONFIGS;
@@ -39,7 +39,8 @@ mod tests {
                 end_clip: 0.0,
                 geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-                deleted: false, no_building_spawn: false,
+                deleted: false,
+                no_building_spawn: false,
             });
         }
         graph.rebuild_adjacency_list();
@@ -54,7 +55,9 @@ mod tests {
             if let Some(lane_ids) = lanes.edge_lanes.get(&(e_idx as usize)) {
                 for &l_id in lane_ids {
                     let l = &lanes.lanes[l_id];
-                    if l.lane_type != LaneType::Foot { continue; }
+                    if l.lane_type != LaneType::Foot {
+                        continue;
+                    }
                     if l.is_fwd == (graph.edges[e_idx].end_node == node) {
                         for &next_id in &l.next_lanes {
                             if lanes.lanes[next_id].edge_id == usize::MAX {
@@ -82,8 +85,10 @@ mod tests {
         for &(fwd, bkw, label) in LANE_CONFIGS {
             let (graph, lanes, n1) = build_4way_junction(fwd, bkw);
             let total = count_sidewalk_connections_at(&graph, &lanes, n1);
-            assert!(total == 16 || total == 24,
-                "[{label}] 4-way junction should have either 16 or 24 sidewalk connections (found {total}).");
+            assert!(
+                total == 16 || total == 24,
+                "[{label}] 4-way junction should have either 16 or 24 sidewalk connections (found {total})."
+            );
         }
     }
 }

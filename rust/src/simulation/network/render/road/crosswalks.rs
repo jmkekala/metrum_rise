@@ -1,7 +1,7 @@
 //! Intersection crosswalk markings and pedestrian path rendering.
 
-use godot::prelude::*;
 use super::*;
+use godot::prelude::*;
 
 pub(super) fn emit_crosswalk_markings(
     mesh: &mut NetworkMeshData,
@@ -10,7 +10,9 @@ pub(super) fn emit_crosswalk_markings(
     use crate::simulation::network::lanes::LaneType;
     for lane in &lane_system.lanes {
         if lane.edge_id == usize::MAX && lane.lane_type == LaneType::Foot && lane.is_crosswalk {
-            if lane.geometry.len() >= 2 { emit_zebra_stripes(mesh, lane); }
+            if lane.geometry.len() >= 2 {
+                emit_zebra_stripes(mesh, lane);
+            }
         }
     }
 }
@@ -33,28 +35,53 @@ fn emit_zebra_stripes(mesh: &mut NetworkMeshData, lane: &crate::simulation::netw
         let v1 = p + tangent * hw - normal * hl;
         let v2 = p + tangent * hw + normal * hl;
         let v3 = p - tangent * hw + normal * hl;
-        push_quad(mesh, MeshLayer::Marking, [v0 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0), v1 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0), v2 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0), v3 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0)], [Vector2::new(0.0, 0.0), Vector2::new(1.0, 0.0), Vector2::new(1.0, 1.0), Vector2::new(0.0, 1.0)], color);
+        push_quad(
+            mesh,
+            MeshLayer::Marking,
+            [
+                v0 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0),
+                v1 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0),
+                v2 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0),
+                v3 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0),
+            ],
+            [
+                Vector2::new(0.0, 0.0),
+                Vector2::new(1.0, 0.0),
+                Vector2::new(1.0, 1.0),
+                Vector2::new(0.0, 1.0),
+            ],
+            color,
+        );
         travelled += step;
     }
 }
 
 fn sample_polyline_pos_tangent(points: &[Vector3], t: f32) -> (Vector3, Vector3) {
-    if points.is_empty() { return (Vector3::ZERO, Vector3::ZERO); }
-    if points.len() == 1 { return (points[0], Vector3::FORWARD); }
+    if points.is_empty() {
+        return (Vector3::ZERO, Vector3::ZERO);
+    }
+    if points.len() == 1 {
+        return (points[0], Vector3::FORWARD);
+    }
     let t = t.clamp(0.0, 1.0);
     let mut total_len = 0.0;
-    for i in 0..points.len()-1 { total_len += points[i].distance_to(points[i+1]); }
+    for i in 0..points.len() - 1 {
+        total_len += points[i].distance_to(points[i + 1]);
+    }
     let target_len = t * total_len;
     let mut current = 0.0;
-    for i in 0..points.len()-1 {
-        let seg_len = points[i].distance_to(points[i+1]);
+    for i in 0..points.len() - 1 {
+        let seg_len = points[i].distance_to(points[i + 1]);
         if current + seg_len >= target_len || i == points.len() - 2 {
             let local_t = (target_len - current) / seg_len;
-            let pos = points[i].lerp(points[i+1], local_t.clamp(0.0, 1.0));
-            let tangent = (points[i+1] - points[i]).normalized();
+            let pos = points[i].lerp(points[i + 1], local_t.clamp(0.0, 1.0));
+            let tangent = (points[i + 1] - points[i]).normalized();
             return (pos, tangent);
         }
         current += seg_len;
     }
-    (points[points.len()-1], (points[points.len()-1] - points[points.len()-2]).normalized())
+    (
+        points[points.len() - 1],
+        (points[points.len() - 1] - points[points.len() - 2]).normalized(),
+    )
 }

@@ -32,7 +32,8 @@ impl SimCore {
 
     /// Loads a full simulation snapshot from a SQLite save file and replaces the live world.
     pub(crate) fn load_game_internal(&mut self, path: &str) -> Result<(), String> {
-        let loaded = load_from_sqlite(&PathBuf::from(path), &self.allocator.registry).map_err(|err| err.to_string())?;
+        let loaded = load_from_sqlite(&PathBuf::from(path), &self.allocator.registry)
+            .map_err(|err| err.to_string())?;
         self.apply_loaded_simulation(loaded);
         Ok(())
     }

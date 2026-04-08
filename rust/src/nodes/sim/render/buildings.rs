@@ -19,7 +19,9 @@ impl SimCore {
 
         for b in &self.allocator.buildings {
             if asset_id == "broken:error" {
-                if !b.broken { continue; }
+                if !b.broken {
+                    continue;
+                }
             } else {
                 if b.broken || b.asset_id != asset_id {
                     continue;
@@ -161,9 +163,18 @@ mod tests {
         // This test ensures that buildings are not "miniature" by verifying the scale factor
         // returned from our logic is at least 10.0 (the standard for current assets).
         let (sx, sy, sz) = get_building_visual_scale();
-        
-        assert!(sy >= 10.0, "Building vertical scale must be at least 10.0 to match asset scale");
-        assert!(sx >= 10.0, "Building horizontal scale must be at least 10.0 to match asset scale");
-        assert!(sz >= 10.0, "Building depth scale must be at least 10.0 to match asset scale");
+
+        assert!(
+            sy >= 10.0,
+            "Building vertical scale must be at least 10.0 to match asset scale"
+        );
+        assert!(
+            sx >= 10.0,
+            "Building horizontal scale must be at least 10.0 to match asset scale"
+        );
+        assert!(
+            sz >= 10.0,
+            "Building depth scale must be at least 10.0 to match asset scale"
+        );
     }
 }

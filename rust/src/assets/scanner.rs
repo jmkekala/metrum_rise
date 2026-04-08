@@ -24,8 +24,8 @@
 //! Broken packs (missing `pack.toml`, invalid TOML, validation failure) are skipped
 //! with a diagnostic entry in [`ScanResult::warnings`].
 
-use std::path::Path;
 use crate::assets::{AssetManifest, PackManifest};
+use std::path::Path;
 
 /// A successfully parsed content pack: one `pack.toml` and all its `asset.toml` files.
 #[derive(Debug)]
@@ -99,7 +99,10 @@ pub fn scan_pack_dir(dir: &Path) -> ScanResult {
         let mut assets = Vec::new();
         collect_assets(&pack_dir, &mut assets, &mut result.warnings);
 
-        result.packs.push(ScannedPack { pack: pack_manifest, assets });
+        result.packs.push(ScannedPack {
+            pack: pack_manifest,
+            assets,
+        });
     }
 
     result
@@ -113,17 +116,16 @@ fn collect_assets(dir: &Path, out: &mut Vec<(AssetManifest, String)>, warnings: 
         Err(_) => return,
     };
 
-    let mut paths: Vec<std::path::PathBuf> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect();
+    let mut paths: Vec<std::path::PathBuf> =
+        entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
     paths.sort();
 
     for path in paths {
         if path.is_dir() {
             collect_assets(&path, out, warnings);
         } else if path.file_name().and_then(|n| n.to_str()) == Some("asset.toml") {
-            let asset_dir = path.parent()
+            let asset_dir = path
+                .parent()
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default();
             match std::fs::read_to_string(&path) {
@@ -195,14 +197,25 @@ lot_depth_cells = 2
         let pack = base.join("test-pack");
 
         write(&pack.join("pack.toml"), VALID_PACK_TOML);
-        write(&pack.join("buildings/residential/house/asset.toml"), BUILDING_TOML);
+        write(
+            &pack.join("buildings/residential/house/asset.toml"),
+            BUILDING_TOML,
+        );
 
         let result = scan_pack_dir(&base);
-        assert_eq!(result.warnings.len(), 0, "unexpected warnings: {:?}", result.warnings);
+        assert_eq!(
+            result.warnings.len(),
+            0,
+            "unexpected warnings: {:?}",
+            result.warnings
+        );
         assert_eq!(result.packs.len(), 1);
         assert_eq!(result.packs[0].pack.pack_id, "test-pack");
         assert_eq!(result.packs[0].assets.len(), 1);
-        assert_eq!(result.packs[0].assets[0].0.asset_id, "building.residential.house");
+        assert_eq!(
+            result.packs[0].assets[0].0.asset_id,
+            "building.residential.house"
+        );
 
         fs::remove_dir_all(&base).unwrap();
     }
@@ -270,10 +283,10 @@ lot_depth_cells = 2
     /// `lot_size` and `preview_scale` round-trip, and `asset_dir` resolves to the LOD file.
     #[test]
     fn scan_and_register_kenney_style_pack() {
-        use crate::assets::registry::AssetRegistry;
         use crate::assets::asset::ZoneClass;
+        use crate::assets::registry::AssetRegistry;
 
-        let base     = std::env::temp_dir().join("metrum_scan_kenney_style");
+        let base = std::env::temp_dir().join("metrum_scan_kenney_style");
         let pack_dir = base.join("kenney");
 
         let pack_toml = r#"
@@ -333,17 +346,21 @@ position = [0, 0, 5]
 forward = [0, 0, -1]
 "#;
         let house_dir = pack_dir.join("assets").join("building.residential.house_a");
-        let shop_dir  = pack_dir.join("assets").join("building.commercial.shop_a");
+        let shop_dir = pack_dir.join("assets").join("building.commercial.shop_a");
 
-        write(&pack_dir.join("pack.toml"),              pack_toml);
-        write(&house_dir.join("asset.toml"),            house_toml);
-        write(&house_dir.join("building-type-a.glb"),   "placeholder");
-        write(&shop_dir.join("asset.toml"),             shop_toml);
-        write(&shop_dir.join("shop-a.glb"),             "placeholder");
+        write(&pack_dir.join("pack.toml"), pack_toml);
+        write(&house_dir.join("asset.toml"), house_toml);
+        write(&house_dir.join("building-type-a.glb"), "placeholder");
+        write(&shop_dir.join("asset.toml"), shop_toml);
+        write(&shop_dir.join("shop-a.glb"), "placeholder");
 
         // ── scan ────────────────────────────────────────────────────────────
         let result = scan_pack_dir(&base);
-        assert!(result.warnings.is_empty(), "unexpected warnings: {:?}", result.warnings);
+        assert!(
+            result.warnings.is_empty(),
+            "unexpected warnings: {:?}",
+            result.warnings
+        );
         assert_eq!(result.packs.len(), 1);
         let pack = &result.packs[0];
         assert_eq!(pack.pack.pack_id, "kenney");
@@ -362,22 +379,30 @@ forward = [0, 0, -1]
         assert_eq!(com, &["kenney:building.commercial.shop_a"]);
 
         // Lot sizes round-trip.
-        assert_eq!(registry.lot_size("kenney:building.residential.house_a"), (1, 1));
-        assert_eq!(registry.lot_size("kenney:building.commercial.shop_a"),   (2, 1));
+        assert_eq!(
+            registry.lot_size("kenney:building.residential.house_a"),
+            (1, 1)
+        );
+        assert_eq!(
+            registry.lot_size("kenney:building.commercial.shop_a"),
+            (2, 1)
+        );
 
         // preview_scale round-trips.
-        let house_scale = registry.get("kenney:building.residential.house_a")
+        let house_scale = registry
+            .get("kenney:building.residential.house_a")
             .and_then(|e| e.manifest.building.as_ref())
             .and_then(|b| b.preview_scale);
         assert_eq!(house_scale, Some(7.18));
 
         // asset_dir + lod file resolves to the file we created on disk.
-        let entry    = registry.get("kenney:building.residential.house_a").unwrap();
+        let entry = registry.get("kenney:building.residential.house_a").unwrap();
         let lod_path = std::path::Path::new(&entry.asset_dir).join(&entry.manifest.lods[0].file);
         assert!(lod_path.exists(), "LOD file not found at {:?}", lod_path);
 
         // density field round-trips.
-        let density = registry.get("kenney:building.residential.house_a")
+        let density = registry
+            .get("kenney:building.residential.house_a")
             .and_then(|e| e.manifest.building.as_ref())
             .map(|b| b.density.as_str());
         assert_eq!(density, Some("low"));

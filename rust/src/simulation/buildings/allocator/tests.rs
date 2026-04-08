@@ -1,8 +1,8 @@
 //! Building allocator unit tests.
 
 use super::*;
-use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
 use crate::assets::AssetManifest;
+use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::households::HouseholdSystem;
@@ -12,14 +12,23 @@ use godot::prelude::Vector2;
 use rand::SeedableRng;
 
 /// Registers a minimal 1×1 building asset for the given zone type so placement tests pass.
-fn register_test_asset(allocator: &mut BuildingAllocator, pack_id: &str, asset_id: &str, zone: ZoneClass) {
+fn register_test_asset(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    zone: ZoneClass,
+) {
     let manifest = AssetManifest {
         asset_id: asset_id.to_owned(),
         display_name: "Test".to_owned(),
         asset_set: None,
         tags: vec![],
         thumbnail: None,
-        lods: vec![LodEntry { file: "lod0.glb".to_owned(), distance_min_m: 0.0, distance_max_m: None }],
+        lods: vec![LodEntry {
+            file: "lod0.glb".to_owned(),
+            distance_min_m: 0.0,
+            distance_max_m: None,
+        }],
         anchors: vec![],
         building: Some(BuildingData {
             zone_type: zone,
@@ -38,7 +47,9 @@ fn register_test_asset(allocator: &mut BuildingAllocator, pack_id: &str, asset_i
         character: None,
         pivot_offset: None,
     };
-    allocator.registry.register(pack_id, manifest, String::new());
+    allocator
+        .registry
+        .register(pack_id, manifest, String::new());
 }
 
 #[test]
@@ -67,7 +78,8 @@ fn test_zone_index_consistency() {
             cell_y: 0,
             occupancy: 0,
             worker_count: 0,
-            asset_id: String::new(), level: 1,
+            asset_id: String::new(),
+            level: 1,
             broken: false,
             stock: 0.0,
             revenue: 0.0,
@@ -126,7 +138,8 @@ fn test_vacancy_index_consistency() {
             cell_y: 0,
             occupancy: 0,
             worker_count: 0,
-            asset_id: String::new(), level: 1,
+            asset_id: String::new(),
+            level: 1,
             broken: false,
             stock: 0.0,
             revenue: 0.0,
@@ -198,7 +211,12 @@ fn test_tick_does_not_auto_spawn_private_buildings_from_zones() {
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
-    register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
+    register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.house",
+        ZoneClass::Residential,
+    );
 
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
@@ -242,7 +260,12 @@ fn test_tick_runs_one_time_founding_bootstrap_from_border_and_zoning() {
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
-    register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
+    register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.house",
+        ZoneClass::Residential,
+    );
     register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
@@ -316,7 +339,12 @@ fn test_building_removal_clears_zoning_occupancy() {
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
-    register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
+    register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.house",
+        ZoneClass::Residential,
+    );
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
@@ -351,7 +379,8 @@ fn test_building_removal_clears_zoning_occupancy() {
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
-        asset_id: String::new(), level: 1,
+        asset_id: String::new(),
+        level: 1,
         broken: false,
         stock: 0.0,
         revenue: 0.0,
@@ -359,7 +388,14 @@ fn test_building_removal_clears_zoning_occupancy() {
         utility_service_available: false,
         shipment_cooldown_days: 0,
     });
-    zoning.mark_occupied_rect(5.0, 10.0, godot::prelude::Vector2::new(0.0, 1.0), 30.0, 30.0, true);
+    zoning.mark_occupied_rect(
+        5.0,
+        10.0,
+        godot::prelude::Vector2::new(0.0, 1.0),
+        30.0,
+        30.0,
+        true,
+    );
 
     allocator.tick(
         &mut zoning,
@@ -386,12 +422,17 @@ fn test_immigration_claims_vacant_home() {
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::economy::agents::AgentSystem;
     use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
-    use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::TransitNetwork;
+    use crate::simulation::network::graph::RegionGraph;
     use godot::prelude::{Vector2, Vector3};
 
     let mut allocator = BuildingAllocator::new();
-    register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
+    register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.house",
+        ZoneClass::Residential,
+    );
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
@@ -429,7 +470,8 @@ fn test_immigration_claims_vacant_home() {
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
-        asset_id: String::new(), level: 1,
+        asset_id: String::new(),
+        level: 1,
         broken: false,
         stock: 0.0,
         revenue: 0.0,
@@ -448,7 +490,11 @@ fn test_immigration_claims_vacant_home() {
         &mut graph,
     );
 
-    assert_eq!(agents.len(), 2, "One two-resident household should have immigrated");
+    assert_eq!(
+        agents.len(),
+        2,
+        "One two-resident household should have immigrated"
+    );
     assert_eq!(
         agents.home_building[0], 0,
         "Immigrant should have claimed home index 0"
@@ -471,7 +517,12 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
-    register_test_asset(&mut allocator, "base", "b.res.house", ZoneClass::Residential);
+    register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.house",
+        ZoneClass::Residential,
+    );
     register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();

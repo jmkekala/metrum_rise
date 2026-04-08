@@ -44,7 +44,11 @@ impl SimCore {
             &self.pollution.grid,
             self.heightmap.width,
             self.heightmap.height,
-            255, 50, 50, 200, 100.0,
+            255,
+            50,
+            50,
+            200,
+            100.0,
         )
     }
 
@@ -54,7 +58,11 @@ impl SimCore {
             &self.noise.grid,
             self.heightmap.width,
             self.heightmap.height,
-            200, 200, 200, 200, 100.0,
+            200,
+            200,
+            200,
+            200,
+            100.0,
         )
     }
 
@@ -64,7 +72,11 @@ impl SimCore {
             &self.desirability.grid,
             self.heightmap.width,
             self.heightmap.height,
-            50, 255, 50, 200, 100.0,
+            50,
+            255,
+            50,
+            200,
+            100.0,
         )
     }
 }

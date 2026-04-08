@@ -187,7 +187,11 @@ mod tests {
         );
 
         // 250m road: no intermediate subdivision nodes, single edge with two endpoint nodes.
-        assert_eq!(graph.edges.len(), 1, "Should have 1 edge for 250m road (no 100m subdivision)");
+        assert_eq!(
+            graph.edges.len(),
+            1,
+            "Should have 1 edge for 250m road (no 100m subdivision)"
+        );
         assert_eq!(graph.nodes.len(), 2, "Should have 2 nodes for 250m road");
     }
 
@@ -234,7 +238,8 @@ mod tests {
                 cell_y: 0,
                 occupancy: 0,
                 worker_count: 0,
-                asset_id: String::new(), level: 1,
+                asset_id: String::new(),
+                level: 1,
                 broken: false,
                 stock: 0.0,
                 revenue: 0.0,

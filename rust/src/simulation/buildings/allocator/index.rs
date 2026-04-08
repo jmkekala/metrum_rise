@@ -1,7 +1,7 @@
 //! Building search indices and vacancy management.
 
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::buildings::allocator::{BuildingAllocator, building_depart_node};
+use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector3;
 
@@ -22,7 +22,8 @@ impl BuildingAllocator {
             let zi = b.zone_type as usize;
             if zi < 6 {
                 self.zone_index[zi].push(idx);
-                let chunk = RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
+                let chunk =
+                    RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
                 self.building_chunks.entry(chunk).or_default().push(idx);
 
                 let resident_cap = self.resident_capacity(idx);

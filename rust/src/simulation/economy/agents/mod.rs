@@ -2,11 +2,11 @@
 
 pub mod data;
 pub mod decisions;
-pub mod tick;
-#[cfg(test)]
-mod tests;
 #[cfg(test)]
 mod test_departure_side;
+#[cfg(test)]
+mod tests;
+pub mod tick;
 
 pub use data::{Agent, AgentSystem, AgentVec};
 

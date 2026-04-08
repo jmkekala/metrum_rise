@@ -1,10 +1,10 @@
-use godot::prelude::*;
-use std::collections::HashMap;
 use super::super::graph::RegionGraph;
 use super::super::types::{TransitFlags, TransitType};
-use super::{Lane, LaneType};
 use super::geometry::{build_cum_dist, road_half_width};
+use super::{Lane, LaneType};
 use crate::config;
+use godot::prelude::*;
+use std::collections::HashMap;
 
 /// A classification of a sidewalk-end at a junction, used for sorting.
 pub struct SidewalkMouth {
@@ -33,9 +33,15 @@ pub struct SidewalkMouth {
 /// Returns the 3-D point `dist` metres along `geom` measured from the start (`from_start=true`)
 /// or from the end (`from_start=false`). Clamps to the endpoint if `dist` exceeds the length.
 fn walk_geom_from_end(geom: &[Vector3], dist: f32, from_start: bool) -> Vector3 {
-    if geom.is_empty() { return Vector3::ZERO; }
+    if geom.is_empty() {
+        return Vector3::ZERO;
+    }
     if dist <= 0.0 {
-        return if from_start { geom[0] } else { *geom.last().unwrap() };
+        return if from_start {
+            geom[0]
+        } else {
+            *geom.last().unwrap()
+        };
     }
     let mut remaining = dist;
     if from_start {
@@ -76,21 +82,37 @@ pub fn build_pedestrian_connections_at_node(
 
     for &e_idx in &adj {
         let edge = graph.edge(e_idx);
-        if edge.deleted || (edge.allowed_types & TransitFlags::FOOT) == 0
-            || edge.primary_type != TransitType::Road { continue; }
+        if edge.deleted
+            || (edge.allowed_types & TransitFlags::FOOT) == 0
+            || edge.primary_type != TransitType::Road
+        {
+            continue;
+        }
 
         let is_start = edge.start_node as usize == node_id;
 
         // Direction from node into the road body (used for angular sorting and offset).
-        let other_p = if is_start { edge.geometry[1] } else { edge.geometry[edge.geometry.len()-2] };
+        let other_p = if is_start {
+            edge.geometry[1]
+        } else {
+            edge.geometry[edge.geometry.len() - 2]
+        };
         let diff = other_p - node_pos;
         let dist = other_p.distance_to(node_pos);
-        let dir = if dist > 1e-4 { diff / dist } else { Vector3::ZERO };
+        let dir = if dist > 1e-4 {
+            diff / dist
+        } else {
+            Vector3::ZERO
+        };
         let side_vec = Vector3::new(-dir.z, 0.0, dir.x);
 
         // Position at the junction mouth — clip distance from the node along the road geometry.
         // This is where the road mesh visually starts/ends, and where crosswalks must sit.
-        let clip = (if is_start { edge.start_clip } else { edge.end_clip }) + config::CROSSWALK_INSET;
+        let clip = (if is_start {
+            edge.start_clip
+        } else {
+            edge.end_clip
+        }) + config::CROSSWALK_INSET;
         let mouth_center = walk_geom_from_end(&edge.geometry, clip, is_start);
 
         for &l_idx in &[-100_i8, 100_i8] {
@@ -117,9 +139,15 @@ pub fn build_pedestrian_connections_at_node(
             );
 
             let (inbound, outbound) = if is_start {
-                (lane_map.get(&(e_idx, false, l_idx)).copied(), lane_map.get(&(e_idx, true, l_idx)).copied())
+                (
+                    lane_map.get(&(e_idx, false, l_idx)).copied(),
+                    lane_map.get(&(e_idx, true, l_idx)).copied(),
+                )
             } else {
-                (lane_map.get(&(e_idx, true, l_idx)).copied(), lane_map.get(&(e_idx, false, l_idx)).copied())
+                (
+                    lane_map.get(&(e_idx, true, l_idx)).copied(),
+                    lane_map.get(&(e_idx, false, l_idx)).copied(),
+                )
             };
             if let (Some(in_id), Some(out_id)) = (inbound, outbound) {
                 mouths.push(SidewalkMouth {
@@ -143,7 +171,9 @@ pub fn build_pedestrian_connections_at_node(
         .keys()
         .filter(|&&(edge_idx, lane_idx)| {
             let edge = graph.edge(edge_idx);
-            lane_idx == 100 || lane_idx == -100 || edge.primary_type == crate::simulation::network::types::TransitType::Foot
+            lane_idx == 100
+                || lane_idx == -100
+                || edge.primary_type == crate::simulation::network::types::TransitType::Foot
         })
         .copied()
         .collect();
@@ -151,7 +181,9 @@ pub fn build_pedestrian_connections_at_node(
     for key in to_remove {
         graph.nodes[node_id].lane_connections.remove(&key);
     }
-    if num_mouths < 2 { return; }
+    if num_mouths < 2 {
+        return;
+    }
 
     let deg = graph.node_adjacency(node_id as u32).len();
 
@@ -162,10 +194,15 @@ pub fn build_pedestrian_connections_at_node(
     for i in 0..num_mouths {
         for j in (i + 1)..num_mouths {
             let dot = mouths[i].dir.dot(mouths[j].dir);
-            if dot <= 0.99 { continue; }
+            if dot <= 0.99 {
+                continue;
+            }
             let edge_idx = mouths[i].edge_idx;
-            let override_opt = graph.nodes[node_id].crosswalk_overrides.get(&edge_idx).copied();
-            
+            let override_opt = graph.nodes[node_id]
+                .crosswalk_overrides
+                .get(&edge_idx)
+                .copied();
+
             if override_opt == Some(false) {
                 continue;
             } else if override_opt == None {
@@ -174,10 +211,12 @@ pub fn build_pedestrian_connections_at_node(
                     continue;
                 }
             }
-            
+
             let steps = vec![mouths[i].road_edge_pos, mouths[j].road_edge_pos];
             let mut step_len = 0.0;
-            for k in 0..steps.len().saturating_sub(1) { step_len += steps[k].distance_to(steps[k+1]); }
+            for k in 0..steps.len().saturating_sub(1) {
+                step_len += steps[k].distance_to(steps[k + 1]);
+            }
             let steps_cum = build_cum_dist(&steps);
             let conn_id = lanes.len();
             let m_start_in_id = mouths[i].in_id;
@@ -198,7 +237,11 @@ pub fn build_pedestrian_connections_at_node(
             lanes[m_start_in_id].next_lanes.push(conn_id);
             let key = (mouths[i].edge_idx, mouths[i].lane_idx);
             let val = (mouths[j].edge_idx, mouths[j].lane_idx);
-            graph.nodes[node_id].lane_connections.entry(key).or_default().push(val);
+            graph.nodes[node_id]
+                .lane_connections
+                .entry(key)
+                .or_default()
+                .push(val);
             // Also add reverse direction so agents can traverse from j→i.
             let conn_id2 = lanes.len();
             let steps2 = vec![mouths[j].mouth_world_pos, mouths[i].mouth_world_pos];
@@ -219,7 +262,11 @@ pub fn build_pedestrian_connections_at_node(
             lanes[mouths[j].in_id].next_lanes.push(conn_id2);
             let key2 = (mouths[j].edge_idx, mouths[j].lane_idx);
             let val2 = (mouths[i].edge_idx, mouths[i].lane_idx);
-            graph.nodes[node_id].lane_connections.entry(key2).or_default().push(val2);
+            graph.nodes[node_id]
+                .lane_connections
+                .entry(key2)
+                .or_default()
+                .push(val2);
             crosswalks_added += 1;
         }
     }
@@ -227,14 +274,20 @@ pub fn build_pedestrian_connections_at_node(
     // Pass 2 — routing connections between angularly adjacent mouths of different arms.
     for i in 0..num_mouths {
         for j in 0..num_mouths {
-            if i == j { continue; }
+            if i == j {
+                continue;
+            }
             let dot = mouths[i].dir.dot(mouths[j].dir);
-            if dot > 0.99 { continue; } // already handled as crosswalk
+            if dot > 0.99 {
+                continue;
+            } // already handled as crosswalk
             let diff_cw = if j > i { j - i } else { j + num_mouths - i };
             let diff_ccw = num_mouths - diff_cw;
             let use_cw = diff_cw <= diff_ccw;
             let num_steps = if use_cw { diff_cw } else { diff_ccw };
-            if num_steps > 1 { continue; }
+            if num_steps > 1 {
+                continue;
+            }
 
             // Routing connection: agents walk from i's inbound end to j's outbound start.
             let mut s: Vec<Vector3> = Vec::new();
@@ -247,12 +300,16 @@ pub fn build_pedestrian_connections_at_node(
                 };
                 let p0 = *lanes[mouths[current].in_id].geometry.last().unwrap();
                 let p1 = lanes[mouths[next].out_id].geometry[0];
-                if s.is_empty() { s.push(p0); }
+                if s.is_empty() {
+                    s.push(p0);
+                }
                 s.push(p1);
                 current = next;
             }
             let mut step_len = 0.0;
-            for k in 0..s.len().saturating_sub(1) { step_len += s[k].distance_to(s[k+1]); }
+            for k in 0..s.len().saturating_sub(1) {
+                step_len += s[k].distance_to(s[k + 1]);
+            }
             let steps_cum = build_cum_dist(&s);
             let conn_id = lanes.len();
             let m_start_in_id = mouths[i].in_id;
@@ -273,7 +330,11 @@ pub fn build_pedestrian_connections_at_node(
             lanes[m_start_in_id].next_lanes.push(conn_id);
             let key = (mouths[i].edge_idx, mouths[i].lane_idx);
             let val = (mouths[j].edge_idx, mouths[j].lane_idx);
-            graph.nodes[node_id].lane_connections.entry(key).or_default().push(val);
+            graph.nodes[node_id]
+                .lane_connections
+                .entry(key)
+                .or_default()
+                .push(val);
         }
     }
 }

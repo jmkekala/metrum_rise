@@ -408,6 +408,26 @@ Limitation:
 
 - A true split cannot be solved automatically. If one old asset becomes several new assets, the creator must choose one canonical replacement target or leave the old ID unresolved with a warning.
 
+### Future Building Access Metadata
+
+V1 keeps the generic entrance/exit system intentionally simple: it uses the required `entrance` anchor named `main`, ignores building-side contention, and does not require driveway or loading-bay capacity metadata.
+
+If a later freight or service-access system needs explicit building-side capacity, the extension point belongs on building anchors rather than in unrelated one-off building fields.
+
+Direction for a later extension:
+
+- `type = "entrance"` remains the generic public/main access point.
+- `type = "service"` remains the generic freight/garage/loading-bay extension point.
+- Future per-anchor access metadata should extend `[[anchors]]`, not replace it with separate top-level building fields.
+- Candidate future per-anchor fields may include:
+  - access role such as public, service, garage, freight, or utility
+  - allowed modes such as foot-only, car-only, or both
+  - maximum concurrent users or reserved bay count
+  - queue capacity or queue-marker count
+  - optional editor-only preview helpers for driveway approach or loading-bay facing
+
+This is later-only design direction. None of those fields are part of the active v1 asset schema yet.
+
 ### Editor Workspace
 
 - The exported pack is the portable runtime artifact.
@@ -735,7 +755,7 @@ Rules:
 
 Anchor requirements by asset class:
 
-- Buildings require at least one `entrance` anchor that marks the main door or primary access point.
+- Buildings require exactly one `entrance` anchor named `main` that marks the main door or primary access point used by the generic entrance/exit system.
 - Buildings may define optional `service` anchors for loading bays, rear access, service doors, or utility access points.
 - Buildings may define optional `prop_socket` anchors for attached props such as signs, benches, lights, or planters.
 - Vehicles may define optional `wheel` anchors and `light` anchors for wheel positions and light-marker positions.
@@ -1593,7 +1613,9 @@ Building rules:
 - `zone_type = "mixed"` may use both capacities, but at least one must be present.
 - `density` is independent of `zone_type`. A `residential / high` building is a high-density apartment; `residential / low` is a detached house. The zoning system uses both fields together to determine placement eligibility.
 - `service_class = "none"` is the default for ordinary zoned private buildings.
-- At least one `[[anchors]]` entry with `type = "entrance"` is required.
+- Exactly one `[[anchors]]` entry with `type = "entrance"` and `name = "main"` is required.
+- Additional building-side access points for freight, garages, or utilities use `type = "service"`, not a second generic `entrance` anchor.
+- In v1, `service` anchors are authored extension points only. The generic entrance/exit runtime uses only the `main` entrance anchor and does not interpret service-anchor capacity or queue behavior yet.
 - In the normal case, `min_zone_*` equals the footprint size.
 - `min_zone_*` reserves room for future yard or setback support without changing the core format.
 - `employment_type` is not part of the v1 building schema. If job-category metadata is needed later, add it as a later extension.

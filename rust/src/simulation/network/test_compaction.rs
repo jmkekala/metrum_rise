@@ -66,7 +66,8 @@ mod tests {
                 cell_y: 0,
                 occupancy: 0,
                 worker_count: 0,
-                asset_id: String::new(), level: 1,
+                asset_id: String::new(),
+                level: 1,
                 broken: false,
                 stock: 0.0,
                 revenue: 0.0,
@@ -142,7 +143,8 @@ mod tests {
             end_clip: 0.0,
             geometry: Vec::new(),
             physical_geometry: Vec::new(),
-            deleted: false, no_building_spawn: false,
+            deleted: false,
+            no_building_spawn: false,
         };
 
         graph.edges = vec![

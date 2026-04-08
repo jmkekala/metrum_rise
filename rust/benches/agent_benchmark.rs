@@ -1,13 +1,13 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use godot::prelude::*;
 use metrum_rise::simulation::buildings::allocator::BuildingAllocator;
+use metrum_rise::simulation::economy::agents::data::Agent;
 use metrum_rise::simulation::economy::agents::{
     AgentSystem, MODE_CAR, TRANSIT_IDLE, TRANSIT_ON_ROAD, VEHICLE_SEDAN,
 };
-use metrum_rise::simulation::economy::agents::data::Agent;
+use metrum_rise::simulation::network::TransitNetwork;
 use metrum_rise::simulation::network::graph::{Edge, RegionGraph};
 use metrum_rise::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
-use metrum_rise::simulation::network::TransitNetwork;
 use std::time::Duration;
 
 struct SharedSetup {
@@ -49,7 +49,8 @@ fn build_shared() -> SharedSetup {
         geometry: geometry.clone(),
         physical_geometry: geometry,
         class: EdgeClass::Standard,
-        deleted: false, no_building_spawn: false,
+        deleted: false,
+        no_building_spawn: false,
     };
     let edge_ab = graph.add_edge(edge);
     graph.rebuild_adjacency_list();
@@ -59,7 +60,13 @@ fn build_shared() -> SharedSetup {
     transit.cch_graph = metrum_rise::simulation::pathing::cch::CchGraph::build(&graph);
     transit.lane_system.rebuild(&mut graph);
 
-    SharedSetup { graph, transit, node_a, node_b, edge_ab }
+    SharedSetup {
+        graph,
+        transit,
+        node_a,
+        node_b,
+        edge_ab,
+    }
 }
 
 fn make_idle_agent(shared: &SharedSetup) -> Agent {
@@ -138,7 +145,13 @@ fn bench_agent_tick(c: &mut Criterion) {
     // --- ON_ROAD: measures lane traversal and movement maths. ---
     // 200-entry bounce path, empty allocator → CCH never called, no arena bloat.
     let bounce_path: Vec<u32> = (0..200)
-        .map(|i| if i % 2 == 0 { shared.node_a } else { shared.node_b })
+        .map(|i| {
+            if i % 2 == 0 {
+                shared.node_a
+            } else {
+                shared.node_b
+            }
+        })
         .collect();
 
     for &count in &[1_000usize, 10_000, 100_000, 1_000_000] {
@@ -155,7 +168,9 @@ fn bench_agent_tick(c: &mut Criterion) {
                 for i in 0..count {
                     // Spread agents across the first half of the edge.
                     let prog = i as f32 % (seg_count / 2.0).max(1.0);
-                    agents.agents.push(make_on_road_agent(&shared, bounce_path.clone(), prog));
+                    agents
+                        .agents
+                        .push(make_on_road_agent(&shared, bounce_path.clone(), prog));
                 }
 
                 b.iter(|| {

@@ -67,7 +67,6 @@ fn find_geo_factor(geo: &[Vector3], pos: Vector3) -> f32 {
     best_factor
 }
 
-
 impl RegionGraph {
     /// Returns the canonical node ID for a given ID, following any merge aliases.
     pub fn get_valid_node(&self, mut id: u32) -> u32 {
@@ -138,11 +137,11 @@ impl RegionGraph {
         let id = self.edge_count();
         self.edges.push(edge);
         self.add_to_spatial_index(id);
- 
+
         // Update Adjacency
         self.adjacency[start as usize].push(id);
         self.adjacency[end as usize].push(id);
- 
+
         id
     }
 
@@ -164,7 +163,7 @@ impl RegionGraph {
         // Find edges connected to this node
         let mut e1_idx = None;
         let mut e2_idx = None;
- 
+
         for (i, edge) in self.edges().iter().enumerate() {
             if edge.deleted {
                 continue;
@@ -215,7 +214,7 @@ impl RegionGraph {
                     (i2, i1)
                 }
             };
- 
+
             for p in &self.edge(first_edge_idx).geometry {
                 new_geom.push(*p);
             }
@@ -261,7 +260,7 @@ impl RegionGraph {
         if keep == remove {
             return;
         }
- 
+
         let new_pos = self.node(keep).pos;
         self.node_aliases.insert(remove, keep);
 
@@ -315,9 +314,10 @@ impl RegionGraph {
         self.remove_node_from_spatial_index(node_id, old_pos);
         self.nodes[node_id as usize].pos = new_pos;
         self.add_node_to_spatial_index(node_id);
- 
+
         // Collect connected edges via adjacency list — O(degree), not O(E).
-        let connected: Vec<usize> = self.node_adjacency(node_id)
+        let connected: Vec<usize> = self
+            .node_adjacency(node_id)
             .iter()
             .copied()
             .filter(|&i| !self.edge(i).deleted)
@@ -338,7 +338,11 @@ impl RegionGraph {
             let is_start = edge.start_node == node_id;
             let is_end = edge.end_node == node_id;
             if is_start && is_end {
-                for pt in edge.geometry.iter_mut().chain(edge.physical_geometry.iter_mut()) {
+                for pt in edge
+                    .geometry
+                    .iter_mut()
+                    .chain(edge.physical_geometry.iter_mut())
+                {
                     *pt += delta;
                 }
             } else if is_start {
@@ -521,7 +525,11 @@ fn collect_endpoint_snap_splits(
             let mut best_dist = f32::MAX;
             let mut best_closest = godot::prelude::Vector3::ZERO;
             for j in 0..edge2_geo_ds.len() - 1 {
-                let closest = interaction::get_closest_point_on_segment(p, edge2_geo_ds[j], edge2_geo_ds[j + 1]);
+                let closest = interaction::get_closest_point_on_segment(
+                    p,
+                    edge2_geo_ds[j],
+                    edge2_geo_ds[j + 1],
+                );
                 let dist = Vector2::new(p.x - closest.x, p.z - closest.z).length();
                 if dist < best_dist {
                     best_dist = dist;
@@ -621,10 +629,12 @@ fn migrate_split_dependents(
                 b.edge_idx = new_edge_id;
                 b.cell_x = b.cell_x.saturating_sub(split_x);
                 let half_cells = b.width_cells as f32 * 0.5;
-                b.frontage_t = (b.cell_x as f32 + half_cells) * cell_size / new_len_second.max(0.001);
+                b.frontage_t =
+                    (b.cell_x as f32 + half_cells) * cell_size / new_len_second.max(0.001);
             } else {
                 let half_cells = b.width_cells as f32 * 0.5;
-                b.frontage_t = (b.cell_x as f32 + half_cells) * cell_size / new_len_first.max(0.001);
+                b.frontage_t =
+                    (b.cell_x as f32 + half_cells) * cell_size / new_len_first.max(0.001);
             }
         }
     }
@@ -851,36 +861,42 @@ mod tests {
         net.add_road(
             &mut graph,
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)].into(),
-            1, 1, crate::simulation::network::types::EdgeClass::Standard,
-            &mut zoning, &mut allocator,
+            1,
+            1,
+            crate::simulation::network::types::EdgeClass::Standard,
+            &mut zoning,
+            &mut allocator,
         );
         let edge_id = graph.edges.len() - 1;
 
         // Force a mock building at cell_x = 8, which is at 80m.
-        allocator.buildings.push(crate::simulation::buildings::allocator::Building {
-            center_x: 80.0,
-            center_y: 10.0,
-            width_cells: 3,
-            depth_cells: 3,
-            zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
-            facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
-            frontage_t: 0.85, // Pre-split frontage_t
-            side_offset: 1.0,
-            abandoned_timer: 0,
-            edge_idx: edge_id,
-            side: 1,
-            cell_x: 8,
-            cell_y: 0,
-            occupancy: 0,
-            worker_count: 0,
-            asset_id: String::new(), level: 1,
-            broken: false,
-            stock: 0.0,
-            revenue: 0.0,
-            operating_budget: 500.0,
-            utility_service_available: false,
-            shipment_cooldown_days: 0,
-        });
+        allocator
+            .buildings
+            .push(crate::simulation::buildings::allocator::Building {
+                center_x: 80.0,
+                center_y: 10.0,
+                width_cells: 3,
+                depth_cells: 3,
+                zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
+                facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
+                frontage_t: 0.85, // Pre-split frontage_t
+                side_offset: 1.0,
+                abandoned_timer: 0,
+                edge_idx: edge_id,
+                side: 1,
+                cell_x: 8,
+                cell_y: 0,
+                occupancy: 0,
+                worker_count: 0,
+                asset_id: String::new(),
+                level: 1,
+                broken: false,
+                stock: 0.0,
+                revenue: 0.0,
+                operating_budget: 500.0,
+                utility_service_available: false,
+                shipment_cooldown_days: 0,
+            });
 
         // Split the road exactly at 50m (cell 5).
         let junction_id = graph.add_node(Vector3::new(50.0, 0.0, 0.0), NodeType::Junction);

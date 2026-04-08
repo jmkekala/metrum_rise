@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests {
-    use crate::simulation::network::graph::{RegionGraph, Edge};
-    use crate::simulation::network::types::{NodeType, TransitType, TransitFlags, EdgeClass};
+    use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::lanes::{LaneSystem, LaneType};
+    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
 
     #[test]
@@ -32,7 +32,8 @@ mod tests {
                 end_clip: 0.0,
                 geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-                deleted: false, no_building_spawn: false,
+                deleted: false,
+                no_building_spawn: false,
             });
         }
         graph.rebuild_adjacency_list();
@@ -44,13 +45,15 @@ mod tests {
         for &e_idx in &graph.adjacency[n1 as usize] {
             let edge = &graph.edges[e_idx];
             let is_end = edge.end_node == n1;
-            
+
             if let Some(lane_ids) = lanes.edge_lanes.get(&(e_idx as usize)) {
                 for &l_id in lane_ids {
                     let l = &lanes.lanes[l_id];
                     // Skip footpaths
-                    if l.lane_type == LaneType::Foot { continue; }
-                    
+                    if l.lane_type == LaneType::Foot {
+                        continue;
+                    }
+
                     // If this lane enters node n1
                     if l.is_fwd == is_end {
                         for &next_id in &l.next_lanes {
@@ -69,7 +72,11 @@ mod tests {
             }
         }
 
-        assert_eq!(uturn_count, 0, "Two-way junction n1 should have ZERO U-turns, but found {}", uturn_count);
+        assert_eq!(
+            uturn_count, 0,
+            "Two-way junction n1 should have ZERO U-turns, but found {}",
+            uturn_count
+        );
     }
 
     #[test]
@@ -102,7 +109,8 @@ mod tests {
                 end_clip: 0.0,
                 geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
                 physical_geometry: vec![graph.nodes[s as usize].pos, graph.nodes[e as usize].pos],
-                deleted: false, no_building_spawn: false,
+                deleted: false,
+                no_building_spawn: false,
             });
         }
         graph.rebuild_adjacency_list();
@@ -129,7 +137,11 @@ mod tests {
             }
         }
 
-        assert_eq!(uturn_count, 0, "Three-way junction n1 should have ZERO U-turns, but found {}", uturn_count);
+        assert_eq!(
+            uturn_count, 0,
+            "Three-way junction n1 should have ZERO U-turns, but found {}",
+            uturn_count
+        );
     }
 
     #[test]
@@ -156,7 +168,8 @@ mod tests {
             end_clip: 0.0,
             geometry: vec![graph.nodes[n0 as usize].pos, graph.nodes[n1 as usize].pos],
             physical_geometry: vec![graph.nodes[n0 as usize].pos, graph.nodes[n1 as usize].pos],
-            deleted: false, no_building_spawn: false,
+            deleted: false,
+            no_building_spawn: false,
         });
         graph.rebuild_adjacency_list();
         let mut lanes = LaneSystem::new();
@@ -168,8 +181,10 @@ mod tests {
         if let Some(lane_ids) = lanes.edge_lanes.get(&(e_idx as usize)) {
             for &l_id in lane_ids {
                 let l = &lanes.lanes[l_id];
-                if l.lane_type == LaneType::Foot { continue; }
-                
+                if l.lane_type == LaneType::Foot {
+                    continue;
+                }
+
                 // Entrance to n1 (end node)
                 if l.is_fwd == true {
                     for &next_id in &l.next_lanes {
@@ -185,6 +200,9 @@ mod tests {
             }
         }
 
-        assert!(uturn_count > 0, "Dead end n1 should have at least one U-turn connection for cars to turn back");
+        assert!(
+            uturn_count > 0,
+            "Dead end n1 should have at least one U-turn connection for cars to turn back"
+        );
     }
 }
