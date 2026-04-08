@@ -5,7 +5,7 @@
 //! [`AgentSystem`] uses a Structure-of-Arrays (SoA) layout provided by the `soa_derive` crate.
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
-use super::{MODE_CAR, TRANSIT_ARRIVING, TRANSIT_IDLE, TRANSIT_IMMIGRATING};
+use super::{MODE_CAR, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::ZoneType;
@@ -56,6 +56,22 @@ pub struct Agent {
     pub current_node: u32,
     /// Graph node the agent is navigating toward.
     pub target_node: u32,
+    /// Planned road-graph endpoint that the origin frontage leg routes toward.
+    pub planned_attach_node: u32,
+    /// Planned road-graph endpoint from which the destination frontage leg begins.
+    pub planned_detach_node: u32,
+    /// Exact lane ID to enter after the short egress leg. `u32::MAX` if there is no current plan.
+    pub planned_attach_lane_id: u32,
+    /// Exact lane ID used for the final frontage approach and network exit. `u32::MAX` if invalid.
+    pub planned_detach_lane_id: u32,
+    /// Exact lane distance where `ACCESS_EGRESS` transitions into the live network.
+    pub planned_attach_lane_d: f32,
+    /// Exact lane distance where the live network transitions into `ACCESS_INGRESS`.
+    pub planned_detach_lane_d: f32,
+    /// Compact authoritative trip-plan metadata. See the `ACCESS_*` constants in `mod.rs`.
+    pub access_flags: u8,
+    /// Earliest simulation time at which trip planning or replanning may be attempted again.
+    pub next_replan_time: f32,
 
     /// Index into `RegionGraph::edges` for the edge the agent is currently traversing.
     pub current_edge: usize,
@@ -181,6 +197,14 @@ impl AgentSystem {
             planned_target_building: usize::MAX,
             current_node: highway_node,
             target_node: home_node,
+            planned_attach_node: u32::MAX,
+            planned_detach_node: u32::MAX,
+            planned_attach_lane_id: u32::MAX,
+            planned_detach_lane_id: u32::MAX,
+            planned_attach_lane_d: 0.0,
+            planned_detach_lane_d: 0.0,
+            access_flags: 0,
+            next_replan_time: 0.0,
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,
@@ -307,7 +331,7 @@ impl AgentSystem {
                 // Building collapsed while they were inside!
                 self.agents.current_building[i] = usize::MAX;
                 self.agents.target_building[i] = usize::MAX;
-                self.agents.transit[i] = TRANSIT_ARRIVING; // Dump them physically onto the sidewalk/rubble
+                self.agents.transit[i] = TRANSIT_ACCESS_INGRESS; // Dump them physically onto the sidewalk/rubble
                 self.agents.is_visible[i] = true;
             } else if self.agents.target_building[i] == building_id {
                 if self.agents.home_building[i] != usize::MAX {
@@ -318,7 +342,7 @@ impl AgentSystem {
                 } else {
                     // Target destroyed, AND homeless! Become stranded on the street!
                     self.agents.target_building[i] = usize::MAX;
-                    self.agents.transit[i] = TRANSIT_ARRIVING;
+                    self.agents.transit[i] = TRANSIT_ACCESS_INGRESS;
                     self.agents.is_visible[i] = true;
                 }
             }
@@ -372,7 +396,7 @@ impl AgentSystem {
 
         for i in 0..self.agents.len() {
             // 1. Snapshot-based Activity Rewards
-            if self.agents.transit[i] == TRANSIT_IDLE {
+            if self.agents.transit[i] == TRANSIT_IN_BUILDING {
                 if self.agents.activity[i] == 0 {
                     // Home
                     self.agents.happiness[i] += 1.0;
@@ -462,7 +486,7 @@ impl AgentSystem {
 
 #[cfg(test)]
 mod tests {
-    use super::super::TRANSIT_ON_ROAD;
+    use super::super::{TRANSIT_IN_BUILDING, TRANSIT_NETWORK};
     use super::*;
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::graph::data::Edge;
@@ -549,7 +573,7 @@ mod tests {
             pos_y: 0.0,
             is_visible: true,
             activity: 0,
-            transit: TRANSIT_ON_ROAD,
+            transit: TRANSIT_NETWORK,
             happiness: 50.0,
             money: 100.0,
             journey_start_time: 0.0,
@@ -558,6 +582,14 @@ mod tests {
             planned_target_building: usize::MAX,
             current_node: 0,
             target_node: 1,
+            planned_attach_node: u32::MAX,
+            planned_detach_node: u32::MAX,
+            planned_attach_lane_id: u32::MAX,
+            planned_detach_lane_id: u32::MAX,
+            planned_attach_lane_d: 0.0,
+            planned_detach_lane_d: 0.0,
+            access_flags: 0,
+            next_replan_time: 0.0,
             current_edge: 0,
             current_lane_id: e0_lane,
             lane_distance: 10.0,
@@ -579,7 +611,7 @@ mod tests {
             pos_y: 0.0,
             is_visible: true,
             activity: 0,
-            transit: TRANSIT_ON_ROAD,
+            transit: TRANSIT_NETWORK,
             happiness: 50.0,
             money: 100.0,
             journey_start_time: 0.0,
@@ -588,6 +620,14 @@ mod tests {
             planned_target_building: usize::MAX,
             current_node: 1,
             target_node: 2,
+            planned_attach_node: u32::MAX,
+            planned_detach_node: u32::MAX,
+            planned_attach_lane_id: u32::MAX,
+            planned_detach_lane_id: u32::MAX,
+            planned_attach_lane_d: 0.0,
+            planned_detach_lane_d: 0.0,
+            access_flags: 0,
+            next_replan_time: 0.0,
             current_edge: 1,
             current_lane_id: e1_lane,
             lane_distance: 10.0,
@@ -640,7 +680,7 @@ mod tests {
             pos_y: 0.0,
             is_visible: false,
             activity: 0,
-            transit: TRANSIT_IDLE,
+            transit: TRANSIT_IN_BUILDING,
             happiness: 50.0,
             money: 100.0,
             journey_start_time: 0.0,
@@ -649,6 +689,14 @@ mod tests {
             planned_target_building: usize::MAX,
             current_node: 0,
             target_node: 0,
+            planned_attach_node: u32::MAX,
+            planned_detach_node: u32::MAX,
+            planned_attach_lane_id: u32::MAX,
+            planned_detach_lane_id: u32::MAX,
+            planned_attach_lane_d: 0.0,
+            planned_detach_lane_d: 0.0,
+            access_flags: 0,
+            next_replan_time: 0.0,
             current_edge: usize::MAX,
             current_lane_id: usize::MAX,
             lane_distance: 0.0,

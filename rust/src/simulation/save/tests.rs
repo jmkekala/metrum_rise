@@ -3,7 +3,7 @@ use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
-use crate::simulation::economy::agents::{MODE_CAR, MODE_WALK, TRANSIT_ON_ROAD};
+use crate::simulation::economy::agents::{ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_NETWORK};
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::{Household, HouseholdSystem, REPLENISHMENT_STABLE};
 use crate::simulation::economy::logistics::{
@@ -146,6 +146,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         total_cost: 640.0,
         eta_days: 1,
     });
+    let mut network_sys = TransitNetwork::new();
+    network_sys.lane_system.rebuild(&mut graph);
+    let planned_lane_id = network_sys.lane_system.edge_lanes[&edge_id][0] as u32;
     let mut agents_sys = AgentSystem::new();
     agents_sys.sim_time = 42.0;
     agents::push_loaded_agent(
@@ -158,6 +161,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             target_building: 0,
             current_node: n0,
             target_node: n1,
+            planned_attach_node: n0,
+            planned_detach_node: n1,
+            planned_attach_lane_id: planned_lane_id,
+            planned_detach_lane_id: planned_lane_id,
+            planned_attach_lane_d: 3.5,
+            planned_detach_lane_d: 7.5,
+            access_flags: ACCESS_PLAN_VALID,
+            next_replan_time: 9.5,
             current_edge: edge_id,
             current_lane_id: 0,
             lane_distance: 0.0,
@@ -165,7 +176,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             pos_y: 0.0,
             is_visible: true,
             activity: 1,
-            transit: TRANSIT_ON_ROAD,
+            transit: TRANSIT_NETWORK,
             transit_mode: MODE_CAR,
             happiness: 88.0,
             money: 123.0,
@@ -188,6 +199,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             target_building: 0,
             current_node: n1,
             target_node: n0,
+            planned_attach_node: u32::MAX,
+            planned_detach_node: u32::MAX,
+            planned_attach_lane_id: u32::MAX,
+            planned_detach_lane_id: u32::MAX,
+            planned_attach_lane_d: 0.0,
+            planned_detach_lane_d: 0.0,
+            access_flags: 0,
+            next_replan_time: 0.0,
             current_edge: usize::MAX,
             current_lane_id: -1,
             lane_distance: 0.0,
@@ -195,7 +214,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             pos_y: 0.0,
             is_visible: true,
             activity: 0,
-            transit: TRANSIT_ON_ROAD,
+            transit: TRANSIT_NETWORK,
             transit_mode: MODE_WALK,
             happiness: 77.0,
             money: 55.0,
@@ -208,8 +227,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             walk_phase: 0.0,
         },
     );
-    let mut network_sys = TransitNetwork::new();
-    network_sys.lane_system.rebuild(&mut graph);
     let path = temp_path("round_trip");
     save_to_sqlite(
         &path,
@@ -262,6 +279,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.households.households[0].pickup_eta_days, 1);
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
+    assert_eq!(loaded.agents.planned_attach_node[0], 0);
+    assert_eq!(loaded.agents.planned_detach_node[0], 1);
+    assert_eq!(loaded.agents.planned_attach_lane_id[0], planned_lane_id);
+    assert_eq!(loaded.agents.planned_detach_lane_id[0], planned_lane_id);
+    assert_eq!(loaded.agents.planned_attach_lane_d[0], 3.5);
+    assert_eq!(loaded.agents.planned_detach_lane_d[0], 7.5);
+    assert_eq!(loaded.agents.access_flags[0], ACCESS_PLAN_VALID);
+    assert_eq!(loaded.agents.next_replan_time[0], 9.5);
     assert_eq!(loaded.agents.sim_time, agents_sys.sim_time);
     assert_eq!(loaded.allocator.buildings[0].frontage_t, 0.5);
     assert_eq!(loaded.logistics.shipments.len(), 1);
@@ -361,4 +386,64 @@ fn load_graph_migrates_missing_vehicle_frontage_access_column_to_bothsides() {
         VehicleFrontageAccess::BothSides
     );
     assert!(!graph.edge(0).no_building_spawn);
+}
+
+#[test]
+fn load_agents_migrates_missing_access_plan_columns_to_invalid_defaults() {
+    let conn = Connection::open_in_memory().expect("in-memory sqlite");
+    conn.execute_batch(
+        r#"
+        CREATE TABLE agents(
+            agent_id INTEGER PRIMARY KEY,
+            home_building INTEGER NOT NULL,
+            household_id INTEGER NOT NULL,
+            work_building INTEGER NOT NULL,
+            current_building INTEGER NOT NULL,
+            target_building INTEGER NOT NULL,
+            current_node INTEGER NOT NULL,
+            target_node INTEGER NOT NULL,
+            current_edge INTEGER NOT NULL,
+            current_lane_id INTEGER NOT NULL,
+            lane_distance REAL NOT NULL,
+            pos_x REAL NOT NULL,
+            pos_y REAL NOT NULL,
+            is_visible INTEGER NOT NULL,
+            activity INTEGER NOT NULL,
+            transit INTEGER NOT NULL,
+            transit_mode INTEGER NOT NULL,
+            pedestrian_side INTEGER NOT NULL,
+            happiness REAL NOT NULL,
+            money REAL NOT NULL,
+            journey_start_time REAL NOT NULL,
+            has_car INTEGER NOT NULL,
+            vehicle_type INTEGER NOT NULL,
+            current_path_index INTEGER NOT NULL
+        );
+        CREATE TABLE agent_path_nodes(
+            agent_id INTEGER NOT NULL,
+            step_index INTEGER NOT NULL,
+            node_id INTEGER NOT NULL,
+            PRIMARY KEY(agent_id, step_index)
+        );
+        "#,
+    )
+    .expect("legacy agent schema");
+
+    conn.execute(
+        "INSERT INTO agents(agent_id, home_building, household_id, work_building, current_building, target_building, current_node, target_node, current_edge, current_lane_id, lane_distance, pos_x, pos_y, is_visible, activity, transit, transit_mode, pedestrian_side, happiness, money, journey_start_time, has_car, vehicle_type, current_path_index)
+         VALUES (0, -1, -1, -1, -1, -1, 0, 1, -1, -1, 0.0, 1.0, 2.0, 1, 0, 2, 1, 0, 50.0, 100.0, 0.0, 1, 0, 0)",
+        [],
+    )
+    .expect("legacy agent row");
+
+    let agents = agents::load_agents(&conn, 12.0).expect("migrated load");
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents.planned_attach_node[0], u32::MAX);
+    assert_eq!(agents.planned_detach_node[0], u32::MAX);
+    assert_eq!(agents.planned_attach_lane_id[0], u32::MAX);
+    assert_eq!(agents.planned_detach_lane_id[0], u32::MAX);
+    assert_eq!(agents.planned_attach_lane_d[0], 0.0);
+    assert_eq!(agents.planned_detach_lane_d[0], 0.0);
+    assert_eq!(agents.access_flags[0], 0);
+    assert_eq!(agents.next_replan_time[0], 0.0);
 }

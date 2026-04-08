@@ -214,6 +214,7 @@ pub(crate) fn load_from_sqlite(
                 .unwrap_or(usize::MAX);
         }
     }
+    agents::validate_loaded_planned_lane_ids(&mut agents, transit_network.lane_system.lanes.len());
 
     allocator.recompute_derived_transforms(&graph, &zoning)?;
     allocator.rebuild_entrance_cache(&graph, &transit_network.lane_system);
@@ -275,6 +276,18 @@ fn build_snapshot_maps(
             graph,
             agents.target_node[i],
         )?);
+        if agents.planned_attach_node[i] != u32::MAX {
+            saved_nodes.insert(network::canonical_existing_node(
+                graph,
+                agents.planned_attach_node[i],
+            )?);
+        }
+        if agents.planned_detach_node[i] != u32::MAX {
+            saved_nodes.insert(network::canonical_existing_node(
+                graph,
+                agents.planned_detach_node[i],
+            )?);
+        }
         for &nid in &agents.current_path[i] {
             saved_nodes.insert(network::canonical_existing_node(graph, nid)?);
         }

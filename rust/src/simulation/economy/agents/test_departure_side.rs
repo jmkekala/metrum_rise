@@ -2,7 +2,7 @@
 mod tests {
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::economy::agents::{
-        AgentSystem, MODE_WALK, TRANSIT_DEPARTING, TRANSIT_ON_ROAD,
+        AgentSystem, MODE_WALK, TRANSIT_ACCESS_EGRESS, TRANSIT_NETWORK,
     };
     use crate::simulation::grid::zoning::ZoneType;
     use crate::simulation::network::TransitNetwork;
@@ -98,7 +98,7 @@ mod tests {
 
         let mut agents = AgentSystem::new();
         let a_id = agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
-        agents.transit[a_id] = TRANSIT_DEPARTING;
+        agents.transit[a_id] = TRANSIT_ACCESS_EGRESS;
         agents.transit_mode[a_id] = MODE_WALK;
         agents.current_node[a_id] = n1;
         agents.current_building[a_id] = 0;
@@ -110,13 +110,13 @@ mod tests {
             test_agents.agents = agents.agents.clone();
             for _ in 0..50 {
                 test_agents.tick(&mut allocator, &network, &mut graph, 0.1);
-                if test_agents.transit[a_id] == TRANSIT_ON_ROAD {
+                if test_agents.transit[a_id] == TRANSIT_NETWORK {
                     break;
                 }
             }
 
             assert_eq!(
-                test_agents.transit[a_id], TRANSIT_ON_ROAD,
+                test_agents.transit[a_id], TRANSIT_NETWORK,
                 "[{label}] agent never reached ON_ROAD"
             );
             // One extra tick to initialize the lane in the ON_ROAD state.

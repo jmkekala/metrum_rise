@@ -1423,6 +1423,9 @@ Goal: one coherent trip from door to door.
 
 - Delete the node-only building fallback paths that were only needed by the old model.
 - Delete "hide on failure" for ordinary replannable situations.
+- Delete any remaining `building_depart_node()` / frontage-node compatibility branches from tick logic, render/debug helpers, and test scaffolding once the exact entrance-plan movement is live.
+- Rewrite or delete the legacy departure/arrival tests that assume heuristic curb insertion from `current_node`, `target_node`, or frontage-node shortcuts; replace them with exact entrance-cache and planned-lane assertions.
+- Remove direct-line render/debug assumptions that still treat egress as "current position -> current node" or ingress as "current position -> building center" once `ACCESS_EGRESS` and `ACCESS_INGRESS` use the exact planned local handoff points.
 - Simplify tests around deterministic entrance access instead of heuristics.
 
 Goal: no ghost legacy behavior left in the movement loop.

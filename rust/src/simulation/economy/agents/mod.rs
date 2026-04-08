@@ -10,18 +10,27 @@ pub mod tick;
 
 pub use data::{Agent, AgentSystem, AgentVec};
 
-/// Agent is inside a building — not moving. Waiting for the next activity trigger.
-pub const TRANSIT_IDLE: u8 = 0;
-/// Agent is walking from building interior to the road edge (departure animation phase).
-pub const TRANSIT_DEPARTING: u8 = 1;
-/// Agent is actively moving along road edges toward `target_node`.
-pub const TRANSIT_ON_ROAD: u8 = 2;
-/// Agent has reached the road node nearest their destination and is walking the final distance to the building.
-pub const TRANSIT_ARRIVING: u8 = 3;
+/// Agent is inside a building and hidden until the next trip trigger fires.
+pub const TRANSIT_IN_BUILDING: u8 = 0;
+/// Agent is traversing the short local segment from the building entry point to the network.
+pub const TRANSIT_ACCESS_EGRESS: u8 = 1;
+/// Agent is traversing the live lane/path network.
+pub const TRANSIT_NETWORK: u8 = 2;
+/// Agent is traversing the short local segment from the network into the destination building.
+pub const TRANSIT_ACCESS_INGRESS: u8 = 3;
 /// Newly spawned agent travelling from a highway border node to their first home — has no current building.
 pub const TRANSIT_IMMIGRATING: u8 = 4;
 /// Agent is traversing a bezier curve through a road intersection (lane-change phase).
 pub const TRANSIT_INTERSECTION: u8 = 5;
+
+/// Trip-plan bit: the `planned_*` scalars contain a valid authoritative access/network plan.
+pub const ACCESS_PLAN_VALID: u8 = 0x01;
+/// Trip-plan bit: the node-path portion is zero-hop because attach and detach nodes match.
+pub const ACCESS_ZERO_HOP_NODE_PATH: u8 = 0x02;
+/// Trip-plan bit: the current path came from a validated flow-field fast path.
+pub const ACCESS_PATH_FROM_FLOW_FIELD: u8 = 0x04;
+/// Trip-plan bit: the trip originated from a border-node immigration spawn, not a building egress.
+pub const ACCESS_IMMIGRATION_ORIGIN: u8 = 0x08;
 
 // Transit Modes
 /// Agent is walking on foot (sidewalks/crosswalks).

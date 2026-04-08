@@ -7,7 +7,7 @@
 
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IDLE};
+use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::TransitNetwork;
@@ -467,7 +467,7 @@ impl HouseholdSystem {
             agents.planned_activity[i] = 0;
             agents.planned_target_building[i] = usize::MAX;
 
-            if agents.transit[i] != TRANSIT_IDLE {
+            if agents.transit[i] != TRANSIT_IN_BUILDING {
                 continue;
             }
 
@@ -668,7 +668,7 @@ fn normalized_commute_penalty(home: &Building, work: &Building) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::economy::agents::TRANSIT_IDLE;
+    use crate::simulation::economy::agents::TRANSIT_IN_BUILDING;
     use godot::prelude::Vector2;
 
     fn make_building(center_x: f32, zone_type: ZoneType, stock: f32, utility: bool) -> Building {
@@ -768,7 +768,7 @@ mod tests {
         let a1 = agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
         for a in [a0, a1] {
             agents.household_id[a] = hid;
-            agents.transit[a] = TRANSIT_IDLE;
+            agents.transit[a] = TRANSIT_IN_BUILDING;
             agents.current_building[a] = 0;
             agents.target_building[a] = usize::MAX;
             agents.current_node[a] = 0;

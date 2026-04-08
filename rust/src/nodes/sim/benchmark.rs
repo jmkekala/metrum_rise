@@ -97,13 +97,13 @@ impl SimCore {
         );
     }
 
-    /// Spawns 100 k pre-pathed ON_ROAD agents for the benchmark run.
+    /// Spawns 100 k pre-pathed network agents for the benchmark run.
     ///
     /// Called from `run_benchmark_from_save` on the Godot main thread (while
     /// holding the `SimCore` lock).
     pub(crate) fn spawn_benchmark_agents(&mut self) {
         use crate::simulation::economy::agents::data::Agent;
-        use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_ON_ROAD};
+        use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
         use crate::simulation::network::types::TransitFlags;
 
         let t_spawn = Instant::now();
@@ -168,7 +168,7 @@ impl SimCore {
                 pos_y: node_pos.z,
                 is_visible: true,
                 activity: 0,
-                transit: TRANSIT_ON_ROAD,
+                transit: TRANSIT_NETWORK,
                 happiness: 50.0,
                 money: 100.0,
                 journey_start_time: 0.0,
@@ -177,6 +177,14 @@ impl SimCore {
                 planned_target_building: usize::MAX,
                 current_node,
                 target_node,
+                planned_attach_node: u32::MAX,
+                planned_detach_node: u32::MAX,
+                planned_attach_lane_id: u32::MAX,
+                planned_detach_lane_id: u32::MAX,
+                planned_attach_lane_d: 0.0,
+                planned_detach_lane_d: 0.0,
+                access_flags: 0,
+                next_replan_time: 0.0,
                 current_edge: usize::MAX,
                 current_lane_id: usize::MAX,
                 lane_distance: 0.0,
@@ -192,7 +200,7 @@ impl SimCore {
             });
         }
         godot_print!(
-            "[bench] Spawned {} agents (ON_ROAD): {:.2}s  RSS {}MB",
+            "[bench] Spawned {} agents (NETWORK): {:.2}s  RSS {}MB",
             self.agents.len(),
             t_spawn.elapsed().as_secs_f32(),
             rss_mb()

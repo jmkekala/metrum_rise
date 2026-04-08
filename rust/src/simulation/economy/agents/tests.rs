@@ -81,7 +81,7 @@ fn test_agent_departure_sidewalk_selection() {
     let mut agents = AgentSystem::new();
     agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
     let a_id = 0;
-    agents.transit[a_id] = TRANSIT_DEPARTING;
+    agents.transit[a_id] = TRANSIT_ACCESS_EGRESS;
     agents.transit_mode[a_id] = MODE_WALK;
     agents.current_node[a_id] = n1;
     agents.current_building[a_id] = 0;
@@ -92,11 +92,11 @@ fn test_agent_departure_sidewalk_selection() {
     // Tick until ON_ROAD or max iterations
     for _ in 0..500 {
         agents.tick(&mut allocator, &network, &mut graph, 0.1);
-        if agents.transit[a_id] == TRANSIT_ON_ROAD {
+        if agents.transit[a_id] == TRANSIT_NETWORK {
             break;
         }
     }
-    assert_eq!(agents.transit[a_id], TRANSIT_ON_ROAD);
+    assert_eq!(agents.transit[a_id], TRANSIT_NETWORK);
     // One extra tick so the ON_ROAD branch can initialise the lane.
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
     let lane_id = agents.current_lane_id[a_id];
@@ -130,7 +130,7 @@ fn test_agent_departure_car_selection() {
     let mut agents = AgentSystem::new();
     agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
     let a_id = 0;
-    agents.transit[a_id] = TRANSIT_DEPARTING;
+    agents.transit[a_id] = TRANSIT_ACCESS_EGRESS;
     agents.transit_mode[a_id] = MODE_CAR;
     agents.current_node[a_id] = n1;
     agents.current_building[a_id] = 0;
@@ -141,11 +141,11 @@ fn test_agent_departure_car_selection() {
     // Tick until ON_ROAD or max iterations
     for _ in 0..500 {
         agents.tick(&mut allocator, &network, &mut graph, 0.1);
-        if agents.transit[a_id] == TRANSIT_ON_ROAD {
+        if agents.transit[a_id] == TRANSIT_NETWORK {
             break;
         }
     }
-    assert_eq!(agents.transit[a_id], TRANSIT_ON_ROAD);
+    assert_eq!(agents.transit[a_id], TRANSIT_NETWORK);
     // One extra tick so the ON_ROAD branch can initialise the lane.
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
     let lane_id = agents.current_lane_id[a_id];
@@ -244,10 +244,10 @@ fn test_parallel_tick_produces_same_positions_as_sequential() {
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
     let allocator = BuildingAllocator::new();
-    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_ON_ROAD};
+    use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_NETWORK};
     let mut agents = AgentSystem::new();
     let i = agents.spawn_agent(usize::MAX, n0, 0.0, 0.0, n0, 0.0, 0.0);
-    agents.transit[i] = TRANSIT_ON_ROAD;
+    agents.transit[i] = TRANSIT_NETWORK;
     agents.transit_mode[i] = MODE_CAR;
     agents.current_node[i] = n0;
     agents.target_node[i] = n1;
@@ -260,7 +260,7 @@ fn test_parallel_tick_produces_same_positions_as_sequential() {
     agents.tick(&allocator, &network, &mut graph, 1.0);
     // Agent should have moved along the edge.
     assert!(
-        agents.pos_x[i] != x_before || agents.transit[i] != TRANSIT_ON_ROAD,
+        agents.pos_x[i] != x_before || agents.transit[i] != TRANSIT_NETWORK,
         "Agent did not move after one tick"
     );
 }
@@ -373,7 +373,7 @@ fn test_pedestrian_crosses_junction() {
     let mut agents = AgentSystem::new();
     let i = agents.spawn_agent(0, n2, 0.0, 0.0, n0, -50.0, 10.0);
     agents.target_building[i] = 1;
-    agents.transit[i] = TRANSIT_DEPARTING;
+    agents.transit[i] = TRANSIT_ACCESS_EGRESS;
     for _ in 0..5000 {
         agents.tick(&mut allocator, &network, &mut graph, 0.1);
         if agents.transit[i] == 0 {
@@ -422,7 +422,7 @@ fn place_on_lane(
 ) -> usize {
     let (n0, n1) = (0u32, 1u32);
     let idx = agents.spawn_agent(usize::MAX, n1, 0.0, 0.0, n0, 0.0, 0.0);
-    agents.transit[idx] = TRANSIT_ON_ROAD;
+    agents.transit[idx] = TRANSIT_NETWORK;
     agents.current_edge[idx] = edge_idx;
     agents.current_lane_id[idx] = fwd_lane;
     agents.lane_distance[idx] = lane_dist;
@@ -629,7 +629,7 @@ fn check_no_stacking_two_edge(fwd: u8, bkw: u8, label: &str) {
         for k in 0..5 {
             let dist = (lane_len - 10.0 - (li * 5 + k) as f32 * 8.0).max(0.0);
             let idx = agents.spawn_agent(usize::MAX, n2, 0.0, 0.0, n0, 0.0, 0.0);
-            agents.transit[idx] = TRANSIT_ON_ROAD;
+            agents.transit[idx] = TRANSIT_NETWORK;
             agents.transit_mode[idx] = MODE_CAR;
             agents.current_node[idx] = n0;
             agents.target_node[idx] = n2;
@@ -678,7 +678,7 @@ fn check_no_stacking_4way(fwd: u8, bkw: u8, label: &str) {
         for &lane_id in lanes {
             let lane_len = network.lane_system.lanes[lane_id].length;
             let idx = agents.spawn_agent(usize::MAX, nc, 0.0, 0.0, arm_nodes[k], 0.0, 0.0);
-            agents.transit[idx] = TRANSIT_ON_ROAD;
+            agents.transit[idx] = TRANSIT_NETWORK;
             agents.transit_mode[idx] = MODE_CAR;
             agents.current_node[idx] = arm_nodes[k];
             agents.target_node[idx] = nc;
@@ -724,7 +724,7 @@ fn check_no_uturn_at_frontage(fwd: u8, bkw: u8, label: &str) {
         for k in 0..3 {
             let dist = (lane_len - 5.0 - (li * 3 + k) as f32 * 8.0).max(0.0);
             let idx = agents.spawn_agent(usize::MAX, n2, 0.0, 0.0, n0, 0.0, 0.0);
-            agents.transit[idx] = TRANSIT_ON_ROAD;
+            agents.transit[idx] = TRANSIT_NETWORK;
             agents.transit_mode[idx] = MODE_CAR;
             agents.current_node[idx] = n0;
             agents.target_node[idx] = n2;
@@ -858,7 +858,7 @@ fn test_lane_bucket_empty_for_idle_agents() {
     }
     // Override transit to IDLE so no pathfinding fires.
     for i in 0..agents.agents.len() {
-        agents.transit[i] = TRANSIT_IDLE;
+        agents.transit[i] = TRANSIT_IN_BUILDING;
     }
 
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
@@ -914,7 +914,7 @@ fn test_lane_bucket_invalid_lane_id_does_not_crash() {
 
     // Spawn with a valid edge but invalid lane — matches the benchmark default.
     let i = agents.spawn_agent(usize::MAX, 1, 0.0, 0.0, 0, 0.0, 0.0);
-    agents.transit[i] = TRANSIT_ON_ROAD;
+    agents.transit[i] = TRANSIT_NETWORK;
     agents.current_edge[i] = edge_idx;
     agents.current_lane_id[i] = usize::MAX;
     agents.lane_distance[i] = 10.0;
@@ -1058,7 +1058,7 @@ fn test_lane_bucket_cleared_after_agent_leaves_edge() {
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
 
     // Manually move the agent off-road (simulates arrival or edge transition).
-    agents.transit[i] = TRANSIT_IDLE;
+    agents.transit[i] = TRANSIT_IN_BUILDING;
     agents.current_lane_id[i] = usize::MAX;
 
     agents.tick(&mut allocator, &network, &mut graph, 0.1);
@@ -1129,7 +1129,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
         let (na, nb) = (edge.start_node, edge.end_node);
         for &(dist, spd) in &[(70.0f32, 5.0f32), (30.0f32, 5.0f32)] {
             let i = agents.spawn_agent(usize::MAX, nb, 0.0, 0.0, na, 0.0, 0.0);
-            agents.transit[i] = TRANSIT_ON_ROAD;
+            agents.transit[i] = TRANSIT_NETWORK;
             agents.current_edge[i] = eid;
             agents.current_lane_id[i] = fwd_lane;
             agents.lane_distance[i] = dist;
@@ -1146,7 +1146,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
     let lane_count = network.lane_system.lanes.len();
     let mut per_lane: std::collections::HashMap<usize, Vec<f32>> = std::collections::HashMap::new();
     for i in 0..agents.agents.len() {
-        if agents.transit[i] == TRANSIT_ON_ROAD {
+        if agents.transit[i] == TRANSIT_NETWORK {
             let lid = agents.current_lane_id[i];
             if lid != usize::MAX && lid < lane_count {
                 per_lane

@@ -120,9 +120,11 @@ impl SimCore {
                     world_y = l.geometry[0].y + 0.02;
                 }
             } else {
-                use crate::simulation::economy::agents::{TRANSIT_ARRIVING, TRANSIT_DEPARTING};
+                use crate::simulation::economy::agents::{
+                    TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS,
+                };
                 let transit = self.agents.transit[i];
-                if transit == TRANSIT_DEPARTING {
+                if transit == TRANSIT_ACCESS_EGRESS {
                     let node_idx = self.agents.current_node[i] as usize;
                     if node_idx < self.region_graph.node_count() {
                         let npos = self.region_graph.node(node_idx as u32).pos;
@@ -133,7 +135,7 @@ impl SimCore {
                             basis_y = basis_z.cross(basis_x).normalized();
                         }
                     }
-                } else if transit == TRANSIT_ARRIVING {
+                } else if transit == TRANSIT_ACCESS_INGRESS {
                     let b_id = self.agents.target_building[i];
                     if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
                         let b = &self.allocator.buildings[b_id];
@@ -190,7 +192,7 @@ impl SimCore {
         let color_direct = Color::from_rgb(1.0, 0.9, 0.2); // Yellow/Golden
         let _color_stuck = Color::from_rgb(1.0, 0.2, 0.2); // Red (Not used yet, but placeholder)
 
-        use crate::simulation::economy::agents::{TRANSIT_ARRIVING, TRANSIT_DEPARTING};
+        use crate::simulation::economy::agents::{TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS};
 
         for i in 0..self.agents.len() {
             if self.agents.transit[i] != 0 {
@@ -201,7 +203,7 @@ impl SimCore {
                 ));
 
                 // A. DEPARTING / ARRIVING direct lines (Yellow)
-                if self.agents.transit[i] == TRANSIT_DEPARTING {
+                if self.agents.transit[i] == TRANSIT_ACCESS_EGRESS {
                     // Heading to node current_node + possibly a lane offset point
                     let target_node = self.agents.current_node[i] as usize;
                     if target_node < self.region_graph.node_count() {
@@ -211,7 +213,7 @@ impl SimCore {
                         colors.push(color_direct);
                         colors.push(color_direct);
                     }
-                } else if self.agents.transit[i] == TRANSIT_ARRIVING {
+                } else if self.agents.transit[i] == TRANSIT_ACCESS_INGRESS {
                     let b_id = self.agents.target_building[i];
                     if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
                         let b = &self.allocator.buildings[b_id];

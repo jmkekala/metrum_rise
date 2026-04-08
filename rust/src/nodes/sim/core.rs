@@ -262,7 +262,9 @@ impl SimCore {
     /// Called from the background thread at the end of every movement tick.
     /// Uses only pure Rust types so the resulting snapshot is `Send`.
     pub fn build_snapshot(&self) -> RenderSnapshot {
-        use crate::simulation::economy::agents::{MODE_CAR, TRANSIT_ARRIVING, TRANSIT_DEPARTING};
+        use crate::simulation::economy::agents::{
+            MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS,
+        };
 
         let mut pedestrian_transforms: HashMap<u8, Vec<f32>> = HashMap::new();
         let mut car_transforms: HashMap<u8, Vec<f32>> = HashMap::new();
@@ -327,7 +329,7 @@ impl SimCore {
                     }
                 } else {
                     let transit = self.agents.transit[i];
-                    if transit == TRANSIT_DEPARTING {
+                    if transit == TRANSIT_ACCESS_EGRESS {
                         let node_idx = self.agents.current_node[i] as usize;
                         if node_idx < self.region_graph.node_count() {
                             let npos = self.region_graph.node(node_idx as u32).pos;
@@ -341,7 +343,7 @@ impl SimCore {
                                 }
                             }
                         }
-                    } else if transit == TRANSIT_ARRIVING {
+                    } else if transit == TRANSIT_ACCESS_INGRESS {
                         let b_id = self.agents.target_building[i];
                         if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
                             let b = &self.allocator.buildings[b_id];
@@ -420,7 +422,7 @@ impl SimCore {
                     }
                 } else {
                     let transit = self.agents.transit[i];
-                    if transit == TRANSIT_DEPARTING {
+                    if transit == TRANSIT_ACCESS_EGRESS {
                         let node_idx = self.agents.current_node[i] as usize;
                         if node_idx < self.region_graph.node_count() {
                             let npos = self.region_graph.node(node_idx as u32).pos;
@@ -434,7 +436,7 @@ impl SimCore {
                                 }
                             }
                         }
-                    } else if transit == TRANSIT_ARRIVING {
+                    } else if transit == TRANSIT_ACCESS_INGRESS {
                         let b_id = self.agents.target_building[i];
                         if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
                             let b = &self.allocator.buildings[b_id];

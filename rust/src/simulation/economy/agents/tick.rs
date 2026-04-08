@@ -2,8 +2,8 @@
 
 use super::data::AgentSystem;
 use super::{
-    MODE_CAR, MODE_WALK, TRANSIT_ARRIVING, TRANSIT_DEPARTING, TRANSIT_IDLE, TRANSIT_IMMIGRATING,
-    TRANSIT_INTERSECTION, TRANSIT_ON_ROAD,
+    MODE_CAR, MODE_WALK, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING,
+    TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::network::TransitNetwork;
@@ -175,7 +175,7 @@ impl AgentSystem {
             }
             if *s_cur_b.get(i) != usize::MAX && *s_cur_b.get(i) >= bldg_count {
                 *s_cur_b.get_mut(i) = usize::MAX;
-                *s_transit.get_mut(i) = TRANSIT_ARRIVING;
+                *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
                 *s_visible.get_mut(i) = true;
             }
             let tgt = *s_tgt_b.get(i);
@@ -185,7 +185,7 @@ impl AgentSystem {
                     *s_tgt_b.get_mut(i) = home;
                 } else {
                     *s_tgt_b.get_mut(i) = usize::MAX;
-                    *s_transit.get_mut(i) = TRANSIT_ARRIVING;
+                    *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
                 }
             }
             let planned = *s_plan_b.get(i);
@@ -208,7 +208,7 @@ impl AgentSystem {
         }
         self.dirty_lanes.clear();
         for i in 0..n {
-            if self.agents.transit[i] == TRANSIT_ON_ROAD {
+            if self.agents.transit[i] == TRANSIT_NETWORK {
                 let lid = self.agents.current_lane_id[i];
                 if lid != usize::MAX && lid < lane_count {
                     if !self.lane_is_dirty[lid] {
@@ -265,7 +265,7 @@ impl AgentSystem {
                 let transit = *s_transit_idm.get(i);
                 let tmode = *s_tmode_idm.get(i);
 
-                if transit != TRANSIT_ON_ROAD || tmode != MODE_CAR {
+                if transit != TRANSIT_NETWORK || tmode != MODE_CAR {
                     *new_spd_raw.get_mut(i) = cur_spd;
                     return;
                 }
@@ -357,7 +357,7 @@ impl AgentSystem {
             self.edge_agent_cnt.resize(edge_count, 0_u32);
 
             for i in 0..n {
-                if self.agents.transit[i] == TRANSIT_ON_ROAD {
+                if self.agents.transit[i] == TRANSIT_NETWORK {
                     let lid = self.agents.current_lane_id[i];
                     if lid != usize::MAX && lid < lane_count {
                         if !self.lane_is_dirty[lid] {
@@ -471,7 +471,7 @@ impl AgentSystem {
             }
 
             match *s_transit.get(i) {
-                TRANSIT_IDLE => {
+                TRANSIT_IN_BUILDING => {
                     let next_bldg = *s_plan_b.get(i);
                     let next_act = *s_plan_act.get(i);
                     let curr_bldg = *s_cur_b.get(i);
@@ -563,7 +563,7 @@ impl AgentSystem {
                                 *s_lane_id.get_mut(i) = usize::MAX;
                                 *s_lane_d.get_mut(i) = 0.0;
                                 *s_visible.get_mut(i) = true;
-                                *s_transit.get_mut(i) = TRANSIT_DEPARTING;
+                                *s_transit.get_mut(i) = TRANSIT_ACCESS_EGRESS;
                             } else if origin_node == target_node {
                                 *s_tgt_b.get_mut(i) = effective_tgt;
                                 *s_activity.get_mut(i) = next_act;
@@ -574,7 +574,7 @@ impl AgentSystem {
                                 *s_lane_id.get_mut(i) = usize::MAX;
                                 *s_lane_d.get_mut(i) = 0.0;
                                 *s_visible.get_mut(i) = true;
-                                *s_transit.get_mut(i) = TRANSIT_ARRIVING;
+                                *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
                             }
                         }
                         *s_plan_b.get_mut(i) = usize::MAX;
@@ -582,15 +582,15 @@ impl AgentSystem {
                     }
                 }
 
-                TRANSIT_DEPARTING => {
+                TRANSIT_ACCESS_EGRESS => {
                     let b_id = *s_cur_b.get(i);
                     if b_id == usize::MAX || b_id >= allocator.buildings.len() {
-                        *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
+                        *s_transit.get_mut(i) = TRANSIT_NETWORK;
                         return;
                     }
                     let b = &allocator.buildings[b_id];
                     if b.edge_idx >= graph.edge_count() || graph.edge(b.edge_idx).deleted {
-                        *s_transit.get_mut(i) = TRANSIT_IDLE;
+                        *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                         *s_visible.get_mut(i) = false;
                         return;
                     }
@@ -678,7 +678,7 @@ impl AgentSystem {
                             if *s_speed.get(i) == 0.0 {
                                 *s_speed.get_mut(i) = graph.edge(edge_idx).speed_limit;
                             }
-                            *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
+                            *s_transit.get_mut(i) = TRANSIT_NETWORK;
                         } else {
                             // No matching lane — fall back to node-based entry.
                             let frontage_node =
@@ -689,7 +689,7 @@ impl AgentSystem {
                             *s_cur_e.get_mut(i) = usize::MAX;
                             *s_lane_id.get_mut(i) = usize::MAX;
                             *s_lane_d.get_mut(i) = 0.0;
-                            *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
+                            *s_transit.get_mut(i) = TRANSIT_NETWORK;
                         }
                     } else {
                         let mv = dir.normalized() * step;
@@ -698,7 +698,7 @@ impl AgentSystem {
                     }
                 }
 
-                TRANSIT_ON_ROAD | TRANSIT_IMMIGRATING | TRANSIT_INTERSECTION => {
+                TRANSIT_NETWORK | TRANSIT_IMMIGRATING | TRANSIT_INTERSECTION => {
                     let speed = if *s_tmode.get(i) == MODE_CAR {
                         if *s_transit.get(i) == TRANSIT_INTERSECTION {
                             // Slow through intersections; still IDM-bounded.
@@ -759,7 +759,7 @@ impl AgentSystem {
                                 *s_path_idx.get_mut(i) = 1;
                                 *s_lane_id.get_mut(i) = usize::MAX;
                             } else {
-                                *s_transit.get_mut(i) = TRANSIT_IDLE;
+                                *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                                 *s_visible.get_mut(i) = false;
                                 break;
                             }
@@ -808,7 +808,7 @@ impl AgentSystem {
                                                 *s_lane_id.get_mut(i) = chosen;
                                                 *s_lane_d.get_mut(i) = 0.0;
                                                 *s_cur_e.get_mut(i) = best_e;
-                                                *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
+                                                *s_transit.get_mut(i) = TRANSIT_NETWORK;
                                                 *s_cur_b.get_mut(i) = usize::MAX;
                                                 // Seed speed from edge limit on first lane entry.
                                                 if *s_speed.get(i) == 0.0 {
@@ -877,7 +877,7 @@ impl AgentSystem {
                                         let kerb = kerb_road + b.facing_dir * b.side_offset;
                                         *s_pos_x.get_mut(i) = kerb.x;
                                         *s_pos_y.get_mut(i) = kerb.y;
-                                        *s_transit.get_mut(i) = TRANSIT_ARRIVING;
+                                        *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
                                         *s_tmode.get_mut(i) = MODE_WALK;
                                         *s_lane_id.get_mut(i) = usize::MAX;
                                         s_path.get_mut(i).clear();
@@ -1049,7 +1049,7 @@ impl AgentSystem {
                                                 let kerb = kerb_road + b.facing_dir * b.side_offset;
                                                 *s_pos_x.get_mut(i) = kerb.x;
                                                 *s_pos_y.get_mut(i) = kerb.y;
-                                                *s_transit.get_mut(i) = TRANSIT_ARRIVING;
+                                                *s_transit.get_mut(i) = TRANSIT_ACCESS_INGRESS;
                                                 *s_tmode.get_mut(i) = MODE_WALK;
                                             }
                                         }
@@ -1062,7 +1062,7 @@ impl AgentSystem {
                                     if tgt_road_lane < transit_network.lane_system.lanes.len() {
                                         *s_lane_id.get_mut(i) = tgt_road_lane;
                                         *s_lane_d.get_mut(i) = 0.0;
-                                        *s_transit.get_mut(i) = TRANSIT_ON_ROAD;
+                                        *s_transit.get_mut(i) = TRANSIT_NETWORK;
                                         *s_cur_e.get_mut(i) = transit_network.lane_system.lanes
                                             [tgt_road_lane]
                                             .edge_id;
@@ -1118,10 +1118,10 @@ impl AgentSystem {
                     }
                 }
 
-                TRANSIT_ARRIVING => {
+                TRANSIT_ACCESS_INGRESS => {
                     let b_id = *s_tgt_b.get(i);
                     if b_id == usize::MAX || b_id >= allocator.buildings.len() {
-                        *s_transit.get_mut(i) = TRANSIT_IDLE;
+                        *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                         return;
                     }
                     let b = &allocator.buildings[b_id];
@@ -1138,7 +1138,7 @@ impl AgentSystem {
                         *s_pos_y.get_mut(i) = center_vec.y;
                         *s_cur_b.get_mut(i) = b_id;
                         *s_visible.get_mut(i) = false;
-                        *s_transit.get_mut(i) = TRANSIT_IDLE;
+                        *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                         let home = *s_home.get(i);
                         let work = *s_work.get(i);
                         if b_id == home {
@@ -1165,7 +1165,7 @@ impl AgentSystem {
                     }
                 }
                 _ => {
-                    *s_transit.get_mut(i) = TRANSIT_IDLE;
+                    *s_transit.get_mut(i) = TRANSIT_IN_BUILDING;
                 }
             }
         }
