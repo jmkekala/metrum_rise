@@ -536,20 +536,45 @@ fn test_pedestrian_crosses_junction() {
     );
     network.lane_system.rebuild(&mut graph);
     network.cch_graph = CchGraph::build(&graph);
-    allocator.buildings.push(create_test_building(0, 1));
-    allocator.buildings.push(create_test_building(1, -1));
+    let home_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "junction_home",
+        ZoneClass::Residential,
+    );
+    let work_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "junction_shop",
+        ZoneClass::Commercial,
+    );
+    let mut home = create_test_building(0, 1);
+    home.asset_id = home_asset;
+    let mut shop = create_test_building(1, -1);
+    shop.asset_id = work_asset;
+    allocator.buildings.push(home);
+    allocator.buildings.push(shop);
     allocator.buildings[1].zone_type = ZoneType::Commercial;
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut agents = AgentSystem::new();
     let i = agents.spawn_agent(0, n2, 0.0, 0.0, n0, -50.0, 10.0);
-    agents.target_building[i] = 1;
-    agents.transit[i] = TRANSIT_ACCESS_EGRESS;
+    agents.current_building[i] = 0;
+    agents.home_building[i] = 0;
+    agents.target_building[i] = usize::MAX;
+    agents.planned_target_building[i] = 1;
+    agents.planned_activity[i] = 2;
+    agents.has_car[i] = false;
+    agents.transit[i] = TRANSIT_IN_BUILDING;
+    agents.pos_x[i] = allocator.entrances[0].door_pos.x;
+    agents.pos_y[i] = allocator.entrances[0].door_pos.y;
     for _ in 0..5000 {
         agents.tick(&mut allocator, &mut network, &mut graph, 0.1);
-        if agents.transit[i] == 0 {
+        if agents.transit[i] == TRANSIT_IN_BUILDING && agents.current_building[i] == 1 {
             break;
         }
     }
-    assert!(agents.transit[i] == 0);
+    assert_eq!(agents.transit[i], TRANSIT_IN_BUILDING);
+    assert_eq!(agents.current_building[i], 1);
 }
 
 // ── IDM tests ────────────────────────────────────────────────────────────────

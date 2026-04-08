@@ -16,6 +16,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::agents::MODE_CAR;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -26,6 +27,28 @@ use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
+
+fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
+    let building_id = if egress {
+        core.agents.current_building[agent_idx]
+    } else {
+        core.agents.target_building[agent_idx]
+    };
+    let entrance = core.allocator.entrances.get(building_id)?;
+    if egress {
+        if core.agents.transit_mode[agent_idx] == MODE_CAR {
+            let lane_id = core.agents.planned_attach_lane_id[agent_idx] as usize;
+            let lane_d = core.agents.planned_attach_lane_d[agent_idx];
+            let lane = core.transit_network.lane_system.lanes.get(lane_id)?;
+            let lane_pos = BuildingAllocator::sample_pos_on_lane(lane, lane_d);
+            Some(Vector3::new(lane_pos.x, 0.0, lane_pos.y))
+        } else {
+            Some(Vector3::new(entrance.curb_pos.x, 0.0, entrance.curb_pos.y))
+        }
+    } else {
+        Some(Vector3::new(entrance.door_pos.x, 0.0, entrance.door_pos.y))
+    }
+}
 
 /// A snapshot of simulation state for undo/redo purposes.
 pub struct SimulationSnapshot {
@@ -262,9 +285,7 @@ impl SimCore {
     /// Called from the background thread at the end of every movement tick.
     /// Uses only pure Rust types so the resulting snapshot is `Send`.
     pub fn build_snapshot(&self) -> RenderSnapshot {
-        use crate::simulation::economy::agents::{
-            MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS,
-        };
+        use crate::simulation::economy::agents::{TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS};
 
         let mut pedestrian_transforms: HashMap<u8, Vec<f32>> = HashMap::new();
         let mut car_transforms: HashMap<u8, Vec<f32>> = HashMap::new();
@@ -330,10 +351,8 @@ impl SimCore {
                 } else {
                     let transit = self.agents.transit[i];
                     if transit == TRANSIT_ACCESS_EGRESS {
-                        let node_idx = self.agents.current_node[i] as usize;
-                        if node_idx < self.region_graph.node_count() {
-                            let npos = self.region_graph.node(node_idx as u32).pos;
-                            let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
+                        if let Some(target) = access_phase_target(self, i, true) {
+                            let dir = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
                             if dir.length_squared() > 1e-6 {
                                 basis_z = dir.normalized();
                                 let right = Vector3::UP.cross(basis_z);
@@ -344,10 +363,8 @@ impl SimCore {
                             }
                         }
                     } else if transit == TRANSIT_ACCESS_INGRESS {
-                        let b_id = self.agents.target_building[i];
-                        if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
-                            let b = &self.allocator.buildings[b_id];
-                            let dir = Vector3::new(b.center_x - world_x, 0.0, b.center_y - world_z);
+                        if let Some(target) = access_phase_target(self, i, false) {
+                            let dir = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
                             if dir.length_squared() > 1e-6 {
                                 basis_z = dir.normalized();
                                 let right = Vector3::UP.cross(basis_z);
@@ -423,10 +440,8 @@ impl SimCore {
                 } else {
                     let transit = self.agents.transit[i];
                     if transit == TRANSIT_ACCESS_EGRESS {
-                        let node_idx = self.agents.current_node[i] as usize;
-                        if node_idx < self.region_graph.node_count() {
-                            let npos = self.region_graph.node(node_idx as u32).pos;
-                            let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
+                        if let Some(target) = access_phase_target(self, i, true) {
+                            let dir = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
                             if dir.length_squared() > 1e-6 {
                                 basis_z = -dir.normalized();
                                 let right = Vector3::UP.cross(basis_z);
@@ -437,10 +452,8 @@ impl SimCore {
                             }
                         }
                     } else if transit == TRANSIT_ACCESS_INGRESS {
-                        let b_id = self.agents.target_building[i];
-                        if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
-                            let b = &self.allocator.buildings[b_id];
-                            let dir = Vector3::new(b.center_x - world_x, 0.0, b.center_y - world_z);
+                        if let Some(target) = access_phase_target(self, i, false) {
+                            let dir = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
                             if dir.length_squared() > 1e-6 {
                                 basis_z = -dir.normalized();
                                 let right = Vector3::UP.cross(basis_z);

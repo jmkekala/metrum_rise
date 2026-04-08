@@ -3,7 +3,31 @@
 //! Handles pedestrian and car instance transform generation, and agent path visual debug.
 
 use crate::nodes::sim::core::SimCore;
+use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::economy::agents::MODE_CAR;
 use godot::prelude::*;
+
+fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
+    let building_id = if egress {
+        core.agents.current_building[agent_idx]
+    } else {
+        core.agents.target_building[agent_idx]
+    };
+    let entrance = core.allocator.entrances.get(building_id)?;
+    if egress {
+        if core.agents.transit_mode[agent_idx] == MODE_CAR {
+            let lane_id = core.agents.planned_attach_lane_id[agent_idx] as usize;
+            let lane_d = core.agents.planned_attach_lane_d[agent_idx];
+            let lane = core.transit_network.lane_system.lanes.get(lane_id)?;
+            let lane_pos = BuildingAllocator::sample_pos_on_lane(lane, lane_d);
+            Some(Vector3::new(lane_pos.x, 0.0, lane_pos.y))
+        } else {
+            Some(Vector3::new(entrance.curb_pos.x, 0.0, entrance.curb_pos.y))
+        }
+    } else {
+        Some(Vector3::new(entrance.door_pos.x, 0.0, entrance.door_pos.y))
+    }
+}
 
 impl SimCore {
     // ── Agent Renderer ──
@@ -11,7 +35,6 @@ impl SimCore {
     /// Returns the 12-float transforms for all visible non-car agents.
     /// Kept for direct (non-snapshot) callers; `build_snapshot` is the hot path.
     pub fn get_agent_transforms_internal(&self) -> PackedFloat32Array {
-        use crate::simulation::economy::agents::MODE_CAR;
         let mut buffer = Vec::with_capacity(self.agents.len() * 12);
 
         let w = self.heightmap.width as f32;
@@ -55,7 +78,6 @@ impl SimCore {
     /// Returns a Dictionary where keys are vehicle type IDs (u8) and values are PackedFloat32Array
     /// containing the 12-float transforms for all visible car agents of that type.
     pub fn get_car_transforms_internal(&self) -> VarDictionary {
-        use crate::simulation::economy::agents::MODE_CAR;
         let mut type_buffers: std::collections::HashMap<u8, Vec<f32>> =
             std::collections::HashMap::new();
 
@@ -125,10 +147,8 @@ impl SimCore {
                 };
                 let transit = self.agents.transit[i];
                 if transit == TRANSIT_ACCESS_EGRESS {
-                    let node_idx = self.agents.current_node[i] as usize;
-                    if node_idx < self.region_graph.node_count() {
-                        let npos = self.region_graph.node(node_idx as u32).pos;
-                        let dir = Vector3::new(npos.x - world_x, 0.0, npos.z - world_z);
+                    if let Some(target) = access_phase_target(self, i, true) {
+                        let dir = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
                         if dir.length_squared() > 1e-6 {
                             basis_z = -dir.normalized();
                             basis_x = Vector3::UP.cross(basis_z).normalized();
@@ -136,10 +156,8 @@ impl SimCore {
                         }
                     }
                 } else if transit == TRANSIT_ACCESS_INGRESS {
-                    let b_id = self.agents.target_building[i];
-                    if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
-                        let b = &self.allocator.buildings[b_id];
-                        let dir = Vector3::new(b.center_x - world_x, 0.0, b.center_y - world_z);
+                    if let Some(target) = access_phase_target(self, i, false) {
+                        let dir = Vector3::new(target.x - world_x, 0.0, target.z - world_z);
                         if dir.length_squared() > 1e-6 {
                             basis_z = -dir.normalized();
                             basis_x = Vector3::UP.cross(basis_z).normalized();
@@ -204,20 +222,16 @@ impl SimCore {
 
                 // A. DEPARTING / ARRIVING direct lines (Yellow)
                 if self.agents.transit[i] == TRANSIT_ACCESS_EGRESS {
-                    // Heading to node current_node + possibly a lane offset point
-                    let target_node = self.agents.current_node[i] as usize;
-                    if target_node < self.region_graph.node_count() {
-                        let target_pos = get_h(self.region_graph.node(target_node as u32).pos);
+                    if let Some(target) = access_phase_target(self, i, true) {
+                        let target_pos = get_h(target);
                         points.push(current_pos);
                         points.push(target_pos);
                         colors.push(color_direct);
                         colors.push(color_direct);
                     }
                 } else if self.agents.transit[i] == TRANSIT_ACCESS_INGRESS {
-                    let b_id = self.agents.target_building[i];
-                    if b_id != usize::MAX && b_id < self.allocator.buildings.len() {
-                        let b = &self.allocator.buildings[b_id];
-                        let target_pos = get_h(Vector3::new(b.center_x, 0.0, b.center_y));
+                    if let Some(target) = access_phase_target(self, i, false) {
+                        let target_pos = get_h(target);
                         points.push(current_pos);
                         points.push(target_pos);
                         colors.push(color_direct);

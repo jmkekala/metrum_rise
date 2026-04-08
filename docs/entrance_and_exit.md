@@ -1424,6 +1424,7 @@ Goal: one coherent trip from door to door.
 - Delete the node-only building fallback paths that were only needed by the old model.
 - Delete "hide on failure" for ordinary replannable situations.
 - Delete any remaining `building_depart_node()` / frontage-node compatibility branches from tick logic, render/debug helpers, and test scaffolding once the exact entrance-plan movement is live.
+- Delete the remaining no-plan compatibility branches kept only for old trips, old saves, or migration overlap, so valid runtime behavior no longer depends on "if `ACCESS_PLAN_VALID` is missing, fall back to the pre-Phase-5 frontage/curb model".
 - Delete the remaining `NETWORK`-side midpoint-arrival, frontage-node arrival-lane reinsertion, and other destination frontage compatibility branches that can still bypass the exact `planned_detach_lane_id` / `planned_detach_lane_d` handoff.
 - Delete any path-missing or path-exhausted compatibility handlers that rebuild a node-only destination approach for trips that already carry a valid exact access plan.
 - Delete legacy arrival-side mode conversion and center-based ingress assumptions, including the old "`MODE_CAR` trip becomes `MODE_WALK` on final arrival" behavior and any fallback that still treats building center as the canonical ingress target for valid assets.
