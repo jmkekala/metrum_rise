@@ -136,6 +136,10 @@ pub struct AgentSystem {
     pub edge_speed_sum: Vec<f32>,
     /// Scratch buffer: per-edge agent count for congestion calculation, indexed by edge ID.
     pub edge_agent_cnt: Vec<u32>,
+    /// Scratch buffer: per-lane speed sum for the low-frequency frontage delay cache.
+    pub lane_speed_sum: Vec<f32>,
+    /// Scratch buffer: per-lane vehicle count for the low-frequency frontage delay cache.
+    pub lane_vehicle_cnt: Vec<u32>,
 }
 
 impl Deref for AgentSystem {
@@ -165,6 +169,8 @@ impl AgentSystem {
             conn_occupied: Vec::new(),
             edge_speed_sum: Vec::new(),
             edge_agent_cnt: Vec::new(),
+            lane_speed_sum: Vec::new(),
+            lane_vehicle_cnt: Vec::new(),
         }
     }
 

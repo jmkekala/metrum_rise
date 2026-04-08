@@ -109,7 +109,7 @@ mod tests {
             let mut test_agents = AgentSystem::new();
             test_agents.agents = agents.agents.clone();
             for _ in 0..50 {
-                test_agents.tick(&mut allocator, &network, &mut graph, 0.1);
+                test_agents.tick(&mut allocator, &mut network, &mut graph, 0.1);
                 if test_agents.transit[a_id] == TRANSIT_NETWORK {
                     break;
                 }
@@ -120,7 +120,7 @@ mod tests {
                 "[{label}] agent never reached ON_ROAD"
             );
             // One extra tick to initialize the lane in the ON_ROAD state.
-            test_agents.tick(&mut allocator, &network, &mut graph, 0.1);
+            test_agents.tick(&mut allocator, &mut network, &mut graph, 0.1);
 
             let lane_id = test_agents.current_lane_id[a_id];
             let lane = &network.lane_system.lanes[lane_id];

@@ -129,6 +129,7 @@ pub fn build_one_lane(
         lane_idx,
         geometry,
         length,
+        frontage_delay_penalty_s: 0.0,
         cum_dist,
         lane_type,
         is_crosswalk: false,

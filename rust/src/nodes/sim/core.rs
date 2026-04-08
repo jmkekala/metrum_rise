@@ -645,8 +645,12 @@ pub fn run_sim_thread(
                 // frame, so the lock is still held across the catch boundary.
                 let tick_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     let c = &mut *core;
-                    c.agents
-                        .tick(&c.allocator, &c.transit_network, &mut c.region_graph, dt);
+                    c.agents.tick(
+                        &c.allocator,
+                        &mut c.transit_network,
+                        &mut c.region_graph,
+                        dt,
+                    );
                 }));
                 if let Err(e) = tick_result {
                     let msg = e

@@ -1,3 +1,5 @@
+//! Lane geometry, lane connectivity, and per-lane derived planning caches.
+
 use godot::prelude::*;
 use std::collections::HashMap;
 
@@ -32,6 +34,8 @@ pub struct Lane {
     pub geometry: Vec<Vector3>,
     /// Total length in meters.
     pub length: f32,
+    /// Low-frequency cached frontage congestion penalty in seconds used only by exact access planning.
+    pub frontage_delay_penalty_s: f32,
     /// Cumulative distance at each geometry vertex: `cum_dist[i]` = distance from `geometry[0]` to `geometry[i]`.
     /// Used for O(log N) position interpolation via binary search.
     pub cum_dist: Vec<f32>,
@@ -53,6 +57,7 @@ impl Default for Lane {
             lane_idx: 0,
             geometry: Vec::new(),
             length: 0.0,
+            frontage_delay_penalty_s: 0.0,
             cum_dist: Vec::new(),
             lane_type: LaneType::Vehicle,
             is_crosswalk: false,

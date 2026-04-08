@@ -146,6 +146,7 @@ pub fn build_vehicle_connections_at_node(
                 lane_idx: 0,
                 geometry: conn_geom,
                 length: conn_len,
+                frontage_delay_penalty_s: 0.0,
                 cum_dist: conn_cum,
                 lane_type: LaneType::Vehicle,
                 is_crosswalk: false,

@@ -48,6 +48,8 @@ pub struct TransitNetwork {
     pub bulk_dirty_edges: HashSet<usize>,
     /// Per-zone-type flow fields for O(1) agent routing. Rebuilt lazily when dirty.
     pub flow_fields: FlowFieldSystem,
+    /// Fixed-cadence accumulator for the frontage delay cache used by exact access planning.
+    pub frontage_delay_elapsed_s: f32,
 }
 
 impl TransitNetwork {
@@ -61,6 +63,7 @@ impl TransitNetwork {
             bulk_load: false,
             bulk_dirty_edges: HashSet::new(),
             flow_fields: FlowFieldSystem::new(),
+            frontage_delay_elapsed_s: 0.0,
         }
     }
 
@@ -100,6 +103,7 @@ impl TransitNetwork {
         self.cch_dirty_chunks.clear();
         self.metric_dirty = false;
         self.lane_system.clear();
+        self.frontage_delay_elapsed_s = 0.0;
         zoning.clear();
         allocator.clear();
     }

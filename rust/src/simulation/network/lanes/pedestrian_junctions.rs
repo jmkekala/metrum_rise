@@ -227,6 +227,7 @@ pub fn build_pedestrian_connections_at_node(
                 lane_idx: 0,
                 geometry: steps,
                 length: step_len,
+                frontage_delay_penalty_s: 0.0,
                 cum_dist: steps_cum,
                 lane_type: LaneType::Foot,
                 is_crosswalk: true,
@@ -252,6 +253,7 @@ pub fn build_pedestrian_connections_at_node(
                 lane_idx: 0,
                 geometry: steps2,
                 length: step_len,
+                frontage_delay_penalty_s: 0.0,
                 cum_dist: steps_cum2,
                 lane_type: LaneType::Foot,
                 is_crosswalk: false, // reverse not rendered, only forward stripe shown
@@ -320,6 +322,7 @@ pub fn build_pedestrian_connections_at_node(
                 lane_idx: 0,
                 geometry: s,
                 length: step_len,
+                frontage_delay_penalty_s: 0.0,
                 cum_dist: steps_cum,
                 lane_type: LaneType::Foot,
                 is_crosswalk: false,
