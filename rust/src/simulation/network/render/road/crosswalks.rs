@@ -1,7 +1,6 @@
 //! Intersection crosswalk markings and pedestrian path rendering.
 
 use super::*;
-use godot::prelude::*;
 
 pub(super) fn emit_crosswalk_markings(
     mesh: &mut NetworkMeshData,

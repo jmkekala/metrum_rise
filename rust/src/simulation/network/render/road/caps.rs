@@ -1,7 +1,6 @@
 //! Terminal cap geometry and circular fill primitives.
 
 use super::*;
-use godot::prelude::*;
 use std::f32::consts::TAU;
 
 pub(super) fn emit_disk(

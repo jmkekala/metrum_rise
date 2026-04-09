@@ -168,6 +168,12 @@ display_name = "House"
 file = "lod0.glb"
 distance_min_m = 0.0
 
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, 0.5]
+forward = [0.0, 0.0, 1.0]
+
 [building]
 zone_type = "residential"
 lot_width_cells = 2

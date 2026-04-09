@@ -535,7 +535,13 @@ mod tests {
             "lot_depth_cells": 2,
             "worker_capacity": 8,
             "economy_profile": "grocery_basic",
-            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
+            "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
+            "anchors": [{
+                "anchor_type": "entrance",
+                "name": "main",
+                "position": [0.0, 0.0, 0.5],
+                "forward": [0.0, 0.0, 1.0]
+            }]
         })
         .to_string();
 

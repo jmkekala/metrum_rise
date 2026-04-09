@@ -14,47 +14,69 @@ Priority values:
 - `P1`
 - `P2`
 
+Kind values:
+- `feature`
+- `bug`
+- `hardening`
+- `refactor`
+- `docs`
+
 ## Active Priorities
 
-| ID         | Status        | Priority | Owner doc                                        | Summary                                                                                                                                                                                                             |
-| ------------| ---------------| ----------| --------------------------------------------------| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `CIV-01`   | `open`        | `P1`     | [`economy.md`](economy.md)                       | Add the first service-building / coverage slice so city stability is no longer only conceptual.                                                                                                                     |
-| `DEM-01`   | `open`        | `P1`     | [`demand.md`](demand.md)                         | Move immigration admission and displacement ownership fully behind demand-layer outputs instead of allocator/transport leftovers.                                                                                   |
-| `ALLOC-01` | `open`        | `P1`     | [`building_allocator.md`](building_allocator.md) | Harden the building allocator against the known spec and ownership limitations documented in [`building_allocator.md`](building_allocator.md) before it becomes the long-term demand-driven growth execution layer. |
-| `DOC-01`   | `in_progress` | `P1`     | [`README.md`](README.md)                         | Finish the docs restructure: keep `project.md` dashboard-sized, keep roadmap IDs stable, and retire remaining numbered references in live docs.                                                                     |
+| ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
+|----|------|--------|----------|-----------|---------|---------------|
+| `CIV-01` | `feature` | `open` | `P1` | [`economy.md`](economy.md) | City stability still lacks the first real service-building and coverage slice. | At least one service-building class affects live city stability through a documented and verified coverage path. |
+| `DEM-01` | `hardening` | `open` | `P1` | [`demand.md`](demand.md) | Immigration admission and displacement ownership still leaks through allocator and transport leftovers. | Demand-layer outputs fully own immigration and displacement decisions with old cross-system leftovers removed. |
+| `ALLOC-01` | `hardening` | `open` | `P1` | [`building_allocator.md`](building_allocator.md) | The building allocator still has known spec and ownership limitations before it can become the long-term growth executor. | Documented allocator limitations are either removed or explicitly bounded in the owning spec and code. |
+| `DOC-01` | `docs` | `in_progress` | `P1` | [`README.md`](README.md) | The docs restructure is not finished and some live references still point back to old numbered backlog habits. | `project.md` stays dashboard-sized, roadmap IDs remain stable, and remaining numbered live references are retired. |
 
-## Parked / Watchlist
+## Code Quality / Technical Debt
 
-| ID | Status | Priority | Owner doc | Summary |
-|----|--------|----------|-----------|---------|
-| `QA-01` | `parked` | `P2` | [`project.md`](project.md) | Old long-run simulation-thread panic. It has not reproduced recently, including at least one overnight run, so it is no longer an active blocker. Promote it back only if it reappears with logs or a reliable repro. |
+| ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
+|----|------|--------|----------|-----------|---------|---------------|
+| `QUAL-01` | `hardening` | `open` | `P1` | [`project.md`](project.md) | The library test suite is not currently clean: `cargo test --lib` still has asset-contract and agent-movement failures. | `cargo test --lib` passes cleanly, or any intentionally deferred failures are split into stable tracked IDs and removed from the default failing set. |
+| `CODE-01` | `refactor` | `open` | `P1` | [`entrance_and_exit.md`](entrance_and_exit.md) | `rust/src/simulation/economy/agents/tick.rs` mixes trip planning, local-access geometry, unsafe SoA movement, congestion, and cache maintenance in one hotspot module. | Agent trip planning, movement, and congestion/cache responsibilities live in smaller focused modules with current behavior and test coverage preserved. |
+| `CODE-02` | `refactor` | `open` | `P2` | [`asset_editor.md`](asset_editor.md) | `godot/scripts/asset_editor.gd` combines editor shell UI, economy-catalog loading, import/export flow, and viewport interaction in one oversized bridge script. | The asset editor shell is split into smaller focused bridges/helpers without changing the current authoring workflow or content contract. |
+| `CODE-03` | `refactor` | `open` | `P2` | [`economy.md`](economy.md) | `rust/src/simulation/economy/definitions.rs` combines authored-economy schema, validation, sandbox simulation, and export/index IO in one module. | Authored economy schema, validation, sandbox execution, and export/index generation are separated into focused modules with the same external behavior. |
+
+## Validated Bugs
+
+| ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
+|----|------|--------|----------|-----------|---------|---------------|
+| `QA-01` | `bug` | `parked` | `P2` | [`project.md`](project.md) | There are historical reports of a long-run simulation-thread panic, but it has not reproduced recently enough to keep as an active blocker. | A reliable repro plus logs promotes this back to active work, or a sustained revalidation window closes it with confidence. |
+
+### `QA-01`
+
+- Evidence: historical long-run panic reports exist, but at least one overnight run completed without reproducing the issue.
+- Revalidation trigger: new logs, a reproducible save, or a fresh report from current code.
 
 ## Large-World Track
 
-| ID | Status | Priority | Owner doc | Summary |
-|----|--------|----------|-----------|---------|
-| `WORLD-01` | `open` | `P2` | [`project.md`](project.md) | Distant-region aggregate simulation for world regions outside the active area of interest. |
-| `WORLD-02` | `open` | `P2` | [`project.md`](project.md) | Promotion and demotion rules between full-FSM, flow-field, and aggregate tiers. |
-| `WORLD-03` | `open` | `P2` | [`project.md`](project.md) | World overview view and aggregate flow inspection for inactive regions. |
+| ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
+|----|------|--------|----------|-----------|---------|---------------|
+| `WORLD-01` | `feature` | `open` | `P2` | [`project.md`](project.md) | Regions outside the active area of interest still lack aggregate simulation. | Inactive regions run at aggregate fidelity with documented behavior and integration points. |
+| `WORLD-02` | `feature` | `open` | `P2` | [`project.md`](project.md) | Promotion and demotion rules between full-FSM, flow-field, and aggregate tiers are not defined in live code. | Tier transitions are implemented and documented with deterministic promotion/demotion rules. |
+| `WORLD-03` | `feature` | `open` | `P2` | [`project.md`](project.md) | There is no world overview for inspecting inactive-region aggregate state. | The world overview can inspect aggregate inactive-region state and flows at a useful gameplay level. |
 
 ## Transport Expansion Track
 
-| ID           | Status | Priority | Owner doc                  | Summary                                                              |
-| --------------| --------| ----------| ----------------------------| ----------------------------------------------------------------------|
-| `TRANSIT-01` | `open` | `P2`     | [`project.md`](project.md) | Bus support on top of a shared vehicle / waiting-state foundation.   |
-| `TRANSIT-02` | `open` | `P2`     | [`project.md`](project.md) | Rail / metro support on isolated `RAIL` routing.                     |
-| `TRANSIT-03` | `open` | `P2`     | [`project.md`](project.md) | Ship / ferry support through harbor-linked water routes.             |
-| `TRANSIT-04` | `open` | `P2`     | [`project.md`](project.md) | Air / border travel support through airport and border-node routing. |
-| `TRANSIT-05` | `open` | `P1`     | [`project.md`](project.md) | Add bicycle support as the next real transport mode on top of the existing multi-modal foundation. |
+| ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
+|----|------|--------|----------|-----------|---------|---------------|
+| `TRANSIT-01` | `feature` | `open` | `P2` | [`project.md`](project.md) | Bus support is not yet layered onto the shared vehicle and waiting-state foundation. | Bus routing, waiting, and vehicle flow run on the shared transport foundation in live gameplay. |
+| `TRANSIT-02` | `feature` | `open` | `P2` | [`project.md`](project.md) | Rail and metro support are still missing from isolated `RAIL` routing. | Rail routing and the first rail gameplay loop are implemented on isolated `RAIL` paths. |
+| `TRANSIT-03` | `feature` | `open` | `P2` | [`project.md`](project.md) | Harbor-linked ship and ferry transport does not exist yet. | Water transport is supported through harbor-linked water routes with live routing behavior. |
+| `TRANSIT-04` | `feature` | `open` | `P2` | [`project.md`](project.md) | Air and border travel support are still absent. | Airport and border-node travel paths are implemented with live routing support. |
+| `TRANSIT-05` | `feature` | `open` | `P1` | [`project.md`](project.md) | Bicycle support is still the next missing real transport mode on top of the multi-modal foundation. | Bicycles are supported as a live transport mode with routing, movement, and gameplay-facing behavior. |
 
 ## Tools And Content
 
-| ID | Status | Priority | Owner doc | Summary |
-|----|--------|----------|-----------|---------|
-| `TOOLS-01` | `open` | `P2` | [`asset_editor.md`](asset_editor.md) | Add an in-game pack-manager UI for installed content packs. |
+| ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
+|----|------|--------|----------|-----------|---------|---------------|
+| `TOOLS-01` | `feature` | `open` | `P2` | [`asset_editor.md`](asset_editor.md) | Installed content packs still lack an in-game pack-manager UI. | Players can view and manage installed content packs through an in-game pack-manager UI. |
 
 ## Notes
 
 - The old numbered backlog and bug table are archived in [`archive/project_legacy_2026-04-09.md`](archive/project_legacy_2026-04-09.md).
 - New work should never introduce fresh `item N` references. Use stable IDs instead.
+- Keep roadmap rows short: describe the current problem and a visible exit condition, then put subsystem detail in the owner doc.
 - The Criterion microbenchmark suite was expanded to cover `ACCESS_EGRESS` and `ACCESS_INGRESS`. Benchmark deltas against older saved results may therefore reflect a changed suite shape, not only a runtime regression.

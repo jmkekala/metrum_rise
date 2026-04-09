@@ -880,6 +880,9 @@ than unresolved core zoning behavior.
 - A later pass should decide whether they remain reserved metadata or become active inputs for
   rezoning suggestions, redevelopment rules, or authored profile-transition permissions.
 
+### Zoning Tools spec need deterministic check
+- Inital Zoning Tool spec is a draft that needs a checking and rework.
+
 ## 12. Proposed Implementation Plan
 
 The zoning redesign is now deterministic enough to implement in phases. The safest order is to
@@ -966,7 +969,12 @@ Exit condition:
 - demand owns growth pressure and change decisions
 - allocator executes profile-legal placements against those decisions
 
-### Phase 6: Later Extensions
+### Phase 6: Legacy code cleanup
+- Remaining legacy code should be cleaned from the system.
+- tests and benchmarks are migrated to use the new system instead of relying to the old legacy code  
+
+
+### Phase 7: Later Extensions
 
 - Add district-style or family-preference systems if tighter authored neighborhood identity is
   needed.

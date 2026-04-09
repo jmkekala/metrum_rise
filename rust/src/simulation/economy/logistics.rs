@@ -11,7 +11,7 @@ use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::types::{NodeType, TransitFlags};
+use crate::simulation::network::types::NodeType;
 
 /// First-pass shipped resource used by the starter economy chain.
 pub const RESOURCE_HOUSEHOLD_SUPPLIES: u8 = 0;
@@ -483,7 +483,7 @@ mod tests {
     use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, ZoneClass};
     use crate::simulation::buildings::allocator::Building;
     use crate::simulation::network::graph::Edge;
-    use crate::simulation::network::types::{EdgeClass, TransitType};
+    use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
     use godot::prelude::{Vector2, Vector3};
 
     fn register_test_asset(

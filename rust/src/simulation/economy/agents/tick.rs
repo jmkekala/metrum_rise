@@ -2101,8 +2101,12 @@ impl AgentSystem {
                         }
                     }
 
+                    let target_building = *s_tgt_b.get(i);
+                    let requires_exact_access_plan = target_building != usize::MAX;
+
                     if *s_transit.get(i) != TRANSIT_IMMIGRATING
                         && (*s_access_flags.get(i) & ACCESS_PLAN_VALID) == 0
+                        && requires_exact_access_plan
                     {
                         let current_lane_id = *s_lane_id.get(i);
                         let replan_start_node = if current_lane_id != usize::MAX {
@@ -2117,7 +2121,6 @@ impl AgentSystem {
                         } else {
                             *s_cur_e.get(i)
                         };
-                        let target_building = *s_tgt_b.get(i);
                         if sim_time < *s_next_replan_time.get(i) {
                             *s_speed.get_mut(i) = 0.0;
                             return;
