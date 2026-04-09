@@ -1,0 +1,259 @@
+# Base-game zoning profile registry.
+#
+# This file is the shipped source of truth for player-facing zoning subcategories,
+# their broad legality envelope, and the UI presentation data used by the zoning tool.
+
+[[profiles]]
+id = "res_low_housing"
+display_name = "Low Density Housing"
+ui_order = 10
+zone_type = "residential"
+density = "low"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "residential_low_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#2DBE60"
+icon = "housing_low"
+description = "Small detached and semi-detached housing."
+
+[[profiles]]
+id = "res_medium_housing"
+display_name = "Medium Density Housing"
+ui_order = 20
+zone_type = "residential"
+density = "medium"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "residential_medium_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#239454"
+icon = "housing_medium"
+description = "Townhouses, walk-ups, and other medium-density homes."
+
+[[profiles]]
+id = "res_high_housing"
+display_name = "High Density Housing"
+ui_order = 30
+zone_type = "residential"
+density = "high"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "residential_high_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#187442"
+icon = "housing_high"
+description = "Dense apartment and tower-style housing."
+
+[[profiles]]
+id = "com_low_commercial"
+display_name = "Low Density Commercial"
+ui_order = 10
+zone_type = "commercial"
+density = "low"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "commercial_low_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#2F7DF6"
+icon = "commercial_low"
+description = "Small roadside shops and local services."
+
+[[profiles]]
+id = "com_medium_commercial"
+display_name = "Medium Density Commercial"
+ui_order = 20
+zone_type = "commercial"
+density = "medium"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "commercial_medium_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#265FD2"
+icon = "commercial_medium"
+description = "Main-street blocks and larger retail frontages."
+
+[[profiles]]
+id = "com_high_commercial"
+display_name = "High Density Commercial"
+ui_order = 30
+zone_type = "commercial"
+density = "high"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "commercial_high_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#1D46A8"
+icon = "commercial_high"
+description = "Dense commercial clusters and major shopping streets."
+
+[[profiles]]
+id = "ind_low_industrial"
+display_name = "Low Density Industrial"
+ui_order = 10
+zone_type = "industrial"
+density = "low"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "industrial_low_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#D8B22B"
+icon = "industrial_low"
+description = "Smaller workshops, light production, and local logistics."
+
+[[profiles]]
+id = "ind_medium_industrial"
+display_name = "Medium Density Industrial"
+ui_order = 20
+zone_type = "industrial"
+density = "medium"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "industrial_medium_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#BE8E14"
+icon = "industrial_medium"
+description = "General-purpose production, storage, and processing."
+
+[[profiles]]
+id = "ind_high_industrial"
+display_name = "High Density Industrial"
+ui_order = 30
+zone_type = "industrial"
+density = "high"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "industrial_high_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#915F0D"
+icon = "industrial_high"
+description = "Large industrial plants and heavy logistics clusters."
+
+[[profiles]]
+id = "off_low_office"
+display_name = "Low Density Office"
+ui_order = 10
+zone_type = "office"
+density = "low"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "office_low_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#2DB8C8"
+icon = "office_low"
+description = "Small office buildings and professional services."
+
+[[profiles]]
+id = "off_medium_office"
+display_name = "Medium Density Office"
+ui_order = 20
+zone_type = "office"
+density = "medium"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "office_medium_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#239AAA"
+icon = "office_medium"
+description = "Mid-rise office blocks and larger business districts."
+
+[[profiles]]
+id = "off_high_office"
+display_name = "High Density Office"
+ui_order = 30
+zone_type = "office"
+density = "high"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "office_high_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#1B7A88"
+icon = "office_high"
+description = "Dense office towers and major employment clusters."
+
+[[profiles]]
+id = "mix_low_mixed"
+display_name = "Low Density Mixed Use"
+ui_order = 10
+zone_type = "mixed"
+density = "low"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "mixed_low_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#B24BD6"
+icon = "mixed_low"
+description = "Low-rise mixed-use blocks for neighborhood centers."
+
+[[profiles]]
+id = "mix_medium_mixed"
+display_name = "Medium Density Mixed Use"
+ui_order = 20
+zone_type = "mixed"
+density = "medium"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "mixed_medium_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#9737B8"
+icon = "mixed_medium"
+description = "Denser mixed-use corridors and urban blocks."
+
+[[profiles]]
+id = "mix_high_mixed"
+display_name = "High Density Mixed Use"
+ui_order = 30
+zone_type = "mixed"
+density = "high"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "mixed_high_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#7A2597"
+icon = "mixed_high"
+description = "Tall mixed-use clusters with dense vertical activity."

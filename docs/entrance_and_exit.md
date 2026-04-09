@@ -25,6 +25,9 @@ Each building is attached to one road edge and stores:
 - `facing_dir`
 - `side_offset`
 
+The authoritative placement meaning of those fields belongs to [`building_allocator.md`](building_allocator.md).
+This document only owns how entrance and trip-planning logic consume them.
+
 `frontage_t` is currently overloaded. It acts as:
 
 - the approximate frontage position along the road edge
@@ -98,7 +101,7 @@ If the expected frontage-side lane does not exist, the code falls back to a much
 
 One scalar currently stands in for:
 
-- lot attachment
+- building-footprint attachment
 - path-planning attachment
 - lane insertion point
 - arrival trigger
@@ -182,7 +185,7 @@ The clean fix is to make building entrances first-class, edge-local access objec
 
 ### Proposed data model
 
-#### 1. Make the road attachment authoritative from lot coordinates, not `frontage_t`
+#### 1. Make the road attachment authoritative from building footprint coordinates, not `frontage_t`
 
 Keep these as authoritative building attachment fields:
 
@@ -208,7 +211,7 @@ Required fields:
 - `vehicle_frontage_access`: `SameSideOnly` or `BothSides`
 - `entrance_s_m`: exact distance in meters along the parent edge centerline
 - `door_pos`: world-space canonical building entry point on the building frontage
-- `curb_pos`: world-space canonical pedestrian network/lot handoff point
+- `curb_pos`: world-space canonical pedestrian network/building-frontage handoff point
 - `foot_lane_fwd`
 - `foot_lane_bkw`
 - `car_lane_fwd`
@@ -514,7 +517,7 @@ Instead, replace the current building-access meanings with:
 
 This keeps the SoA compact and avoids save/load churn from adding another per-agent state field.
 
-`TRANSIT_IMMIGRATING` is not a building-origin access phase. It is a network-origin bootstrap state for agents spawned at a border connection with no origin `BuildingEntrance`.
+`TRANSIT_IMMIGRATING` is not a building-origin access phase. It is a network-origin border-entry state for agents spawned at a border connection with no origin `BuildingEntrance`.
 
 ##### Add these new SoA fields
 

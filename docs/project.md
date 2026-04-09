@@ -13,11 +13,11 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 ## Shipped Foundations
 
 - **Road network and routing**: modular `RegionGraph`, lane system, CCH pathfinding, road rendering, border nodes, and roadway editing are all live.
-- **Zoning and buildings**: world-space zoning grid, occupancy tracking, building placement, vacancy indexing, and no-build edge flags are live.
+- **Zoning and building allocation**: world-space zoning grid, occupancy tracking, roadside building placement, vacancy indexing, and no-build edge flags are live. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
 - **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
 - **Economy foundation**: household records, building-centric daily economy, freight jobs, `OWA` fallback, and exact entrance-side freight ETA are live. See [`economy.md`](economy.md).
-- **Demand telemetry**: demand is rebuilt from live pressure rather than blindly spawning private buildings, and now owns immigration/displacement cleanup direction. See [`demand.md`](demand.md).
+- **Demand foundation**: the live `DemandSystem` rebuilds coarse pressure telemetry from runtime state, while [`demand.md`](demand.md) defines the target ownership split for immigration and displacement cleanup.
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live.
 
 ## Current Priorities
@@ -40,8 +40,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 | Stable constants / bridge API / formats | [`reference.md`](reference.md) |
 | Entrance / exit / trip attachment | [`entrance_and_exit.md`](entrance_and_exit.md) |
 | Economy / freight / household runtime | [`economy.md`](economy.md) |
-| Demand / immigration pressure / displacement ownership | [`demand.md`](demand.md) |
+| Demand / city-growth pressure / admission-removal ownership | [`demand.md`](demand.md) |
 | Zoning | [`zoning.md`](zoning.md) |
+| Building placement / removal / frontage attachment | [`building_allocator.md`](building_allocator.md) |
 | Asset-editor workflow and pack contract | [`asset_editor.md`](asset_editor.md) |
 | Road-renderer notes | [`improved_roads.md`](improved_roads.md) |
 

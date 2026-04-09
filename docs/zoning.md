@@ -42,19 +42,11 @@ cy = ((z / zone_cell_m) + hh).round() as usize   // hh = (height - 1) / 2
 ```
 Out-of-bounds returns `None`; callers skip the slot.
 
-### `EdgeOccupancy` (`simulation/buildings/allocator.rs`)
+### Allocator-owned placement state
 
-```rust
-pub struct EdgeOccupancy {
-    pub cells_long: usize,
-    pub left:  Vec<bool>,
-    pub right: Vec<bool>,
-}
-```
-
-`BuildingAllocator::edge_occupancy: HashMap<usize, EdgeOccupancy>` — fast O(1) same-road column
-check before the rotated-rect world-grid test. Keys are remapped in `update_edge_indices` when
-`compact_edges` runs.
+Allocator-specific placement state such as `EdgeOccupancy` now belongs to
+[`building_allocator.md`](building_allocator.md). This zoning document only owns the world grid,
+occupied grid, distance-to-road grid, no-build mask, and the player-facing zoning/tool contract.
 
 ### Zone types
 
@@ -90,36 +82,22 @@ All exposed via `#[func]` in `nodes/simulation_node.rs` and backed by `nodes/sim
 
 ---
 
-## 4. Building Placement
+## 4. Allocator Interaction
 
-Executed per candidate slot along each non-deleted, non-flagged road edge:
+The full roadside placement and removal pipeline is owned by [`building_allocator.md`](building_allocator.md).
+From the zoning system's perspective, the allocator currently consumes these services:
 
-1. **Edge-occupancy pre-check** — `edge_occupancy[edge_idx].left[cell_x]` (or `.right`). O(1).
-   Skips if the column on this side is already taken.
-2. **Ownership check** — `distance_to_road_world(frontage_center) < 5`. O(1). If a closer road
-   surface exists, this slot belongs to that road's scan; skip to avoid buildings facing the wrong road.
-3. **Zone lookup** — `zoning.get_zone_world(center_x, center_z)`. O(1). Skips if `ZoneType::None`.
-4. **Road-overlap rejection** — `zoning.distance_to_road_world(center_x, center_z) < half_depth`.
-   Rejects buildings whose body would overlap a road carriageway.
-4. **Desirability gate** — `desirability grid ≥ 20`. Skips low-quality locations.
-5. **Desirability gate** — `desirability grid ≥ 20`. Skips low-quality locations.
-6. **Rotated-rect occupancy check** — `zoning.is_rect_occupied(center_x, center_z, tangent, width, depth)`.
-   Catches cross-road overlap and neighbouring buildings. O(footprint area).
-7. **Place** — push `Building`, call `zoning.mark_occupied_rect(…, true)`, set `edge_occupancy` slot.
+- `get_zone_world(...)` to test whether the frontage cell and full footprint are legally zoned
+- `distance_to_road_world(...)` to reject road-overlap cases and resolve scan-order ownership near
+  competing roads
+- `is_rect_occupied(...)` to reject overlapping building footprints
+- `mark_occupied_rect(..., true|false)` to keep the occupied grid synchronized with building
+  placement and removal
 
-### Removal
+The important zoning-side rule is:
 
-A building is removed when any of these is true:
-- Its `edge_idx` is deleted (`edge.deleted`)
-- Its edge now has `no_building_spawn = true`
-- `distance_to_road_world(center_x, center_y) < half_depth` (a new road was placed through it)
-- `get_zone_world(center_x, center_y) != b.zone_type` (zone was erased or changed)
-
-On removal:
-- `zoning.mark_occupied_rect(…, false)` — clears the occupied footprint
-- `edge_occupancy[edge_idx].left/right[cell_x] = false` — clears the column slot
-- Swap-remove from `buildings` vec — the *moved* building's zone is dirtied so its flow field
-  rebuilds with correct indices (see swap-remove bug fix, 2026-04-06)
+- zoning provides legality and occupancy data
+- allocator owns candidate-site discovery, frontage attachment, and final placement or eviction
 
 ---
 
@@ -189,9 +167,10 @@ Rebuilt by `_rebuild_no_build_overlay()` called from `set_tool_active()` and `fu
 ## 8. Save / Load
 
 - Zone grid serialised as a single flat `BLOB` in `zoning_world_grid` SQLite table (width, height, data).
-- `edge_occupancy` is **not** saved directly — it is rebuilt on load by replaying each building's
-  frontage attachment.
-- `occupied` grid is rebuilt on load by calling `mark_occupied_rect` for each loaded building.
+- allocator-owned `edge_occupancy` is **not** saved directly — see
+  [`building_allocator.md`](building_allocator.md) for the rebuild contract.
+- `occupied` grid is rebuilt on load by replaying placed building footprints through
+  `mark_occupied_rect`.
 - `distance_to_road` is rebuilt on load by `update_distance_to_road(graph)`.
 - **Migration**: if `zoning_world_grid` table is absent but `zoning_grids` (old edge-local table) is
   present, load returns an empty grid. The player must repaint zones; old edge-local data cannot be
@@ -215,13 +194,784 @@ called automatically at the end of `update_distance_to_road` (road changes) and 
 `set_no_building_spawn_internal` (player toggle). Uploaded as a 4th R8 texture (`no_build_tex`).
 
 ### 3. Occupied grid sync risk — resolved
-There is exactly one production removal path: the eviction loop in `allocator.rs::tick`. It always
-calls `mark_occupied_rect(…, false)` and clears the `edge_occupancy` slot before the `swap_remove`.
-The swap-remove remap dirties the moved building's zone so flow fields rebuild with correct indices
-and the footprint is never double-cleared. `allocator.clear()` is always preceded by
-`zoning.clear()` (in `network::clear`), so no occupied cells are left stranded on full reset.
+The live synchronization contract is now documented in [`building_allocator.md`](building_allocator.md).
+Zoning relies on allocator cleanup to clear occupied footprints before building removal and on full
+reset paths to clear allocator and zoning state together.
 
 ### 4. Corner buildings
-Not implemented (v0.01 scope). The world-grid model supports them naturally when added:
-mark `edge_occupancy` on both incident edges and call `mark_occupied_rect` once for the combined
-footprint. Requires `corner: bool` and `secondary_edge_idx: usize` on `Building`.
+Not implemented (v0.01 scope). The live zoning system does not yet support dedicated corner-site
+placement or dual-edge occupancy.
+
+---
+
+## 10. Proposed Future Zoning Schema (Not Yet Implemented)
+
+Sections 1-9 describe the live zoning implementation. This section is a forward-looking proposal for a more game-friendly zoning model that can support demand-driven household growth, private building growth, and later building level-up without hardcoding every future subtype into the core UI or runtime.
+
+The intent is to purge the old category-only zoning model as much as practical and replace it with the new profile-based model. Old-save compatibility is not a goal for this redesign.
+
+### Design Goals
+
+- keep the player-facing zoning UI simple and readable
+- keep the internal representation flexible enough to add more subcategories later
+- let zoning define what is legally allowed while demand decides whether growth actually happens
+- allow multiple building families inside one broad subcategory such as medium-density housing
+- apply the same principles across residential, commercial, industrial, office, and mixed zoning
+- keep `Mixed` as a first-class top-level zoning category rather than a special-case hack
+
+### Terminology Conventions
+
+This section uses the following terms consistently:
+
+- `top-level category`: the broad player-facing family such as `Residential` or `Industrial`
+- `zoning subcategory`: the exact player-facing choice under that family, such as `Low Density Housing`
+- `ZoneProfileId`: the authoritative painted zoning choice stored on the map
+- `ZoneType`: the broad family derived from the referenced `ZoneProfile`
+- `density`: the legal density band of the painted zoning choice
+- `building level`: how far one concrete building has upgraded or downgraded within that legal band
+- `build site`: one frontage-attached candidate roadside footprint anchored to one side of one road edge; in baseline `v1` it is identified by the road edge, side, leading frontage column, and footprint dimensions, with world-space center and facing derived from that attachment. This is a gameplay term, not a cadastral parcel system
+
+### Player-Facing Model
+
+The proposed player-facing zoning UI has two layers:
+
+- top-level category
+- zoning subcategory
+
+Player-facing interpretation:
+
+- the top-level category is a UI grouping such as `Residential` or `Industrial`
+- the zoning subcategory is the actual zoning choice the player paints onto the map
+- internally, one painted zoning subcategory maps to one authored `ZoneProfileId`
+
+Top-level categories:
+
+- `Residential`
+- `Commercial`
+- `Industrial`
+- `Office`
+- `Mixed`
+
+The player first chooses a top-level category, then one of that category's zoning subcategories.
+
+Examples of an initial v1 set:
+
+| Top-level category | Initial zoning subcategories |
+|---|---|
+| `Residential` | `Low Density Housing`, `Medium Density Housing`, `High Density Housing` |
+| `Commercial` | `Low Density Commercial`, `Medium Density Commercial`, `High Density Commercial` |
+| `Industrial` | `Low Density Industrial`, `Medium Density Industrial`, `High Density Industrial` |
+| `Office` | `Low Density Office`, `Medium Density Office`, `High Density Office` |
+| `Mixed` | `Low Density Mixed Use`, `Medium Density Mixed Use`, `High Density Mixed Use` |
+
+Important rule for the initial set:
+
+- zoning subcategories stay broad
+- `row housing` is not a separate initial zoning option
+- a zoning subcategory such as `Medium Density Housing` may contain several valid building families
+
+That means the player paints broad intent, while the simulation still has room for visual and economic variety inside the allowed band.
+
+Concrete example:
+
+- the player opens `Residential`
+- the player chooses `Low Density Housing`
+- the game paints the profile id for that exact choice, for example `res_low_housing`
+- that profile says this is a `Residential` zone, with `Low` density, using the allowed low-density residential asset pool
+- the cell does not need to store a second separate top-level residential value if the profile already says it is residential
+
+### Internal Representation
+
+The internal model should stay data-driven. The UI labels above should map to explicit zone profiles rather than to hardcoded special cases.
+
+Recommended shape:
+
+```text
+ZoneType
+  = Residential | Commercial | Industrial | Office | Mixed
+
+ZoneDensity
+  = Low | Medium | High
+
+ZoneProfileId
+  = stable authored id such as res_medium_housing
+
+ZoneProfile
+  - id
+  - display_name
+  - ui_order
+  - zone_type
+  - density
+  - required_asset_tags
+  - allowed_zone_uses_for_mixed
+  - upgrade_targets
+  - downgrade_targets
+  - growth_profile_id
+```
+
+Interpretation:
+
+- `id` is the stable authored profile identifier
+- `zone_type` is the derived top-level category
+- `density` is the broad legal density band of the painted zoning choice
+- `ui_order` determines deterministic subcategory ordering inside one top-level category; ties sort by `id`
+- `required_asset_tags` defines any extra asset-tag filters that must be present after the base zone-type and density match
+- `upgrade_targets` and `downgrade_targets` define legal future transitions
+- `growth_profile_id` points at the demand-owned growth evaluation profile described in [`demand.md`](demand.md)
+
+Authoritative runtime rule:
+
+- the painted world grid should ultimately store `ZoneProfileId`, not both `ZoneProfileId` and `ZoneType`
+- `ZoneType` should be derived from the referenced `ZoneProfile` whenever broad category logic needs it
+- the current category-only painted grid is transitional and should be removed rather than preserved indefinitely
+
+Concrete interpretation of the authoritative rule:
+
+- if the player paints `Low Density Housing`, the cell stores the corresponding `ZoneProfileId`
+- the runtime reads that profile and derives `ZoneType::Residential` from it
+- any broad residential logic should read the profile's `zone_type`, not a second conflicting painted field
+- this avoids drift between "what exact zone did the player paint?" and "what broad family does it belong to?"
+- the legal `density` comes from that same profile, while any later building `level` still belongs to the spawned building instance rather than to the painted map cell
+
+This keeps the model flexible:
+
+- the initial implementation can ship only a small profile list
+- later additions can add new subcategories such as row housing without redesigning the whole system
+- the same mechanism works for commercial, industrial, office, and mixed zoning too
+
+### ZoneProfile Data And Loading
+
+`ZoneProfile`s should be data-authored in shipped TOML files bundled with the game, following the
+same source-of-truth pattern used by the economy data in [`economy.md`](economy.md).
+
+Canonical `v1` data shape:
+
+```text
+zoning/
+  profiles.toml
+  profiles.index.bin   # optional derived cache
+```
+
+Canonical source-of-truth rules:
+
+- `zoning/profiles.toml` is the authoritative authored data
+- any compiled cache or index file is optional derived data only
+- the base-game profile set ships with the game and does not live in the user directory
+- a dedicated zoning-profile editor is not required for the first implementation
+- hand-authored TOML is acceptable while the base profile set remains small and stable
+- a future developer-facing editor may reuse existing tooling later, but exported TOML remains the authoritative data format
+
+Recommended `profiles.toml` shape:
+
+```toml
+[[profiles]]
+id = "res_low_housing"
+display_name = "Low Density Housing"
+ui_order = 10
+zone_type = "residential"
+density = "low"
+required_asset_tags = []
+allowed_zone_uses_for_mixed = []
+growth_profile_id = "residential_low_default"
+upgrade_targets = []
+downgrade_targets = []
+
+[profiles.ui]
+color = "#2DBE60"
+icon = "housing_low"
+description = "Small detached and semi-detached housing."
+```
+
+Deterministic validation rules:
+
+- every `id` must be globally unique
+- every `display_name` must be non-empty
+- every `ui_order` must be an integer `>= 0`
+- every `zone_type` must decode to a known `ZoneType`
+- every `density` must decode to a known `ZoneDensity`
+- every `profiles.ui.color` must be a valid `#RRGGBB` hex colour
+- every `profiles.ui.icon` must be a non-empty stable UI key
+- every `profiles.ui.description` must be non-empty
+- every `growth_profile_id` must resolve to a valid demand-owned `GrowthProfile`
+- every `upgrade_targets` and `downgrade_targets` entry must resolve to another valid `ZoneProfile.id`
+- `required_asset_tags` must be stored as a deduplicated set or deduplicated during load
+- `allowed_zone_uses_for_mixed` must be empty for all non-`Mixed` profiles
+- in baseline `v1`, `allowed_zone_uses_for_mixed` may remain empty for mixed profiles because mixed legality is still limited to assets authored with `building.zone_type = "mixed"`
+
+Deterministic runtime loading rules:
+
+1. Read the shipped `zoning/profiles.toml` file during startup.
+2. Validate the full file before creating the live zoning-profile registry.
+3. If any shipped base-game profile is invalid, fail validation explicitly rather than silently dropping or rewriting profiles.
+4. Build the runtime registry keyed by stable `ZoneProfile.id`.
+5. Group profiles for the UI by `zone_type`.
+6. Within each top-level category, sort profiles by `(ui_order, id)`.
+7. Reserve compiled runtime profile id `0` for `unpainted / none`.
+8. Assign compiled runtime profile ids `1..N` in the deterministic global order:
+   top-level category order `Residential, Commercial, Industrial, Office, Mixed`, then
+   `(ui_order, id)` inside each category.
+9. Use that same compiled-id assignment for the painted grid, save/load blobs, undo payloads,
+   and overlay uploads.
+10. Use the `(ui_order, id)` sorted order whenever the player-facing zoning UI presents
+    subcategories.
+
+### Asset Legality Contract
+
+The future zoning model should use the current building asset schema as the baseline legality
+contract instead of inventing a second unrelated compatibility system.
+
+Baseline asset-side legality inputs from [`asset_editor.md`](asset_editor.md):
+
+- `asset_class`
+- `building.zone_type`
+- `building.density`
+- shared asset `tags`
+- `building.level`
+- `upgrade_family` (currently stored as `asset_set` in the implemented asset format)
+- `building.lot_width_cells` and `building.lot_depth_cells`
+
+Deterministic baseline legality rule:
+
+An asset is legal for a `ZoneProfile` if and only if all of the following are true:
+
+1. `asset_class == "building"`
+2. if `ZoneProfile.zone_type != Mixed`, then `building.zone_type == ZoneProfile.zone_type`
+3. if `ZoneProfile.zone_type == Mixed`, then the baseline `v1` rule is `building.zone_type == mixed`
+4. `building.density == ZoneProfile.density`
+5. every tag in `ZoneProfile.required_asset_tags` is present in the asset's shared `tags`
+
+Interpretation:
+
+- `zone_type + density` are the hard zoning-legality keys
+- `required_asset_tags` are secondary filters that narrow an already legal pool
+- site-specific filters such as later corner detection are evaluated after this profile-legality step rather than by inventing new base zoning types
+
+Not part of baseline profile legality:
+
+- `building.level` is a growth-tier field, not a zoning-legality field
+- `upgrade_family` is an upgrade-family field, not a zoning-legality field
+- `lot_width_cells` and `lot_depth_cells` are site-fit requirements, not zone-profile legality keys
+- capacities, `economy_profile`, and anchors affect runtime behavior after placement, not whether the profile may spawn that asset at all
+
+Mixed-use note:
+
+- the baseline `v1` rule stays simple and deterministic: mixed profiles accept only assets authored with `building.zone_type = "mixed"`
+- `allowed_zone_uses_for_mixed` is reserved for a later explicit extension if the design later wants some mixed profiles to admit selected pure residential, commercial, or office assets too
+
+### Baseline Build-Site Definition
+
+In the baseline replacement model, a `build site` is not a free-floating parcel. It is one
+roadside building candidate attached to exactly one road edge and one side of that edge.
+
+Deterministic `v1` build-site identity:
+
+- `edge_idx`: the attached road edge
+- `side`: which side of that edge the site occupies
+- `leading_cell_x`: the first frontage column claimed on that edge side
+- `width_cells` and `depth_cells`: the candidate building footprint dimensions in zoning cells
+- `zone_profile_id`: the painted zoning profile that the entire candidate footprint must match
+
+Derived runtime geometry:
+
+- `frontage_t`: frontage position along the attached edge
+- `center_2d`: world-space footprint center
+- `facing_dir`: outward building-facing direction derived from the edge tangent and side
+
+Deterministic `v1` legality rules:
+
+- the parent edge must be buildable: not deleted, not `no_building_spawn`, and not degenerate
+- the footprint must fit along the edge's available frontage columns
+- every covered zoning cell in the candidate footprint must resolve to the same painted
+  `zone_profile_id`
+- the candidate footprint must not overlap another occupied building footprint
+- the candidate footprint must not overlap road-owned space or fail the current "too close to the
+  road" rejection
+- baseline `v1` build sites attach to one edge only; corner or other multi-edge sites are later
+  extensions
+
+Deterministic discovery and fallback order:
+
+- baseline legal-site discovery should enumerate candidate sites in ascending `edge_idx`, then side
+  order `[1, -1]`, then ascending `leading_cell_x`, matching the current frontage allocator's scan
+  order
+- demand-owned growth evaluation may later score those legal sites however it wants
+- if multiple legal sites remain exactly tied after demand scoring, the fallback tie-break should be
+  that same discovery order
+
+### Build-Site Ownership
+
+`Build site` is a cross-subsystem runtime concept. It should not be owned by zoning alone.
+
+Recommended ownership split:
+
+- zoning owns the painted zoning profile on the map and the occupancy helpers used to reject
+  overlapping building footprints
+- the road/network subsystem owns the authoritative road-edge geometry, edge existence, and
+  `no_building_spawn` policy that define whether roadside attachment is even possible
+- asset data owns the footprint dimensions and any extra site-fit requirements such as tags
+- the building allocator owns build-site discovery, frontage attachment, geometric fit checks, and
+  final placement or removal
+- demand owns the scoring and choice between already-legal build sites; it should not redefine the
+  underlying geometry contract
+
+Practical interpretation:
+
+- zoning should answer "is this footprint legally zoned and already occupied?"
+- roads should answer "can a building attach to this edge and where is the roadside geometry?"
+- the allocator should answer "does this concrete frontage-attached site fit without overlapping
+  roads or other buildings?"
+- demand should answer "which legal site should change first?"
+
+### Deterministic Asset Selection
+
+After demand has chosen a legal build site, asset selection must stay deterministic.
+
+Deterministic `v1` fresh-spawn selection pipeline:
+
+1. Start from the assets that are already legal for the active `ZoneProfile`.
+2. Keep only assets whose footprint and any site-specific tag filters fit the chosen build site.
+3. Keep only `level = 1` assets for ordinary fresh spawn.
+4. Group the remaining assets into building families:
+   - if `upgrade_family` is present, that is the family key
+   - if `upgrade_family` is absent, the asset behaves as a singleton family keyed by its qualified
+     asset id
+5. Build a deterministic family-preference order for the current roadside strip:
+   - the strip key is `(zone_profile_id, edge_idx, side)`
+   - sort family keys by a stable hash of `(strip key, family key)`
+   - this family order must not depend on registry insertion order, file order, or runtime RNG
+6. Try families in that deterministic order until one family has at least one candidate that fits
+   the chosen build site.
+7. Inside the chosen family, sort candidates by qualified asset id.
+8. Pick one candidate from that sorted family-local list by a stable site hash of
+   `(zone_profile_id, edge_idx, side, leading_cell_x, qualified_asset_id)`.
+
+Interpretation:
+
+- family choice is stable for one roadside strip, so most buildings along that strip prefer the same
+  family and the zoning stays visually tight by default
+- site-local hash inside the chosen family provides bounded deterministic variety between similar
+  variants
+- if the preferred family does not fit an awkward leftover site, the next family in the same stable
+  family order acts as the deterministic fallback or infill family
+- no asset-authored `selection_priority` field is needed in baseline `v1`
+
+Deterministic upgrade and downgrade rule:
+
+- upgrades and downgrades stay inside the current building's `upgrade_family`
+- ordinary upgrade moves from `level = N` to `level = N + 1`
+- ordinary downgrade moves from `level = N` to `level = N - 1`
+- if a building has no `upgrade_family`, it has no family-based upgrade or downgrade path
+- valid content should keep `level` unique within one family, so no extra tie-break is needed for a
+  correct family-level transition
+
+Future explicit higher-level direct spawn:
+
+- baseline `v1` fresh spawn does not skip directly to higher levels
+- a later demand-owned or scenario-owned rule may explicitly request direct spawn at `level > 1`
+- if that extension is added, it must choose the target spawn level before asset selection begins,
+  then run the same deterministic family-selection and site-variant rules at that requested level
+
+### Rezoning And Redevelopment
+
+This rezoning contract applies only to ordinary private zoned buildings that were spawned from a
+painted `ZoneProfile`.
+
+Exclusions:
+
+- future landmarks do not require painted zoning and do not use this rezoning path
+- future city-owned service or utility buildings are explicit player-placed assets and do not use
+  this rezoning path
+
+Deterministic incompatible-rezoning rule:
+
+- if the player repaints an occupied build site to a `ZoneProfile` that is incompatible with the
+  building's current asset, the building enters `pending_redevelopment`
+- set `rezone_grace_days_remaining = 3`
+- decrement that timer once per deterministic daily redevelopment pass
+
+While `pending_redevelopment` is active:
+
+- the building may continue operating temporarily
+- the building keeps its current residents, workers, and economy state
+- the building may not upgrade
+- if the building is removed for any reason during that grace period, the replacement must obey the
+  current painted `ZoneProfile`, not the old one
+
+Recovery rule:
+
+- if the player repaints the site back to a compatible `ZoneProfile` before the grace timer expires,
+  clear `pending_redevelopment` and reset the timer
+
+Expiry rule:
+
+- when `rezone_grace_days_remaining` reaches zero, remove the building in the deterministic daily
+  redevelopment pass
+- once removed, the site becomes an empty legal build site for the current `ZoneProfile`
+- any later replacement or respawn is governed by the current zone plus ordinary demand and
+  allocator rules
+
+Important boundary:
+
+- this short redevelopment grace applies only to zoning incompatibility
+- road deletion, road rebuild, or other frontage-attachment invalidation is not a zoning event and
+  should be handled by allocator-side attachment rules rather than by the rezoning timer
+
+### Growth Contract
+
+The intended ownership split for future zoning growth is:
+
+- zoning profile decides what is legally allowed at a build site
+- demand decides whether enough pressure exists for spawn, despawn, upgrade, or downgrade
+- demand-owned growth evaluation reads local site conditions to decide which legal build sites are attractive enough to change
+- economy decides whether the resulting building is actually viable once it exists
+
+Practical rules:
+
+- zoning should define the legal ceiling, not one exact building result
+- demand should not directly pick one exact asset id
+- zoning should not own demand weighting or local modifier weighting directly
+- asset selection should choose from the legal asset pool for that zone profile
+- upgrades should stay inside the same zone profile unless the player rezones
+- crossing from one density band to another should usually require rezoning rather than happening silently
+
+Example:
+
+- `Medium Density Housing` may allow townhouses, walk-ups, and small apartment blocks
+- a level 1 and a level 3 medium-density building may both be valid in the same painted area
+- demand and local conditions decide whether a site stays modest, upgrades, downgrades, or is replaced
+
+### Mixed As A Separate Top-Level Category
+
+`Mixed` should stay a separate top-level category in the future system.
+
+Reasons:
+
+- it is player-readable
+- it has distinct behavior from pure residential, commercial, industrial, or office areas
+- it will likely want its own asset pool and its own growth profiles
+- it avoids treating mixed-use as a hidden overlap rule that is hard to communicate to players
+
+The internal profile for a mixed zone may still allow more than one use family, but the player should continue to see it as a dedicated top-level choice.
+
+### Future Extensibility
+
+The schema should allow later additions without breaking the core model.
+
+Recommended extensibility rule:
+
+- adding a new `ZoneProfile` should be normal content expansion
+- adding a new top-level `ZoneType` should be possible, but rare
+- a new `ZoneType` is justified only when the area's gameplay and growth behavior is fundamentally different from existing families rather than just a subtype of one of them
+
+Corner-building direction:
+
+- do not introduce a dedicated corner zoning type for the base system
+- zoning should continue to define only the broad legal use and density
+- corner-ness should be treated as a later build-site condition detected by the allocator
+- asset selection may then prefer or require corner-capable assets through existing asset tags such as `corner_capable`, `requires_corner`, or `inline_only`
+- runtime placement would still need explicit dual-edge occupancy and attachment support
+- the world-grid model can support that later by marking `edge_occupancy` on both incident edges and calling `mark_occupied_rect` once for the combined footprint
+- a concrete runtime implementation would likely need `corner: bool`, `secondary_edge_idx: usize`, and either a derived `corner_angle_rad: f32` cache or equivalent corner-geometry metadata on `Building` so asset selection and orientation can distinguish different corner shapes
+
+Examples of later additions:
+
+- `Medium Density Row Housing` under `Residential`
+- `Transit-Oriented Mixed Use` under `Mixed`
+- `Campus Office` under `Office`
+- `Logistics Industry` under `Industrial`
+- `Waterfront Commercial` or other special commercial forms
+
+Examples of possible future top-level categories, if the game later needs them:
+
+- `Civic` or `Public Service`
+- `Agricultural`
+- `Special District`
+- `Entertainment` or `Tourism`
+
+Those later additions should be implemented as new `ZoneProfile` entries, not as brand-new zoning architecture.
+
+### Relationship To Demand
+
+This proposed zoning model is designed to work with the demand ownership described in [`demand.md`](demand.md).
+
+Recommended relationship:
+
+- demand computes broad household and private-building growth pressure
+- demand-owned `GrowthProfile` data determines which signals matter and how they are weighted for growth evaluation
+- zoning profiles define which kinds of buildings may answer that pressure
+- demand-owned site evaluation determines which legal build sites or roadside slots are best candidates by reading local modifiers from their owning systems
+- building upgrades and downgrades should read sustained demand plus local modifier history, not one-frame spikes
+
+Raw local signals such as pollution, crime, education, parks, transit access, utility stability, and other neighborhood conditions should remain owned by their own simulation systems. Zoning and demand should consume summaries of those signals rather than becoming the source of truth for them.
+
+### Replacement Direction From The Current Runtime
+
+The current live runtime stores only `ZoneType` in the world grid and uses that broad type for placement and cleanup.
+
+The replacement direction is:
+
+- keep the current broad zone families as `ZoneType`
+- introduce stable `ZoneProfileId` values for the actual player-painted zoning choice
+- teach building placement, growth, cleanup, and UI to read the active profile instead of only the broad `ZoneType`
+- remove category-only compatibility shims once the new model is live
+- allow old saves to break instead of carrying a long-term migration burden for the replaced zoning format
+
+The important rule is to keep the player-facing model stable:
+
+- broad categories remain familiar
+- subcategories add control without exploding the top-level toolbar
+- the simulation remains free to add more profiles later
+
+### Zoning Tool
+
+The current live zoning tool is legacy and should be fully replaced once the profile-based zoning
+model is implemented. This is a top-layer replacement, not an incremental extension of the current
+rectangle-only tool.
+
+Current live behavior:
+
+- Godot owns a hardcoded zoning toolbar that maps directly to the current `ZoneType` values
+  `0..5`
+- the paint interaction is rectangle-only: one mouse drag produces one axis-aligned world-space
+  rectangle
+- the Godot-to-Rust write payload is rectangle-specific: `(x_min, z_min, x_max, z_max, zone_type)`
+- the preview is one colored rectangle derived from the current broad `ZoneType`
+- the tool keeps its own rectangle undo ring by capturing one raw sub-rectangle before paint and
+  restoring it with a second rectangle-specific raw write call
+- Rust also currently pushes a full `ZoningSystem` snapshot for the same paint operation; that
+  duplicated zoning-undo path is legacy
+- the overlay already uses a full-grid upload model, but the zoning layer itself is currently one
+  R8 `ZoneType` texture with hardcoded broad-family colours
+- save/load already persists the whole painted world grid as one blob, and that whole-grid
+  persistence model should remain
+
+Deterministic replacement contract:
+
+- the replacement tool is driven by the loaded `ZoneProfile` registry rather than by hardcoded
+  `ZoneType` button lists
+- the player-facing UI still groups choices by top-level `ZoneType`
+- within one top-level category, the subcategory list comes from the validated runtime
+  `ZoneProfile` registry sorted by `(ui_order, id)`
+- the baseline replacement supports at least `rectangle` and `brush` paint modes
+- later modes such as fill or stamp may be added, but they must reuse the same generic patch-based
+  edit API
+- committed paint edits operate on snapped zoning-grid cell coordinates, not on unsnapped
+  world-space floats
+
+Canonical replacement paint payload:
+
+- `grid_x`, `grid_y`, `width_cells`, `height_cells`: bounding box of the edited patch in zoning
+  grid coordinates
+- `write_mask`: one deterministic mask entry per cell in that bounding box; `1` means "this cell is
+  written by this edit", `0` means "leave the existing cell unchanged"
+- `target_profile_runtime_id`: the compiled runtime `ZoneProfile` id to paint into every masked
+  cell
+
+Canonical replacement undo payload:
+
+- `grid_x`, `grid_y`, `width_cells`, `height_cells`: same bounding box as the forward paint
+- `previous_profile_runtime_ids`: one stored runtime profile id per cell in that same box before
+  the edit was applied
+
+Tool/API rules:
+
+- Godot should no longer call rectangle-specific bridge methods such as `set_zone_rect`,
+  `get_zone_subrect`, or `set_zone_rect_raw`
+- Rust should instead expose one generic "apply zoning patch" write path and one generic
+  "restore zoning patch" write path
+- rectangle mode and brush mode differ only in how they generate `write_mask`; they do not get
+  separate simulation-side storage or save rules
+- ordinary paint uses `target_profile_runtime_id`
+- erase uses the reserved runtime id `0`, which means `unpainted / none`
+
+Runtime-id rule:
+
+- authored `ZoneProfile.id` stays a stable string key in TOML and UI data
+- the live zoning grid stores a compiled dense runtime profile id
+- baseline `v1` should use `u16` runtime profile ids
+- runtime profile id `0` is reserved for `unpainted / none`
+- non-zero runtime profile ids are assigned deterministically from the validated profile registry
+  using the category and `(ui_order, id)` order defined above
+
+Undo rule:
+
+- after replacement, zoning paint uses one authoritative patch-based zoning undo path
+- zone paint must not push full-grid zoning snapshots into the generic `SimCore` undo stack
+- the current duplicated setup of "tool-local rectangle undo plus Rust full-zoning snapshot undo"
+  is legacy and should be removed
+
+Overlay rule:
+
+- the full-grid upload model remains
+- the current `distance_to_road`, `occupied`, and `no_build_mask` textures remain valid
+- the separate zoning overlay mesh remains; the replacement does not recolour the terrain material
+  directly
+- the current single-channel broad-`ZoneType` overlay texture is replaced by profile-aware overlay
+  data
+- the authoritative overlay source is the compiled runtime `ZoneProfile`-id grid
+- the concrete GPU upload format may be `R16` or another equivalent packed representation; it does
+  not need to stay a single `R8` broad-zone texture
+- overlay colours, icons, tooltips, and other presentation data come from the loaded
+  `zoning/profiles.toml` registry rather than from hardcoded `ZoneType` colour tables
+- baseline presentation data should include at least `profiles.ui.color`, `profiles.ui.icon`, and
+  `profiles.ui.description`
+
+Save/load rule:
+
+- the save format continues to persist the whole painted zoning world grid as one blob
+- after replacement, that blob stores compiled `u16` runtime `ZoneProfile` ids in deterministic
+  row-major order using little-endian encoding
+- save/load does not preserve or reconstruct rectangle paint operations; it only persists the final
+  painted grid state
+
+Legacy code after replacement:
+
+- the hardcoded `ZoneType` zoning button list in the current Godot UI
+- the rectangle-only Godot zoning tool and its rectangle preview assumptions
+- rectangle-specific Rust bridge methods such as `set_zone_rect`, `get_zone_subrect`, and
+  `set_zone_rect_raw`
+- the current rectangle-shaped GDScript zoning undo payload
+- zone paint calling `push_undo_state(..., inc_zoning = true)`
+- any hardcoded "zoning id `1..5` means fixed colour X" assumptions in the current tool layer
+
+Those legacy paths should be removed rather than preserved behind compatibility shims.
+
+## 11. Remaining Follow-Up Limitations
+
+Section 10 now covers the core future zoning rules closely enough to act as the main implementation
+spec. The remaining items below are mostly tooling, bridge, and content-authoring follow-up rather
+than unresolved core zoning behavior.
+
+### Asset-editor follow-up
+
+- The baseline legality contract can already reuse the current asset fields such as `zone_type`,
+  `density`, `level`, footprint dimensions, and tags in [`asset_editor.md`](asset_editor.md).
+- The asset editor should load the shipped zoning-profile registry from `zoning/profiles.toml`
+  instead of owning hardcoded zoning-choice lists in UI code.
+- The building inspector should derive its available zoning choices from that loaded registry,
+  then still write the asset's baseline `zone_type` and `density` fields into `asset.toml`.
+- The remaining asset-editor follow-up is to expose the profile-based system more directly: show
+  compatible `ZoneProfile`s, validate required tags, and surface later site-specific filters such as
+  corner-capable assets cleanly in the UI.
+- Building-family authoring also needs cleanup in the editor: the intended building-side concept is
+  `upgrade_family` even though the implemented field name is still `asset_set`, and the editor
+  should auto-fill and preserve that family key, warn when ordinary zoned private buildings omit it,
+  and require it for `level > 1` assets.
+
+### Demand-side growth-profile follow-up
+
+- `zoning/profiles.toml` now depends on stable `growth_profile_id` values, but the shipped
+  demand-side `GrowthProfile` registry and its source file are not yet defined.
+- [`demand.md`](demand.md) still needs the matching authored data contract, validation rules, and
+  initial shipped profile ids before end-to-end profile-driven zoning growth can be implemented.
+
+### Zoning patch bridge and overlay packing follow-up
+
+- Section 10 now fixes the generic patch-based zoning-edit model, but the exact Rust and Godot
+  bridge method names and packed wire format are still implementation details to choose.
+- The overlay contract now clearly requires profile-aware data, but the exact GPU upload format
+  still needs a final implementation choice such as `R16` or an equivalent packed representation.
+
+### ZoneProfile transition-field follow-up
+
+- `upgrade_targets` and `downgrade_targets` are now part of the authored `ZoneProfile` shape, but
+  baseline `v1` zoning does not yet execute any runtime behavior from those fields.
+- The first implementation may keep them empty and validation-only.
+- A later pass should decide whether they remain reserved metadata or become active inputs for
+  rezoning suggestions, redevelopment rules, or authored profile-transition permissions.
+
+## 12. Proposed Implementation Plan
+
+The zoning redesign is now deterministic enough to implement in phases. The safest order is to
+replace the authoring and data foundation first, then replace the live tool layer, then switch the
+runtime placement and growth logic over to the profile-based model.
+
+### Phase 1: Authoring And Registry Foundation
+
+- Keep `zoning/profiles.toml` as the shipped source of truth and finalize the broad initial
+  `low / medium / high` profile set for each major top-level category.
+- Implement Rust-side `ZoneProfile` loading, validation, deterministic sorting, and compiled runtime
+  id assignment.
+- Expose read-only profile-registry queries to Godot so the UI and tools can stop hardcoding zoning
+  choices.
+- Update the asset editor to load that registry, replace hardcoded zoning lists, and align its
+  `zone_type`, `density`, and `upgrade_family` authoring UX with the new profile data.
+
+Exit condition:
+
+- shipped profiles load deterministically at startup
+- the asset editor can read the registry and no longer owns hardcoded zoning-choice lists
+
+### Phase 2: Painted-Grid And Persistence Replacement
+
+- Replace the live painted world grid from broad `ZoneType` cells to compiled `ZoneProfile`
+  runtime-id cells.
+- Keep `ZoneType` as derived broad-family data read from the loaded profile registry.
+- Update save/load so the zoning blob stores compiled `u16` profile ids in deterministic row-major
+  order.
+- Update helper queries so gameplay code can read both the exact painted profile and the derived
+  broad `ZoneType` where needed.
+
+Exit condition:
+
+- the authoritative painted zoning state is `ZoneProfile`-based everywhere in Rust
+- save/load roundtrips the new grid format without any old-format migration work
+
+### Phase 3: Zoning Tool And Overlay Replacement
+
+- Remove the rectangle-only zoning tool path and replace it with the profile-driven zoning tool
+  described in section 10.
+- Replace the hardcoded zoning toolbar with a top-level-category plus subcategory UI built from the
+  loaded registry.
+- Implement the generic patch-based zoning write and restore bridge API.
+- Support at least `rectangle` and `brush` paint modes on top of that shared patch API.
+- Replace the current duplicated zoning undo setup with one authoritative patch-based zoning undo
+  path.
+- Drive zoning overlay colours, icons, and descriptions from `zoning/profiles.toml` instead of
+  hardcoded color tables.
+
+Exit condition:
+
+- the live zoning tool is profile-driven
+- rectangle and brush both work through the same patch-based Rust API
+- the current legacy zoning tool/UI path can be deleted
+
+### Phase 4: Allocator And Legality Integration
+
+- Update build-site legality checks so candidate footprints require one exact painted
+  `ZoneProfileId` instead of only broad `ZoneType`.
+- Update stale-building cleanup, rezoning compatibility checks, and redevelopment state to use the
+  profile-based legality contract.
+- Implement the deterministic asset-selection pipeline against `ZoneProfile`, `density`,
+  `required_asset_tags`, build-site fit, and `upgrade_family`.
+- Keep corner and other multi-edge sites out of scope for this baseline pass.
+
+Exit condition:
+
+- building placement and cleanup read the new profile-based zoning contract end to end
+- spawned building selection is deterministic under the section-10 rules
+
+### Phase 5: Demand And Growth Integration
+
+- Implement the demand-owned `GrowthProfile` registry and make `growth_profile_id` from zoning
+  resolve against it.
+- Move private building spawn, despawn, upgrade, and downgrade decisions behind demand-owned growth
+  outputs instead of allocator-owned bootstrap logic.
+- Implement the rezoning and redevelopment timer path from section 10.
+- Keep direct `level > 1` spawn as a later explicit extension after the baseline demand loop works.
+
+Exit condition:
+
+- zoning defines legal envelopes
+- demand owns growth pressure and change decisions
+- allocator executes profile-legal placements against those decisions
+
+### Phase 6: Later Extensions
+
+- Add district-style or family-preference systems if tighter authored neighborhood identity is
+  needed.
+- Add corner and other multi-edge build-site support.
+- Add richer mixed-use legality if future mixed profiles should admit selected pure-use assets.
+- Add any extra zoning subcategories beyond the broad initial `low / medium / high` baseline.
+
+This phase is intentionally non-blocking for the first playable profile-based zoning replacement.

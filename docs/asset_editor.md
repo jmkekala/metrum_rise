@@ -18,6 +18,12 @@ Interpretation rules:
 - `must` means required for the v1 contract.
 - `may` means allowed but optional.
 
+Terminology note:
+
+- `lot_width_cells` and `lot_depth_cells` are authored building footprint dimensions in zoning cells; they do not imply a cadastral parcel system.
+- `plot` in this document means an editor preview footprint or buildable rectangle.
+- `category` in this document means asset-catalog grouping unless a section explicitly talks about `zone_type`.
+
 ## V1 Design Constraints
 
 The first implementation must stay narrow. The asset editor is a packaging, validation, preview, and metadata-authoring tool, not a general-purpose content pipeline for every asset type or every possible runtime behavior.
@@ -26,7 +32,7 @@ Core v1 constraints:
 
 - The editor must be a separate tool. Modders need a stable preview sandbox, not a live city with traffic, demand, and simulation noise.
 - The preview sandbox uses a `500 m x 500 m` map. That size is sufficient for scale validation, lighting checks, prop placement, and vehicle/character reference scenes.
-- Asset metadata must be authored outside raw model files. Plot size, jobs, category, pack membership, author, and licensing are manifest data, not mesh data.
+- Asset metadata must be authored outside raw model files. Building footprint size, jobs, asset category, pack membership, author, and licensing are manifest data, not mesh data.
 - Pack enable-disable support is required. The content system must support curation at the pack level from the beginning.
 
 V1 non-goals and hard limits:
@@ -58,7 +64,7 @@ Runtime shape:
   - Sidewalk + lane scene
   - Day/night lighting scene
 
-The editor follows an in-engine preview model while still keeping explicit metadata files instead of hiding lot and asset data inside scene files.
+The editor follows an in-engine preview model while still keeping explicit metadata files instead of hiding footprint metadata and asset data inside scene files.
 
 ## Scope Split
 
@@ -1072,31 +1078,19 @@ Building workflow:
 2. Set initial frontage from current camera view if the imported front is not already correct
 3. Choose `zone_type`
 4. Set `lot_width_cells` and `lot_depth_cells`
-5. Snap the mesh into a preview plot of that exact size
-6. Enter capacity and category metadata
+5. Snap the mesh into a preview footprint rectangle of that exact size
+6. Enter capacity and asset-category metadata
 7. Run validation for footprint overflow, frontage orientation, and sidewalk clearance
 
-Required simulation-side redesign:
+Runtime placement note:
 
-- Replace the fixed `ZONING_DEPTH` constant with per-edge-side dynamic `depth_cells` allocated on demand from actually painted zoning.
-- Keep the road-aligned zoning coordinate system `(edge_idx, side, x, y)` because frontage and road-facing orientation still matter for building placement.
-- Spawn logic does not assume a fixed depth budget.
-- Spawn logic asks only whether a contiguous `lot_width_cells x lot_depth_cells` rectangle of matching zoning exists.
-- If the player paints five adjacent `1x5` columns, a `5x5` building is allowed to consume all five columns as one footprint.
-- Fit checks must be rectangle-based, not area-based. A `3x3` building must fail on a `3x2` zoned area, and it must also fail on a row of three `1x2` parcels even though there are three adjacent columns. Every cell in the full required `3x3` rectangle must exist, be zoned correctly, be unobstructed, and be unoccupied.
-- Three adjacent `1x3` columns are valid for a `3x3` building only because together they form a real contiguous `3x3` rectangle. Summing parcel counts or total painted area is never enough by itself.
-- Obstruction caching and zoning rendering iterate only over that edge-side's allocated `depth_cells`, not a global zoning-depth limit.
-
-Zoning storage shape:
-
-- `cells_long` remains per edge.
-- `depth_cells` is stored per edge-side and increases when zoning is painted beyond the current allocated depth.
-- The painted, occupied, and blocked cell arrays are sized to `cells_long * depth_cells` for that edge-side only.
-- Painting beyond the current depth grows that edge-side's arrays immediately and initializes new cells as empty / unoccupied / unblocked.
-- Clearing zoning does not need to shrink arrays on every edit, but save/load and rebuild paths should store the true local `depth_cells` for that edge-side rather than a global cap.
-- Save data should therefore carry per-edge-side `depth_cells` plus the corresponding cell arrays, not one global zoning-depth assumption.
-- Edge split/merge migration must remap those per-edge-side arrays instead of recreating them from scratch, otherwise authored larger footprints will break during road edits.
-- Solid zoning should retain parcel/block IDs so the allocator can prefer coherent rectangles and the renderer can keep separate painted parcels visually distinct.
+- The allocator-side build-site contract is owned by [`building_allocator.md`](building_allocator.md).
+- The zoning storage and paint-model contract is owned by [`zoning.md`](zoning.md).
+- For asset authoring, the stable runtime-facing rule is simple: `lot_width_cells` and
+  `lot_depth_cells` define the required contiguous footprint that the live allocator must find at a
+  legal roadside build site.
+- The asset editor does not own zoning storage layout, roadside scan order, or allocator tie-break
+  rules.
 
 ### Props / Parks / Detail Objects
 
@@ -1297,6 +1291,7 @@ Thumbnail generation rules:
 V1 inspector and viewport contract:
 
 - Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`zone_type`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `residents_capacity`, `worker_capacity`), optional material paths, entrance/service/prop_socket anchors, and `[[lods]]`.
+- The zoning-choice controls in building mode should load their available categories and density-band combinations from the shipped zoning-profile registry rather than from hardcoded editor-only lists.
 - Building mode viewport shows the lot rectangle, frontage arrow, sidewalk/road reference, entrance anchor gizmo, orientation validation, and footprint overflow warnings.
 - Prop mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), prop fields (`category`, `bounding_size_m`, `snap_mode`, `terrain_behavior`), and optional material paths.
 - Prop mode viewport shows ground contact, snap target, pivot, authored bounds, and orientation validation.
@@ -1493,7 +1488,7 @@ Required fields for every asset:
 Optional common fields:
 
 - `thumbnail`: relative path to preview image
-- `asset_set`: lower-case slug for content grouping
+- `asset_set`: lower-case slug for content grouping. For buildings, the current runtime still uses this field name for upgrade-family identity, but the intended clearer building-side concept is `upgrade_family`
 - `tags`: array of strings
 
 Optional `[attribution]` table:
@@ -1571,16 +1566,26 @@ Optional fields:
 Optional upgrade fields:
 
 - `level`: integer `>= 1`, default `1`. Declares which growth tier this asset represents within its family.
+- `upgrade_family`: string, recommended for ordinary zoned private buildings. Current runtime compatibility note: this is still stored as top-level `asset_set` in the implemented schema today
 
 Building families and upgrade levels:
 
-- `asset_set` (shared field on every `asset.toml`) is the family key for buildings. Assets with the same `asset_set` and the same `zone_type` form an upgrade family.
-- `level` must be unique within a family. Two assets with the same `asset_set` and `level` are a conflict; the runtime logs a warning. The second asset loaded wins.
-- A building at level N upgrades to level N+1 in the same family when the runtime finds a registered asset with the same `asset_set` and `level = N+1`. No pointer in the manifest is required.
+- `upgrade_family` is the intended family key for buildings. In the current runtime and file format this still uses the field name `asset_set`.
+- Assets with the same `upgrade_family` and the same `zone_type` form an upgrade family.
+- `level` must be unique within a family. Two assets with the same `upgrade_family` and `level` are a conflict; the runtime logs a warning. The second asset loaded wins.
+- A building at level N upgrades to level N+1 in the same family when the runtime finds a registered asset with the same `upgrade_family` and `level = N+1`. No pointer in the manifest is required.
 - Each family member is independently authorable. Creating a level-2 variant later never requires editing the level-1 file.
-- A building with no `asset_set` belongs to no family and never upgrades. This is valid and common for unique landmark assets.
+- A building with no `upgrade_family` belongs to no family and never upgrades. This is valid for true one-off buildings and landmarks, but it is risky as an accidental omission on ordinary zoned private buildings.
 - `lot_width_cells` and `lot_depth_cells` must be identical for all members of a family. The footprint does not change on upgrade; only the mesh and capacities change.
 - `residents_capacity` and `worker_capacity` are tier-specific. A level-2 building may house more residents than a level-1 building of the same family.
+
+Recommended editor behavior:
+
+- auto-fill `upgrade_family` when a new building asset is created instead of leaving it blank
+- preserve the same `upgrade_family` when creating a higher-level variant from an existing building
+- warn when a normal zoned private building has no `upgrade_family`
+- require `upgrade_family` when `level > 1`
+- keep an explicit way to clear the field for true one-off buildings or landmarks that should never upgrade
 
 #### Capacity estimation
 
@@ -1610,7 +1615,10 @@ Building rules:
 - `zone_type = "residential"` requires `residents_capacity` and must not use `worker_capacity`.
 - `zone_type = "commercial"`, `industrial`, and `office` require `worker_capacity`.
 - `zone_type = "mixed"` may use both capacities, but at least one must be present.
-- `density` is independent of `zone_type`. A `residential / high` building is a high-density apartment; `residential / low` is a detached house. The zoning system uses both fields together to determine placement eligibility.
+- `density` is independent of `zone_type`. A `residential / high` building is a high-density apartment; `residential / low` is a detached house. The zoning system uses `zone_type + density` together as the baseline placement-legality keys.
+- `level` is a growth-tier field inside an upgrade family. It does not make an otherwise illegal zone-type or density combination legal.
+- shared asset `tags` may later act as additional zoning or build-site filters when a `ZoneProfile` explicitly requires them, but tags do not override `zone_type` or `density`.
+- The asset editor should validate `zone_type` and `density` against the loaded shipped zoning-profile registry so content authoring stays aligned with the live zoning data rather than with hardcoded editor defaults.
 - `service_class = "none"` is the default for ordinary zoned private buildings.
 - Exactly one `[[anchors]]` entry with `type = "entrance"` and `name = "main"` is required.
 - Additional building-side access points for freight, garages, or utilities use `type = "service"`, not a second generic `entrance` anchor.

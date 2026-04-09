@@ -292,7 +292,7 @@ The city owns one explicit treasury ledger.
 Rules:
 
 - the city treasury is a separate ledger from household budgets and building budgets
-- bootstrap treasury funds initialize that ledger at game start
+- startup treasury funds initialize that ledger at game start
 - income tax, property tax, real estate tax, `VAT`, tariffs, and similar city-owned fiscal inflows deposit into the city treasury
 - ordinary utility service payments do not deposit into the city treasury by default; only any tax portion or future city-owned utility revenue would do so
 - subsidies and other city-funded support measures withdraw from the city treasury
@@ -303,16 +303,16 @@ Rules:
 
 This makes fiscal policy a real money flow instead of a pure abstract modifier layer.
 
-### Bootstrap funds
+### Startup funds
 
 The first economy pass should define explicit startup money instead of leaving early cash flow implicit.
 
 - immigrating households arrive with starter savings
-- the city starts with a modest bootstrap treasury for early construction and city-level obligations
+- the city starts with a modest startup treasury for early construction and city-level obligations
 - newly created businesses begin with a small one-time startup float in their own building budget so they can purchase initial imported stock and cover the first wage cycle before local revenue stabilizes
-- this startup float is private bootstrap capital or owner equity, not a city grant and not a withdrawal from the city treasury
+- this startup float is private startup capital or owner equity, not a city grant and not a withdrawal from the city treasury
 
-These are bootstrap tuning values, not long-term substitutes for a functioning local economy.
+These are startup tuning values, not long-term substitutes for a functioning local economy.
 
 ### Infrastructure costs
 
@@ -392,44 +392,25 @@ Rules for `v0.1`:
 
 This keeps the first economy pass understandable and stable while still leaving room for later market complexity.
 
-## Bootstrap, Migration, and Demand
+## Startup Economy and Outside World Exchange
 
-An empty map cannot start with a fully self-contained local economy. The economy needs a bootstrap phase.
+An empty map cannot start with a fully self-contained local economy. The economy needs a startup phase.
 
-### Bootstrap economy
+### Startup economy
 
 At the beginning of a new city:
 
-- the outside world acts as the initial source and sink for people, goods, and money
-- external trade and immigration require at least one connected border connection
-- immigration is stronger than emigration by default, as long as the city can accept new households
-- early households arrive with starter savings and immediately create household demand
+- the outside world acts as the initial source and sink for goods, money, and externally admitted households
+- external trade requires at least one connected border connection
+- early admitted households arrive with starter savings and immediately create household demand
 - early shops and workplaces may operate in `OWA`-backed mode until local supply chains exist
-- surplus may later be exported, but exports are not required to bootstrap the city
+- surplus may later be exported, but exports are not required to start the city
 
 This prevents the economy from deadlocking on day one when no households, producers, or internal supply chains exist yet.
 
-Bootstrap immigration should taper gradually as the city develops. It should not use a fixed hard cap such as "stop after N agents." The slowdown should be driven by household count and city conditions instead.
+This section uses `startup economy` to mean early-city money, stock, freight, and `OWA` support. It does not own one-time founding placement, and it does not own the demand-side decision about whether new households should be admitted.
 
-Recommended `v0.1` immigration taper rule:
-
-```text
-immigration_attempts_per_day =
-    base_inflow
-  * housing_factor
-  * job_factor
-  * city_stability_factor
-```
-
-Where:
-
-- all factors are clamped to `0.0..1.0`
-- `housing_factor` is derived from vacant housing capacity or vacant household slots
-- `job_factor` is derived from reachable open jobs relative to incoming worker demand
-- `city_stability_factor` is derived from household supply stability, utility-service stability, and other broad city-condition signals
-- actual admitted households are still capped by real vacant housing capacity
-
-This makes immigration slow automatically as housing fills, job surplus shrinks, or city conditions deteriorate, without using a magic population cap.
+[`docs/demand.md`](demand.md) owns whether the city admits households at all and how many it admits. This document owns the startup money, stock, freight, and runtime consequences once those households already exist.
 
 ### Outside World Exchange (`OWA`)
 
@@ -450,7 +431,7 @@ Rules:
 - payments for `OWA` utility fallback leave the local economy as external service spend rather than becoming city treasury revenue
 - player tariffs may later modify effective trade cost, but tariffs do not replace the base `OWA` rules
 
-This gives the city a bootstrap source and a surplus sink without requiring a full intercity supply-chain simulation.
+This gives the city a startup source and a surplus sink without requiring a full intercity supply-chain simulation.
 
 ### Border connections and physical freight
 
@@ -483,52 +464,31 @@ Local supply chains should usually beat permanent `OWA` dependence through:
 
 Exports should work as a safety valve for surplus, not as the default engine of city growth.
 
-### Immigration and emigration
+### Household admission and removal handoff
 
-Immigration and emigration belong at the boundary between demography and economy.
+Household admission and removal affect labor supply, consumption, service load, and business viability, but the city-level decision about whether that change should happen belongs to [`docs/demand.md`](demand.md), not to this document.
 
-They affect:
+For `v0.1`, the economy-side contract is:
 
-- available labor
-- number of consuming households
-- housing demand
-- wage pressure
-- business viability
-- service load
+- household admission and household removal happen at whole-household granularity, not one unrelated resident at a time
+- economy creates and owns the admitted `Household` runtime record once demand has already decided the outcome
+- admitted households receive startup state such as shared savings and household stock through the economy rules in this document
+- the economy spec does not require a physically simulated border-entry transport visualization path in `v0.1`
+- whether a later transport layer visualizes arrival or departure through border spawns or exits is a separate transport-layer decision
+- births and other within-household demographic change are later systems, not part of the `v0.1` economy model
 
-Early game rules should favor immigration so the city can start growing. Later, migration should react to economic conditions such as:
+### Demand boundary and decisions system
 
-- available housing
-- job availability
-- household cost pressure
-- household stock stability
-- commute burden
-- service quality
-
-For `v0.1`, migration should use households as the decision unit rather than individual residents.
-
-Rules:
-
-- immigration creates or admits a whole household, not one unrelated person at a time
-- emigration removes a whole household, not isolated residents one by one
-- the economy spec does not require a physically simulated household bootstrap path through border-entry agents in `v0.1`
-- household admission and household removal are economy-layer events; whether a later transport layer visualizes those moves through border spawns or border exits is a separate system decision
-- births and other within-household demographic change are later systems, not part of the `v0.1` migration model
-
-Whether the city should admit or lose households belongs to [`docs/demand.md`](demand.md). This document owns what a household is and what runtime state it receives once the city has already decided to admit it.
-
-### Demand system and decisions system
-
-The economy should separate aggregated demand tracking from concrete decisions made by agents, households, and buildings.
+The economy should separate coarse city-level demand pressure from concrete decisions made by agents, households, and buildings.
 
 #### Demand system
 
 The demand system should track aggregated pressures such as:
 
-- household demand for essentials
-- labor demand by workplace type
+- household admission and removal pressure
+- residential, commercial, industrial, and later service-building growth pressure
 - unmet goods or service demand
-- city attractiveness for immigration and risk factors for emigration
+- broad city stability signals that other systems consume
 
 This layer should operate mostly on coarse aggregate data rather than per-agent decision logic. The detailed city-growth and migration-pressure contract belongs in [`docs/demand.md`](demand.md).
 
@@ -1516,6 +1476,75 @@ These are implementation defaults, not final balance targets:
 - initial `OWA export_bid` for `staple_food`: `3 currency / unit`
 
 These numbers are only a bootstrap reference pack. They should ship in the first editable economy data so all implementations and test scenarios start from the same baseline before the editor-driven balancing pass diverges.
+
+## Suggested Implementation Order
+
+The codebase already ships part of the `v0.1` starter loop: explicit household records, simple building budgets and stock, bounded freight reservations, `OWA` import fallback, and the first developer-side economy data path. The phases below are therefore the recommended continuation order from the current partial implementation, not a claim that every earlier phase is still untouched.
+
+### Phase 1 - Stabilize the current starter loop
+
+- Treat the explicit-household plus bounded-freight path as the only authoritative `v0.1` baseline.
+- Keep one essential chain authoritative: local producer -> local shop or distribution -> household stock.
+- Do not widen scope into dynamic pricing, per-agent daily shopping, or broad multi-resource simulation yet.
+
+Goal: keep the already-landed economy slice small, testable, and worth building on.
+
+### Phase 2 - Add the shared operational clock and schedule contract
+
+- Introduce the shared operational runtime state described earlier in this document, centered on `day_index` and `minute_of_day`.
+- Move work timing, household replenishment cadence, and freight timing preferences onto authored schedule windows and stable offsets.
+- Cache or periodically refresh travel estimates instead of opening fresh per-agent path queries on the hot path.
+
+Goal: give labor, deliveries, and later school or service timing one deterministic time base before more systems depend on it.
+
+### Phase 3 - Make authored economy profiles drive runtime behavior
+
+- Resolve asset-side `economy_profile` references into compiled runtime tables during load and placement.
+- Keep exported TOML plus the economy editor as the authoritative authoring surface and treat runtime caches as derived data only.
+- Replace hardcoded starter-loop constants incrementally with profile-backed worker caps, rates, buffers, and fixed `v0.1` price or wage values.
+- Preserve explicit unresolved-profile and broken-economy behavior instead of silent fallback.
+
+Goal: stop duplicating economy rules between runtime code, packs, and the editor data model.
+
+### Phase 4 - Generalize inventories and freight one resource at a time
+
+- Move from one stock scalar toward resource-typed building inventories, reservations, and shortage state.
+- Keep shipment creation bounded, batched, and entrance-aware; do not regress into per-order or per-agent freight.
+- Expand to additional resources only after the starter household-supply loop still works cleanly on the generalized runtime.
+
+Goal: support more than one production chain without rewriting the logistics foundation again.
+
+### Phase 5 - Add treasury ownership and daily fiscal settlement
+
+- Separate household budgets, building budgets, and the city treasury into explicit ledgers.
+- Land build cost, upkeep, utility charges, operator revenue, and later `VAT` or subsidy hooks on the daily fiscal settlement cadence.
+- Keep `v0.1` pricing and wage response fixed while this ledger split stabilizes.
+
+Goal: make money flow explicit before adding richer service or policy behavior.
+
+### Phase 6 - Add the `Utility Service Layer` and first service-building slice
+
+- Replace the current placeholder utility-availability behavior with connected local utility producers or processors plus `OWA` fallback.
+- Make city-owned and privately operated utility or service buildings real economy actors rather than invisible background rules.
+- Land `CIV-01` here so city stability is no longer only conceptual.
+
+Goal: turn baseline services into real runtime constraints without treating utilities as trucked goods.
+
+### Phase 7 - Hand immigration and displacement decisions to demand later, not sooner
+
+- Keep [`demand.md`](demand.md) as future ownership guidance until its runtime outputs actually exist.
+- When that work starts, move household admission or removal and city-growth pressure behind demand-owned daily outputs instead of allocator-local formulas.
+- Keep economy responsible for creating and updating household or building economy state once demand has already decided the outcome.
+
+Goal: cleanly separate city-growth decisions from economy state without blocking the economy work that is already underway.
+
+### Phase 8 - Remove transitional hardcoding and old assumptions
+
+- Delete remaining zone-type-only economy branches, allocator-owned immigration heuristics, and hidden fallback paths that bypass profile or runtime state.
+- Rewrite tests, save/load expectations, and tooling diagnostics around explicit households, compiled profiles, utility or service resolution, and bounded freight.
+- Keep the `v0.1` scope intentionally narrow even during cleanup; later market complexity should extend this model, not compete with it.
+
+Goal: finish with one coherent economy model instead of a mix of prototype and authored code paths.
 
 ## Legacy Cleanup Targets
 

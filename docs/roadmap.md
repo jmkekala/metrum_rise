@@ -16,12 +16,12 @@ Priority values:
 
 ## Active Priorities
 
-| ID | Status | Priority | Owner doc | Summary |
-|----|--------|----------|-----------|---------|
-| `CIV-01` | `open` | `P1` | [`economy.md`](economy.md) | Add the first service-building / coverage slice so city stability is no longer only conceptual. |
-| `MOB-01` | `open` | `P1` | [`project.md`](project.md) | Add bicycle support as the next real transport mode on top of the existing multi-modal foundation. |
-| `DEM-01` | `open` | `P1` | [`demand.md`](demand.md) | Move immigration admission and displacement ownership fully behind demand-layer outputs instead of allocator/transport leftovers. |
-| `DOC-01` | `in_progress` | `P1` | [`README.md`](README.md) | Finish the docs restructure: keep `project.md` dashboard-sized, keep roadmap IDs stable, and retire remaining numbered references in live docs. |
+| ID         | Status        | Priority | Owner doc                                        | Summary                                                                                                                                                                                                             |
+| ------------| ---------------| ----------| --------------------------------------------------| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `CIV-01`   | `open`        | `P1`     | [`economy.md`](economy.md)                       | Add the first service-building / coverage slice so city stability is no longer only conceptual.                                                                                                                     |
+| `DEM-01`   | `open`        | `P1`     | [`demand.md`](demand.md)                         | Move immigration admission and displacement ownership fully behind demand-layer outputs instead of allocator/transport leftovers.                                                                                   |
+| `ALLOC-01` | `open`        | `P1`     | [`building_allocator.md`](building_allocator.md) | Harden the building allocator against the known spec and ownership limitations documented in [`building_allocator.md`](building_allocator.md) before it becomes the long-term demand-driven growth execution layer. |
+| `DOC-01`   | `in_progress` | `P1`     | [`README.md`](README.md)                         | Finish the docs restructure: keep `project.md` dashboard-sized, keep roadmap IDs stable, and retire remaining numbered references in live docs.                                                                     |
 
 ## Parked / Watchlist
 
@@ -39,12 +39,13 @@ Priority values:
 
 ## Transport Expansion Track
 
-| ID | Status | Priority | Owner doc | Summary |
-|----|--------|----------|-----------|---------|
-| `TRANSIT-01` | `open` | `P2` | [`project.md`](project.md) | Bus support on top of a shared vehicle / waiting-state foundation. |
-| `TRANSIT-02` | `open` | `P2` | [`project.md`](project.md) | Rail / metro support on isolated `RAIL` routing. |
-| `TRANSIT-03` | `open` | `P2` | [`project.md`](project.md) | Ship / ferry support through harbor-linked water routes. |
-| `TRANSIT-04` | `open` | `P2` | [`project.md`](project.md) | Air / border travel support through airport and border-node routing. |
+| ID           | Status | Priority | Owner doc                  | Summary                                                              |
+| --------------| --------| ----------| ----------------------------| ----------------------------------------------------------------------|
+| `TRANSIT-01` | `open` | `P2`     | [`project.md`](project.md) | Bus support on top of a shared vehicle / waiting-state foundation.   |
+| `TRANSIT-02` | `open` | `P2`     | [`project.md`](project.md) | Rail / metro support on isolated `RAIL` routing.                     |
+| `TRANSIT-03` | `open` | `P2`     | [`project.md`](project.md) | Ship / ferry support through harbor-linked water routes.             |
+| `TRANSIT-04` | `open` | `P2`     | [`project.md`](project.md) | Air / border travel support through airport and border-node routing. |
+| `TRANSIT-05` | `open` | `P1`     | [`project.md`](project.md) | Add bicycle support as the next real transport mode on top of the existing multi-modal foundation. |
 
 ## Tools And Content
 

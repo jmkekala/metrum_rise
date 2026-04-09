@@ -2,6 +2,8 @@
 
 Stable lookup tables for architecture constants, Godot bridge API, and data formats. Update this file when specs change. For current status see [`project.md`](project.md); for active tracked work see [`roadmap.md`](roadmap.md); for doc ownership see [`README.md`](README.md).
 
+Terminology note: this file mirrors current code and API names on purpose. When subsystem specs use broader gameplay terms such as `build site`, this reference may still show code-facing names such as `lot_width_cells` or `get_building_plot_transforms()` until the underlying runtime API changes.
+
 ---
 
 ## Architecture Reference
@@ -13,7 +15,7 @@ Stable lookup tables for architecture constants, Godot bridge API, and data form
 | City tile size | Player-configurable | Default `20 km × 20 km`, defined by `MapConfig`. |
 | Zoning cell | `10 m × 10 m` (`zone_cell_m`) | Configurable via `MapConfig`. |
 | World-space zoning grid (default map) | `2000 × 2000` | Derived from `width_m / zone_cell_m` and `height_m / zone_cell_m`. |
-| Building lot footprint | Asset-authored | `lot_width_cells × lot_depth_cells`; no fixed global `3 × 3` footprint anymore. |
+| Building footprint in zoning cells | Asset-authored | `lot_width_cells × lot_depth_cells`; authored building footprint, not a cadastral parcel model. |
 | Reference zoning depth | `12` cells | `DEFAULT_ZONING_DEPTH`; tooling / fade heuristic only, not a hard cap. |
 | Lane width | `3.5 m` | `LANE_WIDTH`. |
 | Sidewalk width | `1.5 m` each side | `SIDEWALK_WIDTH`. |
@@ -155,7 +157,7 @@ Runtime-spawned tools:
 | Pedestrian transforms | `VarDictionary` | Keys = `pedestrian_type`; values = `PackedFloat32Array` with `12` floats per instance: `[basis.x(3), basis.y(3), basis.z(3), origin(3)]`. |
 | Car transforms | `VarDictionary` | Keys = `(vehicle_type * 10 + color_variant)`; values = `PackedFloat32Array` with the same `12`-float `Transform3D` layout. |
 | Building transforms | `PackedFloat32Array` | Returned per asset ID by `get_building_transforms_for_asset(asset_id)`, same `12`-float transform layout. |
-| Building plot transforms | `PackedFloat32Array` | Returned per zone ID by `get_building_plot_transforms(zone_id)`, same `12`-float transform layout. |
+| Building plot transforms | `PackedFloat32Array` | Returned per zone ID by `get_building_plot_transforms(zone_id)`, same `12`-float transform layout; used for zoned building footprint or foundation preview, not for a separate parcel system. |
 | Agent path debug | `VarDictionary` | `points: PackedVector3Array`, `colors: PackedColorArray`. |
 | Pollution / Noise / Desirability overlays | `PackedByteArray` | RGBA8, one pixel per heightmap cell, uploaded as shader textures. |
 | Zone texture | `PackedByteArray` | R8, one byte per world-space zone cell. |
