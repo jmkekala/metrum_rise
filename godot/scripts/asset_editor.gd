@@ -20,9 +20,6 @@ const TEMPLATES := [
 	"Night Lighting",
 ]
 
-const ZONE_TYPES := ["residential", "commercial", "industrial", "office", "mixed"]
-const DENSITY_TYPES := ["low", "medium", "high"]
-
 @onready var sim: SimulationNode = $SimulationNode
 
 # ── UI refs ───────────────────────────────────────────────────────────────────
@@ -96,6 +93,9 @@ var _main_entrance_auto: bool = true
 var _updating_main_entrance_fields: bool = false
 var _extra_anchors: Array[Dictionary] = []
 var _dragging_main_entrance: bool = false
+var _zoning_profiles: Array[Dictionary] = []
+var _zone_types: Array[String] = []
+var _density_types_by_zone: Dictionary = {}
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -114,6 +114,7 @@ func _ready() -> void:
 	_font_size_label   = _config.get_value("ui", "font_size_label",   11)
 	_save_config()  # write defaults if keys are missing
 
+	_load_zone_profiles()
 	_build_preview_node()
 	_build_ui()
 	_bbcode_strip_regex = RegEx.new()
@@ -123,6 +124,38 @@ func _ready() -> void:
 	_load_economy_profiles()
 	_load_packs()
 	_apply_template(0)
+
+func _load_zone_profiles() -> void:
+	_zoning_profiles.clear()
+	_zone_types.clear()
+	_density_types_by_zone.clear()
+
+	var payload = sim.get_zone_profiles()
+	if payload is Array:
+		for entry in payload:
+			if not (entry is Dictionary):
+				continue
+			var profile: Dictionary = entry
+			var zone_type := str(profile.get("zone_type", "")).strip_edges()
+			var density := str(profile.get("density", "")).strip_edges()
+			if zone_type.is_empty() or density.is_empty():
+				continue
+			_zoning_profiles.append(profile.duplicate(true))
+			if not _zone_types.has(zone_type):
+				_zone_types.append(zone_type)
+			var densities: Array = _density_types_by_zone.get(zone_type, [])
+			if not densities.has(density):
+				densities.append(density)
+				densities.sort()
+			_density_types_by_zone[zone_type] = densities
+
+	if _zone_types.is_empty():
+		_zone_types = ["residential", "commercial", "industrial"]
+		_density_types_by_zone = {
+			"residential": ["low", "medium", "high"],
+			"commercial": ["low", "medium", "high"],
+			"industrial": ["low", "medium", "high"],
+		}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 3D preview
@@ -248,17 +281,16 @@ func _build_right_panel(parent: Control) -> void:
 	_add_label(vbox, "Building", _font_size_section)
 
 	_zone_type_btn = OptionButton.new()
-	for z in ZONE_TYPES:
+	for z in _zone_types:
 		_zone_type_btn.add_item(z.capitalize())
-	_zone_type_btn.item_selected.connect(_on_zone_or_lot_changed)
-	_zone_type_btn.item_selected.connect(func(_i): _auto_suggest_asset_id())
+	_zone_type_btn.item_selected.connect(_on_zone_type_selected)
 	vbox.add_child(_zone_type_btn)
 
 	_add_label(vbox, "Density", _font_size_label)
 	_density_btn = OptionButton.new()
-	for d in DENSITY_TYPES:
-		_density_btn.add_item(d.capitalize())
+	_density_btn.item_selected.connect(_on_zone_or_lot_changed)
 	vbox.add_child(_density_btn)
+	_refresh_density_options()
 
 	_width_spin    = _add_spinbox(vbox, "Lot Width (cells)", 1, 20, 2)
 	_depth_spin    = _add_spinbox(vbox, "Lot Depth (cells)", 1, 20, 2)
@@ -520,13 +552,12 @@ func _populate_inspector_from(data: Dictionary) -> void:
 		_pivot_offset = Vector3.ZERO
 
 	var zt: String = data.get("zone_type", "residential")
-	var zi := ZONE_TYPES.find(zt)
+	var zi := _zone_types.find(zt)
 	if zi >= 0:
 		_zone_type_btn.selected = zi
 
 	var dt: String = data.get("density", "low")
-	var di := DENSITY_TYPES.find(dt)
-	_density_btn.selected = maxi(0, di)
+	_refresh_density_options(dt)
 	_set_economy_profile_selection(data.get("economy_profile", "") if data.get("economy_profile") != null else "")
 	_extra_anchors.clear()
 
@@ -591,6 +622,39 @@ func _populate_inspector_from(data: Dictionary) -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 # Lot / zone change
 # ──────────────────────────────────────────────────────────────────────────────
+
+func _selected_zone_type() -> String:
+	if not _zone_type_btn or _zone_type_btn.get_item_count() == 0:
+		return "residential"
+	var idx := clampi(_zone_type_btn.selected, 0, _zone_type_btn.get_item_count() - 1)
+	return _zone_types[idx]
+
+func _selected_density() -> String:
+	if not _density_btn or _density_btn.get_item_count() == 0:
+		return "low"
+	return _density_btn.get_item_text(_density_btn.selected).to_lower()
+
+func _refresh_density_options(preferred_density: String = "") -> void:
+	if not _density_btn:
+		return
+	var zone_type := _selected_zone_type()
+	var densities: Array = _density_types_by_zone.get(zone_type, [])
+	if densities.is_empty():
+		densities = ["low"]
+	_density_btn.clear()
+	for density in densities:
+		_density_btn.add_item(str(density).capitalize())
+	var selected_idx := 0
+	if not preferred_density.is_empty():
+		var preferred_idx := densities.find(preferred_density)
+		if preferred_idx >= 0:
+			selected_idx = preferred_idx
+	_density_btn.selected = selected_idx
+
+func _on_zone_type_selected(_idx: int) -> void:
+	_refresh_density_options()
+	_auto_suggest_asset_id()
+	_on_zone_or_lot_changed(0)
 
 func _on_zone_or_lot_changed(_idx) -> void:
 	_preview.set_lot_size(int(_width_spin.value), int(_depth_spin.value))
@@ -722,9 +786,7 @@ func _update_economy_profile_status() -> void:
 		return
 
 	var selected_id := _selected_economy_profile_id()
-	var zone_type: String = ""
-	if _zone_type_btn:
-		zone_type = ZONE_TYPES[_zone_type_btn.selected]
+	var zone_type := _selected_zone_type()
 	if not _economy_catalog_loaded:
 		var msg := "Economy catalog unavailable."
 		if not _economy_catalog_error.is_empty():
@@ -777,7 +839,7 @@ func _set_economy_profile_status(message: String, color: Color) -> void:
 func _auto_suggest_asset_id() -> void:
 	if not _asset_id_auto:
 		return
-	var zone: String = ZONE_TYPES[_zone_type_btn.selected]
+	var zone := _selected_zone_type()
 	var name_slug: String = _display_name_edit.text.strip_edges().to_lower()
 	name_slug = name_slug.replace(" ", "_")
 	var clean := ""
@@ -950,8 +1012,8 @@ func _on_export_pressed() -> void:
 		"display_name":     _display_name_edit.text.strip_edges(),
 		"asset_set":        asset_set_val if not asset_set_val.is_empty() else null,
 		"tags":             tags,
-		"zone_type":        ZONE_TYPES[_zone_type_btn.selected],
-		"density":          DENSITY_TYPES[_density_btn.selected],
+		"zone_type":        _selected_zone_type(),
+		"density":          _selected_density(),
 		"lot_width_cells":   int(_width_spin.value),
 		"lot_depth_cells":   int(_depth_spin.value),
 		"level":             int(_level_spin.value),
@@ -1260,8 +1322,8 @@ func _suggest_capacity() -> void:
 	var floors    := maxi(1, roundi(sh / 3.5))
 	var res_floors := maxi(1, roundi(res_h / 3.5))
 	var footprint := sw * sd
-	var zone: String    = ZONE_TYPES[_zone_type_btn.selected]
-	var density: String = DENSITY_TYPES[_density_btn.selected]
+	var zone := _selected_zone_type()
+	var density := _selected_density()
 	# m² per person/worker by zone and density. Level does not affect capacity yet
 	# (deferred until wealth/money system is implemented).
 	var sqm_res := 30.0
@@ -1278,16 +1340,13 @@ func _suggest_capacity() -> void:
 				cap_per_floor * res_floors)
 			_residents_spin.value = suggested
 			_workers_spin.value = 0
-		"commercial", "office":
+		"commercial":
 			_residents_spin.value = 0
 			_workers_spin.value = maxi(1, roundi(footprint * floors / sqm_wrk))
 		"industrial":
 			_residents_spin.value = 0
 			# Industrial is slightly less dense than commercial
 			_workers_spin.value = maxi(1, roundi(footprint * floors / (sqm_wrk * 1.25)))
-		"mixed":
-			_residents_spin.value = maxi(1, roundi(footprint * floors / (sqm_res * 1.33)))
-			_workers_spin.value   = maxi(1, roundi(footprint * floors / (sqm_wrk * 1.33)))
 
 func _update_dim_label() -> void:
 	if _mesh_aabb.size.length() < 0.001 or not _dim_label:

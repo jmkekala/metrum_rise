@@ -13,7 +13,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 ## Shipped Foundations
 
 - **Road network and routing**: modular `RegionGraph`, lane system, CCH pathfinding, road rendering, border nodes, and roadway editing are all live.
-- **Zoning and building allocation**: world-space zoning grid, occupancy tracking, roadside building placement, vacancy indexing, and no-build edge flags are live. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
+- **Zoning and building allocation**: the shipped zoning foundation now uses a shared profile registry from `zoning/profiles.toml`, runtime `ZoneProfile` ids in the painted grid and save data, profile-aware overlay upload, and registry-driven zoning UI/tooling on top of the live roadside building-placement and occupancy systems. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
 - **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
 - **Economy foundation**: household records, building-centric daily economy, freight jobs, `OWA` fallback, and exact entrance-side freight ETA are live. See [`economy.md`](economy.md).
@@ -53,6 +53,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `README.md` now serves as the docs index and ownership map.
 - The legacy numbered backlog and bug table were preserved in the archive rather than kept half-live in the dashboard.
 - `rust/benches/agent_benchmark.rs` now includes access-phase microbenchmarks for `ACCESS_EGRESS` and `ACCESS_INGRESS`, so old Criterion result history is no longer strictly apples-to-apples with the updated suite.
+- The zoning and asset-authoring foundation now shares one shipped profile registry, so the live zoning tool, overlay, save/load path, allocator legality checks, and asset-editor zoning choices no longer depend on separate hardcoded category lists.
 
 ## Reference
 

@@ -34,9 +34,12 @@
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |
-//! | **Zoning** | `set_zoning_range` | `zoning_tool.gd` |
-//! | | `update_zoning_visuals` | `zoning_tool.gd` |
-//! | | `get_zoning_grid_data` | `zoning_renderer.gd` |
+//! | **Zoning** | `get_zone_profiles` | `zoning_tool.gd`, `asset_editor.gd` |
+//! | | `capture_zoning_patch` | `zoning_tool.gd` |
+//! | | `apply_zoning_patch` | `zoning_tool.gd` |
+//! | | `restore_zoning_patch` | `zoning_tool.gd` |
+//! | | `get_zone_profile_texture_data_rg8` | `zoning_overlay.gd` |
+//! | | `get_zone_profile_style_lut_rgba8` | `zoning_overlay.gd` |
 //! | **Agents** | `get_agent_transforms` | `agent_renderer.gd` |
 //! | | `get_car_transforms` | `agent_renderer.gd` |
 //! | | `set_camera_aabb` | `agents.gd` (culling update) |
@@ -272,53 +275,106 @@ impl SimulationNode {
 
     // ── Zoning ──
 
-    /// Paints a world-space rectangle with the given zone type. `zone_type_int` 0 = erase.
+    /// Returns the validated runtime zoning-profile registry for Godot tools and UI.
     #[func]
-    pub fn set_zone_rect(
-        &mut self,
-        x_min: f32,
-        z_min: f32,
-        x_max: f32,
-        z_max: f32,
-        zone_type_int: u8,
-    ) {
-        self.lock_core()
-            .set_zone_rect_internal(x_min, z_min, x_max, z_max, zone_type_int);
+    pub fn get_zone_profiles(&self) -> VarArray {
+        let core = self.lock_core();
+        let mut arr = VarArray::new();
+        for profile in core.zoning.profiles.profiles() {
+            let mut dict = VarDictionary::new();
+            dict.set("id", GString::from(profile.id.as_str()));
+            dict.set("runtime_id", i64::from(profile.runtime_id));
+            dict.set("display_name", GString::from(profile.display_name.as_str()));
+            dict.set("ui_order", i64::from(profile.ui_order));
+            dict.set("zone_type", GString::from(profile.zone_type.as_str()));
+            dict.set("density", GString::from(profile.density.as_str()));
+            dict.set(
+                "ui_color",
+                GString::from(
+                    format!(
+                        "#{:02X}{:02X}{:02X}",
+                        profile.ui_color_rgb[0], profile.ui_color_rgb[1], profile.ui_color_rgb[2]
+                    )
+                    .as_str(),
+                ),
+            );
+            dict.set("ui_icon", GString::from(profile.ui_icon.as_str()));
+            dict.set(
+                "ui_description",
+                GString::from(profile.ui_description.as_str()),
+            );
+            arr.push(&dict.to_variant());
+        }
+        arr
     }
 
-    /// Restores a raw zone sub-rectangle (GDScript undo path).
+    /// Captures one zoning patch bounding box as packed little-endian runtime ids.
     #[func]
-    pub fn set_zone_rect_raw(
-        &mut self,
-        x_min: f32,
-        z_min: f32,
-        x_max: f32,
-        z_max: f32,
-        bytes: PackedByteArray,
-    ) {
-        self.lock_core()
-            .set_zone_rect_raw_internal(x_min, z_min, x_max, z_max, bytes.to_vec());
-    }
-
-    /// Captures the zone bytes of a sub-rectangle (call before painting for undo state).
-    #[func]
-    pub fn get_zone_subrect(
+    pub fn capture_zoning_patch(
         &self,
-        x_min: f32,
-        z_min: f32,
-        x_max: f32,
-        z_max: f32,
+        grid_x: i32,
+        grid_y: i32,
+        width_cells: i32,
+        height_cells: i32,
     ) -> PackedByteArray {
-        PackedByteArray::from_iter(
-            self.lock_core()
-                .get_zone_subrect_internal(x_min, z_min, x_max, z_max),
-        )
+        PackedByteArray::from_iter(self.lock_core().capture_zoning_patch_internal(
+            grid_x,
+            grid_y,
+            width_cells,
+            height_cells,
+        ))
     }
 
-    /// Returns the full zone-type grid as a flat byte array for R8 texture upload.
+    /// Applies one masked zoning paint patch.
     #[func]
-    pub fn get_zone_texture_data(&self) -> PackedByteArray {
-        PackedByteArray::from_iter(self.lock_core().zoning.get_zone_texture_data())
+    pub fn apply_zoning_patch(
+        &mut self,
+        grid_x: i32,
+        grid_y: i32,
+        width_cells: i32,
+        height_cells: i32,
+        target_profile_runtime_id: i32,
+        write_mask: PackedByteArray,
+    ) {
+        self.lock_core().apply_zoning_patch_internal(
+            grid_x,
+            grid_y,
+            width_cells,
+            height_cells,
+            target_profile_runtime_id,
+            write_mask.to_vec(),
+        );
+    }
+
+    /// Restores one full zoning patch bounding box from packed little-endian runtime ids.
+    #[func]
+    pub fn restore_zoning_patch(
+        &mut self,
+        grid_x: i32,
+        grid_y: i32,
+        width_cells: i32,
+        height_cells: i32,
+        profile_ids_le_u16: PackedByteArray,
+    ) {
+        self.lock_core().restore_zoning_patch_internal(
+            grid_x,
+            grid_y,
+            width_cells,
+            height_cells,
+            profile_ids_le_u16.to_vec(),
+        );
+    }
+
+    /// Returns the authoritative zoning-profile grid as RG8 bytes for texture upload.
+    #[func]
+    pub fn get_zone_profile_texture_data_rg8(&self) -> PackedByteArray {
+        PackedByteArray::from_iter(self.lock_core().zoning.get_zone_profile_texture_data_rg8())
+    }
+
+    /// Returns the one-row RGBA8 style LUT for the profile-aware zoning overlay.
+    #[func]
+    pub fn get_zone_profile_style_lut_rgba8(&self) -> PackedByteArray {
+        PackedByteArray::from_iter(self.lock_core().zoning.get_zone_profile_style_lut_rgba8())
     }
 
     /// Returns the occupied grid as a flat byte array (0/1 per cell) for texture upload.

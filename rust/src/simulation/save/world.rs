@@ -78,9 +78,12 @@ pub(super) fn save_world(
         ],
     )?;
 
-    // Zoning — serialize the flat world-grid as a single BLOB
+    // Zoning — serialize the flat world-grid as little-endian runtime profile ids.
     {
-        let data: Vec<u8> = zoning.grid.data.iter().map(|&z| z as u8).collect();
+        let mut data = Vec::with_capacity(zoning.grid.data.len() * 2);
+        for &runtime_id in &zoning.grid.data {
+            data.extend_from_slice(&runtime_id.to_le_bytes());
+        }
         tx.execute(
             "INSERT INTO zoning_world_grid(width, height, data) VALUES (?1, ?2, ?3)",
             params![
@@ -92,7 +95,7 @@ pub(super) fn save_world(
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, shipment_cooldown_days, width, depth, asset_id, level, broken) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, shipment_cooldown_days, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)")?;
     for (old_bid, b) in buildings.buildings.iter().enumerate() {
         let saved_bid = maps
             .building_old_to_new
@@ -123,7 +126,9 @@ pub(super) fn save_world(
             usize_to_i64(b.depth_cells as usize)?,
             &b.asset_id,
             i64::from(b.level),
-            i64::from(if b.broken { 1 } else { 0 })
+            i64::from(if b.broken { 1 } else { 0 }),
+            i64::from(if b.pending_redevelopment { 1 } else { 0 }),
+            i64::from(b.rezone_grace_days_remaining)
         ])?;
     }
     tx.execute(
@@ -223,9 +228,8 @@ pub(super) fn load_water(conn: &Connection, ew: usize, eh: usize) -> SaveLoadRes
 }
 
 pub(super) fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResult<ZoningSystem> {
-    use crate::simulation::grid::zoning::ZoneType;
     let mut zoning = ZoningSystem::new(config);
-    // Try new world-grid format first; fall back to empty grid if the table is absent (old saves).
+    // Try the current world-grid format first; fall back to empty grid if the table is absent.
     let result: rusqlite::Result<(i64, i64, Vec<u8>)> = conn.query_row(
         "SELECT width, height, data FROM zoning_world_grid LIMIT 1",
         [],
@@ -234,12 +238,14 @@ pub(super) fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResu
     if let Ok((w_raw, h_raw, blob)) = result {
         let w = i64_to_usize(w_raw)?;
         let h = i64_to_usize(h_raw)?;
-        let expected = w * h;
+        let expected = w * h * 2;
         if blob.len() == expected {
-            zoning.grid.data = blob.into_iter().map(ZoneType::from_u8).collect();
+            zoning.grid.data = blob
+                .chunks_exact(2)
+                .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+                .collect();
         }
     }
-    // Old saves using zoning_grids are silently ignored — the player repaints zones.
     Ok(zoning)
 }
 
@@ -248,7 +254,7 @@ pub(super) fn load_buildings(
     registry: &crate::assets::AssetRegistry,
 ) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, shipment_cooldown_days, width, depth, asset_id, level, broken FROM buildings ORDER BY building_id")?;
+    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, zone_type, occupancy, worker_count, stock, revenue, operating_budget, utility_service_available, shipment_cooldown_days, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -281,6 +287,8 @@ pub(super) fn load_buildings(
             shipment_cooldown_days: i64_to_u8(row.get(13)?)?,
             level: row.get::<_, i64>(17)?.clamp(1, 255) as u8,
             broken,
+            pending_redevelopment: row.get::<_, i64>(19)? != 0,
+            rezone_grace_days_remaining: i64_to_u8(row.get(20)?)?,
         });
     }
     allocator.founding_bootstrap_consumed = conn.query_row(

@@ -1,7 +1,7 @@
 //! Building removal, immigration admission, and coordinate restoration.
 
 use crate::debug_log;
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{BuildingAllocator, zone_class_to_zone_type};
 use crate::simulation::economy::agents::{AgentSystem, MODE_WALK, TRANSIT_IN_BUILDING};
 use crate::simulation::economy::households::{DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE, HouseholdSystem};
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -16,6 +16,7 @@ const IMMIGRATION_BASE_INFLOW: f32 = 1.0;
 const MAX_IMMIGRANT_HOUSEHOLDS_PER_DAY: usize = 4;
 const HOME_PICK_SAMPLE_ATTEMPTS: usize = 8;
 const PLAYER_STARTUP_POPULATION_TARGET: usize = 8;
+const REZONE_GRACE_DAYS: u8 = 3;
 
 impl BuildingAllocator {
     /// Removes buildings if their zone category has changed or their road edge no longer exists.
@@ -31,26 +32,120 @@ impl BuildingAllocator {
         let mut removed_any = false;
         let mut i = 0;
         while i < self.buildings.len() {
-            let b = &self.buildings[i];
-            let remove = {
+            let compatibility = {
+                let b = &self.buildings[i];
                 let edge_ok = b.edge_idx < graph.edge_count() && !graph.edge(b.edge_idx).deleted;
                 if !edge_ok {
-                    true
+                    None
                 } else if graph.edge(b.edge_idx).no_building_spawn {
-                    true
+                    None
                 } else {
                     let half_depth = b.depth_cells as f32 * zone_cell_m * 0.5;
                     let road_dist = zoning.distance_to_road_world(b.center_x, b.center_y) as f32;
                     if road_dist < half_depth {
-                        true
+                        None
                     } else {
-                        let current_zone = zoning.get_zone_world(b.center_x, b.center_y);
-                        current_zone != b.zone_type
+                        match self.registry.get(&b.asset_id) {
+                            Some(entry) => match entry.manifest.building.as_ref() {
+                                Some(asset_building) => {
+                                    let expected_zone_type =
+                                        zone_class_to_zone_type(asset_building.zone_type);
+                                    let edge = graph.edge(b.edge_idx);
+                                    let edge_len = edge.physical_length;
+                                    let cells_long = (edge_len / zone_cell_m).floor() as usize;
+                                    if cells_long == 0
+                                        || b.cell_x + b.width_cells as usize > cells_long
+                                    {
+                                        None
+                                    } else {
+                                        let curb_dist =
+                                            edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+                                        let side = b.side as f32;
+                                        let mut footprint_profile_runtime_id = 0_u16;
+                                        let mut compatible = true;
+                                        'profile_check: for dx in 0..b.width_cells as usize {
+                                            let t_dx = (b.cell_x as f32 + dx as f32 + 0.5)
+                                                * zone_cell_m
+                                                / edge_len;
+                                            let wp =
+                                                Self::sample_pos_on_edge(graph, b.edge_idx, t_dx);
+                                            let tangent = Self::sample_tangent_on_edge(
+                                                graph, b.edge_idx, t_dx,
+                                            );
+                                            let normal = Vector2::new(tangent.y, -tangent.x) * side;
+                                            for dy in 0..b.depth_cells as usize {
+                                                let cell_center = wp
+                                                    + normal
+                                                        * (curb_dist
+                                                            + (dy as f32 + 0.5) * zone_cell_m);
+                                                let runtime_id = zoning
+                                                    .get_zone_profile_runtime_id_world(
+                                                        cell_center.x,
+                                                        cell_center.y,
+                                                    );
+                                                if footprint_profile_runtime_id == 0 {
+                                                    if runtime_id == 0
+                                                        || !zoning.profiles.asset_is_legal(
+                                                            runtime_id,
+                                                            expected_zone_type,
+                                                            &asset_building.density,
+                                                            &entry.manifest.tags,
+                                                        )
+                                                    {
+                                                        compatible = false;
+                                                        break 'profile_check;
+                                                    }
+                                                    footprint_profile_runtime_id = runtime_id;
+                                                } else if runtime_id != footprint_profile_runtime_id
+                                                {
+                                                    compatible = false;
+                                                    break 'profile_check;
+                                                }
+                                            }
+                                        }
+                                        Some(compatible)
+                                    }
+                                }
+                                None => {
+                                    let current_zone =
+                                        zoning.get_zone_world(b.center_x, b.center_y);
+                                    Some(current_zone == b.zone_type)
+                                }
+                            },
+                            None => {
+                                let current_zone = zoning.get_zone_world(b.center_x, b.center_y);
+                                Some(current_zone == b.zone_type)
+                            }
+                        }
+                    }
+                }
+            };
+
+            let remove = match compatibility {
+                None => true,
+                Some(true) => {
+                    let building = &mut self.buildings[i];
+                    building.pending_redevelopment = false;
+                    building.rezone_grace_days_remaining = 0;
+                    false
+                }
+                Some(false) => {
+                    let building = &mut self.buildings[i];
+                    if !building.pending_redevelopment {
+                        building.pending_redevelopment = true;
+                        building.rezone_grace_days_remaining = REZONE_GRACE_DAYS;
+                        false
+                    } else {
+                        if building.rezone_grace_days_remaining > 0 {
+                            building.rezone_grace_days_remaining -= 1;
+                        }
+                        building.rezone_grace_days_remaining == 0
                     }
                 }
             };
 
             if remove {
+                let b = &self.buildings[i];
                 let b_edge_idx = b.edge_idx;
                 let b_side = b.side;
                 let b_cell_x = b.cell_x;

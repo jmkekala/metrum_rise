@@ -99,7 +99,7 @@ impl BuildingAllocator {
 
     fn preferred_founding_asset_id(&self, zone_class: ZoneClass) -> Option<String> {
         self.registry
-            .buildings_for_zone(zone_class)
+            .buildings_for_zone_density(zone_class, "low")
             .iter()
             .find(|qualified_id| {
                 self.registry
@@ -111,7 +111,7 @@ impl BuildingAllocator {
             .cloned()
             .or_else(|| {
                 self.registry
-                    .buildings_for_zone(zone_class)
+                    .buildings_for_zone_density(zone_class, "low")
                     .first()
                     .cloned()
             })
@@ -161,6 +161,8 @@ impl BuildingAllocator {
         let building = entry.manifest.building.as_ref()?;
         Some(AssetPlacementParams {
             zone_type: zone_class_to_zone_type(building.zone_type),
+            density: building.density.clone(),
+            tags: entry.manifest.tags.clone(),
             width_cells: building.lot_width_cells as usize,
             depth_cells: building.lot_depth_cells as usize,
             initial_level: building.level,
@@ -199,7 +201,17 @@ impl BuildingAllocator {
         let frontage_tangent = self.get_tangent_on_edge(graph, edge_idx, t_col);
         let frontage_normal = Vector2::new(frontage_tangent.y, -frontage_tangent.x) * side as f32;
         let frontage_center = frontage_pos + frontage_normal * (curb_dist + zone_cell_m * 0.5);
-        if zoning.get_zone_world(frontage_center.x, frontage_center.y) != params.zone_type {
+        let frontage_profile_runtime_id =
+            zoning.get_zone_profile_runtime_id_world(frontage_center.x, frontage_center.y);
+        if frontage_profile_runtime_id == 0 {
+            return None;
+        }
+        if !zoning.profiles.asset_is_legal(
+            frontage_profile_runtime_id,
+            params.zone_type,
+            &params.density,
+            &params.tags,
+        ) {
             return None;
         }
 
@@ -218,7 +230,9 @@ impl BuildingAllocator {
             let nd = Vector2::new(td.y, -td.x) * side as f32;
             for dy in 0..params.depth_cells {
                 let cell_center = wp + nd * (curb_dist + (dy as f32 + 0.5) * zone_cell_m);
-                if zoning.get_zone_world(cell_center.x, cell_center.y) != params.zone_type {
+                if zoning.get_zone_profile_runtime_id_world(cell_center.x, cell_center.y)
+                    != frontage_profile_runtime_id
+                {
                     return None;
                 }
             }
@@ -338,6 +352,8 @@ impl BuildingAllocator {
             operating_budget: 0.0,
             utility_service_available: false,
             shipment_cooldown_days: 0,
+            pending_redevelopment: false,
+            rezone_grace_days_remaining: 0,
             abandoned_timer: 0,
         });
         self.buildings.len() - 1
@@ -356,6 +372,8 @@ fn has_connected_border_node(graph: &RegionGraph) -> bool {
 
 struct AssetPlacementParams {
     zone_type: ZoneType,
+    density: String,
+    tags: Vec<String>,
     width_cells: usize,
     depth_cells: usize,
     initial_level: u8,

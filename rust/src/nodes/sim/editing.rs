@@ -3,7 +3,6 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::SimCore;
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::terrain::TerrainSystem;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -41,47 +40,77 @@ impl SimCore {
         self.water_dirty = true;
     }
 
-    /// Paints a world-space rectangle with the given zone type.
-    ///
-    /// Coordinates in metres, snapped to the 10 m cell grid. `zone_type_int` 0 = erase.
-    pub fn set_zone_rect_internal(
-        &mut self,
-        x_min: f32,
-        z_min: f32,
-        x_max: f32,
-        z_max: f32,
-        zone_type_int: u8,
-    ) {
-        self.push_undo_state(false, false, false, true);
-        let zone_type = ZoneType::from_u8(zone_type_int);
-        self.zoning
-            .set_zone_rect(x_min, z_min, x_max, z_max, zone_type);
-        self.allocator.dirty = true;
-    }
-
-    /// Restores a raw zone sub-rectangle. Used exclusively by the GDScript undo path.
-    pub fn set_zone_rect_raw_internal(
-        &mut self,
-        x_min: f32,
-        z_min: f32,
-        x_max: f32,
-        z_max: f32,
-        bytes: Vec<u8>,
-    ) {
-        self.zoning
-            .set_zone_rect_raw(x_min, z_min, x_max, z_max, &bytes);
-        self.allocator.dirty = true;
-    }
-
-    /// Captures the zone bytes of a sub-rectangle. Called before painting for undo state.
-    pub fn get_zone_subrect_internal(
+    /// Captures one zoning patch bounding box as packed little-endian runtime ids.
+    pub fn capture_zoning_patch_internal(
         &self,
-        x_min: f32,
-        z_min: f32,
-        x_max: f32,
-        z_max: f32,
+        grid_x: i32,
+        grid_y: i32,
+        width_cells: i32,
+        height_cells: i32,
     ) -> Vec<u8> {
-        self.zoning.get_zone_subrect(x_min, z_min, x_max, z_max)
+        if width_cells <= 0 || height_cells <= 0 {
+            return Vec::new();
+        }
+        self.zoning
+            .capture_patch(grid_x, grid_y, width_cells as usize, height_cells as usize)
+    }
+
+    /// Applies one masked zoning paint patch.
+    pub fn apply_zoning_patch_internal(
+        &mut self,
+        grid_x: i32,
+        grid_y: i32,
+        width_cells: i32,
+        height_cells: i32,
+        target_profile_runtime_id: i32,
+        write_mask: Vec<u8>,
+    ) {
+        if width_cells <= 0 || height_cells <= 0 {
+            return;
+        }
+        let Ok(runtime_id) = u16::try_from(target_profile_runtime_id) else {
+            return;
+        };
+        if runtime_id != 0
+            && self
+                .zoning
+                .profiles
+                .profile_by_runtime_id(runtime_id)
+                .is_none()
+        {
+            return;
+        }
+        self.zoning.apply_patch(
+            grid_x,
+            grid_y,
+            width_cells as usize,
+            height_cells as usize,
+            runtime_id,
+            &write_mask,
+        );
+        self.allocator.dirty = true;
+    }
+
+    /// Restores one full zoning patch bounding box from packed little-endian runtime ids.
+    pub fn restore_zoning_patch_internal(
+        &mut self,
+        grid_x: i32,
+        grid_y: i32,
+        width_cells: i32,
+        height_cells: i32,
+        profile_ids_le_u16: Vec<u8>,
+    ) {
+        if width_cells <= 0 || height_cells <= 0 {
+            return;
+        }
+        self.zoning.restore_patch(
+            grid_x,
+            grid_y,
+            width_cells as usize,
+            height_cells as usize,
+            &profile_ids_le_u16,
+        );
+        self.allocator.dirty = true;
     }
 
     /// Sets the classification of an edge.

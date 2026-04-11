@@ -116,7 +116,7 @@ func _unhandled_input(event):
 			KEY_PAGEDOWN: _handle_altitude_adjust(-2.5)
 
 			# Zoning Selection
-			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
+			KEY_1, KEY_2, KEY_3:
 				_handle_zoning_selection(event.keycode)
 
 			KEY_ESCAPE:
@@ -262,10 +262,26 @@ func _handle_overlay_mode(keycode):
 	if terrain_node: terrain_node.overlay_mode = mode
 
 func _handle_zoning_selection(keycode):
-	var type = keycode - KEY_0 # 1-5
 	if current_tool != Tool.ZONING:
 		_toggle_tool(Tool.ZONING)
-	if zoning_tool: zoning_tool.current_zone_type = type
+	if not zoning_tool:
+		return
+	match keycode:
+		KEY_1: zoning_tool.select_profile_by_zone_type("residential")
+		KEY_2: zoning_tool.select_profile_by_zone_type("commercial")
+		KEY_3: zoning_tool.select_profile_by_zone_type("industrial")
+
+func select_zone_profile(runtime_id: int) -> void:
+	if current_tool != Tool.ZONING:
+		_toggle_tool(Tool.ZONING)
+	if zoning_tool:
+		zoning_tool.select_profile(runtime_id)
+
+func set_zoning_paint_mode(mode: String) -> void:
+	if current_tool != Tool.ZONING:
+		_toggle_tool(Tool.ZONING)
+	if zoning_tool:
+		zoning_tool.set_paint_mode(mode)
 
 func _handle_mouse(event):
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:

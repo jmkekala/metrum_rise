@@ -75,6 +75,11 @@ pub struct Building {
     pub utility_service_available: bool,
     /// Remaining daily cooldown steps before this building may open another freight request.
     pub shipment_cooldown_days: u8,
+    /// True when the current painted zoning profile is incompatible and the building is waiting
+    /// for the rezoning grace timer to expire.
+    pub pending_redevelopment: bool,
+    /// Remaining deterministic daily grace before incompatible rezoning forces removal.
+    pub rezone_grace_days_remaining: u8,
 }
 
 #[derive(Clone)]

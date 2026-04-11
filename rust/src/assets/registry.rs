@@ -35,6 +35,8 @@ pub struct AssetRegistry {
     /// Secondary index: `by_zone[ZoneClass as usize]` = sorted list of qualified_ids for
     /// building assets of that zone type. Sorted for deterministic placement selection.
     by_zone: [Vec<String>; 5],
+    /// Secondary index: `(zone_type, density)` → sorted list of qualified_ids.
+    by_zone_density: HashMap<(ZoneClass, String), Vec<String>>,
     /// Upgrade index: `(asset_set, level) → qualified_id`.
     /// Lets the runtime find the next-tier asset without forward pointers in the manifest.
     upgrade_index: HashMap<(String, u8), String>,
@@ -67,6 +69,12 @@ impl AssetRegistry {
                     list.push(qid.clone());
                     list.sort_unstable();
                 }
+            }
+            let density_key = (bd.zone_type, bd.density.clone());
+            let density_list = self.by_zone_density.entry(density_key).or_default();
+            if !density_list.contains(&qid) {
+                density_list.push(qid.clone());
+                density_list.sort_unstable();
             }
 
             // Upgrade index — only populated when the asset belongs to a named family.
@@ -142,6 +150,14 @@ impl AssetRegistry {
         }
     }
 
+    /// Returns all qualified IDs for building assets of one `(zone_type, density)` pair.
+    pub fn buildings_for_zone_density(&self, zone_class: ZoneClass, density: &str) -> &[String] {
+        self.by_zone_density
+            .get(&(zone_class, density.to_owned()))
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     /// Returns the lot footprint in zoning grid cells `(width, depth)` for an asset.
     ///
     /// Falls back to `(1, 1)` if the asset is unknown or is not a building.
@@ -175,6 +191,7 @@ impl AssetRegistry {
         for list in &mut self.by_zone {
             list.clear();
         }
+        self.by_zone_density.clear();
         self.upgrade_index.clear();
     }
 }

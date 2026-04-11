@@ -1,8 +1,10 @@
 shader_type spatial;
 render_mode unshaded, cull_disabled, depth_draw_never;
 
-// R8 texture: zone type per cell (0=None, 1=Res, 2=Com, 3=Ind, 4=Office, 5=Mixed)
+// RG8 texture: one little-endian u16 runtime profile id per zoning cell.
 uniform sampler2D zone_texture : filter_nearest;
+// 1-row RGBA8 style LUT indexed by runtime profile id.
+uniform sampler2D profile_style_lut : filter_nearest;
 // R8 texture: distance to nearest road in metres (raw byte = metres, clamped 255)
 uniform sampler2D distance_texture : filter_nearest;
 // R8 texture: occupied bool (0=free, 255=occupied)
@@ -15,26 +17,29 @@ uniform float tool_active : hint_range(0.0, 1.0) = 0.0;
 
 // Number of zone cells per axis (default 2000 for a 20km map at 10m cells)
 uniform float grid_cells : hint_range(1.0, 4096.0) = 2000.0;
+// Number of entries in the 1-row style LUT.
+uniform float profile_style_lut_size : hint_range(1.0, 1024.0) = 1.0;
 
-vec3 zone_color(float z) {
-    vec3 col = vec3(0.0);
-    col = mix(col, vec3(0.18, 0.80, 0.18), step(0.5, z) * step(z, 1.5)); // Residential
-    col = mix(col, vec3(0.18, 0.45, 1.00), step(1.5, z) * step(z, 2.5)); // Commercial
-    col = mix(col, vec3(1.00, 0.75, 0.10), step(2.5, z) * step(z, 3.5)); // Industrial
-    col = mix(col, vec3(0.65, 0.10, 0.90), step(3.5, z) * step(z, 4.5)); // Office
-    col = mix(col, vec3(0.10, 0.80, 0.75), step(4.5, z));                 // Mixed
-    return col;
+float decode_runtime_id(vec2 rg) {
+    float lo = floor(rg.r * 255.0 + 0.5);
+    float hi = floor(rg.g * 255.0 + 0.5);
+    return lo + hi * 256.0;
+}
+
+vec4 profile_style(float runtime_id) {
+    float lut_x = (runtime_id + 0.5) / max(profile_style_lut_size, 1.0);
+    return texture(profile_style_lut, vec2(lut_x, 0.5));
 }
 
 void fragment() {
-    float raw        = texture(zone_texture, UV).r * 255.0;
-    float z_type     = floor(raw + 0.5);
+    float runtime_id = decode_runtime_id(texture(zone_texture, UV).rg);
+    vec4 style       = profile_style(runtime_id);
     float dist_raw   = texture(distance_texture, UV).r * 255.0;
     float occ        = texture(occupied_texture, UV).r; // 0.0 or ~1.0
     float no_build   = texture(no_build_texture, UV).r; // 0.0 or ~1.0
 
     // Invisible when: no zone type, within 3m of road edge, or masked by a no-build road.
-    float visible = step(0.5, z_type) * step(3.0, dist_raw) * (1.0 - step(0.5, no_build));
+    float visible = step(0.5, runtime_id) * step(3.0, dist_raw) * (1.0 - step(0.5, no_build));
 
     // Distance-to-road alpha scale
     float dist_alpha = 1.0;
@@ -50,7 +55,7 @@ void fragment() {
     float alpha = base_alpha * dist_alpha * occ_factor * visible;
 
     // Colour
-    vec3 col = zone_color(z_type);
+    vec3 col = style.rgb;
 
     // Procedural 10m cell grid when tool is active and camera is close enough
     vec2 cell_uv = fract(UV * grid_cells);

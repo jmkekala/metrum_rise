@@ -564,6 +564,8 @@ mod tests {
             operating_budget: budget,
             utility_service_available: utility,
             shipment_cooldown_days: 0,
+            pending_redevelopment: false,
+            rezone_grace_days_remaining: 0,
         }
     }
 

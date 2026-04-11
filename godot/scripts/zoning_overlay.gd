@@ -1,8 +1,9 @@
-## Zone overlay — uploads ZoningSystem textures to a full-map quad and manages active/passive state.
+## Zone overlay — uploads profile-aware zoning textures to a full-map quad and manages active/passive state.
 ##
-## Rust methods called: get_zone_texture_data(), get_distance_texture_data(),
-##   get_occupied_texture_data(), get_no_build_mask_texture_data(), get_zone_grid_size(),
-##   get_heightmap_size(), get_no_building_spawn_edge_indices(), get_edge_geometry_3d()
+## Rust methods called: get_zone_profile_texture_data_rg8(), get_zone_profile_style_lut_rgba8(),
+##   get_distance_texture_data(), get_occupied_texture_data(), get_no_build_mask_texture_data(),
+##   get_zone_grid_size(), get_heightmap_size(), get_no_building_spawn_edge_indices(),
+##   get_edge_geometry_3d()
 ##
 ## Attach to a MeshInstance3D node named ZoningOverlay positioned at (0, 0.005, 0).
 ## The mesh is a PlaneMesh sized to the full terrain extent. The shader reads three
@@ -11,19 +12,22 @@ extends MeshInstance3D
 
 @onready var simulation_node = $"../SimulationNode"
 
-# R8 images for each data layer
+# Grid textures and profile-style LUT
 var zone_image: Image
+var style_lut_image: Image
 var distance_image: Image
 var occupied_image: Image
 var no_build_image: Image
 
 var zone_tex: ImageTexture
+var style_lut_tex: ImageTexture
 var distance_tex: ImageTexture
 var occupied_tex: ImageTexture
 var no_build_tex: ImageTexture
 
 var zone_grid_w: int = 0
 var zone_grid_h: int = 0
+var profile_style_lut_size: int = 1
 
 # Smooth alpha transition when entering/leaving the zoning tool
 var _tool_active: float = 0.0         # current lerped value
@@ -37,16 +41,22 @@ var _occupied_dirty: bool = true
 var _no_build_dirty: bool = true
 
 func _ready():
-	var size = simulation_node.get_zone_grid_size()
+	var size: Vector2i = simulation_node.get_zone_grid_size()
 	zone_grid_w = size.x
 	zone_grid_h = size.y
 
-	zone_image     = Image.create(zone_grid_w, zone_grid_h, false, Image.FORMAT_R8)
+	var style_bytes: PackedByteArray = simulation_node.get_zone_profile_style_lut_rgba8()
+	profile_style_lut_size = maxi(1, style_bytes.size() / 4)
+
+	zone_image     = Image.create(zone_grid_w, zone_grid_h, false, Image.FORMAT_RG8)
+	style_lut_image = Image.create(profile_style_lut_size, 1, false, Image.FORMAT_RGBA8)
 	distance_image = Image.create(zone_grid_w, zone_grid_h, false, Image.FORMAT_R8)
 	occupied_image = Image.create(zone_grid_w, zone_grid_h, false, Image.FORMAT_R8)
 	no_build_image = Image.create(zone_grid_w, zone_grid_h, false, Image.FORMAT_R8)
 
 	zone_tex     = ImageTexture.create_from_image(zone_image)
+	style_lut_image.set_data(profile_style_lut_size, 1, false, Image.FORMAT_RGBA8, style_bytes)
+	style_lut_tex = ImageTexture.create_from_image(style_lut_image)
 	distance_tex = ImageTexture.create_from_image(distance_image)
 	occupied_tex = ImageTexture.create_from_image(occupied_image)
 	no_build_tex = ImageTexture.create_from_image(no_build_image)
@@ -62,6 +72,8 @@ func _ready():
 	var mat = ShaderMaterial.new()
 	mat.shader = load("res://scripts/shaders/zoning_overlay.gdshader")
 	mat.set_shader_parameter("zone_texture",     zone_tex)
+	mat.set_shader_parameter("profile_style_lut", style_lut_tex)
+	mat.set_shader_parameter("profile_style_lut_size", float(profile_style_lut_size))
 	mat.set_shader_parameter("distance_texture", distance_tex)
 	mat.set_shader_parameter("occupied_texture", occupied_tex)
 	mat.set_shader_parameter("no_build_texture", no_build_tex)
@@ -96,9 +108,9 @@ func _process(delta):
 		_no_build_dirty = false
 
 func _upload_zone():
-	var bytes = simulation_node.get_zone_texture_data()
-	if bytes.size() == zone_grid_w * zone_grid_h:
-		zone_image.set_data(zone_grid_w, zone_grid_h, false, Image.FORMAT_R8, bytes)
+	var bytes = simulation_node.get_zone_profile_texture_data_rg8()
+	if bytes.size() == zone_grid_w * zone_grid_h * 2:
+		zone_image.set_data(zone_grid_w, zone_grid_h, false, Image.FORMAT_RG8, bytes)
 		zone_tex.update(zone_image)
 
 func _upload_distance():

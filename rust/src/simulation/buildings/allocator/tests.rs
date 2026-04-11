@@ -59,6 +59,78 @@ fn register_test_asset(
     format!("{pack_id}:{asset_id}")
 }
 
+fn setup_bootstrap_city_for_rezoning() -> (
+    BuildingAllocator,
+    crate::simulation::grid::zoning::ZoningSystem,
+    AgentSystem,
+    HouseholdSystem,
+    ShipmentSystem,
+    crate::simulation::network::TransitNetwork,
+    RegionGraph,
+    usize,
+) {
+    use crate::simulation::grid::zoning::ZoningSystem;
+    use crate::simulation::network::TransitNetwork;
+    use crate::simulation::network::types::NodeType;
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.house",
+        ZoneClass::Residential,
+    );
+    register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
+
+    let map_cfg = MapConfig::default();
+    let mut zoning = ZoningSystem::new(&map_cfg);
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    graph.set_node_type(0, NodeType::Border);
+    zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
+    zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+
+    allocator.tick(
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut network,
+        &mut graph,
+    );
+
+    let residential_idx = allocator
+        .buildings
+        .iter()
+        .position(|building| building.zone_type == ZoneType::Residential)
+        .expect("founding bootstrap should create one residential building");
+
+    (
+        allocator,
+        zoning,
+        agents,
+        households,
+        logistics,
+        network,
+        graph,
+        residential_idx,
+    )
+}
+
 #[test]
 fn test_zone_index_consistency() {
     let mut allocator = BuildingAllocator::new();
@@ -93,6 +165,8 @@ fn test_zone_index_consistency() {
             operating_budget: 500.0,
             utility_service_available: false,
             shipment_cooldown_days: 0,
+            pending_redevelopment: false,
+            rezone_grace_days_remaining: 0,
         });
     }
     allocator.dirty_index = true;
@@ -153,6 +227,8 @@ fn test_vacancy_index_consistency() {
             operating_budget: 500.0,
             utility_service_available: false,
             shipment_cooldown_days: 0,
+            pending_redevelopment: false,
+            rezone_grace_days_remaining: 0,
         });
     }
     allocator.rebuild_zone_index();
@@ -340,6 +416,120 @@ fn test_tick_runs_one_time_founding_bootstrap_from_border_and_zoning() {
 }
 
 #[test]
+fn test_incompatible_rezoning_enters_pending_redevelopment_before_removal() {
+    let (
+        mut allocator,
+        mut zoning,
+        mut agents,
+        mut households,
+        mut logistics,
+        mut network,
+        mut graph,
+        residential_idx,
+    ) = setup_bootstrap_city_for_rezoning();
+
+    let residential = allocator.buildings[residential_idx].clone();
+    zoning.set_zone_rect(
+        residential.center_x - 10.0,
+        residential.center_y - 10.0,
+        residential.center_x + 10.0,
+        residential.center_y + 10.0,
+        ZoneType::Commercial,
+    );
+
+    allocator.tick(
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut network,
+        &mut graph,
+    );
+
+    assert_eq!(allocator.buildings.len(), 2);
+    assert!(allocator.buildings[residential_idx].pending_redevelopment);
+    assert_eq!(
+        allocator.buildings[residential_idx].rezone_grace_days_remaining,
+        3
+    );
+
+    for _ in 0..3 {
+        allocator.tick(
+            &mut zoning,
+            &mut agents,
+            &mut households,
+            &mut logistics,
+            &mut network,
+            &mut graph,
+        );
+    }
+
+    assert_eq!(allocator.buildings.len(), 1);
+    assert!(
+        allocator
+            .buildings
+            .iter()
+            .all(|building| building.zone_type != ZoneType::Residential)
+    );
+}
+
+#[test]
+fn test_rezoning_recovery_clears_pending_redevelopment() {
+    let (
+        mut allocator,
+        mut zoning,
+        mut agents,
+        mut households,
+        mut logistics,
+        mut network,
+        mut graph,
+        residential_idx,
+    ) = setup_bootstrap_city_for_rezoning();
+
+    let residential = allocator.buildings[residential_idx].clone();
+    zoning.set_zone_rect(
+        residential.center_x - 10.0,
+        residential.center_y - 10.0,
+        residential.center_x + 10.0,
+        residential.center_y + 10.0,
+        ZoneType::Commercial,
+    );
+    allocator.tick(
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut network,
+        &mut graph,
+    );
+
+    assert!(allocator.buildings[residential_idx].pending_redevelopment);
+
+    zoning.set_zone_rect(
+        residential.center_x - 10.0,
+        residential.center_y - 10.0,
+        residential.center_x + 10.0,
+        residential.center_y + 10.0,
+        ZoneType::Residential,
+    );
+    allocator.tick(
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut network,
+        &mut graph,
+    );
+
+    assert_eq!(allocator.buildings.len(), 2);
+    assert!(!allocator.buildings[residential_idx].pending_redevelopment);
+    assert_eq!(
+        allocator.buildings[residential_idx].rezone_grace_days_remaining,
+        0
+    );
+}
+
+#[test]
 fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
@@ -394,6 +584,8 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         operating_budget: 0.0,
         utility_service_available: false,
         shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
     });
 
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -499,6 +691,8 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         operating_budget: 0.0,
         utility_service_available: false,
         shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
     });
 
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -567,6 +761,8 @@ fn test_building_removal_clears_zoning_occupancy() {
         operating_budget: 500.0,
         utility_service_available: false,
         shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
     });
     zoning.mark_occupied_rect(
         5.0,
@@ -586,10 +782,24 @@ fn test_building_removal_clears_zoning_occupancy() {
         &mut graph,
     );
 
+    assert_eq!(allocator.buildings.len(), 1);
+    assert!(allocator.buildings[0].pending_redevelopment);
+
+    for _ in 0..3 {
+        allocator.tick(
+            &mut zoning,
+            &mut agents,
+            &mut households,
+            &mut logistics,
+            &mut network,
+            &mut graph,
+        );
+    }
+
     assert_eq!(
         allocator.buildings.len(),
         0,
-        "Building should have been removed"
+        "Building should be removed after the rezoning grace expires"
     );
     assert!(
         !zoning.is_rect_occupied(5.0, 10.0, godot::prelude::Vector2::new(0.0, 1.0), 5.0, 5.0),
@@ -658,6 +868,8 @@ fn test_immigration_claims_vacant_home() {
         operating_budget: 500.0,
         utility_service_available: false,
         shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
     });
     allocator.rebuild_zone_index();
 
@@ -759,6 +971,8 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         operating_budget: 500.0,
         utility_service_available: true,
         shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
     });
     allocator.buildings.push(Building {
         center_x: 40.0,
@@ -784,6 +998,8 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         operating_budget: 500.0,
         utility_service_available: true,
         shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
     });
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();

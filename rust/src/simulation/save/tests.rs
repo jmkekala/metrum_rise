@@ -111,6 +111,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         operating_budget: 500.0,
         utility_service_available: false,
         shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
     });
     allocator
         .recompute_derived_transforms(&graph, &zoning)

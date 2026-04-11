@@ -38,15 +38,19 @@ fn test_clear_resets_everything() {
 #[test]
 fn test_zone_subrect_roundtrip() {
     let mut z = make_zoning();
-    z.set_zone_rect(-50.0, -50.0, 50.0, 50.0, ZoneType::Office);
+    let runtime_id = z
+        .profiles
+        .default_runtime_id_for_zone_type(ZoneType::Commercial)
+        .unwrap();
+    z.set_zone_profile_rect(-50.0, -50.0, 50.0, 50.0, runtime_id);
 
     // Capture, then clear, then restore.
-    let saved = z.get_zone_subrect(-50.0, -50.0, 50.0, 50.0);
+    let saved = z.capture_patch(950, 950, 101, 101);
     z.set_zone_rect(-50.0, -50.0, 50.0, 50.0, ZoneType::None);
     assert_eq!(z.get_zone_world(0.0, 0.0), ZoneType::None);
 
-    z.set_zone_rect_raw(-50.0, -50.0, 50.0, 50.0, &saved);
-    assert_eq!(z.get_zone_world(0.0, 0.0), ZoneType::Office);
+    z.restore_patch(950, 950, 101, 101, &saved);
+    assert_eq!(z.get_zone_world(0.0, 0.0), ZoneType::Commercial);
 }
 
 #[test]
@@ -79,8 +83,8 @@ fn test_texture_data_length() {
 #[test]
 fn test_update_edge_indices_noop() {
     let mut z = make_zoning();
-    z.set_zone_rect(-10.0, -10.0, 10.0, 10.0, ZoneType::Mixed);
+    z.set_zone_rect(-10.0, -10.0, 10.0, 10.0, ZoneType::Industrial);
     let map = std::collections::HashMap::new();
     z.update_edge_indices(&map); // must not panic or clear data
-    assert_eq!(z.get_zone_world(0.0, 0.0), ZoneType::Mixed);
+    assert_eq!(z.get_zone_world(0.0, 0.0), ZoneType::Industrial);
 }

@@ -231,28 +231,51 @@ func _build_ui():
 	
 	zoning_combined_hbox.add_child(zoning_sub_panel)
 
-	var zone_info = [
-		{"name": "Residential", "type": 1, "color": Color(0.1, 0.8, 0.1)},
-		{"name": "Commercial", "type": 2, "color": Color(0.1, 0.1, 0.8)},
-		{"name": "Industrial", "type": 3, "color": Color(0.8, 0.8, 0.1)},
-		{"name": "Office", "type": 4, "color": Color(0.1, 0.8, 0.8)},
-		{"name": "Mixed", "type": 5, "color": Color(0.8, 0.1, 0.8)},
-		{"name": "Clear", "type": 0, "color": Color(0.5, 0.5, 0.5)}
-	]
-	
-	for zi in zone_info:
+	var rect_btn = Button.new()
+	rect_btn.text = "Rect"
+	rect_btn.custom_minimum_size = Vector2(70, 50)
+	rect_btn.pressed.connect(func(): input_manager.set_zoning_paint_mode("rectangle"))
+	zoning_sub_menu.add_child(rect_btn)
+
+	var brush_btn = Button.new()
+	brush_btn.text = "Brush"
+	brush_btn.custom_minimum_size = Vector2(70, 50)
+	brush_btn.pressed.connect(func(): input_manager.set_zoning_paint_mode("brush"))
+	zoning_sub_menu.add_child(brush_btn)
+
+	var profiles = simulation_node.get_zone_profiles()
+	var last_zone_type := ""
+	for entry in profiles:
+		if not (entry is Dictionary):
+			continue
+		var profile: Dictionary = entry
+		var zone_type := str(profile.get("zone_type", "")).strip_edges()
+		if not last_zone_type.is_empty() and zone_type != last_zone_type:
+			var zone_sep := VSeparator.new()
+			zoning_sub_menu.add_child(zone_sep)
+		last_zone_type = zone_type
+
 		var b = Button.new()
-		b.text = zi.name
-		b.custom_minimum_size = Vector2(80, 50)
+		b.text = str(profile.get("display_name", zone_type.capitalize()))
+		b.tooltip_text = str(profile.get("ui_description", ""))
+		b.custom_minimum_size = Vector2(120, 50)
 		var bs = StyleBoxFlat.new()
-		bs.bg_color = zi.color
-		bs.bg_color.a = 0.4
+		bs.bg_color = _color_from_hex(str(profile.get("ui_color", "#777777")), 0.4)
 		bs.set_corner_radius_all(10)
 		b.add_theme_stylebox_override("normal", bs)
-		b.pressed.connect(func():
-			input_manager._handle_zoning_selection(KEY_0 + zi.type)
-		)
+		var runtime_id := int(profile.get("runtime_id", 0))
+		b.pressed.connect(func(): input_manager.select_zone_profile(runtime_id))
 		zoning_sub_menu.add_child(b)
+
+	var clear_btn := Button.new()
+	clear_btn.text = "Clear"
+	clear_btn.custom_minimum_size = Vector2(80, 50)
+	var clear_style := StyleBoxFlat.new()
+	clear_style.bg_color = Color(0.5, 0.5, 0.5, 0.4)
+	clear_style.set_corner_radius_all(10)
+	clear_btn.add_theme_stylebox_override("normal", clear_style)
+	clear_btn.pressed.connect(func(): input_manager.select_zone_profile(0))
+	zoning_sub_menu.add_child(clear_btn)
 	
 	# 1. Main Toolbar (Bottom stack layer)
 	main_toolbar = HBoxContainer.new()
@@ -497,6 +520,14 @@ func show_road_properties_multi(edge_indices: Array):
 
 func hide_road_properties():
 	road_properties_panel.visible = false
+
+func _color_from_hex(hex: String, alpha: float) -> Color:
+	if hex.length() == 7 and hex.begins_with("#"):
+		var r := hex.substr(1, 2).hex_to_int()
+		var g := hex.substr(3, 2).hex_to_int()
+		var b := hex.substr(5, 2).hex_to_int()
+		return Color8(r, g, b, int(clampf(alpha, 0.0, 1.0) * 255.0))
+	return Color(0.5, 0.5, 0.5, alpha)
 
 var _pack_manager: Window = null
 

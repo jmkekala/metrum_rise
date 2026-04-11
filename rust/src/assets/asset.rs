@@ -63,7 +63,7 @@ pub enum AnchorType {
 /// Land-use category for a zoned building asset.
 ///
 /// Maps onto [`crate::simulation::grid::zoning::ZoneType`] during registry step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ZoneClass {
     /// Residential housing.

@@ -7,6 +7,7 @@
 
 use crate::assets::{AssetManifest, CURRENT_SCHEMA_VERSION, PackManifest};
 use crate::debug_log;
+use crate::simulation::grid::zoning::load_builtin_profile_registry;
 use serde::Deserialize;
 use std::path::Path;
 
@@ -227,6 +228,22 @@ fn build_asset_toml(p: &ExportParams) -> String {
     out
 }
 
+fn validate_against_builtin_zoning(params: &ExportParams) -> Result<(), String> {
+    let registry = load_builtin_profile_registry()?;
+    let zone_type = params.zone_type.as_deref().unwrap_or("residential");
+    let density = params.density.as_deref().unwrap_or("low");
+    let matches_any_profile = registry.profiles().iter().any(|profile| {
+        profile.zone_type.as_str() == zone_type && profile.density.as_str() == density
+    });
+    if !matches_any_profile {
+        return Err(format!(
+            "unsupported zoned building legality '{} + {}' for baseline shipped zoning profiles",
+            zone_type, density
+        ));
+    }
+    Ok(())
+}
+
 // ── Public helpers called from SimulationNode ─────────────────────────────────
 
 /// Validates the JSON export params, writes `pack.toml` (if absent) and
@@ -256,6 +273,11 @@ pub fn validate_and_export_asset_internal(params_json: &str, output_dir: &str) -
         );
         debug_log!("asset-editor", "{msg}");
         return msg;
+    }
+
+    if let Err(err) = validate_against_builtin_zoning(&params) {
+        debug_log!("asset-editor", "{err}");
+        return err;
     }
 
     // Build and round-trip validate the asset TOML.

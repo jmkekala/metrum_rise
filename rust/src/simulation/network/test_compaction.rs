@@ -74,6 +74,8 @@ mod tests {
                 operating_budget: 500.0,
                 utility_service_available: false,
                 shipment_cooldown_days: 0,
+                pending_redevelopment: false,
+                rezone_grace_days_remaining: 0,
             });
 
         // 5. Spawn an agent on Road B (Index 1)

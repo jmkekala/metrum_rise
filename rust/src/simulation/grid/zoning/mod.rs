@@ -1,17 +1,25 @@
-//! World-space zoning grid replacing the legacy per-edge `EdgeZoning` system.
+//! World-space zoning grid and built-in zoning-profile registry.
 //!
-//! Zone types are painted freely onto a global `DataGrid<ZoneType>` (2000×2000 cells at 10 m
-//! resolution for a 20 km map). Buildings still spawn along road frontage but look up their zone
-//! from the world grid rather than edge-local cells. The entire deferred-flush / obstruction-cache
-//! pipeline from the old system is gone — zone painting is an immediate write to the grid.
+//! The authoritative painted world stores dense runtime `ZoneProfile` ids (`u16`) in one global
+//! grid. Broad [`ZoneType`] values remain as derived helpers for systems that still consume the
+//! larger residential/commercial/industrial families. Buildings still spawn along road frontage,
+//! but legality now reads the profile-derived zone family and density from the global painted grid
+//! rather than from edge-local cells.
 
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::grid::data_grid::DataGrid;
 use godot::prelude::Vector2;
 use rayon::prelude::*;
+use std::sync::Arc;
+
+pub mod profiles;
+
+pub use profiles::{
+    ZoneDensity, ZoneProfileRuntime, ZoningProfileRegistry, load_builtin_profile_registry,
+};
 
 /// Land-use category painted onto a zoning grid cell.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
 #[repr(u8)]
 pub enum ZoneType {
     /// No zoning — cell is unbuildable and transparent in the UI.
@@ -41,6 +49,18 @@ impl ZoneType {
             _ => Self::None,
         }
     }
+
+    /// Returns the canonical snake-case string key for this zone family.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Residential => "residential",
+            Self::Commercial => "commercial",
+            Self::Industrial => "industrial",
+            Self::Office => "office",
+            Self::Mixed => "mixed",
+        }
+    }
 }
 
 /// World-space zoning system built on three flat grids.
@@ -51,8 +71,10 @@ impl ZoneType {
 /// `hw = (width - 1) / 2`.
 #[derive(Clone)]
 pub struct ZoningSystem {
-    /// Zone type for every 10 m cell in the world. 2000×2000 = 4 MB for a 20 km map.
-    pub grid: DataGrid<ZoneType>,
+    /// Validated built-in zoning-profile registry shared by the zoning grid, UI bridge, and saves.
+    pub profiles: Arc<ZoningProfileRegistry>,
+    /// Dense runtime zoning-profile id for every painted world cell. `0` means unpainted / none.
+    pub grid: DataGrid<u16>,
     /// Building footprint occupancy. True when a placed building covers this cell.
     pub occupied: DataGrid<bool>,
     /// Distance to the nearest road edge in metres, clamped to 255.
@@ -70,8 +92,11 @@ impl ZoningSystem {
     pub fn new(config: &MapConfig) -> Self {
         let w = config.zone_grid_width();
         let h = config.zone_grid_height();
+        let profiles = load_builtin_profile_registry()
+            .unwrap_or_else(|err| panic!("could not load built-in zoning profiles: {err}"));
         Self {
-            grid: DataGrid::new(w, h, ZoneType::None),
+            profiles,
+            grid: DataGrid::new(w, h, 0),
             occupied: DataGrid::new(w, h, false),
             distance_to_road: DataGrid::new(w, h, 255u8),
             no_build_mask: DataGrid::new(w, h, false),
@@ -81,7 +106,7 @@ impl ZoningSystem {
 
     /// Clears all zone, occupancy, distance, and no-build mask data.
     pub fn clear(&mut self) {
-        self.grid.data.fill(ZoneType::None);
+        self.grid.data.fill(0);
         self.occupied.data.fill(false);
         self.distance_to_road.data.fill(255);
         self.no_build_mask.data.fill(false);
@@ -143,14 +168,52 @@ impl ZoningSystem {
     /// Returns the zone type at the given world-space position.
     pub fn get_zone_world(&self, x: f32, z: f32) -> ZoneType {
         match self.world_to_cell(x, z) {
-            Some((cx, cy)) => *self.grid.get(cx, cy).unwrap_or(&ZoneType::None),
+            Some((cx, cy)) => self
+                .profiles
+                .zone_type_for_runtime_id(*self.grid.get(cx, cy).unwrap_or(&0)),
             None => ZoneType::None,
         }
     }
 
-    /// Paints a world-space rectangle with `zone_type`.
+    /// Returns the dense runtime profile id at one world-space position.
+    pub fn get_zone_profile_runtime_id_world(&self, x: f32, z: f32) -> u16 {
+        match self.world_to_cell(x, z) {
+            Some((cx, cy)) => *self.grid.get(cx, cy).unwrap_or(&0),
+            None => 0,
+        }
+    }
+
+    /// Returns the dense runtime profile id at one grid-space cell.
+    pub fn get_zone_profile_runtime_id_cell(&self, cx: usize, cy: usize) -> u16 {
+        *self.grid.get(cx, cy).unwrap_or(&0)
+    }
+
+    /// Paints a world-space rectangle with one runtime zoning-profile id.
     ///
-    /// Cell boundaries are determined by snapping to the nearest 10 m boundary.
+    /// Cell boundaries are determined by snapping to the nearest zoning grid boundary.
+    pub fn set_zone_profile_rect(
+        &mut self,
+        x_min: f32,
+        z_min: f32,
+        x_max: f32,
+        z_max: f32,
+        runtime_id: u16,
+    ) {
+        let (cx_min, cy_min) = self.world_to_cell_clamped(x_min.min(x_max), z_min.min(z_max));
+        let (cx_max, cy_max) = self.world_to_cell_clamped(x_min.max(x_max), z_min.max(z_max));
+        let gw = self.grid.width;
+        let gh = self.grid.height;
+        for cy in cy_min..=cy_max.min(gh.saturating_sub(1)) {
+            for cx in cx_min..=cx_max.min(gw.saturating_sub(1)) {
+                self.grid.set(cx, cy, runtime_id);
+            }
+        }
+    }
+
+    /// Paints a world-space rectangle with one broad zone family.
+    ///
+    /// Transitional helper kept for older call sites. Baseline Phase 1 maps broad family paints
+    /// to the default low-density runtime profile for that family.
     pub fn set_zone_rect(
         &mut self,
         x_min: f32,
@@ -159,61 +222,127 @@ impl ZoningSystem {
         z_max: f32,
         zone: ZoneType,
     ) {
-        let (cx_min, cy_min) = self.world_to_cell_clamped(x_min.min(x_max), z_min.min(z_max));
-        let (cx_max, cy_max) = self.world_to_cell_clamped(x_min.max(x_max), z_min.max(z_max));
-        let gw = self.grid.width;
-        let gh = self.grid.height;
-        for cy in cy_min..=cy_max.min(gh.saturating_sub(1)) {
-            for cx in cx_min..=cx_max.min(gw.saturating_sub(1)) {
-                self.grid.set(cx, cy, zone);
-            }
-        }
+        let runtime_id = self
+            .profiles
+            .default_runtime_id_for_zone_type(zone)
+            .unwrap_or(0);
+        self.set_zone_profile_rect(x_min, z_min, x_max, z_max, runtime_id);
     }
 
-    /// Writes raw zone bytes into a sub-rectangle. Used exclusively by the GDScript undo path.
-    pub fn set_zone_rect_raw(
-        &mut self,
-        x_min: f32,
-        z_min: f32,
-        x_max: f32,
-        z_max: f32,
-        bytes: &[u8],
-    ) {
-        let (cx_min, cy_min) = self.world_to_cell_clamped(x_min.min(x_max), z_min.min(z_max));
-        let (cx_max, cy_max) = self.world_to_cell_clamped(x_min.max(x_max), z_min.max(z_max));
-        let gw = self.grid.width;
-        let gh = self.grid.height;
-        let mut idx = 0;
-        for cy in cy_min..=cy_max.min(gh.saturating_sub(1)) {
-            for cx in cx_min..=cx_max.min(gw.saturating_sub(1)) {
-                if idx < bytes.len() {
-                    self.grid.set(cx, cy, ZoneType::from_u8(bytes[idx]));
-                    idx += 1;
-                }
-            }
-        }
-    }
-
-    /// Captures the raw zone bytes of a sub-rectangle. Called before each paint for undo.
-    pub fn get_zone_subrect(&self, x_min: f32, z_min: f32, x_max: f32, z_max: f32) -> Vec<u8> {
-        let (cx_min, cy_min) = self.world_to_cell_clamped(x_min.min(x_max), z_min.min(z_max));
-        let (cx_max, cy_max) = self.world_to_cell_clamped(x_min.max(x_max), z_min.max(z_max));
-        let gw = self.grid.width;
-        let gh = self.grid.height;
-        let mut out = Vec::new();
-        for cy in cy_min..=cy_max.min(gh.saturating_sub(1)) {
-            for cx in cx_min..=cx_max.min(gw.saturating_sub(1)) {
-                out.push(*self.grid.get(cx, cy).unwrap_or(&ZoneType::None) as u8);
+    /// Captures one patch bounding box as little-endian runtime profile ids in row-major order.
+    pub fn capture_patch(
+        &self,
+        grid_x: i32,
+        grid_y: i32,
+        width_cells: usize,
+        height_cells: usize,
+    ) -> Vec<u8> {
+        let mut out = Vec::with_capacity(width_cells * height_cells * 2);
+        for dy in 0..height_cells {
+            for dx in 0..width_cells {
+                let cx = grid_x + dx as i32;
+                let cy = grid_y + dy as i32;
+                let runtime_id = if cx >= 0
+                    && cy >= 0
+                    && (cx as usize) < self.grid.width
+                    && (cy as usize) < self.grid.height
+                {
+                    self.get_zone_profile_runtime_id_cell(cx as usize, cy as usize)
+                } else {
+                    0
+                };
+                out.extend_from_slice(&runtime_id.to_le_bytes());
             }
         }
         out
     }
 
+    /// Restores one full patch bounding box from little-endian runtime profile ids.
+    pub fn restore_patch(
+        &mut self,
+        grid_x: i32,
+        grid_y: i32,
+        width_cells: usize,
+        height_cells: usize,
+        profile_ids_le_u16: &[u8],
+    ) {
+        let mut idx = 0;
+        for dy in 0..height_cells {
+            for dx in 0..width_cells {
+                if idx + 1 >= profile_ids_le_u16.len() {
+                    return;
+                }
+                let cx = grid_x + dx as i32;
+                let cy = grid_y + dy as i32;
+                if cx >= 0
+                    && cy >= 0
+                    && (cx as usize) < self.grid.width
+                    && (cy as usize) < self.grid.height
+                {
+                    let runtime_id =
+                        u16::from_le_bytes([profile_ids_le_u16[idx], profile_ids_le_u16[idx + 1]]);
+                    self.grid.set(cx as usize, cy as usize, runtime_id);
+                }
+                idx += 2;
+            }
+        }
+    }
+
+    /// Applies one masked paint patch using row-major `0/1` bytes.
+    pub fn apply_patch(
+        &mut self,
+        grid_x: i32,
+        grid_y: i32,
+        width_cells: usize,
+        height_cells: usize,
+        runtime_id: u16,
+        write_mask: &[u8],
+    ) {
+        let mut idx = 0;
+        for dy in 0..height_cells {
+            for dx in 0..width_cells {
+                if idx >= write_mask.len() {
+                    return;
+                }
+                if write_mask[idx] != 0 {
+                    let cx = grid_x + dx as i32;
+                    let cy = grid_y + dy as i32;
+                    if cx >= 0
+                        && cy >= 0
+                        && (cx as usize) < self.grid.width
+                        && (cy as usize) < self.grid.height
+                    {
+                        self.grid.set(cx as usize, cy as usize, runtime_id);
+                    }
+                }
+                idx += 1;
+            }
+        }
+    }
+
     // ── Texture data for Godot uploads ──────────────────────────────────────
 
-    /// Returns the zone-type grid as a flat `u8` byte array for R8 texture upload.
+    /// Returns the derived broad zone-family grid as a flat `u8` byte array for legacy callers.
     pub fn get_zone_texture_data(&self) -> Vec<u8> {
-        self.grid.data.iter().map(|&z| z as u8).collect()
+        self.grid
+            .data
+            .iter()
+            .map(|&runtime_id| self.profiles.zone_type_for_runtime_id(runtime_id) as u8)
+            .collect()
+    }
+
+    /// Returns the authoritative profile-id grid as RG8 bytes for overlay upload.
+    pub fn get_zone_profile_texture_data_rg8(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.grid.data.len() * 2);
+        for &runtime_id in &self.grid.data {
+            out.extend_from_slice(&runtime_id.to_le_bytes());
+        }
+        out
+    }
+
+    /// Returns the one-row RGBA8 style LUT for the profile-aware overlay shader.
+    pub fn get_zone_profile_style_lut_rgba8(&self) -> Vec<u8> {
+        self.profiles.style_lut_rgba8()
     }
 
     /// Returns the occupancy grid as a flat `u8` byte array (0 or 1 per cell).
