@@ -15,6 +15,8 @@ use crate::simulation::network::types::NodeType;
 
 /// First-pass shipped resource used by the starter economy chain.
 pub const RESOURCE_HOUSEHOLD_SUPPLIES: u8 = 0;
+/// Starter industrial-input resource delivered to industrial buildings.
+pub const RESOURCE_INDUSTRIAL_INPUTS: u8 = 1;
 /// The shipment originates from a local supplier building.
 pub const SHIPMENT_SOURCE_LOCAL: u8 = 0;
 /// The shipment originates from an `OWA` border terminal.
@@ -32,8 +34,13 @@ const COMMERCIAL_STOCK_TARGET_UNITS: f32 = 600.0;
 const COMMERCIAL_REORDER_UNITS: f32 = 400.0;
 const COMMERCIAL_CRITICAL_UNITS: f32 = 100.0;
 const COMMERCIAL_MIN_SHIPMENT_UNITS: f32 = 40.0;
+const INDUSTRIAL_INPUT_TARGET_UNITS: f32 = 480.0;
+const INDUSTRIAL_INPUT_REORDER_UNITS: f32 = 240.0;
+const INDUSTRIAL_INPUT_CRITICAL_UNITS: f32 = 80.0;
+const INDUSTRIAL_INPUT_MIN_SHIPMENT_UNITS: f32 = 60.0;
 const WHOLESALE_UNIT_PRICE: f32 = 5.0;
 const OWA_IMPORT_ASK: f32 = 8.0;
+const INDUSTRIAL_INPUT_IMPORT_ASK: f32 = 4.0;
 const SUPPLIER_SEARCH_MAX_RING: i32 = 3;
 const SUPPLIER_SEARCH_CANDIDATES: usize = 8;
 const SHIPMENT_RETRY_COOLDOWN_DAYS: u8 = 1;
@@ -137,6 +144,7 @@ impl ShipmentSystem {
         self.progress_shipments(allocator);
         self.decrement_building_cooldowns(allocator);
         self.create_commercial_restock_shipments(allocator, transit_network, graph);
+        self.create_industrial_input_shipments(allocator, transit_network, graph);
         self.shipments
             .retain(|shipment| shipment.status == SHIPMENT_IN_TRANSIT);
     }
@@ -164,6 +172,7 @@ impl ShipmentSystem {
                 SHIPMENT_SOURCE_LOCAL => {
                     let src_idx = shipment.source_building_id;
                     if src_idx >= allocator.buildings.len()
+                        || shipment.resource_type != RESOURCE_HOUSEHOLD_SUPPLIES
                         || allocator.buildings[src_idx].stock < shipment.amount
                     {
                         allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
@@ -180,7 +189,21 @@ impl ShipmentSystem {
                     shipment.status = SHIPMENT_FULFILLED;
                 }
                 SHIPMENT_SOURCE_OWA => {
-                    allocator.buildings[dest_idx].stock += shipment.amount;
+                    match shipment.resource_type {
+                        RESOURCE_HOUSEHOLD_SUPPLIES => {
+                            allocator.buildings[dest_idx].stock += shipment.amount;
+                        }
+                        RESOURCE_INDUSTRIAL_INPUTS => {
+                            allocator.buildings[dest_idx].input_stock += shipment.amount;
+                        }
+                        _ => {
+                            allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
+                            allocator.buildings[dest_idx].shipment_cooldown_days =
+                                SHIPMENT_RETRY_COOLDOWN_DAYS;
+                            shipment.status = SHIPMENT_FAILED;
+                            continue;
+                        }
+                    }
                     shipment.status = SHIPMENT_FULFILLED;
                 }
                 _ => {
@@ -214,7 +237,7 @@ impl ShipmentSystem {
 
         for dest_idx in 0..allocator.buildings.len() {
             let building = &allocator.buildings[dest_idx];
-            if !matches!(building.zone_type, ZoneType::Commercial | ZoneType::Mixed)
+            if building.zone_type != ZoneType::Commercial
                 || building.broken
                 || building.edge_idx == usize::MAX
                 || has_open_inbound.get(dest_idx).copied().unwrap_or(false)
@@ -254,6 +277,62 @@ impl ShipmentSystem {
                 dest_idx,
                 desired_amount,
                 allow_emergency,
+                allocator,
+                transit_network,
+                graph,
+                &border_nodes,
+                &border_job_counts,
+            ) {
+                continue;
+            }
+
+            allocator.buildings[dest_idx].shipment_cooldown_days = SHIPMENT_RETRY_COOLDOWN_DAYS;
+        }
+    }
+
+    fn create_industrial_input_shipments(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        let (_reserved_outbound, reserved_inbound, has_open_inbound, border_job_counts) =
+            self.build_reservation_views();
+        let border_nodes = connected_border_nodes(graph);
+
+        for dest_idx in 0..allocator.buildings.len() {
+            let building = &allocator.buildings[dest_idx];
+            if building.zone_type != ZoneType::Industrial
+                || building.broken
+                || building.edge_idx == usize::MAX
+                || has_open_inbound.get(dest_idx).copied().unwrap_or(false)
+                || building.shipment_cooldown_days > 0
+            {
+                continue;
+            }
+
+            let effective_input_stock =
+                building.input_stock + reserved_inbound.get(dest_idx).copied().unwrap_or(0.0);
+            if effective_input_stock >= INDUSTRIAL_INPUT_REORDER_UNITS {
+                continue;
+            }
+
+            let allow_emergency = effective_input_stock <= INDUSTRIAL_INPUT_CRITICAL_UNITS;
+            let desired_amount = (INDUSTRIAL_INPUT_TARGET_UNITS - effective_input_stock).max(0.0);
+            if desired_amount <= 0.0 {
+                continue;
+            }
+            if desired_amount < INDUSTRIAL_INPUT_MIN_SHIPMENT_UNITS && !allow_emergency {
+                continue;
+            }
+
+            if self.try_owa_fallback_for_resource(
+                dest_idx,
+                desired_amount,
+                allow_emergency,
+                INDUSTRIAL_INPUT_MIN_SHIPMENT_UNITS,
+                INDUSTRIAL_INPUT_IMPORT_ASK,
+                RESOURCE_INDUSTRIAL_INPUTS,
                 allocator,
                 transit_network,
                 graph,
@@ -353,21 +432,51 @@ impl ShipmentSystem {
         border_nodes: &[u32],
         border_job_counts: &HashMap<u32, usize>,
     ) -> bool {
+        self.try_owa_fallback_for_resource(
+            dest_idx,
+            desired_amount,
+            allow_emergency,
+            COMMERCIAL_MIN_SHIPMENT_UNITS,
+            OWA_IMPORT_ASK,
+            RESOURCE_HOUSEHOLD_SUPPLIES,
+            allocator,
+            transit_network,
+            graph,
+            border_nodes,
+            border_job_counts,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn try_owa_fallback_for_resource(
+        &mut self,
+        dest_idx: usize,
+        desired_amount: f32,
+        allow_emergency: bool,
+        min_shipment_units: f32,
+        unit_price: f32,
+        resource_type: u8,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+        border_nodes: &[u32],
+        border_job_counts: &HashMap<u32, usize>,
+    ) -> bool {
         if border_nodes.is_empty() {
             return false;
         }
 
-        let min_amount = if desired_amount < COMMERCIAL_MIN_SHIPMENT_UNITS && allow_emergency {
+        let min_amount = if desired_amount < min_shipment_units && allow_emergency {
             desired_amount
         } else {
-            COMMERCIAL_MIN_SHIPMENT_UNITS
+            min_shipment_units
         };
-        let max_affordable_amount = allocator.buildings[dest_idx].operating_budget / OWA_IMPORT_ASK;
+        let max_affordable_amount = allocator.buildings[dest_idx].operating_budget / unit_price;
         if max_affordable_amount < min_amount {
             return false;
         }
         let amount = desired_amount.max(min_amount).min(max_affordable_amount);
-        let total_cost = amount * OWA_IMPORT_ASK;
+        let total_cost = amount * unit_price;
 
         let mut best_border = u32::MAX;
         let mut best_cost = f32::MAX;
@@ -397,7 +506,7 @@ impl ShipmentSystem {
 
         allocator.buildings[dest_idx].operating_budget -= total_cost;
         self.shipments.push(Shipment {
-            resource_type: RESOURCE_HOUSEHOLD_SUPPLIES,
+            resource_type,
             amount,
             source_kind: SHIPMENT_SOURCE_OWA,
             source_building_id: usize::MAX,
@@ -556,6 +665,7 @@ mod tests {
             center_y: 10.0,
             width_cells: 2,
             depth_cells: 2,
+            zone_profile_runtime_id: 0,
             zone_type,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
@@ -571,6 +681,7 @@ mod tests {
             level: 1,
             broken: false,
             stock,
+            input_stock: 0.0,
             revenue: 0.0,
             operating_budget: budget,
             utility_service_available: utility,
@@ -685,10 +796,15 @@ mod tests {
 
         shipments.daily_tick(&mut allocator, &network, &graph);
 
-        assert!(shipments.shipments.is_empty());
         assert!(allocator.buildings[1].stock > 100.0);
         assert!(allocator.buildings[0].stock < 300.0);
         assert!(allocator.buildings[0].revenue > 0.0);
+        assert!(
+            shipments
+                .shipments
+                .iter()
+                .all(|shipment| shipment.resource_type == RESOURCE_INDUSTRIAL_INPUTS)
+        );
     }
 
     #[test]
@@ -759,5 +875,47 @@ mod tests {
         assert!(shipments.shipments[0].amount >= COMMERCIAL_MIN_SHIPMENT_UNITS);
         assert!(shipments.shipments[0].amount < COMMERCIAL_STOCK_TARGET_UNITS);
         assert!(allocator.buildings[0].operating_budget <= 0.001);
+    }
+
+    #[test]
+    fn industrial_input_import_fills_input_stock_from_owa() {
+        let (graph, network, industrial_edge, _commercial_edge, border_node) =
+            simple_graph_with_border();
+        let mut allocator = BuildingAllocator::new();
+        let industrial_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "owa_industrial_inputs",
+            ZoneClass::Industrial,
+        );
+        let destination = make_building(
+            -50.0,
+            ZoneType::Industrial,
+            industrial_edge,
+            &industrial_asset,
+            0.0,
+            5_000.0,
+            true,
+        );
+        allocator.buildings.push(destination);
+        allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+        allocator.rebuild_zone_index();
+
+        let mut shipments = ShipmentSystem::new();
+        shipments.daily_tick(&mut allocator, &network, &graph);
+
+        assert_eq!(shipments.shipments.len(), 1);
+        assert_eq!(
+            shipments.shipments[0].resource_type,
+            RESOURCE_INDUSTRIAL_INPUTS
+        );
+        assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_OWA);
+        assert_eq!(shipments.shipments[0].source_border_node, border_node);
+        assert_eq!(allocator.buildings[0].input_stock, 0.0);
+
+        shipments.daily_tick(&mut allocator, &network, &graph);
+
+        assert!(shipments.shipments.is_empty());
+        assert!(allocator.buildings[0].input_stock > 0.0);
     }
 }

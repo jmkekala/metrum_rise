@@ -265,7 +265,7 @@ fn validate_against_builtin_zoning(params: &ExportParams) -> Result<(), String> 
     });
     if !matches_any_profile {
         return Err(format!(
-            "unsupported zoned building legality '{} + {}' for baseline shipped zoning profiles",
+            "unsupported zoned building legality '{} + {}' for the baseline shipped zoning profiles; office and mixed remain future extensions",
             zone_type, density
         ));
     }

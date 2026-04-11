@@ -3,7 +3,8 @@
 use crate::assets::ZoneClass;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
-    Building, BuildingAllocator, EdgeOccupancy, zone_class_to_zone_type, zone_type_to_zone_class,
+    Building, BuildingAllocator, EdgeOccupancy, baseline_private_zone_slot,
+    zone_class_to_zone_type, zone_type_to_zone_class,
 };
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSpawnCandidate};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
@@ -335,6 +336,7 @@ impl BuildingAllocator {
 
         Some(ResolvedPlacement {
             asset_id: asset_id.to_owned(),
+            zone_profile_runtime_id: frontage_profile_runtime_id,
             zone_type: params.zone_type,
             initial_level: params.initial_level,
             edge_idx,
@@ -395,7 +397,9 @@ impl BuildingAllocator {
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;
-        self.dirty_zones[self.buildings[building_idx].zone_type as usize] = true;
+        if let Some(zone_idx) = baseline_private_zone_slot(self.buildings[building_idx].zone_type) {
+            self.dirty_zones[zone_idx] = true;
+        }
         debug_log!(
             "economy",
             "demand placed building idx={} asset_id={} zone={:?} edge={} cell=({}, {}) center=({:.1}, {:.1})",
@@ -437,6 +441,7 @@ impl BuildingAllocator {
 
     fn place_building_instance(&mut self, placement: ResolvedPlacement) -> usize {
         self.buildings.push(Building {
+            zone_profile_runtime_id: placement.zone_profile_runtime_id,
             zone_type: placement.zone_type,
             facing_dir: placement.facing_dir,
             frontage_t: placement.frontage_t,
@@ -455,6 +460,7 @@ impl BuildingAllocator {
             level: placement.initial_level,
             broken: false,
             stock: 0.0,
+            input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 0.0,
             utility_service_available: false,
@@ -549,6 +555,7 @@ struct AssetPlacementParams {
 
 struct ResolvedPlacement {
     asset_id: String,
+    zone_profile_runtime_id: u16,
     zone_type: ZoneType,
     initial_level: u8,
     edge_idx: usize,

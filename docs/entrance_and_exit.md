@@ -594,7 +594,7 @@ Reset and save rules:
 
 Reset and save rules:
 
-- `access_flags = 0` in `spawn_agent()`
+- `access_flags = 0` in `spawn_housed_agent()` and `spawn_border_arrival_agent()`
 - `access_flags = 0` in `kill_agent()`
 - `access_flags = 0` whenever the agent returns to `IN_BUILDING`
 - failed planning and failed replanning must clear `ACCESS_PLAN_VALID`
@@ -704,7 +704,7 @@ That is a meaningful increase, but it is still cheap compared to the cost of kee
 
 The SoA migration requires coordinated updates in all agent lifecycle code:
 
-- `spawn_agent()`
+- `spawn_housed_agent()` and `spawn_border_arrival_agent()`
 - `kill_agent()`
 - save/load of agent state
 - benchmark/test setup that manually populates agent fields
@@ -1201,6 +1201,58 @@ Use this exact rule:
 
 This keeps immigration compatible with the entrance model without inventing a fake origin building or a fake origin entrance cache.
 
+##### Future outside-gateway household arrival and departure model
+
+This is a later explicit extension, not the baseline `v0.1` transport contract.
+
+When the city later supports multiple outside-connection types for people as well as freight, the
+transport layer should generalize narrow `TRANSIT_IMMIGRATING` into a shared outside-gateway model.
+
+Recommended future model:
+
+- compile every connected external people/freight connection into one `OutsideGateway` runtime
+  record
+- an `OutsideGateway` may be `road`, `rail`, `ship`, `air`, or a later authored external mode
+- each gateway should declare which external flows it supports:
+  - household arrival
+  - household departure
+  - freight import
+  - freight export
+- the same physical outside connection may serve both household movement and `OWA` freight, but
+  those remain different consumers of the same gateway rather than one merged subsystem
+
+Recommended future transport states:
+
+- `TRANSIT_EXTERNAL_ARRIVAL`
+  - generalized replacement for narrow border-road `TRANSIT_IMMIGRATING`
+  - used when an admitted household is visualized as entering the map through a chosen
+    `OutsideGateway`
+  - starts from the chosen gateway rather than from a building door
+  - keeps the current rule that demand already decided admission and economy already created the
+    household record and claimed its destination home before transport visualization begins
+- `TRANSIT_EXTERNAL_DEPARTURE`
+  - used when a household already selected for whole-city removal is visualized as leaving through
+    a chosen `OutsideGateway`
+  - transport does not decide whether departure happens; it only executes the already-decided trip
+  - once the departure handoff at the chosen gateway is complete, the household members are removed
+    from live simulation
+
+Ownership boundary for this future model:
+
+- [`docs/demand.md`](demand.md) decides whether households are admitted or removed and how many
+- [`docs/economy.md`](economy.md) owns the admitted household record, claimed home, and the
+  underlying bad-state reasons that may lead to later removal
+- this document owns only the physical outside-gateway arrival/departure trip semantics, gateway
+  choice, and visible transport behavior
+
+Shared-gateway rule:
+
+- if the same outside connection also serves the `OWA`, it should do so through the same
+  `OutsideGateway` abstraction
+- freight import/export remains economy-owned `OWA` behavior
+- household arrival/departure remains transport-owned movement behavior
+- the shared abstraction is the gateway, not the business logic
+
 ##### Exact same-endpoint rule
 
 If the selected candidate has `planned_attach_node == planned_detach_node`, the trip has a zero-hop network leg.
@@ -1404,7 +1456,8 @@ Goal: make access geometry explicit and deterministic before changing planner or
 - Add the new `planned_attach_*`, `planned_detach_*`, `access_flags`, and `next_replan_time` fields.
 - Rename the transit-state semantics to `IN_BUILDING`, `ACCESS_EGRESS`, `NETWORK`, `ACCESS_INGRESS`, `IMMIGRATING`, and `INTERSECTION`.
 - Keep `target_node` and `is_visible` temporarily while old and new readers still exist.
-- Update `spawn_agent()`, save/load, tests, benchmarks, and any manual SoA setup to initialise all new fields.
+- Update `spawn_housed_agent()`, `spawn_border_arrival_agent()`, save/load, tests, benchmarks,
+  and any manual SoA setup to initialise all new fields.
 - Keep `current_path` for the network leg only.
 
 Goal: make the trip/access contract explicit in the data model before changing planner or movement code.
@@ -1450,6 +1503,10 @@ Goal: one coherent trip from door to door.
 - Simplify tests around deterministic entrance access instead of heuristics.
 - Keep non-agent systems on the same entrance-cache abstraction as ordinary trips. Freight/shipment ETA, supplier choice, `OWA` border-terminal choice, and helper-path spawning should continue to use exact entrance-side car access rather than regressing to any edge-endpoint proxy.
 - `TRANSIT_IMMIGRATING` should stay transport-layer-only if retained. Ownership of whether the city admits households belongs to `docs/demand.md`; `docs/economy.md` owns the admitted household record; this document owns only the movement semantics for an optional border-origin transport trip.
+- If later gameplay upgrades border-only immigration into a full multi-mode outside-gateway system,
+  replace narrow `TRANSIT_IMMIGRATING` with explicit `TRANSIT_EXTERNAL_ARRIVAL` and
+  `TRANSIT_EXTERNAL_DEPARTURE` states rather than overloading ordinary building ingress or direct
+  household deletion.
 - Write a dedicated destruction/eviction contract for agents whose current or target building disappears, then remove the out-of-band `TRANSIT_ACCESS_INGRESS` "dump onto rubble/street" behavior from `AgentSystem::evict_building()`.
 - Audit any remaining debug logs, tests, and tooling helpers that still speak in terms of legacy "home_node" or edge-endpoint semantics even though ordinary trips now run on entrance-cache plans.
 

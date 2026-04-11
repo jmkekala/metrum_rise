@@ -87,8 +87,6 @@ impl SimCore {
             1 => ZoneType::Residential,
             2 => ZoneType::Commercial,
             3 => ZoneType::Industrial,
-            4 => ZoneType::Office,
-            5 => ZoneType::Mixed,
             _ => ZoneType::None,
         };
 

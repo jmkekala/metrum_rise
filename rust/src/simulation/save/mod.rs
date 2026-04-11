@@ -245,7 +245,7 @@ pub(crate) fn load_from_sqlite(
 
     let mut graph = network::load_graph(&conn)?;
     let mut zoning = world::load_zoning(&conn, &config)?;
-    let mut allocator = world::load_buildings(&conn, registry)?;
+    let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
     let households = world::load_households(&conn)?;
     let logistics = world::load_shipments(&conn)?;
     let mut agents = agents::load_agents(&conn, time_r.4)?;
@@ -465,6 +465,9 @@ pub(super) fn i64_to_usize(v: i64) -> SaveLoadResult<usize> {
 }
 pub(super) fn i64_to_u32(v: i64) -> SaveLoadResult<u32> {
     u32::try_from(v).map_err(|_| SaveLoadError::custom("u32 overflow"))
+}
+pub(super) fn i64_to_u16(v: i64) -> SaveLoadResult<u16> {
+    u16::try_from(v).map_err(|_| SaveLoadError::custom("u16 overflow"))
 }
 pub(super) fn i64_to_u8(v: i64) -> SaveLoadResult<u8> {
     u8::try_from(v).map_err(|_| SaveLoadError::custom("u8 overflow"))

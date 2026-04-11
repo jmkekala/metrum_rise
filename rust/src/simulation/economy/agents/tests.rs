@@ -96,6 +96,7 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         center_y: 0.0,
         width_cells: 1,
         depth_cells: 1,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(1.0, 0.0),
         frontage_t: 0.5, // t=0.5 → depart node = end_node of the edge
@@ -111,6 +112,7 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: false,
@@ -146,7 +148,7 @@ fn test_agent_departure_sidewalk_selection() {
     let lane = &network.lane_system.lanes[lane_id];
     let planned_attach_node = if lane.is_fwd { n1 } else { n0 };
     let mut agents = AgentSystem::new();
-    agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
+    agents.spawn_border_arrival_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
     let a_id = 0;
     agents.transit[a_id] = TRANSIT_ACCESS_EGRESS;
     agents.transit_mode[a_id] = MODE_WALK;
@@ -209,7 +211,7 @@ fn test_agent_departure_car_selection() {
     let lane = &network.lane_system.lanes[lane_id];
     let planned_attach_node = if lane.is_fwd { n1 } else { n0 };
     let mut agents = AgentSystem::new();
-    agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
+    agents.spawn_border_arrival_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
     let a_id = 0;
     agents.transit[a_id] = TRANSIT_ACCESS_EGRESS;
     agents.transit_mode[a_id] = MODE_CAR;
@@ -290,7 +292,7 @@ fn test_simultaneous_car_egress_queues_instead_of_deadlocking_at_attach_point() 
     let mut agents = AgentSystem::new();
     let mut ids = Vec::new();
     for _ in 0..5 {
-        let a_id = agents.spawn_agent(
+        let a_id = agents.spawn_border_arrival_agent(
             0,
             n0,
             0.0,
@@ -371,7 +373,8 @@ fn test_simultaneous_car_ingress_queues_instead_of_deadlocking_at_detach_point()
     let mut agents = AgentSystem::new();
     let mut ids = Vec::new();
     for _ in 0..5 {
-        let a_id = agents.spawn_agent(0, n0, 0.0, 0.0, n0, lane_point.x, lane_point.y);
+        let a_id =
+            agents.spawn_border_arrival_agent(0, n0, 0.0, 0.0, n0, lane_point.x, lane_point.y);
         agents.transit[a_id] = TRANSIT_NETWORK;
         agents.transit_mode[a_id] = MODE_CAR;
         agents.current_edge[a_id] = edge_idx;
@@ -493,7 +496,7 @@ fn test_agent_fsm_planned_departure_lifecycle() {
     allocator.rebuild_zone_index();
     let mut agents = AgentSystem::new();
     for _ in 0..10 {
-        let i = agents.spawn_agent(0, n0, 0.0, 0.0, n0, 5.0, 10.0);
+        let i = agents.spawn_border_arrival_agent(0, n0, 0.0, 0.0, n0, 5.0, 10.0);
         agents.home_building[i] = 0;
         agents.work_building[i] = 1;
         agents.current_building[i] = 0; // Start inside home building
@@ -553,7 +556,7 @@ fn test_planned_departure_populates_exact_trip_plan() {
     allocator.rebuild_entrance_cache(&g, &network.lane_system);
 
     let mut agents = AgentSystem::new();
-    let i = agents.spawn_agent(0, n0, 0.0, 0.0, n0, 50.0, -10.0);
+    let i = agents.spawn_border_arrival_agent(0, n0, 0.0, 0.0, n0, 50.0, -10.0);
     agents.home_building[i] = 0;
     agents.work_building[i] = 1;
     agents.current_building[i] = 0;
@@ -628,7 +631,7 @@ fn test_same_edge_car_trip_prefers_direct_frontage_lane_over_endpoint_wrap() {
     assert_eq!(home_entrance.car_lane_fwd, work_entrance.car_lane_fwd);
 
     let mut agents = AgentSystem::new();
-    let i = agents.spawn_agent(
+    let i = agents.spawn_border_arrival_agent(
         0,
         n0,
         0.0,
@@ -712,7 +715,7 @@ fn test_same_edge_direct_car_trip_reaches_opposite_side_destination_building() {
     allocator.rebuild_entrance_cache(&g, &network.lane_system);
 
     let mut agents = AgentSystem::new();
-    let i = agents.spawn_agent(
+    let i = agents.spawn_border_arrival_agent(
         0,
         n0,
         0.0,
@@ -813,7 +816,7 @@ fn test_same_edge_opposite_side_household_car_arrivals_eventually_finish_ingress
     let mut agents = AgentSystem::new();
     let mut ids = Vec::new();
     for _ in 0..5 {
-        let i = agents.spawn_agent(
+        let i = agents.spawn_border_arrival_agent(
             0,
             n0,
             0.0,
@@ -861,9 +864,9 @@ fn test_same_edge_opposite_side_household_car_arrivals_eventually_finish_ingress
 #[test]
 fn test_vehicle_type_persistence() {
     let mut agents = AgentSystem::new();
-    let _i0 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
-    let _i1 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
-    let i2 = agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+    let _i0 = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+    let _i1 = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+    let i2 = agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
     let type2 = agents.vehicle_type[i2];
     let mut allocator = BuildingAllocator::new();
     agents.kill_agent(1, &mut allocator);
@@ -900,7 +903,7 @@ fn test_border_spawn_movement() {
     home.asset_id = asset_id;
     allocator.buildings.push(home);
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
-    let agent_idx = agents.spawn_agent(0, n0, 0.0, 0.0, n1, 100.0, 0.0);
+    let agent_idx = agents.spawn_border_arrival_agent(0, n0, 0.0, 0.0, n1, 100.0, 0.0);
     agents.tick(&mut allocator, &mut network, &mut graph, 1.0);
     assert!(agents.access_flags[agent_idx] & ACCESS_PLAN_VALID != 0);
     let mut reached_destination_ingress = false;
@@ -969,7 +972,7 @@ fn test_pedestrian_crosses_junction() {
     allocator.buildings[1].zone_type = ZoneType::Commercial;
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     let mut agents = AgentSystem::new();
-    let i = agents.spawn_agent(0, n2, 0.0, 0.0, n0, -50.0, 10.0);
+    let i = agents.spawn_border_arrival_agent(0, n2, 0.0, 0.0, n0, -50.0, 10.0);
     agents.current_building[i] = 0;
     agents.home_building[i] = 0;
     agents.target_building[i] = usize::MAX;
@@ -1027,7 +1030,7 @@ fn place_on_lane(
     speed: f32,
 ) -> usize {
     let (n0, n1) = (0u32, 1u32);
-    let idx = agents.spawn_agent(usize::MAX, n1, 0.0, 0.0, n0, 0.0, 0.0);
+    let idx = agents.spawn_border_arrival_agent(usize::MAX, n1, 0.0, 0.0, n0, 0.0, 0.0);
     agents.transit[idx] = TRANSIT_NETWORK;
     agents.current_edge[idx] = edge_idx;
     agents.current_lane_id[idx] = fwd_lane;
@@ -1234,7 +1237,7 @@ fn check_no_stacking_two_edge(fwd: u8, bkw: u8, label: &str) {
         let lane_len = network.lane_system.lanes[lane_id].length;
         for k in 0..5 {
             let dist = (lane_len - 10.0 - (li * 5 + k) as f32 * 8.0).max(0.0);
-            let idx = agents.spawn_agent(usize::MAX, n2, 0.0, 0.0, n0, 0.0, 0.0);
+            let idx = agents.spawn_border_arrival_agent(usize::MAX, n2, 0.0, 0.0, n0, 0.0, 0.0);
             agents.transit[idx] = TRANSIT_NETWORK;
             agents.transit_mode[idx] = MODE_CAR;
             agents.current_node[idx] = n0;
@@ -1282,7 +1285,8 @@ fn check_no_stacking_4way(fwd: u8, bkw: u8, label: &str) {
     for (k, lanes) in arm_lanes.iter().enumerate() {
         for &lane_id in lanes {
             let lane_len = network.lane_system.lanes[lane_id].length;
-            let idx = agents.spawn_agent(usize::MAX, nc, 0.0, 0.0, arm_nodes[k], 0.0, 0.0);
+            let idx =
+                agents.spawn_border_arrival_agent(usize::MAX, nc, 0.0, 0.0, arm_nodes[k], 0.0, 0.0);
             agents.transit[idx] = TRANSIT_NETWORK;
             agents.transit_mode[idx] = MODE_CAR;
             agents.current_node[idx] = arm_nodes[k];
@@ -1327,7 +1331,7 @@ fn check_no_uturn_at_frontage(fwd: u8, bkw: u8, label: &str) {
         let lane_len = network.lane_system.lanes[lane_id].length;
         for k in 0..3 {
             let dist = (lane_len - 5.0 - (li * 3 + k) as f32 * 8.0).max(0.0);
-            let idx = agents.spawn_agent(usize::MAX, n2, 0.0, 0.0, n0, 0.0, 0.0);
+            let idx = agents.spawn_border_arrival_agent(usize::MAX, n2, 0.0, 0.0, n0, 0.0, 0.0);
             agents.transit[idx] = TRANSIT_NETWORK;
             agents.transit_mode[idx] = MODE_CAR;
             agents.current_node[idx] = n0;
@@ -1457,7 +1461,7 @@ fn test_lane_bucket_empty_for_idle_agents() {
 
     // Spawn idle agents (home/work = MAX → safety scrub keeps them idle).
     for _ in 0..10 {
-        agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        agents.spawn_border_arrival_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
     }
     // Override transit to IDLE so no pathfinding fires.
     for i in 0..agents.agents.len() {
@@ -1516,7 +1520,7 @@ fn test_lane_bucket_invalid_lane_id_does_not_crash() {
     let mut allocator = BuildingAllocator::new();
 
     // Spawn with a valid edge but invalid lane — matches the benchmark default.
-    let i = agents.spawn_agent(usize::MAX, 1, 0.0, 0.0, 0, 0.0, 0.0);
+    let i = agents.spawn_border_arrival_agent(usize::MAX, 1, 0.0, 0.0, 0, 0.0, 0.0);
     agents.transit[i] = TRANSIT_NETWORK;
     agents.current_edge[i] = edge_idx;
     agents.current_lane_id[i] = usize::MAX;
@@ -1808,7 +1812,7 @@ fn test_lane_bucket_parallel_sort_matches_sequential_order() {
         let edge = graph.edge(eid);
         let (na, nb) = (edge.start_node, edge.end_node);
         for &(dist, spd) in &[(70.0f32, 5.0f32), (30.0f32, 5.0f32)] {
-            let i = agents.spawn_agent(usize::MAX, nb, 0.0, 0.0, na, 0.0, 0.0);
+            let i = agents.spawn_border_arrival_agent(usize::MAX, nb, 0.0, 0.0, na, 0.0, 0.0);
             agents.transit[i] = TRANSIT_NETWORK;
             agents.current_edge[i] = eid;
             agents.current_lane_id[i] = fwd_lane;

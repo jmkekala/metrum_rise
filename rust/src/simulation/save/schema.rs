@@ -1,11 +1,10 @@
 //! SQLite schema and enum mapping for persistent storage.
 
 use super::SaveLoadError;
-use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 18;
+pub const SAVE_VERSION: i64 = 21;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -120,14 +119,6 @@ CREATE TABLE lane_connections(
     to_edge INTEGER NOT NULL,
     to_lane INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS zoning_grids(
-    edge_id INTEGER PRIMARY KEY,
-    cells_long INTEGER NOT NULL,
-    left_depth INTEGER NOT NULL,
-    right_depth INTEGER NOT NULL,
-    left_zone_blob_u8 BLOB NOT NULL,
-    right_zone_blob_u8 BLOB NOT NULL
-);
 CREATE TABLE zoning_world_grid(
     width INTEGER NOT NULL,
     height INTEGER NOT NULL,
@@ -140,10 +131,11 @@ CREATE TABLE buildings(
     side INTEGER NOT NULL,
     cell_x INTEGER NOT NULL,
     cell_y INTEGER NOT NULL,
-    zone_type INTEGER NOT NULL,
+    profile_runtime_id INTEGER NOT NULL,
     occupancy INTEGER NOT NULL,
     worker_count INTEGER NOT NULL,
     stock REAL NOT NULL,
+    input_stock REAL NOT NULL,
     revenue REAL NOT NULL,
     operating_budget REAL NOT NULL,
     utility_service_available INTEGER NOT NULL,
@@ -169,7 +161,8 @@ CREATE TABLE households(
     reserved_store_building_id INTEGER NOT NULL,
     reserved_amount REAL NOT NULL,
     reserved_total_cost REAL NOT NULL,
-    pickup_eta_days INTEGER NOT NULL
+    pickup_eta_days INTEGER NOT NULL,
+    stay_failure_days INTEGER NOT NULL
 );
 CREATE TABLE shipments(
     shipment_id INTEGER PRIMARY KEY,
@@ -317,25 +310,6 @@ pub fn vehicle_frontage_access_from_i64(
         1 => Ok(VehicleFrontageAccess::BothSides),
         _ => Err(SaveLoadError::custom(format!(
             "unknown VehicleFrontageAccess value {}",
-            value
-        ))),
-    }
-}
-
-pub fn zone_type_to_i64(value: ZoneType) -> i64 {
-    i64::from(value as u8)
-}
-
-pub fn zone_type_from_i64(value: i64) -> Result<ZoneType, SaveLoadError> {
-    match value {
-        0 => Ok(ZoneType::None),
-        1 => Ok(ZoneType::Residential),
-        2 => Ok(ZoneType::Commercial),
-        3 => Ok(ZoneType::Industrial),
-        4 => Ok(ZoneType::Office),
-        5 => Ok(ZoneType::Mixed),
-        _ => Err(SaveLoadError::custom(format!(
-            "unknown ZoneType value {}",
             value
         ))),
     }

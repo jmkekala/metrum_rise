@@ -223,18 +223,10 @@ impl SimCore {
         );
         // Drain building dirty-zone flags → mark matching flow fields for rebuild.
         {
-            use crate::simulation::grid::zoning::ZoneType;
-            let zones = [
-                ZoneType::None,
-                ZoneType::Residential,
-                ZoneType::Commercial,
-                ZoneType::Industrial,
-                ZoneType::Office,
-                ZoneType::Mixed,
-            ];
-            for (z, zone) in zones.iter().enumerate() {
-                if self.allocator.dirty_zones[z] {
-                    self.allocator.dirty_zones[z] = false;
+            use crate::simulation::buildings::allocator::BASELINE_PRIVATE_ZONES;
+            for (zone_idx, zone) in BASELINE_PRIVATE_ZONES.iter().enumerate() {
+                if self.allocator.dirty_zones[zone_idx] {
+                    self.allocator.dirty_zones[zone_idx] = false;
                     self.transit_network.flow_fields.mark_zone_dirty(*zone);
                 }
             }

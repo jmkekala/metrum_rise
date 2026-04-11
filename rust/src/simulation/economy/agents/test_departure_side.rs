@@ -103,6 +103,7 @@ mod tests {
             center_y: 0.0,
             width_cells: 1,
             depth_cells: 1,
+            zone_profile_runtime_id: 0,
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(1.0, 0.0),
             frontage_t: 0.5, // t=0.5 → depart node = end_node of the edge
@@ -118,6 +119,7 @@ mod tests {
             level: 1,
             broken: false,
             stock: 0.0,
+            input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: false,
@@ -185,7 +187,7 @@ mod tests {
             );
 
         let mut agents = AgentSystem::new();
-        let a_id = agents.spawn_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
+        let a_id = agents.spawn_border_arrival_agent(0, n0, 100.0, 0.0, n0, 100.0, 0.0);
         agents.transit[a_id] = TRANSIT_ACCESS_EGRESS;
         agents.transit_mode[a_id] = MODE_WALK;
         agents.current_building[a_id] = 0;

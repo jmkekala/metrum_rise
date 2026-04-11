@@ -7,7 +7,8 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 const PROFILES_FILE: &str = "profiles.toml";
 const CONTROLLERS_FILE: &str = "controllers.toml";
@@ -56,6 +57,7 @@ pub fn export_project_json(project_json: &str, dir_path: &Path) -> Result<String
         &dir_path.join(PROFILES_FILE),
         &ProfilesFile {
             profiles: project.profiles.clone(),
+            runtime_tuning: project.runtime_tuning.clone(),
         },
     )?;
     write_pretty_toml(
@@ -115,9 +117,95 @@ struct EconomyProject {
     #[serde(default)]
     profiles: Vec<EconomyProfile>,
     #[serde(default)]
+    runtime_tuning: RuntimeEconomyTuning,
+    #[serde(default)]
     controllers: Vec<EconomyController>,
     #[serde(default)]
     scenarios: Vec<EconomyScenario>,
+}
+
+/// Authored economy-side runtime tuning used by the live simulation.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub(crate) struct RuntimeEconomyTuning {
+    /// Household relocation and eviction thresholds.
+    pub households: HouseholdRuntimeTuning,
+    /// Building viability thresholds used by demand-owned level changes.
+    pub viability: BuildingViabilityRuntimeTuning,
+}
+
+/// Household-side runtime tuning values derived from `economy/profiles.toml`.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub(crate) struct HouseholdRuntimeTuning {
+    /// Minimum reserve-days required to move into each residential level.
+    pub residential_move_in_min_reserve_days_by_level: Vec<f32>,
+    /// Minimum reserve-days required to remain in each residential level.
+    pub residential_stay_min_reserve_days_by_level: Vec<f32>,
+    /// Number of consecutive failed stay checks before eviction is allowed.
+    pub stay_failure_days_before_eviction: u32,
+}
+
+/// Building-side viability thresholds derived from `economy/profiles.toml`.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub(crate) struct BuildingViabilityRuntimeTuning {
+    /// Minimum occupancy ratio required to upgrade into each residential target level.
+    pub residential_min_occupancy_ratio_for_upgrade: Vec<f32>,
+    /// Maximum occupancy ratio below which residential downgrade becomes viable for each level.
+    pub residential_max_occupancy_ratio_for_downgrade: Vec<f32>,
+    /// Minimum operating-buffer days required to upgrade into each non-residential target level.
+    pub nonresidential_min_buffer_days_by_level: Vec<f32>,
+    /// Maximum operating-buffer days below which downgrade becomes viable for each level.
+    pub nonresidential_max_buffer_days_for_downgrade: Vec<f32>,
+    /// Minimum staffing ratio required for non-residential upgrades.
+    pub nonresidential_min_staffing_ratio_for_upgrade: f32,
+    /// Maximum staffing ratio below which non-residential downgrade becomes viable.
+    pub nonresidential_max_staffing_ratio_for_downgrade: f32,
+    /// Minimum industrial input coverage required for industrial upgrades.
+    pub industrial_min_input_coverage_for_upgrade: f32,
+    /// Minimum industrial output headroom required for industrial upgrades.
+    pub industrial_min_output_headroom_for_upgrade: f32,
+    /// Maximum industrial input coverage below which industrial downgrade becomes viable.
+    pub industrial_max_input_coverage_for_downgrade: f32,
+    /// Maximum industrial output headroom below which industrial downgrade becomes viable.
+    pub industrial_max_output_headroom_for_downgrade: f32,
+}
+
+impl Default for RuntimeEconomyTuning {
+    fn default() -> Self {
+        Self {
+            households: HouseholdRuntimeTuning::default(),
+            viability: BuildingViabilityRuntimeTuning::default(),
+        }
+    }
+}
+
+impl Default for HouseholdRuntimeTuning {
+    fn default() -> Self {
+        Self {
+            residential_move_in_min_reserve_days_by_level: vec![0.0, 6.0, 12.0],
+            residential_stay_min_reserve_days_by_level: vec![0.0, 4.0, 8.0],
+            stay_failure_days_before_eviction: 2,
+        }
+    }
+}
+
+impl Default for BuildingViabilityRuntimeTuning {
+    fn default() -> Self {
+        Self {
+            residential_min_occupancy_ratio_for_upgrade: vec![0.0, 0.65, 0.85],
+            residential_max_occupancy_ratio_for_downgrade: vec![1.0, 0.20, 0.15],
+            nonresidential_min_buffer_days_by_level: vec![0.0, 4.0, 8.0],
+            nonresidential_max_buffer_days_for_downgrade: vec![1.0, 1.5, 2.0],
+            nonresidential_min_staffing_ratio_for_upgrade: 0.85,
+            nonresidential_max_staffing_ratio_for_downgrade: 0.25,
+            industrial_min_input_coverage_for_upgrade: 0.75,
+            industrial_min_output_headroom_for_upgrade: 0.25,
+            industrial_max_input_coverage_for_downgrade: 0.20,
+            industrial_max_output_headroom_for_downgrade: 0.10,
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -232,6 +320,8 @@ struct ScenarioControllerLink {
 struct ProfilesFile {
     #[serde(default)]
     profiles: Vec<EconomyProfile>,
+    #[serde(default)]
+    runtime_tuning: RuntimeEconomyTuning,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -349,9 +439,30 @@ fn load_project(dir_path: &Path) -> Result<EconomyProject, String> {
     let scenarios: ScenariosFile = parse_toml_file(&dir_path.join(SCENARIOS_FILE))?;
     Ok(EconomyProject {
         profiles: profiles.profiles,
+        runtime_tuning: profiles.runtime_tuning,
         controllers: controllers.controllers,
         scenarios: scenarios.scenarios,
     })
+}
+
+static BUILTIN_RUNTIME_TUNING: OnceLock<Result<RuntimeEconomyTuning, String>> = OnceLock::new();
+
+/// Loads the shipped economy-side runtime tuning from `economy/profiles.toml`.
+pub(crate) fn load_runtime_economy_tuning() -> Result<Arc<RuntimeEconomyTuning>, String> {
+    match BUILTIN_RUNTIME_TUNING.get_or_init(load_runtime_economy_tuning_from_disk) {
+        Ok(config) => Ok(Arc::new(config.clone())),
+        Err(err) => Err(err.clone()),
+    }
+}
+
+fn load_runtime_economy_tuning_from_disk() -> Result<RuntimeEconomyTuning, String> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("economy")
+        .join(PROFILES_FILE);
+    let profiles: ProfilesFile = parse_toml_file(&path)?;
+    validate_runtime_tuning(&profiles.runtime_tuning)?;
+    Ok(profiles.runtime_tuning)
 }
 
 fn parse_toml_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
@@ -433,6 +544,7 @@ fn validate_project(project: &EconomyProject) -> Vec<ValidationMessage> {
             ));
         }
     }
+    validate_runtime_tuning_messages(&project.runtime_tuning, &mut messages);
 
     for controller in &project.controllers {
         if controller.display_name.trim().is_empty() {
@@ -456,6 +568,138 @@ fn validate_project(project: &EconomyProject) -> Vec<ValidationMessage> {
     }
 
     messages
+}
+
+fn validate_runtime_tuning_messages(
+    tuning: &RuntimeEconomyTuning,
+    messages: &mut Vec<ValidationMessage>,
+) {
+    if let Err(err) = validate_runtime_tuning(tuning) {
+        messages.push(error(
+            "invalid_runtime_tuning",
+            "project.runtime_tuning",
+            err,
+        ));
+    }
+}
+
+fn validate_runtime_tuning(tuning: &RuntimeEconomyTuning) -> Result<(), String> {
+    validate_nonempty_level_array(
+        &tuning
+            .households
+            .residential_move_in_min_reserve_days_by_level,
+        "runtime_tuning.households.residential_move_in_min_reserve_days_by_level",
+        0.0,
+        f32::INFINITY,
+    )?;
+    validate_nonempty_level_array(
+        &tuning.households.residential_stay_min_reserve_days_by_level,
+        "runtime_tuning.households.residential_stay_min_reserve_days_by_level",
+        0.0,
+        f32::INFINITY,
+    )?;
+    if tuning.households.stay_failure_days_before_eviction == 0 {
+        return Err(
+            "runtime_tuning.households.stay_failure_days_before_eviction must be > 0".to_owned(),
+        );
+    }
+    validate_nonempty_level_array(
+        &tuning.viability.residential_min_occupancy_ratio_for_upgrade,
+        "runtime_tuning.viability.residential_min_occupancy_ratio_for_upgrade",
+        0.0,
+        1.0,
+    )?;
+    validate_nonempty_level_array(
+        &tuning
+            .viability
+            .residential_max_occupancy_ratio_for_downgrade,
+        "runtime_tuning.viability.residential_max_occupancy_ratio_for_downgrade",
+        0.0,
+        1.0,
+    )?;
+    validate_nonempty_level_array(
+        &tuning.viability.nonresidential_min_buffer_days_by_level,
+        "runtime_tuning.viability.nonresidential_min_buffer_days_by_level",
+        0.0,
+        f32::INFINITY,
+    )?;
+    validate_nonempty_level_array(
+        &tuning
+            .viability
+            .nonresidential_max_buffer_days_for_downgrade,
+        "runtime_tuning.viability.nonresidential_max_buffer_days_for_downgrade",
+        0.0,
+        f32::INFINITY,
+    )?;
+    validate_range(
+        tuning
+            .viability
+            .nonresidential_min_staffing_ratio_for_upgrade,
+        0.0,
+        1.0,
+        "runtime_tuning.viability.nonresidential_min_staffing_ratio_for_upgrade",
+    )?;
+    validate_range(
+        tuning
+            .viability
+            .nonresidential_max_staffing_ratio_for_downgrade,
+        0.0,
+        1.0,
+        "runtime_tuning.viability.nonresidential_max_staffing_ratio_for_downgrade",
+    )?;
+    validate_range(
+        tuning.viability.industrial_min_input_coverage_for_upgrade,
+        0.0,
+        1.0,
+        "runtime_tuning.viability.industrial_min_input_coverage_for_upgrade",
+    )?;
+    validate_range(
+        tuning.viability.industrial_min_output_headroom_for_upgrade,
+        0.0,
+        1.0,
+        "runtime_tuning.viability.industrial_min_output_headroom_for_upgrade",
+    )?;
+    validate_range(
+        tuning.viability.industrial_max_input_coverage_for_downgrade,
+        0.0,
+        1.0,
+        "runtime_tuning.viability.industrial_max_input_coverage_for_downgrade",
+    )?;
+    validate_range(
+        tuning
+            .viability
+            .industrial_max_output_headroom_for_downgrade,
+        0.0,
+        1.0,
+        "runtime_tuning.viability.industrial_max_output_headroom_for_downgrade",
+    )?;
+    Ok(())
+}
+
+fn validate_nonempty_level_array(
+    values: &[f32],
+    label: &str,
+    min_value: f32,
+    max_value: f32,
+) -> Result<(), String> {
+    if values.is_empty() {
+        return Err(format!("{label} must contain at least one level value"));
+    }
+    for (idx, value) in values.iter().copied().enumerate() {
+        validate_range(value, min_value, max_value, &format!("{label}[{idx}]"))?;
+    }
+    Ok(())
+}
+
+fn validate_range(value: f32, min_value: f32, max_value: f32, label: &str) -> Result<(), String> {
+    if !value.is_finite() || value < min_value || value > max_value {
+        Err(format!(
+            "{label} must be finite and in [{}..={}]",
+            min_value, max_value
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 fn validate_scenario(

@@ -23,6 +23,23 @@ use crate::simulation::network::types::VehicleFrontageAccess;
 use godot::prelude::Vector2;
 use std::collections::HashMap;
 
+/// Shipped baseline private-use families supported by the live zoning-driven runtime.
+pub(crate) const BASELINE_PRIVATE_ZONES: [ZoneType; 3] = [
+    ZoneType::Residential,
+    ZoneType::Commercial,
+    ZoneType::Industrial,
+];
+
+/// Returns the compact baseline bucket index for one shipped private-use family.
+pub(crate) fn baseline_private_zone_slot(zone: ZoneType) -> Option<usize> {
+    match zone {
+        ZoneType::Residential => Some(0),
+        ZoneType::Commercial => Some(1),
+        ZoneType::Industrial => Some(2),
+        ZoneType::None | ZoneType::Office | ZoneType::Mixed => None,
+    }
+}
+
 /// A placed building occupying a variable-footprint area on a zoning grid.
 #[derive(Clone)]
 pub struct Building {
@@ -34,7 +51,12 @@ pub struct Building {
     pub width_cells: u16,
     /// Depth of the footprint in zoning grid cells.
     pub depth_cells: u16,
-    /// Zone category this building was spawned into.
+    /// Authoritative runtime zoning-profile id captured when this building was placed.
+    pub zone_profile_runtime_id: u16,
+    /// Cached broad baseline family derived from [`Self::zone_profile_runtime_id`].
+    ///
+    /// Kept as a hot-path cache for broad R/C/I grouping and economy lookups. Legality still
+    /// comes from the authoritative zoning-profile id plus the painted world grid.
     pub zone_type: ZoneType,
     /// Unit vector pointing from the road toward the building.
     pub facing_dir: Vector2,
@@ -67,6 +89,8 @@ pub struct Building {
     pub broken: bool,
     /// Current on-site stock buffer for the first-pass economy loop.
     pub stock: f32,
+    /// Current industrial input stock buffer for the first-pass starter chain.
+    pub input_stock: f32,
     /// Lifetime gross revenue collected by this building.
     pub revenue: f32,
     /// Current operating budget available for wages, utility fallback, and imports.
@@ -125,18 +149,18 @@ pub struct BuildingAllocator {
     pub dirty: bool,
     /// Per-edge frontage occupancy tracker.
     pub edge_occupancy: HashMap<usize, EdgeOccupancy>,
-    /// Inverted index: `zone_index[ZoneType as usize]` contains building indices.
-    pub zone_index: [Vec<usize>; 6],
-    /// Inverted index: buildings with occupancy below capacity.
-    pub vacancy_index: [Vec<usize>; 6],
+    /// Inverted index for shipped baseline families in [`BASELINE_PRIVATE_ZONES`] order.
+    pub zone_index: [Vec<usize>; 3],
+    /// Inverted vacancy index for shipped residential/commercial/industrial buildings.
+    pub vacancy_index: [Vec<usize>; 3],
     /// Position of each building in its respective `vacancy_index` list for O(1) removal.
     pub vacancy_pos: Vec<usize>,
     /// Coarse 512 m chunk index of building centers for bounded nearby-economy queries.
     pub building_chunks: HashMap<(i32, i32), Vec<usize>>,
     /// Recalculates inverted indices if true.
     pub dirty_index: bool,
-    /// Per-zone dirty flags set when buildings are spawned or removed.
-    pub dirty_zones: [bool; 6],
+    /// Per-family dirty flags in [`BASELINE_PRIVATE_ZONES`] order.
+    pub dirty_zones: [bool; 3],
     /// True when the derived entrance cache must be rebuilt before use.
     pub(crate) entrances_dirty: bool,
     /// Registry of all loaded pack assets.
@@ -186,12 +210,12 @@ impl BuildingAllocator {
             buildings: Vec::new(),
             dirty: false,
             edge_occupancy: HashMap::new(),
-            zone_index: [const { Vec::new() }; 6],
-            vacancy_index: [const { Vec::new() }; 6],
+            zone_index: [const { Vec::new() }; 3],
+            vacancy_index: [const { Vec::new() }; 3],
             vacancy_pos: Vec::new(),
             building_chunks: HashMap::new(),
             dirty_index: true,
-            dirty_zones: [false; 6],
+            dirty_zones: [false; 3],
             entrances_dirty: false,
             registry: AssetRegistry::new(),
             entrances: Vec::new(),

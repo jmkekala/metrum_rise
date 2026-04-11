@@ -12,6 +12,25 @@ use crate::simulation::network::types::VehicleFrontageAccess;
 use godot::prelude::Vector2;
 use rand::SeedableRng;
 
+fn zone_bucket(zone: ZoneType) -> usize {
+    baseline_private_zone_slot(zone).expect("tests should only query baseline private zones")
+}
+
+fn paint_zone_rect(
+    zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+    x0: f32,
+    z0: f32,
+    x1: f32,
+    z1: f32,
+    zone: ZoneType,
+) {
+    let runtime_id = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(zone)
+        .unwrap_or(0);
+    zoning.set_zone_profile_rect(x0, z0, x1, z1, runtime_id);
+}
+
 /// Registers a minimal 1×1 building asset for the given zone type so placement tests pass.
 fn register_test_asset(
     allocator: &mut BuildingAllocator,
@@ -215,8 +234,8 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         &mut allocator,
     );
     graph.set_node_type(0, NodeType::Border);
-    zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
-    zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+    paint_zone_rect(&mut zoning, -50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
+    paint_zone_rect(&mut zoning, 55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
 
     let mut demand = DemandSystem::new();
     demand.run_daily_pass(&allocator, &households, &graph, &zoning);
@@ -277,6 +296,7 @@ fn test_zone_index_consistency() {
             center_y: 0.0,
             width_cells: 3,
             depth_cells: 3,
+            zone_profile_runtime_id: 0,
             zone_type: if i % 2 == 0 {
                 ZoneType::Residential
             } else {
@@ -300,6 +320,7 @@ fn test_zone_index_consistency() {
             level: 1,
             broken: false,
             stock: 0.0,
+            input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: false,
@@ -312,10 +333,13 @@ fn test_zone_index_consistency() {
     allocator.rebuild_zone_index();
 
     assert_eq!(
-        allocator.zone_index[ZoneType::Residential as usize].len(),
+        allocator.zone_index[zone_bucket(ZoneType::Residential)].len(),
         5
     );
-    assert_eq!(allocator.zone_index[ZoneType::Commercial as usize].len(), 5);
+    assert_eq!(
+        allocator.zone_index[zone_bucket(ZoneType::Commercial)].len(),
+        5
+    );
 
     allocator.buildings.swap_remove(0);
     allocator.dirty_index = true;
@@ -323,10 +347,13 @@ fn test_zone_index_consistency() {
 
     assert_eq!(allocator.buildings.len(), 9);
     assert_eq!(
-        allocator.zone_index[ZoneType::Residential as usize].len(),
+        allocator.zone_index[zone_bucket(ZoneType::Residential)].len(),
         4
     );
-    assert_eq!(allocator.zone_index[ZoneType::Commercial as usize].len(), 5);
+    assert_eq!(
+        allocator.zone_index[zone_bucket(ZoneType::Commercial)].len(),
+        5
+    );
 
     let pick = allocator.get_random_building_by_zone(ZoneType::Commercial, &mut rng);
     assert!(pick.is_some());
@@ -353,6 +380,7 @@ fn test_vacancy_index_consistency() {
             center_y: 0.0,
             width_cells: 3,
             depth_cells: 3,
+            zone_profile_runtime_id: 0,
             zone_type: ZoneType::Residential,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
@@ -368,6 +396,7 @@ fn test_vacancy_index_consistency() {
             level: 1,
             broken: false,
             stock: 0.0,
+            input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: false,
@@ -379,7 +408,7 @@ fn test_vacancy_index_consistency() {
     allocator.rebuild_zone_index();
 
     assert_eq!(
-        allocator.vacancy_index[ZoneType::Residential as usize].len(),
+        allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
         5
     );
 
@@ -389,27 +418,27 @@ fn test_vacancy_index_consistency() {
     allocator.claim_vacancy(0);
     allocator.claim_vacancy(0);
     assert_eq!(
-        allocator.vacancy_index[ZoneType::Residential as usize].len(),
+        allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
         5
     );
     allocator.claim_vacancy(0);
 
     assert_eq!(
-        allocator.vacancy_index[ZoneType::Residential as usize].len(),
+        allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
         4
     );
-    assert!(!allocator.vacancy_index[ZoneType::Residential as usize].contains(&0));
+    assert!(!allocator.vacancy_index[zone_bucket(ZoneType::Residential)].contains(&0));
 
     allocator.release_vacancy(0);
     assert_eq!(
-        allocator.vacancy_index[ZoneType::Residential as usize].len(),
+        allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
         5
     );
-    assert!(allocator.vacancy_index[ZoneType::Residential as usize].contains(&0));
+    assert!(allocator.vacancy_index[zone_bucket(ZoneType::Residential)].contains(&0));
 
     let mut agents = AgentSystem::new();
     for _ in 0..5 {
-        agents.spawn_agent(usize::MAX, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        agents.spawn_housed_agent(usize::MAX, 0.0, 0.0);
     }
 
     let last_idx = allocator.buildings.len() - 1;
@@ -423,11 +452,11 @@ fn test_vacancy_index_consistency() {
 
     assert_eq!(allocator.buildings.len(), 4);
     assert_eq!(
-        allocator.zone_index[ZoneType::Residential as usize].len(),
+        allocator.zone_index[zone_bucket(ZoneType::Residential)].len(),
         4
     );
     assert_eq!(
-        allocator.vacancy_index[ZoneType::Residential as usize].len(),
+        allocator.vacancy_index[zone_bucket(ZoneType::Residential)].len(),
         4
     );
 }
@@ -463,7 +492,14 @@ fn test_tick_does_not_auto_spawn_private_buildings_from_zones() {
         &mut zoning,
         &mut allocator,
     );
-    zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, ZoneType::Residential);
+    paint_zone_rect(
+        &mut zoning,
+        -50.0,
+        -50.0,
+        150.0,
+        50.0,
+        ZoneType::Residential,
+    );
 
     allocator.tick(
         &mut zoning,
@@ -513,8 +549,8 @@ fn test_allocator_tick_does_not_place_founding_buildings() {
         &mut allocator,
     );
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
-    zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
-    zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+    paint_zone_rect(&mut zoning, -50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
+    paint_zone_rect(&mut zoning, 55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
 
     allocator.tick(
         &mut zoning,
@@ -573,8 +609,8 @@ fn test_startup_demand_residential_family_selection_uses_strip_hash_order() {
         &mut allocator,
     );
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
-    zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
-    zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+    paint_zone_rect(&mut zoning, -50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
+    paint_zone_rect(&mut zoning, 55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
 
     execute_startup_demand_building_pass(
         &mut allocator,
@@ -653,8 +689,8 @@ fn test_startup_demand_residential_variant_selection_uses_site_hash() {
         &mut allocator,
     );
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
-    zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
-    zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+    paint_zone_rect(&mut zoning, -50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
+    paint_zone_rect(&mut zoning, 55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
 
     execute_startup_demand_building_pass(
         &mut allocator,
@@ -708,7 +744,8 @@ fn test_incompatible_rezoning_enters_pending_redevelopment_before_removal() {
     ) = setup_startup_spawn_city_for_rezoning();
 
     let residential = allocator.buildings[residential_idx].clone();
-    zoning.set_zone_rect(
+    paint_zone_rect(
+        &mut zoning,
         residential.center_x - 10.0,
         residential.center_y - 10.0,
         residential.center_x + 10.0,
@@ -766,7 +803,8 @@ fn test_rezoning_recovery_clears_pending_redevelopment() {
     ) = setup_startup_spawn_city_for_rezoning();
 
     let residential = allocator.buildings[residential_idx].clone();
-    zoning.set_zone_rect(
+    paint_zone_rect(
+        &mut zoning,
         residential.center_x - 10.0,
         residential.center_y - 10.0,
         residential.center_x + 10.0,
@@ -784,7 +822,8 @@ fn test_rezoning_recovery_clears_pending_redevelopment() {
 
     assert!(allocator.buildings[residential_idx].pending_redevelopment);
 
-    zoning.set_zone_rect(
+    paint_zone_rect(
+        &mut zoning,
         residential.center_x - 10.0,
         residential.center_y - 10.0,
         residential.center_x + 10.0,
@@ -844,6 +883,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         center_y: -10.0,
         width_cells: 1,
         depth_cells: 1,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
@@ -859,6 +899,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 0.0,
         utility_service_available: false,
@@ -954,6 +995,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         center_y: -10.0,
         width_cells: 1,
         depth_cells: 1,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
@@ -969,6 +1011,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 0.0,
         utility_service_available: false,
@@ -1024,6 +1067,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         center_y: 10.0,
         width_cells: 3,
         depth_cells: 3,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.05,
@@ -1039,6 +1083,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: false,
@@ -1125,12 +1170,20 @@ fn test_immigration_claims_vacant_home() {
     let edge_id = graph.edge_count() - 1;
 
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
-    zoning.set_zone_rect(-50.0, -50.0, 150.0, 50.0, ZoneType::Residential);
+    paint_zone_rect(
+        &mut zoning,
+        -50.0,
+        -50.0,
+        150.0,
+        50.0,
+        ZoneType::Residential,
+    );
     allocator.buildings.push(Building {
         center_x: 10.0,
         center_y: 10.0,
         width_cells: 3,
         depth_cells: 3,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.1,
@@ -1146,6 +1199,7 @@ fn test_immigration_claims_vacant_home() {
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: false,
@@ -1237,6 +1291,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         center_y: 10.0,
         width_cells: 2,
         depth_cells: 2,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.1,
@@ -1252,6 +1307,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: true,
@@ -1264,6 +1320,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         center_y: 10.0,
         width_cells: 2,
         depth_cells: 2,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Commercial,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.4,
@@ -1279,6 +1336,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: true,
@@ -1291,7 +1349,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
 
     let household_id = households.admit_immigrant_household(0, 2);
     for _ in 0..2 {
-        let idx = agents.spawn_agent(0, 1, 0.0, 0.0, 0, 0.0, 0.0);
+        let idx = agents.spawn_housed_agent(0, 0.0, 0.0);
         agents.household_id[idx] = household_id;
     }
     households.households[household_id].budget = 120.0;
@@ -1345,7 +1403,7 @@ fn test_demand_building_spawn_plan_executes_from_daily_budget() {
         &mut allocator,
     );
     graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
-    zoning.set_zone_rect(-40.0, -40.0, 80.0, 40.0, ZoneType::Residential);
+    paint_zone_rect(&mut zoning, -40.0, -40.0, 80.0, 40.0, ZoneType::Residential);
 
     let mut demand = DemandSystem::new();
     demand.run_daily_pass(&allocator, &households, &graph, &zoning);
@@ -1411,13 +1469,21 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &mut zoning,
         &mut allocator,
     );
-    zoning.set_zone_rect(-40.0, -40.0, 120.0, 40.0, ZoneType::Residential);
+    paint_zone_rect(
+        &mut zoning,
+        -40.0,
+        -40.0,
+        120.0,
+        40.0,
+        ZoneType::Residential,
+    );
 
     allocator.buildings.push(Building {
         center_x: 0.0,
         center_y: 0.0,
         width_cells: 1,
         depth_cells: 1,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
@@ -1433,6 +1499,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 0.0,
         utility_service_available: true,
@@ -1445,6 +1512,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         center_y: 0.0,
         width_cells: 1,
         depth_cells: 1,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
@@ -1460,6 +1528,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         level: 2,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 0.0,
         utility_service_available: true,
@@ -1472,6 +1541,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         center_y: 0.0,
         width_cells: 1,
         depth_cells: 1,
+        zone_profile_runtime_id: 0,
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
@@ -1487,6 +1557,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 0.0,
         revenue: 0.0,
         operating_budget: 0.0,
         utility_service_available: true,

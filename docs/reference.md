@@ -142,8 +142,8 @@ Runtime-spawned tools:
 | `network_renderer.gd` | `is_network_dirty()`, `flatten_terrain_for_roads()`, `clear_terrain_dirty()`, `clear_network_dirty()` |
 | `move_tool.gd` | `get_closest_network_point()`, `get_closest_node()`, `get_height_at()`, `move_network_node()` |
 | `lane_tool.gd` | `intersect_terrain()`, `get_closest_node()`, `get_node_lanes()`, `get_lane_connections_array()`, `set_lane_connection()`, `clear_lane_source()`, `clear_lane_connections()`, `get_node_pos()` |
-| `zoning_tool.gd` | `intersect_terrain()`, `get_zone_subrect()`, `set_zone_rect()`, `set_zone_rect_raw()` |
-| `zoning_overlay.gd` | `get_zone_grid_size()`, `get_heightmap_size()`, `get_zone_texture_data()`, `get_distance_texture_data()`, `get_occupied_texture_data()`, `get_no_build_mask_texture_data()`, `get_no_building_spawn_edge_indices()`, `get_edge_geometry_3d()` |
+| `zoning_tool.gd` | `intersect_terrain()`, `capture_zoning_patch()`, `apply_zoning_patch()`, `restore_zoning_patch()`, `get_zone_profiles()`, `get_zone_grid_size()` |
+| `zoning_overlay.gd` | `get_zone_grid_size()`, `get_heightmap_size()`, `get_zone_profile_texture_data_rg8()`, `get_zone_profile_style_lut_rgba8()`, `get_distance_texture_data()`, `get_occupied_texture_data()`, `get_no_build_mask_texture_data()`, `get_no_building_spawn_edge_indices()`, `get_edge_geometry_3d()` |
 | `select_tool.gd` | `intersect_terrain()`, `get_closest_node()`, `get_node_lanes()`, `get_lane_connections_array()`, `get_node_pos()`, `has_crosswalk()`, `set_crosswalk_override()`, `set_lane_connection()`, `clear_lane_source()`, `clear_lane_connections()`, `get_edge_nodes()`, `get_hovered_edge()`, `set_edge_class()`, `set_no_building_spawn()`, `get_edge_geometry_3d()`, `get_edge_width()` |
 | `cul_de_sac_tool.gd` | `get_closest_node()`, `get_node_connection_count()`, `has_cul_de_sac()`, `set_node_cul_de_sac()` |
 

@@ -52,6 +52,8 @@ Important ownership note:
 
 The authoritative placement-side fields on each building are:
 
+- `zone_profile_runtime_id`
+- `zone_type` (derived broad-family cache)
 - `edge_idx`
 - `side`
 - `cell_x`
@@ -65,8 +67,12 @@ The authoritative placement-side fields on each building are:
 - `level`
 
 These fields define where the building is attached, how large its footprint is, and which asset and
-growth tier it represents. Later systems such as entrance planning, economy, and rendering consume
-these fields rather than inventing their own separate placement truth.
+growth tier it represents. `zone_profile_runtime_id` is the authoritative zoning-side legality key
+that now saves and loads with each building. `zone_type` is intentionally retained as a derived
+broad-family cache because allocator indices, vacancy tracking, and several hot-path consumers only
+need the baseline residential/commercial/industrial family. Later systems such as entrance
+planning, economy, and rendering consume these fields rather than inventing their own separate
+placement truth.
 
 ### `EdgeOccupancy`
 
@@ -239,9 +245,9 @@ Current follow-up limitations:
   should be reconciled before the allocator becomes the long-term growth execution layer.
 - `edge_occupancy` is currently only a fast leading-column pre-check. Final overlap safety still
   depends on the occupied-footprint test rather than on full frontage-span reservation.
-- The runtime legality path is now profile-based and footprint-wide, but some surrounding
-  allocator-facing data still carries cached broad `zone_type` fields for compatibility with older
-  subsystems and save data.
+- The runtime legality path is now profile-based and footprint-wide. The remaining broad
+  `zone_type` field on `Building` is an intentional derived hot-path cache, not a second
+  authoritative legality source.
 - Stale-building cleanup now uses footprint-wide profile compatibility plus deterministic rezoning
   grace, but some other attachment-invalidity paths still collapse directly into removal rather than
   through a richer reattachment or redevelopment flow.

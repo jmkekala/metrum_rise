@@ -940,6 +940,7 @@ mod tests {
                 center_y: 10.0,
                 width_cells: 3,
                 depth_cells: 3,
+                zone_profile_runtime_id: 0,
                 zone_type: crate::simulation::grid::zoning::ZoneType::Residential,
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.85, // Pre-split frontage_t
@@ -955,6 +956,7 @@ mod tests {
                 level: 1,
                 broken: false,
                 stock: 0.0,
+                input_stock: 0.0,
                 revenue: 0.0,
                 operating_budget: 500.0,
                 utility_service_available: false,

@@ -229,8 +229,16 @@ impl FlowField {
 // FlowFieldSystem
 // ---------------------------------------------------------------------------
 
-/// Number of zone types (ZoneType::None through ZoneType::Mixed).
-const ZONE_COUNT: usize = 6;
+const FLOW_FIELD_ZONE_COUNT: usize = 3;
+
+fn flow_field_zone_slot(zone: ZoneType) -> Option<usize> {
+    match zone {
+        ZoneType::Residential => Some(0),
+        ZoneType::Commercial => Some(1),
+        ZoneType::Industrial => Some(2),
+        ZoneType::None | ZoneType::Office | ZoneType::Mixed => None,
+    }
+}
 
 /// Manages one [`FlowField`] per zone type per transit mode, rebuilt lazily.
 ///
@@ -238,12 +246,12 @@ const ZONE_COUNT: usize = 6;
 /// Call [`FlowFieldSystem::mark_all_dirty`] on topology changes and
 /// [`FlowFieldSystem::mark_zone_dirty`] when buildings of a zone type are added/removed.
 pub struct FlowFieldSystem {
-    /// `car_fields[z]` — flow field for zone type `z` for car agents.
-    pub car_fields: [Option<FlowField>; ZONE_COUNT],
-    /// `foot_fields[z]` — flow field for zone type `z` for foot agents.
-    pub foot_fields: [Option<FlowField>; ZONE_COUNT],
-    /// Per-zone dirty flags. Set to rebuild on next `rebuild_dirty` call.
-    dirty: [bool; ZONE_COUNT],
+    /// `car_fields[z]` for one shipped baseline private-use family.
+    pub car_fields: [Option<FlowField>; FLOW_FIELD_ZONE_COUNT],
+    /// `foot_fields[z]` for one shipped baseline private-use family.
+    pub foot_fields: [Option<FlowField>; FLOW_FIELD_ZONE_COUNT],
+    /// Per-family dirty flags. Set to rebuild on next `rebuild_dirty` call.
+    dirty: [bool; FLOW_FIELD_ZONE_COUNT],
 }
 
 impl FlowFieldSystem {
@@ -252,18 +260,20 @@ impl FlowFieldSystem {
         Self {
             car_fields: std::array::from_fn(|_| None),
             foot_fields: std::array::from_fn(|_| None),
-            dirty: [true; ZONE_COUNT],
+            dirty: [true; FLOW_FIELD_ZONE_COUNT],
         }
     }
 
     /// Marks all zone types as dirty (called on road topology change).
     pub fn mark_all_dirty(&mut self) {
-        self.dirty = [true; ZONE_COUNT];
+        self.dirty = [true; FLOW_FIELD_ZONE_COUNT];
     }
 
     /// Marks a single zone type as dirty (called on building spawn/removal).
     pub fn mark_zone_dirty(&mut self, zone: ZoneType) {
-        self.dirty[zone as usize] = true;
+        if let Some(zone_idx) = flow_field_zone_slot(zone) {
+            self.dirty[zone_idx] = true;
+        }
     }
 
     /// Rebuilds flow fields for all dirty zone types.
@@ -279,45 +289,43 @@ impl FlowFieldSystem {
         graph: &RegionGraph,
         sources_fn: impl Fn(ZoneType, u8) -> Vec<(u32, usize)>,
     ) {
-        for z in 1..ZONE_COUNT {
-            // Skip ZoneType::None (index 0) — no buildings of type None.
-            if !self.dirty[z] {
+        for (zone_idx, zone) in [
+            ZoneType::Residential,
+            ZoneType::Commercial,
+            ZoneType::Industrial,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if !self.dirty[zone_idx] {
                 continue;
             }
-            let zone = match z {
-                1 => ZoneType::Residential,
-                2 => ZoneType::Commercial,
-                3 => ZoneType::Industrial,
-                4 => ZoneType::Office,
-                5 => ZoneType::Mixed,
-                _ => continue,
-            };
             let car_sources = sources_fn(zone, TransitFlags::CAR);
             let foot_sources = sources_fn(zone, TransitFlags::FOOT);
-            self.car_fields[z] = if car_sources.is_empty() {
+            self.car_fields[zone_idx] = if car_sources.is_empty() {
                 None
             } else {
                 Some(FlowField::build(&car_sources, graph, TransitFlags::CAR))
             };
-            self.foot_fields[z] = if foot_sources.is_empty() {
+            self.foot_fields[zone_idx] = if foot_sources.is_empty() {
                 None
             } else {
                 Some(FlowField::build(&foot_sources, graph, TransitFlags::FOOT))
             };
-            self.dirty[z] = false;
+            self.dirty[zone_idx] = false;
         }
     }
 
     /// Returns the car flow field for `zone`, or `None` if not yet built or zone has no buildings.
     #[inline]
     pub fn car(&self, zone: ZoneType) -> Option<&FlowField> {
-        self.car_fields[zone as usize].as_ref()
+        self.car_fields[flow_field_zone_slot(zone)?].as_ref()
     }
 
     /// Returns the foot flow field for `zone`, or `None` if not yet built or zone has no buildings.
     #[inline]
     pub fn foot(&self, zone: ZoneType) -> Option<&FlowField> {
-        self.foot_fields[zone as usize].as_ref()
+        self.foot_fields[flow_field_zone_slot(zone)?].as_ref()
     }
 }
 

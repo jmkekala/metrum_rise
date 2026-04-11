@@ -1,7 +1,12 @@
 //! Demand-driven daily growth pass built from authored baseline tuning.
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::households::{HouseholdSystem, household_reserve_days};
+use crate::simulation::economy::definitions::{RuntimeEconomyTuning, load_runtime_economy_tuning};
+use crate::simulation::economy::households::{
+    HouseholdSystem, building_operating_buffer_days, building_staffing_ratio,
+    household_reserve_days, industrial_input_coverage_factor, industrial_output_headroom_factor,
+    level_tuning_value,
+};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
@@ -392,6 +397,10 @@ impl DemandSystem {
         self.building_actions = DemandBuildingActionPlan::default();
         let snapshot =
             DailyDemandSnapshot::from_runtime(allocator, households, graph, &self.config);
+        let economy_tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let residential_occupants =
+            ResidentialOccupantSnapshot::from_runtime(allocator, households);
 
         let housing_shortage = 1.0 - snapshot.housing_availability;
         let goods_shortage = 1.0 - snapshot.household_stock_stability;
@@ -492,8 +501,14 @@ impl DemandSystem {
             let growth_pressure = self.pressure_for_use(use_kind);
             let spawn_candidates =
                 allocator.collect_demand_spawn_candidates(zone_type, zoning, graph);
-            let existing_candidates =
-                self.collect_existing_building_candidates(allocator, zone_type, growth_pressure);
+            let existing_candidates = self.collect_existing_building_candidates(
+                allocator,
+                households,
+                economy_tuning.as_ref(),
+                &residential_occupants,
+                zone_type,
+                growth_pressure,
+            );
 
             let normalized_spawn_pressure = spawn_candidates
                 .iter()
@@ -627,6 +642,40 @@ struct ExistingBuildingCandidates {
     upgrades: Vec<WeightedLevelChangeCandidate>,
 }
 
+#[derive(Clone, Debug)]
+struct ResidentialOccupantSnapshot {
+    household_count_by_building: Vec<u32>,
+    min_reserve_days_by_building: Vec<f32>,
+}
+
+impl ResidentialOccupantSnapshot {
+    fn from_runtime(allocator: &BuildingAllocator, households: &HouseholdSystem) -> Self {
+        let mut household_count_by_building = vec![0_u32; allocator.buildings.len()];
+        let mut min_reserve_days_by_building = vec![f32::INFINITY; allocator.buildings.len()];
+        for household in &households.households {
+            if household.member_count == 0 {
+                continue;
+            }
+            let home_building_id = household.home_building_id;
+            if home_building_id >= allocator.buildings.len()
+                || allocator.buildings[home_building_id].broken
+            {
+                continue;
+            }
+            household_count_by_building[home_building_id] =
+                household_count_by_building[home_building_id].saturating_add(1);
+            min_reserve_days_by_building[home_building_id] = min_reserve_days_by_building
+                [home_building_id]
+                .min(household_reserve_days(household));
+        }
+
+        Self {
+            household_count_by_building,
+            min_reserve_days_by_building,
+        }
+    }
+}
+
 impl DemandSystem {
     fn pressure_for_use(&self, use_kind: DemandUse) -> f32 {
         match use_kind {
@@ -639,6 +688,9 @@ impl DemandSystem {
     fn collect_existing_building_candidates(
         &self,
         allocator: &BuildingAllocator,
+        households: &HouseholdSystem,
+        economy_tuning: &RuntimeEconomyTuning,
+        residential_occupants: &ResidentialOccupantSnapshot,
         zone_type: ZoneType,
         growth_pressure: f32,
     ) -> ExistingBuildingCandidates {
@@ -676,72 +728,322 @@ impl DemandSystem {
                 continue;
             };
 
-            if building.occupancy == 0
-                && building.worker_count == 0
-                && normalized_negative_pressure(growth_pressure, profile.despawn_threshold) > 0.0
-            {
+            let despawn_pressure =
+                normalized_negative_pressure(growth_pressure, profile.despawn_threshold);
+            let downgrade_pressure =
+                normalized_negative_pressure(growth_pressure, profile.downgrade_threshold);
+            let upgrade_pressure =
+                normalized_positive_pressure(growth_pressure, profile.upgrade_threshold);
+
+            if building.occupancy == 0 && building.worker_count == 0 && despawn_pressure > 0.0 {
                 candidates.despawns.push(WeightedDespawnCandidate {
                     action: demand_building_action_key(building),
-                    normalized_action_pressure: normalized_negative_pressure(
-                        growth_pressure,
-                        profile.despawn_threshold,
-                    ),
+                    normalized_action_pressure: despawn_pressure,
                 });
                 continue;
             }
 
-            if building.occupancy == 0
-                && building.worker_count == 0
-                && normalized_negative_pressure(growth_pressure, profile.downgrade_threshold) > 0.0
+            if downgrade_pressure > 0.0
                 && let Some(target_asset_id) = allocator.registry.prev_level(&building.asset_id)
                 && level_change_is_compatible(allocator, building_idx, target_asset_id)
+                && building_is_viable_for_downgrade(
+                    allocator,
+                    households,
+                    economy_tuning,
+                    residential_occupants,
+                    building_idx,
+                    target_asset_id,
+                )
             {
                 candidates.downgrades.push(WeightedLevelChangeCandidate {
                     action: DemandLevelChangeAction {
                         building: demand_building_action_key(building),
                         target_asset_id: target_asset_id.to_owned(),
                     },
-                    normalized_action_pressure: normalized_negative_pressure(
-                        growth_pressure,
-                        profile.downgrade_threshold,
-                    ),
+                    normalized_action_pressure: downgrade_pressure,
                 });
                 continue;
             }
 
-            let capacity_saturated = match zone_type {
-                ZoneType::Residential => {
-                    let resident_capacity = allocator.resident_capacity(building_idx);
-                    resident_capacity > 0 && building.occupancy >= resident_capacity
-                }
-                ZoneType::Commercial | ZoneType::Industrial => {
-                    let worker_capacity = allocator.worker_capacity(building_idx);
-                    worker_capacity > 0
-                        && building.worker_count >= worker_capacity
-                        && building.utility_service_available
-                }
-                _ => false,
-            };
-            if capacity_saturated
-                && normalized_positive_pressure(growth_pressure, profile.upgrade_threshold) > 0.0
+            if upgrade_pressure > 0.0
                 && let Some(target_asset_id) = allocator.registry.next_level(&building.asset_id)
                 && level_change_is_compatible(allocator, building_idx, target_asset_id)
+                && building_is_viable_for_upgrade(
+                    allocator,
+                    households,
+                    economy_tuning,
+                    residential_occupants,
+                    building_idx,
+                    target_asset_id,
+                )
             {
                 candidates.upgrades.push(WeightedLevelChangeCandidate {
                     action: DemandLevelChangeAction {
                         building: demand_building_action_key(building),
                         target_asset_id: target_asset_id.to_owned(),
                     },
-                    normalized_action_pressure: normalized_positive_pressure(
-                        growth_pressure,
-                        profile.upgrade_threshold,
-                    ),
+                    normalized_action_pressure: upgrade_pressure,
                 });
             }
         }
 
         candidates
     }
+}
+
+fn building_is_viable_for_upgrade(
+    allocator: &BuildingAllocator,
+    households: &HouseholdSystem,
+    economy_tuning: &RuntimeEconomyTuning,
+    residential_occupants: &ResidentialOccupantSnapshot,
+    building_idx: usize,
+    target_asset_id: &str,
+) -> bool {
+    let Some(building) = allocator.buildings.get(building_idx) else {
+        return false;
+    };
+    match building.zone_type {
+        ZoneType::Residential => residential_upgrade_viable(
+            allocator,
+            households,
+            economy_tuning,
+            residential_occupants,
+            building_idx,
+            target_asset_id,
+        ),
+        ZoneType::Commercial => {
+            nonresidential_upgrade_viable(allocator, economy_tuning, building_idx, target_asset_id)
+        }
+        ZoneType::Industrial => {
+            industrial_upgrade_viable(allocator, economy_tuning, building_idx, target_asset_id)
+        }
+        _ => false,
+    }
+}
+
+fn building_is_viable_for_downgrade(
+    allocator: &BuildingAllocator,
+    households: &HouseholdSystem,
+    economy_tuning: &RuntimeEconomyTuning,
+    residential_occupants: &ResidentialOccupantSnapshot,
+    building_idx: usize,
+    _target_asset_id: &str,
+) -> bool {
+    let Some(building) = allocator.buildings.get(building_idx) else {
+        return false;
+    };
+    match building.zone_type {
+        ZoneType::Residential => residential_downgrade_viable(
+            allocator,
+            households,
+            economy_tuning,
+            residential_occupants,
+            building_idx,
+        ),
+        ZoneType::Commercial => {
+            nonresidential_downgrade_viable(allocator, economy_tuning, building_idx)
+        }
+        ZoneType::Industrial => {
+            industrial_downgrade_viable(allocator, economy_tuning, building_idx)
+        }
+        _ => false,
+    }
+}
+
+fn residential_upgrade_viable(
+    allocator: &BuildingAllocator,
+    households: &HouseholdSystem,
+    economy_tuning: &RuntimeEconomyTuning,
+    residential_occupants: &ResidentialOccupantSnapshot,
+    building_idx: usize,
+    target_asset_id: &str,
+) -> bool {
+    let Some(building) = allocator.buildings.get(building_idx) else {
+        return false;
+    };
+    let Some(target_building) = allocator
+        .registry
+        .get(target_asset_id)
+        .and_then(|entry| entry.manifest.building.as_ref())
+    else {
+        return false;
+    };
+    let resident_capacity = allocator.resident_capacity(building_idx);
+    if resident_capacity == 0 {
+        return false;
+    }
+    let occupancy_ratio = clamp01(building.occupancy as f32 / resident_capacity as f32);
+    let min_occupancy_ratio = level_tuning_value(
+        &economy_tuning
+            .viability
+            .residential_min_occupancy_ratio_for_upgrade,
+        target_building.level,
+    );
+    if occupancy_ratio + EPSILON < min_occupancy_ratio {
+        return false;
+    }
+    if building.occupancy > 0
+        && residential_occupants.household_count_by_building[building_idx] == 0
+    {
+        return false;
+    }
+    let required_reserve_days = level_tuning_value(
+        &economy_tuning
+            .households
+            .residential_move_in_min_reserve_days_by_level,
+        target_building.level,
+    );
+    let min_reserve_days = residential_occupants.min_reserve_days_by_building[building_idx];
+    if building.occupancy > 0 && min_reserve_days + EPSILON < required_reserve_days {
+        return false;
+    }
+
+    let _ = households;
+    true
+}
+
+fn residential_downgrade_viable(
+    allocator: &BuildingAllocator,
+    households: &HouseholdSystem,
+    economy_tuning: &RuntimeEconomyTuning,
+    residential_occupants: &ResidentialOccupantSnapshot,
+    building_idx: usize,
+) -> bool {
+    let Some(building) = allocator.buildings.get(building_idx) else {
+        return false;
+    };
+    let resident_capacity = allocator.resident_capacity(building_idx);
+    if resident_capacity == 0 {
+        return false;
+    }
+    let occupancy_ratio = clamp01(building.occupancy as f32 / resident_capacity as f32);
+    let max_occupancy_ratio = level_tuning_value(
+        &economy_tuning
+            .viability
+            .residential_max_occupancy_ratio_for_downgrade,
+        building.level,
+    );
+    if occupancy_ratio > max_occupancy_ratio + EPSILON {
+        return false;
+    }
+    if building.occupancy > 0
+        && residential_occupants.household_count_by_building[building_idx] == 0
+    {
+        return false;
+    }
+
+    let _ = households;
+    true
+}
+
+fn nonresidential_upgrade_viable(
+    allocator: &BuildingAllocator,
+    economy_tuning: &RuntimeEconomyTuning,
+    building_idx: usize,
+    target_asset_id: &str,
+) -> bool {
+    let Some(building) = allocator.buildings.get(building_idx) else {
+        return false;
+    };
+    if !building.utility_service_available {
+        return false;
+    }
+    let Some(target_level) = allocator
+        .registry
+        .get(target_asset_id)
+        .and_then(|entry| entry.manifest.building.as_ref())
+        .map(|target| target.level)
+    else {
+        return false;
+    };
+    let staffing_ratio = building_staffing_ratio(allocator, building_idx, building);
+    if staffing_ratio + EPSILON
+        < economy_tuning
+            .viability
+            .nonresidential_min_staffing_ratio_for_upgrade
+    {
+        return false;
+    }
+    let min_buffer_days = level_tuning_value(
+        &economy_tuning
+            .viability
+            .nonresidential_min_buffer_days_by_level,
+        target_level,
+    );
+    if building_operating_buffer_days(building) + EPSILON < min_buffer_days {
+        return false;
+    }
+    if matches!(building.zone_type, ZoneType::Commercial) && building.stock <= EPSILON {
+        return false;
+    }
+    true
+}
+
+fn nonresidential_downgrade_viable(
+    allocator: &BuildingAllocator,
+    economy_tuning: &RuntimeEconomyTuning,
+    building_idx: usize,
+) -> bool {
+    let Some(building) = allocator.buildings.get(building_idx) else {
+        return false;
+    };
+    let staffing_ratio = building_staffing_ratio(allocator, building_idx, building);
+    let buffer_days = building_operating_buffer_days(building);
+    let max_buffer_days = level_tuning_value(
+        &economy_tuning
+            .viability
+            .nonresidential_max_buffer_days_for_downgrade,
+        building.level,
+    );
+    !building.utility_service_available
+        || staffing_ratio
+            <= economy_tuning
+                .viability
+                .nonresidential_max_staffing_ratio_for_downgrade
+                + EPSILON
+        || buffer_days <= max_buffer_days + EPSILON
+        || matches!(building.zone_type, ZoneType::Commercial) && building.stock <= EPSILON
+}
+
+fn industrial_upgrade_viable(
+    allocator: &BuildingAllocator,
+    economy_tuning: &RuntimeEconomyTuning,
+    building_idx: usize,
+    target_asset_id: &str,
+) -> bool {
+    let Some(building) = allocator.buildings.get(building_idx) else {
+        return false;
+    };
+    nonresidential_upgrade_viable(allocator, economy_tuning, building_idx, target_asset_id)
+        && industrial_input_coverage_factor(building) + EPSILON
+            >= economy_tuning
+                .viability
+                .industrial_min_input_coverage_for_upgrade
+        && industrial_output_headroom_factor(building) + EPSILON
+            >= economy_tuning
+                .viability
+                .industrial_min_output_headroom_for_upgrade
+}
+
+fn industrial_downgrade_viable(
+    allocator: &BuildingAllocator,
+    economy_tuning: &RuntimeEconomyTuning,
+    building_idx: usize,
+) -> bool {
+    let Some(building) = allocator.buildings.get(building_idx) else {
+        return false;
+    };
+    nonresidential_downgrade_viable(allocator, economy_tuning, building_idx)
+        || industrial_input_coverage_factor(building)
+            <= economy_tuning
+                .viability
+                .industrial_max_input_coverage_for_downgrade
+                + EPSILON
+        || industrial_output_headroom_factor(building)
+            <= economy_tuning
+                .viability
+                .industrial_max_output_headroom_for_downgrade
+                + EPSILON
 }
 
 fn attachment_sort_key(
@@ -1230,7 +1532,7 @@ impl DailyDemandSnapshot {
                 existing_private_building_count = existing_private_building_count.saturating_add(1);
             }
 
-            if matches!(building.zone_type, ZoneType::Residential | ZoneType::Mixed) {
+            if matches!(building.zone_type, ZoneType::Residential) {
                 let resident_capacity = allocator.resident_capacity(idx);
                 total_household_slots = total_household_slots.saturating_add(resident_capacity);
                 occupied_household_slots = occupied_household_slots
@@ -1239,7 +1541,7 @@ impl DailyDemandSnapshot {
 
             if matches!(
                 building.zone_type,
-                ZoneType::Commercial | ZoneType::Industrial | ZoneType::Office | ZoneType::Mixed
+                ZoneType::Commercial | ZoneType::Industrial
             ) {
                 let worker_capacity = allocator.worker_capacity(idx);
                 let occupied = building.worker_count.min(worker_capacity);
@@ -1388,6 +1690,16 @@ mod tests {
         asset_id: &str,
         zone_type: ZoneType,
     ) -> String {
+        register_family_asset(allocator, asset_id, zone_type, None, 1)
+    }
+
+    fn register_family_asset(
+        allocator: &mut BuildingAllocator,
+        asset_id: &str,
+        zone_type: ZoneType,
+        asset_set: Option<&str>,
+        level: u8,
+    ) -> String {
         let (zone_class, residents_capacity, worker_capacity) = match zone_type {
             ZoneType::Residential => (ZoneClass::Residential, Some(6), None),
             ZoneType::Commercial => (ZoneClass::Commercial, None, Some(4)),
@@ -1399,7 +1711,7 @@ mod tests {
         let manifest = AssetManifest {
             asset_id: asset_id.to_owned(),
             display_name: "Test".to_owned(),
-            asset_set: None,
+            asset_set: asset_set.map(str::to_owned),
             tags: vec![],
             thumbnail: None,
             lods: vec![LodEntry {
@@ -1421,7 +1733,7 @@ mod tests {
                 lot_depth_cells: 2,
                 min_zone_width_cells: None,
                 min_zone_depth_cells: None,
-                level: 1,
+                level,
                 residents_capacity,
                 worker_capacity,
                 service_class: None,
@@ -1449,6 +1761,7 @@ mod tests {
             center_y: 0.0,
             width_cells: 2,
             depth_cells: 2,
+            zone_profile_runtime_id: 0,
             zone_type,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
@@ -1464,6 +1777,7 @@ mod tests {
             level: 1,
             broken: false,
             stock,
+            input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: true,
@@ -1492,6 +1806,7 @@ mod tests {
             reserved_amount: 0.0,
             reserved_total_cost: 0.0,
             pickup_eta_days: 0,
+            stay_failure_days: 0,
         }
     }
 
@@ -1681,5 +1996,178 @@ mod tests {
         let snapshot = DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config);
 
         assert!((snapshot.utility_service_stability - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn residential_upgrade_requires_current_household_affordability_for_target_level() {
+        let mut allocator = BuildingAllocator::new();
+        let level_one = register_family_asset(
+            &mut allocator,
+            "res_level_1",
+            ZoneType::Residential,
+            Some("res_family"),
+            1,
+        );
+        let _level_two = register_family_asset(
+            &mut allocator,
+            "res_level_2",
+            ZoneType::Residential,
+            Some("res_family"),
+            2,
+        );
+        allocator.buildings.push(building(
+            ZoneType::Residential,
+            0.0,
+            6,
+            0,
+            level_one.clone(),
+        ));
+
+        let mut households = HouseholdSystem::new();
+        households
+            .households
+            .push(housed_household(0, 6, 200.0, 3.0));
+
+        let demand = DemandSystem::new();
+        let economy_tuning =
+            load_runtime_economy_tuning().expect("runtime economy tuning must load");
+        let residential_occupants =
+            ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
+        let low_affordability = demand.collect_existing_building_candidates(
+            &allocator,
+            &households,
+            economy_tuning.as_ref(),
+            &residential_occupants,
+            ZoneType::Residential,
+            0.95,
+        );
+        assert!(low_affordability.upgrades.is_empty());
+
+        households.households[0].budget = 400.0;
+        let residential_occupants =
+            ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
+        let high_affordability = demand.collect_existing_building_candidates(
+            &allocator,
+            &households,
+            economy_tuning.as_ref(),
+            &residential_occupants,
+            ZoneType::Residential,
+            0.95,
+        );
+        assert_eq!(high_affordability.upgrades.len(), 1);
+    }
+
+    #[test]
+    fn commercial_upgrade_requires_business_viability_not_only_pressure() {
+        let mut allocator = BuildingAllocator::new();
+        let level_one = register_family_asset(
+            &mut allocator,
+            "com_level_1",
+            ZoneType::Commercial,
+            Some("com_family"),
+            1,
+        );
+        let _level_two = register_family_asset(
+            &mut allocator,
+            "com_level_2",
+            ZoneType::Commercial,
+            Some("com_family"),
+            2,
+        );
+        let mut shop = building(ZoneType::Commercial, 50.0, 0, 1, level_one);
+        shop.operating_budget = 20.0;
+        allocator.buildings.push(shop);
+
+        let households = HouseholdSystem::new();
+        let demand = DemandSystem::new();
+        let economy_tuning =
+            load_runtime_economy_tuning().expect("runtime economy tuning must load");
+        let residential_occupants =
+            ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
+
+        let weak_viability = demand.collect_existing_building_candidates(
+            &allocator,
+            &households,
+            economy_tuning.as_ref(),
+            &residential_occupants,
+            ZoneType::Commercial,
+            0.95,
+        );
+        assert!(weak_viability.upgrades.is_empty());
+
+        allocator.buildings[0].worker_count = 4;
+        allocator.buildings[0].operating_budget = 2_000.0;
+        let strong_viability = demand.collect_existing_building_candidates(
+            &allocator,
+            &households,
+            economy_tuning.as_ref(),
+            &residential_occupants,
+            ZoneType::Commercial,
+            0.95,
+        );
+        assert_eq!(strong_viability.upgrades.len(), 1);
+    }
+
+    #[test]
+    fn industrial_upgrade_requires_input_coverage_and_output_headroom() {
+        let mut allocator = BuildingAllocator::new();
+        let level_one = register_family_asset(
+            &mut allocator,
+            "ind_level_1",
+            ZoneType::Industrial,
+            Some("ind_family"),
+            1,
+        );
+        let _level_two = register_family_asset(
+            &mut allocator,
+            "ind_level_2",
+            ZoneType::Industrial,
+            Some("ind_family"),
+            2,
+        );
+        let mut factory = building(ZoneType::Industrial, 50.0, 0, 4, level_one);
+        factory.operating_budget = 2_000.0;
+        factory.input_stock = 0.0;
+        allocator.buildings.push(factory);
+
+        let households = HouseholdSystem::new();
+        let demand = DemandSystem::new();
+        let economy_tuning =
+            load_runtime_economy_tuning().expect("runtime economy tuning must load");
+        let residential_occupants =
+            ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
+
+        let weak_inputs = demand.collect_existing_building_candidates(
+            &allocator,
+            &households,
+            economy_tuning.as_ref(),
+            &residential_occupants,
+            ZoneType::Industrial,
+            0.95,
+        );
+        assert!(weak_inputs.upgrades.is_empty());
+
+        allocator.buildings[0].input_stock = 320.0;
+        allocator.buildings[0].stock = 50.0;
+        let strong_inputs = demand.collect_existing_building_candidates(
+            &allocator,
+            &households,
+            economy_tuning.as_ref(),
+            &residential_occupants,
+            ZoneType::Industrial,
+            0.95,
+        );
+        assert_eq!(strong_inputs.upgrades.len(), 1);
+
+        allocator.buildings[0].stock = 630.0;
+        let jammed_output = demand.collect_existing_building_candidates(
+            &allocator,
+            &households,
+            economy_tuning.as_ref(),
+            &residential_occupants,
+            ZoneType::Industrial,
+            0.95,
+        );
+        assert!(jammed_output.upgrades.is_empty());
     }
 }

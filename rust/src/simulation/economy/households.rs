@@ -6,8 +6,13 @@
 //! daily replenishment requests, and decision-utility-driven work/home planning.
 
 use crate::debug_log;
-use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-use crate::simulation::economy::agents::{AgentSystem, TRANSIT_IN_BUILDING};
+use crate::simulation::buildings::allocator::{
+    Building, BuildingAllocator, baseline_private_zone_slot,
+};
+use crate::simulation::economy::agents::{
+    AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
+};
+use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::TransitNetwork;
@@ -39,17 +44,15 @@ pub const DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 2;
 
 const COMMERCIAL_BASE_RATE: f32 = 200.0;
 const INDUSTRIAL_BASE_RATE: f32 = 160.0;
-const OFFICE_BASE_RATE: f32 = 120.0;
+const INDUSTRIAL_INPUT_UNITS_PER_OUTPUT: f32 = 1.0;
+const INDUSTRIAL_OUTPUT_STORAGE_CAP_UNITS: f32 = 640.0;
 const STARTUP_OPERATING_FLOAT: f32 = 500.0;
 
 const WAGE_INDUSTRIAL: f32 = 100.0;
 const WAGE_COMMERCIAL: f32 = 90.0;
-const WAGE_OFFICE: f32 = 95.0;
 
 const UTILITY_COST_COMMERCIAL: f32 = 8.0;
 const UTILITY_COST_INDUSTRIAL: f32 = 12.0;
-const UTILITY_COST_OFFICE: f32 = 10.0;
-const UTILITY_COST_MIXED: f32 = 9.0;
 
 const W_INCOME: f32 = 0.35;
 const W_STOCK: f32 = 0.35;
@@ -89,6 +92,8 @@ pub struct Household {
     pub reserved_total_cost: f32,
     /// Remaining daily steps before the reserved pickup completes.
     pub pickup_eta_days: u8,
+    /// Consecutive daily stay-rule failures for the current home.
+    pub stay_failure_days: u32,
 }
 
 /// Collection of explicit household records for the live simulation.
@@ -134,6 +139,7 @@ impl HouseholdSystem {
             reserved_amount: 0.0,
             reserved_total_cost: 0.0,
             pickup_eta_days: 0,
+            stay_failure_days: 0,
         });
         self.households.len() - 1
     }
@@ -156,6 +162,7 @@ impl HouseholdSystem {
         logistics.daily_tick(allocator, transit_network, graph);
         self.pay_daily_wages(agents, allocator);
         self.consume_household_stock(agents);
+        self.resolve_household_housing(agents, allocator);
         self.run_household_replenishment(allocator);
         self.plan_agent_work_and_return_trips(agents, allocator);
         self.sync_agent_money_from_households(agents);
@@ -253,6 +260,7 @@ impl HouseholdSystem {
                     reserved_amount: 0.0,
                     reserved_total_cost: 0.0,
                     pickup_eta_days: 0,
+                    stay_failure_days: 0,
                 });
                 agents.household_id[i] = self.households.len() - 1;
             }
@@ -304,7 +312,7 @@ impl HouseholdSystem {
         for building in &mut allocator.buildings {
             if !matches!(
                 building.zone_type,
-                ZoneType::Commercial | ZoneType::Industrial | ZoneType::Office | ZoneType::Mixed
+                ZoneType::Commercial | ZoneType::Industrial
             ) {
                 continue;
             }
@@ -319,8 +327,6 @@ impl HouseholdSystem {
             let utility_cost = match building.zone_type {
                 ZoneType::Commercial => UTILITY_COST_COMMERCIAL,
                 ZoneType::Industrial => UTILITY_COST_INDUSTRIAL,
-                ZoneType::Office => UTILITY_COST_OFFICE,
-                ZoneType::Mixed => UTILITY_COST_MIXED,
                 _ => {
                     building.utility_service_available = true;
                     continue;
@@ -351,25 +357,33 @@ impl HouseholdSystem {
             } else {
                 0.0
             };
+            let input_factor = if zone == ZoneType::Industrial {
+                industrial_input_coverage_factor(&allocator.buildings[idx])
+            } else {
+                1.0
+            };
+            let output_headroom_factor = if zone == ZoneType::Industrial {
+                industrial_output_headroom_factor(&allocator.buildings[idx])
+            } else {
+                1.0
+            };
             let throughput = match zone {
                 ZoneType::Commercial => COMMERCIAL_BASE_RATE,
                 ZoneType::Industrial => INDUSTRIAL_BASE_RATE,
-                ZoneType::Office => OFFICE_BASE_RATE,
-                ZoneType::Mixed => COMMERCIAL_BASE_RATE * 0.5,
                 _ => 0.0,
             } * staffing_factor
+                * input_factor
+                * output_headroom_factor
                 * utility_factor;
 
             let building = &mut allocator.buildings[idx];
             match zone {
-                ZoneType::Commercial | ZoneType::Mixed => {}
+                ZoneType::Commercial => {}
                 ZoneType::Industrial => {
-                    building.stock += throughput;
-                }
-                ZoneType::Office => {
-                    let service_revenue = throughput * 1.5;
-                    building.revenue += service_revenue;
-                    building.operating_budget += service_revenue;
+                    let consumed_inputs = throughput * INDUSTRIAL_INPUT_UNITS_PER_OUTPUT;
+                    building.input_stock = (building.input_stock - consumed_inputs).max(0.0);
+                    building.stock =
+                        (building.stock + throughput).min(INDUSTRIAL_OUTPUT_STORAGE_CAP_UNITS);
                 }
                 _ => {}
             }
@@ -420,6 +434,258 @@ impl HouseholdSystem {
         }
     }
 
+    fn resolve_household_housing(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
+        let config = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+
+        for household_id in 0..self.households.len() {
+            let household = &self.households[household_id];
+            if household.member_count == 0 {
+                continue;
+            }
+
+            let reserve_days = household_reserve_days(household);
+            let current_home = household.home_building_id;
+            let is_housed = household_is_housed(household, allocator);
+
+            if !is_housed {
+                self.households[household_id].stay_failure_days = 0;
+                if let Some(target_home) = self.find_affordable_home_for_household(
+                    household_id,
+                    reserve_days,
+                    allocator,
+                    None,
+                    &config.households,
+                ) {
+                    self.relocate_household(
+                        household_id,
+                        usize::MAX,
+                        target_home,
+                        agents,
+                        allocator,
+                    );
+                }
+                continue;
+            }
+
+            let current_level = allocator.buildings[current_home].level;
+            let stay_threshold = level_tuning_value(
+                &config.households.residential_stay_min_reserve_days_by_level,
+                current_level,
+            );
+
+            if reserve_days >= stay_threshold {
+                self.households[household_id].stay_failure_days = 0;
+                if let Some(target_home) = self.find_affordable_home_for_household(
+                    household_id,
+                    reserve_days,
+                    allocator,
+                    Some(current_home),
+                    &config.households,
+                ) && allocator.buildings[target_home].level > current_level
+                {
+                    self.relocate_household(
+                        household_id,
+                        current_home,
+                        target_home,
+                        agents,
+                        allocator,
+                    );
+                }
+                continue;
+            }
+
+            self.households[household_id].stay_failure_days = self.households[household_id]
+                .stay_failure_days
+                .saturating_add(1);
+            if self.households[household_id].stay_failure_days
+                < config.households.stay_failure_days_before_eviction
+            {
+                continue;
+            }
+
+            if let Some(target_home) = self.find_affordable_home_for_household(
+                household_id,
+                reserve_days,
+                allocator,
+                Some(current_home),
+                &config.households,
+            ) {
+                self.relocate_household(household_id, current_home, target_home, agents, allocator);
+            } else {
+                self.evict_household(household_id, current_home, agents, allocator);
+            }
+        }
+    }
+
+    fn find_affordable_home_for_household(
+        &self,
+        household_id: usize,
+        reserve_days: f32,
+        allocator: &BuildingAllocator,
+        current_home: Option<usize>,
+        config: &crate::simulation::economy::definitions::HouseholdRuntimeTuning,
+    ) -> Option<usize> {
+        let household = &self.households[household_id];
+        let required_slots = household.member_count.max(1) as u32;
+        let current_center = current_home.and_then(|building_idx| {
+            allocator
+                .buildings
+                .get(building_idx)
+                .map(|building| (building.center_x, building.center_y))
+        });
+
+        let mut candidates = Vec::new();
+        let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
+            return None;
+        };
+        for &building_idx in &allocator.vacancy_index[residential_slot] {
+            if Some(building_idx) == current_home || building_idx >= allocator.buildings.len() {
+                continue;
+            }
+            let building = &allocator.buildings[building_idx];
+            if building.broken || building.pending_redevelopment {
+                continue;
+            }
+
+            let free_slots = allocator
+                .resident_capacity(building_idx)
+                .saturating_sub(building.occupancy);
+            if free_slots < required_slots {
+                continue;
+            }
+
+            let move_in_threshold = level_tuning_value(
+                &config.residential_move_in_min_reserve_days_by_level,
+                building.level,
+            );
+            if reserve_days + f32::EPSILON < move_in_threshold {
+                continue;
+            }
+
+            let distance = current_center.map_or(0.0, |(origin_x, origin_y)| {
+                let dx = building.center_x - origin_x;
+                let dy = building.center_y - origin_y;
+                dx * dx + dy * dy
+            });
+            candidates.push((building_idx, building.level, distance));
+        }
+
+        candidates.sort_by(|left, right| {
+            right
+                .1
+                .cmp(&left.1)
+                .then_with(|| {
+                    left.2
+                        .partial_cmp(&right.2)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        candidates.first().map(|candidate| candidate.0)
+    }
+
+    fn relocate_household(
+        &mut self,
+        household_id: usize,
+        old_home: usize,
+        new_home: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
+        if household_id >= self.households.len() || new_home >= allocator.buildings.len() {
+            return;
+        }
+
+        let member_count = self.households[household_id].member_count as u32;
+        if old_home < allocator.buildings.len() {
+            for _ in 0..member_count {
+                allocator.release_vacancy(old_home);
+            }
+        }
+        for _ in 0..member_count {
+            allocator.claim_vacancy(new_home);
+        }
+
+        self.households[household_id].home_building_id = new_home;
+        self.households[household_id].stay_failure_days = 0;
+
+        for agent_idx in 0..agents.len() {
+            if agents.household_id[agent_idx] != household_id {
+                continue;
+            }
+            agents.home_building[agent_idx] = new_home;
+            if old_home < allocator.buildings.len() {
+                if agents.current_building[agent_idx] == old_home {
+                    agents.current_building[agent_idx] = new_home;
+                    agents.target_building[agent_idx] = usize::MAX;
+                    agents.planned_target_building[agent_idx] = usize::MAX;
+                    agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
+                }
+                if agents.target_building[agent_idx] == old_home {
+                    agents.target_building[agent_idx] = new_home;
+                }
+                if agents.planned_target_building[agent_idx] == old_home {
+                    agents.planned_target_building[agent_idx] = new_home;
+                }
+            } else if agents.current_building[agent_idx] == usize::MAX
+                && agents.target_building[agent_idx] == usize::MAX
+            {
+                agents.target_building[agent_idx] = new_home;
+                agents.planned_target_building[agent_idx] = new_home;
+                agents.activity[agent_idx] = 0;
+            }
+        }
+    }
+
+    fn evict_household(
+        &mut self,
+        household_id: usize,
+        old_home: usize,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
+        if household_id >= self.households.len() {
+            return;
+        }
+
+        let member_count = self.households[household_id].member_count as u32;
+        if old_home < allocator.buildings.len() {
+            for _ in 0..member_count {
+                allocator.release_vacancy(old_home);
+            }
+        }
+
+        let household = &mut self.households[household_id];
+        household.home_building_id = usize::MAX;
+        household.stay_failure_days = 0;
+        clear_replenishment_request(household);
+
+        for agent_idx in 0..agents.len() {
+            if agents.household_id[agent_idx] != household_id {
+                continue;
+            }
+            agents.home_building[agent_idx] = usize::MAX;
+            if agents.current_building[agent_idx] == old_home {
+                agents.current_building[agent_idx] = usize::MAX;
+                agents.target_building[agent_idx] = usize::MAX;
+                agents.planned_target_building[agent_idx] = usize::MAX;
+                agents.transit[agent_idx] = TRANSIT_ACCESS_INGRESS;
+            } else {
+                if agents.target_building[agent_idx] == old_home {
+                    agents.target_building[agent_idx] = usize::MAX;
+                }
+                if agents.planned_target_building[agent_idx] == old_home {
+                    agents.planned_target_building[agent_idx] = usize::MAX;
+                }
+            }
+        }
+    }
+
     fn run_household_replenishment(&mut self, allocator: &mut BuildingAllocator) {
         for hid in 0..self.households.len() {
             self.progress_household_replenishment(hid, allocator);
@@ -439,7 +705,7 @@ impl HouseholdSystem {
             let candidates = allocator.find_nearby_buildings_by_zones(
                 home.center_x,
                 home.center_y,
-                &[ZoneType::Commercial, ZoneType::Mixed],
+                &[ZoneType::Commercial],
                 GROCERY_SEARCH_MAX_RING,
                 GROCERY_SEARCH_CANDIDATES,
             );
@@ -566,12 +832,7 @@ impl HouseholdSystem {
             let mut candidates = allocator.find_nearby_buildings_by_zones(
                 home.center_x,
                 home.center_y,
-                &[
-                    ZoneType::Industrial,
-                    ZoneType::Commercial,
-                    ZoneType::Office,
-                    ZoneType::Mixed,
-                ],
+                &[ZoneType::Industrial, ZoneType::Commercial],
                 JOB_SEARCH_MAX_RING,
                 JOB_SEARCH_CANDIDATES,
             );
@@ -595,10 +856,7 @@ impl HouseholdSystem {
                 let building = &allocator.buildings[candidate];
                 if !matches!(
                     building.zone_type,
-                    ZoneType::Industrial
-                        | ZoneType::Commercial
-                        | ZoneType::Office
-                        | ZoneType::Mixed
+                    ZoneType::Industrial | ZoneType::Commercial
                 ) {
                     continue;
                 }
@@ -681,8 +939,7 @@ impl HouseholdSystem {
             }
             let wage = match allocator.buildings[work].zone_type {
                 ZoneType::Industrial => WAGE_INDUSTRIAL,
-                ZoneType::Commercial | ZoneType::Mixed => WAGE_COMMERCIAL,
-                ZoneType::Office => WAGE_OFFICE,
+                ZoneType::Commercial => WAGE_COMMERCIAL,
                 _ => 0.0,
             };
             if wage <= 0.0 {
@@ -799,6 +1056,59 @@ fn normalized_commute_penalty(home: &Building, work: &Building) -> f32 {
     ((dx * dx + dy * dy).sqrt() / 2000.0).clamp(0.0, 1.0)
 }
 
+pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {
+    let index = level.saturating_sub(1) as usize;
+    values
+        .get(index)
+        .copied()
+        .or_else(|| values.last().copied())
+        .unwrap_or(0.0)
+}
+
+pub(crate) fn building_operating_buffer_days(building: &Building) -> f32 {
+    let daily_operating_cost = match building.zone_type {
+        ZoneType::Commercial => {
+            building.worker_count as f32 * WAGE_COMMERCIAL + UTILITY_COST_COMMERCIAL
+        }
+        ZoneType::Industrial => {
+            building.worker_count as f32 * WAGE_INDUSTRIAL + UTILITY_COST_INDUSTRIAL
+        }
+        _ => 0.0,
+    };
+    if daily_operating_cost <= 0.0 {
+        0.0
+    } else {
+        (building.operating_budget.max(0.0) / daily_operating_cost).max(0.0)
+    }
+}
+
+pub(crate) fn building_staffing_ratio(
+    allocator: &BuildingAllocator,
+    building_idx: usize,
+    building: &Building,
+) -> f32 {
+    let worker_capacity = allocator.worker_capacity(building_idx);
+    if worker_capacity == 0 {
+        0.0
+    } else {
+        (building.worker_count as f32 / worker_capacity as f32).clamp(0.0, 1.0)
+    }
+}
+
+pub(crate) fn industrial_input_coverage_factor(building: &Building) -> f32 {
+    let daily_input_need = INDUSTRIAL_BASE_RATE * INDUSTRIAL_INPUT_UNITS_PER_OUTPUT;
+    if daily_input_need <= 0.0 {
+        0.0
+    } else {
+        (building.input_stock / daily_input_need).clamp(0.0, 1.0)
+    }
+}
+
+pub(crate) fn industrial_output_headroom_factor(building: &Building) -> f32 {
+    let remaining_headroom = (INDUSTRIAL_OUTPUT_STORAGE_CAP_UNITS - building.stock).max(0.0);
+    (remaining_headroom / INDUSTRIAL_OUTPUT_STORAGE_CAP_UNITS).clamp(0.0, 1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -821,6 +1131,7 @@ mod tests {
             center_y: 0.0,
             width_cells: 2,
             depth_cells: 2,
+            zone_profile_runtime_id: 0,
             zone_type,
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
@@ -836,6 +1147,7 @@ mod tests {
             level: 1,
             broken: false,
             stock,
+            input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: utility,
@@ -916,6 +1228,7 @@ mod tests {
             reserved_amount: 0.0,
             reserved_total_cost: 0.0,
             pickup_eta_days: 0,
+            stay_failure_days: 0,
         });
 
         let mut allocator = BuildingAllocator::new();
@@ -997,8 +1310,8 @@ mod tests {
         allocator.rebuild_zone_index();
 
         let mut agents = AgentSystem::new();
-        let a0 = agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
-        let a1 = agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+        let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
         for a in [a0, a1] {
             agents.household_id[a] = hid;
             agents.transit[a] = TRANSIT_IN_BUILDING;
@@ -1040,6 +1353,7 @@ mod tests {
             reserved_amount: 0.0,
             reserved_total_cost: 0.0,
             pickup_eta_days: 0,
+            stay_failure_days: 0,
         }
     }
 
@@ -1076,9 +1390,9 @@ mod tests {
         allocator.rebuild_zone_index();
 
         let mut agents = AgentSystem::new();
-        let housed_a = agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
-        let unhoused = agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
-        let housed_b = agents.spawn_agent(1, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        let housed_a = agents.spawn_housed_agent(0, 0.0, 0.0);
+        let unhoused = agents.spawn_housed_agent(0, 0.0, 0.0);
+        let housed_b = agents.spawn_housed_agent(1, 0.0, 0.0);
         agents.household_id[housed_a] = 0;
         agents.household_id[unhoused] = 1;
         agents.home_building[unhoused] = usize::MAX;
@@ -1132,9 +1446,9 @@ mod tests {
         allocator.rebuild_zone_index();
 
         let mut agents = AgentSystem::new();
-        let weak_housed = agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
-        let strong_housed = agents.spawn_agent(1, 0, 0.0, 0.0, 0, 0.0, 0.0);
-        let unhoused = agents.spawn_agent(0, 0, 0.0, 0.0, 0, 0.0, 0.0);
+        let weak_housed = agents.spawn_housed_agent(0, 0.0, 0.0);
+        let strong_housed = agents.spawn_housed_agent(1, 0.0, 0.0);
+        let unhoused = agents.spawn_housed_agent(0, 0.0, 0.0);
         agents.household_id[weak_housed] = 0;
         agents.household_id[strong_housed] = 1;
         agents.household_id[unhoused] = 2;
@@ -1151,5 +1465,91 @@ mod tests {
         assert_eq!(agents.home_building[0], 1);
         assert_eq!(allocator.buildings[0].occupancy, 0);
         assert_eq!(allocator.buildings[1].occupancy, 1);
+    }
+
+    #[test]
+    fn unhoused_household_rehouses_into_affordable_vacant_home() {
+        let mut households = HouseholdSystem::new();
+        households
+            .households
+            .push(make_household(usize::MAX, 2, 12.0, 3.0));
+
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "rehouse_res",
+            ZoneClass::Residential,
+        );
+        allocator.buildings.push(make_building(
+            0.0,
+            ZoneType::Residential,
+            &residential_asset,
+            0.0,
+            true,
+        ));
+        allocator.rebuild_zone_index();
+
+        let mut agents = AgentSystem::new();
+        let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+        let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+        for a in [a0, a1] {
+            agents.household_id[a] = 0;
+            agents.home_building[a] = usize::MAX;
+            agents.current_building[a] = usize::MAX;
+            agents.target_building[a] = usize::MAX;
+            agents.planned_target_building[a] = usize::MAX;
+            agents.transit[a] = TRANSIT_ACCESS_INGRESS;
+        }
+
+        households.resolve_household_housing(&mut agents, &mut allocator);
+
+        assert_eq!(households.households[0].home_building_id, 0);
+        assert_eq!(allocator.buildings[0].occupancy, 2);
+        assert_eq!(agents.home_building[a0], 0);
+        assert_eq!(agents.home_building[a1], 0);
+        assert_eq!(agents.target_building[a0], 0);
+        assert_eq!(agents.target_building[a1], 0);
+    }
+
+    #[test]
+    fn failed_stay_rule_evicts_household_when_no_affordable_home_exists() {
+        let mut households = HouseholdSystem::new();
+        let mut household = make_household(0, 2, 0.5, 1.0);
+        household.stay_failure_days = 1;
+        households.households.push(household);
+
+        let mut allocator = BuildingAllocator::new();
+        let residential_asset =
+            register_test_asset(&mut allocator, "test", "evict_res", ZoneClass::Residential);
+        let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0, true);
+        home.level = 2;
+        home.occupancy = 2;
+        allocator.buildings.push(home);
+        allocator.rebuild_zone_index();
+
+        let mut agents = AgentSystem::new();
+        let a0 = agents.spawn_housed_agent(0, 0.0, 0.0);
+        let a1 = agents.spawn_housed_agent(0, 0.0, 0.0);
+        for a in [a0, a1] {
+            agents.household_id[a] = 0;
+            agents.home_building[a] = 0;
+            agents.current_building[a] = 0;
+            agents.target_building[a] = usize::MAX;
+            agents.planned_target_building[a] = usize::MAX;
+            agents.transit[a] = TRANSIT_IN_BUILDING;
+        }
+
+        households.resolve_household_housing(&mut agents, &mut allocator);
+
+        assert_eq!(households.households[0].home_building_id, usize::MAX);
+        assert_eq!(households.households[0].stay_failure_days, 0);
+        assert_eq!(allocator.buildings[0].occupancy, 0);
+        assert_eq!(agents.home_building[a0], usize::MAX);
+        assert_eq!(agents.home_building[a1], usize::MAX);
+        assert_eq!(agents.current_building[a0], usize::MAX);
+        assert_eq!(agents.current_building[a1], usize::MAX);
+        assert_eq!(agents.transit[a0], TRANSIT_ACCESS_INGRESS);
+        assert_eq!(agents.transit[a1], TRANSIT_ACCESS_INGRESS);
     }
 }

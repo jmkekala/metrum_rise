@@ -1,6 +1,6 @@
 //! Building search indices and vacancy management.
 
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
 use godot::prelude::Vector3;
@@ -19,8 +19,7 @@ impl BuildingAllocator {
         self.building_chunks.clear();
 
         for (idx, b) in self.buildings.iter().enumerate() {
-            let zi = b.zone_type as usize;
-            if zi < 6 {
+            if let Some(zi) = baseline_private_zone_slot(b.zone_type) {
                 self.zone_index[zi].push(idx);
                 let chunk =
                     RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
@@ -48,7 +47,9 @@ impl BuildingAllocator {
 
         // If it was in the vacancy list and is now full, remove it
         if b.occupancy >= cap {
-            let zi = b.zone_type as usize;
+            let Some(zi) = baseline_private_zone_slot(b.zone_type) else {
+                return;
+            };
             let v_pos = self.vacancy_pos[building_idx];
             if v_pos != usize::MAX {
                 let list = &mut self.vacancy_index[zi];
@@ -71,7 +72,9 @@ impl BuildingAllocator {
 
         // If it was full and now has space, add it back to vacancy index
         if b.occupancy + 1 == cap {
-            let zi = b.zone_type as usize;
+            let Some(zi) = baseline_private_zone_slot(b.zone_type) else {
+                return;
+            };
             if self.vacancy_pos[building_idx] == usize::MAX {
                 let v_idx = self.vacancy_index[zi].len();
                 self.vacancy_index[zi].push(building_idx);
@@ -86,7 +89,7 @@ impl BuildingAllocator {
         zone: ZoneType,
         rng: &mut impl rand::Rng,
     ) -> Option<usize> {
-        let list = &self.zone_index[zone as usize];
+        let list = &self.zone_index[baseline_private_zone_slot(zone)?];
         if list.is_empty() {
             return None;
         }
@@ -104,11 +107,14 @@ impl BuildingAllocator {
         graph: &RegionGraph,
         mode_flags: u8,
     ) -> Vec<(u32, usize)> {
+        let Some(zone_idx) = baseline_private_zone_slot(zone) else {
+            return Vec::new();
+        };
         let mut sources = Vec::new();
         let want_car = (mode_flags & crate::simulation::network::types::TransitFlags::CAR) != 0;
         let want_foot = (mode_flags & crate::simulation::network::types::TransitFlags::FOOT) != 0;
 
-        for &idx in &self.zone_index[zone as usize] {
+        for &idx in &self.zone_index[zone_idx] {
             if idx >= self.buildings.len() || idx >= self.entrances.len() {
                 continue;
             }
@@ -152,7 +158,9 @@ impl BuildingAllocator {
         // We sum the counts and pick based on weighted probability of lengths
         let mut total = 0;
         for &zone in zones {
-            total += self.zone_index[zone as usize].len();
+            total += baseline_private_zone_slot(zone)
+                .map(|zone_idx| self.zone_index[zone_idx].len())
+                .unwrap_or(0);
         }
 
         if total == 0 {
@@ -161,7 +169,10 @@ impl BuildingAllocator {
 
         let mut pick = rng.gen_range(0..total);
         for &zone in zones {
-            let list = &self.zone_index[zone as usize];
+            let Some(zone_idx) = baseline_private_zone_slot(zone) else {
+                continue;
+            };
+            let list = &self.zone_index[zone_idx];
             if pick < list.len() {
                 return Some(list[pick]);
             }

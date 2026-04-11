@@ -72,9 +72,9 @@ pub enum ZoneClass {
     Commercial,
     /// Manufacturing and logistics.
     Industrial,
-    /// Office employment.
+    /// Office employment reserved for a later explicit extension.
     Office,
-    /// Dual-use residential and commercial.
+    /// Mixed residential/commercial use reserved for a later explicit extension.
     Mixed,
 }
 
@@ -480,7 +480,7 @@ impl AssetManifest {
                         }
                         ZoneClass::Office | ZoneClass::Mixed => {
                             return Err(ManifestError::Validation(format!(
-                                "asset_id '{}': office and mixed are outside the baseline shipped building contract",
+                                "asset_id '{}': office and mixed are reserved future extensions outside the baseline shipped building contract",
                                 self.asset_id
                             )));
                         }

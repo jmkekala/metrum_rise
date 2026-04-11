@@ -463,6 +463,17 @@ Rules:
 
 This gives the city a startup source and a surplus sink without requiring a full intercity supply-chain simulation.
 
+Shared outside-gateway boundary:
+
+- the same connected outside connection may later also serve household arrival and household
+  departure visualization
+- that shared physical gateway should not collapse freight and household movement into one logic
+  path
+- `OWA` still owns external goods and utility-service exchange
+- [`docs/entrance_and_exit.md`](entrance_and_exit.md) should own any later household
+  `OutsideGateway` arrival or departure trip semantics
+- [`docs/demand.md`](demand.md) still owns whether households are admitted or removed at all
+
 ### Border connections and physical freight
 
 External trade must be physically delivered through the city, not teleported into a warehouse or shop.
@@ -561,6 +572,12 @@ Deterministic relocation rule:
    in that sorted list.
 5. If the current home did not fail the stay rule, a voluntary up-move is allowed only if the first
    affordable candidate has a strictly higher `target_level` than the current home.
+
+Current live note:
+
+- the live runtime now loads `runtime_tuning.households` from `economy/profiles.toml`
+- the daily household pass now executes the stay check, relocation, eviction, and `unhoused`
+  transitions before demand reads the settled daily snapshot
 
 Eviction and unhoused rule:
 
@@ -795,6 +812,22 @@ Authoring and data rule:
   and one for all non-residential buildings
 - if no required economy-side viability entry exists for a target level, that level transition is
   not allowed
+
+Current live note:
+
+- the live runtime now loads `runtime_tuning.viability` from `economy/profiles.toml` and applies
+  those thresholds during demand-owned upgrade and downgrade candidate selection
+- residential level changes now use occupancy plus occupant-affordability gates in the live
+  runtime
+- commercial and industrial level changes now use staffing, operating-buffer, and
+  utility-availability gates in the live runtime
+- the live runtime now uses a narrow starter industrial inventory slice:
+  - `input_stock` for industrial required-input coverage
+  - `stock` as the current output or saleable-stock buffer
+- industrial viability now reads explicit input coverage and output headroom from that starter
+  runtime state
+- full generic typed inventories, per-resource reservations, and broader multi-resource freight are
+  still a later extension rather than part of this narrow starter slice
 
 ## Product Shape
 
@@ -1167,6 +1200,9 @@ This means:
 - each household record stores at least `home_building_id`, derived `member_count`, shared budget, household stock, and replenishment state
 - agents reference a `household_id` for home-life needs and shared household money
 - immigration, emigration, and move-in or move-out should default to household-level events rather than isolated individual moves; the economy spec does not require a separate border-entry bootstrap choreography for those members in `v0.1`
+- if a later transport layer visualizes admitted or departing households through shared outside
+  gateways, economy still owns the household record before arrival and the household-side removal
+  reason before departure; transport owns only the trip choreography
 - households may also contribute baseline utility load through the `Utility Service Layer`, but that load is a runtime consequence of occupancy and activity rather than something authored through a household `economy_profile`
 - residential buildings still own the physical location and capacity, but they do not become the source of truth for each household's budget or stock
 
@@ -1776,11 +1812,38 @@ building budgets and stock, bounded freight reservations, `OWA` import fallback,
 developer-side economy data path. The phases below are therefore the recommended continuation order
 from the current partial implementation, not a claim that every earlier phase is still untouched.
 
+Current status summary:
+
+- Phase 1 is complete in the live runtime.
+- Phase 2 is partially implemented.
+- Phase 3 is partially implemented.
+- Phase 4 is partially implemented.
+- Phase 5 is not started in a meaningful runtime form.
+- Phase 6 is not started in its intended authored/runtime form.
+- Phase 7 is largely complete already.
+- Phase 8 is ongoing cleanup rather than untouched future work.
+
+Recommended continuation order from the current runtime:
+
+1. finish the remaining Phase 2 timing and schedule-contract work
+2. finish Phase 3 authored `economy_profile` to runtime resolution
+3. finish Phase 4 generalized inventories and freight
+4. then land Phase 5 treasury and fiscal settlement
+5. then land Phase 6 utility/service runtime actors
+6. keep Phase 8 cleanup running alongside those phases instead of treating it as one final isolated pass
+
 ### Phase 1 - Stabilize the current starter loop
 
 - Treat the explicit-household plus bounded-freight path as the only authoritative `v0.1` baseline.
 - Keep one essential chain authoritative: local producer -> local shop or distribution -> household stock.
 - Do not widen scope into dynamic pricing, per-agent daily shopping, or broad multi-resource simulation yet.
+
+Current status:
+
+- complete
+- explicit household records, bounded freight reservations, `OWA` startup fallback, household
+  stock, building operating budgets, and the starter industrial input/output slice are all live
+- this phase should now be treated as the settled baseline to build on rather than as active work
 
 Goal: keep the already-landed economy slice small, testable, and worth building on.
 
@@ -1789,6 +1852,14 @@ Goal: keep the already-landed economy slice small, testable, and worth building 
 - Introduce the shared operational runtime state described earlier in this document, centered on `day_index` and `minute_of_day`.
 - Move work timing, household replenishment cadence, and freight timing preferences onto authored schedule windows and stable offsets.
 - Cache or periodically refresh travel estimates instead of opening fresh per-agent path queries on the hot path.
+
+Current status:
+
+- partially implemented
+- the daily economy-settlement to daily-demand handoff now exists and runs in a stable order
+- the full authored operational clock, `minute_of_day`-driven schedule windows, and broader
+  stable-offset timing contract are not fully implemented yet
+- this is the next economy phase that still needs focused runtime work
 
 Goal: give labor, deliveries, and later school or service timing one deterministic time base before more systems depend on it.
 
@@ -1799,13 +1870,29 @@ Goal: give labor, deliveries, and later school or service timing one determinist
 - Replace hardcoded starter-loop constants incrementally with profile-backed worker caps, rates, buffers, and fixed `v0.1` price or wage values.
 - Preserve explicit unresolved-profile and broken-economy behavior instead of silent fallback.
 
+Current status:
+
+- partially implemented
+- `economy/profiles.toml` already loads and baseline viability tuning is now runtime-authored
+- some starter rates, buffers, and economy-side gates already read authored data
+- the larger goal of resolving authored `economy_profile` references into general compiled runtime
+  production behavior is not finished yet
+
 Goal: stop duplicating economy rules between runtime code, packs, and the editor data model.
 
 ### Phase 4 - Generalize inventories and freight one resource at a time
 
-- Move from one stock scalar toward resource-typed building inventories, reservations, and shortage state.
+- Move from the current starter stock-plus-industrial-input buffers toward fully resource-typed building inventories, reservations, and shortage state.
 - Keep shipment creation bounded, batched, and entrance-aware; do not regress into per-order or per-agent freight.
 - Expand to additional resources only after the starter household-supply loop still works cleanly on the generalized runtime.
+
+Current status:
+
+- partially implemented
+- the runtime already has household stock, building stock, and the starter industrial input/output
+  buffers
+- it does not yet have fully generalized resource-typed building inventories, per-resource
+  reservations, or multiple authored production chains running through one shared runtime model
 
 Goal: support more than one production chain without rewriting the logistics foundation again.
 
@@ -1815,6 +1902,12 @@ Goal: support more than one production chain without rewriting the logistics fou
 - Land build cost, upkeep, utility charges, operator revenue, and later `VAT` or subsidy hooks on the daily fiscal settlement cadence.
 - Keep `v0.1` pricing and wage response fixed while this ledger split stabilizes.
 
+Current status:
+
+- pending
+- household and building money already exist in starter form, but the city treasury and explicit
+  fiscal-ledger split do not
+
 Goal: make money flow explicit before adding richer service or policy behavior.
 
 ### Phase 6 - Add the `Utility Service Layer` and first service-building slice
@@ -1822,6 +1915,12 @@ Goal: make money flow explicit before adding richer service or policy behavior.
 - Replace the current placeholder utility-availability behavior with connected local utility producers or processors plus `OWA` fallback.
 - Make city-owned and privately operated utility or service buildings real economy actors rather than invisible background rules.
 - Land `CIV-01` here so city stability is no longer only conceptual.
+
+Current status:
+
+- pending in its intended final form
+- placeholder utility availability and `OWA` fallback exist, but authored local utility producers,
+  processors, and the first real service-building slice do not
 
 Goal: turn baseline services into real runtime constraints without treating utilities as trucked goods.
 
@@ -1834,14 +1933,32 @@ Goal: turn baseline services into real runtime constraints without treating util
 - Keep economy responsible for creating and updating household or building economy state once
   demand has already decided the outcome.
 
+Current status:
+
+- largely complete
+- demand-owned household admission, removal, startup support, and daily building action plans are
+  already integrated into the live runtime
+- economy-side relocation, eviction, viability, and building-change gates already participate in
+  that handoff
+- any remaining work here is boundary hardening, not a missing first-pass integration
+
 Goal: finish the demand and economy ownership boundary cleanly instead of leaving allocator-local or
 economy-local fallback growth decisions behind.
 
 ### Phase 8 - Remove transitional hardcoding and old assumptions
 
-- Delete remaining zone-type-only economy branches, allocator-owned immigration heuristics, and hidden fallback paths that bypass profile or runtime state.
+- Delete remaining transitional zone-type-only economy branches and hidden fallback paths that
+  bypass profile or runtime state.
 - Rewrite tests, save/load expectations, and tooling diagnostics around explicit households, compiled profiles, utility or service resolution, and bounded freight.
 - Keep the `v0.1` scope intentionally narrow even during cleanup; later market complexity should extend this model, not compete with it.
+
+Current status:
+
+- ongoing
+- allocator-owned immigration heuristics are already gone
+- the main remaining cleanup themes are broader profile-driven runtime resolution, richer utility
+  actors, generalized inventories, and the building-loss displacement fallback still called out in
+  the cross-doc cleanup work
 
 Goal: finish with one coherent economy model instead of a mix of prototype and authored code paths.
 

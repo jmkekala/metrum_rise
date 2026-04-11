@@ -1,8 +1,10 @@
-//! Building removal, immigration admission, and coordinate restoration.
+//! Building removal, demand-owned household admission, and coordinate restoration.
 
 use crate::debug_log;
-use crate::simulation::buildings::allocator::{BuildingAllocator, zone_class_to_zone_type};
-use crate::simulation::economy::agents::{AgentSystem, MODE_WALK, TRANSIT_IN_BUILDING};
+use crate::simulation::buildings::allocator::{
+    BuildingAllocator, baseline_private_zone_slot, zone_class_to_zone_type,
+};
+use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
 };
@@ -158,7 +160,9 @@ impl BuildingAllocator {
                 let b_width = b.width_cells;
                 let b_depth = b.depth_cells;
                 let b_zone = b.zone_type;
-                self.dirty_zones[b_zone as usize] = true;
+                if let Some(zone_idx) = baseline_private_zone_slot(b_zone) {
+                    self.dirty_zones[zone_idx] = true;
+                }
 
                 let tangent = Vector2::new(-b_facing.y, b_facing.x);
                 let width_m = b_width as f32 * zone_cell_m;
@@ -179,7 +183,11 @@ impl BuildingAllocator {
                 logistics.invalidate_building(i, self);
                 let last_idx = self.buildings.len() - 1;
                 if i < last_idx {
-                    self.dirty_zones[self.buildings[last_idx].zone_type as usize] = true;
+                    if let Some(zone_idx) =
+                        baseline_private_zone_slot(self.buildings[last_idx].zone_type)
+                    {
+                        self.dirty_zones[zone_idx] = true;
+                    }
                     let mut mapping = std::collections::HashMap::new();
                     mapping.insert(last_idx, i);
                     agents.remap_building_indices(&mapping);
@@ -236,21 +244,8 @@ impl BuildingAllocator {
             );
 
             for _ in 0..household_size {
-                let agent_idx = agents.spawn_agent(
-                    home_idx,
-                    u32::MAX,
-                    0.0,
-                    0.0,
-                    u32::MAX,
-                    home_door.x,
-                    home_door.y,
-                );
+                let agent_idx = agents.spawn_housed_agent(home_idx, home_door.x, home_door.y);
                 agents.household_id[agent_idx] = household_id;
-                agents.transit[agent_idx] = TRANSIT_IN_BUILDING;
-                agents.transit_mode[agent_idx] = MODE_WALK;
-                agents.current_building[agent_idx] = home_idx;
-                agents.target_building[agent_idx] = usize::MAX;
-                agents.planned_target_building[agent_idx] = usize::MAX;
                 agents.current_node[agent_idx] = u32::MAX;
                 agents.planned_attach_node[agent_idx] = u32::MAX;
                 agents.planned_detach_node[agent_idx] = u32::MAX;
@@ -405,12 +400,15 @@ impl BuildingAllocator {
 
 impl BuildingAllocator {
     fn claim_home_for_household(&mut self, desired_size: u32) -> Option<(usize, u16)> {
-        let target_zones = [ZoneType::Residential, ZoneType::Mixed];
+        let target_zones = [ZoneType::Residential];
 
         let mut fallback_idx = usize::MAX;
         let mut fallback_size = 0_u16;
         'fallback: for &zone in &target_zones {
-            for &building_idx in &self.vacancy_index[zone as usize] {
+            let Some(zone_idx) = baseline_private_zone_slot(zone) else {
+                continue;
+            };
+            for &building_idx in &self.vacancy_index[zone_idx] {
                 let free_slots = self
                     .resident_capacity(building_idx)
                     .saturating_sub(self.buildings[building_idx].occupancy);
@@ -484,16 +482,20 @@ impl BuildingAllocator {
         }
 
         let target_zone_type = zone_class_to_zone_type(target_building.zone_type?);
+        if target_zone_type != building.zone_type {
+            return None;
+        }
         let building = &mut self.buildings[building_idx];
         building.asset_id = action.target_asset_id.clone();
         building.level = target_building.level;
-        building.zone_type = target_zone_type;
         building.pending_redevelopment = false;
         building.rezone_grace_days_remaining = 0;
         self.dirty = true;
         self.dirty_index = true;
         self.entrances_dirty = true;
-        self.dirty_zones[building.zone_type as usize] = true;
+        if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
+            self.dirty_zones[zone_idx] = true;
+        }
         Some(demand_building_action_key(building))
     }
 
@@ -531,13 +533,17 @@ impl BuildingAllocator {
 
         agents.evict_building(building_idx);
         logistics.invalidate_building(building_idx, self);
-        self.dirty_zones[building.zone_type as usize] = true;
+        if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
+            self.dirty_zones[zone_idx] = true;
+        }
 
         let last_idx = self.buildings.len().saturating_sub(1);
         let moved_key = if building_idx < last_idx {
             let moved_building = self.buildings[last_idx].clone();
             let moved_key = demand_building_action_key(&moved_building);
-            self.dirty_zones[moved_building.zone_type as usize] = true;
+            if let Some(zone_idx) = baseline_private_zone_slot(moved_building.zone_type) {
+                self.dirty_zones[zone_idx] = true;
+            }
             let mut mapping = std::collections::HashMap::new();
             mapping.insert(last_idx, building_idx);
             agents.remap_building_indices(&mapping);

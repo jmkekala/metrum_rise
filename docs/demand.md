@@ -51,8 +51,15 @@ Current live behavior:
 - the live runtime now executes ordinary household removal from the demand-owned
   `households_to_remove_today` output using the deterministic selection order owned by
   [`economy.md`](economy.md)
+- the live runtime now reads household affordability, relocation, eviction, and `unhoused`
+  outcomes from the settled daily economy pass before computing the next demand snapshot
 - the live runtime now executes private building spawn, despawn, upgrade, and downgrade actions
   from demand-owned daily building-action plans instead of allocator-owned heuristics
+- those building-action plans now also pass through economy-side viability gates backed by the
+  authored `runtime_tuning` block in `economy/profiles.toml`
+- industrial building actions now read explicit input-coverage and output-headroom signals from the
+  live starter industrial inventory slice instead of treating industrial viability as pure
+  staffing-plus-buffer approximation
 - fresh-map startup now uses the authored demand-side `startup_support` path instead of an
   allocator-owned one-time founding placement exception
 
@@ -64,6 +71,8 @@ Current derived inputs:
 - household affordability and stock stability
 - connected external-border availability
 - startup-support progress from housed residents, private buildings, and filled jobs
+- economy-side residential and non-residential viability gates from `economy/profiles.toml`
+- industrial input coverage plus industrial output headroom from the live starter inventory slice
 
 Short version:
 
@@ -724,7 +733,9 @@ This document does not own:
 
 - the exact `Household` runtime record
 - the exact home-claim procedure once a household is admitted
-- whether arrival is visualized through a border-origin transport trip
+- whether arrival or departure is visualized through a border-origin or later outside-gateway
+  transport trip
+- which outside gateway is chosen when transport visualizes household arrival or departure
 - the exact freight or utility-service flow that later changes migration pressure
 
 ## Core Rule
@@ -1168,6 +1179,15 @@ If a household is admitted:
 - housing/vacancy logic claims a real home
 - transport may either instantiate the household directly at home or visualize a border-origin arrival
 
+If a household is removed:
+
+- demand still owns the whole-household removal count
+- economy still owns the household-side bad-state reasons that made removal pressure rise
+- transport may later either remove the household immediately or visualize a trip to an external
+  gateway
+- any future external-gateway arrival or departure visualization remains downstream of the demand
+  decision and belongs to [`docs/entrance_and_exit.md`](entrance_and_exit.md)
+
 Both outcomes are valid, but they are downstream of the demand decision.
 
 ## Relationship To Building Growth
@@ -1264,17 +1284,13 @@ allocator- or transport-owned behavior alive.
 - The coarse immigration decision has now moved behind the demand-owned `households_to_admit_today`
   output, and allocator execution consumes that count through
   `execute_demand_household_admission(...)` rather than recomputing pressure locally.
-- The remaining admission-side follow-up is execution cleanup: allocator still owns the home-claim
-  loop and direct housed-agent creation once demand has already decided the count. That execution
-  path should eventually settle into the final economy/allocator split documented here.
-- `rust/src/simulation/economy/agents/data.rs::spawn_agent()` still defaults new agents to `TRANSIT_IMMIGRATING`. That default is transport-oriented legacy behavior and should not be the generic constructor path for ordinary household admission.
-- The generic agent-spawn API still mixes ordinary housed admission, optional border-origin transport visualization, and test/helper setup into one constructor shape. That should be split into explicit paths such as:
-  - ordinary housed-agent creation for demand-driven household admission
-  - optional border-origin transport visualization
-  - test/helper spawning
-  - ordinary demand-driven household admission must not depend on a constructor that defaults to `TRANSIT_IMMIGRATING`
-- `rust/src/simulation/economy/agents/tick.rs::plan_immigration_trip()` and the `TRANSIT_IMMIGRATING` branch are acceptable only as optional transport-layer visualization for exceptional/manual border-origin arrivals. They must not remain a hidden prerequisite for normal city growth.
-- Building removal currently happens through stale topology or zoning cleanup, not through a demand-owned despawn or abandonment decision. Any future private-building disappearance, downgrade, abandonment, or redevelopment flow should have an explicit demand-side trigger contract instead of piggybacking on invalid-placement cleanup.
+- Ordinary household admission now uses the explicit housed-admission path in
+  `rust/src/simulation/economy/agents/data.rs::spawn_housed_agent()`. Optional border-origin
+  transport visualization is separate in `spawn_border_arrival_agent()` and remains the only place
+  where `TRANSIT_IMMIGRATING` is still appropriate.
+- Ordinary private-building despawn, downgrade, upgrade, and spawn now execute from demand-owned
+  daily action plans. Stale topology or zoning cleanup remains only as invalid-placement cleanup,
+  not as the ordinary building-growth path.
 - Building-loss displacement currently has no dedicated demand/economy ownership boundary. `AgentSystem::evict_building()` still forces some agents into `TRANSIT_ACCESS_INGRESS` as a fake rubble/street fallback. That should be replaced by an explicit rehousing, homelessness, disaster, or removal contract rather than by reusing ordinary entrance-travel semantics.
 - Debug logging and tooling should stop implying that immigration is fundamentally a border-spawn FSM process when the real source of truth is the demand-layer household-admission decision.
 

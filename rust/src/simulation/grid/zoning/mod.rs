@@ -31,9 +31,9 @@ pub enum ZoneType {
     Commercial = 2,
     /// Manufacturing / logistics — agents work here, consumes industrial demand.
     Industrial = 3,
-    /// Office employment — treated as commercial demand at 50% weight currently.
+    /// Office employment reserved for a later explicit extension.
     Office = 4,
-    /// Dual-use: serves as both residential and commercial, consumes both demands.
+    /// Mixed residential/commercial use reserved for a later explicit extension.
     Mixed = 5,
 }
 
@@ -165,20 +165,6 @@ impl ZoningSystem {
         }
     }
 
-    /// Returns the broad zone type at the given world-space position.
-    ///
-    /// Test-only compatibility helper kept for older migration coverage. Normal runtime zoning
-    /// work should read profile runtime ids instead.
-    #[cfg(test)]
-    pub fn get_zone_world(&self, x: f32, z: f32) -> ZoneType {
-        match self.world_to_cell(x, z) {
-            Some((cx, cy)) => self
-                .profiles
-                .zone_type_for_runtime_id(*self.grid.get(cx, cy).unwrap_or(&0)),
-            None => ZoneType::None,
-        }
-    }
-
     /// Returns the dense runtime profile id at one world-space position.
     pub fn get_zone_profile_runtime_id_world(&self, x: f32, z: f32) -> u16 {
         match self.world_to_cell(x, z) {
@@ -212,26 +198,6 @@ impl ZoningSystem {
                 self.grid.set(cx, cy, runtime_id);
             }
         }
-    }
-
-    /// Paints a world-space rectangle with one broad zone family.
-    ///
-    /// Test-only compatibility helper kept for migration coverage. Broad-family paints map to the
-    /// default low-density runtime profile for that family.
-    #[cfg(test)]
-    pub fn set_zone_rect(
-        &mut self,
-        x_min: f32,
-        z_min: f32,
-        x_max: f32,
-        z_max: f32,
-        zone: ZoneType,
-    ) {
-        let runtime_id = self
-            .profiles
-            .default_runtime_id_for_zone_type(zone)
-            .unwrap_or(0);
-        self.set_zone_profile_rect(x_min, z_min, x_max, z_max, runtime_id);
     }
 
     /// Captures one patch bounding box as little-endian runtime profile ids in row-major order.
@@ -326,19 +292,6 @@ impl ZoningSystem {
     }
 
     // ── Texture data for Godot uploads ──────────────────────────────────────
-
-    /// Returns the derived broad zone-family grid as a flat `u8` byte array for legacy callers.
-    ///
-    /// Test-only compatibility helper kept while migration coverage still reads the old texture
-    /// shape. Normal runtime uploads use [`Self::get_zone_profile_texture_data_rg8`].
-    #[cfg(test)]
-    pub fn get_zone_texture_data(&self) -> Vec<u8> {
-        self.grid
-            .data
-            .iter()
-            .map(|&runtime_id| self.profiles.zone_type_for_runtime_id(runtime_id) as u8)
-            .collect()
-    }
 
     /// Returns the authoritative profile-id grid as RG8 bytes for overlay upload.
     pub fn get_zone_profile_texture_data_rg8(&self) -> Vec<u8> {

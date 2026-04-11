@@ -191,12 +191,13 @@ Rebuilt by `_rebuild_no_build_overlay()` called from `set_tool_active()` and `fu
   height, data), with one little-endian `u16` runtime profile id per cell.
 - allocator-owned `edge_occupancy` is **not** saved directly — see
   [`building_allocator.md`](building_allocator.md) for the rebuild contract.
+- placed buildings now save the authoritative `zone_profile_runtime_id`; the old broad
+  `zone_type` field is rebuilt as a derived cache from the loaded profile id
 - `occupied` grid is rebuilt on load by replaying placed building footprints through
   `mark_occupied_rect`.
 - `distance_to_road` is rebuilt on load by `update_distance_to_road(graph)`.
-- **Migration**: if `zoning_world_grid` table is absent but `zoning_grids` (old edge-local table) is
-  present, load returns an empty grid. The player must repaint zones; old edge-local data cannot be
-  faithfully migrated.
+- old edge-local `zoning_grids` save compatibility was intentionally removed during the profile-grid
+  rewrite; only the world-grid `zoning_world_grid` format is supported now
 
 ---
 
@@ -1031,15 +1032,26 @@ Exit condition:
 
 ### Phase 3: Economy Integration And Replacement
 
-- Implement or align the settled economy-side source values that baseline demand consumes:
-  housing capacity and vacancy, housed-resident presence, affordability, stock stability,
-  utility-service stability, reachable jobs, unhoused tracking, and the daily settlement handoff.
-- Implement the household relocation, eviction, and deterministic household-removal selection rules
-  from [`economy.md`](economy.md).
-- Implement the residential and non-residential viability gates that demand-owned upgrade,
-  downgrade, spawn, and despawn decisions still pass through.
-- Finish the operational-clock and daily-settlement integration so demand reads one stable
-  post-settlement snapshot per day instead of partial hourly state.
+Completed in the current implementation:
+
+- The settled economy-side source values that baseline demand consumes now come from one
+  post-settlement daily snapshot: housing capacity and vacancy, housed-resident presence,
+  affordability, stock stability, utility-service stability, reachable jobs, unhoused tracking,
+  and the daily settlement handoff.
+- Household relocation, eviction, rehousing from `unhoused`, and deterministic household-removal
+  target selection are now implemented from the rules described in [`economy.md`](economy.md).
+- Demand-owned residential building changes now pass through economy-side occupancy and household
+  affordability gates authored in `economy/profiles.toml`.
+- Demand-owned commercial and industrial building changes now pass through economy-side staffing,
+  operating-buffer, and utility-availability gates authored in `economy/profiles.toml`.
+- Industrial building changes now also pass through starter input-coverage and output-headroom
+  gates backed by the live industrial input buffer plus output stock buffer.
+- The operational-clock and daily-settlement handoff now runs in one stable order so demand reads
+  one post-settlement snapshot per day instead of partial hourly state.
+
+Pending to finish Phase 3 fully:
+
+- none currently tracked
 
 Exit condition:
 
@@ -1050,29 +1062,44 @@ Exit condition:
 
 ### Phase 4: Legacy Cleanup And Validation
 
-- Remove the old rectangle-only zoning tool path, the old hardcoded zoning lists, and other
-  obsolete zone-type-only UI or bridge paths that the new zoning system replaced.
-- Remove the remaining broad-`ZoneType` compatibility helpers in the zoning runtime once tests,
-  save-load, and tooling no longer need them, including transitional helper paths such as
-  broad-family paint wrappers and derived broad-family texture exports.
-- Remove or demote any cached broad `zone_type` building fields that are no longer authoritative
-  once the live runtime and save/load path rely fully on `ZoneProfile`-based legality.
-- Remove allocator-owned immigration and other growth-decision leftovers once
-  the new demand path is live.
-- Remove transport-oriented household-admission defaults that no longer match the new demand and
-  economy ownership split.
-- Remove leftover baseline-taxonomy paths that still enumerate deferred `Office` or `Mixed`
-  families in allocator indices, flow-field dirtying, or similar broad-family runtime tables once
-  the shipped baseline remains residential, commercial, and industrial only.
-- Update tests, tools, and benchmarks so they exercise the new profile-driven zoning and
-  demand-owned growth path rather than relying on legacy fallback behavior.
+Completed in the live runtime:
+
+- the old rectangle-only zoning tool path, old hardcoded zoning lists, and obsolete zone-type-only
+  UI/bridge calls are gone from the live zoning tool and overlay flow
+- the remaining broad-`ZoneType` compatibility helpers were deleted from the zoning runtime once
+  tests and save-load no longer needed them
+- save/load and building legality now rely on authoritative `ZoneProfile` runtime ids; the cached
+  broad `zone_type` field remains only as a derived hot-path cache on buildings
+- allocator-owned immigration and other growth-decision leftovers were removed in favor of the
+  demand-owned daily household and building action path
+- ordinary household admission no longer inherits transport-oriented `TRANSIT_IMMIGRATING`
+  defaults; optional border-origin transport visualization is now a separate path
+- deferred `Office` and `Mixed` baseline runtime tables were removed from allocator indices,
+  flow-field dirtying, and other shipped baseline runtime paths
+- tests and save paths now exercise the profile-driven zoning contract directly instead of relying
+  on broad-zone fallback helpers
+
+Intentionally retained after the Phase 4 cleanup:
+
+- `Building.zone_type` was successfully demoted from a legacy quasi-authoritative zoning field into
+  an explicit derived broad-family hot-path cache beside authoritative `zone_profile_runtime_id`.
+  It remains in the runtime by design and is no longer treated as a second legality source or an
+  unresolved legacy seam.
+- `ZoneType::Office` and `ZoneType::Mixed` were intentionally retained only as extension
+  vocabulary in the broad enum and authored asset/profile mapping helpers. They are no longer part
+  of any shipped baseline runtime table and are not treated as unresolved baseline legacy.
+- `TRANSIT_IMMIGRATING` remains only for optional border-origin transport visualization and
+  explicitly-authored exceptional arrivals. Ordinary household admission no longer depends on it.
+
+Pending to finish Phase 4 fully:
+
+- none currently tracked
 
 Exit condition:
 
-- the old zoning toolchain, broad-`ZoneType` compatibility helpers, and old allocator-owned
-  growth decisions are deleted
-- deferred `Office` or `Mixed` baseline leftovers no longer remain in zoning-driven runtime paths
-- tests and tooling no longer depend on removed allocator-owned startup exceptions
+- fulfilled in the live baseline runtime: the old zoning toolchain, broad-`ZoneType`
+  compatibility helpers, allocator-owned growth decisions, and baseline `Office`/`Mixed` runtime
+  leftovers are gone from normal zoning-driven behavior
 
 ### Phase 5: Later Extensions
 
@@ -1083,13 +1110,20 @@ Exit condition:
   setup rather than reintroducing allocator-owned bootstrap logic.
 - Reintroduce office or mixed-use zoning only if their legality, demand, and growth-profile rules
   are specified together as one coherent extension.
+- Keep the broad `ZoneType` enum vocabulary only as extension space for authored future content;
+  baseline runtime tables should stay residential/commercial/industrial unless a full extension
+  ships.
 - Add any extra zoning subcategories beyond the broad initial `low / medium / high` baseline.
 - If later gameplay needs authored zone-to-zone transition permissions, reintroduce explicit
   `upgrade_targets` or `downgrade_targets`-style `ZoneProfile` transition fields only when a real
   runtime system uses them.
-- Split the generic agent-spawn API into separate ordinary housed admission, optional border-origin
-  transport visualization, and test/helper paths so ordinary demand-driven growth does not inherit
-  `TRANSIT_IMMIGRATING` defaults.
+- Keep the optional border-origin `TRANSIT_IMMIGRATING` transport path only for exceptional or
+  explicitly-authored arrivals; ordinary household admission should remain separate from it.
+- If later gameplay wants visible multi-mode household arrival and departure through road, rail,
+  ship, air, or other external links, replace narrow `TRANSIT_IMMIGRATING` with shared
+  `OutsideGateway` support plus `TRANSIT_EXTERNAL_ARRIVAL` and `TRANSIT_EXTERNAL_DEPARTURE` in
+  [`entrance_and_exit.md`](entrance_and_exit.md), while keeping admission and removal counts owned
+  by [`demand.md`](demand.md) and household-side state owned by [`economy.md`](economy.md).
 - Replace the current building-loss displacement fallback with an explicit rehousing, unhoused,
   disaster, or removal contract instead of reusing ordinary entrance-travel states.
 - Continue removing test and helper fixtures that rely on unresolved building manifests or

@@ -87,6 +87,20 @@ fn register_test_asset(
     format!("{pack_id}:{asset_id}")
 }
 
+fn paint_zone_rect(zoning: &mut ZoningSystem, x0: f32, z0: f32, x1: f32, z1: f32, zone: ZoneType) {
+    let runtime_id = zoning
+        .profiles
+        .default_runtime_id_for_zone_type(zone)
+        .expect("tests should only paint baseline zones");
+    zoning.set_zone_profile_rect(x0, z0, x1, z1, runtime_id);
+}
+
+fn zone_at_world(zoning: &ZoningSystem, x: f32, z: f32) -> ZoneType {
+    zoning
+        .profiles
+        .zone_type_for_runtime_id(zoning.get_zone_profile_runtime_id_world(x, z))
+}
+
 #[test]
 fn sqlite_round_trip_preserves_authoritative_state() {
     let config = MapConfig::new(100.0, 100.0, 10.0, 10.0);
@@ -129,7 +143,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     });
     graph.add_lane_connection(n0, edge_id, 0, edge_id, 0);
     let mut zoning = ZoningSystem::new(&config);
-    zoning.set_zone_rect(-20.0, -15.0, 20.0, 15.0, ZoneType::Residential);
+    paint_zone_rect(&mut zoning, -20.0, -15.0, 20.0, 15.0, ZoneType::Residential);
     let mut pollution = PollutionSystem::new(&config);
     pollution.grid.data[0] = 3.0;
     let mut noise = NoiseSystem::new(&config);
@@ -155,6 +169,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         center_y: 0.0,
         width_cells: 3,
         depth_cells: 3,
+        zone_profile_runtime_id: zoning
+            .profiles
+            .default_runtime_id_for_zone_type(ZoneType::Residential)
+            .expect("residential runtime id"),
         zone_type: ZoneType::Residential,
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
@@ -170,6 +188,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         level: 1,
         broken: false,
         stock: 0.0,
+        input_stock: 42.0,
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: false,
@@ -196,6 +215,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         reserved_amount: 2.5,
         reserved_total_cost: 15.0,
         pickup_eta_days: 1,
+        stay_failure_days: 1,
     });
     let mut logistics = ShipmentSystem::new();
     logistics.shipments.push(Shipment {
@@ -346,7 +366,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         VehicleFrontageAccess::BothSides
     );
     assert_eq!(
-        loaded.zoning.get_zone_world(0.0, 0.0),
+        zone_at_world(&loaded.zoning, 0.0, 0.0),
         ZoneType::Residential
     );
     assert_eq!(loaded.allocator.buildings.len(), 1);
@@ -358,6 +378,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.households.households[0].reserved_amount, 2.5);
     assert_eq!(loaded.households.households[0].reserved_total_cost, 15.0);
     assert_eq!(loaded.households.households[0].pickup_eta_days, 1);
+    assert_eq!(loaded.households.households[0].stay_failure_days, 1);
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);
     assert_eq!(loaded.agents.planned_attach_node[0], 0);
@@ -370,6 +391,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.agents.next_replan_time[0], 9.5);
     assert_eq!(loaded.agents.sim_time, agents_sys.sim_time);
     assert_eq!(loaded.allocator.buildings[0].frontage_t, 0.5);
+    assert_eq!(loaded.allocator.buildings[0].input_stock, 42.0);
     assert_eq!(loaded.logistics.shipments.len(), 1);
     assert_eq!(loaded.logistics.shipments[0].destination_building_id, 0);
 }

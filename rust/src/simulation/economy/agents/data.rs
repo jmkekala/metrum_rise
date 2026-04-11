@@ -5,8 +5,10 @@
 //! [`AgentSystem`] uses a Structure-of-Arrays (SoA) layout provided by the `soa_derive` crate.
 //! This enables cache-friendly bulk iteration and ensures all fields are kept in sync.
 
-use super::{MODE_CAR, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING};
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use super::{
+    MODE_CAR, MODE_WALK, TRANSIT_ACCESS_INGRESS, TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING,
+};
+use crate::simulation::buildings::allocator::{BuildingAllocator, baseline_private_zone_slot};
 use crate::simulation::grid::pollution::PollutionSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::graph::RegionGraph;
@@ -175,8 +177,52 @@ impl AgentSystem {
         }
     }
 
-    /// Spawns a single agent arriving at the city as an immigrant.
-    pub fn spawn_agent(
+    /// Spawns one agent already housed inside a building.
+    pub fn spawn_housed_agent(&mut self, home: usize, init_x: f32, init_y: f32) -> usize {
+        let mut rng = rand::thread_rng();
+        let agent = Agent {
+            home_building: home,
+            household_id: usize::MAX,
+            work_building: usize::MAX,
+            pos_x: init_x,
+            pos_y: init_y,
+            activity: 0,
+            transit: TRANSIT_IN_BUILDING,
+            happiness: 50.0,
+            money: 100.0,
+            journey_start_time: self.sim_time,
+            current_building: home,
+            target_building: usize::MAX,
+            planned_target_building: usize::MAX,
+            current_node: u32::MAX,
+            planned_attach_node: u32::MAX,
+            planned_detach_node: u32::MAX,
+            planned_attach_lane_id: u32::MAX,
+            planned_detach_lane_id: u32::MAX,
+            planned_attach_lane_d: 0.0,
+            planned_detach_lane_d: 0.0,
+            access_flags: 0,
+            next_replan_time: 0.0,
+            current_edge: usize::MAX,
+            current_lane_id: usize::MAX,
+            lane_distance: 0.0,
+            speed: 0.0,
+            transit_mode: MODE_WALK,
+            planned_activity: 0,
+            current_path: Vec::new(),
+            current_path_index: 0,
+            has_car: true,
+            vehicle_type: rng.gen_range(0..4) as u8,
+            pedestrian_type: rng.gen_range(0..4) as u8,
+            walk_phase: rng.gen_range(0.0..1.0),
+        };
+
+        self.agents.push(agent);
+        self.agents.len() - 1
+    }
+
+    /// Spawns a single border-origin arrival agent for explicit immigration-visualization paths.
+    pub fn spawn_border_arrival_agent(
         &mut self,
         home: usize,
         _home_node: u32,
@@ -247,15 +293,7 @@ impl AgentSystem {
             let start_node = rng.gen_range(0..graph.node_count()) as u32;
             let start_pos = graph.node(start_node).pos;
 
-            self.spawn_agent(
-                home_idx,
-                u32::MAX,
-                0.0,
-                0.0,
-                start_node,
-                start_pos.x,
-                start_pos.z,
-            );
+            self.spawn_housed_agent(home_idx, start_pos.x, start_pos.z);
         }
     }
 
@@ -368,33 +406,27 @@ impl AgentSystem {
         }
     }
 
-    /// Finds a residential or mixed-use building with available vacancy.
+    /// Finds a residential building with available vacancy.
     /// Uses the allocator's `vacancy_index` for O(1) random selection.
     pub fn find_available_home(&mut self, allocator: &mut BuildingAllocator) -> Option<usize> {
         let mut rng = rand::thread_rng();
-        let target_zones = [ZoneType::Residential, ZoneType::Mixed];
+        let Some(residential_slot) = baseline_private_zone_slot(ZoneType::Residential) else {
+            return None;
+        };
 
-        // Sum total vacancy across residential and mixed
-        let mut total_vacant = 0;
-        for &z in &target_zones {
-            total_vacant += allocator.vacancy_index[z as usize].len();
-        }
+        let total_vacant = allocator.vacancy_index[residential_slot].len();
 
         if total_vacant == 0 {
             return None;
         }
 
         // Pick random building index from the combined vacancy lists
-        let mut pick = rng.gen_range(0..total_vacant);
+        let pick = rng.gen_range(0..total_vacant);
         let mut building_idx = usize::MAX;
 
-        for &z in &target_zones {
-            let list = &allocator.vacancy_index[z as usize];
-            if pick < list.len() {
-                building_idx = list[pick];
-                break;
-            }
-            pick -= list.len();
+        let list = &allocator.vacancy_index[residential_slot];
+        if pick < list.len() {
+            building_idx = list[pick];
         }
 
         if building_idx != usize::MAX {
