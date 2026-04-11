@@ -11,6 +11,23 @@ const PANEL_LEFT_W  := 270
 const PANEL_RIGHT_W := 300
 const PANEL_BOT_H   := 140
 const MAIN_ENTRANCE_PICK_RADIUS_PX := 18.0
+const PLACEMENT_MODES := [
+	{"id": "zoned_private", "label": "Zoned Private"},
+	{"id": "explicit", "label": "Explicit"},
+]
+const SERVICE_CLASSES := [
+	{"id": "none", "label": "None"},
+	{"id": "police", "label": "Police"},
+	{"id": "fire", "label": "Fire"},
+	{"id": "healthcare", "label": "Healthcare"},
+	{"id": "education", "label": "Education"},
+	{"id": "power", "label": "Power"},
+	{"id": "water", "label": "Water"},
+	{"id": "waste", "label": "Waste"},
+	{"id": "transit", "label": "Transit"},
+	{"id": "parks", "label": "Parks"},
+	{"id": "government", "label": "Government"},
+]
 
 const TEMPLATES := [
 	"Flat Studio",
@@ -37,13 +54,18 @@ var _asset_id_edit: LineEdit
 var _display_name_edit: LineEdit
 var _asset_set_edit: LineEdit
 var _tags_edit: LineEdit
+var _placement_mode_btn: OptionButton
 var _zone_type_btn: OptionButton
 var _density_btn: OptionButton
+var _zoned_only_box: VBoxContainer
 var _width_spin: SpinBox
 var _depth_spin: SpinBox
+var _min_zone_width_spin: SpinBox
+var _min_zone_depth_spin: SpinBox
 var _level_spin: SpinBox
 var _residents_spin: SpinBox
 var _workers_spin: SpinBox
+var _service_class_btn: OptionButton
 var _economy_profile_btn: OptionButton
 var _economy_profile_status_lbl: Label
 var _lod_list: ItemList
@@ -96,6 +118,8 @@ var _dragging_main_entrance: bool = false
 var _zoning_profiles: Array[Dictionary] = []
 var _zone_types: Array[String] = []
 var _density_types_by_zone: Dictionary = {}
+var _last_lot_width_cells: int = 1
+var _last_lot_depth_cells: int = 1
 
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -274,29 +298,56 @@ func _build_right_panel(parent: Control) -> void:
 	_asset_id_edit.text_changed.connect(_on_asset_id_text_changed)
 	_display_name_edit = _add_line_edit(vbox, "Display Name", "House")
 	_display_name_edit.text_changed.connect(func(_t): _auto_suggest_asset_id())
-	_asset_set_edit   = _add_line_edit(vbox, "Asset Set (optional)", "")
+	_asset_set_edit   = _add_line_edit(vbox, "Upgrade Family / Asset Set (optional)", "")
 	_tags_edit        = _add_line_edit(vbox, "Tags (comma-separated)", "")
 
 	vbox.add_child(HSeparator.new())
 	_add_label(vbox, "Building", _font_size_section)
 
+	_add_label(vbox, "Placement Mode", _font_size_label)
+	_placement_mode_btn = OptionButton.new()
+	for mode in PLACEMENT_MODES:
+		_placement_mode_btn.add_item(str(mode["label"]))
+		_placement_mode_btn.set_item_metadata(
+			_placement_mode_btn.get_item_count() - 1,
+			str(mode["id"])
+		)
+	_placement_mode_btn.item_selected.connect(_on_placement_mode_selected)
+	vbox.add_child(_placement_mode_btn)
+
+	_zoned_only_box = VBoxContainer.new()
+	vbox.add_child(_zoned_only_box)
+
+	_add_label(_zoned_only_box, "Zone Type", _font_size_label)
 	_zone_type_btn = OptionButton.new()
 	for z in _zone_types:
 		_zone_type_btn.add_item(z.capitalize())
 	_zone_type_btn.item_selected.connect(_on_zone_type_selected)
-	vbox.add_child(_zone_type_btn)
+	_zoned_only_box.add_child(_zone_type_btn)
 
-	_add_label(vbox, "Density", _font_size_label)
+	_add_label(_zoned_only_box, "Density", _font_size_label)
 	_density_btn = OptionButton.new()
 	_density_btn.item_selected.connect(_on_zone_or_lot_changed)
-	vbox.add_child(_density_btn)
+	_zoned_only_box.add_child(_density_btn)
 	_refresh_density_options()
 
 	_width_spin    = _add_spinbox(vbox, "Lot Width (cells)", 1, 20, 2)
 	_depth_spin    = _add_spinbox(vbox, "Lot Depth (cells)", 1, 20, 2)
+	_min_zone_width_spin = _add_spinbox(_zoned_only_box, "Min Zoned Width (cells)", 1, 20, 2)
+	_min_zone_depth_spin = _add_spinbox(_zoned_only_box, "Min Zoned Depth (cells)", 1, 20, 2)
 	_level_spin    = _add_spinbox(vbox, "Level", 1, 255, 1)
 	_residents_spin = _add_spinbox(vbox, "Residents Capacity", 0, 9999, 0)
 	_workers_spin  = _add_spinbox(vbox, "Worker Capacity", 0, 9999, 0)
+	_add_label(vbox, "Service Class", _font_size_label)
+	_service_class_btn = OptionButton.new()
+	for service_class in SERVICE_CLASSES:
+		_service_class_btn.add_item(str(service_class["label"]))
+		_service_class_btn.set_item_metadata(
+			_service_class_btn.get_item_count() - 1,
+			str(service_class["id"])
+		)
+	_service_class_btn.item_selected.connect(_on_service_class_selected)
+	vbox.add_child(_service_class_btn)
 	_add_label(vbox, "Economy Profile", _font_size_label)
 	var economy_row := HBoxContainer.new()
 	_economy_profile_btn = OptionButton.new()
@@ -319,6 +370,11 @@ func _build_right_panel(parent: Control) -> void:
 
 	_width_spin.value_changed.connect(func(_v): _on_zone_or_lot_changed(0))
 	_depth_spin.value_changed.connect(func(_v): _on_zone_or_lot_changed(0))
+	_last_lot_width_cells = int(_width_spin.value)
+	_last_lot_depth_cells = int(_depth_spin.value)
+	_min_zone_width_spin.value = _width_spin.value
+	_min_zone_depth_spin.value = _depth_spin.value
+	_update_building_mode_visibility()
 
 	vbox.add_child(HSeparator.new())
 	_add_label(vbox, "Preview Scale", _font_size_section)
@@ -538,8 +594,12 @@ func _populate_inspector_from(data: Dictionary) -> void:
 	_display_name_edit.text = data.get("display_name", "")
 	_asset_set_edit.text    = data.get("asset_set", "") if data.get("asset_set") != null else ""
 	_tags_edit.text         = ", ".join(data.get("tags", []))
-	_width_spin.value       = data.get("lot_width_cells", 1)
-	_depth_spin.value       = data.get("lot_depth_cells", 1)
+	var lot_width := int(data.get("lot_width_cells", 1))
+	var lot_depth := int(data.get("lot_depth_cells", 1))
+	_width_spin.value       = lot_width
+	_depth_spin.value       = lot_depth
+	_last_lot_width_cells = lot_width
+	_last_lot_depth_cells = lot_depth
 	_level_spin.value       = data.get("level", 1)
 	_residents_spin.value   = data.get("residents_capacity", 0) if data.get("residents_capacity") != null else 0
 	_workers_spin.value     = data.get("worker_capacity", 0) if data.get("worker_capacity") != null else 0
@@ -551,13 +611,29 @@ func _populate_inspector_from(data: Dictionary) -> void:
 	else:
 		_pivot_offset = Vector3.ZERO
 
-	var zt: String = data.get("zone_type", "residential")
+	_set_placement_mode_selection(str(data.get("placement_mode", "zoned_private")))
+	_set_service_class_selection(str(data.get("service_class", "none")))
+
+	var zt_value = data.get("zone_type", null)
+	var zt: String = str(zt_value if zt_value != null else "residential")
 	var zi := _zone_types.find(zt)
 	if zi >= 0:
 		_zone_type_btn.selected = zi
 
-	var dt: String = data.get("density", "low")
+	var dt_value = data.get("density", null)
+	var dt: String = str(dt_value if dt_value != null else "low")
 	_refresh_density_options(dt)
+	_min_zone_width_spin.value = (
+		int(data.get("min_zone_width_cells"))
+		if data.get("min_zone_width_cells") != null
+		else lot_width
+	)
+	_min_zone_depth_spin.value = (
+		int(data.get("min_zone_depth_cells"))
+		if data.get("min_zone_depth_cells") != null
+		else lot_depth
+	)
+	_update_building_mode_visibility()
 	_set_economy_profile_selection(data.get("economy_profile", "") if data.get("economy_profile") != null else "")
 	_extra_anchors.clear()
 
@@ -605,6 +681,7 @@ func _populate_inspector_from(data: Dictionary) -> void:
 		_lod_source_paths.append(native)
 
 	_preview.set_lot_size(int(_width_spin.value), int(_depth_spin.value))
+	_update_economy_profile_status()
 
 	# Load LOD0 mesh into the preview if the file exists on disk.
 	if lods.size() > 0 and not pack_id.is_empty():
@@ -623,6 +700,22 @@ func _populate_inspector_from(data: Dictionary) -> void:
 # Lot / zone change
 # ──────────────────────────────────────────────────────────────────────────────
 
+func _selected_placement_mode() -> String:
+	if not _placement_mode_btn or _placement_mode_btn.get_item_count() == 0:
+		return "zoned_private"
+	var idx := clampi(_placement_mode_btn.selected, 0, _placement_mode_btn.get_item_count() - 1)
+	return str(_placement_mode_btn.get_item_metadata(idx)).strip_edges()
+
+func _set_placement_mode_selection(placement_mode: String) -> void:
+	var target := placement_mode.strip_edges()
+	if target != "explicit":
+		target = "zoned_private"
+	for i in range(_placement_mode_btn.get_item_count()):
+		if str(_placement_mode_btn.get_item_metadata(i)).strip_edges() == target:
+			_placement_mode_btn.select(i)
+			return
+	_placement_mode_btn.select(0)
+
 func _selected_zone_type() -> String:
 	if not _zone_type_btn or _zone_type_btn.get_item_count() == 0:
 		return "residential"
@@ -633,6 +726,27 @@ func _selected_density() -> String:
 	if not _density_btn or _density_btn.get_item_count() == 0:
 		return "low"
 	return _density_btn.get_item_text(_density_btn.selected).to_lower()
+
+func _selected_service_class() -> String:
+	if not _service_class_btn or _service_class_btn.get_item_count() == 0:
+		return "none"
+	var idx := clampi(_service_class_btn.selected, 0, _service_class_btn.get_item_count() - 1)
+	return str(_service_class_btn.get_item_metadata(idx)).strip_edges()
+
+func _set_service_class_selection(service_class: String) -> void:
+	var target := service_class.strip_edges()
+	if target.is_empty():
+		target = "none"
+	for i in range(_service_class_btn.get_item_count()):
+		if str(_service_class_btn.get_item_metadata(i)).strip_edges() == target:
+			_service_class_btn.select(i)
+			return
+	_service_class_btn.select(0)
+
+func _update_building_mode_visibility() -> void:
+	var is_zoned_private := _selected_placement_mode() == "zoned_private"
+	if _zoned_only_box:
+		_zoned_only_box.visible = is_zoned_private
 
 func _refresh_density_options(preferred_density: String = "") -> void:
 	if not _density_btn:
@@ -656,7 +770,29 @@ func _on_zone_type_selected(_idx: int) -> void:
 	_auto_suggest_asset_id()
 	_on_zone_or_lot_changed(0)
 
+func _on_placement_mode_selected(_idx: int) -> void:
+	_update_building_mode_visibility()
+	_auto_suggest_asset_id()
+	_on_zone_or_lot_changed(0)
+
+func _on_service_class_selected(_idx: int) -> void:
+	_auto_suggest_asset_id()
+	_update_economy_profile_status()
+
+func _sync_min_zone_defaults_with_lot_change() -> void:
+	if not _min_zone_width_spin or not _min_zone_depth_spin:
+		return
+	var current_width := int(_width_spin.value)
+	var current_depth := int(_depth_spin.value)
+	if int(_min_zone_width_spin.value) == _last_lot_width_cells:
+		_min_zone_width_spin.value = current_width
+	if int(_min_zone_depth_spin.value) == _last_lot_depth_cells:
+		_min_zone_depth_spin.value = current_depth
+	_last_lot_width_cells = current_width
+	_last_lot_depth_cells = current_depth
+
 func _on_zone_or_lot_changed(_idx) -> void:
+	_sync_min_zone_defaults_with_lot_change()
 	_preview.set_lot_size(int(_width_spin.value), int(_depth_spin.value))
 	if _main_entrance_auto:
 		_set_main_entrance_position(_default_main_entrance_position(), true)
@@ -786,6 +922,7 @@ func _update_economy_profile_status() -> void:
 		return
 
 	var selected_id := _selected_economy_profile_id()
+	var placement_mode := _selected_placement_mode()
 	var zone_type := _selected_zone_type()
 	if not _economy_catalog_loaded:
 		var msg := "Economy catalog unavailable."
@@ -794,6 +931,26 @@ func _update_economy_profile_status() -> void:
 		if not selected_id.is_empty():
 			msg += " Existing selection will be preserved on export."
 		_set_economy_profile_status(msg, Color(0.95, 0.78, 0.38))
+		return
+
+	if not _unresolved_economy_profile_id.is_empty() and selected_id == _unresolved_economy_profile_id:
+		_set_economy_profile_status(
+			"Selected profile is missing from the current economy catalog and will be exported unchanged.",
+			Color(0.95, 0.78, 0.38)
+		)
+		return
+
+	if placement_mode == "explicit":
+		if selected_id.is_empty():
+			var explicit_msg := "Explicit buildings are outside zoned-private growth. Economy profile is optional."
+			if _economy_catalog_warning_count > 0:
+				explicit_msg += " Catalog has %d validation warning(s)." % _economy_catalog_warning_count
+			_set_economy_profile_status(explicit_msg, Color(0.72, 0.82, 0.92))
+			return
+		var explicit_selected_msg := "Selected economy profile: %s" % selected_id
+		if _economy_catalog_warning_count > 0:
+			explicit_selected_msg += " (catalog has %d validation warning(s))" % _economy_catalog_warning_count
+		_set_economy_profile_status(explicit_selected_msg, Color(0.72, 0.92, 0.72))
 		return
 
 	if zone_type == "residential":
@@ -805,13 +962,6 @@ func _update_economy_profile_status() -> void:
 			return
 		_set_economy_profile_status(
 			"Residential buildings usually do not require an economy profile. Leave this unassigned unless a later system explicitly needs one.",
-			Color(0.95, 0.78, 0.38)
-		)
-		return
-
-	if not _unresolved_economy_profile_id.is_empty() and selected_id == _unresolved_economy_profile_id:
-		_set_economy_profile_status(
-			"Selected profile is missing from the current economy catalog and will be exported unchanged.",
 			Color(0.95, 0.78, 0.38)
 		)
 		return
@@ -839,7 +989,13 @@ func _set_economy_profile_status(message: String, color: Color) -> void:
 func _auto_suggest_asset_id() -> void:
 	if not _asset_id_auto:
 		return
-	var zone := _selected_zone_type()
+	var prefix := "explicit"
+	if _selected_placement_mode() == "zoned_private":
+		prefix = _selected_zone_type()
+	else:
+		var service_class := _selected_service_class()
+		if service_class != "none":
+			prefix = service_class
 	var name_slug: String = _display_name_edit.text.strip_edges().to_lower()
 	name_slug = name_slug.replace(" ", "_")
 	var clean := ""
@@ -851,7 +1007,7 @@ func _auto_suggest_asset_id() -> void:
 		clean = "unnamed"
 	# Set text without triggering the manual-edit flag.
 	_asset_id_edit.text_changed.disconnect(_on_asset_id_text_changed)
-	_asset_id_edit.text = "building.%s.%s" % [zone, clean]
+	_asset_id_edit.text = "building.%s.%s" % [prefix, clean]
 	_asset_id_edit.text_changed.connect(_on_asset_id_text_changed)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1002,6 +1158,12 @@ func _on_export_pressed() -> void:
 
 	var asset_set_val = _asset_set_edit.text.strip_edges()
 	var economy_profile_id := _selected_economy_profile_id()
+	var placement_mode := _selected_placement_mode()
+	var service_class := _selected_service_class()
+	var lot_width := int(_width_spin.value)
+	var lot_depth := int(_depth_spin.value)
+	var min_zone_width := int(_min_zone_width_spin.value)
+	var min_zone_depth := int(_min_zone_depth_spin.value)
 
 	var params := {
 		"pack_id":          pack_id,
@@ -1012,11 +1174,15 @@ func _on_export_pressed() -> void:
 		"display_name":     _display_name_edit.text.strip_edges(),
 		"asset_set":        asset_set_val if not asset_set_val.is_empty() else null,
 		"tags":             tags,
-		"zone_type":        _selected_zone_type(),
-		"density":          _selected_density(),
-		"lot_width_cells":   int(_width_spin.value),
-		"lot_depth_cells":   int(_depth_spin.value),
+		"placement_mode":   placement_mode,
+		"zone_type":        _selected_zone_type() if placement_mode == "zoned_private" else null,
+		"density":          _selected_density() if placement_mode == "zoned_private" else null,
+		"lot_width_cells":   lot_width,
+		"lot_depth_cells":   lot_depth,
+		"min_zone_width_cells": min_zone_width if placement_mode == "zoned_private" and min_zone_width != lot_width else null,
+		"min_zone_depth_cells": min_zone_depth if placement_mode == "zoned_private" and min_zone_depth != lot_depth else null,
 		"level":             int(_level_spin.value),
+		"service_class":     service_class if service_class != "none" else null,
 		"economy_profile":   economy_profile_id if not economy_profile_id.is_empty() else null,
 		"preview_scale":     _preview_scale_spin.value,
 		"pivot_offset":      [_pivot_offset.x, _pivot_offset.y, _pivot_offset.z],
@@ -1312,6 +1478,9 @@ func _apply_scale_fraction(fraction: float) -> void:
 
 func _suggest_capacity() -> void:
 	if _mesh_aabb.size.length() < 0.001:
+		return
+	if _selected_placement_mode() != "zoned_private":
+		_log("[color=yellow]Capacity suggestion currently supports zoned private buildings only.[/color]")
 		return
 	var s         := _preview_scale_spin.value
 	var sw        := _mesh_aabb.size.x * s

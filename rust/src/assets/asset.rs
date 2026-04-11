@@ -78,20 +78,36 @@ pub enum ZoneClass {
     Mixed,
 }
 
+/// Placement contract for one building asset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlacementMode {
+    /// Ordinary private building that participates in painted zoning legality and growth.
+    ZonedPrivate,
+    /// Explicitly placed building that stays outside painted zoning legality.
+    Explicit,
+}
+
 // ── Building ──────────────────────────────────────────────────────────────────
 
-/// Class-specific data for a zoned building asset.
+/// Class-specific data for a building asset.
 #[derive(Debug, Clone, Deserialize)]
 pub struct BuildingData {
-    /// Land-use category this building satisfies when placed.
-    pub zone_type: ZoneClass,
-    /// Density tier: `low`, `medium`, or `high`. Controls placement eligibility in density-zoned cells.
-    #[serde(default = "default_density")]
-    pub density: String,
+    /// How this building enters the world.
+    #[serde(default = "default_placement_mode")]
+    pub placement_mode: PlacementMode,
+    /// Land-use category this building satisfies when placed through painted zoning.
+    pub zone_type: Option<ZoneClass>,
+    /// Density tier for painted-zoning legality.
+    pub density: Option<String>,
     /// Footprint width in zoning grid cells (along the road).
     pub lot_width_cells: u16,
     /// Footprint depth in zoning grid cells (away from the road).
     pub lot_depth_cells: u16,
+    /// Minimum zoned width accepted for this building. Defaults to `lot_width_cells`.
+    pub min_zone_width_cells: Option<u16>,
+    /// Minimum zoned depth accepted for this building. Defaults to `lot_depth_cells`.
+    pub min_zone_depth_cells: Option<u16>,
     /// Growth tier within the asset family identified by `asset_set`.
     /// `1` = base tier (default). Buildings without `asset_set` ignore this field.
     #[serde(default = "default_level")]
@@ -108,11 +124,34 @@ pub struct BuildingData {
     pub preview_scale: Option<f32>,
 }
 
+fn default_placement_mode() -> PlacementMode {
+    PlacementMode::ZonedPrivate
+}
+
 fn default_level() -> u8 {
     1
 }
-fn default_density() -> String {
-    "low".to_string()
+
+impl BuildingData {
+    /// Returns `true` when this building participates in painted zoning.
+    pub fn is_zoned_private(&self) -> bool {
+        self.placement_mode == PlacementMode::ZonedPrivate
+    }
+
+    /// Returns the authored zoning density key when present.
+    pub fn density_key(&self) -> Option<&str> {
+        self.density.as_deref()
+    }
+
+    /// Returns the minimum zoned width for this building.
+    pub fn effective_min_zone_width_cells(&self) -> u16 {
+        self.min_zone_width_cells.unwrap_or(self.lot_width_cells)
+    }
+
+    /// Returns the minimum zoned depth for this building.
+    pub fn effective_min_zone_depth_cells(&self) -> u16 {
+        self.min_zone_depth_cells.unwrap_or(self.lot_depth_cells)
+    }
 }
 
 // ── Prop ────────────────────────────────────────────────────���─────────────────
@@ -262,7 +301,7 @@ pub struct CharacterData {
 /// The resolved asset class after validating that exactly one class table is present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AssetClass {
-    /// Zoned building.
+    /// Building.
     Building,
     /// Prop or environment detail.
     Prop,
@@ -307,7 +346,7 @@ pub struct AssetManifest {
     pub pivot_offset: Option<[f32; 3]>,
 
     // ── Class-specific subsections (exactly one must be Some after parsing) ──
-    /// Populated when this is a zoned building asset.
+    /// Populated when this is a building asset.
     pub building: Option<BuildingData>,
     /// Populated when this is a prop or environment detail asset.
     pub prop: Option<PropData>,
@@ -390,6 +429,72 @@ impl AssetManifest {
                     self.asset_id
                 )));
             }
+            if b.effective_min_zone_width_cells() == 0 || b.effective_min_zone_depth_cells() == 0 {
+                return Err(ManifestError::Validation(format!(
+                    "asset_id '{}': min_zone_width_cells and min_zone_depth_cells must be > 0",
+                    self.asset_id
+                )));
+            }
+            match b.placement_mode {
+                PlacementMode::ZonedPrivate => {
+                    let Some(zone_type) = b.zone_type else {
+                        return Err(ManifestError::Validation(format!(
+                            "asset_id '{}': zoned_private buildings require zone_type",
+                            self.asset_id
+                        )));
+                    };
+                    let Some(density) = b.density_key() else {
+                        return Err(ManifestError::Validation(format!(
+                            "asset_id '{}': zoned_private buildings require density",
+                            self.asset_id
+                        )));
+                    };
+                    if density.trim().is_empty() {
+                        return Err(ManifestError::Validation(format!(
+                            "asset_id '{}': density must not be empty",
+                            self.asset_id
+                        )));
+                    }
+                    match zone_type {
+                        ZoneClass::Residential => {
+                            if b.residents_capacity.is_none() {
+                                return Err(ManifestError::Validation(format!(
+                                    "asset_id '{}': residential zoned_private buildings require residents_capacity",
+                                    self.asset_id
+                                )));
+                            }
+                            if b.worker_capacity.is_some() {
+                                return Err(ManifestError::Validation(format!(
+                                    "asset_id '{}': residential zoned_private buildings must not use worker_capacity",
+                                    self.asset_id
+                                )));
+                            }
+                        }
+                        ZoneClass::Commercial | ZoneClass::Industrial => {
+                            if b.worker_capacity.is_none() {
+                                return Err(ManifestError::Validation(format!(
+                                    "asset_id '{}': commercial and industrial zoned_private buildings require worker_capacity",
+                                    self.asset_id
+                                )));
+                            }
+                        }
+                        ZoneClass::Office | ZoneClass::Mixed => {
+                            return Err(ManifestError::Validation(format!(
+                                "asset_id '{}': office and mixed are outside the baseline shipped building contract",
+                                self.asset_id
+                            )));
+                        }
+                    }
+                }
+                PlacementMode::Explicit => {
+                    if b.zone_type.is_some() || b.density.is_some() {
+                        return Err(ManifestError::Validation(format!(
+                            "asset_id '{}': explicit buildings must not declare zone_type or density",
+                            self.asset_id
+                        )));
+                    }
+                }
+            }
 
             let mut main_entrance_count = 0usize;
             for anchor in &self.anchors {
@@ -452,7 +557,9 @@ tags = ["residential", "corner"]
 asset_set = "lowrise_residential"
 
 [building]
+placement_mode = "zoned_private"
 zone_type = "residential"
+density = "low"
 lot_width_cells = 3
 lot_depth_cells = 3
 residents_capacity = 12
@@ -483,7 +590,8 @@ distance_max_m = 600.0
         assert_eq!(m.display_name, "Low-rise Corner Building");
         assert_eq!(m.class().unwrap(), AssetClass::Building);
         let b = m.building.as_ref().unwrap();
-        assert_eq!(b.zone_type, ZoneClass::Residential);
+        assert_eq!(b.zone_type, Some(ZoneClass::Residential));
+        assert_eq!(b.placement_mode, PlacementMode::ZonedPrivate);
         assert_eq!(b.lot_width_cells, 3);
         assert_eq!(b.lot_depth_cells, 3);
         assert_eq!(b.residents_capacity, Some(12));
@@ -509,7 +617,9 @@ distance_max_m = 600.0
 asset_id = "building.residential.bad"
 display_name = "Bad"
 [building]
+placement_mode = "zoned_private"
 zone_type = "residential"
+density = "low"
 lot_width_cells = 0
 lot_depth_cells = 3
 "#;
@@ -522,7 +632,9 @@ lot_depth_cells = 3
 asset_id = "building.residential.bad"
 display_name = "Bad"
 [building]
+placement_mode = "zoned_private"
 zone_type = "residential"
+density = "low"
 lot_width_cells = 2
 lot_depth_cells = 2
 "#;
@@ -535,7 +647,9 @@ lot_depth_cells = 2
 asset_id = "building.residential.bad"
 display_name = "Bad"
 [building]
+placement_mode = "zoned_private"
 zone_type = "residential"
+density = "low"
 lot_width_cells = 2
 lot_depth_cells = 2
 
@@ -560,7 +674,9 @@ forward = [0.0, 0.0, -1.0]
 asset_id = "building.residential.bad"
 display_name = "Bad"
 [building]
+placement_mode = "zoned_private"
 zone_type = "residential"
+density = "low"
 lot_width_cells = 2
 lot_depth_cells = 2
 
@@ -720,7 +836,9 @@ display_name = "No Class"
 asset_id = "building.residential.two_classes"
 display_name = "Two Classes"
 [building]
+placement_mode = "zoned_private"
 zone_type = "residential"
+density = "low"
 lot_width_cells = 3
 lot_depth_cells = 3
 [prop]
@@ -728,6 +846,54 @@ category = "street_furniture"
 bounding_size_m = [1.0, 1.0, 1.0]
 snap_mode = "free"
 terrain_behavior = "flat_ground"
+"#;
+        assert!(AssetManifest::from_str(toml).is_err());
+    }
+
+    #[test]
+    fn explicit_building_manifest_round_trip() {
+        let toml = r#"
+asset_id = "building.service.water_tower"
+display_name = "Water Tower"
+
+[building]
+placement_mode = "explicit"
+lot_width_cells = 4
+lot_depth_cells = 4
+service_class = "water"
+worker_capacity = 6
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, 2.0]
+forward = [0.0, 0.0, 1.0]
+"#;
+        let manifest = AssetManifest::from_str(toml).expect("explicit parse failed");
+        let building = manifest.building.as_ref().unwrap();
+        assert_eq!(building.placement_mode, PlacementMode::Explicit);
+        assert_eq!(building.zone_type, None);
+        assert_eq!(building.density, None);
+        assert_eq!(building.service_class.as_deref(), Some("water"));
+    }
+
+    #[test]
+    fn explicit_building_rejects_zone_fields() {
+        let toml = r#"
+asset_id = "building.service.bad_explicit"
+display_name = "Bad Explicit"
+[building]
+placement_mode = "explicit"
+zone_type = "residential"
+density = "low"
+lot_width_cells = 2
+lot_depth_cells = 2
+
+[[anchors]]
+type = "entrance"
+name = "main"
+position = [0.0, 0.0, 1.0]
+forward = [0.0, 0.0, 1.0]
 "#;
         assert!(AssetManifest::from_str(toml).is_err());
     }

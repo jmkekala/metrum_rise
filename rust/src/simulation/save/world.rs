@@ -56,8 +56,17 @@ pub(super) fn save_world(
 
     // Demand
     tx.execute(
-        "INSERT INTO demand_state(residential, commercial, industrial) VALUES (?1, ?2, ?3)",
-        params![demand.residential, demand.commercial, demand.industrial],
+        "INSERT INTO demand_state(residential, commercial, industrial, households_to_admit_today, households_to_remove_today, startup_support_factor, admission_action_credit, removal_action_credit) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            demand.residential,
+            demand.commercial,
+            demand.industrial,
+            i64::from(demand.households_to_admit_today),
+            i64::from(demand.households_to_remove_today),
+            demand.startup_support_factor,
+            demand.admission_action_credit,
+            demand.removal_action_credit
+        ],
     )?;
 
     // Grids

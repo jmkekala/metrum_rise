@@ -5,7 +5,7 @@ use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 15;
+pub const SAVE_VERSION: i64 = 16;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -49,7 +49,12 @@ CREATE TABLE water_sources(
 CREATE TABLE demand_state(
     residential REAL NOT NULL,
     commercial REAL NOT NULL,
-    industrial REAL NOT NULL
+    industrial REAL NOT NULL,
+    households_to_admit_today INTEGER NOT NULL,
+    households_to_remove_today INTEGER NOT NULL,
+    startup_support_factor REAL NOT NULL,
+    admission_action_credit REAL NOT NULL,
+    removal_action_credit REAL NOT NULL
 );
 CREATE TABLE pollution_state(
     width INTEGER NOT NULL,

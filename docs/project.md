@@ -17,7 +17,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
 - **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
 - **Economy foundation**: household records, building-centric daily economy, freight jobs, `OWA` fallback, and exact entrance-side freight ETA are live. See [`economy.md`](economy.md).
-- **Demand foundation**: the live `DemandSystem` rebuilds coarse pressure telemetry from runtime state, while [`demand.md`](demand.md) now defines the target ownership split for immigration and displacement cleanup, a shipped default `GrowthProfile` registry for residential/commercial/industrial growth, and deterministic baseline `DemandChannel` formulas for those three families.
+- **Demand foundation**: the live `DemandSystem` now loads the shipped demand tuning file, computes the baseline residential/commercial/industrial `DemandChannel`s plus startup support and daily household-admission/removal outputs, and drives ordinary household admission through a demand-owned daily count. The remaining building-change and removal sides are still follow-up work described in [`demand.md`](demand.md).
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live.
 
 ## Current Priorities
@@ -54,6 +54,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - The legacy numbered backlog and bug table were preserved in the archive rather than kept half-live in the dashboard.
 - `rust/benches/agent_benchmark.rs` now includes access-phase microbenchmarks for `ACCESS_EGRESS` and `ACCESS_INGRESS`, so old Criterion result history is no longer strictly apples-to-apples with the updated suite.
 - The zoning and asset-authoring foundation now shares one shipped profile registry, so the live zoning tool, overlay, save/load path, allocator legality checks, and asset-editor zoning choices no longer depend on separate hardcoded category lists.
+- The remaining broad-`ZoneType` zoning helpers are no longer part of normal runtime behavior; live zoning now relies on profile-runtime ids end to end, with broad-family helpers kept only for migration-oriented test coverage.
 
 ## Reference
 

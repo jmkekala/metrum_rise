@@ -9,13 +9,8 @@ use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneSystem;
-use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
 
-const IMMIGRATION_BASE_INFLOW: f32 = 1.0;
-const MAX_IMMIGRANT_HOUSEHOLDS_PER_DAY: usize = 4;
-const HOME_PICK_SAMPLE_ATTEMPTS: usize = 8;
-const PLAYER_STARTUP_POPULATION_TARGET: usize = 8;
 const REZONE_GRACE_DAYS: u8 = 3;
 
 impl BuildingAllocator {
@@ -47,80 +42,85 @@ impl BuildingAllocator {
                     } else {
                         match self.registry.get(&b.asset_id) {
                             Some(entry) => match entry.manifest.building.as_ref() {
-                                Some(asset_building) => {
-                                    let expected_zone_type =
-                                        zone_class_to_zone_type(asset_building.zone_type);
-                                    let edge = graph.edge(b.edge_idx);
-                                    let edge_len = edge.physical_length;
-                                    let cells_long = (edge_len / zone_cell_m).floor() as usize;
-                                    if cells_long == 0
-                                        || b.cell_x + b.width_cells as usize > cells_long
-                                    {
-                                        None
-                                    } else {
-                                        let curb_dist =
-                                            edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
-                                        let side = b.side as f32;
-                                        let mut footprint_profile_runtime_id = 0_u16;
-                                        let mut compatible = true;
-                                        'profile_check: for dx in 0..b.width_cells as usize {
-                                            let t_dx = (b.cell_x as f32 + dx as f32 + 0.5)
-                                                * zone_cell_m
-                                                / edge_len;
-                                            let wp =
-                                                Self::sample_pos_on_edge(graph, b.edge_idx, t_dx);
-                                            let tangent = Self::sample_tangent_on_edge(
-                                                graph, b.edge_idx, t_dx,
-                                            );
-                                            let normal = Vector2::new(tangent.y, -tangent.x) * side;
-                                            for dy in 0..b.depth_cells as usize {
-                                                let cell_center = wp
-                                                    + normal
-                                                        * (curb_dist
-                                                            + (dy as f32 + 0.5) * zone_cell_m);
-                                                let runtime_id = zoning
-                                                    .get_zone_profile_runtime_id_world(
-                                                        cell_center.x,
-                                                        cell_center.y,
-                                                    );
-                                                if footprint_profile_runtime_id == 0 {
-                                                    if runtime_id == 0
-                                                        || !zoning.profiles.asset_is_legal(
-                                                            runtime_id,
-                                                            expected_zone_type,
-                                                            &asset_building.density,
-                                                            &entry.manifest.tags,
-                                                        )
-                                                    {
-                                                        compatible = false;
-                                                        break 'profile_check;
-                                                    }
-                                                    footprint_profile_runtime_id = runtime_id;
-                                                } else if runtime_id != footprint_profile_runtime_id
+                                Some(asset_building) if asset_building.is_zoned_private() => {
+                                    match (asset_building.zone_type, asset_building.density_key()) {
+                                        (Some(asset_zone_class), Some(asset_density)) => {
+                                            let expected_zone_type =
+                                                zone_class_to_zone_type(asset_zone_class);
+                                            let edge = graph.edge(b.edge_idx);
+                                            let edge_len = edge.physical_length;
+                                            let cells_long =
+                                                (edge_len / zone_cell_m).floor() as usize;
+                                            if cells_long == 0
+                                                || b.cell_x + b.width_cells as usize > cells_long
+                                            {
+                                                None
+                                            } else {
+                                                let curb_dist = edge.width * 0.5
+                                                    + crate::config::SIDEWALK_WIDTH;
+                                                let side = b.side as f32;
+                                                let mut footprint_profile_runtime_id = 0_u16;
+                                                let mut compatible = true;
+                                                'profile_check: for dx in 0..b.width_cells as usize
                                                 {
-                                                    compatible = false;
-                                                    break 'profile_check;
+                                                    let t_dx = (b.cell_x as f32 + dx as f32 + 0.5)
+                                                        * zone_cell_m
+                                                        / edge_len;
+                                                    let wp = Self::sample_pos_on_edge(
+                                                        graph, b.edge_idx, t_dx,
+                                                    );
+                                                    let tangent = Self::sample_tangent_on_edge(
+                                                        graph, b.edge_idx, t_dx,
+                                                    );
+                                                    let normal =
+                                                        Vector2::new(tangent.y, -tangent.x) * side;
+                                                    for dy in 0..b.depth_cells as usize {
+                                                        let cell_center = wp
+                                                            + normal
+                                                                * (curb_dist
+                                                                    + (dy as f32 + 0.5)
+                                                                        * zone_cell_m);
+                                                        let runtime_id = zoning
+                                                            .get_zone_profile_runtime_id_world(
+                                                                cell_center.x,
+                                                                cell_center.y,
+                                                            );
+                                                        if footprint_profile_runtime_id == 0 {
+                                                            if runtime_id == 0
+                                                                || !zoning.profiles.asset_is_legal(
+                                                                    runtime_id,
+                                                                    expected_zone_type,
+                                                                    asset_density,
+                                                                    &entry.manifest.tags,
+                                                                )
+                                                            {
+                                                                compatible = false;
+                                                                break 'profile_check;
+                                                            }
+                                                            footprint_profile_runtime_id =
+                                                                runtime_id;
+                                                        } else if runtime_id
+                                                            != footprint_profile_runtime_id
+                                                        {
+                                                            compatible = false;
+                                                            break 'profile_check;
+                                                        }
+                                                    }
                                                 }
+                                                Some(compatible)
                                             }
                                         }
-                                        Some(compatible)
+                                        _ => None,
                                     }
                                 }
-                                None => {
-                                    let current_zone =
-                                        zoning.get_zone_world(b.center_x, b.center_y);
-                                    Some(current_zone == b.zone_type)
-                                }
+                                Some(_) => Some(true),
+                                None => None,
                             },
-                            None => {
-                                let current_zone = zoning.get_zone_world(b.center_x, b.center_y);
-                                Some(current_zone == b.zone_type)
-                            }
+                            None => None,
                         }
                     }
                 }
             };
-
             let remove = match compatibility {
                 None => true,
                 Some(true) => {
@@ -196,155 +196,29 @@ impl BuildingAllocator {
         }
     }
 
-    /// Admits immigrant households through external border connectivity and assigns them to homes.
-    pub(super) fn spawn_immigrants(
+    /// Admits the already-decided demand-owned household count and assigns those households to
+    /// claimed homes.
+    pub(super) fn admit_households_from_demand(
         &mut self,
+        households_to_spawn: usize,
         agents: &mut AgentSystem,
         households: &mut HouseholdSystem,
-        graph: &RegionGraph,
     ) {
-        let vacant_resident_slots: usize = self
-            .buildings
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| b.zone_type == ZoneType::Residential || b.zone_type == ZoneType::Mixed)
-            .fold(0, |acc, (idx, b)| {
-                if b.broken {
-                    return acc;
-                }
-                let cap = self.resident_capacity(idx);
-                let cap = if cap == 0 { 6 } else { cap } as usize;
-                acc + cap.saturating_sub(b.occupancy as usize)
-            });
-
-        if vacant_resident_slots == 0 {
-            debug_log!("economy", "immigration blocked: no vacant resident slots");
-            return;
-        }
-
-        let border_nodes: Vec<u32> = graph
-            .nodes()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, node)| {
-                if node.node_type != NodeType::Border {
-                    return None;
-                }
-                let connected = graph
-                    .node_adjacency(i as u32)
-                    .iter()
-                    .any(|&e| !graph.edge(e).deleted);
-                if connected { Some(i as u32) } else { None }
-            })
-            .collect();
-        if border_nodes.is_empty() {
-            debug_log!("economy", "immigration blocked: no connected Border nodes");
-            return;
-        }
-
-        let resident_count: f32 = households
-            .households
-            .iter()
-            .filter(|household| household.member_count > 0)
-            .map(|household| household.member_count as f32)
-            .sum();
-        let open_job_slots: f32 = self
-            .buildings
-            .iter()
-            .enumerate()
-            .filter(|(_, b)| {
-                !b.broken
-                    && matches!(
-                        b.zone_type,
-                        ZoneType::Commercial
-                            | ZoneType::Industrial
-                            | ZoneType::Office
-                            | ZoneType::Mixed
-                    )
-            })
-            .map(|(idx, building)| {
-                self.worker_capacity(idx)
-                    .saturating_sub(building.worker_count) as f32
-            })
-            .sum();
-
-        let housing_factor = (vacant_resident_slots as f32
-            / (vacant_resident_slots as f32 + resident_count.max(1.0)))
-        .clamp(0.0, 1.0);
-        let job_factor = if resident_count == 0.0 {
-            1.0
-        } else {
-            (open_job_slots / (open_job_slots + DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as f32))
-                .clamp(0.0, 1.0)
-        };
-
-        let mut stock_stability_sum = 0.0;
-        let mut utility_stability_sum = 0.0;
-        let mut active_households = 0.0;
-        for household in &households.households {
-            if household.member_count == 0 {
-                continue;
-            }
-            stock_stability_sum += (household.stock_days / 3.0).clamp(0.0, 1.0);
-            let utility_ok = household.home_building_id < self.buildings.len()
-                && self.buildings[household.home_building_id].utility_service_available;
-            utility_stability_sum += if utility_ok { 1.0 } else { 0.0 };
-            active_households += 1.0;
-        }
-        let city_stability_factor = if active_households > 0.0 {
-            (0.6 * (stock_stability_sum / active_households)
-                + 0.4 * (utility_stability_sum / active_households))
-                .clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-
-        let mut households_to_spawn =
-            (IMMIGRATION_BASE_INFLOW * housing_factor * job_factor * city_stability_factor).round()
-                as usize;
-        let startup_ready = resident_count < PLAYER_STARTUP_POPULATION_TARGET as f32
-            && vacant_resident_slots > 0
-            && open_job_slots > 0.0;
-        if startup_ready {
-            households_to_spawn = households_to_spawn.max(1);
-        }
         if households_to_spawn == 0 {
-            debug_log!(
-                "economy",
-                "immigration blocked: formula rounded to zero (housing_factor={:.2}, job_factor={:.2}, stability={:.2}, vacant_slots={}, border_nodes={})",
-                housing_factor,
-                job_factor,
-                city_stability_factor,
-                vacant_resident_slots,
-                border_nodes.len()
-            );
             return;
         }
-
-        let households_to_spawn = households_to_spawn
-            .min(MAX_IMMIGRANT_HOUSEHOLDS_PER_DAY)
-            .min(vacant_resident_slots);
         debug_log!(
             "economy",
-            "immigration planning: households_to_spawn={} vacant_slots={} border_nodes={} resident_count={} open_job_slots={:.1} housing_factor={:.2} job_factor={:.2} stability={:.2}",
+            "demand-owned household admission planning: households_to_spawn={}",
             households_to_spawn,
-            vacant_resident_slots,
-            border_nodes.len(),
-            resident_count as usize,
-            open_job_slots,
-            housing_factor,
-            job_factor,
-            city_stability_factor
         );
-
-        let mut rng = rand::thread_rng();
         for _ in 0..households_to_spawn {
             let Some((home_idx, household_size)) =
-                self.claim_home_for_household(DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as u32, &mut rng)
+                self.claim_home_for_household(DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as u32)
             else {
                 debug_log!(
                     "economy",
-                    "immigration aborted mid-pass: could not claim a home from vacancy index"
+                    "demand-owned household admission stopped early: could not claim a home from vacancy index"
                 );
                 break;
             };
@@ -352,11 +226,10 @@ impl BuildingAllocator {
             let household_id = households.admit_immigrant_household(home_idx, household_size);
             debug_log!(
                 "economy",
-                "immigration admitted household_id={} size={} home_building={} border_connections={}",
+                "demand-owned household admission created household_id={} size={} home_building={}",
                 household_id,
                 household_size,
                 home_idx,
-                border_nodes.len()
             );
 
             for _ in 0..household_size {
@@ -396,7 +269,7 @@ impl BuildingAllocator {
                 agents.current_path_index[agent_idx] = 0;
                 debug_log!(
                     "economy",
-                    "immigration housed agent_idx={} household_id={} current_building={} pos=({:.1}, {:.1})",
+                    "demand-owned household admission housed agent_idx={} household_id={} current_building={} pos=({:.1}, {:.1})",
                     agent_idx,
                     household_id,
                     home_idx,
@@ -458,47 +331,8 @@ impl BuildingAllocator {
 }
 
 impl BuildingAllocator {
-    fn claim_home_for_household(
-        &mut self,
-        desired_size: u32,
-        rng: &mut impl rand::Rng,
-    ) -> Option<(usize, u16)> {
+    fn claim_home_for_household(&mut self, desired_size: u32) -> Option<(usize, u16)> {
         let target_zones = [ZoneType::Residential, ZoneType::Mixed];
-        let total_candidates: usize = target_zones
-            .iter()
-            .map(|&zone| self.vacancy_index[zone as usize].len())
-            .sum();
-        if total_candidates == 0 {
-            return None;
-        }
-
-        for _ in 0..HOME_PICK_SAMPLE_ATTEMPTS {
-            let mut pick = rng.gen_range(0..total_candidates);
-            let mut building_idx = usize::MAX;
-            for &zone in &target_zones {
-                let list = &self.vacancy_index[zone as usize];
-                if pick < list.len() {
-                    building_idx = list[pick];
-                    break;
-                }
-                pick -= list.len();
-            }
-            if building_idx == usize::MAX {
-                continue;
-            }
-
-            let free_slots = self
-                .resident_capacity(building_idx)
-                .saturating_sub(self.buildings[building_idx].occupancy);
-            if free_slots == 0 {
-                continue;
-            }
-            let admitted_size = free_slots.min(desired_size).max(1) as u16;
-            for _ in 0..admitted_size {
-                self.claim_vacancy(building_idx);
-            }
-            return Some((building_idx, admitted_size));
-        }
 
         let mut fallback_idx = usize::MAX;
         let mut fallback_size = 0_u16;

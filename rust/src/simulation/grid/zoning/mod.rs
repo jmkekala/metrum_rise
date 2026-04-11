@@ -165,7 +165,11 @@ impl ZoningSystem {
         }
     }
 
-    /// Returns the zone type at the given world-space position.
+    /// Returns the broad zone type at the given world-space position.
+    ///
+    /// Test-only compatibility helper kept for older migration coverage. Normal runtime zoning
+    /// work should read profile runtime ids instead.
+    #[cfg(test)]
     pub fn get_zone_world(&self, x: f32, z: f32) -> ZoneType {
         match self.world_to_cell(x, z) {
             Some((cx, cy)) => self
@@ -212,8 +216,9 @@ impl ZoningSystem {
 
     /// Paints a world-space rectangle with one broad zone family.
     ///
-    /// Transitional helper kept for older call sites. Baseline Phase 1 maps broad family paints
-    /// to the default low-density runtime profile for that family.
+    /// Test-only compatibility helper kept for migration coverage. Broad-family paints map to the
+    /// default low-density runtime profile for that family.
+    #[cfg(test)]
     pub fn set_zone_rect(
         &mut self,
         x_min: f32,
@@ -323,6 +328,10 @@ impl ZoningSystem {
     // ── Texture data for Godot uploads ──────────────────────────────────────
 
     /// Returns the derived broad zone-family grid as a flat `u8` byte array for legacy callers.
+    ///
+    /// Test-only compatibility helper kept while migration coverage still reads the old texture
+    /// shape. Normal runtime uploads use [`Self::get_zone_profile_texture_data_rg8`].
+    #[cfg(test)]
     pub fn get_zone_texture_data(&self) -> Vec<u8> {
         self.grid
             .data

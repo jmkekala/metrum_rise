@@ -34,13 +34,15 @@ This document owns the allocator-side contracts. It does not own:
 3. `network.rebuild_pathing_if_dirty()`
 4. `rebuild_entrance_cache()` when the cache is dirty or length-mismatched
 5. `rebuild_zone_index()` when indices are dirty
-6. `spawn_immigrants()`
-7. clear `dirty`
+6. clear `dirty`
 
 Important ownership note:
 
-- steps `2` and `6` are still transitional allocator-owned growth behavior, not the desired final
-  demand-owned model
+- step `2` is still transitional allocator-owned growth behavior, not the desired final
+  scenario/startup-owned model
+- ordinary household admission no longer runs inside allocator tick; the live runtime now computes
+  `households_to_admit_today` in the demand layer after daily economy settlement, then calls
+  `execute_demand_household_admission(...)` as a separate consumption step
 
 ## Core Data Model
 
@@ -120,11 +122,13 @@ natural fallback ordering for any later deterministic tie-break.
 1. parent edge exists, is not deleted, allows building spawn, and has enough frontage columns
 2. `edge_occupancy` says the leading column on that side is free
 3. the frontage ownership check rejects sites that really belong to a closer road surface
-4. the frontage-adjacent zoning cell matches the candidate `zone_type`
-5. every covered cell in the full `width_cells x depth_cells` footprint matches the candidate
-   `zone_type`
-6. the rotated footprint does not overlap the occupied grid
-7. the footprint body does not overlap the road carriageway
+4. the frontage-adjacent zoning cell resolves to one non-zero runtime `ZoneProfile`
+5. that frontage `ZoneProfile` accepts the candidate asset's baseline `zone_type`, `density`, and
+   authored tag filters
+6. every covered cell in the full `width_cells x depth_cells` footprint resolves to that same
+   runtime `ZoneProfile`
+7. the rotated footprint does not overlap the occupied grid
+8. the footprint body does not overlap the road carriageway
 
 If all checks pass, the allocator commits placement by:
 
@@ -142,7 +146,9 @@ If all checks pass, the allocator commits placement by:
 - its `edge_idx` no longer exists or its edge is deleted
 - its edge now has `no_building_spawn = true`
 - its footprint has become too close to a road surface
-- the current zoning at the building center no longer matches the building's stored `zone_type`
+- its full footprint no longer resolves to one compatible runtime `ZoneProfile` for the current
+  asset after any rezoning grace has expired
+- its `asset_id` no longer resolves to a valid building manifest required for legality checks
 
 Removal order is important and currently deterministic:
 
@@ -152,6 +158,14 @@ Removal order is important and currently deterministic:
 4. if `swap_remove` will move another building, remap moved building indices in dependent systems
 5. `swap_remove` from `buildings`
 6. mark indices and entrance cache dirty
+
+Important invariant:
+
+- stale-building cleanup no longer falls back to broad `ZoneType` checks when a building's
+  `asset_id` is missing or malformed
+- explicit buildings are ignored by zoning-compatibility cleanup, but malformed or unresolved
+  building manifests are treated as invalid runtime state and are removed instead of silently
+  surviving on a weaker zoning check
 
 ### Save/load and topology rebuilds
 
@@ -196,8 +210,11 @@ The derived entrance cache must never become a second authoritative source of pl
 The allocator still owns some growth behavior that should eventually move elsewhere:
 
 - one-time founding placement through `place_founding_bootstrap_if_ready()`
-- immigrant household admission through `spawn_immigrants()`
 - invalid-placement cleanup that removes buildings when zoning or road attachment becomes illegal
+
+The allocator now only executes already-decided household admission through
+`execute_demand_household_admission(...)`; it no longer owns the immigration-pressure formula or
+the daily admission count itself.
 
 Target direction:
 
@@ -218,15 +235,14 @@ Current follow-up limitations:
 - The live legality and ownership checks are still somewhat weaker than the intended long-term
   contract. In particular, some spec wording is cleaner than the exact current implementation and
   should be reconciled before the allocator becomes the long-term growth execution layer.
-- The live build-site inputs and legality checks are still broad-`ZoneType` based. The long-term
-  zoning contract now expects footprint-wide `ZoneProfile` legality, profile-derived density, and
-  profile-aware rezoning behavior rather than allocator checks that only compare one broad
-  `zone_type`.
 - `edge_occupancy` is currently only a fast leading-column pre-check. Final overlap safety still
   depends on the occupied-footprint test rather than on full frontage-span reservation.
-- Stale-building cleanup still uses a center-sample zoning check. That is acceptable for the current
-  broad `ZoneType` runtime, but it is not strong enough for future profile-based rezoning or
-  footprint-wide legality decisions.
+- The runtime legality path is now profile-based and footprint-wide, but some surrounding
+  allocator-facing data still carries cached broad `zone_type` fields for compatibility with older
+  subsystems and save data.
+- Stale-building cleanup now uses footprint-wide profile compatibility plus deterministic rezoning
+  grace, but some other attachment-invalidity paths still collapse directly into removal rather than
+  through a richer reattachment or redevelopment flow.
 - Temporary road deletion and rebuild currently collapse into ordinary attachment invalidation. This
   is intentionally deferred to later allocator hardening work: frontage attachment should eventually
   get its own short deterministic reattachment grace so buildings are not demolished unnecessarily
@@ -234,13 +250,13 @@ Current follow-up limitations:
 - The current full frontage scan order is acceptable for founding bootstrap and small transitional
   flows, but it should not become the permanent large-city private-development allocator once
   demand-driven spawning grows beyond today's narrow use.
-- The current tick order still includes `place_founding_bootstrap_if_ready()` and
-  `spawn_immigrants()` inside allocator execution. That is a deliberate transitional exception in
-  the live runtime, but it conflicts with the newer demand/economy ownership split and should be
-  removed once demand-owned daily outputs are implemented.
-- The allocator still mixes geometry execution with some city-growth policy through founding
-  placement and immigrant admission. Those responsibilities should move behind scenario or
-  demand-owned outputs later.
+- The current tick order still includes `place_founding_bootstrap_if_ready()` inside allocator
+  execution. That is a deliberate transitional exception in the live runtime, but it conflicts
+  with the newer demand/economy ownership split and should move behind scenario/startup setup
+  later.
+- The allocator no longer computes immigrant-admission pressure, but it still mixes geometry
+  execution with one-time founding policy through bootstrap placement. That remaining policy should
+  move behind scenario/startup ownership later.
 
 Recommended interpretation:
 

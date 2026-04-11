@@ -10,6 +10,7 @@ use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::lanes::LaneSystem;
 use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
+use std::collections::BTreeMap;
 
 const FOUNDING_RESIDENTIAL_ZONE: ZoneClass = ZoneClass::Residential;
 const FOUNDING_COMMERCIAL_ZONE: ZoneClass = ZoneClass::Commercial;
@@ -45,41 +46,27 @@ impl BuildingAllocator {
             return;
         }
 
-        let Some(residential_asset_id) =
-            self.preferred_founding_asset_id(FOUNDING_RESIDENTIAL_ZONE)
-        else {
+        let Some(residential_slot) = self.resolve_first_valid_slot_for_zone_density(
+            FOUNDING_RESIDENTIAL_ZONE,
+            "low",
+            zoning,
+            graph,
+        ) else {
             debug_log!(
                 "economy",
-                "founding bootstrap blocked: no registered residential building asset"
+                "founding bootstrap waiting: no valid deterministic residential slot for low density"
             );
             return;
         };
-        let Some(commercial_asset_id) = self.preferred_founding_asset_id(FOUNDING_COMMERCIAL_ZONE)
-        else {
+        let Some(commercial_slot) = self.resolve_first_valid_slot_for_zone_density(
+            FOUNDING_COMMERCIAL_ZONE,
+            "low",
+            zoning,
+            graph,
+        ) else {
             debug_log!(
                 "economy",
-                "founding bootstrap blocked: no registered commercial building asset"
-            );
-            return;
-        };
-
-        let Some(residential_slot) =
-            self.resolve_first_valid_slot_for_asset(&residential_asset_id, zoning, graph)
-        else {
-            debug_log!(
-                "economy",
-                "founding bootstrap waiting: no valid residential zoned frontage for '{}'",
-                residential_asset_id
-            );
-            return;
-        };
-        let Some(commercial_slot) =
-            self.resolve_first_valid_slot_for_asset(&commercial_asset_id, zoning, graph)
-        else {
-            debug_log!(
-                "economy",
-                "founding bootstrap waiting: no valid commercial zoned frontage for '{}'",
-                commercial_asset_id
+                "founding bootstrap waiting: no valid deterministic commercial slot for low density"
             );
             return;
         };
@@ -97,34 +84,13 @@ impl BuildingAllocator {
         );
     }
 
-    fn preferred_founding_asset_id(&self, zone_class: ZoneClass) -> Option<String> {
-        self.registry
-            .buildings_for_zone_density(zone_class, "low")
-            .iter()
-            .find(|qualified_id| {
-                self.registry
-                    .get(qualified_id.as_str())
-                    .and_then(|entry| entry.manifest.building.as_ref())
-                    .map(|building| building.level == 1)
-                    .unwrap_or(false)
-            })
-            .cloned()
-            .or_else(|| {
-                self.registry
-                    .buildings_for_zone_density(zone_class, "low")
-                    .first()
-                    .cloned()
-            })
-    }
-
-    fn resolve_first_valid_slot_for_asset(
+    fn resolve_first_valid_slot_for_zone_density(
         &self,
-        asset_id: &str,
+        zone_class: ZoneClass,
+        density: &str,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
     ) -> Option<ResolvedPlacement> {
-        let params = self.asset_placement_params(asset_id)?;
-
         for edge_idx in 0..graph.edge_count() {
             let edge = graph.edge(edge_idx);
             if edge.deleted
@@ -137,16 +103,36 @@ impl BuildingAllocator {
 
             let zone_cell_m = zoning.config.zone_cell_m;
             let cells_long = (edge.physical_length / zone_cell_m).floor() as usize;
-            if cells_long == 0 || params.width_cells > cells_long {
+            if cells_long == 0 {
                 continue;
             }
-            let max_leading = cells_long.saturating_sub(params.width_cells);
 
             for side in [1_i8, -1_i8] {
-                for cell_x in 0..=max_leading {
-                    if let Some(resolved) =
-                        self.resolve_slot(asset_id, &params, edge_idx, side, cell_x, zoning, graph)
+                for cell_x in 0..cells_long {
+                    let Some(profile_runtime_id) = self.frontage_profile_runtime_id_for_site(
+                        edge_idx, side, cell_x, zoning, graph,
+                    ) else {
+                        continue;
+                    };
+                    let Some(profile) = zoning.profiles.profile_by_runtime_id(profile_runtime_id)
+                    else {
+                        continue;
+                    };
+                    if profile.zone_type != zone_class_to_zone_type(zone_class)
+                        || profile.density.as_str() != density
                     {
+                        continue;
+                    }
+                    if let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
+                        zone_class,
+                        density,
+                        profile_runtime_id,
+                        edge_idx,
+                        side,
+                        cell_x,
+                        zoning,
+                        graph,
+                    ) {
                         return Some(resolved);
                     }
                 }
@@ -156,12 +142,144 @@ impl BuildingAllocator {
         None
     }
 
+    fn frontage_profile_runtime_id_for_site(
+        &self,
+        edge_idx: usize,
+        side: i8,
+        cell_x: usize,
+        zoning: &ZoningSystem,
+        graph: &RegionGraph,
+    ) -> Option<u16> {
+        let edge = graph.edge(edge_idx);
+        let edge_len = edge.physical_length;
+        let zone_cell_m = zoning.config.zone_cell_m;
+        if edge_len < zone_cell_m * 0.5 {
+            return None;
+        }
+        let t_col = (cell_x as f32 + 0.5) * zone_cell_m / edge_len;
+        let frontage_pos = self.get_pos_on_edge(graph, edge_idx, t_col);
+        let frontage_tangent = self.get_tangent_on_edge(graph, edge_idx, t_col);
+        let frontage_normal = Vector2::new(frontage_tangent.y, -frontage_tangent.x) * side as f32;
+        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+        let frontage_center = frontage_pos + frontage_normal * (curb_dist + zone_cell_m * 0.5);
+        let profile_runtime_id =
+            zoning.get_zone_profile_runtime_id_world(frontage_center.x, frontage_center.y);
+        if profile_runtime_id == 0 {
+            None
+        } else {
+            Some(profile_runtime_id)
+        }
+    }
+
+    fn select_deterministic_fresh_spawn_asset(
+        &self,
+        zone_class: ZoneClass,
+        density: &str,
+        profile_runtime_id: u16,
+        edge_idx: usize,
+        side: i8,
+        cell_x: usize,
+        zoning: &ZoningSystem,
+        graph: &RegionGraph,
+    ) -> Option<ResolvedPlacement> {
+        let mut families: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for qualified_id in self
+            .registry
+            .buildings_for_zone_density(zone_class, density)
+        {
+            let Some(entry) = self.registry.get(qualified_id) else {
+                continue;
+            };
+            let Some(building) = entry.manifest.building.as_ref() else {
+                continue;
+            };
+            if !building.is_zoned_private() || building.level != 1 {
+                continue;
+            }
+            let Some(asset_zone_class) = building.zone_type else {
+                continue;
+            };
+            let Some(asset_density) = building.density_key() else {
+                continue;
+            };
+            if !zoning.profiles.asset_is_legal(
+                profile_runtime_id,
+                zone_class_to_zone_type(asset_zone_class),
+                asset_density,
+                &entry.manifest.tags,
+            ) {
+                continue;
+            }
+            let family_key = entry
+                .manifest
+                .asset_set
+                .clone()
+                .unwrap_or_else(|| qualified_id.clone());
+            families
+                .entry(family_key)
+                .or_default()
+                .push(qualified_id.clone());
+        }
+
+        let mut ordered_families: Vec<(u64, String, Vec<String>)> = families
+            .into_iter()
+            .map(|(family_key, mut candidate_ids)| {
+                candidate_ids.sort();
+                (
+                    stable_strip_family_hash(profile_runtime_id, edge_idx, side, &family_key),
+                    family_key,
+                    candidate_ids,
+                )
+            })
+            .collect();
+        ordered_families.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+        for (_, _, candidate_ids) in ordered_families {
+            let mut resolved_variants: Vec<(u64, String, ResolvedPlacement)> = Vec::new();
+            for qualified_id in candidate_ids {
+                let Some(params) = self.asset_placement_params(&qualified_id) else {
+                    continue;
+                };
+                if let Some(resolved) = self.resolve_slot(
+                    &qualified_id,
+                    &params,
+                    edge_idx,
+                    side,
+                    cell_x,
+                    zoning,
+                    graph,
+                ) {
+                    resolved_variants.push((
+                        stable_site_variant_hash(
+                            profile_runtime_id,
+                            edge_idx,
+                            side,
+                            cell_x,
+                            &qualified_id,
+                        ),
+                        qualified_id,
+                        resolved,
+                    ));
+                }
+            }
+            resolved_variants.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            if let Some((_, _, resolved)) = resolved_variants.into_iter().next() {
+                return Some(resolved);
+            }
+        }
+
+        None
+    }
+
     fn asset_placement_params(&self, asset_id: &str) -> Option<AssetPlacementParams> {
         let entry = self.registry.get(asset_id)?;
         let building = entry.manifest.building.as_ref()?;
+        if !building.is_zoned_private() {
+            return None;
+        }
         Some(AssetPlacementParams {
-            zone_type: zone_class_to_zone_type(building.zone_type),
-            density: building.density.clone(),
+            zone_type: zone_class_to_zone_type(building.zone_type?),
+            density: building.density_key()?.to_owned(),
             tags: entry.manifest.tags.clone(),
             width_cells: building.lot_width_cells as usize,
             depth_cells: building.lot_depth_cells as usize,
@@ -357,6 +475,77 @@ impl BuildingAllocator {
             abandoned_timer: 0,
         });
         self.buildings.len() - 1
+    }
+}
+
+fn stable_strip_family_hash(
+    profile_runtime_id: u16,
+    edge_idx: usize,
+    side: i8,
+    family_key: &str,
+) -> u64 {
+    let mut hasher = StableHasher::new();
+    hasher.write_u16(profile_runtime_id);
+    hasher.write_usize(edge_idx);
+    hasher.write_i8(side);
+    hasher.write_str(family_key);
+    hasher.finish()
+}
+
+fn stable_site_variant_hash(
+    profile_runtime_id: u16,
+    edge_idx: usize,
+    side: i8,
+    cell_x: usize,
+    qualified_asset_id: &str,
+) -> u64 {
+    let mut hasher = StableHasher::new();
+    hasher.write_u16(profile_runtime_id);
+    hasher.write_usize(edge_idx);
+    hasher.write_i8(side);
+    hasher.write_usize(cell_x);
+    hasher.write_str(qualified_asset_id);
+    hasher.finish()
+}
+
+struct StableHasher {
+    state: u64,
+}
+
+impl StableHasher {
+    fn new() -> Self {
+        Self {
+            state: 0xcbf29ce484222325,
+        }
+    }
+
+    fn write_bytes(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.state ^= byte as u64;
+            self.state = self.state.wrapping_mul(0x100000001b3);
+        }
+        self.state ^= 0xff;
+        self.state = self.state.wrapping_mul(0x100000001b3);
+    }
+
+    fn write_u16(&mut self, value: u16) {
+        self.write_bytes(&value.to_le_bytes());
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.write_bytes(&(value as u64).to_le_bytes());
+    }
+
+    fn write_i8(&mut self, value: i8) {
+        self.write_bytes(&[value as u8]);
+    }
+
+    fn write_str(&mut self, value: &str) {
+        self.write_bytes(value.as_bytes());
+    }
+
+    fn finish(self) -> u64 {
+        self.state
     }
 }
 

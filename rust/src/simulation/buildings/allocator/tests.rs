@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::assets::AssetManifest;
-use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, ZoneClass};
+use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::households::HouseholdSystem;
@@ -19,10 +19,25 @@ fn register_test_asset(
     asset_id: &str,
     zone: ZoneClass,
 ) -> String {
+    register_test_asset_with_family(allocator, pack_id, asset_id, zone, None)
+}
+
+fn register_test_asset_with_family(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    zone: ZoneClass,
+    asset_set: Option<&str>,
+) -> String {
+    let (residents_capacity, worker_capacity) = match zone {
+        ZoneClass::Residential => (Some(6), None),
+        ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
+        ZoneClass::Mixed => (Some(4), Some(2)),
+    };
     let manifest = AssetManifest {
         asset_id: asset_id.to_owned(),
         display_name: "Test".to_owned(),
-        asset_set: None,
+        asset_set: asset_set.map(str::to_owned),
         tags: vec![],
         thumbnail: None,
         lods: vec![LodEntry {
@@ -37,13 +52,16 @@ fn register_test_asset(
             forward: [0.0, 0.0, 1.0],
         }],
         building: Some(BuildingData {
-            zone_type: zone,
-            density: "low".to_owned(),
+            placement_mode: PlacementMode::ZonedPrivate,
+            zone_type: Some(zone),
+            density: Some("low".to_owned()),
             lot_width_cells: 1,
             lot_depth_cells: 1,
+            min_zone_width_cells: None,
+            min_zone_depth_cells: None,
             level: 1,
-            residents_capacity: Some(6),
-            worker_capacity: None,
+            residents_capacity,
+            worker_capacity,
             service_class: None,
             economy_profile: None,
             preview_scale: Some(1.0),
@@ -57,6 +75,67 @@ fn register_test_asset(
         .registry
         .register(pack_id, manifest, String::new());
     format!("{pack_id}:{asset_id}")
+}
+
+fn stable_hash_bytes(parts: &[&[u8]]) -> u64 {
+    let mut state = 0xcbf29ce484222325u64;
+    for part in parts {
+        for &byte in *part {
+            state ^= byte as u64;
+            state = state.wrapping_mul(0x100000001b3);
+        }
+        state ^= 0xff;
+        state = state.wrapping_mul(0x100000001b3);
+    }
+    state
+}
+
+fn stable_strip_family_hash(
+    profile_runtime_id: u16,
+    edge_idx: usize,
+    side: i8,
+    family_key: &str,
+) -> u64 {
+    stable_hash_bytes(&[
+        &profile_runtime_id.to_le_bytes(),
+        &(edge_idx as u64).to_le_bytes(),
+        &[side as u8],
+        family_key.as_bytes(),
+    ])
+}
+
+fn stable_site_variant_hash(
+    profile_runtime_id: u16,
+    edge_idx: usize,
+    side: i8,
+    cell_x: usize,
+    qualified_asset_id: &str,
+) -> u64 {
+    stable_hash_bytes(&[
+        &profile_runtime_id.to_le_bytes(),
+        &(edge_idx as u64).to_le_bytes(),
+        &[side as u8],
+        &(cell_x as u64).to_le_bytes(),
+        qualified_asset_id.as_bytes(),
+    ])
+}
+
+fn frontage_profile_runtime_id_for_building(
+    allocator: &BuildingAllocator,
+    building: &Building,
+    zoning: &crate::simulation::grid::zoning::ZoningSystem,
+    graph: &RegionGraph,
+) -> u16 {
+    let zone_cell_m = zoning.config.zone_cell_m;
+    let edge = graph.edge(building.edge_idx);
+    let t_col = (building.cell_x as f32 + 0.5) * zone_cell_m / edge.physical_length;
+    let frontage_pos = allocator.get_pos_on_edge(graph, building.edge_idx, t_col);
+    let frontage_tangent = allocator.get_tangent_on_edge(graph, building.edge_idx, t_col);
+    let frontage_normal =
+        Vector2::new(frontage_tangent.y, -frontage_tangent.x) * building.side as f32;
+    let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+    let frontage_center = frontage_pos + frontage_normal * (curb_dist + zone_cell_m * 0.5);
+    zoning.get_zone_profile_runtime_id_world(frontage_center.x, frontage_center.y)
 }
 
 fn setup_bootstrap_city_for_rezoning() -> (
@@ -200,6 +279,12 @@ fn test_zone_index_consistency() {
 #[test]
 fn test_vacancy_index_consistency() {
     let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.vacancy",
+        ZoneClass::Residential,
+    );
     let _rng = rand::rngs::StdRng::seed_from_u64(42);
 
     for i in 0..5 {
@@ -219,7 +304,7 @@ fn test_vacancy_index_consistency() {
             cell_y: 0,
             occupancy: 0,
             worker_count: 0,
-            asset_id: String::new(),
+            asset_id: residential_asset.clone(),
             level: 1,
             broken: false,
             stock: 0.0,
@@ -413,6 +498,166 @@ fn test_tick_runs_one_time_founding_bootstrap_from_border_and_zoning() {
         2,
         "Founding bootstrap should only seed one residential and one commercial building"
     );
+}
+
+#[test]
+fn test_founding_bootstrap_residential_family_selection_uses_strip_hash_order() {
+    use crate::simulation::grid::zoning::ZoningSystem;
+    use crate::simulation::network::TransitNetwork;
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    let family_a_id = register_test_asset_with_family(
+        &mut allocator,
+        "base",
+        "b.res.family_a_variant",
+        ZoneClass::Residential,
+        Some("family_a"),
+    );
+    let family_b_id = register_test_asset_with_family(
+        &mut allocator,
+        "base",
+        "b.res.family_b_variant",
+        ZoneClass::Residential,
+        Some("family_b"),
+    );
+    register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
+
+    let map_cfg = MapConfig::default();
+    let mut zoning = ZoningSystem::new(&map_cfg);
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
+    zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
+    zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+
+    allocator.tick(
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut network,
+        &mut graph,
+    );
+
+    let residential = allocator
+        .buildings
+        .iter()
+        .find(|building| building.zone_type == ZoneType::Residential)
+        .expect("bootstrap should place a residential building");
+    let profile_runtime_id =
+        frontage_profile_runtime_id_for_building(&allocator, residential, &zoning, &graph);
+    let expected_asset_id = if stable_strip_family_hash(
+        profile_runtime_id,
+        residential.edge_idx,
+        residential.side,
+        "family_a",
+    ) <= stable_strip_family_hash(
+        profile_runtime_id,
+        residential.edge_idx,
+        residential.side,
+        "family_b",
+    ) {
+        family_a_id
+    } else {
+        family_b_id
+    };
+
+    assert_eq!(residential.asset_id, expected_asset_id);
+}
+
+#[test]
+fn test_founding_bootstrap_residential_variant_selection_uses_site_hash() {
+    use crate::simulation::grid::zoning::ZoningSystem;
+    use crate::simulation::network::TransitNetwork;
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    let variant_a_id = register_test_asset_with_family(
+        &mut allocator,
+        "base",
+        "b.res.shared_family_a",
+        ZoneClass::Residential,
+        Some("shared_family"),
+    );
+    let variant_b_id = register_test_asset_with_family(
+        &mut allocator,
+        "base",
+        "b.res.shared_family_b",
+        ZoneClass::Residential,
+        Some("shared_family"),
+    );
+    register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
+
+    let map_cfg = MapConfig::default();
+    let mut zoning = ZoningSystem::new(&map_cfg);
+    let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
+    let mut logistics = ShipmentSystem::new();
+    let mut graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(100.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
+    zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
+    zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
+
+    allocator.tick(
+        &mut zoning,
+        &mut agents,
+        &mut households,
+        &mut logistics,
+        &mut network,
+        &mut graph,
+    );
+
+    let residential = allocator
+        .buildings
+        .iter()
+        .find(|building| building.zone_type == ZoneType::Residential)
+        .expect("bootstrap should place a residential building");
+    let profile_runtime_id =
+        frontage_profile_runtime_id_for_building(&allocator, residential, &zoning, &graph);
+    let expected_asset_id = if stable_site_variant_hash(
+        profile_runtime_id,
+        residential.edge_idx,
+        residential.side,
+        residential.cell_x,
+        &variant_a_id,
+    ) <= stable_site_variant_hash(
+        profile_runtime_id,
+        residential.edge_idx,
+        residential.side,
+        residential.cell_x,
+        &variant_b_id,
+    ) {
+        variant_a_id
+    } else {
+        variant_b_id
+    };
+
+    assert_eq!(residential.asset_id, expected_asset_id);
 }
 
 #[test]
@@ -633,10 +878,13 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             forward: [0.0, 0.0, 1.0],
         }],
         building: Some(BuildingData {
-            zone_type: ZoneClass::Residential,
-            density: "low".to_owned(),
+            placement_mode: PlacementMode::ZonedPrivate,
+            zone_type: Some(ZoneClass::Residential),
+            density: Some("low".to_owned()),
             lot_width_cells: 1,
             lot_depth_cells: 1,
+            min_zone_width_cells: None,
+            min_zone_depth_cells: None,
             level: 1,
             residents_capacity: Some(6),
             worker_capacity: None,
@@ -817,7 +1065,7 @@ fn test_immigration_claims_vacant_home() {
     use godot::prelude::{Vector2, Vector3};
 
     let mut allocator = BuildingAllocator::new();
-    register_test_asset(
+    let residential_asset_id = register_test_asset(
         &mut allocator,
         "base",
         "b.res.house",
@@ -860,7 +1108,7 @@ fn test_immigration_claims_vacant_home() {
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
-        asset_id: String::new(),
+        asset_id: residential_asset_id,
         level: 1,
         broken: false,
         stock: 0.0,
@@ -881,11 +1129,12 @@ fn test_immigration_claims_vacant_home() {
         &mut network,
         &mut graph,
     );
+    allocator.execute_demand_household_admission(1, &mut agents, &mut households);
 
     assert_eq!(
         agents.len(),
         2,
-        "One two-resident household should have immigrated"
+        "One two-resident household should have been admitted from the demand-owned output"
     );
     assert_eq!(
         agents.home_building[0], 0,
@@ -919,16 +1168,18 @@ fn test_immigration_claims_vacant_home() {
 
 #[test]
 fn test_startup_immigration_floor_avoids_zero_rounding() {
+    use crate::simulation::economy::demand::DemandSystem;
     use godot::prelude::Vector3;
 
     let mut allocator = BuildingAllocator::new();
-    register_test_asset(
+    let residential_asset = register_test_asset(
         &mut allocator,
         "base",
         "b.res.house",
         ZoneClass::Residential,
     );
-    register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
+    let commercial_asset =
+        register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
     let mut graph = RegionGraph::new();
@@ -963,7 +1214,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         cell_y: 0,
         occupancy: 2,
         worker_count: 0,
-        asset_id: "base:b.res.house".to_owned(),
+        asset_id: residential_asset,
         level: 1,
         broken: false,
         stock: 0.0,
@@ -990,7 +1241,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
-        asset_id: "base:b.com.shop".to_owned(),
+        asset_id: commercial_asset,
         level: 1,
         broken: false,
         stock: 0.0,
@@ -1009,13 +1260,24 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         let idx = agents.spawn_agent(0, 1, 0.0, 0.0, 0, 0.0, 0.0);
         agents.household_id[idx] = household_id;
     }
-    households.households[household_id].stock = 0.0;
-    households.households[household_id].stock_days = 0.0;
+    households.households[household_id].budget = 120.0;
+    households.households[household_id].stock = 6.0;
+    households.households[household_id].stock_days = 3.0;
 
-    allocator.spawn_immigrants(&mut agents, &mut households, &graph);
+    let mut demand = DemandSystem::new();
+    demand.run_daily_pass(&allocator, &households, &graph);
+    assert!(
+        demand.households_to_admit_today > 0,
+        "startup support should produce a demand-owned household-admission output"
+    );
+    allocator.execute_demand_household_admission(
+        demand.households_to_admit_today,
+        &mut agents,
+        &mut households,
+    );
 
     assert!(
         households.households.len() >= 2,
-        "player-seeded startup city should admit another household even when the raw formula rounds to zero"
+        "player-seeded startup city should admit another household through the demand-owned startup output"
     );
 }

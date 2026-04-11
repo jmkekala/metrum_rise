@@ -640,6 +640,19 @@ fn stock_days(stock: f32, member_count: u16, consumption_rate: f32) -> f32 {
     }
 }
 
+pub(crate) fn household_reserve_days(household: &Household) -> f32 {
+    let members = household.member_count.max(1) as f32;
+    let daily_supply_cost =
+        members * household.consumption_rate.max(0.0) * HOUSEHOLD_SUPPLY_UNIT_PRICE;
+    let daily_utility_cost = members * HOUSEHOLD_UTILITY_COST_PER_MEMBER;
+    let daily_essential_cost = daily_supply_cost + daily_utility_cost;
+    if daily_essential_cost <= 0.0 {
+        0.0
+    } else {
+        (household.budget.max(0.0) / daily_essential_cost).max(0.0)
+    }
+}
+
 fn clear_replenishment_request(household: &mut Household) {
     household.replenishment_state = REPLENISHMENT_STABLE;
     household.cooldown_days = 0;

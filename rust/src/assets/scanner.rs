@@ -175,9 +175,12 @@ position = [0.0, 0.0, 0.5]
 forward = [0.0, 0.0, 1.0]
 
 [building]
+placement_mode = "zoned_private"
 zone_type = "residential"
+density = "low"
 lot_width_cells = 2
 lot_depth_cells = 2
+residents_capacity = 6
 "#;
 
     #[test]
@@ -410,7 +413,7 @@ forward = [0, 0, -1]
         let density = registry
             .get("kenney:building.residential.house_a")
             .and_then(|e| e.manifest.building.as_ref())
-            .map(|b| b.density.as_str());
+            .and_then(|b| b.density_key());
         assert_eq!(density, Some("low"));
 
         fs::remove_dir_all(&base).unwrap();

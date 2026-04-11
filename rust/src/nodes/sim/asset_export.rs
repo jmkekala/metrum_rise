@@ -5,6 +5,7 @@
 //! validation, and writes the output files. Pack TOML is only written when the file does
 //! not already exist, so re-exporting individual assets never overwrites pack metadata.
 
+use crate::assets::asset::PlacementMode;
 use crate::assets::{AssetManifest, CURRENT_SCHEMA_VERSION, PackManifest};
 use crate::debug_log;
 use crate::simulation::grid::zoning::load_builtin_profile_registry;
@@ -73,12 +74,21 @@ pub struct ExportParams {
     /// Density hint (e.g. `"low"`, `"medium"`, `"high"`).
     #[serde(default)]
     pub density: Option<String>,
+    /// How this building enters the world.
+    #[serde(default = "default_placement_mode")]
+    pub placement_mode: String,
     /// Footprint width in 10 m zone cells along the road frontage.
     #[serde(default)]
     pub lot_width_cells: u16,
     /// Footprint depth in 10 m zone cells away from the road.
     #[serde(default)]
     pub lot_depth_cells: u16,
+    /// Minimum accepted zoned width for this building.
+    #[serde(default)]
+    pub min_zone_width_cells: Option<u16>,
+    /// Minimum accepted zoned depth for this building.
+    #[serde(default)]
+    pub min_zone_depth_cells: Option<u16>,
     /// Development level (1 = lowest density / newest; higher = denser / upgraded).
     #[serde(default = "default_level")]
     pub level: u8,
@@ -117,6 +127,10 @@ fn default_license() -> String {
 }
 fn default_level() -> u8 {
     1
+}
+
+fn default_placement_mode() -> String {
+    "zoned_private".to_owned()
 }
 
 // ── TOML generation ───────────────────────────────────────────────────────────
@@ -162,12 +176,26 @@ fn build_asset_toml(p: &ExportParams) -> String {
     match p.asset_class.as_str() {
         "building" => {
             out.push_str("[building]\n");
-            let zone = p.zone_type.as_deref().unwrap_or("residential");
-            out.push_str(&format!("zone_type = \"{zone}\"\n"));
-            let density = p.density.as_deref().unwrap_or("low");
-            out.push_str(&format!("density = \"{density}\"\n"));
+            let placement_mode = normalized_placement_mode_key(&p.placement_mode);
+            out.push_str(&format!("placement_mode = \"{placement_mode}\"\n"));
+            if placement_mode == "zoned_private" {
+                let zone = p.zone_type.as_deref().unwrap_or("residential");
+                out.push_str(&format!("zone_type = \"{zone}\"\n"));
+                let density = p.density.as_deref().unwrap_or("low");
+                out.push_str(&format!("density = \"{density}\"\n"));
+            }
             out.push_str(&format!("lot_width_cells = {}\n", p.lot_width_cells));
             out.push_str(&format!("lot_depth_cells = {}\n", p.lot_depth_cells));
+            if let Some(min_width) = p.min_zone_width_cells {
+                if min_width > 0 && min_width != p.lot_width_cells {
+                    out.push_str(&format!("min_zone_width_cells = {min_width}\n"));
+                }
+            }
+            if let Some(min_depth) = p.min_zone_depth_cells {
+                if min_depth > 0 && min_depth != p.lot_depth_cells {
+                    out.push_str(&format!("min_zone_depth_cells = {min_depth}\n"));
+                }
+            }
             out.push_str(&format!("level = {}\n", p.level));
             if let Some(r) = p.residents_capacity {
                 if r > 0 {
@@ -180,7 +208,7 @@ fn build_asset_toml(p: &ExportParams) -> String {
                 }
             }
             if let Some(sc) = &p.service_class {
-                if !sc.is_empty() {
+                if !sc.is_empty() && sc != "none" {
                     out.push_str(&format!("service_class = \"{sc}\"\n"));
                 }
             }
@@ -244,6 +272,87 @@ fn validate_against_builtin_zoning(params: &ExportParams) -> Result<(), String> 
     Ok(())
 }
 
+fn normalized_placement_mode_key(value: &str) -> &'static str {
+    match value.trim() {
+        "explicit" => "explicit",
+        _ => "zoned_private",
+    }
+}
+
+fn parse_placement_mode(value: &str) -> Result<PlacementMode, String> {
+    match normalized_placement_mode_key(value) {
+        "zoned_private" => Ok(PlacementMode::ZonedPrivate),
+        "explicit" => Ok(PlacementMode::Explicit),
+        _ => Err(format!("unsupported placement_mode '{}'", value.trim())),
+    }
+}
+
+fn non_empty_optional_string(value: &Option<String>) -> Option<&str> {
+    value
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn validate_building_export_contract(params: &ExportParams) -> Result<(), String> {
+    let placement_mode = parse_placement_mode(&params.placement_mode)?;
+    if params.lot_width_cells == 0 || params.lot_depth_cells == 0 {
+        return Err("lot_width_cells and lot_depth_cells must be > 0".to_owned());
+    }
+    if params.min_zone_width_cells == Some(0) || params.min_zone_depth_cells == Some(0) {
+        return Err("min_zone_width_cells and min_zone_depth_cells must be > 0".to_owned());
+    }
+
+    match placement_mode {
+        PlacementMode::ZonedPrivate => {
+            let zone_type = non_empty_optional_string(&params.zone_type)
+                .ok_or_else(|| "zoned_private buildings require zone_type".to_owned())?;
+            let _density = non_empty_optional_string(&params.density)
+                .ok_or_else(|| "zoned_private buildings require density".to_owned())?;
+            validate_against_builtin_zoning(params)?;
+            match zone_type {
+                "residential" => {
+                    if params.residents_capacity.unwrap_or(0) == 0 {
+                        return Err(
+                            "residential zoned_private buildings require residents_capacity"
+                                .to_owned(),
+                        );
+                    }
+                    if params.worker_capacity.unwrap_or(0) > 0 {
+                        return Err(
+                            "residential zoned_private buildings must not use worker_capacity"
+                                .to_owned(),
+                        );
+                    }
+                }
+                "commercial" | "industrial" => {
+                    if params.worker_capacity.unwrap_or(0) == 0 {
+                        return Err(
+                            "commercial and industrial zoned_private buildings require worker_capacity"
+                                .to_owned(),
+                        );
+                    }
+                }
+                other => {
+                    return Err(format!(
+                        "unsupported zoned_private zone_type '{}' for the baseline contract",
+                        other
+                    ));
+                }
+            }
+        }
+        PlacementMode::Explicit => {
+            if non_empty_optional_string(&params.zone_type).is_some()
+                || non_empty_optional_string(&params.density).is_some()
+            {
+                return Err("explicit buildings must not export zone_type or density".to_owned());
+            }
+        }
+    }
+
+    Ok(())
+}
+
 // ── Public helpers called from SimulationNode ─────────────────────────────────
 
 /// Validates the JSON export params, writes `pack.toml` (if absent) and
@@ -275,7 +384,7 @@ pub fn validate_and_export_asset_internal(params_json: &str, output_dir: &str) -
         return msg;
     }
 
-    if let Err(err) = validate_against_builtin_zoning(&params) {
+    if let Err(err) = validate_building_export_contract(&params) {
         debug_log!("asset-editor", "{err}");
         return err;
     }
@@ -378,14 +487,26 @@ pub fn get_asset_manifest_json_internal(
     });
 
     if let Some(b) = &m.building {
-        obj["zone_type"] = serde_json::json!(format!("{:?}", b.zone_type).to_lowercase());
-        obj["density"] = serde_json::json!(&b.density);
+        obj["placement_mode"] = serde_json::json!(match b.placement_mode {
+            PlacementMode::ZonedPrivate => "zoned_private",
+            PlacementMode::Explicit => "explicit",
+        });
+        obj["zone_type"] = match b.zone_type {
+            Some(zone_type) => serde_json::json!(format!("{:?}", zone_type).to_lowercase()),
+            None => serde_json::Value::Null,
+        };
+        obj["density"] = match b.density_key() {
+            Some(density) => serde_json::json!(density),
+            None => serde_json::Value::Null,
+        };
         obj["lot_width_cells"] = serde_json::json!(b.lot_width_cells);
         obj["lot_depth_cells"] = serde_json::json!(b.lot_depth_cells);
+        obj["min_zone_width_cells"] = serde_json::json!(b.min_zone_width_cells);
+        obj["min_zone_depth_cells"] = serde_json::json!(b.min_zone_depth_cells);
         obj["level"] = serde_json::json!(b.level);
         obj["residents_capacity"] = serde_json::json!(b.residents_capacity);
         obj["worker_capacity"] = serde_json::json!(b.worker_capacity);
-        obj["service_class"] = serde_json::json!(b.service_class);
+        obj["service_class"] = serde_json::json!(b.service_class.as_deref().unwrap_or("none"));
         obj["economy_profile"] = serde_json::json!(b.economy_profile);
         obj["preview_scale"] = serde_json::json!(b.preview_scale.unwrap_or(1.0));
     }
@@ -442,7 +563,9 @@ mod tests {
             "asset_class": "building",
             "asset_id": asset_id,
             "display_name": "Test House",
+            "placement_mode": "zoned_private",
             "zone_type": "residential",
+            "density": "low",
             "lot_width_cells": 2,
             "lot_depth_cells": 2,
             "level": 1,
@@ -505,7 +628,9 @@ mod tests {
             "asset_class": "building",
             "asset_id": "Bad.ID",
             "display_name": "Bad",
+            "placement_mode": "zoned_private",
             "zone_type": "residential",
+            "density": "low",
             "lot_width_cells": 2,
             "lot_depth_cells": 2,
             "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
@@ -526,7 +651,9 @@ mod tests {
             "asset_class": "building",
             "asset_id": "building.residential.house",
             "display_name": "House",
+            "placement_mode": "zoned_private",
             "zone_type": "residential",
+            "density": "low",
             "lot_width_cells": 0,
             "lot_depth_cells": 2,
             "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}]
@@ -552,7 +679,9 @@ mod tests {
             "asset_class": "building",
             "asset_id": "building.commercial.grocery_test",
             "display_name": "Grocery Test",
+            "placement_mode": "zoned_private",
             "zone_type": "commercial",
+            "density": "low",
             "lot_width_cells": 2,
             "lot_depth_cells": 2,
             "worker_capacity": 8,

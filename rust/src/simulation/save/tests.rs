@@ -83,9 +83,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let mut noise = NoiseSystem::new(&config);
     noise.grid.data[0] = 7.0;
     let mut demand = DemandSystem::new();
-    demand.residential = 12.0;
-    demand.commercial = 8.0;
-    demand.industrial = 4.0;
+    demand.residential = 0.12;
+    demand.commercial = 0.08;
+    demand.industrial = 0.04;
+    demand.households_to_admit_today = 2;
+    demand.households_to_remove_today = 1;
+    demand.startup_support_factor = 0.75;
+    demand.admission_action_credit = 1.25;
+    demand.removal_action_credit = 0.50;
     let mut allocator = BuildingAllocator::new();
     allocator.buildings.push(Building {
         center_x: 0.0,
@@ -254,6 +259,28 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.terrain.source_data, terrain.source_data);
     assert_eq!(loaded.water.depth, water.depth);
     assert_eq!(loaded.demand.residential, demand.residential);
+    assert_eq!(loaded.demand.commercial, demand.commercial);
+    assert_eq!(loaded.demand.industrial, demand.industrial);
+    assert_eq!(
+        loaded.demand.households_to_admit_today,
+        demand.households_to_admit_today
+    );
+    assert_eq!(
+        loaded.demand.households_to_remove_today,
+        demand.households_to_remove_today
+    );
+    assert_eq!(
+        loaded.demand.startup_support_factor,
+        demand.startup_support_factor
+    );
+    assert_eq!(
+        loaded.demand.admission_action_credit,
+        demand.admission_action_credit
+    );
+    assert_eq!(
+        loaded.demand.removal_action_credit,
+        demand.removal_action_credit
+    );
     assert_eq!(loaded.pollution.grid.data, pollution.grid.data);
     assert_eq!(loaded.noise.grid.data, noise.grid.data);
     assert_eq!(loaded.graph.edge_count(), 1);

@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod tests {
     use crate::assets::AssetManifest;
-    use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, ZoneClass};
+    use crate::assets::asset::{
+        Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass,
+    };
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
     use crate::simulation::economy::agents::{
         ACCESS_PLAN_VALID, AgentSystem, MODE_WALK, TRANSIT_ACCESS_EGRESS, TRANSIT_NETWORK,
@@ -40,10 +42,13 @@ mod tests {
                 forward: [0.0, 0.0, 1.0],
             }],
             building: Some(BuildingData {
-                zone_type: zone,
-                density: "low".to_owned(),
+                placement_mode: PlacementMode::ZonedPrivate,
+                zone_type: Some(zone),
+                density: Some("low".to_owned()),
                 lot_width_cells: 1,
                 lot_depth_cells: 1,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
                 level: 1,
                 residents_capacity: Some(6),
                 worker_capacity: None,

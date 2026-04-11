@@ -202,10 +202,9 @@ impl SimCore {
     pub fn simulate_tick_internal(&mut self) {
         let tick_start = Instant::now();
 
-        self.demand.recalculate(&self.allocator, &self.households);
         debug_log!(
             "economy",
-            "daily tick start: buildings={} households={} agents={} demand=(R {:.1}, C {:.1}, I {:.1})",
+            "daily tick start: buildings={} households={} agents={}",
             self.allocator.buildings.len(),
             self.households
                 .households
@@ -213,9 +212,6 @@ impl SimCore {
                 .filter(|h| h.member_count > 0)
                 .count(),
             self.agents.len(),
-            self.demand.residential,
-            self.demand.commercial,
-            self.demand.industrial
         );
         self.allocator.tick(
             &mut self.zoning,
@@ -256,10 +252,16 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
         );
-        self.demand.recalculate(&self.allocator, &self.households);
+        self.demand
+            .run_daily_pass(&self.allocator, &self.households, &self.region_graph);
+        self.allocator.execute_demand_household_admission(
+            self.demand.households_to_admit_today,
+            &mut self.agents,
+            &mut self.households,
+        );
         debug_log!(
             "economy",
-            "daily tick end: buildings={} households={} agents={} demand=(R {:.1}, C {:.1}, I {:.1})",
+            "daily tick end: buildings={} households={} agents={} demand=(R {:.0}%, C {:.0}%, I {:.0}%) admit={} remove={}",
             self.allocator.buildings.len(),
             self.households
                 .households
@@ -267,9 +269,11 @@ impl SimCore {
                 .filter(|h| h.member_count > 0)
                 .count(),
             self.agents.len(),
-            self.demand.residential,
-            self.demand.commercial,
-            self.demand.industrial
+            self.demand.residential * 100.0,
+            self.demand.commercial * 100.0,
+            self.demand.industrial * 100.0,
+            self.demand.households_to_admit_today,
+            self.demand.households_to_remove_today
         );
         self.agents.daily_update(&self.pollution, &self.config);
         self.agents

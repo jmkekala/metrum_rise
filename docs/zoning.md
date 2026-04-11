@@ -26,9 +26,11 @@ The following are **fully deleted**:
 
 ```rust
 pub struct ZoningSystem {
-    pub grid:             DataGrid<ZoneType>,  // 2000×2000, 1 byte/cell = 4 MB
+    pub profiles:         Arc<ZoningProfileRegistry>,
+    pub grid:             DataGrid<u16>,        // 2000×2000 runtime profile ids, 0 = unpainted
     pub occupied:         DataGrid<bool>,       // 2000×2000, building footprints
     pub distance_to_road: DataGrid<u8>,         // 2000×2000, metres to nearest road (clamped 255)
+    pub no_build_mask:    DataGrid<bool>,       // 2000×2000, no-build frontage suppression
     pub config:           MapConfig,
 }
 ```
@@ -48,31 +50,39 @@ Allocator-specific placement state such as `EdgeOccupancy` now belongs to
 [`building_allocator.md`](building_allocator.md). This zoning document only owns the world grid,
 occupied grid, distance-to-road grid, no-build mask, and the player-facing zoning/tool contract.
 
-### Zone types
+### Derived broad zone families
 
-| Value | Name | Colour |
+The authoritative painted world stores runtime `ZoneProfile` ids, not `ZoneType` bytes. Broad
+`ZoneType` values are now derived helpers used only where a larger family bucket is still useful.
+
+| Value | Name | Notes |
 |---|---|---|
-| 0 | None | — |
-| 1 | Residential | Green |
-| 2 | Commercial | Blue |
-| 3 | Industrial | Yellow-orange |
-| 4 | Office | Purple |
-| 5 | Mixed | Teal |
+| 0 | None | Unpainted / no zoning |
+| 1 | Residential | Shipped baseline family |
+| 2 | Commercial | Shipped baseline family |
+| 3 | Industrial | Shipped baseline family |
+| 4 | Office | Deferred extension; not in the shipped Phase 1 profile set |
+| 5 | Mixed | Deferred extension; not in the shipped Phase 1 profile set |
 
 ---
 
 ## 3. Public Rust API
 
-All exposed via `#[func]` in `nodes/simulation_node.rs` and backed by `nodes/sim/editing.rs`:
+All exposed via `#[func]` in `nodes/simulation_node.rs` and backed by
+`nodes/sim/editing.rs` where mutation is needed:
 
 | Method | Purpose |
 |---|---|
-| `set_zone_rect(x_min, z_min, x_max, z_max, zone_type: u8)` | Paint a world-space rectangle |
-| `set_zone_rect_raw(x_min, z_min, x_max, z_max, bytes: PackedByteArray)` | Restore sub-rect (undo) |
-| `get_zone_subrect(x_min, z_min, x_max, z_max) -> PackedByteArray` | Capture sub-rect (undo) |
-| `get_zone_texture_data() -> PackedByteArray` | Full zone grid as flat u8 (R8 texture upload) |
+| `get_zone_profiles() -> Array[Dictionary]` | Return the validated zoning-profile registry for UI and tools |
+| `capture_zoning_patch(grid_x, grid_y, width_cells, height_cells) -> PackedByteArray` | Capture one little-endian `u16` profile-id patch for undo |
+| `apply_zoning_patch(grid_x, grid_y, width_cells, height_cells, target_profile_runtime_id, write_mask)` | Apply one masked paint patch |
+| `restore_zoning_patch(grid_x, grid_y, width_cells, height_cells, profile_ids_le_u16)` | Restore one full patch for undo |
+| `get_zone_profile_texture_data_rg8() -> PackedByteArray` | Full profile-id grid packed as `RG8` for overlay upload |
+| `get_zone_profile_style_lut_rgba8() -> PackedByteArray` | One-row RGBA8 style LUT for the overlay shader |
 | `get_occupied_texture_data() -> PackedByteArray` | Full occupied grid as flat u8 |
 | `get_distance_texture_data() -> PackedByteArray` | Full distance grid as flat u8 |
+| `get_no_build_mask_texture_data() -> PackedByteArray` | Full no-build mask as flat u8 |
+| `get_zone_grid_size() -> Vector2i` | Return zoning-grid dimensions for Godot tools |
 | `get_no_building_spawn_edge_indices() -> PackedInt32Array` | Indices of flagged edges (overlay) |
 | `set_no_building_spawn(edge_idx, enabled)` | Toggle no-build flag |
 | `get_no_building_spawn(edge_idx) -> bool` | Read no-build flag |
@@ -87,7 +97,9 @@ All exposed via `#[func]` in `nodes/simulation_node.rs` and backed by `nodes/sim
 The full roadside placement and removal pipeline is owned by [`building_allocator.md`](building_allocator.md).
 From the zoning system's perspective, the allocator currently consumes these services:
 
-- `get_zone_world(...)` to test whether the frontage cell and full footprint are legally zoned
+- `get_zone_profile_runtime_id_world(...)` to read the painted runtime profile at footprint cells
+- `profiles.asset_is_legal(...)` to test that the painted profile accepts the asset's
+  `zone_type + density + tags`
 - `distance_to_road_world(...)` to reject road-overlap cases and resolve scan-order ownership near
   competing roads
 - `is_rect_occupied(...)` to reject overlapping building footprints
@@ -136,13 +148,19 @@ The important zoning-side rule is:
 ## 7. Zone Rendering (`zoning_overlay.gd` + `zoning_overlay.gdshader`)
 
 A single full-map `MeshInstance3D` quad at `Y = 0.005` (below road asphalt at `Y = 0.01`).
-Three `R8` textures (zone type, distance-to-road, occupied) are uploaded to a `ShaderMaterial`.
+Five uploaded resources drive the zoning overlay material:
+- profile ids packed as `RG8`
+- style LUT packed as `RGBA8`
+- distance-to-road as `R8`
+- occupied as `R8`
+- no-build mask as `R8`
 
 ### Shader behaviour
 
 | Input | Effect |
 |---|---|
-| Zone type byte | Colour LUT lookup |
+| Profile-id `RG8` texel | Reconstruct runtime `u16` profile id |
+| Style LUT | Resolve the player-facing profile colour |
 | Distance ≤ 3 m (road carriageway) | Alpha → 0 (road asphalt masking) |
 | Distance 3–40 m | Full zone alpha |
 | Distance 40–100 m | Linear taper to 0.4× |
@@ -153,9 +171,12 @@ Three `R8` textures (zone type, distance-to-road, occupied) are uploaded to a `S
 
 ### Texture update cadence
 
-- **Zone type texture**: full re-upload after each paint operation (`set_zone_rect` → `get_zone_texture_data`).
+- **Profile texture**: full re-upload after each paint operation
+  (`apply_zoning_patch` / `restore_zoning_patch` → `get_zone_profile_texture_data_rg8`).
+- **Style LUT**: uploaded when the overlay initializes or the profile registry changes.
 - **Distance-to-road texture**: re-uploaded from `network_renderer.gd` after every road placement or removal.
 - **Occupied texture**: re-uploaded every 30 frames from `buildings.gd`.
+- **No-build mask texture**: re-uploaded with the distance texture and after no-build flag toggles.
 
 ### No-build overlay
 
@@ -166,7 +187,8 @@ Rebuilt by `_rebuild_no_build_overlay()` called from `set_tool_active()` and `fu
 
 ## 8. Save / Load
 
-- Zone grid serialised as a single flat `BLOB` in `zoning_world_grid` SQLite table (width, height, data).
+- Zone grid serialised as a single flat `BLOB` in `zoning_world_grid` SQLite table (width,
+  height, data), with one little-endian `u16` runtime profile id per cell.
 - allocator-owned `edge_occupancy` is **not** saved directly — see
   [`building_allocator.md`](building_allocator.md) for the rebuild contract.
 - `occupied` grid is rebuilt on load by replaying placed building footprints through
@@ -923,24 +945,38 @@ work those demand outputs consume.
 
 ### Phase 1: Zoning And Asset-Editor Foundation
 
-- Keep `zoning/profiles.toml` as the shipped source of truth and finalize the broad initial
+Completed in the current implementation:
+
+- `zoning/profiles.toml` is now the shipped source of truth for the broad initial
   `low / medium / high` residential, commercial, and industrial profile set.
-- Implement Rust-side `ZoneProfile` loading, validation, deterministic sorting, and compiled runtime
-  id assignment.
-- Expose read-only profile-registry queries to Godot so the UI and tools can stop hardcoding zoning
-  choices.
-- Update the asset editor to load that registry, replace hardcoded zoning lists, write
-  deterministic `zone_type` and `density` choices from the loaded data, validate authored building
-  data against the registry, and align its `upgrade_family` authoring UX with the new profile data.
-- Remove old editor-side `office` and `mixed` zoning controls from the asset editor and any other
-  zoning-related tools so the live tooling surface matches the shipped baseline registry instead of
-  preserving dead categories.
-- Replace the painted zoning grid, helper queries, and save-load format so the authoritative
-  painted world stores compiled `ZoneProfile` ids instead of broad `ZoneType`.
-- Replace the live zoning tool and overlay with the profile-driven brush/rectangle tool, patch
-  bridge, and registry-driven UI described earlier in this document.
-- Update allocator legality, stale-building cleanup, rezoning compatibility, and deterministic
-  asset selection to consume the new profile-based zoning contract end to end.
+- Rust-side `ZoneProfile` loading, validation, deterministic sorting, and compiled runtime id
+  assignment are implemented.
+- Read-only profile-registry queries are exposed to Godot so the UI and tools no longer need
+  hardcoded zoning choices.
+- The asset editor now loads that shared registry, replaces hardcoded zoning lists, writes
+  deterministic `zone_type` and `density` choices from the loaded data, and validates authored
+  zoned-building legality against the shipped registry.
+- The asset editor now also follows the newer conditional building contract closely enough for
+  baseline implementation, including `placement_mode`, explicit-building authoring, `service_class`,
+  and conditional zoning-field export.
+- Old editor-side `office` and `mixed` zoning controls were removed from the asset editor and live
+  zoning-related tools so the tooling surface matches the shipped baseline registry.
+- The painted zoning grid, helper bridge, and save-load format now store compiled `ZoneProfile`
+  ids instead of broad `ZoneType`.
+- The live zoning tool and overlay were replaced with the profile-driven brush/rectangle tool,
+  patch bridge, and registry-driven UI described earlier in this document.
+- Allocator legality, stale-building cleanup, and rezoning compatibility now consume the
+  profile-based zoning contract, including the deterministic rezoning grace period for
+  incompatible repainting.
+- Deterministic fresh-spawn asset selection now follows the baseline family-order and site-variant
+  rules: strip-stable family preference by `(zone_profile_id, edge_idx, side)` and site-local
+  variant choice by stable hash of `(zone_profile_id, edge_idx, side, leading_cell_x,
+  qualified_asset_id)`.
+
+Pending to finish Phase 1 fully:
+
+- none currently tracked inside Phase 1. Remaining broad-`ZoneType` helpers are now test-only
+  migration coverage rather than part of normal profile-driven runtime behavior.
 
 Exit condition:
 
@@ -951,6 +987,9 @@ Exit condition:
   hardcoded office or mixed options
 - the authoritative painted zoning state, live tool, save-load path, and allocator legality checks
   all use the same profile-based zoning contract
+- deterministic asset selection matches the zoning-spec family-order and site-variant rules rather
+  than only broad profile legality filtering
+- transitional broad-`ZoneType` helpers are no longer used by normal runtime behavior
 
 ### Phase 2: Demand-Layer Integration
 
@@ -961,10 +1000,18 @@ Exit condition:
   [`demand.md`](demand.md).
 - Wire the daily demand pass to the settled snapshot handoff described in [`demand.md`](demand.md)
   without trying to finish every deeper economy redesign item first.
+- Reconcile live demand inputs with the settled economy values as those source systems land rather
+  than leaving neutral placeholders in the runtime; in particular, keep
+  `utility_service_stability` wired to real settled utility outcomes instead of a permanent
+  fallback constant.
 - Move private building spawn, despawn, upgrade, and downgrade decisions behind demand-owned
   outputs instead of allocator-owned bootstrap logic.
 - Move household admission and removal behind demand-owned daily outputs instead of allocator-owned
   immigration logic.
+- Remove the remaining silent runtime compatibility fallbacks such as invented resident or worker
+  capacities once authored asset capacities are authoritative everywhere.
+- Keep [`building_allocator.md`](building_allocator.md) aligned with the live profile-based
+  legality, footprint-wide compatibility, and rezoning-grace behavior as these Phase 2 slices land.
 - Keep direct `level > 1` spawn as a later explicit extension after the baseline demand loop works.
 
 Exit condition:
@@ -996,16 +1043,26 @@ Exit condition:
 
 - Remove the old rectangle-only zoning tool path, the old hardcoded zoning lists, and other
   obsolete zone-type-only UI or bridge paths that the new zoning system replaced.
+- Remove the remaining broad-`ZoneType` compatibility helpers in the zoning runtime once tests,
+  save-load, and tooling no longer need them, including transitional helper paths such as
+  broad-family paint wrappers and derived broad-family texture exports.
+- Remove or demote any cached broad `zone_type` building fields that are no longer authoritative
+  once the live runtime and save/load path rely fully on `ZoneProfile`-based legality.
 - Remove allocator-owned immigration, founding bootstrap, and other growth-decision leftovers once
   the new demand path is live.
 - Remove transport-oriented household-admission defaults that no longer match the new demand and
   economy ownership split.
+- Remove leftover baseline-taxonomy paths that still enumerate deferred `Office` or `Mixed`
+  families in allocator indices, flow-field dirtying, or similar broad-family runtime tables once
+  the shipped baseline remains residential, commercial, and industrial only.
 - Update tests, tools, and benchmarks so they exercise the new profile-driven zoning and
   demand-owned growth path rather than relying on legacy bootstrap behavior.
 
 Exit condition:
 
-- the old zoning toolchain and old allocator-owned growth decisions are deleted
+- the old zoning toolchain, broad-`ZoneType` compatibility helpers, and old allocator-owned
+  growth decisions are deleted
+- deferred `Office` or `Mixed` baseline leftovers no longer remain in zoning-driven runtime paths
 - tests and tooling no longer depend on legacy bootstrap paths
 
 ### Phase 5: Later Extensions

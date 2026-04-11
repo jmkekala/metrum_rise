@@ -5,7 +5,9 @@
 //! 2. Runs the one-time founding bootstrap when the player has provided valid
 //!    startup zoning and an external connection.
 //! 3. Rebuilds derived indices and pathing after building mutations.
-//! 4. Admits immigrant households through connected border nodes up to current housing capacity.
+//!
+//! Demand-owned household admission is executed separately after the daily economy settlement and
+//! daily demand pass; allocator tick no longer recomputes immigration pressure locally.
 
 mod entrance;
 mod geometry;
@@ -194,7 +196,7 @@ impl BuildingAllocator {
         &mut self,
         zoning: &mut ZoningSystem,
         agents: &mut crate::simulation::economy::agents::AgentSystem,
-        households: &mut crate::simulation::economy::households::HouseholdSystem,
+        _households: &mut crate::simulation::economy::households::HouseholdSystem,
         logistics: &mut crate::simulation::economy::logistics::ShipmentSystem,
         network: &mut crate::simulation::network::TransitNetwork,
         graph: &mut RegionGraph,
@@ -215,10 +217,16 @@ impl BuildingAllocator {
             self.rebuild_zone_index();
         }
 
-        // 3. Immigration logic.
-        self.spawn_immigrants(agents, households, graph);
-
         self.dirty = false;
+    }
+
+    pub(crate) fn execute_demand_household_admission(
+        &mut self,
+        households_to_admit_today: u32,
+        agents: &mut crate::simulation::economy::agents::AgentSystem,
+        households: &mut crate::simulation::economy::households::HouseholdSystem,
+    ) {
+        self.admit_households_from_demand(households_to_admit_today as usize, agents, households);
     }
 
     /// Remaps all building edge indices after a road network compaction.
@@ -267,16 +275,19 @@ impl BuildingAllocator {
     }
 
     /// Returns the occupant capacity for a building, from its registered manifest.
+    ///
+    /// Unresolved assets or undeclared capacities count as zero.
     pub fn building_capacity(&self, building_idx: usize) -> u32 {
         let b = &self.buildings[building_idx];
         if b.broken {
             return 0;
         }
-        let cap = self.registry.capacity(&b.asset_id);
-        if cap == 0 { 6 } else { cap }
+        self.registry.capacity(&b.asset_id)
     }
 
     /// Returns the residential capacity declared by a building asset.
+    ///
+    /// Unresolved assets or undeclared capacities count as zero.
     pub fn resident_capacity(&self, building_idx: usize) -> u32 {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
@@ -288,16 +299,12 @@ impl BuildingAllocator {
             .get(&b.asset_id)
             .and_then(|entry| entry.manifest.building.as_ref())
             .and_then(|building| building.residents_capacity)
-            .unwrap_or_else(|| {
-                if matches!(b.zone_type, ZoneType::Residential | ZoneType::Mixed) {
-                    6
-                } else {
-                    0
-                }
-            })
+            .unwrap_or(0)
     }
 
     /// Returns the worker capacity declared by a building asset.
+    ///
+    /// Unresolved assets or undeclared capacities count as zero.
     pub fn worker_capacity(&self, building_idx: usize) -> u32 {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
@@ -309,13 +316,7 @@ impl BuildingAllocator {
             .get(&b.asset_id)
             .and_then(|entry| entry.manifest.building.as_ref())
             .and_then(|building| building.worker_capacity)
-            .unwrap_or_else(|| match b.zone_type {
-                ZoneType::Commercial => 3,
-                ZoneType::Industrial => 4,
-                ZoneType::Office => 3,
-                ZoneType::Mixed => 2,
-                _ => 0,
-            })
+            .unwrap_or(0)
     }
 
     /// Returns a bounded nearby candidate list for the requested zones, sorted by distance.

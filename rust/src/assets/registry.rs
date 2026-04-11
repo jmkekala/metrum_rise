@@ -5,10 +5,10 @@
 //! footprint dimensions, and stable qualified IDs.
 //!
 //! Primary key is `"pack_id:asset_id"`. Secondary indices cover:
-//! - zone-type placement: all building assets for a given zone
+//! - zone-type placement: all zoned-private building assets for a given zone
 //! - family upgrade chains: `(asset_set, level + 1) → qualified_id` for in-place upgrades
 
-use crate::assets::asset::{AssetManifest, ZoneClass};
+use crate::assets::asset::{AssetManifest, PlacementMode, ZoneClass};
 use std::collections::HashMap;
 
 /// A single registered asset, combining its manifest with its pack origin.
@@ -33,7 +33,7 @@ pub struct AssetRegistry {
     /// Primary store: qualified_id → entry.
     entries: HashMap<String, AssetEntry>,
     /// Secondary index: `by_zone[ZoneClass as usize]` = sorted list of qualified_ids for
-    /// building assets of that zone type. Sorted for deterministic placement selection.
+    /// zoned-private building assets of that zone type. Sorted for deterministic placement selection.
     by_zone: [Vec<String>; 5],
     /// Secondary index: `(zone_type, density)` → sorted list of qualified_ids.
     by_zone_density: HashMap<(ZoneClass, String), Vec<String>>,
@@ -61,8 +61,30 @@ impl AssetRegistry {
         let qid = manifest.qualified_id(pack_id);
 
         if let Some(bd) = &manifest.building {
+            if bd.placement_mode != PlacementMode::ZonedPrivate {
+                self.entries.insert(
+                    qid,
+                    AssetEntry {
+                        manifest,
+                        pack_id: pack_id.to_owned(),
+                        asset_dir,
+                    },
+                );
+                return;
+            }
             // Zone placement index.
-            let zi = bd.zone_type as usize;
+            let Some(zone_type) = bd.zone_type else {
+                self.entries.insert(
+                    qid,
+                    AssetEntry {
+                        manifest,
+                        pack_id: pack_id.to_owned(),
+                        asset_dir,
+                    },
+                );
+                return;
+            };
+            let zi = zone_type as usize;
             if zi < self.by_zone.len() {
                 let list = &mut self.by_zone[zi];
                 if !list.contains(&qid) {
@@ -70,7 +92,7 @@ impl AssetRegistry {
                     list.sort_unstable();
                 }
             }
-            let density_key = (bd.zone_type, bd.density.clone());
+            let density_key = (zone_type, bd.density_key().unwrap_or("low").to_owned());
             let density_list = self.by_zone_density.entry(density_key).or_default();
             if !density_list.contains(&qid) {
                 density_list.push(qid.clone());
@@ -200,7 +222,7 @@ impl AssetRegistry {
 mod tests {
     use super::*;
     use crate::assets::AssetManifest;
-    use crate::assets::asset::{BuildingData, LodEntry, ZoneClass};
+    use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
 
     fn make_building_manifest(asset_id: &str, zone: ZoneClass, w: u16, d: u16) -> AssetManifest {
         AssetManifest {
@@ -216,10 +238,13 @@ mod tests {
             }],
             anchors: vec![],
             building: Some(BuildingData {
-                zone_type: zone,
-                density: "low".to_owned(),
+                placement_mode: PlacementMode::ZonedPrivate,
+                zone_type: Some(zone),
+                density: Some("low".to_owned()),
                 lot_width_cells: w,
                 lot_depth_cells: d,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
                 level: 1,
                 residents_capacity: None,
                 worker_capacity: None,
