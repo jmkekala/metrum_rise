@@ -29,6 +29,17 @@ fn register_test_asset_with_family(
     zone: ZoneClass,
     asset_set: Option<&str>,
 ) -> String {
+    register_test_asset_with_family_level(allocator, pack_id, asset_id, zone, asset_set, 1)
+}
+
+fn register_test_asset_with_family_level(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    zone: ZoneClass,
+    asset_set: Option<&str>,
+    level: u8,
+) -> String {
     let (residents_capacity, worker_capacity) = match zone {
         ZoneClass::Residential => (Some(6), None),
         ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
@@ -59,7 +70,7 @@ fn register_test_asset_with_family(
             lot_depth_cells: 1,
             min_zone_width_cells: None,
             min_zone_depth_cells: None,
-            level: 1,
+            level,
             residents_capacity,
             worker_capacity,
             service_class: None,
@@ -138,7 +149,30 @@ fn frontage_profile_runtime_id_for_building(
     zoning.get_zone_profile_runtime_id_world(frontage_center.x, frontage_center.y)
 }
 
-fn setup_bootstrap_city_for_rezoning() -> (
+fn execute_startup_demand_building_pass(
+    allocator: &mut BuildingAllocator,
+    zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
+    agents: &mut AgentSystem,
+    households: &HouseholdSystem,
+    logistics: &mut ShipmentSystem,
+    network: &crate::simulation::network::TransitNetwork,
+    graph: &RegionGraph,
+) {
+    use crate::simulation::economy::demand::DemandSystem;
+
+    let mut demand = DemandSystem::new();
+    demand.run_daily_pass(allocator, households, graph, zoning);
+    allocator.execute_demand_building_actions(
+        &demand.building_actions,
+        zoning,
+        agents,
+        logistics,
+        graph,
+        &network.lane_system,
+    );
+}
+
+fn setup_startup_spawn_city_for_rezoning() -> (
     BuildingAllocator,
     crate::simulation::grid::zoning::ZoningSystem,
     AgentSystem,
@@ -148,6 +182,7 @@ fn setup_bootstrap_city_for_rezoning() -> (
     RegionGraph,
     usize,
 ) {
+    use crate::simulation::economy::demand::{DemandBuildingActionPlan, DemandSystem};
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::types::NodeType;
@@ -165,7 +200,7 @@ fn setup_bootstrap_city_for_rezoning() -> (
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
-    let mut households = HouseholdSystem::new();
+    let households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -183,20 +218,29 @@ fn setup_bootstrap_city_for_rezoning() -> (
     zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
     zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
 
-    allocator.tick(
+    let mut demand = DemandSystem::new();
+    demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+    let mut startup_plan = DemandBuildingActionPlan::default();
+    if let Some(action) = demand.building_actions.residential.spawns.first() {
+        startup_plan.residential.spawns.push(action.clone());
+    }
+    if let Some(action) = demand.building_actions.commercial.spawns.first() {
+        startup_plan.commercial.spawns.push(action.clone());
+    }
+    allocator.execute_demand_building_actions(
+        &startup_plan,
         &mut zoning,
         &mut agents,
-        &mut households,
         &mut logistics,
-        &mut network,
-        &mut graph,
+        &graph,
+        &network.lane_system,
     );
 
     let residential_idx = allocator
         .buildings
         .iter()
         .position(|building| building.zone_type == ZoneType::Residential)
-        .expect("founding bootstrap should create one residential building");
+        .expect("startup demand should create one seeded residential building for rezoning tests");
 
     (
         allocator,
@@ -214,6 +258,18 @@ fn setup_bootstrap_city_for_rezoning() -> (
 fn test_zone_index_consistency() {
     let mut allocator = BuildingAllocator::new();
     let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "zone_index_res",
+        ZoneClass::Residential,
+    );
+    let commercial_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "zone_index_com",
+        ZoneClass::Commercial,
+    );
 
     for i in 0..10 {
         allocator.buildings.push(Building {
@@ -236,7 +292,11 @@ fn test_zone_index_consistency() {
             cell_y: 0,
             occupancy: 0,
             worker_count: 0,
-            asset_id: String::new(),
+            asset_id: if i % 2 == 0 {
+                residential_asset.clone()
+            } else {
+                commercial_asset.clone()
+            },
             level: 1,
             broken: false,
             stock: 0.0,
@@ -422,7 +482,7 @@ fn test_tick_does_not_auto_spawn_private_buildings_from_zones() {
 }
 
 #[test]
-fn test_tick_runs_one_time_founding_bootstrap_from_border_and_zoning() {
+fn test_allocator_tick_does_not_place_founding_buildings() {
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use godot::prelude::Vector3;
@@ -465,43 +525,15 @@ fn test_tick_runs_one_time_founding_bootstrap_from_border_and_zoning() {
         &mut graph,
     );
 
-    assert!(allocator.founding_bootstrap_consumed);
-    assert_eq!(allocator.buildings.len(), 2);
-    assert_eq!(
-        allocator
-            .buildings
-            .iter()
-            .filter(|building| building.zone_type == ZoneType::Residential)
-            .count(),
-        1
-    );
-    assert_eq!(
-        allocator
-            .buildings
-            .iter()
-            .filter(|building| building.zone_type == ZoneType::Commercial)
-            .count(),
-        1
-    );
-
-    allocator.tick(
-        &mut zoning,
-        &mut agents,
-        &mut households,
-        &mut logistics,
-        &mut network,
-        &mut graph,
-    );
-
     assert_eq!(
         allocator.buildings.len(),
-        2,
-        "Founding bootstrap should only seed one residential and one commercial building"
+        0,
+        "allocator tick should no longer seed founding buildings on its own"
     );
 }
 
 #[test]
-fn test_founding_bootstrap_residential_family_selection_uses_strip_hash_order() {
+fn test_startup_demand_residential_family_selection_uses_strip_hash_order() {
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use godot::prelude::Vector3;
@@ -526,7 +558,7 @@ fn test_founding_bootstrap_residential_family_selection_uses_strip_hash_order() 
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
-    let mut households = HouseholdSystem::new();
+    let households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -544,20 +576,21 @@ fn test_founding_bootstrap_residential_family_selection_uses_strip_hash_order() 
     zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
     zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
 
-    allocator.tick(
+    execute_startup_demand_building_pass(
+        &mut allocator,
         &mut zoning,
         &mut agents,
-        &mut households,
+        &households,
         &mut logistics,
-        &mut network,
-        &mut graph,
+        &network,
+        &graph,
     );
 
     let residential = allocator
         .buildings
         .iter()
         .find(|building| building.zone_type == ZoneType::Residential)
-        .expect("bootstrap should place a residential building");
+        .expect("startup demand should place a residential building");
     let profile_runtime_id =
         frontage_profile_runtime_id_for_building(&allocator, residential, &zoning, &graph);
     let expected_asset_id = if stable_strip_family_hash(
@@ -580,7 +613,7 @@ fn test_founding_bootstrap_residential_family_selection_uses_strip_hash_order() 
 }
 
 #[test]
-fn test_founding_bootstrap_residential_variant_selection_uses_site_hash() {
+fn test_startup_demand_residential_variant_selection_uses_site_hash() {
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use godot::prelude::Vector3;
@@ -605,7 +638,7 @@ fn test_founding_bootstrap_residential_variant_selection_uses_site_hash() {
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
-    let mut households = HouseholdSystem::new();
+    let households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -623,20 +656,21 @@ fn test_founding_bootstrap_residential_variant_selection_uses_site_hash() {
     zoning.set_zone_rect(-50.0, -50.0, 45.0, 50.0, ZoneType::Residential);
     zoning.set_zone_rect(55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
 
-    allocator.tick(
+    execute_startup_demand_building_pass(
+        &mut allocator,
         &mut zoning,
         &mut agents,
-        &mut households,
+        &households,
         &mut logistics,
-        &mut network,
-        &mut graph,
+        &network,
+        &graph,
     );
 
     let residential = allocator
         .buildings
         .iter()
         .find(|building| building.zone_type == ZoneType::Residential)
-        .expect("bootstrap should place a residential building");
+        .expect("startup demand should place a residential building");
     let profile_runtime_id =
         frontage_profile_runtime_id_for_building(&allocator, residential, &zoning, &graph);
     let expected_asset_id = if stable_site_variant_hash(
@@ -671,7 +705,7 @@ fn test_incompatible_rezoning_enters_pending_redevelopment_before_removal() {
         mut network,
         mut graph,
         residential_idx,
-    ) = setup_bootstrap_city_for_rezoning();
+    ) = setup_startup_spawn_city_for_rezoning();
 
     let residential = allocator.buildings[residential_idx].clone();
     zoning.set_zone_rect(
@@ -729,7 +763,7 @@ fn test_rezoning_recovery_clears_pending_redevelopment() {
         mut network,
         mut graph,
         residential_idx,
-    ) = setup_bootstrap_city_for_rezoning();
+    ) = setup_startup_spawn_city_for_rezoning();
 
     let residential = allocator.buildings[residential_idx].clone();
     zoning.set_zone_rect(
@@ -1265,7 +1299,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
     households.households[household_id].stock_days = 3.0;
 
     let mut demand = DemandSystem::new();
-    demand.run_daily_pass(&allocator, &households, &graph);
+    demand.run_daily_pass(&allocator, &households, &graph, &zoning);
     assert!(
         demand.households_to_admit_today > 0,
         "startup support should produce a demand-owned household-admission output"
@@ -1279,5 +1313,255 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
     assert!(
         households.households.len() >= 2,
         "player-seeded startup city should admit another household through the demand-owned startup output"
+    );
+}
+
+#[test]
+fn test_demand_building_spawn_plan_executes_from_daily_budget() {
+    use crate::simulation::economy::demand::DemandSystem;
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "base",
+        "b.res.house",
+        ZoneClass::Residential,
+    );
+    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&MapConfig::default());
+    let mut graph = RegionGraph::new();
+    let mut network = crate::simulation::network::TransitNetwork::new();
+    let mut agents = AgentSystem::new();
+    let mut logistics = ShipmentSystem::new();
+    let households = HouseholdSystem::new();
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(120.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    graph.set_node_type(0, crate::simulation::network::types::NodeType::Border);
+    zoning.set_zone_rect(-40.0, -40.0, 80.0, 40.0, ZoneType::Residential);
+
+    let mut demand = DemandSystem::new();
+    demand.run_daily_pass(&allocator, &households, &graph, &zoning);
+    assert!(
+        !demand.building_actions.residential.spawns.is_empty(),
+        "startup support and legal zoning should produce at least one residential spawn action"
+    );
+
+    allocator.execute_demand_building_actions(
+        &demand.building_actions,
+        &mut zoning,
+        &mut agents,
+        &mut logistics,
+        &graph,
+        &network.lane_system,
+    );
+
+    assert!(
+        allocator
+            .buildings
+            .iter()
+            .any(|building| building.asset_id == residential_asset),
+        "the demand-owned residential spawn plan should place a real building"
+    );
+}
+
+#[test]
+fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() {
+    use crate::simulation::economy::demand::{
+        DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
+    };
+    use godot::prelude::Vector3;
+
+    let mut allocator = BuildingAllocator::new();
+    let residential_level_1 = register_test_asset_with_family_level(
+        &mut allocator,
+        "base",
+        "b.res.family_l1",
+        ZoneClass::Residential,
+        Some("res_family"),
+        1,
+    );
+    let residential_level_2 = register_test_asset_with_family_level(
+        &mut allocator,
+        "base",
+        "b.res.family_l2",
+        ZoneClass::Residential,
+        Some("res_family"),
+        2,
+    );
+    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&MapConfig::default());
+    let mut graph = RegionGraph::new();
+    let mut network = crate::simulation::network::TransitNetwork::new();
+    let mut agents = AgentSystem::new();
+    let mut logistics = ShipmentSystem::new();
+
+    network.add_road(
+        &mut graph,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(120.0, 0.0, 0.0)],
+        1,
+        1,
+        crate::simulation::network::types::EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    zoning.set_zone_rect(-40.0, -40.0, 120.0, 40.0, ZoneType::Residential);
+
+    allocator.buildings.push(Building {
+        center_x: 0.0,
+        center_y: 0.0,
+        width_cells: 1,
+        depth_cells: 1,
+        zone_type: ZoneType::Residential,
+        facing_dir: Vector2::new(0.0, -1.0),
+        frontage_t: 0.0,
+        side_offset: 1.0,
+        abandoned_timer: 0,
+        edge_idx: 0,
+        side: 1,
+        cell_x: 0,
+        cell_y: 0,
+        occupancy: 6,
+        worker_count: 0,
+        asset_id: residential_level_1.clone(),
+        level: 1,
+        broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 0.0,
+        utility_service_available: true,
+        shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
+    });
+    allocator.buildings.push(Building {
+        center_x: 0.0,
+        center_y: 0.0,
+        width_cells: 1,
+        depth_cells: 1,
+        zone_type: ZoneType::Residential,
+        facing_dir: Vector2::new(0.0, -1.0),
+        frontage_t: 0.0,
+        side_offset: 1.0,
+        abandoned_timer: 0,
+        edge_idx: 0,
+        side: 1,
+        cell_x: 2,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        asset_id: residential_level_2.clone(),
+        level: 2,
+        broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 0.0,
+        utility_service_available: true,
+        shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
+    });
+    allocator.buildings.push(Building {
+        center_x: 0.0,
+        center_y: 0.0,
+        width_cells: 1,
+        depth_cells: 1,
+        zone_type: ZoneType::Residential,
+        facing_dir: Vector2::new(0.0, -1.0),
+        frontage_t: 0.0,
+        side_offset: 1.0,
+        abandoned_timer: 0,
+        edge_idx: 0,
+        side: 1,
+        cell_x: 4,
+        cell_y: 0,
+        occupancy: 0,
+        worker_count: 0,
+        asset_id: residential_level_1.clone(),
+        level: 1,
+        broken: false,
+        stock: 0.0,
+        revenue: 0.0,
+        operating_budget: 0.0,
+        utility_service_available: true,
+        shipment_cooldown_days: 0,
+        pending_redevelopment: false,
+        rezone_grace_days_remaining: 0,
+    });
+    allocator
+        .recompute_derived_transforms(&graph, &zoning)
+        .expect("building transforms should rebuild for test fixtures");
+    allocator.rebuild_zone_index();
+    allocator.rebuild_entrance_cache(&graph, &network.lane_system);
+
+    let mut plan = DemandBuildingActionPlan::default();
+    plan.residential.despawns.push(DemandBuildingActionKey {
+        edge_idx: 0,
+        side: 1,
+        cell_x: 4,
+        width_cells: 1,
+        depth_cells: 1,
+        level: 1,
+        asset_id: residential_level_1.clone(),
+    });
+    plan.residential.downgrades.push(DemandLevelChangeAction {
+        building: DemandBuildingActionKey {
+            edge_idx: 0,
+            side: 1,
+            cell_x: 2,
+            width_cells: 1,
+            depth_cells: 1,
+            level: 2,
+            asset_id: residential_level_2.clone(),
+        },
+        target_asset_id: residential_level_1.clone(),
+    });
+    plan.residential.upgrades.push(DemandLevelChangeAction {
+        building: DemandBuildingActionKey {
+            edge_idx: 0,
+            side: 1,
+            cell_x: 0,
+            width_cells: 1,
+            depth_cells: 1,
+            level: 1,
+            asset_id: residential_level_1.clone(),
+        },
+        target_asset_id: residential_level_2.clone(),
+    });
+
+    allocator.execute_demand_building_actions(
+        &plan,
+        &mut zoning,
+        &mut agents,
+        &mut logistics,
+        &graph,
+        &network.lane_system,
+    );
+
+    assert_eq!(allocator.buildings.len(), 2);
+    assert!(
+        allocator.buildings.iter().any(|building| {
+            building.cell_x == 0 && building.asset_id == residential_level_2 && building.level == 2
+        }),
+        "upgrade action should replace the first building with the next family level"
+    );
+    assert!(
+        allocator.buildings.iter().any(|building| {
+            building.cell_x == 2 && building.asset_id == residential_level_1 && building.level == 1
+        }),
+        "downgrade action should replace the second building with the previous family level"
+    );
+    assert!(
+        allocator
+            .buildings
+            .iter()
+            .all(|building| building.cell_x != 4),
+        "despawn action should remove the empty third building"
     );
 }

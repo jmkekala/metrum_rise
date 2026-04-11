@@ -993,26 +993,35 @@ Exit condition:
 
 ### Phase 2: Demand-Layer Integration
 
-- Implement the demand-owned `GrowthProfile` registry and make `growth_profile_id` from zoning
-  resolve against it.
-- Implement the baseline demand signal normalization, `DemandChannel` formulas, startup-support
-  rules, household admission/removal rules, and daily building-action budgets from
-  [`demand.md`](demand.md).
-- Wire the daily demand pass to the settled snapshot handoff described in [`demand.md`](demand.md)
-  without trying to finish every deeper economy redesign item first.
-- Reconcile live demand inputs with the settled economy values as those source systems land rather
-  than leaving neutral placeholders in the runtime; in particular, keep
-  `utility_service_stability` wired to real settled utility outcomes instead of a permanent
-  fallback constant.
-- Move private building spawn, despawn, upgrade, and downgrade decisions behind demand-owned
-  outputs instead of allocator-owned bootstrap logic.
-- Move household admission and removal behind demand-owned daily outputs instead of allocator-owned
-  immigration logic.
-- Remove the remaining silent runtime compatibility fallbacks such as invented resident or worker
-  capacities once authored asset capacities are authoritative everywhere.
-- Keep [`building_allocator.md`](building_allocator.md) aligned with the live profile-based
-  legality, footprint-wide compatibility, and rezoning-grace behavior as these Phase 2 slices land.
-- Keep direct `level > 1` spawn as a later explicit extension after the baseline demand loop works.
+Completed in the current implementation:
+
+- The demand-owned `GrowthProfile` registry is now shipped and `growth_profile_id` from zoning
+  resolves against it.
+- The baseline demand signal normalization, `DemandChannel` formulas, startup-support rules, and
+  household admission or removal formulas from [`demand.md`](demand.md) are now implemented.
+- The daily demand pass now runs from the settled snapshot handoff described in [`demand.md`](demand.md)
+  instead of as a separate allocator-owned pressure pass.
+- `utility_service_stability` no longer uses a permanent placeholder constant; the live runtime now
+  derives it from settled building-level utility outcomes as the current baseline approximation.
+- Ordinary household admission is now driven by the demand-owned `households_to_admit_today`
+  output instead of allocator-owned immigration pressure logic.
+- Private building spawn, despawn, upgrade, and downgrade decisions now execute from
+  demand-owned daily building-action budgets and deterministic action plans in the live runtime.
+- Fresh-map startup no longer uses allocator-owned founding placement; the live runtime now relies
+  on the authored demand-side `startup_support` path to begin growth without a hidden bootstrap
+  exception.
+- Silent runtime fallback capacities were removed; resident and worker capacities now come from
+  authored asset data or resolve to zero if the asset data is missing.
+- [`building_allocator.md`](building_allocator.md) is now aligned with the live profile-based
+  legality, footprint-wide compatibility, rezoning grace, and demand-owned admission handoff.
+
+Pending to finish Phase 2 fully:
+
+- none currently tracked
+
+Deferred extension:
+
+- direct `level > 1` spawn remains a later explicit extension after the baseline demand loop works.
 
 Exit condition:
 
@@ -1035,8 +1044,8 @@ Exit condition:
 Exit condition:
 
 - economy produces the settled daily snapshot that demand expects
-- economy consumes demand-owned household and building change outputs without fallback bootstrap
-  paths
+- economy consumes demand-owned household and building change outputs directly from the daily demand
+  pass
 - zoning legality, demand ownership, and economy viability all meet cleanly in one runtime path
 
 ### Phase 4: Legacy Cleanup And Validation
@@ -1048,7 +1057,7 @@ Exit condition:
   broad-family paint wrappers and derived broad-family texture exports.
 - Remove or demote any cached broad `zone_type` building fields that are no longer authoritative
   once the live runtime and save/load path rely fully on `ZoneProfile`-based legality.
-- Remove allocator-owned immigration, founding bootstrap, and other growth-decision leftovers once
+- Remove allocator-owned immigration and other growth-decision leftovers once
   the new demand path is live.
 - Remove transport-oriented household-admission defaults that no longer match the new demand and
   economy ownership split.
@@ -1056,25 +1065,34 @@ Exit condition:
   families in allocator indices, flow-field dirtying, or similar broad-family runtime tables once
   the shipped baseline remains residential, commercial, and industrial only.
 - Update tests, tools, and benchmarks so they exercise the new profile-driven zoning and
-  demand-owned growth path rather than relying on legacy bootstrap behavior.
+  demand-owned growth path rather than relying on legacy fallback behavior.
 
 Exit condition:
 
 - the old zoning toolchain, broad-`ZoneType` compatibility helpers, and old allocator-owned
   growth decisions are deleted
 - deferred `Office` or `Mixed` baseline leftovers no longer remain in zoning-driven runtime paths
-- tests and tooling no longer depend on legacy bootstrap paths
+- tests and tooling no longer depend on removed allocator-owned startup exceptions
 
 ### Phase 5: Later Extensions
 
 - Add district-style or family-preference systems if tighter authored neighborhood identity is
   needed.
 - Add corner and other multi-edge build-site support.
+- If later scenarios need a special founding-placement rule, add it as explicit scenario-owned
+  setup rather than reintroducing allocator-owned bootstrap logic.
 - Reintroduce office or mixed-use zoning only if their legality, demand, and growth-profile rules
   are specified together as one coherent extension.
 - Add any extra zoning subcategories beyond the broad initial `low / medium / high` baseline.
 - If later gameplay needs authored zone-to-zone transition permissions, reintroduce explicit
   `upgrade_targets` or `downgrade_targets`-style `ZoneProfile` transition fields only when a real
   runtime system uses them.
+- Split the generic agent-spawn API into separate ordinary housed admission, optional border-origin
+  transport visualization, and test/helper paths so ordinary demand-driven growth does not inherit
+  `TRANSIT_IMMIGRATING` defaults.
+- Replace the current building-loss displacement fallback with an explicit rehousing, unhoused,
+  disaster, or removal contract instead of reusing ordinary entrance-travel states.
+- Continue removing test and helper fixtures that rely on unresolved building manifests or
+  under-specified asset capacities as the authored asset contract becomes stricter.
 
 This phase is intentionally non-blocking for the first playable profile-based zoning replacement.

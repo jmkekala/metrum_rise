@@ -17,6 +17,11 @@ fn register_test_asset(
     asset_id: &str,
     zone: ZoneClass,
 ) -> String {
+    let (residents_capacity, worker_capacity) = match zone {
+        ZoneClass::Residential => (Some(6), None),
+        ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
+        ZoneClass::Mixed => (Some(4), Some(2)),
+    };
     let manifest = AssetManifest {
         asset_id: asset_id.to_owned(),
         display_name: "Test".to_owned(),
@@ -43,8 +48,8 @@ fn register_test_asset(
             min_zone_width_cells: None,
             min_zone_depth_cells: None,
             level: 1,
-            residents_capacity: Some(6),
-            worker_capacity: None,
+            residents_capacity,
+            worker_capacity,
             service_class: None,
             economy_profile: None,
             preview_scale: Some(1.0),
@@ -102,7 +107,7 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         cell_y: 0,
         occupancy: 0,
         worker_count: 0,
-        asset_id: String::new(),
+        asset_id: "test:placeholder".to_owned(),
         level: 1,
         broken: false,
         stock: 0.0,

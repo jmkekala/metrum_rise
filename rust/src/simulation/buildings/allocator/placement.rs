@@ -1,96 +1,29 @@
-//! One-time founding bootstrap placement and frontage-slot resolution.
+//! Demand-driven building placement candidate discovery and frontage-slot resolution.
 
 use crate::assets::ZoneClass;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
-    Building, BuildingAllocator, EdgeOccupancy, zone_class_to_zone_type,
+    Building, BuildingAllocator, EdgeOccupancy, zone_class_to_zone_type, zone_type_to_zone_class,
 };
+use crate::simulation::economy::demand::{DemandSpawnAction, DemandSpawnCandidate};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
-use crate::simulation::network::lanes::LaneSystem;
-use crate::simulation::network::types::NodeType;
 use godot::prelude::Vector2;
 use std::collections::BTreeMap;
 
-const FOUNDING_RESIDENTIAL_ZONE: ZoneClass = ZoneClass::Residential;
-const FOUNDING_COMMERCIAL_ZONE: ZoneClass = ZoneClass::Commercial;
-
 impl BuildingAllocator {
-    /// Places the one-time founding bootstrap when the city has a border
-    /// connection plus valid residential and commercial zoned frontage.
-    pub fn place_founding_bootstrap_if_ready(
-        &mut self,
-        zoning: &mut ZoningSystem,
-        graph: &RegionGraph,
-        lanes: &LaneSystem,
-    ) {
-        if self.founding_bootstrap_consumed {
-            return;
-        }
-
-        if !self.buildings.is_empty() {
-            self.founding_bootstrap_consumed = true;
-            debug_log!(
-                "economy",
-                "founding bootstrap skipped permanently: city already has {} building(s)",
-                self.buildings.len()
-            );
-            return;
-        }
-
-        if !has_connected_border_node(graph) {
-            debug_log!(
-                "economy",
-                "founding bootstrap waiting: no connected external Border node"
-            );
-            return;
-        }
-
-        let Some(residential_slot) = self.resolve_first_valid_slot_for_zone_density(
-            FOUNDING_RESIDENTIAL_ZONE,
-            "low",
-            zoning,
-            graph,
-        ) else {
-            debug_log!(
-                "economy",
-                "founding bootstrap waiting: no valid deterministic residential slot for low density"
-            );
-            return;
-        };
-        let Some(commercial_slot) = self.resolve_first_valid_slot_for_zone_density(
-            FOUNDING_COMMERCIAL_ZONE,
-            "low",
-            zoning,
-            graph,
-        ) else {
-            debug_log!(
-                "economy",
-                "founding bootstrap waiting: no valid deterministic commercial slot for low density"
-            );
-            return;
-        };
-
-        let residential_idx = self.commit_resolved_slot(residential_slot, zoning);
-        let commercial_idx = self.commit_resolved_slot(commercial_slot, zoning);
-        self.rebuild_entrance_cache(graph, lanes);
-        self.founding_bootstrap_consumed = true;
-
-        debug_log!(
-            "economy",
-            "founding bootstrap placed residential_idx={} commercial_idx={} and is now consumed",
-            residential_idx,
-            commercial_idx
-        );
-    }
-
-    fn resolve_first_valid_slot_for_zone_density(
+    pub(crate) fn collect_demand_spawn_candidates(
         &self,
-        zone_class: ZoneClass,
-        density: &str,
+        zone_type: ZoneType,
         zoning: &ZoningSystem,
         graph: &RegionGraph,
-    ) -> Option<ResolvedPlacement> {
+    ) -> Vec<DemandSpawnCandidate> {
+        let Some(zone_class) = zone_type_to_zone_class(zone_type) else {
+            return Vec::new();
+        };
+        let mut reserved_frontage: BTreeMap<(usize, i8), Vec<bool>> = BTreeMap::new();
+        let mut candidates = Vec::new();
+
         for edge_idx in 0..graph.edge_count() {
             let edge = graph.edge(edge_idx);
             if edge.deleted
@@ -109,6 +42,13 @@ impl BuildingAllocator {
 
             for side in [1_i8, -1_i8] {
                 for cell_x in 0..cells_long {
+                    let reserved = reserved_frontage
+                        .entry((edge_idx, side))
+                        .or_insert_with(|| vec![false; cells_long]);
+                    if reserved.get(cell_x).copied().unwrap_or(false) {
+                        continue;
+                    }
+
                     let Some(profile_runtime_id) = self.frontage_profile_runtime_id_for_site(
                         edge_idx, side, cell_x, zoning, graph,
                     ) else {
@@ -118,28 +58,53 @@ impl BuildingAllocator {
                     else {
                         continue;
                     };
-                    if profile.zone_type != zone_class_to_zone_type(zone_class)
-                        || profile.density.as_str() != density
-                    {
+                    if profile.zone_type != zone_type {
                         continue;
                     }
-                    if let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
+
+                    let Some(resolved) = self.select_deterministic_fresh_spawn_asset(
                         zone_class,
-                        density,
+                        profile.density.as_str(),
                         profile_runtime_id,
                         edge_idx,
                         side,
                         cell_x,
                         zoning,
                         graph,
-                    ) {
-                        return Some(resolved);
+                    ) else {
+                        continue;
+                    };
+
+                    let required_cells = cell_x + resolved.width_cells;
+                    if required_cells > reserved.len() {
+                        reserved.resize(required_cells, false);
                     }
+                    if reserved
+                        .iter()
+                        .skip(cell_x)
+                        .take(resolved.width_cells)
+                        .any(|occupied| *occupied)
+                    {
+                        continue;
+                    }
+                    for occupied in reserved.iter_mut().skip(cell_x).take(resolved.width_cells) {
+                        *occupied = true;
+                    }
+
+                    candidates.push(DemandSpawnCandidate {
+                        action: DemandSpawnAction {
+                            edge_idx,
+                            side,
+                            cell_x,
+                            asset_id: resolved.asset_id,
+                        },
+                        density: profile.density.as_str().to_owned(),
+                    });
                 }
             }
         }
 
-        None
+        candidates
     }
 
     fn frontage_profile_runtime_id_for_site(
@@ -433,7 +398,7 @@ impl BuildingAllocator {
         self.dirty_zones[self.buildings[building_idx].zone_type as usize] = true;
         debug_log!(
             "economy",
-            "founding bootstrap placed building idx={} asset_id={} zone={:?} edge={} cell=({}, {}) center=({:.1}, {:.1})",
+            "demand placed building idx={} asset_id={} zone={:?} edge={} cell=({}, {}) center=({:.1}, {:.1})",
             building_idx,
             self.buildings[building_idx].asset_id,
             self.buildings[building_idx].zone_type,
@@ -444,6 +409,30 @@ impl BuildingAllocator {
             self.buildings[building_idx].center_y
         );
         building_idx
+    }
+
+    pub(crate) fn execute_demand_spawn_action(
+        &mut self,
+        action: &DemandSpawnAction,
+        zoning: &mut ZoningSystem,
+        graph: &RegionGraph,
+    ) -> bool {
+        let Some(params) = self.asset_placement_params(&action.asset_id) else {
+            return false;
+        };
+        let Some(resolved) = self.resolve_slot(
+            &action.asset_id,
+            &params,
+            action.edge_idx,
+            action.side,
+            action.cell_x,
+            zoning,
+            graph,
+        ) else {
+            return false;
+        };
+        self.commit_resolved_slot(resolved, zoning);
+        true
     }
 
     fn place_building_instance(&mut self, placement: ResolvedPlacement) -> usize {
@@ -547,16 +536,6 @@ impl StableHasher {
     fn finish(self) -> u64 {
         self.state
     }
-}
-
-fn has_connected_border_node(graph: &RegionGraph) -> bool {
-    graph.nodes().iter().enumerate().any(|(i, node)| {
-        node.node_type == NodeType::Border
-            && graph
-                .node_adjacency(i as u32)
-                .iter()
-                .any(|&edge_idx| !graph.edge(edge_idx).deleted)
-    })
 }
 
 struct AssetPlacementParams {

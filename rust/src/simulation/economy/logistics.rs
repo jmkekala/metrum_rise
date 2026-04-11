@@ -494,6 +494,11 @@ mod tests {
         asset_id: &str,
         zone: ZoneClass,
     ) -> String {
+        let (residents_capacity, worker_capacity) = match zone {
+            ZoneClass::Residential => (Some(6), None),
+            ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
+            ZoneClass::Mixed => (Some(4), Some(2)),
+        };
         let manifest = AssetManifest {
             asset_id: asset_id.to_owned(),
             display_name: "Test".to_owned(),
@@ -520,8 +525,8 @@ mod tests {
                 min_zone_width_cells: None,
                 min_zone_depth_cells: None,
                 level: 1,
-                residents_capacity: Some(6),
-                worker_capacity: None,
+                residents_capacity,
+                worker_capacity,
                 service_class: None,
                 economy_profile: None,
                 preview_scale: Some(1.0),
@@ -541,6 +546,7 @@ mod tests {
         center_x: f32,
         zone_type: ZoneType,
         edge_idx: usize,
+        asset_id: &str,
         stock: f32,
         budget: f32,
         utility: bool,
@@ -561,7 +567,7 @@ mod tests {
             cell_y: 0,
             occupancy: 0,
             worker_count: 0,
-            asset_id: String::new(),
+            asset_id: asset_id.to_owned(),
             level: 1,
             broken: false,
             stock,
@@ -647,24 +653,24 @@ mod tests {
             "logistics_commercial",
             ZoneClass::Commercial,
         );
-        let mut supplier = make_building(
+        let supplier = make_building(
             -50.0,
             ZoneType::Industrial,
             industrial_edge,
+            &industrial_asset,
             300.0,
             0.0,
             true,
         );
-        supplier.asset_id = industrial_asset;
-        let mut destination = make_building(
+        let destination = make_building(
             50.0,
             ZoneType::Commercial,
             commercial_edge,
+            &commercial_asset,
             100.0,
             2_000.0,
             true,
         );
-        destination.asset_id = commercial_asset;
         allocator.buildings.push(supplier);
         allocator.buildings.push(destination);
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -696,15 +702,15 @@ mod tests {
             "owa_commercial",
             ZoneClass::Commercial,
         );
-        let mut destination = make_building(
+        let destination = make_building(
             50.0,
             ZoneType::Commercial,
             commercial_edge,
+            &commercial_asset,
             50.0,
             5_000.0,
             true,
         );
-        destination.asset_id = commercial_asset;
         allocator.buildings.push(destination);
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);
         allocator.rebuild_zone_index();
@@ -732,15 +738,15 @@ mod tests {
             "owa_affordable_commercial",
             ZoneClass::Commercial,
         );
-        let mut destination = make_building(
+        let destination = make_building(
             50.0,
             ZoneType::Commercial,
             commercial_edge,
+            &commercial_asset,
             50.0,
             500.0,
             true,
         );
-        destination.asset_id = commercial_asset;
         allocator.buildings.push(destination);
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);
         allocator.rebuild_zone_index();

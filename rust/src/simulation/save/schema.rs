@@ -5,7 +5,7 @@ use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 16;
+pub const SAVE_VERSION: i64 = 18;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -54,7 +54,19 @@ CREATE TABLE demand_state(
     households_to_remove_today INTEGER NOT NULL,
     startup_support_factor REAL NOT NULL,
     admission_action_credit REAL NOT NULL,
-    removal_action_credit REAL NOT NULL
+    removal_action_credit REAL NOT NULL,
+    spawn_action_credit_residential REAL NOT NULL,
+    spawn_action_credit_commercial REAL NOT NULL,
+    spawn_action_credit_industrial REAL NOT NULL,
+    upgrade_action_credit_residential REAL NOT NULL,
+    upgrade_action_credit_commercial REAL NOT NULL,
+    upgrade_action_credit_industrial REAL NOT NULL,
+    downgrade_action_credit_residential REAL NOT NULL,
+    downgrade_action_credit_commercial REAL NOT NULL,
+    downgrade_action_credit_industrial REAL NOT NULL,
+    despawn_action_credit_residential REAL NOT NULL,
+    despawn_action_credit_commercial REAL NOT NULL,
+    despawn_action_credit_industrial REAL NOT NULL
 );
 CREATE TABLE pollution_state(
     width INTEGER NOT NULL,
@@ -143,9 +155,6 @@ CREATE TABLE buildings(
     broken INTEGER NOT NULL DEFAULT 0,
     pending_redevelopment INTEGER NOT NULL DEFAULT 0,
     rezone_grace_days_remaining INTEGER NOT NULL DEFAULT 0
-);
-CREATE TABLE founding_state(
-    bootstrap_consumed INTEGER NOT NULL
 );
 CREATE TABLE households(
     household_id INTEGER PRIMARY KEY,

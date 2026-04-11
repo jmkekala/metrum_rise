@@ -287,7 +287,6 @@ fn build_access_shared() -> AccessSharedSetup {
     zoning.update_distance_to_road(&graph);
 
     let mut allocator = BuildingAllocator::new();
-    allocator.founding_bootstrap_consumed = true;
     let asset_id = register_test_asset(
         &mut allocator,
         "bench",

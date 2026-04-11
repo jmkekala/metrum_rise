@@ -252,16 +252,33 @@ impl SimCore {
             &self.transit_network,
             &self.region_graph,
         );
-        self.demand
-            .run_daily_pass(&self.allocator, &self.households, &self.region_graph);
+        self.demand.run_daily_pass(
+            &self.allocator,
+            &self.households,
+            &self.region_graph,
+            &self.zoning,
+        );
         self.allocator.execute_demand_household_admission(
             self.demand.households_to_admit_today,
             &mut self.agents,
             &mut self.households,
         );
+        self.allocator.execute_demand_building_actions(
+            &self.demand.building_actions,
+            &mut self.zoning,
+            &mut self.agents,
+            &mut self.logistics,
+            &self.region_graph,
+            &self.transit_network.lane_system,
+        );
+        self.households.execute_demand_household_removal(
+            self.demand.households_to_remove_today,
+            &mut self.agents,
+            &mut self.allocator,
+        );
         debug_log!(
             "economy",
-            "daily tick end: buildings={} households={} agents={} demand=(R {:.0}%, C {:.0}%, I {:.0}%) admit={} remove={}",
+            "daily tick end: buildings={} households={} agents={} demand=(R {:.0}%, C {:.0}%, I {:.0}%) admit={} remove={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
             self.allocator.buildings.len(),
             self.households
                 .households
@@ -273,7 +290,19 @@ impl SimCore {
             self.demand.commercial * 100.0,
             self.demand.industrial * 100.0,
             self.demand.households_to_admit_today,
-            self.demand.households_to_remove_today
+            self.demand.households_to_remove_today,
+            self.demand.building_actions.residential.spawns.len(),
+            self.demand.building_actions.commercial.spawns.len(),
+            self.demand.building_actions.industrial.spawns.len(),
+            self.demand.building_actions.residential.upgrades.len(),
+            self.demand.building_actions.commercial.upgrades.len(),
+            self.demand.building_actions.industrial.upgrades.len(),
+            self.demand.building_actions.residential.downgrades.len(),
+            self.demand.building_actions.commercial.downgrades.len(),
+            self.demand.building_actions.industrial.downgrades.len(),
+            self.demand.building_actions.residential.despawns.len(),
+            self.demand.building_actions.commercial.despawns.len(),
+            self.demand.building_actions.industrial.despawns.len()
         );
         self.agents.daily_update(&self.pollution, &self.config);
         self.agents

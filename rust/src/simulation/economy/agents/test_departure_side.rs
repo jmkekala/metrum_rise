@@ -24,6 +24,11 @@ mod tests {
         asset_id: &str,
         zone: ZoneClass,
     ) -> String {
+        let (residents_capacity, worker_capacity) = match zone {
+            ZoneClass::Residential => (Some(6), None),
+            ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
+            ZoneClass::Mixed => (Some(4), Some(2)),
+        };
         let manifest = AssetManifest {
             asset_id: asset_id.to_owned(),
             display_name: "Test".to_owned(),
@@ -50,8 +55,8 @@ mod tests {
                 min_zone_width_cells: None,
                 min_zone_depth_cells: None,
                 level: 1,
-                residents_capacity: Some(6),
-                worker_capacity: None,
+                residents_capacity,
+                worker_capacity,
                 service_class: None,
                 economy_profile: None,
                 preview_scale: Some(1.0),
@@ -92,7 +97,7 @@ mod tests {
         }
     }
 
-    fn create_test_building(edge_idx: usize, side: i8) -> Building {
+    fn create_test_building(edge_idx: usize, side: i8, asset_id: &str) -> Building {
         Building {
             center_x: 0.0,
             center_y: 0.0,
@@ -109,7 +114,7 @@ mod tests {
             cell_y: 0,
             occupancy: 0,
             worker_count: 0,
-            asset_id: String::new(),
+            asset_id: asset_id.to_owned(),
             level: 1,
             broken: false,
             stock: 0.0,
@@ -153,8 +158,7 @@ mod tests {
             &format!("departure_side_{label}_{building_side}"),
             ZoneClass::Residential,
         );
-        let mut building = create_test_building(edge_idx, building_side);
-        building.asset_id = asset_id;
+        let building = create_test_building(edge_idx, building_side, &asset_id);
         allocator.buildings.push(building);
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);
         let entrance = allocator.entrances[0].clone();

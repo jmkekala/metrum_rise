@@ -139,19 +139,51 @@ impl AssetRegistry {
             .map(String::as_str)
     }
 
+    /// Returns the qualified ID of the previous downgrade tier for the given asset, or `None`.
+    ///
+    /// Downgrade is possible when the asset has an `asset_set` and a building with
+    /// `level - 1` in the same family is registered.
+    pub fn prev_level(&self, qualified_id: &str) -> Option<&str> {
+        let entry = self.entries.get(qualified_id)?;
+        let asset_set = entry.manifest.asset_set.as_deref()?;
+        let level = entry.manifest.building.as_ref()?.level;
+        if level <= 1 {
+            return None;
+        }
+        self.upgrade_index
+            .get(&(asset_set.to_owned(), level - 1))
+            .map(String::as_str)
+    }
+
+    /// Returns the residential capacity declared by a building asset's manifest.
+    ///
+    /// Returns `0` if the asset is not a building or has no declared residential capacity.
+    pub fn resident_capacity(&self, qualified_id: &str) -> u32 {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .and_then(|building| building.residents_capacity)
+            .unwrap_or(0)
+    }
+
+    /// Returns the worker capacity declared by a building asset's manifest.
+    ///
+    /// Returns `0` if the asset is not a building or has no declared worker capacity.
+    pub fn worker_capacity(&self, qualified_id: &str) -> u32 {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .and_then(|building| building.worker_capacity)
+            .unwrap_or(0)
+    }
+
     /// Returns the occupant capacity declared by a building asset's manifest.
     ///
     /// For residential assets this is `residents_capacity`; for commercial/industrial/office
     /// assets this is `worker_capacity`; for mixed assets this is the sum of both.
     /// Returns `0` if the asset is not a building or has no declared capacity.
     pub fn capacity(&self, qualified_id: &str) -> u32 {
-        let Some(entry) = self.entries.get(qualified_id) else {
-            return 0;
-        };
-        let Some(bd) = &entry.manifest.building else {
-            return 0;
-        };
-        bd.residents_capacity.unwrap_or(0) + bd.worker_capacity.unwrap_or(0)
+        self.resident_capacity(qualified_id) + self.worker_capacity(qualified_id)
     }
 
     /// Returns the entry for a qualified ID, or `None` if not registered.
@@ -225,6 +257,11 @@ mod tests {
     use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
 
     fn make_building_manifest(asset_id: &str, zone: ZoneClass, w: u16, d: u16) -> AssetManifest {
+        let (residents_capacity, worker_capacity) = match zone {
+            ZoneClass::Residential => (Some(6), None),
+            ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
+            ZoneClass::Mixed => (Some(4), Some(2)),
+        };
         AssetManifest {
             asset_id: asset_id.to_owned(),
             display_name: "Test Building".to_owned(),
@@ -246,8 +283,8 @@ mod tests {
                 min_zone_width_cells: None,
                 min_zone_depth_cells: None,
                 level: 1,
-                residents_capacity: None,
-                worker_capacity: None,
+                residents_capacity,
+                worker_capacity,
                 service_class: None,
                 economy_profile: None,
                 preview_scale: None,

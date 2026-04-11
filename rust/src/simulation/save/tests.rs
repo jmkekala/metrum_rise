@@ -1,4 +1,6 @@
 use super::*;
+use crate::assets::AssetManifest;
+use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -33,6 +35,56 @@ fn temp_path(name: &str) -> std::path::PathBuf {
             .unwrap()
             .as_nanos()
     ))
+}
+
+fn register_test_asset(
+    allocator: &mut BuildingAllocator,
+    pack_id: &str,
+    asset_id: &str,
+    zone: ZoneClass,
+) -> String {
+    let (residents_capacity, worker_capacity) = match zone {
+        ZoneClass::Residential => (Some(6), None),
+        ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
+        ZoneClass::Mixed => (Some(4), Some(2)),
+    };
+    allocator.registry.register(
+        pack_id,
+        AssetManifest {
+            asset_id: asset_id.to_owned(),
+            display_name: "Test".to_owned(),
+            asset_set: None,
+            tags: vec![],
+            thumbnail: None,
+            lods: vec![LodEntry {
+                file: "lod0.glb".to_owned(),
+                distance_min_m: 0.0,
+                distance_max_m: None,
+            }],
+            anchors: vec![],
+            building: Some(BuildingData {
+                placement_mode: PlacementMode::ZonedPrivate,
+                zone_type: Some(zone),
+                density: Some("low".to_owned()),
+                lot_width_cells: 3,
+                lot_depth_cells: 3,
+                min_zone_width_cells: None,
+                min_zone_depth_cells: None,
+                level: 1,
+                residents_capacity,
+                worker_capacity,
+                service_class: None,
+                economy_profile: None,
+                preview_scale: None,
+            }),
+            prop: None,
+            vehicle: None,
+            character: None,
+            pivot_offset: None,
+        },
+        String::new(),
+    );
+    format!("{pack_id}:{asset_id}")
 }
 
 #[test]
@@ -92,6 +144,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     demand.admission_action_credit = 1.25;
     demand.removal_action_credit = 0.50;
     let mut allocator = BuildingAllocator::new();
+    let residential_asset = register_test_asset(
+        &mut allocator,
+        "test",
+        "save_residential",
+        ZoneClass::Residential,
+    );
     allocator.buildings.push(Building {
         center_x: 0.0,
         center_y: 0.0,
@@ -108,7 +166,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         cell_y: 0,
         occupancy: 2,
         worker_count: 0,
-        asset_id: String::new(),
+        asset_id: residential_asset,
         level: 1,
         broken: false,
         stock: 0.0,
@@ -124,7 +182,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         .expect("transforms");
     world::repaint_building_occupancy(&mut zoning, &allocator).expect("occupancy");
     allocator.rebuild_zone_index();
-    allocator.founding_bootstrap_consumed = true;
     let mut households = HouseholdSystem::new();
     households.households.push(Household {
         home_building_id: 0,
@@ -293,7 +350,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         ZoneType::Residential
     );
     assert_eq!(loaded.allocator.buildings.len(), 1);
-    assert!(loaded.allocator.founding_bootstrap_consumed);
     assert_eq!(loaded.households.households.len(), 1);
     assert_eq!(
         loaded.households.households[0].reserved_store_building_id,

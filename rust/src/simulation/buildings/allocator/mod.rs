@@ -2,9 +2,7 @@
 //!
 //! [`BuildingAllocator::tick`] runs once per simulation tick. It:
 //! 1. Removes buildings whose zoning cell has been changed or whose road edge was deleted.
-//! 2. Runs the one-time founding bootstrap when the player has provided valid
-//!    startup zoning and an external connection.
-//! 3. Rebuilds derived indices and pathing after building mutations.
+//! 2. Rebuilds derived indices and pathing after building mutations.
 //!
 //! Demand-owned household admission is executed separately after the daily economy settlement and
 //! daily demand pass; allocator tick no longer recomputes immigration pressure locally.
@@ -139,8 +137,6 @@ pub struct BuildingAllocator {
     pub dirty_index: bool,
     /// Per-zone dirty flags set when buildings are spawned or removed.
     pub dirty_zones: [bool; 6],
-    /// Prevents the one-time founding bootstrap from running more than once.
-    pub founding_bootstrap_consumed: bool,
     /// True when the derived entrance cache must be rebuilt before use.
     pub(crate) entrances_dirty: bool,
     /// Registry of all loaded pack assets.
@@ -171,6 +167,18 @@ pub(crate) fn zone_class_to_zone_type(zone: ZoneClass) -> ZoneType {
     }
 }
 
+/// Converts a simulation [`ZoneType`] back to the authored [`ZoneClass`] when one exists.
+pub(crate) fn zone_type_to_zone_class(zone: ZoneType) -> Option<ZoneClass> {
+    match zone {
+        ZoneType::Residential => Some(ZoneClass::Residential),
+        ZoneType::Commercial => Some(ZoneClass::Commercial),
+        ZoneType::Industrial => Some(ZoneClass::Industrial),
+        ZoneType::Office => Some(ZoneClass::Office),
+        ZoneType::Mixed => Some(ZoneClass::Mixed),
+        ZoneType::None => None,
+    }
+}
+
 impl BuildingAllocator {
     /// Creates an empty allocator.
     pub fn new() -> Self {
@@ -184,7 +192,6 @@ impl BuildingAllocator {
             building_chunks: HashMap::new(),
             dirty_index: true,
             dirty_zones: [false; 6],
-            founding_bootstrap_consumed: false,
             entrances_dirty: false,
             registry: AssetRegistry::new(),
             entrances: Vec::new(),
@@ -203,9 +210,6 @@ impl BuildingAllocator {
     ) {
         // 1. Stale building cleanup.
         self.cleanup_stale_buildings(zoning, agents, logistics, graph, &network.lane_system);
-
-        // 2. One-time founding bootstrap from zoning + border connection.
-        self.place_founding_bootstrap_if_ready(zoning, graph, &network.lane_system);
 
         network.rebuild_pathing_if_dirty(graph);
 
@@ -267,7 +271,6 @@ impl BuildingAllocator {
         }
         self.vacancy_pos.clear();
         self.building_chunks.clear();
-        self.founding_bootstrap_consumed = false;
         self.dirty = false;
         self.dirty_index = false;
         self.entrances.clear();
@@ -295,11 +298,7 @@ impl BuildingAllocator {
         if b.broken {
             return 0;
         }
-        self.registry
-            .get(&b.asset_id)
-            .and_then(|entry| entry.manifest.building.as_ref())
-            .and_then(|building| building.residents_capacity)
-            .unwrap_or(0)
+        self.registry.resident_capacity(&b.asset_id)
     }
 
     /// Returns the worker capacity declared by a building asset.
@@ -312,11 +311,7 @@ impl BuildingAllocator {
         if b.broken {
             return 0;
         }
-        self.registry
-            .get(&b.asset_id)
-            .and_then(|entry| entry.manifest.building.as_ref())
-            .and_then(|building| building.worker_capacity)
-            .unwrap_or(0)
+        self.registry.worker_capacity(&b.asset_id)
     }
 
     /// Returns a bounded nearby candidate list for the requested zones, sorted by distance.

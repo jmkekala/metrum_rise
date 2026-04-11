@@ -293,7 +293,25 @@ impl AgentSystem {
             allocator.release_vacancy(home);
         }
 
+        let work = self.agents.work_building[index];
+        if work != usize::MAX && work < allocator.buildings.len() {
+            allocator.buildings[work].worker_count =
+                allocator.buildings[work].worker_count.saturating_sub(1);
+        }
+
         self.agents.swap_remove(index);
+    }
+
+    /// Remaps household indices after a `swap_remove` in `HouseholdSystem`. O(A).
+    pub fn remap_household_indices(&mut self, mapping: &HashMap<usize, usize>) {
+        if mapping.is_empty() {
+            return;
+        }
+        for i in 0..self.agents.len() {
+            if let Some(&new_id) = mapping.get(&self.agents.household_id[i]) {
+                self.agents.household_id[i] = new_id;
+            }
+        }
     }
 
     /// Remaps building indices after a `swap_remove` in `BuildingAllocator`. O(A).

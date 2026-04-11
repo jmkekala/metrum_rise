@@ -3,6 +3,9 @@
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{BuildingAllocator, zone_class_to_zone_type};
 use crate::simulation::economy::agents::{AgentSystem, MODE_WALK, TRANSIT_IN_BUILDING};
+use crate::simulation::economy::demand::{
+    DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
+};
 use crate::simulation::economy::households::{DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE, HouseholdSystem};
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
@@ -280,6 +283,76 @@ impl BuildingAllocator {
         }
     }
 
+    pub(crate) fn execute_demand_building_actions(
+        &mut self,
+        plan: &DemandBuildingActionPlan,
+        zoning: &mut ZoningSystem,
+        agents: &mut AgentSystem,
+        logistics: &mut ShipmentSystem,
+        graph: &RegionGraph,
+        lanes: &LaneSystem,
+    ) {
+        let mut action_lookup: std::collections::HashMap<DemandBuildingActionKey, usize> = self
+            .buildings
+            .iter()
+            .enumerate()
+            .map(|(idx, building)| (demand_building_action_key(building), idx))
+            .collect();
+        let mut mutated_any = false;
+
+        for use_plan in [&plan.residential, &plan.commercial, &plan.industrial] {
+            for action in &use_plan.despawns {
+                let Some(building_idx) = action_lookup.remove(action) else {
+                    continue;
+                };
+                if !self.can_demand_despawn(building_idx) {
+                    continue;
+                }
+                if let Some((moved_key, moved_idx)) =
+                    self.remove_building_at_index(building_idx, zoning, agents, logistics)
+                {
+                    action_lookup.insert(moved_key, moved_idx);
+                }
+                mutated_any = true;
+            }
+
+            for action in &use_plan.downgrades {
+                let Some(&building_idx) = action_lookup.get(&action.building) else {
+                    continue;
+                };
+                if let Some(updated_key) = self.apply_level_change_action(building_idx, action) {
+                    action_lookup.remove(&action.building);
+                    action_lookup.insert(updated_key, building_idx);
+                    mutated_any = true;
+                }
+            }
+
+            for action in &use_plan.upgrades {
+                let Some(&building_idx) = action_lookup.get(&action.building) else {
+                    continue;
+                };
+                if let Some(updated_key) = self.apply_level_change_action(building_idx, action) {
+                    action_lookup.remove(&action.building);
+                    action_lookup.insert(updated_key, building_idx);
+                    mutated_any = true;
+                }
+            }
+
+            for action in &use_plan.spawns {
+                if self.execute_demand_spawn_action(action, zoning, graph) {
+                    mutated_any = true;
+                }
+            }
+        }
+
+        if mutated_any {
+            if self.dirty_index {
+                self.rebuild_zone_index();
+            }
+            self.rebuild_entrance_cache(graph, lanes);
+        }
+    }
+
     /// Recomputes world-space building transforms from saved frontage attachment data.
     pub(crate) fn recompute_derived_transforms(
         &mut self,
@@ -356,5 +429,128 @@ impl BuildingAllocator {
             self.claim_vacancy(fallback_idx);
         }
         Some((fallback_idx, fallback_size))
+    }
+}
+
+fn demand_building_action_key(
+    building: &crate::simulation::buildings::allocator::Building,
+) -> DemandBuildingActionKey {
+    DemandBuildingActionKey {
+        edge_idx: building.edge_idx,
+        side: building.side,
+        cell_x: building.cell_x,
+        width_cells: building.width_cells,
+        depth_cells: building.depth_cells,
+        level: building.level,
+        asset_id: building.asset_id.clone(),
+    }
+}
+
+impl BuildingAllocator {
+    fn can_demand_despawn(&self, building_idx: usize) -> bool {
+        let Some(building) = self.buildings.get(building_idx) else {
+            return false;
+        };
+        !building.broken
+            && !building.pending_redevelopment
+            && building.occupancy == 0
+            && building.worker_count == 0
+    }
+
+    fn apply_level_change_action(
+        &mut self,
+        building_idx: usize,
+        action: &DemandLevelChangeAction,
+    ) -> Option<DemandBuildingActionKey> {
+        let building = self.buildings.get(building_idx)?;
+        if building.broken || building.pending_redevelopment {
+            return None;
+        }
+        if demand_building_action_key(building) != action.building {
+            return None;
+        }
+
+        let target_entry = self.registry.get(&action.target_asset_id)?;
+        let target_building = target_entry.manifest.building.as_ref()?;
+        if !target_building.is_zoned_private() {
+            return None;
+        }
+        if target_building.lot_width_cells != building.width_cells
+            || target_building.lot_depth_cells != building.depth_cells
+            || self.registry.resident_capacity(&action.target_asset_id) < building.occupancy
+            || self.registry.worker_capacity(&action.target_asset_id) < building.worker_count
+        {
+            return None;
+        }
+
+        let target_zone_type = zone_class_to_zone_type(target_building.zone_type?);
+        let building = &mut self.buildings[building_idx];
+        building.asset_id = action.target_asset_id.clone();
+        building.level = target_building.level;
+        building.zone_type = target_zone_type;
+        building.pending_redevelopment = false;
+        building.rezone_grace_days_remaining = 0;
+        self.dirty = true;
+        self.dirty_index = true;
+        self.entrances_dirty = true;
+        self.dirty_zones[building.zone_type as usize] = true;
+        Some(demand_building_action_key(building))
+    }
+
+    fn remove_building_at_index(
+        &mut self,
+        building_idx: usize,
+        zoning: &mut ZoningSystem,
+        agents: &mut AgentSystem,
+        logistics: &mut ShipmentSystem,
+    ) -> Option<(DemandBuildingActionKey, usize)> {
+        let zone_cell_m = zoning.config.zone_cell_m;
+        let building = self.buildings.get(building_idx)?.clone();
+        let tangent = Vector2::new(-building.facing_dir.y, building.facing_dir.x);
+        let width_m = building.width_cells as f32 * zone_cell_m;
+        let depth_m = building.depth_cells as f32 * zone_cell_m;
+        zoning.mark_occupied_rect(
+            building.center_x,
+            building.center_y,
+            tangent,
+            width_m,
+            depth_m,
+            false,
+        );
+
+        if let Some(occ) = self.edge_occupancy.get_mut(&building.edge_idx) {
+            let slot = if building.side > 0 {
+                &mut occ.left
+            } else {
+                &mut occ.right
+            };
+            if building.cell_x < slot.len() {
+                slot[building.cell_x] = false;
+            }
+        }
+
+        agents.evict_building(building_idx);
+        logistics.invalidate_building(building_idx, self);
+        self.dirty_zones[building.zone_type as usize] = true;
+
+        let last_idx = self.buildings.len().saturating_sub(1);
+        let moved_key = if building_idx < last_idx {
+            let moved_building = self.buildings[last_idx].clone();
+            let moved_key = demand_building_action_key(&moved_building);
+            self.dirty_zones[moved_building.zone_type as usize] = true;
+            let mut mapping = std::collections::HashMap::new();
+            mapping.insert(last_idx, building_idx);
+            agents.remap_building_indices(&mapping);
+            logistics.remap_building_indices(&mapping);
+            Some((moved_key, building_idx))
+        } else {
+            None
+        };
+
+        self.buildings.swap_remove(building_idx);
+        self.dirty = true;
+        self.dirty_index = true;
+        self.entrances_dirty = true;
+        moved_key
     }
 }

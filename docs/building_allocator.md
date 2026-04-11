@@ -30,19 +30,21 @@ This document owns the allocator-side contracts. It does not own:
 `BuildingAllocator::tick()` currently runs in this order:
 
 1. `cleanup_stale_buildings()`
-2. `place_founding_bootstrap_if_ready()`
-3. `network.rebuild_pathing_if_dirty()`
-4. `rebuild_entrance_cache()` when the cache is dirty or length-mismatched
-5. `rebuild_zone_index()` when indices are dirty
-6. clear `dirty`
+2. `network.rebuild_pathing_if_dirty()`
+3. `rebuild_entrance_cache()` when the cache is dirty or length-mismatched
+4. `rebuild_zone_index()` when indices are dirty
+5. clear `dirty`
 
 Important ownership note:
 
-- step `2` is still transitional allocator-owned growth behavior, not the desired final
-  scenario/startup-owned model
 - ordinary household admission no longer runs inside allocator tick; the live runtime now computes
   `households_to_admit_today` in the demand layer after daily economy settlement, then calls
   `execute_demand_household_admission(...)` as a separate consumption step
+- private building spawn, despawn, upgrade, and downgrade also no longer depend on allocator-local
+  heuristics; the live runtime now consumes demand-owned daily building-action plans through
+  `execute_demand_building_actions(...)` after the daily demand pass
+- fresh-map startup no longer uses an allocator-owned founding placement exception; the live runtime
+  now relies on the demand-owned `startup_support` path described in [`demand.md`](demand.md)
 
 ## Core Data Model
 
@@ -188,6 +190,8 @@ Current vacancy rule:
 
 - a building enters the residential vacancy index when `resident_capacity(idx) > occupancy`
 - `claim_vacancy()` and `release_vacancy()` update that index in O(1)
+- `resident_capacity(idx)` now comes only from the resolved authored asset manifest; the live
+  runtime no longer invents fallback residential or worker capacities when asset data is missing
 
 This index is allocator-owned because household admission and home claiming still route through the
 allocator today.
@@ -207,9 +211,8 @@ The derived entrance cache must never become a second authoritative source of pl
 
 ## Transitional Growth Responsibilities
 
-The allocator still owns some growth behavior that should eventually move elsewhere:
+The allocator still owns some lifecycle behavior that should eventually move elsewhere:
 
-- one-time founding placement through `place_founding_bootstrap_if_ready()`
 - invalid-placement cleanup that removes buildings when zoning or road attachment becomes illegal
 
 The allocator now only executes already-decided household admission through
@@ -218,7 +221,6 @@ the daily admission count itself.
 
 Target direction:
 
-- scenario or startup systems should own founding rules
 - [`demand.md`](demand.md) should own immigration, emigration, spawn, despawn, upgrade, and
   downgrade pressure
 - allocator should execute already-decided legal placement or removal, not invent the city's growth
@@ -247,16 +249,9 @@ Current follow-up limitations:
   is intentionally deferred to later allocator hardening work: frontage attachment should eventually
   get its own short deterministic reattachment grace so buildings are not demolished unnecessarily
   during intentional road rebuilds.
-- The current full frontage scan order is acceptable for founding bootstrap and small transitional
-  flows, but it should not become the permanent large-city private-development allocator once
-  demand-driven spawning grows beyond today's narrow use.
-- The current tick order still includes `place_founding_bootstrap_if_ready()` inside allocator
-  execution. That is a deliberate transitional exception in the live runtime, but it conflicts
-  with the newer demand/economy ownership split and should move behind scenario/startup setup
-  later.
-- The allocator no longer computes immigrant-admission pressure, but it still mixes geometry
-  execution with one-time founding policy through bootstrap placement. That remaining policy should
-  move behind scenario/startup ownership later.
+- The current full frontage scan order is acceptable for the baseline demand-owned spawn batches,
+  but it should not become the permanent large-city private-development allocator once
+  demand-driven growth scales further.
 
 Recommended interpretation:
 

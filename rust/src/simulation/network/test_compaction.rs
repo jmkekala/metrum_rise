@@ -1,5 +1,7 @@
 #[cfg(test)]
 mod tests {
+    use crate::assets::AssetManifest;
+    use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::BuildingAllocator;
     use crate::simulation::core::config::MapConfig;
     use crate::simulation::economy::agents::AgentSystem;
@@ -10,6 +12,56 @@ mod tests {
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::*;
     use std::collections::HashMap;
+
+    fn register_test_asset(
+        allocator: &mut BuildingAllocator,
+        pack_id: &str,
+        asset_id: &str,
+        zone: ZoneClass,
+    ) -> String {
+        let (residents_capacity, worker_capacity) = match zone {
+            ZoneClass::Residential => (Some(6), None),
+            ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
+            ZoneClass::Mixed => (Some(4), Some(2)),
+        };
+        allocator.registry.register(
+            pack_id,
+            AssetManifest {
+                asset_id: asset_id.to_owned(),
+                display_name: "Test".to_owned(),
+                asset_set: None,
+                tags: vec![],
+                thumbnail: None,
+                lods: vec![LodEntry {
+                    file: "lod0.glb".to_owned(),
+                    distance_min_m: 0.0,
+                    distance_max_m: None,
+                }],
+                anchors: vec![],
+                building: Some(BuildingData {
+                    placement_mode: PlacementMode::ZonedPrivate,
+                    zone_type: Some(zone),
+                    density: Some("low".to_owned()),
+                    lot_width_cells: 3,
+                    lot_depth_cells: 3,
+                    min_zone_width_cells: None,
+                    min_zone_depth_cells: None,
+                    level: 1,
+                    residents_capacity,
+                    worker_capacity,
+                    service_class: None,
+                    economy_profile: None,
+                    preview_scale: None,
+                }),
+                prop: None,
+                vehicle: None,
+                character: None,
+                pivot_offset: None,
+            },
+            String::new(),
+        );
+        format!("{pack_id}:{asset_id}")
+    }
 
     #[test]
     fn test_edge_compaction_remapping() {
@@ -43,6 +95,12 @@ mod tests {
         );
 
         assert_eq!(graph.edges.len(), 2);
+        let residential_asset = register_test_asset(
+            &mut allocator,
+            "test",
+            "compaction_residential",
+            ZoneClass::Residential,
+        );
 
         // 3. Mark Road A as deleted
         graph.edges[0].deleted = true;
@@ -66,7 +124,7 @@ mod tests {
                 cell_y: 0,
                 occupancy: 0,
                 worker_count: 0,
-                asset_id: String::new(),
+                asset_id: residential_asset,
                 level: 1,
                 broken: false,
                 stock: 0.0,

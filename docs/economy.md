@@ -438,7 +438,7 @@ At the beginning of a new city:
 
 This prevents the economy from deadlocking on day one when no households, producers, or internal supply chains exist yet.
 
-This section uses `startup economy` to mean early-city money, stock, freight, and `OWA` support. It does not own one-time founding placement, and it does not own the demand-side decision about whether new households should be admitted.
+This section uses `startup economy` to mean early-city money, stock, freight, and `OWA` support. It does not own any special fresh-map building-placement exception, and it does not own the demand-side decision about whether new households should be admitted.
 
 [`docs/demand.md`](demand.md) owns whether the city admits households at all and how many it admits. This document owns the startup money, stock, freight, and runtime consequences once those households already exist.
 
@@ -1883,6 +1883,6 @@ The recommended design is:
 - the `OWA` acts as an external buyer and seller, but all imported and exported goods still move through physical border freight
 - future player policies such as income tax, property tax, `VAT`, tariffs, and subsidies use a separate bounded gameplay UI
 - households consume shared household supply so agents do not need constant shopping trips
-- founding bootstrap and later private development are separate systems, and zoning alone must not spam empty buildings
+- fresh-map startup support and later private development remain bounded systems, and zoning alone must not spam empty buildings
 
 That gives Metrum Rise a debuggable economy authoring workflow without violating the project's scale and performance constraints.

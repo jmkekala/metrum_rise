@@ -55,8 +55,12 @@ pub(super) fn save_world(
     }
 
     // Demand
+    let spawn_action_credit = demand.spawn_action_credit.as_array();
+    let upgrade_action_credit = demand.upgrade_action_credit.as_array();
+    let downgrade_action_credit = demand.downgrade_action_credit.as_array();
+    let despawn_action_credit = demand.despawn_action_credit.as_array();
     tx.execute(
-        "INSERT INTO demand_state(residential, commercial, industrial, households_to_admit_today, households_to_remove_today, startup_support_factor, admission_action_credit, removal_action_credit) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO demand_state(residential, commercial, industrial, households_to_admit_today, households_to_remove_today, startup_support_factor, admission_action_credit, removal_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         params![
             demand.residential,
             demand.commercial,
@@ -65,7 +69,19 @@ pub(super) fn save_world(
             i64::from(demand.households_to_remove_today),
             demand.startup_support_factor,
             demand.admission_action_credit,
-            demand.removal_action_credit
+            demand.removal_action_credit,
+            spawn_action_credit[0],
+            spawn_action_credit[1],
+            spawn_action_credit[2],
+            upgrade_action_credit[0],
+            upgrade_action_credit[1],
+            upgrade_action_credit[2],
+            downgrade_action_credit[0],
+            downgrade_action_credit[1],
+            downgrade_action_credit[2],
+            despawn_action_credit[0],
+            despawn_action_credit[1],
+            despawn_action_credit[2]
         ],
     )?;
 
@@ -140,15 +156,6 @@ pub(super) fn save_world(
             i64::from(b.rezone_grace_days_remaining)
         ])?;
     }
-    tx.execute(
-        "INSERT INTO founding_state(bootstrap_consumed) VALUES (?1)",
-        params![i64::from(if buildings.founding_bootstrap_consumed {
-            1
-        } else {
-            0
-        })],
-    )?;
-
     let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")?;
     for (hid, household) in households.households.iter().enumerate() {
         household_stmt.execute(params![
@@ -300,11 +307,6 @@ pub(super) fn load_buildings(
             rezone_grace_days_remaining: i64_to_u8(row.get(20)?)?,
         });
     }
-    allocator.founding_bootstrap_consumed = conn.query_row(
-        "SELECT bootstrap_consumed FROM founding_state LIMIT 1",
-        [],
-        |row| row.get::<_, i64>(0),
-    )? != 0;
     Ok(allocator)
 }
 

@@ -2,7 +2,7 @@
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::economy::households::{HouseholdSystem, household_reserve_days};
-use crate::simulation::grid::zoning::ZoneType;
+use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{NodeType, TransitFlags, TransitType};
 use serde::Deserialize;
@@ -31,6 +31,16 @@ enum DemandUse {
     Residential,
     Commercial,
     Industrial,
+}
+
+impl DemandUse {
+    fn zone_type(self) -> ZoneType {
+        match self {
+            Self::Residential => ZoneType::Residential,
+            Self::Commercial => ZoneType::Commercial,
+            Self::Industrial => ZoneType::Industrial,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -66,8 +76,8 @@ struct GrowthProfileRuntime {
     hysteresis_margin: f32,
 }
 
-#[derive(Clone, Debug)]
-struct UseTuningF32 {
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct UseTuningF32 {
     residential: f32,
     commercial: f32,
     industrial: f32,
@@ -79,6 +89,68 @@ impl UseTuningF32 {
             DemandUse::Residential => self.residential,
             DemandUse::Commercial => self.commercial,
             DemandUse::Industrial => self.industrial,
+        }
+    }
+
+    fn get_mut(&mut self, use_kind: DemandUse) -> &mut f32 {
+        match use_kind {
+            DemandUse::Residential => &mut self.residential,
+            DemandUse::Commercial => &mut self.commercial,
+            DemandUse::Industrial => &mut self.industrial,
+        }
+    }
+
+    pub(crate) fn as_array(self) -> [f32; 3] {
+        [self.residential, self.commercial, self.industrial]
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct DemandBuildingActionKey {
+    pub(crate) edge_idx: usize,
+    pub(crate) side: i8,
+    pub(crate) cell_x: usize,
+    pub(crate) width_cells: u16,
+    pub(crate) depth_cells: u16,
+    pub(crate) level: u8,
+    pub(crate) asset_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DemandLevelChangeAction {
+    pub(crate) building: DemandBuildingActionKey,
+    pub(crate) target_asset_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DemandSpawnAction {
+    pub(crate) edge_idx: usize,
+    pub(crate) side: i8,
+    pub(crate) cell_x: usize,
+    pub(crate) asset_id: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DemandUseActionPlan {
+    pub(crate) despawns: Vec<DemandBuildingActionKey>,
+    pub(crate) downgrades: Vec<DemandLevelChangeAction>,
+    pub(crate) upgrades: Vec<DemandLevelChangeAction>,
+    pub(crate) spawns: Vec<DemandSpawnAction>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DemandBuildingActionPlan {
+    pub(crate) residential: DemandUseActionPlan,
+    pub(crate) commercial: DemandUseActionPlan,
+    pub(crate) industrial: DemandUseActionPlan,
+}
+
+impl DemandBuildingActionPlan {
+    fn use_plan_mut(&mut self, use_kind: DemandUse) -> &mut DemandUseActionPlan {
+        match use_kind {
+            DemandUse::Residential => &mut self.residential,
+            DemandUse::Commercial => &mut self.commercial,
+            DemandUse::Industrial => &mut self.industrial,
         }
     }
 }
@@ -126,6 +198,28 @@ struct DemandConfig {
     household_action: HouseholdActionConfig,
     action_budget: ActionBudgetConfig,
     profiles: Vec<GrowthProfileRuntime>,
+}
+
+impl DemandConfig {
+    fn profile_for_zone_density(
+        &self,
+        zone_type: ZoneType,
+        density: &str,
+    ) -> Option<&GrowthProfileRuntime> {
+        let idx = match (zone_type, density) {
+            (ZoneType::Residential, "low") => 0,
+            (ZoneType::Residential, "medium") => 1,
+            (ZoneType::Residential, "high") => 2,
+            (ZoneType::Commercial, "low") => 3,
+            (ZoneType::Commercial, "medium") => 4,
+            (ZoneType::Commercial, "high") => 5,
+            (ZoneType::Industrial, "low") => 6,
+            (ZoneType::Industrial, "medium") => 7,
+            (ZoneType::Industrial, "high") => 8,
+            _ => return None,
+        };
+        self.profiles.get(idx)
+    }
 }
 
 #[derive(Deserialize)]
@@ -211,6 +305,11 @@ pub struct DemandSystem {
     pub(crate) startup_support_factor: f32,
     pub(crate) admission_action_credit: f32,
     pub(crate) removal_action_credit: f32,
+    pub(crate) spawn_action_credit: UseTuningF32,
+    pub(crate) upgrade_action_credit: UseTuningF32,
+    pub(crate) downgrade_action_credit: UseTuningF32,
+    pub(crate) despawn_action_credit: UseTuningF32,
+    pub(crate) building_actions: DemandBuildingActionPlan,
 }
 
 impl DemandSystem {
@@ -228,6 +327,11 @@ impl DemandSystem {
             startup_support_factor: 0.0,
             admission_action_credit: 0.0,
             removal_action_credit: 0.0,
+            spawn_action_credit: UseTuningF32::default(),
+            upgrade_action_credit: UseTuningF32::default(),
+            downgrade_action_credit: UseTuningF32::default(),
+            despawn_action_credit: UseTuningF32::default(),
+            building_actions: DemandBuildingActionPlan::default(),
         }
     }
 
@@ -240,6 +344,10 @@ impl DemandSystem {
         startup_support_factor: f32,
         admission_action_credit: f32,
         removal_action_credit: f32,
+        spawn_action_credit: [f32; 3],
+        upgrade_action_credit: [f32; 3],
+        downgrade_action_credit: [f32; 3],
+        despawn_action_credit: [f32; 3],
     ) -> Self {
         let mut system = Self::new();
         system.residential = residential;
@@ -250,6 +358,26 @@ impl DemandSystem {
         system.startup_support_factor = startup_support_factor;
         system.admission_action_credit = admission_action_credit;
         system.removal_action_credit = removal_action_credit;
+        system.spawn_action_credit = UseTuningF32 {
+            residential: spawn_action_credit[0],
+            commercial: spawn_action_credit[1],
+            industrial: spawn_action_credit[2],
+        };
+        system.upgrade_action_credit = UseTuningF32 {
+            residential: upgrade_action_credit[0],
+            commercial: upgrade_action_credit[1],
+            industrial: upgrade_action_credit[2],
+        };
+        system.downgrade_action_credit = UseTuningF32 {
+            residential: downgrade_action_credit[0],
+            commercial: downgrade_action_credit[1],
+            industrial: downgrade_action_credit[2],
+        };
+        system.despawn_action_credit = UseTuningF32 {
+            residential: despawn_action_credit[0],
+            commercial: despawn_action_credit[1],
+            industrial: despawn_action_credit[2],
+        };
         system
     }
 
@@ -259,7 +387,9 @@ impl DemandSystem {
         allocator: &BuildingAllocator,
         households: &HouseholdSystem,
         graph: &RegionGraph,
+        zoning: &ZoningSystem,
     ) {
+        self.building_actions = DemandBuildingActionPlan::default();
         let snapshot =
             DailyDemandSnapshot::from_runtime(allocator, households, graph, &self.config);
 
@@ -352,7 +482,320 @@ impl DemandSystem {
             self.config.action_budget.max_households_per_day,
             snapshot.total_household_count,
         );
+
+        for use_kind in [
+            DemandUse::Residential,
+            DemandUse::Commercial,
+            DemandUse::Industrial,
+        ] {
+            let zone_type = use_kind.zone_type();
+            let growth_pressure = self.pressure_for_use(use_kind);
+            let spawn_candidates =
+                allocator.collect_demand_spawn_candidates(zone_type, zoning, graph);
+            let existing_candidates =
+                self.collect_existing_building_candidates(allocator, zone_type, growth_pressure);
+
+            let normalized_spawn_pressure = spawn_candidates
+                .iter()
+                .filter_map(|candidate| {
+                    self.config
+                        .profile_for_zone_density(zone_type, &candidate.density)
+                        .map(|profile| {
+                            normalized_positive_pressure(growth_pressure, profile.spawn_threshold)
+                        })
+                })
+                .sum::<f32>();
+            let spawn_budget_units = normalized_spawn_pressure
+                * self
+                    .config
+                    .action_budget
+                    .spawn_batch_fraction_by_use
+                    .get(use_kind)
+                + self.startup_support_factor
+                    * self.config.startup_support.spawn_bonus_by_use.get(use_kind);
+            let spawns_today = advance_building_action_credit(
+                self.spawn_action_credit.get_mut(use_kind),
+                spawn_budget_units,
+                spawn_candidates.len(),
+            );
+            let selected_spawns: Vec<_> = spawn_candidates
+                .into_iter()
+                .take(spawns_today)
+                .map(|candidate| candidate.action)
+                .collect();
+
+            let normalized_upgrade_pressure = existing_candidates
+                .upgrades
+                .iter()
+                .map(|candidate| candidate.normalized_action_pressure)
+                .sum::<f32>();
+            let upgrade_budget_units = normalized_upgrade_pressure
+                * self
+                    .config
+                    .action_budget
+                    .upgrade_batch_fraction_by_use
+                    .get(use_kind);
+            let upgrades_today = advance_building_action_credit(
+                self.upgrade_action_credit.get_mut(use_kind),
+                upgrade_budget_units,
+                existing_candidates.upgrades.len(),
+            );
+            let selected_upgrades: Vec<_> = existing_candidates
+                .upgrades
+                .iter()
+                .take(upgrades_today)
+                .map(|candidate| candidate.action.clone())
+                .collect();
+
+            let normalized_downgrade_pressure = existing_candidates
+                .downgrades
+                .iter()
+                .map(|candidate| candidate.normalized_action_pressure)
+                .sum::<f32>();
+            let downgrade_budget_units = normalized_downgrade_pressure
+                * self
+                    .config
+                    .action_budget
+                    .downgrade_batch_fraction_by_use
+                    .get(use_kind);
+            let downgrades_today = advance_building_action_credit(
+                self.downgrade_action_credit.get_mut(use_kind),
+                downgrade_budget_units,
+                existing_candidates.downgrades.len(),
+            );
+            let selected_downgrades: Vec<_> = existing_candidates
+                .downgrades
+                .iter()
+                .take(downgrades_today)
+                .map(|candidate| candidate.action.clone())
+                .collect();
+
+            let normalized_despawn_pressure = existing_candidates
+                .despawns
+                .iter()
+                .map(|candidate| candidate.normalized_action_pressure)
+                .sum::<f32>();
+            let despawn_budget_units = normalized_despawn_pressure
+                * self
+                    .config
+                    .action_budget
+                    .despawn_batch_fraction_by_use
+                    .get(use_kind);
+            let despawns_today = advance_building_action_credit(
+                self.despawn_action_credit.get_mut(use_kind),
+                despawn_budget_units,
+                existing_candidates.despawns.len(),
+            );
+            let selected_despawns: Vec<_> = existing_candidates
+                .despawns
+                .iter()
+                .take(despawns_today)
+                .map(|candidate| candidate.action.clone())
+                .collect();
+
+            let plan = self.building_actions.use_plan_mut(use_kind);
+            plan.spawns.extend(selected_spawns);
+            plan.upgrades.extend(selected_upgrades);
+            plan.downgrades.extend(selected_downgrades);
+            plan.despawns.extend(selected_despawns);
+        }
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DemandSpawnCandidate {
+    pub(crate) action: DemandSpawnAction,
+    pub(crate) density: String,
+}
+
+#[derive(Clone, Debug)]
+struct WeightedLevelChangeCandidate {
+    action: DemandLevelChangeAction,
+    normalized_action_pressure: f32,
+}
+
+#[derive(Clone, Debug)]
+struct WeightedDespawnCandidate {
+    action: DemandBuildingActionKey,
+    normalized_action_pressure: f32,
+}
+
+#[derive(Clone, Debug, Default)]
+struct ExistingBuildingCandidates {
+    despawns: Vec<WeightedDespawnCandidate>,
+    downgrades: Vec<WeightedLevelChangeCandidate>,
+    upgrades: Vec<WeightedLevelChangeCandidate>,
+}
+
+impl DemandSystem {
+    fn pressure_for_use(&self, use_kind: DemandUse) -> f32 {
+        match use_kind {
+            DemandUse::Residential => self.residential,
+            DemandUse::Commercial => self.commercial,
+            DemandUse::Industrial => self.industrial,
+        }
+    }
+
+    fn collect_existing_building_candidates(
+        &self,
+        allocator: &BuildingAllocator,
+        zone_type: ZoneType,
+        growth_pressure: f32,
+    ) -> ExistingBuildingCandidates {
+        let mut building_indices: Vec<usize> = allocator
+            .buildings
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, building)| (building.zone_type == zone_type).then_some(idx))
+            .collect();
+        building_indices.sort_by(|&a, &b| {
+            let left = &allocator.buildings[a];
+            let right = &allocator.buildings[b];
+            attachment_sort_key(left).cmp(&attachment_sort_key(right))
+        });
+
+        let mut candidates = ExistingBuildingCandidates::default();
+        for building_idx in building_indices {
+            let building = &allocator.buildings[building_idx];
+            if building.broken || building.pending_redevelopment {
+                continue;
+            }
+            let Some(entry) = allocator.registry.get(&building.asset_id) else {
+                continue;
+            };
+            let Some(asset_building) = entry.manifest.building.as_ref() else {
+                continue;
+            };
+            if !asset_building.is_zoned_private() {
+                continue;
+            }
+            let Some(density) = asset_building.density_key() else {
+                continue;
+            };
+            let Some(profile) = self.config.profile_for_zone_density(zone_type, density) else {
+                continue;
+            };
+
+            if building.occupancy == 0
+                && building.worker_count == 0
+                && normalized_negative_pressure(growth_pressure, profile.despawn_threshold) > 0.0
+            {
+                candidates.despawns.push(WeightedDespawnCandidate {
+                    action: demand_building_action_key(building),
+                    normalized_action_pressure: normalized_negative_pressure(
+                        growth_pressure,
+                        profile.despawn_threshold,
+                    ),
+                });
+                continue;
+            }
+
+            if building.occupancy == 0
+                && building.worker_count == 0
+                && normalized_negative_pressure(growth_pressure, profile.downgrade_threshold) > 0.0
+                && let Some(target_asset_id) = allocator.registry.prev_level(&building.asset_id)
+                && level_change_is_compatible(allocator, building_idx, target_asset_id)
+            {
+                candidates.downgrades.push(WeightedLevelChangeCandidate {
+                    action: DemandLevelChangeAction {
+                        building: demand_building_action_key(building),
+                        target_asset_id: target_asset_id.to_owned(),
+                    },
+                    normalized_action_pressure: normalized_negative_pressure(
+                        growth_pressure,
+                        profile.downgrade_threshold,
+                    ),
+                });
+                continue;
+            }
+
+            let capacity_saturated = match zone_type {
+                ZoneType::Residential => {
+                    let resident_capacity = allocator.resident_capacity(building_idx);
+                    resident_capacity > 0 && building.occupancy >= resident_capacity
+                }
+                ZoneType::Commercial | ZoneType::Industrial => {
+                    let worker_capacity = allocator.worker_capacity(building_idx);
+                    worker_capacity > 0
+                        && building.worker_count >= worker_capacity
+                        && building.utility_service_available
+                }
+                _ => false,
+            };
+            if capacity_saturated
+                && normalized_positive_pressure(growth_pressure, profile.upgrade_threshold) > 0.0
+                && let Some(target_asset_id) = allocator.registry.next_level(&building.asset_id)
+                && level_change_is_compatible(allocator, building_idx, target_asset_id)
+            {
+                candidates.upgrades.push(WeightedLevelChangeCandidate {
+                    action: DemandLevelChangeAction {
+                        building: demand_building_action_key(building),
+                        target_asset_id: target_asset_id.to_owned(),
+                    },
+                    normalized_action_pressure: normalized_positive_pressure(
+                        growth_pressure,
+                        profile.upgrade_threshold,
+                    ),
+                });
+            }
+        }
+
+        candidates
+    }
+}
+
+fn attachment_sort_key(
+    building: &crate::simulation::buildings::allocator::Building,
+) -> (usize, u8, usize, u16, u16, u8, &str) {
+    (
+        building.edge_idx,
+        if building.side > 0 { 0 } else { 1 },
+        building.cell_x,
+        building.width_cells,
+        building.depth_cells,
+        building.level,
+        building.asset_id.as_str(),
+    )
+}
+
+fn demand_building_action_key(
+    building: &crate::simulation::buildings::allocator::Building,
+) -> DemandBuildingActionKey {
+    DemandBuildingActionKey {
+        edge_idx: building.edge_idx,
+        side: building.side,
+        cell_x: building.cell_x,
+        width_cells: building.width_cells,
+        depth_cells: building.depth_cells,
+        level: building.level,
+        asset_id: building.asset_id.clone(),
+    }
+}
+
+fn level_change_is_compatible(
+    allocator: &BuildingAllocator,
+    building_idx: usize,
+    target_asset_id: &str,
+) -> bool {
+    let Some(building) = allocator.buildings.get(building_idx) else {
+        return false;
+    };
+    let Some(target_entry) = allocator.registry.get(target_asset_id) else {
+        return false;
+    };
+    let Some(target_building) = target_entry.manifest.building.as_ref() else {
+        return false;
+    };
+    if !target_building.is_zoned_private() {
+        return false;
+    }
+    if target_building.lot_width_cells != building.width_cells
+        || target_building.lot_depth_cells != building.depth_cells
+    {
+        return false;
+    }
+    allocator.registry.resident_capacity(target_asset_id) >= building.occupancy
+        && allocator.registry.worker_capacity(target_asset_id) >= building.worker_count
 }
 
 fn load_builtin_demand_config() -> Result<Arc<DemandConfig>, String> {
@@ -713,6 +1156,33 @@ fn advance_household_action_credit(
         .min(max_actionable_households)
 }
 
+fn advance_building_action_credit(
+    credit: &mut f32,
+    budget_units: f32,
+    max_actionable_buildings: usize,
+) -> usize {
+    *credit += budget_units.max(0.0);
+    let buildings_to_act = (*credit).floor().max(0.0) as usize;
+    *credit -= buildings_to_act as f32;
+    buildings_to_act.min(max_actionable_buildings)
+}
+
+fn normalized_positive_pressure(pressure: f32, threshold: f32) -> f32 {
+    if threshold >= 1.0 {
+        0.0
+    } else {
+        clamp01((pressure - threshold) / (1.0 - threshold))
+    }
+}
+
+fn normalized_negative_pressure(pressure: f32, threshold: f32) -> f32 {
+    if threshold <= 0.0 {
+        0.0
+    } else {
+        clamp01((threshold - pressure) / threshold.max(EPSILON))
+    }
+}
+
 struct DailyDemandSnapshot {
     vacant_household_slots: u32,
     housed_resident_count: u32,
@@ -902,9 +1372,11 @@ mod tests {
         Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass,
     };
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+    use crate::simulation::core::config::MapConfig;
     use crate::simulation::economy::households::{
         Household, HouseholdSystem, REPLENISHMENT_STABLE,
     };
+    use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::graph::{Edge, RegionGraph};
     use crate::simulation::network::types::{
         EdgeClass, TransitFlags, TransitType, VehicleFrontageAccess,
@@ -1051,6 +1523,10 @@ mod tests {
         graph
     }
 
+    fn empty_zoning() -> ZoningSystem {
+        ZoningSystem::new(&MapConfig::default())
+    }
+
     #[test]
     fn daily_pass_raises_commercial_and_industrial_pressure_on_shortages() {
         let mut allocator = BuildingAllocator::new();
@@ -1080,8 +1556,9 @@ mod tests {
             .push(housed_household(2, 2, 120.0, 0.25));
 
         let graph = graph_with_connected_border();
+        let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
-        demand.run_daily_pass(&allocator, &households, &graph);
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
 
         assert!(demand.commercial > 0.60);
         assert!(demand.industrial > 0.60);
@@ -1126,8 +1603,9 @@ mod tests {
         }
 
         let graph = graph_with_connected_border();
+        let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
-        demand.run_daily_pass(&allocator, &households, &graph);
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
 
         assert!(demand.residential > 0.50);
     }
@@ -1137,9 +1615,10 @@ mod tests {
         let allocator = BuildingAllocator::new();
         let households = HouseholdSystem::new();
         let graph = RegionGraph::new();
+        let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
 
-        demand.run_daily_pass(&allocator, &households, &graph);
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
 
         assert_eq!(demand.residential, 0.0);
         assert_eq!(demand.commercial, 0.0);
@@ -1171,9 +1650,10 @@ mod tests {
 
         let households = HouseholdSystem::new();
         let graph = graph_with_connected_border();
+        let zoning = empty_zoning();
         let mut demand = DemandSystem::new();
 
-        demand.run_daily_pass(&allocator, &households, &graph);
+        demand.run_daily_pass(&allocator, &households, &graph, &zoning);
 
         assert!(demand.households_to_admit_today > 0);
         assert!(demand.startup_support_factor > 0.0);
