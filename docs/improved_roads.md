@@ -105,6 +105,9 @@ Current limitation:
 - this is only sufficient for simple branch visuals
 - when a centered or across-road footpath meets the road corridor, the current centerline-road / implicit-sidewalk model still lacks the curb-apron patch that should bridge the trimmed footpath into the road-side shoulder
 - fully correct pedestrian joins also need side-aware sidewalk connectivity and crosswalk semantics rather than a single road-center node
+- that later sidewalk/connectivity work must stay aligned with [`entrance_and_exit.md`](entrance_and_exit.md)
+  so the renderer does not accidentally invent a second pedestrian-access model that disagrees with
+  the exact frontage-side entrance cache and local-access rules
 
 This guarantees the visible contract:
 

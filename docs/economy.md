@@ -116,7 +116,7 @@ If routine travel starts taking multiple in-game days, the time scale, travel sp
 
 The simulation does not need to update every economic rule every render frame.
 
-Recommended cadence:
+Baseline `v0.1` cadence:
 
 - movement and deliveries: continuous, on the normal simulation tick
 - labor availability, production, and household consumption: evaluated on coarse sub-daily steps such as once per in-game hour
@@ -129,6 +129,36 @@ Authoring units should follow this scale:
 - stock: `days of supply`
 - wages and operating costs: `currency/day` or `currency/workday`
 - prices: `currency/unit`
+
+### Daily demand handoff
+
+The demand layer must not read half-updated hourly economy state.
+
+Deterministic day-boundary rule:
+
+1. Run the final sub-daily operational-clock economy step for the current day.
+2. Run one daily economy settlement pass for that operational day.
+3. During that settlement pass, finalize the day-level economy state that demand is allowed to read:
+   - household budgets, stock, utility charges, and affordability results
+   - household relocation, eviction, and `unhoused` outcomes owned by economy
+   - building budgets, operating-buffer values, staffing or input shortfall state, and other
+     building-side viability summaries
+   - settled source values and city-level daily summaries from which demand derives its own
+     normalized input signals, such as household-slot capacity and vacancy, housed residents,
+     reachable open jobs, stock stability, utility-service satisfaction, and
+     external-connection state
+4. Freeze that post-settlement city snapshot.
+5. Run the daily demand pass exactly once from that frozen snapshot.
+6. Apply the resulting demand-owned daily household outputs and building-action budgets before the
+   next operational day's sub-daily economy steps begin.
+
+Interpretation:
+
+- demand reads one post-settlement city snapshot per operational day
+- buildings or households created, removed, upgraded, downgraded, relocated, or evicted during
+  that demand pass do not rewrite the same day's demand inputs
+- those changes become part of the next operational day's economy state and therefore affect the
+  next daily demand pass
 
 ### Operational clock runtime state
 
@@ -477,6 +507,98 @@ For `v0.1`, the economy-side contract is:
 - whether a later transport layer visualizes arrival or departure through border spawns or exits is a separate transport-layer decision
 - births and other within-household demographic change are later systems, not part of the `v0.1` economy model
 
+### Household housing affordability, relocation, and eviction
+
+Household affordability failure should not directly downgrade a residential building.
+
+Cross-system rule:
+
+- this document owns whether a household can afford to stay in its current home
+- this document owns household-side relocation between vacant homes inside the city
+- [`docs/demand.md`](demand.md) owns whether a household ultimately leaves the city
+- [`docs/zoning.md`](zoning.md) owns what buildings and levels are legally allowed on the site if
+  later redevelopment happens
+
+Important `v0.1` rule:
+
+- `poor household -> move-out / relocation / eviction`
+- not `poor household -> building instantly downgrades`
+
+Recommended derived value:
+
+```text
+household_daily_essential_cost =
+    household_supply_cost_per_day
+  + household_daily_utility_charges
+
+household_reserve_days =
+    household_budget / max(household_daily_essential_cost, epsilon)
+```
+
+Economy-owned residential affordability data:
+
+- `residential_move_in_min_reserve_days_by_level[level]`
+- `residential_stay_min_reserve_days_by_level[level]`
+
+Deterministic `v0.1` household housing rule:
+
+- each housed household is checked on the coarse daily economy cadence
+- a household may stay in its current home if
+  `household_reserve_days >= residential_stay_min_reserve_days_by_level[current_home_level]`
+- if that stay rule fails for the required sustained period, the economy layer must try relocation
+  before declaring the household unhoused
+
+Deterministic relocation rule:
+
+1. Build the set of vacant candidate homes with available household capacity.
+2. Keep only candidates whose target home level satisfies
+   `household_reserve_days >= residential_move_in_min_reserve_days_by_level[target_level]`.
+3. Sort the remaining candidates by:
+   - higher `target_level` first
+   - then lower travel distance from the current home if the household is already housed
+   - then lower `building_id`
+4. If the current home failed the stay rule, move the household to the first affordable candidate
+   in that sorted list.
+5. If the current home did not fail the stay rule, a voluntary up-move is allowed only if the first
+   affordable candidate has a strictly higher `target_level` than the current home.
+
+Eviction and unhoused rule:
+
+- if a housed household fails the stay rule and no affordable vacant home exists, the household is
+  evicted from its current home and becomes `unhoused`
+- becoming `unhoused` is not the same thing as immediate city removal
+- the household remains an explicit runtime record until demand later decides whether
+  `households_to_remove_today` should remove it from the city
+
+Deterministic `v0.1` household-removal selection rule:
+
+1. When demand produces `households_to_remove_today = N`, build the ordered removal candidate list
+   from the settled economy snapshot after relocation and eviction have already run.
+2. Add every `unhoused` household first.
+3. Sort that `unhoused` candidate subset by:
+   - lower `household_reserve_days` first
+   - then lower `stock_days`
+   - then lower `household_id`
+4. If `N` is larger than the `unhoused` candidate count, append housed households sorted by the
+   same rule:
+   - lower `household_reserve_days` first
+   - then lower `stock_days`
+   - then lower `household_id`
+5. Remove the first `N` households from that deterministic ordered list.
+
+Interpretation:
+
+- `unhoused` households leave the city before housed households when removal pressure is present
+- if broader weak-city conditions require more outflow than the `unhoused` pool alone provides,
+  the weakest housed households leave next in deterministic order
+- demand still owns the count; economy owns the runtime household records and the deterministic
+  removal target order
+
+- one rich household in an apartment building does not level the whole building up
+- that household may relocate to a better vacant home if one exists and is affordable
+- one poor household in a good building does not level the whole building down
+- that household first tries to relocate; only the household's housing state changes immediately
+
 ### Demand boundary and decisions system
 
 The economy should separate coarse city-level demand pressure from concrete decisions made by agents, households, and buildings.
@@ -486,11 +608,19 @@ The economy should separate coarse city-level demand pressure from concrete deci
 The demand system should track aggregated pressures such as:
 
 - household admission and removal pressure
-- residential, commercial, industrial, and later service-building growth pressure
+- residential, commercial, industrial, and any later explicitly-added private-use growth pressure
 - unmet goods or service demand
 - broad city stability signals that other systems consume
 
 This layer should operate mostly on coarse aggregate data rather than per-agent decision logic. The detailed city-growth and migration-pressure contract belongs in [`docs/demand.md`](demand.md).
+
+Important scope note:
+
+- baseline `v0.1` demand-owned private growth covers only residential, commercial, and industrial
+- future office or mixed-use growth belongs there only if zoning and demand add them as one
+  explicit extension
+- city-owned service or utility building expansion is not ordinary demand-owned private growth; it
+  remains player-, scenario-, or city-management-owned instead
 
 #### Decisions system
 
@@ -510,6 +640,161 @@ Short version:
 
 - demand answers "what pressures exist in the city?"
 - decisions answer "what does this household, worker, or building do about them?"
+
+### Building upgrade and downgrade viability
+
+Demand pressure alone must not be enough to level a building up.
+
+Cross-system rule:
+
+- [`docs/demand.md`](demand.md) decides whether a building is under enough sustained pressure to be
+  eligible for upgrade or downgrade
+- [`docs/zoning.md`](zoning.md) decides which next level is legal inside the current
+  `upgrade_family` and zone profile
+- this document decides whether that legal next level is economically viable
+
+This prevents cases such as poor households upgrading directly into mansion-tier residential assets
+just because broad residential demand is high.
+
+Important `v0.1` rule:
+
+- because the absolute money scale is still an open balance question, upgrade viability should use
+  relative affordability and operating-buffer ratios rather than hardcoded absolute currency
+  thresholds
+
+#### Residential upgrade viability
+
+For residential buildings, the economy-side gate should use aggregate building viability plus
+household affordability at move-in or stay time. It should not use one occupant's wealth as a
+direct whole-building level trigger.
+
+Recommended derived values:
+
+```text
+residential_occupancy_ratio =
+    occupied_household_slots / max(total_household_slots, 1)
+```
+
+Deterministic `v0.1` residential rule:
+
+- each target residential building level must have one economy-owned aggregate viability
+  requirement `residential_min_occupancy_ratio_for_upgrade[target_level]`
+- a residential building is eligible to upgrade from `level = N` to `level = N + 1` only if:
+  - demand says upgrade pressure is high enough
+  - zoning says the next family level is legal
+  - `residential_occupancy_ratio >= residential_min_occupancy_ratio_for_upgrade[N + 1]`
+  - every occupied household in that building satisfies the target level's move-in affordability
+    rule
+    for the required sustained period
+- a residential building is eligible to downgrade if:
+  - demand says downgrade pressure is high enough
+  - the building is vacant or near-vacant for the required sustained period
+  - the economy-owned residential redevelopment-retention floor for the current level is no longer
+    met
+  - occupant poverty by itself does not trigger whole-building downgrade
+
+Interpretation:
+
+- residential upgrades are aggregate building-side changes, not one-household wealth events
+- occupied households still matter, because the building must not upgrade into a tier its current
+  households cannot afford to occupy
+- residential decline is primarily a vacancy or redevelopment path, not an occupant-poverty path
+- poor households are handled by the relocation and eviction rules above before whole-building
+  downgrade is considered
+
+#### Non-residential upgrade viability
+
+For baseline `v0.1` commercial and industrial buildings, and for any later explicit office or
+mixed-use extensions, the economy-side gate should use business viability rather than household
+affordability.
+
+Recommended derived values:
+
+```text
+building_daily_operating_cost =
+    daily_wages
+  + daily_input_cost
+  + daily_utility_cost
+  + other_daily_operating_cost
+
+building_operating_buffer_days =
+    building_budget / max(building_daily_operating_cost, epsilon)
+```
+
+Deterministic `v0.1` non-residential rule:
+
+- each target non-residential building level must have one economy-owned operating-buffer
+  requirement `nonresidential_min_buffer_days_by_level[target_level]`
+- a non-residential building is eligible to upgrade from `level = N` to `level = N + 1` only if:
+  - demand says upgrade pressure is high enough
+  - zoning says the next family level is legal
+  - `building_operating_buffer_days` meets the target-level requirement for the required sustained
+    period
+  - the building has no critical unresolved utility failure
+  - the building has no critical unresolved staffing or required-input shortfall
+- a non-residential building is eligible to downgrade if sustained demand and economy conditions
+  fall below the current level's downgrade floor
+
+Interpretation:
+
+- high city demand alone does not force a shop or factory to level up
+- the business must also be able to support the more expensive tier
+
+#### Zone-type viability summary
+
+The same layered rule applies to every ordinary private zone:
+
+- demand says whether upgrade, downgrade, spawn, or redevelopment pressure is high enough
+- zoning says whether the next level or replacement form is legal
+- economy says whether that concrete zone type can actually sustain the change
+
+Deterministic `v0.1` summary by zone type:
+
+- `Residential`
+  - upgrade requires aggregate residential occupancy viability plus occupant affordability for the
+    target level
+  - household poverty triggers relocation, eviction, or unhoused outcomes first
+  - downgrade is primarily a vacancy or redevelopment path, not a one-household poverty path
+- `Commercial`
+  - upgrade requires commercial demand plus enough staffing, enough stock coverage, enough
+    operating-buffer days, and no critical utility failure
+  - downgrade requires sustained weak demand or weak business viability at the current tier
+- `Industrial`
+  - upgrade requires industrial demand plus enough staffing, enough required-input coverage, enough
+    output clearance or storage headroom, enough operating-buffer days, and no critical utility
+    failure
+  - downgrade requires sustained weak demand or weak industrial viability at the current tier
+
+Later-extension note:
+
+- baseline `v0.1` does not ship ordinary private `Office` or `Mixed` growth families
+- if office or mixed-use return later as explicit zoning and demand extensions, they should reuse
+  the same business-viability pattern here rather than bypassing the layered
+  demand-plus-zoning-plus-economy gate
+
+Baseline `v0.1` modifier rule:
+
+- crime, noise, parks, education, and similar neighborhood conditions are not hard economy-side
+  blockers in the baseline upgrade gate
+- those systems may later feed demand-side local modifiers or bounded viability multipliers once
+  their source simulations are trustworthy enough to use as upgrade inputs
+- until then, baseline `v0.1` upgrade and downgrade viability should rely on the simpler staffing,
+  stock, utility, occupancy, affordability, and operating-buffer signals described above
+
+Authoring and data rule:
+
+- `residential_move_in_min_reserve_days_by_level`,
+  `residential_stay_min_reserve_days_by_level`,
+  `residential_min_occupancy_ratio_for_upgrade`, and
+  `nonresidential_min_buffer_days_by_level` belong to economy-owned tuning data, not to zoning
+  profiles and not to individual building assets
+- any later commercial, industrial, office, or mixed-specific staffing, stock, input, output, or
+  occupancy thresholds also belong to economy-owned tuning data rather than to zoning profiles or
+  building assets
+- `v0.1` may ship one simple shared table per use family or one shared table for all residential
+  and one for all non-residential buildings
+- if no required economy-side viability entry exists for a target level, that level transition is
+  not allowed
 
 ## Product Shape
 
@@ -1479,7 +1764,17 @@ These numbers are only a bootstrap reference pack. They should ship in the first
 
 ## Suggested Implementation Order
 
-The codebase already ships part of the `v0.1` starter loop: explicit household records, simple building budgets and stock, bounded freight reservations, `OWA` import fallback, and the first developer-side economy data path. The phases below are therefore the recommended continuation order from the current partial implementation, not a claim that every earlier phase is still untouched.
+Cross-doc sequencing note:
+
+- the shared cross-doc order is defined in [`zoning.md`](zoning.md): zoning and asset-editor
+  foundation first, demand-layer integration second, economy integration third
+- this section is therefore the economy-local implementation order that should run once the zoning
+  and demand ownership contracts already exist
+
+The codebase already ships part of the `v0.1` starter loop: explicit household records, simple
+building budgets and stock, bounded freight reservations, `OWA` import fallback, and the first
+developer-side economy data path. The phases below are therefore the recommended continuation order
+from the current partial implementation, not a claim that every earlier phase is still untouched.
 
 ### Phase 1 - Stabilize the current starter loop
 
@@ -1530,13 +1825,17 @@ Goal: make money flow explicit before adding richer service or policy behavior.
 
 Goal: turn baseline services into real runtime constraints without treating utilities as trucked goods.
 
-### Phase 7 - Hand immigration and displacement decisions to demand later, not sooner
+### Phase 7 - Complete the demand and economy handoff
 
-- Keep [`demand.md`](demand.md) as future ownership guidance until its runtime outputs actually exist.
-- When that work starts, move household admission or removal and city-growth pressure behind demand-owned daily outputs instead of allocator-local formulas.
-- Keep economy responsible for creating and updating household or building economy state once demand has already decided the outcome.
+- Assume the demand-owned outputs from [`demand.md`](demand.md) already exist as part of the
+  earlier cross-doc implementation order.
+- Finish routing household admission or removal and city-growth pressure through those demand-owned
+  daily outputs instead of allocator-local formulas.
+- Keep economy responsible for creating and updating household or building economy state once
+  demand has already decided the outcome.
 
-Goal: cleanly separate city-growth decisions from economy state without blocking the economy work that is already underway.
+Goal: finish the demand and economy ownership boundary cleanly instead of leaving allocator-local or
+economy-local fallback growth decisions behind.
 
 ### Phase 8 - Remove transitional hardcoding and old assumptions
 

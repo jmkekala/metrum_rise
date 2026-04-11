@@ -216,8 +216,8 @@ The intent is to purge the old category-only zoning model as much as practical a
 - keep the internal representation flexible enough to add more subcategories later
 - let zoning define what is legally allowed while demand decides whether growth actually happens
 - allow multiple building families inside one broad subcategory such as medium-density housing
-- apply the same principles across residential, commercial, industrial, office, and mixed zoning
-- keep `Mixed` as a first-class top-level zoning category rather than a special-case hack
+- keep the baseline `v1` profile set focused on residential, commercial, and industrial zoning
+- allow later private-use families such as office or mixed only as explicit extensions
 
 ### Terminology Conventions
 
@@ -249,8 +249,6 @@ Top-level categories:
 - `Residential`
 - `Commercial`
 - `Industrial`
-- `Office`
-- `Mixed`
 
 The player first chooses a top-level category, then one of that category's zoning subcategories.
 
@@ -261,8 +259,6 @@ Examples of an initial v1 set:
 | `Residential` | `Low Density Housing`, `Medium Density Housing`, `High Density Housing` |
 | `Commercial` | `Low Density Commercial`, `Medium Density Commercial`, `High Density Commercial` |
 | `Industrial` | `Low Density Industrial`, `Medium Density Industrial`, `High Density Industrial` |
-| `Office` | `Low Density Office`, `Medium Density Office`, `High Density Office` |
-| `Mixed` | `Low Density Mixed Use`, `Medium Density Mixed Use`, `High Density Mixed Use` |
 
 Important rule for the initial set:
 
@@ -288,7 +284,7 @@ Recommended shape:
 
 ```text
 ZoneType
-  = Residential | Commercial | Industrial | Office | Mixed
+  = Residential | Commercial | Industrial
 
 ZoneDensity
   = Low | Medium | High
@@ -303,9 +299,6 @@ ZoneProfile
   - zone_type
   - density
   - required_asset_tags
-  - allowed_zone_uses_for_mixed
-  - upgrade_targets
-  - downgrade_targets
   - growth_profile_id
 ```
 
@@ -316,8 +309,7 @@ Interpretation:
 - `density` is the broad legal density band of the painted zoning choice
 - `ui_order` determines deterministic subcategory ordering inside one top-level category; ties sort by `id`
 - `required_asset_tags` defines any extra asset-tag filters that must be present after the base zone-type and density match
-- `upgrade_targets` and `downgrade_targets` define legal future transitions
-- `growth_profile_id` points at the demand-owned growth evaluation profile described in [`demand.md`](demand.md)
+- `growth_profile_id` points at the demand-owned growth evaluation profile described in [`demand.md`](demand.md); in baseline `v1`, this is a small closed shipped set with one default profile per shipped baseline `zone_type + density`
 
 Authoritative runtime rule:
 
@@ -337,7 +329,7 @@ This keeps the model flexible:
 
 - the initial implementation can ship only a small profile list
 - later additions can add new subcategories such as row housing without redesigning the whole system
-- the same mechanism works for commercial, industrial, office, and mixed zoning too
+- the same mechanism works for later private-use families too if the design later adds them
 
 ### ZoneProfile Data And Loading
 
@@ -371,10 +363,7 @@ ui_order = 10
 zone_type = "residential"
 density = "low"
 required_asset_tags = []
-allowed_zone_uses_for_mixed = []
 growth_profile_id = "residential_low_default"
-upgrade_targets = []
-downgrade_targets = []
 
 [profiles.ui]
 color = "#2DBE60"
@@ -393,10 +382,9 @@ Deterministic validation rules:
 - every `profiles.ui.icon` must be a non-empty stable UI key
 - every `profiles.ui.description` must be non-empty
 - every `growth_profile_id` must resolve to a valid demand-owned `GrowthProfile`
-- every `upgrade_targets` and `downgrade_targets` entry must resolve to another valid `ZoneProfile.id`
+- in baseline `v1`, every shipped `growth_profile_id` must be the one default demand profile that
+  matches the profile's `(zone_type, density)`
 - `required_asset_tags` must be stored as a deduplicated set or deduplicated during load
-- `allowed_zone_uses_for_mixed` must be empty for all non-`Mixed` profiles
-- in baseline `v1`, `allowed_zone_uses_for_mixed` may remain empty for mixed profiles because mixed legality is still limited to assets authored with `building.zone_type = "mixed"`
 
 Deterministic runtime loading rules:
 
@@ -408,7 +396,7 @@ Deterministic runtime loading rules:
 6. Within each top-level category, sort profiles by `(ui_order, id)`.
 7. Reserve compiled runtime profile id `0` for `unpainted / none`.
 8. Assign compiled runtime profile ids `1..N` in the deterministic global order:
-   top-level category order `Residential, Commercial, Industrial, Office, Mixed`, then
+   top-level category order `Residential, Commercial, Industrial`, then
    `(ui_order, id)` inside each category.
 9. Use that same compiled-id assignment for the painted grid, save/load blobs, undo payloads,
    and overlay uploads.
@@ -435,10 +423,9 @@ Deterministic baseline legality rule:
 An asset is legal for a `ZoneProfile` if and only if all of the following are true:
 
 1. `asset_class == "building"`
-2. if `ZoneProfile.zone_type != Mixed`, then `building.zone_type == ZoneProfile.zone_type`
-3. if `ZoneProfile.zone_type == Mixed`, then the baseline `v1` rule is `building.zone_type == mixed`
-4. `building.density == ZoneProfile.density`
-5. every tag in `ZoneProfile.required_asset_tags` is present in the asset's shared `tags`
+2. `building.zone_type == ZoneProfile.zone_type`
+3. `building.density == ZoneProfile.density`
+4. every tag in `ZoneProfile.required_asset_tags` is present in the asset's shared `tags`
 
 Interpretation:
 
@@ -455,8 +442,9 @@ Not part of baseline profile legality:
 
 Mixed-use note:
 
-- the baseline `v1` rule stays simple and deterministic: mixed profiles accept only assets authored with `building.zone_type = "mixed"`
-- `allowed_zone_uses_for_mixed` is reserved for a later explicit extension if the design later wants some mixed profiles to admit selected pure residential, commercial, or office assets too
+- baseline `v1` does not ship mixed-use profiles
+- if mixed-use returns later, it should come back as an explicit extension with its own legality,
+  demand, and asset-authoring rules written down at the same time
 
 ### Baseline Build-Site Definition
 
@@ -563,6 +551,9 @@ Deterministic upgrade and downgrade rule:
 - if a building has no `upgrade_family`, it has no family-based upgrade or downgrade path
 - valid content should keep `level` unique within one family, so no extra tie-break is needed for a
   correct family-level transition
+- crossing demand-side upgrade or downgrade thresholds only makes the next family level eligible;
+  the economy-side viability gate described in [`economy.md`](economy.md) must still pass before
+  the level change actually happens
 
 Future explicit higher-level direct spawn:
 
@@ -633,6 +624,8 @@ Practical rules:
 - asset selection should choose from the legal asset pool for that zone profile
 - upgrades should stay inside the same zone profile unless the player rezones
 - crossing from one density band to another should usually require rezoning rather than happening silently
+- household relocation, eviction, or affordability failure does not by itself change zoning legality
+  or building level; any later building replacement still has to obey the current zone profile
 
 Example:
 
@@ -640,18 +633,19 @@ Example:
 - a level 1 and a level 3 medium-density building may both be valid in the same painted area
 - demand and local conditions decide whether a site stays modest, upgrades, downgrades, or is replaced
 
-### Mixed As A Separate Top-Level Category
+### Office And Mixed As Later Extensions
 
-`Mixed` should stay a separate top-level category in the future system.
+Baseline `v1` should stay focused on residential, commercial, and industrial zoning only.
 
-Reasons:
+If office or mixed-use zoning returns later, it should return as an explicit extension rather than
+as a half-specified baseline family.
 
-- it is player-readable
-- it has distinct behavior from pure residential, commercial, industrial, or office areas
-- it will likely want its own asset pool and its own growth profiles
-- it avoids treating mixed-use as a hidden overlap rule that is hard to communicate to players
+Requirements for that later extension:
 
-The internal profile for a mixed zone may still allow more than one use family, but the player should continue to see it as a dedicated top-level choice.
+- define the player-facing category and subcategory contract explicitly
+- add matching zoning-profile data and legality rules
+- add matching demand-side formulas and `GrowthProfile` data
+- add any asset-authoring or upgrade-family rules needed for that family
 
 ### Future Extensibility
 
@@ -683,12 +677,16 @@ Examples of later additions:
 
 Examples of possible future top-level categories, if the game later needs them:
 
-- `Civic` or `Public Service`
 - `Agricultural`
 - `Special District`
 - `Entertainment` or `Tourism`
 
 Those later additions should be implemented as new `ZoneProfile` entries, not as brand-new zoning architecture.
+
+Explicit exclusion:
+
+- future city-owned service or utility buildings remain outside this painted-zoning path even if the
+  game later adds more painted private-use categories
 
 ### Relationship To Demand
 
@@ -697,10 +695,18 @@ This proposed zoning model is designed to work with the demand ownership describ
 Recommended relationship:
 
 - demand computes broad household and private-building growth pressure
-- demand-owned `GrowthProfile` data determines which signals matter and how they are weighted for growth evaluation
+- in baseline `v1`, demand uses the fixed city-level signal normalization and `DemandChannel`
+  formulas defined in [`demand.md`](demand.md) rather than zoning-authored weighting rules
+- in baseline `v1`, the shipped `GrowthProfile` set stays intentionally small and closed, with one
+  default profile per `zone_type + density`; new zoning profiles should normally reuse one of those
+  defaults rather than create new demand behavior
+- demand-owned `GrowthProfile` data tunes cadence, thresholds, hysteresis, and action budgets for
+  that fixed evaluator
 - zoning profiles define which kinds of buildings may answer that pressure
-- demand-owned site evaluation determines which legal build sites or roadside slots are best candidates by reading local modifiers from their owning systems
-- building upgrades and downgrades should read sustained demand plus local modifier history, not one-frame spikes
+- in baseline `v1`, demand chooses among already-legal build sites through the deterministic
+  candidate ordering and daily action-budget rules described in [`demand.md`](demand.md)
+- building upgrades and downgrades should read sustained demand rather than one-frame spikes;
+  later local modifiers may influence that pressure only if demand adds them explicitly
 
 Raw local signals such as pollution, crime, education, parks, transit access, utility stability, and other neighborhood conditions should remain owned by their own simulation systems. Zoning and demand should consume summaries of those signals rather than becoming the source of truth for them.
 
@@ -773,16 +779,59 @@ Canonical replacement undo payload:
 - `previous_profile_runtime_ids`: one stored runtime profile id per cell in that same box before
   the edit was applied
 
+Brush rasterization rule:
+
+- baseline `v1` brush size is an integer `radius_cells`
+- the brush center always snaps to one zoning-grid cell center before any rasterization happens
+- one brush stamp paints a deterministic integer round mask
+- for one stamp, the brush paints offset cell `(dx, dy)` if and only if
+  `dx * dx + dy * dy <= radius_cells * radius_cells`
+- a drag stroke paints the union of those brush stamps along the deterministic supercover grid line
+  between the previous snapped brush center and the new snapped brush center
+- one committed drag produces one merged patch, one `write_mask`, and one undo entry
+- preview smoothing or interpolation may be added later for visuals, but preview-only rendering must
+  not change the committed painted cell set
+- later UI support for multiple brush sizes is allowed, but every supported size must still use this
+  same integer `radius_cells` rasterization rule
+
 Tool/API rules:
 
 - Godot should no longer call rectangle-specific bridge methods such as `set_zone_rect`,
   `get_zone_subrect`, or `set_zone_rect_raw`
-- Rust should instead expose one generic "apply zoning patch" write path and one generic
-  "restore zoning patch" write path
+- Rust should instead expose the following zoning-tool bridge methods:
+  - `get_zone_profiles() -> Array[Dictionary]`
+  - `capture_zoning_patch(grid_x, grid_y, width_cells, height_cells) -> PackedByteArray`
+  - `apply_zoning_patch(grid_x, grid_y, width_cells, height_cells, target_profile_runtime_id, write_mask) -> void`
+  - `restore_zoning_patch(grid_x, grid_y, width_cells, height_cells, profile_ids_le_u16) -> void`
 - rectangle mode and brush mode differ only in how they generate `write_mask`; they do not get
   separate simulation-side storage or save rules
 - ordinary paint uses `target_profile_runtime_id`
 - erase uses the reserved runtime id `0`, which means `unpainted / none`
+
+Bridge parameter contract:
+
+- `grid_x`, `grid_y`, `width_cells`, and `height_cells` are integer zoning-grid coordinates or
+  extents on the Godot boundary
+- `target_profile_runtime_id` is passed over the Godot boundary as an integer, but Rust validates
+  it against the compiled `u16` runtime profile-id registry
+- `write_mask` is a `PackedByteArray` of length exactly `width_cells * height_cells`
+- `write_mask` uses deterministic row-major ordering: `x` increases first inside one row, then `y`
+  advances to the next row
+- every `write_mask` byte must be either `0` or `1`
+- `capture_zoning_patch()` returns `width_cells * height_cells * 2` bytes containing little-endian
+  `u16` profile ids in that same row-major order
+- `restore_zoning_patch()` accepts that same packed little-endian `u16` row-major payload and
+  restores the entire patch bounding box exactly
+
+Registry query contract:
+
+- `get_zone_profiles()` returns the already validated profile registry in the deterministic order
+  used by the UI and runtime-id assignment
+- each returned entry must include at least:
+  `id`, `runtime_id`, `display_name`, `ui_order`, `zone_type`, `density`,
+  `ui_color`, `ui_icon`, and `ui_description`
+- Godot uses that registry for zoning buttons, tooltips, preview colour selection, and overlay
+  presentation metadata; it must not rebuild those lists from hardcoded `ZoneType` assumptions
 
 Runtime-id rule:
 
@@ -809,8 +858,17 @@ Overlay rule:
 - the current single-channel broad-`ZoneType` overlay texture is replaced by profile-aware overlay
   data
 - the authoritative overlay source is the compiled runtime `ZoneProfile`-id grid
-- the concrete GPU upload format may be `R16` or another equivalent packed representation; it does
-  not need to stay a single `R8` broad-zone texture
+- Rust exposes that grid to Godot as `get_zone_profile_texture_data_rg8() -> PackedByteArray`
+- `get_zone_profile_texture_data_rg8()` packs one `u16` runtime profile id per zoning cell into two
+  bytes in deterministic row-major order:
+  low byte first, high byte second
+- Godot uploads that payload as an `RG8` image with one texel per zoning cell
+- the shader reconstructs the `u16` runtime profile id from the two normalized channels using
+  rounded byte reconstruction; it does not read hardcoded broad `ZoneType` ids anymore
+- Rust also exposes `get_zone_profile_style_lut_rgba8() -> PackedByteArray`
+- that LUT contains one `RGBA8` texel per runtime profile id in ascending runtime-id order
+- LUT entry `0` is reserved for `unpainted / none`
+- LUT entries `1..N` derive their RGB values from `profiles.ui.color` in `zoning/profiles.toml`
 - overlay colours, icons, tooltips, and other presentation data come from the loaded
   `zoning/profiles.toml` registry rather than from hardcoded `ZoneType` colour tables
 - baseline presentation data should include at least `profiles.ui.color`, `profiles.ui.icon`, and
@@ -844,142 +902,122 @@ than unresolved core zoning behavior.
 
 ### Asset-editor follow-up
 
-- The baseline legality contract can already reuse the current asset fields such as `zone_type`,
-  `density`, `level`, footprint dimensions, and tags in [`asset_editor.md`](asset_editor.md).
-- The asset editor should load the shipped zoning-profile registry from `zoning/profiles.toml`
-  instead of owning hardcoded zoning-choice lists in UI code.
-- The building inspector should derive its available zoning choices from that loaded registry,
-  then still write the asset's baseline `zone_type` and `density` fields into `asset.toml`.
-- The remaining asset-editor follow-up is to expose the profile-based system more directly: show
-  compatible `ZoneProfile`s, validate required tags, and surface later site-specific filters such as
-  corner-capable assets cleanly in the UI.
-- Building-family authoring also needs cleanup in the editor: the intended building-side concept is
-  `upgrade_family` even though the implemented field name is still `asset_set`, and the editor
-  should auto-fill and preserve that family key, warn when ordinary zoned private buildings omit it,
-  and require it for `level > 1` assets.
-
-### Demand-side growth-profile follow-up
-
-- `zoning/profiles.toml` now depends on stable `growth_profile_id` values, but the shipped
-  demand-side `GrowthProfile` registry and its source file are not yet defined.
-- [`demand.md`](demand.md) still needs the matching authored data contract, validation rules, and
-  initial shipped profile ids before end-to-end profile-driven zoning growth can be implemented.
-
-### Zoning patch bridge and overlay packing follow-up
-
-- Section 10 now fixes the generic patch-based zoning-edit model, but the exact Rust and Godot
-  bridge method names and packed wire format are still implementation details to choose.
-- The overlay contract now clearly requires profile-aware data, but the exact GPU upload format
-  still needs a final implementation choice such as `R16` or an equivalent packed representation.
-
-### ZoneProfile transition-field follow-up
-
-- `upgrade_targets` and `downgrade_targets` are now part of the authored `ZoneProfile` shape, but
-  baseline `v1` zoning does not yet execute any runtime behavior from those fields.
-- The first implementation may keep them empty and validation-only.
-- A later pass should decide whether they remain reserved metadata or become active inputs for
-  rezoning suggestions, redevelopment rules, or authored profile-transition permissions.
-
-### Zoning Tools spec need deterministic check
-- Inital Zoning Tool spec is a draft that needs a checking and rework.
+- The only zoning-side contract here is that the asset editor must consume the shipped
+  zoning-profile registry from `zoning/profiles.toml` instead of owning hardcoded zoning-choice
+  lists.
+- The deterministic editor behavior and UX rules for that integration belong in
+  [`asset_editor.md`](asset_editor.md), not here.
 
 ## 12. Proposed Implementation Plan
 
-The zoning redesign is now deterministic enough to implement in phases. The safest order is to
-replace the authoring and data foundation first, then replace the live tool layer, then switch the
-runtime placement and growth logic over to the profile-based model.
+The zoning, demand, and economy specs are now deterministic enough that implementation can proceed
+in one deliberate cross-doc order. The intended order is:
 
-### Phase 1: Authoring And Registry Foundation
+1. zoning plus asset-editor changes
+2. demand-layer changes
+3. economy-side integration and replacement work
+
+That order keeps the legal world model and authoring surface stable first, then moves city-growth
+ownership into demand, and only after that finishes the deeper economy-side signal and viability
+work those demand outputs consume.
+
+### Phase 1: Zoning And Asset-Editor Foundation
 
 - Keep `zoning/profiles.toml` as the shipped source of truth and finalize the broad initial
-  `low / medium / high` profile set for each major top-level category.
+  `low / medium / high` residential, commercial, and industrial profile set.
 - Implement Rust-side `ZoneProfile` loading, validation, deterministic sorting, and compiled runtime
   id assignment.
 - Expose read-only profile-registry queries to Godot so the UI and tools can stop hardcoding zoning
   choices.
-- Update the asset editor to load that registry, replace hardcoded zoning lists, and align its
-  `zone_type`, `density`, and `upgrade_family` authoring UX with the new profile data.
+- Update the asset editor to load that registry, replace hardcoded zoning lists, write
+  deterministic `zone_type` and `density` choices from the loaded data, validate authored building
+  data against the registry, and align its `upgrade_family` authoring UX with the new profile data.
+- Remove old editor-side `office` and `mixed` zoning controls from the asset editor and any other
+  zoning-related tools so the live tooling surface matches the shipped baseline registry instead of
+  preserving dead categories.
+- Replace the painted zoning grid, helper queries, and save-load format so the authoritative
+  painted world stores compiled `ZoneProfile` ids instead of broad `ZoneType`.
+- Replace the live zoning tool and overlay with the profile-driven brush/rectangle tool, patch
+  bridge, and registry-driven UI described earlier in this document.
+- Update allocator legality, stale-building cleanup, rezoning compatibility, and deterministic
+  asset selection to consume the new profile-based zoning contract end to end.
 
 Exit condition:
 
 - shipped profiles load deterministically at startup
-- the asset editor can read the registry and no longer owns hardcoded zoning-choice lists
+- the asset editor can read the registry, no longer owns hardcoded zoning-choice lists, and
+  validates authored zoning-related building fields against the shipped data
+- editor and tool zoning-choice UIs expose only the shipped baseline categories instead of the old
+  hardcoded office or mixed options
+- the authoritative painted zoning state, live tool, save-load path, and allocator legality checks
+  all use the same profile-based zoning contract
 
-### Phase 2: Painted-Grid And Persistence Replacement
-
-- Replace the live painted world grid from broad `ZoneType` cells to compiled `ZoneProfile`
-  runtime-id cells.
-- Keep `ZoneType` as derived broad-family data read from the loaded profile registry.
-- Update save/load so the zoning blob stores compiled `u16` profile ids in deterministic row-major
-  order.
-- Update helper queries so gameplay code can read both the exact painted profile and the derived
-  broad `ZoneType` where needed.
-
-Exit condition:
-
-- the authoritative painted zoning state is `ZoneProfile`-based everywhere in Rust
-- save/load roundtrips the new grid format without any old-format migration work
-
-### Phase 3: Zoning Tool And Overlay Replacement
-
-- Remove the rectangle-only zoning tool path and replace it with the profile-driven zoning tool
-  described in section 10.
-- Replace the hardcoded zoning toolbar with a top-level-category plus subcategory UI built from the
-  loaded registry.
-- Implement the generic patch-based zoning write and restore bridge API.
-- Support at least `rectangle` and `brush` paint modes on top of that shared patch API.
-- Replace the current duplicated zoning undo setup with one authoritative patch-based zoning undo
-  path.
-- Drive zoning overlay colours, icons, and descriptions from `zoning/profiles.toml` instead of
-  hardcoded color tables.
-
-Exit condition:
-
-- the live zoning tool is profile-driven
-- rectangle and brush both work through the same patch-based Rust API
-- the current legacy zoning tool/UI path can be deleted
-
-### Phase 4: Allocator And Legality Integration
-
-- Update build-site legality checks so candidate footprints require one exact painted
-  `ZoneProfileId` instead of only broad `ZoneType`.
-- Update stale-building cleanup, rezoning compatibility checks, and redevelopment state to use the
-  profile-based legality contract.
-- Implement the deterministic asset-selection pipeline against `ZoneProfile`, `density`,
-  `required_asset_tags`, build-site fit, and `upgrade_family`.
-- Keep corner and other multi-edge sites out of scope for this baseline pass.
-
-Exit condition:
-
-- building placement and cleanup read the new profile-based zoning contract end to end
-- spawned building selection is deterministic under the section-10 rules
-
-### Phase 5: Demand And Growth Integration
+### Phase 2: Demand-Layer Integration
 
 - Implement the demand-owned `GrowthProfile` registry and make `growth_profile_id` from zoning
   resolve against it.
-- Move private building spawn, despawn, upgrade, and downgrade decisions behind demand-owned growth
+- Implement the baseline demand signal normalization, `DemandChannel` formulas, startup-support
+  rules, household admission/removal rules, and daily building-action budgets from
+  [`demand.md`](demand.md).
+- Wire the daily demand pass to the settled snapshot handoff described in [`demand.md`](demand.md)
+  without trying to finish every deeper economy redesign item first.
+- Move private building spawn, despawn, upgrade, and downgrade decisions behind demand-owned
   outputs instead of allocator-owned bootstrap logic.
-- Implement the rezoning and redevelopment timer path from section 10.
+- Move household admission and removal behind demand-owned daily outputs instead of allocator-owned
+  immigration logic.
 - Keep direct `level > 1` spawn as a later explicit extension after the baseline demand loop works.
 
 Exit condition:
 
 - zoning defines legal envelopes
-- demand owns growth pressure and change decisions
-- allocator executes profile-legal placements against those decisions
+- demand owns household admission or removal plus private-building change decisions
+- allocator executes profile-legal placements and removals against those demand outputs
 
-### Phase 6: Legacy code cleanup
-- Remaining legacy code should be cleaned from the system.
-- tests and benchmarks are migrated to use the new system instead of relying to the old legacy code  
+### Phase 3: Economy Integration And Replacement
 
+- Implement or align the settled economy-side source values that baseline demand consumes:
+  housing capacity and vacancy, housed-resident presence, affordability, stock stability,
+  utility-service stability, reachable jobs, unhoused tracking, and the daily settlement handoff.
+- Implement the household relocation, eviction, and deterministic household-removal selection rules
+  from [`economy.md`](economy.md).
+- Implement the residential and non-residential viability gates that demand-owned upgrade,
+  downgrade, spawn, and despawn decisions still pass through.
+- Finish the operational-clock and daily-settlement integration so demand reads one stable
+  post-settlement snapshot per day instead of partial hourly state.
 
-### Phase 7: Later Extensions
+Exit condition:
+
+- economy produces the settled daily snapshot that demand expects
+- economy consumes demand-owned household and building change outputs without fallback bootstrap
+  paths
+- zoning legality, demand ownership, and economy viability all meet cleanly in one runtime path
+
+### Phase 4: Legacy Cleanup And Validation
+
+- Remove the old rectangle-only zoning tool path, the old hardcoded zoning lists, and other
+  obsolete zone-type-only UI or bridge paths that the new zoning system replaced.
+- Remove allocator-owned immigration, founding bootstrap, and other growth-decision leftovers once
+  the new demand path is live.
+- Remove transport-oriented household-admission defaults that no longer match the new demand and
+  economy ownership split.
+- Update tests, tools, and benchmarks so they exercise the new profile-driven zoning and
+  demand-owned growth path rather than relying on legacy bootstrap behavior.
+
+Exit condition:
+
+- the old zoning toolchain and old allocator-owned growth decisions are deleted
+- tests and tooling no longer depend on legacy bootstrap paths
+
+### Phase 5: Later Extensions
 
 - Add district-style or family-preference systems if tighter authored neighborhood identity is
   needed.
 - Add corner and other multi-edge build-site support.
-- Add richer mixed-use legality if future mixed profiles should admit selected pure-use assets.
+- Reintroduce office or mixed-use zoning only if their legality, demand, and growth-profile rules
+  are specified together as one coherent extension.
 - Add any extra zoning subcategories beyond the broad initial `low / medium / high` baseline.
+- If later gameplay needs authored zone-to-zone transition permissions, reintroduce explicit
+  `upgrade_targets` or `downgrade_targets`-style `ZoneProfile` transition fields only when a real
+  runtime system uses them.
 
 This phase is intentionally non-blocking for the first playable profile-based zoning replacement.

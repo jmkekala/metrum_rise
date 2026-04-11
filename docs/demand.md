@@ -12,6 +12,23 @@ It answers questions like:
 
 It does not own household data layout, freight movement, or door-to-door travel.
 
+## Cross-Doc Implementation Order
+
+This document is intended to be implemented after the profile-based zoning and asset-editor
+foundation in [`zoning.md`](zoning.md), and before the deeper economy-side integration work in
+[`economy.md`](economy.md).
+
+Cross-doc order:
+
+1. implement the profile-based zoning and asset-editor changes from [`zoning.md`](zoning.md)
+2. implement the demand-owned growth, admission, removal, and building-change rules from this
+   document
+3. finish the deeper economy-side signal production, viability gates, and runtime handoff work in
+   [`economy.md`](economy.md)
+
+This keeps legality and authoring stable first, then moves city-growth ownership into demand, and
+only after that finishes the economy-side runtime details that demand consumes.
+
 ## Current Runtime Snapshot
 
 The live game currently has a small Rust-side `DemandSystem`, but it is not yet the full growth controller this document is meant to define.
@@ -44,17 +61,19 @@ This document uses the following terms consistently:
 - `build site`: one candidate legal location where a private building could appear, disappear, upgrade, downgrade, or be replaced. The concrete frontage-attached runtime shape of a build site is owned by [`building_allocator.md`](building_allocator.md); this remains a gameplay term, not a cadastral parcel system
 - `startup household growth`: early-city admission bias for new households; this is different from one-time founding placement and different from the economy-side startup money described in [`economy.md`](economy.md)
 
-## Current Legacy Growth Control
+## Current Replacement Targets
 
-Several important growth behaviors still live outside the current `DemandSystem`. Those paths are transitional or legacy and should be replaced by demand-owned outputs.
+Several important growth behaviors still live outside the current `DemandSystem`. These are
+temporary ownership violations, not behaviors to preserve. The demand redesign should replace the
+decision-making parts cleanly and remove the old paths rather than keep compatibility shims.
 
-Current legacy or transitional paths:
+Current replacement targets:
 
 - one-time founding placement still lives in `BuildingAllocator::place_founding_bootstrap_if_ready()`
 - immigrant household admission still lives in `BuildingAllocator::spawn_immigrants()`
 - that allocator-owned immigration path directly computes `housing_factor`, `job_factor`, and `city_stability_factor` instead of consuming a demand-owned daily output
 - building removal currently happens through stale-building cleanup when zoning or road attachment becomes invalid; that is not the same as demand-owned despawn logic
-- building upgrade or downgrade is not currently demand-owned and does not yet have a live system contract here
+- building upgrade or downgrade is not currently demand-owned in live runtime code even though this document now defines the target contract
 
 This means the current runtime is split:
 
@@ -62,15 +81,22 @@ This means the current runtime is split:
 - allocator lifecycle code still makes some real growth decisions
 - some desired demand-owned features do not exist yet at all
 
+Replacement-first rule:
+
+- once a demand-owned output exists for one of these behaviors, the old allocator- or
+  transport-owned decision path should be deleted rather than left behind as a fallback
+
 ## Target Scope
 
-The target demand system should become the authoritative city-growth layer.
+The target demand layer is the sole owner of ongoing city-growth decisions.
 
 Target responsibilities:
 
 - immigration and emigration pressure at whole-household granularity
 - bounded daily outputs such as `households_to_admit_today` and `households_to_remove_today`
-- private residential, commercial, industrial, office, mixed, and later service-building spawn pressure
+- baseline `v0.1` private residential, commercial, and industrial spawn pressure
+- later other private-use growth families only if they are added with explicit formulas and shipped
+  profile data at the same time
 - private building despawn, abandonment, downgrade, recovery, or replacement pressure where those systems exist
 - building upgrade and downgrade pressure derived from sustained conditions rather than one-frame spikes
 
@@ -79,37 +105,134 @@ The intended rule is:
 - demand decides whether growth or decline should happen
 - economy creates and updates the household or building runtime state once that decision is made
 - transport may visualize movement, but transport does not decide city growth
+- no other runtime subsystem should independently decide household admission or removal, or
+  private-building spawn, despawn, upgrade, or downgrade, except for explicit scenario/startup
+  setup and allocator-owned integrity cleanup
+
+Important scope guard:
+
+- demand owns ongoing city-growth decisions
+- explicit one-time scenario setup such as founding placement does not need to become a permanent
+  demand feature; it only needs to stop being a hidden allocator-owned exception
+- invalid geometry cleanup, broken road attachment cleanup, and other placement-integrity repair are
+  allocator concerns, not demand outputs
 
 ## Growth Profiles
 
 Growth evaluation data belongs in the demand layer, not in zoning structure.
 
-`ZoneProfile` in [`zoning.md`](zoning.md) should stay focused on what is legally allowed at a build site. When a zoning choice needs custom growth behavior, it should reference a demand-owned `GrowthProfile` through something like `growth_profile_id`.
+`ZoneProfile` in [`zoning.md`](zoning.md) stays focused on what is legally allowed at a build
+site. When a zoning choice needs custom growth behavior, it references a demand-owned
+`GrowthProfile` through `growth_profile_id`.
 
-Recommended shape:
+Deterministic `v0.1` rule:
+
+- `GrowthProfile` tunes one fixed private-building growth evaluator
+- `GrowthProfile` does not define its own formula language or custom aggregation logic
+- whole-city household admission and removal remain demand-owned daily outputs, not `GrowthProfile`
+  outputs
+- the shipped `GrowthProfile` set is intentionally small and closed in `v0.1`
+- `v0.1` ships exactly one default `GrowthProfile` per shipped baseline private-use family and
+  density
+- baseline `v0.1` demand does not ship dedicated `OfficeGrowth` or `MixedGrowth` channels
+- many `ZoneProfile`s may later reuse the same `GrowthProfile`
+- adding a new `ZoneProfile` should normally reuse an existing `GrowthProfile`
+- adding a brand-new `GrowthProfile` is a larger design change and is expected to remain rare
+
+Canonical `v0.1` shape:
 
 ```text
+DemandChannel
+  = ResidentialGrowth | CommercialGrowth | IndustrialGrowth
+
 GrowthProfile
   - id
-  - demand_channels
-  - local_modifier_weights
-  - signal_scope_rules
-  - aggregation_rules
+  - demand_channel
+  - cadence_days
+  - base_pressure_weight
+  - local_modifier_scale
+  - local_modifier_weights   # optional in v0.1
   - spawn_threshold
   - despawn_threshold
   - upgrade_threshold
   - downgrade_threshold
-  - hysteresis_rules
-  - evaluation_cadence
+  - hysteresis_margin
 ```
 
 Interpretation:
 
-- `demand_channels` tells the demand system which broad pressure signals the profile listens to
-- `local_modifier_weights` tells the demand system how strongly local conditions such as pollution, crime, parks, education, transit access, utility stability, and similar signals affect growth evaluation
-- `signal_scope_rules` defines whether a signal is read at site, building, household, district, or city scope
-- `aggregation_rules` defines how those signals combine into spawn, despawn, upgrade, or downgrade pressure
-- thresholds and hysteresis rules keep growth stable and stop one-frame spikes from causing churn
+- `demand_channel` selects exactly one city-level growth-pressure input for the profile
+- `cadence_days` controls how often this profile is re-evaluated
+- `base_pressure_weight` controls how strongly the chosen city-level demand channel contributes to
+  the final growth score
+- `local_modifier_scale` controls how strongly local desirability changes the final growth score
+- `local_modifier_weights` optionally tells the demand system how strongly each local condition
+  contributes to local desirability
+- thresholds convert the final normalized score into spawn, despawn, upgrade, or downgrade
+  eligibility
+- `hysteresis_margin` keeps state changes stable and stops one-frame spikes from causing churn
+
+Implemented `v0.1` local-modifier rule:
+
+- shipped `v0.1` `GrowthProfile`s are allowed to omit `local_modifier_weights` entirely
+- if a shipped `GrowthProfile` omits `local_modifier_weights`, then `local_desirability = 0.5`
+  neutral and `local_modifier_scale` must be `0.0`
+- this keeps baseline demand implementable without requiring local-modifier systems that are not yet
+  trustworthy or complete
+
+Local-modifier input rule:
+
+- every local modifier consumed by a `GrowthProfile` must be normalized to `0.0..1.0`
+- higher values must always mean "more favorable for private building growth" by the time the
+  demand layer reads them
+- if another subsystem stores a raw harmful quantity such as pollution or crime, that subsystem or
+  the demand adapter layer must invert or remap it before it is fed into the fixed evaluator
+- local modifiers are a later extension in `v0.1`, not a required dependency for baseline demand
+
+Future local-modifier families may include:
+
+- pollution
+- noise
+- crime
+- education
+- parks and public-space quality
+- transit access
+- utility or service stability
+- commute burden
+- broader neighborhood attractiveness
+
+Deterministic fixed evaluator:
+
+1. Read the city-level `demand_channel` pressure as `city_pressure` in `0.0..1.0`.
+2. If `local_modifier_weights` is present and non-empty, read each referenced local modifier in
+   `0.0..1.0` and compute `local_desirability` as the weighted average of those referenced
+   modifiers.
+3. Otherwise set `local_desirability = 0.5`.
+4. Compute the final normalized score:
+
+```text
+final_growth_score =
+    clamp(
+        city_pressure * base_pressure_weight
+      + (local_desirability - 0.5) * local_modifier_scale,
+        0.0,
+        1.0
+    )
+```
+
+5. Compare `final_growth_score` against the profile thresholds:
+   - empty legal site: `spawn_threshold`
+   - existing building: `upgrade_threshold`, `downgrade_threshold`, `despawn_threshold`
+6. Apply one fixed hysteresis rule:
+   - once a state change becomes eligible, it should not flip back until the score crosses the same
+     threshold by more than `hysteresis_margin`
+
+Important boundary:
+
+- crossing a spawn, despawn, upgrade, or downgrade threshold makes that state change eligible from
+  the demand side
+- it does not bypass zoning legality or the economy-side viability gate described in
+  [`economy.md`](economy.md)
 
 Important ownership rule:
 
@@ -118,45 +241,449 @@ Important ownership rule:
 - `GrowthProfile` stores authored tuning for how demand uses them
 - demand consumes `GrowthProfile`; it does not generate the profile itself at runtime
 
+### GrowthProfile Data And Loading
+
+`GrowthProfile`s are data-authored in shipped TOML files bundled with the game.
+
+Canonical `v0.1` data shape:
+
+```text
+demand/
+  growth_profiles.toml
+  growth_profiles.index.bin   # optional derived cache
+```
+
+Canonical source-of-truth rules:
+
+- `demand/growth_profiles.toml` is the authoritative authored data
+- any compiled cache or index file is optional derived data only
+- the base-game growth-profile set ships with the game and does not live in the user directory
+- a dedicated growth-profile editor is not required for the first implementation
+- hand-authored TOML is acceptable while the shipped profile set remains small and closed
+- baseline `v0.1` does not load extra growth profiles from zoning files, scenario files, mods, or
+  the user directory
+- baseline `v0.1` does not generate runtime-only synthetic `GrowthProfile`s
+
+Closed shipped `v0.1` profile set:
+
+- `residential_low_default`
+- `residential_medium_default`
+- `residential_high_default`
+- `commercial_low_default`
+- `commercial_medium_default`
+- `commercial_high_default`
+- `industrial_low_default`
+- `industrial_medium_default`
+- `industrial_high_default`
+
+Deterministic `v0.1` identity rule:
+
+- the shipped base-game set contains exactly those 9 profile ids and no others
+- every shipped id follows the stable naming rule `<zone_type>_<density>_default`
+- there is exactly one shipped `GrowthProfile` for each shipped baseline `(zone_type, density)`
+  pair
+- there is no separate compiled numeric `GrowthProfile` id in baseline `v0.1`; the stable authored
+  string id is the authoritative identity key
+
+`v0.1` mapping rule:
+
+- each shipped `ZoneProfile` from [`zoning/profiles.toml`](../zoning/profiles.toml) must reference
+  the one default `GrowthProfile` that matches its shipped baseline `(zone_type, density)`
+- baseline `v0.1` does not ship zoning-specific custom `GrowthProfile`s beyond that closed set
+- baseline `v0.1` also does not ship office or mixed zoning profiles; those remain later explicit
+  extensions if the design reintroduces them
+
+Canonical `growth_profiles.toml` shape:
+
+```toml
+[signal_normalization]
+resident_presence_saturation_residents = 500
+household_affordability_target_reserve_days = 7.0
+household_stock_stability_target_days = 3.0
+
+[startup_support]
+target_housed_residents = 200
+target_private_building_count = 24
+target_filled_job_slots = 80
+household_bonus = 1.5
+
+[startup_support.growth_floor_by_use]
+residential = 0.70
+commercial = 0.68
+industrial = 0.66
+
+[startup_support.spawn_bonus_by_use]
+residential = 8.0
+commercial = 3.0
+industrial = 2.0
+
+[action_budget]
+max_households_per_day = 12
+
+[household_action]
+base_inflow = 0.55
+admission_threshold = 0.25
+removal_threshold = 0.35
+
+[action_budget.spawn_batch_fraction_by_use]
+residential = 0.30
+commercial = 0.20
+industrial = 0.15
+
+[action_budget.upgrade_batch_fraction_by_use]
+residential = 0.10
+commercial = 0.08
+industrial = 0.08
+
+[action_budget.downgrade_batch_fraction_by_use]
+residential = 0.08
+commercial = 0.08
+industrial = 0.08
+
+[action_budget.despawn_batch_fraction_by_use]
+residential = 0.05
+commercial = 0.05
+industrial = 0.05
+
+[[profiles]]
+id = "residential_low_default"
+demand_channel = "ResidentialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.55
+despawn_threshold = 0.20
+upgrade_threshold = 0.80
+downgrade_threshold = 0.30
+hysteresis_margin = 0.05
+```
+
+Deterministic validation rules:
+
+- `signal_normalization.resident_presence_saturation_residents` must be finite and `> 0`
+- `signal_normalization.household_affordability_target_reserve_days` must be finite and `> 0.0`
+- `signal_normalization.household_stock_stability_target_days` must be finite and `> 0.0`
+- `startup_support.target_housed_residents` must be finite and `> 0`
+- `startup_support.target_private_building_count` must be finite and `> 0`
+- `startup_support.target_filled_job_slots` must be finite and `> 0`
+- `startup_support.household_bonus` must be finite and `>= 0.0`
+- `startup_support.growth_floor_by_use` must contain exactly `residential`, `commercial`, and
+  `industrial`
+- every `startup_support.growth_floor_by_use.*` value must be finite and in `0.0..1.0`
+- `startup_support.spawn_bonus_by_use` must contain exactly `residential`, `commercial`, and
+  `industrial`
+- every `startup_support.spawn_bonus_by_use.*` value must be finite and `>= 0.0`
+- `action_budget.max_households_per_day` must be a finite integer `>= 0`
+- `household_action.base_inflow` must be finite and in `0.0..1.0`
+- `household_action.admission_threshold` must be finite and in `0.0..1.0`
+- `household_action.removal_threshold` must be finite and in `0.0..1.0`
+- `action_budget.spawn_batch_fraction_by_use` must contain exactly `residential`, `commercial`,
+  and `industrial`
+- every `action_budget.spawn_batch_fraction_by_use.*` value must be finite and in `0.0..1.0`
+- `action_budget.upgrade_batch_fraction_by_use` must contain exactly `residential`, `commercial`,
+  and `industrial`
+- every `action_budget.upgrade_batch_fraction_by_use.*` value must be finite and in `0.0..1.0`
+- `action_budget.downgrade_batch_fraction_by_use` must contain exactly `residential`,
+  `commercial`, and `industrial`
+- every `action_budget.downgrade_batch_fraction_by_use.*` value must be finite and in `0.0..1.0`
+- `action_budget.despawn_batch_fraction_by_use` must contain exactly `residential`, `commercial`,
+  and `industrial`
+- every `action_budget.despawn_batch_fraction_by_use.*` value must be finite and in `0.0..1.0`
+- every `id` must be globally unique
+- every shipped base-game `id` must belong to the closed 9-id `v0.1` set listed above
+- every `demand_channel` must decode to a known `DemandChannel`
+- every `cadence_days` must be an integer `>= 1`
+- `base_pressure_weight`, `local_modifier_scale`, every threshold, and `hysteresis_margin` must be
+  finite values in `0.0..1.0`
+- shipped base-game `v0.1` profiles must set `local_modifier_scale = 0.0`
+- shipped base-game `v0.1` profiles must omit `profiles.local_modifier_weights`
+- if a future extension re-enables `profiles.local_modifier_weights`, the explicit supported key set
+  must be documented here at the same time
+- `upgrade_threshold` must be `>= downgrade_threshold`
+- invalid shipped base-game growth profiles must fail validation explicitly rather than being
+  silently dropped or rewritten
+
+Deterministic runtime loading rules:
+
+1. Read the shipped `demand/growth_profiles.toml` file during startup.
+2. Validate the full file before creating the live growth-profile registry.
+3. Validate that the shipped base-game file contains exactly one valid entry for each required
+   shipped baseline `(zone_type, density)` pair and no extra base-game entries.
+4. Build the runtime registry keyed by stable `GrowthProfile.id`.
+5. Build the deterministic ordered profile list in this exact order:
+   `residential_low_default`, `residential_medium_default`, `residential_high_default`,
+   `commercial_low_default`, `commercial_medium_default`, `commercial_high_default`,
+   `industrial_low_default`, `industrial_medium_default`, `industrial_high_default`.
+6. Use that deterministic ordered list whenever the demand layer iterates over all shipped
+   `GrowthProfile`s.
+7. Validate every `ZoneProfile.growth_profile_id` reference from
+   [`zoning/profiles.toml`](../zoning/profiles.toml) against that loaded registry.
+8. Load and validate the one shipped `signal_normalization` table before any demand formula is
+   evaluated.
+9. Load and validate the one shipped `startup_support` table before any startup-related demand
+   formula is evaluated.
+10. Load and validate the one shipped `household_action` table before any household admission or
+    removal formula is evaluated.
+11. Load and validate the one shipped `action_budget` table before any household-action or
+    building-action budget formula is evaluated.
+12. In `v0.1`, enforce the one-default-profile-per-`(zone_type, density)` mapping rule for the
+   shipped base-game profile set.
+
 ## Modifiers And Signal Sources
 
-The proper demand system is expected to read a wider set of positive and negative modifiers than the current three-counter telemetry model.
+The demand layer should consume normalized signals from other systems. It should not become the
+source of truth for those underlying systems.
 
-Expected modifier families:
+Deterministic `v0.1` rule:
 
-- housing availability
-- job availability
-- household cost pressure
-- household stock stability
+- shipped `v0.1` `GrowthProfile`s do not use local modifiers
+- baseline `v0.1` building-growth evaluation therefore reads only city-level demand channels plus
+  zoning, allocator, and economy viability gates
+- local modifiers are a later extension and are not required for baseline demand behavior
+
+Baseline `v0.1` city-level signal families:
+
+- `housing_availability`
+- `resident_presence`
+- `job_availability`
+- `household_affordability`
+- `household_stock_stability`
+- `utility_service_stability`
+- `external_connection_available`
+
+Baseline ownership rule:
+
+- `housing_availability` comes from housing capacity and vacancy state owned by economy/building
+  systems
+- `resident_presence` comes from occupied housing or admitted-household presence state owned by
+  economy/building systems
+- `job_availability` comes from labor demand and open-job state owned by economy/building systems
+- `household_affordability` comes from household budgets and essential-cost state owned by economy
+- `household_stock_stability` comes from household stock buffers owned by economy
+- `utility_service_stability` comes from utility-service resolution owned by economy/utility systems
+- `external_connection_available` comes from network-border connectivity owned by the road/network
+  layer
+
+Normalization rule:
+
+- every signal consumed by demand must be normalized to `0.0..1.0` before it enters a demand
+  formula
+- higher values must always mean "more favorable for growth" by the time demand reads the signal
+- if another system stores a harmful raw quantity such as pollution, noise, or crime, that source
+  system or a thin adapter layer must invert or remap it before demand consumes it
+
+Deterministic `v0.1` signal-normalization rules:
+
+The baseline city-level signals are derived from the frozen post-settlement economy snapshot using
+the following exact formulas.
+
+Baseline derived economy values:
+
+```text
+vacant_household_slots =
+    max(total_household_slots - occupied_household_slots, 0)
+
+total_reachable_job_slots =
+    occupied_reachable_job_slots + open_reachable_job_slots
+```
+
+Signal formulas:
+
+```text
+housing_availability =
+    if total_household_slots == 0 then 0.0
+    else clamp(vacant_household_slots / total_household_slots, 0.0, 1.0)
+
+resident_presence =
+    clamp(
+        housed_resident_count / resident_presence_saturation_residents,
+        0.0,
+        1.0
+    )
+
+job_availability =
+    if total_reachable_job_slots == 0 then 0.0
+    else clamp(open_reachable_job_slots / total_reachable_job_slots, 0.0, 1.0)
+
+household_affordability =
+    if housed_household_count == 0 then 1.0
+    else average_over_housed_households(
+        clamp(
+            household_reserve_days
+            / household_affordability_target_reserve_days,
+            0.0,
+            1.0
+        )
+    )
+
+household_stock_stability =
+    if housed_household_count == 0 then 1.0
+    else average_over_housed_households(
+        clamp(
+            household_stock_days
+            / household_stock_stability_target_days,
+            0.0,
+            1.0
+        )
+    )
+
+utility_service_stability =
+    min(power_service_ratio, water_service_ratio, sewage_service_ratio)
+
+external_connection_available =
+    if connected_border_count > 0 then 1.0 else 0.0
+```
+
+Interpretation and source rule:
+
+- `housing_availability` uses settled household-slot capacity after the daily economy pass
+- `resident_presence` uses housed residents, not raw map population targets
+- `job_availability` uses open reachable jobs after the settled daily viability and staffing state
+- `household_affordability` uses settled economy-owned `household_reserve_days` values from
+  [`economy.md`](economy.md)
+- `household_stock_stability` uses settled economy-owned `household_stock_days` values
+- `utility_service_stability` uses settled service-satisfaction ratios in `0.0..1.0`; if a
+  specific utility dimension is not implemented yet in baseline `v0.1`, that dimension contributes
+  a neutral `1.0`
+- `external_connection_available` is a hard gate derived from settled network-border connectivity
+- `resident_presence_saturation_residents`,
+  `household_affordability_target_reserve_days`, and
+  `household_stock_stability_target_days` are authored in the top-level
+  `signal_normalization` table in [`demand/growth_profiles.toml`](../demand/growth_profiles.toml)
+
+Future local-modifier families may include:
+
 - pollution
+- noise
 - crime
 - education
 - parks and public-space quality
-- utility or service stability
+- transit access
 - commute burden
 - broader neighborhood or city attractiveness
 
-Open ownership question:
+Future-extension rule:
 
-- some of these signals are naturally local to buildings
-- some are naturally lived outcomes at household level
-- some may need both building-side and household-side views
+- those later local modifiers remain owned by their source systems
+- demand may only consume normalized summaries of them
+- any future expansion of shipped `GrowthProfile`s to use local modifiers must update the supported
+  key set and validation rules in this document at the same time
 
-Recommended direction:
+Deterministic `v0.1` `DemandChannel` formulas:
 
-- raw local conditions should stay owned by the subsystem that simulates them
-- demand should consume aggregated summaries of those conditions rather than becoming the source of truth for every underlying metric
-- authored weighting and threshold rules for those conditions should live in demand-owned `GrowthProfile` data rather than in zoning structure
-- household-level signals should matter most for immigration, emigration, and residential growth pressure
-- building-level or site-level signals should matter most for spawn, despawn, and upgrade pressure at specific locations
+Baseline helper terms:
+
+```text
+housing_shortage = 1.0 - housing_availability
+goods_shortage   = 1.0 - household_stock_stability
+service_gate     = utility_service_stability * external_connection_available
+```
+
+Evaluation order:
+
+1. Read every baseline city-level signal and clamp it to `0.0..1.0`.
+2. Compute the helper terms above.
+3. Compute the baseline pre-startup `DemandChannel` values in this exact order:
+
+```text
+base_ResidentialGrowth =
+    clamp(
+        housing_shortage
+      * job_availability
+      * household_affordability
+        * service_gate,
+        0.0,
+        1.0
+    )
+
+base_CommercialGrowth =
+    clamp(
+        resident_presence
+      * goods_shortage
+      * household_affordability
+      * service_gate,
+        0.0,
+        1.0
+    )
+
+base_IndustrialGrowth =
+    clamp(
+        resident_presence
+      * goods_shortage
+      * service_gate,
+        0.0,
+        1.0
+    )
+```
+
+4. Compute the startup-support progress from the same frozen settled snapshot:
+
+```text
+startup_progress =
+    (
+        clamp(housed_resident_count / startup_support.target_housed_residents, 0.0, 1.0)
+      + clamp(existing_private_building_count / startup_support.target_private_building_count, 0.0, 1.0)
+      + clamp(filled_job_slots / startup_support.target_filled_job_slots, 0.0, 1.0)
+    ) / 3.0
+
+startup_support_factor =
+    clamp(
+        external_connection_available
+      * (1.0 - startup_progress),
+        0.0,
+        1.0
+    )
+```
+
+5. Apply the startup-support growth floor to produce the final city-level `DemandChannel` values
+   consumed by `GrowthProfile`s:
+
+```text
+ResidentialGrowth =
+    max(
+        base_ResidentialGrowth,
+        startup_support_factor * startup_support.growth_floor_by_use.residential
+    )
+
+CommercialGrowth =
+    max(
+        base_CommercialGrowth,
+        startup_support_factor * startup_support.growth_floor_by_use.commercial
+    )
+
+IndustrialGrowth =
+    max(
+        base_IndustrialGrowth,
+        startup_support_factor * startup_support.growth_floor_by_use.industrial
+    )
+```
+
+Interpretation:
+
+- startup support is not budget-only in baseline `v0.1`
+- startup support first applies a temporary per-use growth floor to the city-level
+  `DemandChannel`s so an empty city can cross early spawn thresholds without hidden founding
+  placement
+- startup support then separately boosts household admission and early spawn budgets as documented
+  later in this file
+- `ResidentialGrowth` rises when the city has a housing shortage, reachable jobs, affordable
+  household conditions, and healthy utility or border-service support
+- `CommercialGrowth` rises when a real resident/customer base exists, household stock is unstable,
+  households can still spend, and the city is healthy enough to support more commerce
+- `IndustrialGrowth` rises when a real resident/customer base exists, household stock is unstable,
+  and utility or external-service support is healthy enough for more goods-producing capacity
+- baseline `v0.1` intentionally does not define `OfficeGrowth` or `MixedGrowth`; office and mixed
+  private growth remain later explicit extensions if they are reintroduced with fully specified
+  formulas and matching shipped profile data
 
 ## Ownership
 
 The intended ownership split is:
 
-- `docs/demand.md`: city-level pressure, immigration and emigration pressure, private building growth or decline pressure, building upgrade or downgrade pressure, and `GrowthProfile` evaluation rules
-- `docs/economy.md`: household/company/building economy state once those entities already exist
+- `docs/demand.md`: city-level pressure, immigration and emigration pressure, private building growth or decline pressure, building upgrade or downgrade eligibility, redevelopment pressure, and `GrowthProfile` evaluation rules
+- `docs/economy.md`: household, company, and building economy state once those entities already exist, including household affordability, relocation, eviction, and economy-side viability gates
 - `docs/zoning.md`: player-facing zoning model, `ZoneType`, `ZoneProfile`, and legal placement or upgrade envelopes
+- `docs/building_allocator.md`: concrete build-site discovery, frontage attachment, geometric fit, placement, and removal execution
 - `docs/entrance_and_exit.md`: transport semantics only, if a household move is visualized as a border-origin trip
 
 So immigration should not be primarily owned by the entrance/exit redesign, and it should not be primarily owned by the building-entry system either.
@@ -199,51 +726,338 @@ The same ownership pattern should later apply to private buildings:
 
 ## Inputs
 
-The immigration and emigration pressure model should be derived from coarse city signals such as:
+Baseline `v0.1` immigration and emigration pressure is derived from coarse city signals such
+as:
 
 - vacant resident capacity
+- resident presence
 - job availability
-- household cost pressure
+- household affordability
 - household stock stability
-- commute burden
-- service quality
-- broader city stability
+- utility or service stability
 - existence of at least one external connection when external immigration is required
 
 These are city-level signals, not per-agent trip decisions.
 
+Later extensions may add more city-level pressure inputs such as commute burden, broader service
+quality, or other wider city-stability summaries, but baseline `v0.1` must stay aligned with the
+fixed signal families defined in `Modifiers And Signal Sources`.
+
 ## Outputs
 
-The demand layer should produce bounded daily outputs such as:
+The demand layer should produce three distinct output families:
+
+- concrete daily household-action outputs
+- concrete daily building-action budgets
+- ongoing building-growth pressure outputs
+
+Concrete daily household-action outputs:
 
 - `households_to_admit_today`
-- `households_to_remove_today` or equivalent emigration pressure
-- residential growth pressure for future building creation systems
-- commercial, industrial, office, mixed, and later service-building growth pressure
-- building upgrade or downgrade pressure summaries
+- `households_to_remove_today`
+
+Interpretation:
+
+- these are bounded whole-household counts
+- they are direct daily city-growth actions, not vague pressure scores
+- economy, household, and vacancy systems consume them to create or remove real households
+
+Deterministic pressure-to-action rule for household outputs:
+
+- household admission and removal start from normalized whole-city pressure values in `0.0..1.0`
+- each action has a fixed threshold in `0.0..1.0`
+- pressure below threshold produces `0` action today
+- pressure above threshold produces a bounded daily household count derived from the excess above
+  threshold
+
+Deterministic conversion rule:
+
+```text
+normalized_action_pressure =
+    clamp((pressure - action_threshold) / (1.0 - action_threshold), 0.0, 1.0)
+
+daily_action_credit += normalized_action_pressure * max_households_per_day
+
+households_to_act_today = floor(daily_action_credit)
+daily_action_credit -= households_to_act_today
+```
+
+Authoring rule:
+
+- `admission_threshold = household_action.admission_threshold`
+- `removal_threshold = household_action.removal_threshold`
+- `max_households_per_day = action_budget.max_households_per_day` from
+  [`demand/growth_profiles.toml`](../demand/growth_profiles.toml)
+- admission uses `action_threshold = admission_threshold`
+- removal uses `action_threshold = removal_threshold`
+- baseline `v0.1` uses one shared authored daily household-action cap for both admission and
+  removal instead of hard-coded runtime constants
+
+Interpretation:
+
+- the farther pressure is above the threshold, the faster household action accumulates
+- weak but persistent pressure still produces deterministic action over multiple days
+- stronger pressure produces larger daily household counts, but never above the bounded daily cap
+
+Concrete daily building-action budgets:
+
+- `residential_spawns_today`
+- `commercial_spawns_today`
+- `industrial_spawns_today`
+- `residential_upgrades_today`
+- `commercial_upgrades_today`
+- `industrial_upgrades_today`
+- `residential_downgrades_today`
+- `commercial_downgrades_today`
+- `industrial_downgrades_today`
+- `residential_despawns_today`
+- `commercial_despawns_today`
+- `industrial_despawns_today`
+
+Interpretation:
+
+- these are bounded whole-building or whole-site counts, not vague pressure scores
+- demand computes them once from one frozen daily city snapshot and one frozen eligible-candidate
+  snapshot
+- buildings placed, upgraded, downgraded, or removed during that pass do not change the same-day
+  budgets; they affect the next daily demand pass
+- there is no separate allocator-owned arbitrary cap on top of these demand-owned daily budgets
+
+Deterministic budget rule for building actions:
+
+For each use family `use` and action type `action`, demand first builds the eligible candidate list
+from the frozen daily snapshot. It then computes the bounded daily budget from the relevant
+normalized action pressure, the eligible candidate count, and a carried action-credit buffer.
+
+For spawn:
+
+```text
+normalized_spawn_pressure =
+    clamp((growth_pressure - spawn_threshold) / (1.0 - spawn_threshold), 0.0, 1.0)
+
+spawn_action_credit[use] +=
+    normalized_spawn_pressure
+  * (
+        eligible_spawn_count[use] * spawn_batch_fraction_by_use[use]
+      + startup_support_factor * startup_spawn_bonus_by_use[use]
+    )
+
+spawns_today[use] =
+    min(eligible_spawn_count[use], floor(spawn_action_credit[use]))
+
+spawn_action_credit[use] -= spawns_today[use]
+```
+
+For upgrade:
+
+```text
+normalized_upgrade_pressure =
+    clamp((growth_pressure - upgrade_threshold) / (1.0 - upgrade_threshold), 0.0, 1.0)
+
+upgrade_action_credit[use] +=
+    normalized_upgrade_pressure
+  * eligible_upgrade_count[use]
+  * upgrade_batch_fraction_by_use[use]
+
+upgrades_today[use] =
+    min(eligible_upgrade_count[use], floor(upgrade_action_credit[use]))
+
+upgrade_action_credit[use] -= upgrades_today[use]
+```
+
+For downgrade:
+
+```text
+normalized_downgrade_pressure =
+    clamp(
+        (downgrade_threshold - growth_pressure) / max(downgrade_threshold, epsilon),
+        0.0,
+        1.0
+    )
+
+downgrade_action_credit[use] +=
+    normalized_downgrade_pressure
+  * eligible_downgrade_count[use]
+  * downgrade_batch_fraction_by_use[use]
+
+downgrades_today[use] =
+    min(eligible_downgrade_count[use], floor(downgrade_action_credit[use]))
+
+downgrade_action_credit[use] -= downgrades_today[use]
+```
+
+For despawn:
+
+```text
+normalized_despawn_pressure =
+    clamp(
+        (despawn_threshold - growth_pressure) / max(despawn_threshold, epsilon),
+        0.0,
+        1.0
+    )
+
+despawn_action_credit[use] +=
+    normalized_despawn_pressure
+  * eligible_despawn_count[use]
+  * despawn_batch_fraction_by_use[use]
+
+despawns_today[use] =
+    min(eligible_despawn_count[use], floor(despawn_action_credit[use]))
+
+despawn_action_credit[use] -= despawns_today[use]
+```
+
+Authoring rule:
+
+- `spawn_batch_fraction_by_use = action_budget.spawn_batch_fraction_by_use`
+- `upgrade_batch_fraction_by_use = action_budget.upgrade_batch_fraction_by_use`
+- `downgrade_batch_fraction_by_use = action_budget.downgrade_batch_fraction_by_use`
+- `despawn_batch_fraction_by_use = action_budget.despawn_batch_fraction_by_use`
+- all of those tables are authored in [`demand/growth_profiles.toml`](../demand/growth_profiles.toml)
+- baseline `v0.1` does not hard-code these fractions in runtime code
+
+Deterministic execution order:
+
+- demand builds all eligible candidate lists once per daily pass before any building change is
+  executed
+- use families iterate in this exact order for the daily pass: `residential`, then `commercial`,
+  then `industrial`
+- spawn candidates sort by the allocator's deterministic build-site order:
+  `(edge_idx, side_order, cell_x, width_cells, depth_cells, zone_profile_id)` where
+  `side_order = [1, -1]`
+- existing-building candidates for upgrade, downgrade, and despawn sort by the building's
+  attachment order:
+  `(edge_idx, side_order, cell_x, width_cells, depth_cells, level, asset_id)`
+- for each use family, execution order is `despawn`, then `downgrade`, then `upgrade`, then
+  `spawn`
+- a building or empty site may be affected at most once per daily demand pass
+
+Interpretation:
+
+- large legally zoned estates under strong pressure can fill in visible daily batches rather than
+  one building at a time
+- weak but persistent pressure still produces deterministic building change over multiple days
+- startup support can intentionally make early-city spawn batches larger so the city forms a real
+  starter neighborhood instead of stalling at tiny-village scale
+
+Ongoing building-growth pressure outputs:
+
+- `residential_growth_pressure`
+- `commercial_growth_pressure`
+- `industrial_growth_pressure`
+- later, other use-family growth pressures if new top-level zoning categories are added
+- building upgrade pressure summaries
+- building downgrade pressure summaries
 - optional local build-site scores for site-level private development later on
 
-Those outputs are then consumed by economy and building systems.
+Interpretation:
+
+- these outputs say how strongly the city wants more, less, better, or worse private building
+  capacity of a given type
+- they are not direct spawn commands and they are not direct household counts
+- economy, zoning, and allocator/building systems consume them together with legal-site
+  availability to decide whether a real building spawn, despawn, upgrade, downgrade, or
+  replacement may happen
+
+Pressure-dynamics rule:
+
+- these growth-pressure outputs are recalculated from current city conditions; they do not
+  monotonically increase over time
+- a growth-pressure value may rise, plateau, or fall as housing, jobs, stock stability,
+  utility-service stability, and other documented current inputs change
+- categories the city does not structurally support should naturally remain low instead of drifting
+  upward just because time has passed
+- startup support, when present, is a separate temporary input layered onto the ordinary pressure
+  calculation; it is not a permanent "pressure always ticks upward" rule
+
+Those outputs are then consumed by economy and building systems in their own layers.
+
+## Demand Cadence And Economy Handoff
+
+Demand runs from the operational clock, but it does not sample the economy continuously.
+
+Deterministic `v0.1` day-boundary rule:
+
+1. Finish the final sub-daily economy step for the current operational day.
+2. Run one daily economy settlement pass owned by [`economy.md`](economy.md).
+3. Freeze the post-settlement city snapshot produced by that pass.
+4. Derive every baseline demand input from that frozen snapshot:
+   - `housing_availability`
+   - `resident_presence`
+   - `job_availability`
+   - `household_affordability`
+   - `household_stock_stability`
+   - `utility_service_stability`
+   - `external_connection_available`
+5. Compute the city-level `DemandChannel` values from that same frozen snapshot.
+6. Evaluate every active `GrowthProfile` whose cadence matches that day boundary.
+7. Compute `households_to_admit_today`, `households_to_remove_today`, and all building-action
+   budgets from that same frozen snapshot.
+8. Execute the resulting demand-owned daily actions before the next operational day's sub-daily
+   economy steps begin.
+
+Deterministic cadence rule:
+
+- the demand layer runs exactly once per operational day boundary
+- a `GrowthProfile` with `cadence_days = N` is evaluated only on day boundaries where
+  the current operational `day_index % N == 0`
+- household-action outputs and building-action budgets are rebuilt on every daily demand pass from
+  the current frozen post-settlement snapshot
+
+Interpretation:
+
+- demand does not read half-settled hourly economy state
+- demand does not recompute after each spawned, removed, upgraded, or downgraded building inside
+  the same day-boundary pass
+- demand-owned actions at one day boundary change the city's runtime state for the next operational
+  day and therefore affect the next daily demand pass
+- the economy layer owns the sub-daily work, stock, utility, wage, and affordability updates that
+  produce the settled snapshot; demand owns the once-per-day growth decision taken from that
+  snapshot
 
 ## Startup Household Growth
 
 An empty map needs an early growth bias or the city deadlocks before the local economy can form.
 
-For `v0.1`, startup household growth should remain demand-owned rather than being hidden inside allocator-local admission code.
+For `v0.1`, startup household growth remains demand-owned rather than being hidden inside
+allocator-local admission code.
 
-This section is about early household-admission pressure only. It is not the same thing as one-time founding placement, and it is not the same thing as the economy-side startup money described in [`economy.md`](economy.md).
+This section covers the demand-owned startup support factor that biases both early household
+admission and early private-building spawn batches. It is not the same thing as one-time founding
+placement, and it is not the same thing as the economy-side startup money described in
+[`economy.md`](economy.md).
 
 Rules:
 
 - early game should favor household admission while valid housing, reachable jobs, and any required external connection still exist
 - startup household growth should taper gradually as the city develops rather than stopping at a fixed magic population cap
-- household admission pressure should be driven by coarse city signals, not by a transport-state side effect
+- household admission pressure is driven by coarse city signals, not by a transport-state side effect
+- startup support uses one demand-owned `startup_support_factor` in `0.0..1.0`
+- startup support gives a temporary per-use floor to the city-level `DemandChannel`s before
+  `GrowthProfile` thresholds are applied
+- `startup_support_factor` biases both household admission and daily spawn budgets
+- `startup_support_factor` decays as the city develops; it is not a permanent hidden growth source
+- startup-support tuning is authored in the top-level `startup_support` table in
+  [`demand/growth_profiles.toml`](../demand/growth_profiles.toml)
 
-Recommended `v0.1` admission-pressure rule:
+Deterministic `v0.1` admission-pressure rule:
 
 ```text
+base_inflow =
+    household_action.base_inflow * external_connection_available
+
+housing_factor =
+    housing_availability
+
+job_factor =
+    job_availability
+
+city_stability_factor =
+    min(household_stock_stability, utility_service_stability)
+
 admission_pressure =
     base_inflow
+  * (1.0 + startup_support_factor * startup_household_bonus)
   * housing_factor
   * job_factor
   * city_stability_factor
@@ -252,16 +1066,65 @@ admission_pressure =
 Where:
 
 - all factors are clamped to `0.0..1.0`
-- `housing_factor` is derived from vacant housing capacity or vacant household slots
-- `job_factor` is derived from reachable open jobs relative to incoming worker demand
-- `city_stability_factor` is derived from household stock stability, utility or service stability, and other broad city-condition signals
+- `startup_support_factor` is clamped to `0.0..1.0`
+- `base_inflow = household_action.base_inflow * external_connection_available`
+- `housing_factor = housing_availability`
+- `job_factor = job_availability`
+- `city_stability_factor = min(household_stock_stability, utility_service_stability)`
 - the final `households_to_admit_today` output is derived deterministically from this pressure and remains capped by real vacant housing capacity plus any explicit daily admission cap
+- `startup_household_bonus = startup_support.household_bonus`
+- `startup_spawn_bonus_by_use = startup_support.spawn_bonus_by_use`
 
-This keeps early growth positive while letting immigration slow automatically as housing fills, job surplus shrinks, or city conditions deteriorate.
+This keeps early growth positive while letting immigration and early building batches slow
+automatically as housing fills, job surplus shrinks, or city conditions deteriorate.
+
+Deterministic `v0.1` removal-pressure rule:
+
+```text
+unhoused_household_ratio =
+    if total_household_count == 0 then 0.0
+    else clamp(unhoused_household_count / total_household_count, 0.0, 1.0)
+
+job_failure =
+    1.0 - job_availability
+
+city_instability =
+    1.0 - min(household_stock_stability, utility_service_stability)
+
+removal_pressure =
+    clamp(
+        unhoused_household_ratio * 0.50
+      + job_failure * 0.25
+      + city_instability * 0.25,
+        0.0,
+        1.0
+    )
+```
+
+Where:
+
+- all derived terms are clamped to `0.0..1.0`
+- `total_household_count = housed_household_count + unhoused_household_count`
+- `unhoused_household_count` is read from the settled economy snapshot after relocation and
+  eviction have already run for that operational day
+- `job_availability`, `household_stock_stability`, and `utility_service_stability` come from the
+  same frozen post-settlement snapshot used by the rest of the daily demand pass
+- the final `households_to_remove_today` output is derived deterministically from this pressure
+  through the generic household pressure-to-action conversion rule documented earlier in this file
+
+Interpretation:
+
+- ordinary low money does not directly remove households from the city in baseline `v0.1`
+- household affordability failure first flows through the economy-owned relocation, eviction, and
+  `unhoused` rules described in [`economy.md`](economy.md)
+- once the settled snapshot contains persistent `unhoused` households, weak jobs, or broad city
+  instability, demand may convert that state into whole-household city removal
+- baseline `v0.1` household outflow therefore comes from sustained failed living conditions, not
+  from one bad hourly dip or one direct poverty-to-deletion shortcut
 
 ## Deterministic `v0.1` Rules
 
-For `v0.1`, the immigration rules should stay simple and deterministic:
+For `v0.1`, the immigration rules are simple and deterministic:
 
 - evaluate immigration and emigration on a coarse daily cadence
 - if there is no valid housing capacity, admit `0` households
@@ -280,14 +1143,17 @@ Both outcomes are valid, but they are downstream of the demand decision.
 
 ## Relationship To Building Growth
 
-Residential growth and immigration should stay coupled through demand, not through hidden automatic spawning.
+Residential growth and immigration stay coupled through demand, not through hidden automatic
+spawning.
 
 That means:
 
 - immigration should not ignore housing limits
 - future residential building creation should not ignore household demand
-- future commercial, industrial, office, mixed, and service-building creation should not ignore their own demand pressure
-- future building upgrades should not ignore local demand and neighborhood conditions
+- future commercial, industrial, and any later private-use building creation should not ignore
+  their own demand pressure
+- future building upgrades should not ignore demand pressure and the documented zoning and economy
+  gates that make higher levels legal and viable
 - zoning alone is not enough to force either households or buildings to appear
 
 The long-term clean model is:
@@ -298,11 +1164,73 @@ The long-term clean model is:
 - that pressure can justify both household admission and future private residential development
 - buildings, economy, and transport each consume that pressure in their own layer
 
-## Legacy Cleanup Targets
+Important residential boundary:
+
+- household affordability failure, relocation between vacant homes, and eviction from the current
+  home are economy-owned household rules described in [`economy.md`](economy.md)
+- residential downgrade or redevelopment pressure is a building-side demand output, not a direct
+  "one poor household makes the building downgrade" rule
+- in practice, household poverty should first create move-out, relocation, or unhoused outcomes;
+  only later vacancy and weak building-side conditions may justify building-level decline or
+  redevelopment
+
+Important zone-type boundary:
+
+- demand upgrade and downgrade pressure is intentionally broad and use-family-level
+- the final upgrade or downgrade decision still passes through zone-type-specific economy viability
+  gates described in [`economy.md`](economy.md)
+- in `v0.1`, those economy gates should rely on relatively mature signals such as occupancy,
+  affordability, staffing, stock, input coverage, utility status, and operating-buffer days
+- crime, noise, parks, education, and similar neighborhood conditions are later local modifiers to
+  demand pressure, not required baseline hard blockers for building level changes
+
+### Deterministic building spawn rule
+
+A private building spawns only when all owning layers agree that the spawn is allowed.
+
+Deterministic `v0.1` spawn rule:
+
+1. Demand reads the relevant city-level growth pressure for the target use family.
+2. The relevant `GrowthProfile` evaluates that pressure and makes spawn eligible only if
+   `final_growth_score >= spawn_threshold`.
+3. Demand builds the frozen eligible spawn-candidate list, sorts it in deterministic allocator
+   build-site order, and computes `spawns_today[use]` from the daily batch-budget rule described
+   above.
+4. Zoning and allocator rules must then find at least one legal build site for the active
+   `ZoneProfile`.
+5. Economy viability must allow the spawn for that zone type:
+   - `Residential`: enough demand plus a legal site and ordinary residential viability
+   - `Commercial`, `Industrial`: enough demand plus a legal site and the relevant business-side
+     viability gate from [`economy.md`](economy.md)
+6. The allocator chooses up to `spawns_today[use]` concrete legal build sites from the sorted
+   candidate list.
+7. Zoning-side asset selection chooses one legal `level = 1` asset deterministically from the
+   allowed family pool.
+
+Interpretation:
+
+- city-level growth pressure alone does not create a building
+- zoning alone does not create a building
+- economy viability alone does not create a building
+- spawn happens only when demand, zoning, economy, and allocator all pass, and only up to the
+  bounded daily spawn budget for that use family
+- baseline `v0.1` fresh spawn stays at `level = 1`; higher-level direct spawn is a later explicit
+  extension
+
+Residential note:
+
+- `households_to_admit_today` and residential building spawn are related but not identical outputs
+- household admission decides whether new households enter the city
+- residential building spawn decides whether new housing capacity appears on the map
+- both should respond to residential demand, but each still uses its own owning-layer contract
+
+## Code Removal And Replacement Targets
 
 The current codebase still has transitional growth logic outside the demand layer.
 
-These paths should be removed, narrowed, or rewritten so growth ownership matches this document.
+These paths are listed so they can be replaced or deleted. The goal is one authoritative
+demand-owned decision path per growth behavior, without long-term fallback logic that keeps the old
+allocator- or transport-owned behavior alive.
 
 - `rust/src/simulation/buildings/allocator/lifecycle.rs::spawn_immigrants()` still owns the live immigration pressure formula, daily household count, and admission gating. The coarse decision logic currently lives there through:
   - `IMMIGRATION_BASE_INFLOW`
@@ -319,9 +1247,12 @@ These paths should be removed, narrowed, or rewritten so growth ownership matche
   - ordinary demand-driven household admission must not depend on a constructor that defaults to `TRANSIT_IMMIGRATING`
 - `rust/src/simulation/economy/agents/tick.rs::plan_immigration_trip()` and the `TRANSIT_IMMIGRATING` branch are acceptable only as optional transport-layer visualization for exceptional/manual border-origin arrivals. They must not remain a hidden prerequisite for normal city growth.
 - The coarse immigration decision should move fully into a demand-owned daily output. The allocator/economy layer should consume something like `households_to_admit_today` rather than recomputing immigration pressure locally during `spawn_immigrants()`.
-- `rust/src/simulation/buildings/allocator/placement.rs::place_founding_bootstrap_if_ready()` still owns the one-time founding placement rule. That rule should eventually be expressed through explicit scenario or demand-owned startup outputs rather than as a hidden allocator-only placement exception.
+- `rust/src/simulation/buildings/allocator/placement.rs::place_founding_bootstrap_if_ready()` still owns the one-time founding placement rule. That rule should move behind an explicit scenario or startup setup path rather than remain a hidden allocator-only placement exception. Demand may own ongoing startup household admission after that point, but it does not need to absorb one-time founding placement itself as a permanent feature.
+- `rust/src/simulation/buildings/allocator/mod.rs::tick()` still hardwires the live growth-related execution order by running stale cleanup, founding bootstrap, and immigration inside allocator-owned tick flow. Once those decisions move to explicit demand-owned outputs or explicit startup/scenario setup, allocator tick should stop owning that sequencing policy.
 - Building removal currently happens through stale topology or zoning cleanup, not through a demand-owned despawn or abandonment decision. Any future private-building disappearance, downgrade, abandonment, or redevelopment flow should have an explicit demand-side trigger contract instead of piggybacking on invalid-placement cleanup.
-- Building upgrade or downgrade is not yet demand-owned. When that system is added, it should read sustained demand plus local modifier history rather than bypassing the demand layer with ad hoc upgrade logic.
+- Building upgrade or downgrade is not yet demand-owned in live runtime code. When that runtime path
+  is replaced, it should follow the documented demand-side eligibility rules plus the economy and
+  zoning gates rather than bypassing them with ad hoc upgrade logic.
 - Building-loss displacement currently has no dedicated demand/economy ownership boundary. `AgentSystem::evict_building()` still forces some agents into `TRANSIT_ACCESS_INGRESS` as a fake rubble/street fallback. That should be replaced by an explicit rehousing, homelessness, disaster, or removal contract rather than by reusing ordinary entrance-travel semantics.
 - Debug logging and tooling should stop implying that immigration is fundamentally a border-spawn FSM process when the real source of truth is the demand-layer household-admission decision.
 
@@ -329,7 +1260,30 @@ The target end state is:
 
 - demand computes whether immigration should happen and how many households may be admitted
 - demand computes whether private buildings should appear, disappear, upgrade, or downgrade
+- explicit scenario or startup setup owns one-time founding placement when that feature is needed
 - economy creates the admitted household records
 - building systems execute legal placement, removal, and level changes once demand has already decided the pressure outcome
 - housing/vacancy logic claims real homes
 - transport either visualizes the move or does nothing, but it does not decide growth
+
+## Remaining Follow-Up Limitations
+
+### Open Spec Gaps
+
+- none currently tracked inside `demand.md`; the baseline `v0.1` demand ownership, formulas,
+  household-action thresholds, budgets, startup support, and economy handoff are now specified closely enough for
+  implementation work to begin
+
+### Intentional `v0.1` Deferrals
+
+- `v0.1` intentionally keeps the shipped `GrowthProfile` set small and closed. If later gameplay
+  truly needs zoning-specific demand behavior beyond one default profile per shipped baseline
+  `zone_type + density`,
+  that extension should be added deliberately rather than by making growth-profile creation as open
+  ended as zoning-profile creation.
+- `Office` and `Mixed` are intentionally outside the baseline `v0.1` demand-channel set. If later
+  gameplay reintroduces them as ordinary private growth families, they should come back only with
+  explicit `DemandChannel` formulas, shipped `GrowthProfile` data, and matching zoning-side
+  profile rules added at the same time.
+- local-modifier support beyond neutral defaults should be added only when the underlying source
+  systems are implemented well enough to be trustworthy demand inputs.

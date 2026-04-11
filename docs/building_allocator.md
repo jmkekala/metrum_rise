@@ -218,6 +218,10 @@ Current follow-up limitations:
 - The live legality and ownership checks are still somewhat weaker than the intended long-term
   contract. In particular, some spec wording is cleaner than the exact current implementation and
   should be reconciled before the allocator becomes the long-term growth execution layer.
+- The live build-site inputs and legality checks are still broad-`ZoneType` based. The long-term
+  zoning contract now expects footprint-wide `ZoneProfile` legality, profile-derived density, and
+  profile-aware rezoning behavior rather than allocator checks that only compare one broad
+  `zone_type`.
 - `edge_occupancy` is currently only a fast leading-column pre-check. Final overlap safety still
   depends on the occupied-footprint test rather than on full frontage-span reservation.
 - Stale-building cleanup still uses a center-sample zoning check. That is acceptable for the current
@@ -230,6 +234,10 @@ Current follow-up limitations:
 - The current full frontage scan order is acceptable for founding bootstrap and small transitional
   flows, but it should not become the permanent large-city private-development allocator once
   demand-driven spawning grows beyond today's narrow use.
+- The current tick order still includes `place_founding_bootstrap_if_ready()` and
+  `spawn_immigrants()` inside allocator execution. That is a deliberate transitional exception in
+  the live runtime, but it conflicts with the newer demand/economy ownership split and should be
+  removed once demand-owned daily outputs are implemented.
 - The allocator still mixes geometry execution with some city-growth policy through founding
   placement and immigrant admission. Those responsibilities should move behind scenario or
   demand-owned outputs later.

@@ -1,0 +1,165 @@
+# Base-game demand growth-profile registry.
+#
+# This file is the shipped source of truth for private-building growth tuning.
+# In v0.1, the shipped set is intentionally small and closed: one default
+# GrowthProfile per shipped baseline private-use family and density.
+#
+# Baseline v0.1 keeps local modifiers neutral by default. The shipped profiles
+# therefore rely on city-level demand pressure, thresholds, and hysteresis only.
+
+[signal_normalization]
+resident_presence_saturation_residents = 500
+household_affordability_target_reserve_days = 7.0
+household_stock_stability_target_days = 3.0
+
+[startup_support]
+target_housed_residents = 200
+target_private_building_count = 24
+target_filled_job_slots = 80
+household_bonus = 1.5
+
+[startup_support.growth_floor_by_use]
+residential = 0.70
+commercial = 0.68
+industrial = 0.66
+
+[startup_support.spawn_bonus_by_use]
+residential = 8.0
+commercial = 3.0
+industrial = 2.0
+
+[action_budget]
+max_households_per_day = 12
+
+[household_action]
+base_inflow = 0.55
+admission_threshold = 0.25
+removal_threshold = 0.35
+
+[action_budget.spawn_batch_fraction_by_use]
+residential = 0.30
+commercial = 0.20
+industrial = 0.15
+
+[action_budget.upgrade_batch_fraction_by_use]
+residential = 0.10
+commercial = 0.08
+industrial = 0.08
+
+[action_budget.downgrade_batch_fraction_by_use]
+residential = 0.08
+commercial = 0.08
+industrial = 0.08
+
+[action_budget.despawn_batch_fraction_by_use]
+residential = 0.05
+commercial = 0.05
+industrial = 0.05
+
+[[profiles]]
+id = "residential_low_default"
+demand_channel = "ResidentialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.55
+despawn_threshold = 0.20
+upgrade_threshold = 0.80
+downgrade_threshold = 0.30
+hysteresis_margin = 0.05
+
+[[profiles]]
+id = "residential_medium_default"
+demand_channel = "ResidentialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.58
+despawn_threshold = 0.22
+upgrade_threshold = 0.82
+downgrade_threshold = 0.32
+hysteresis_margin = 0.05
+
+[[profiles]]
+id = "residential_high_default"
+demand_channel = "ResidentialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.62
+despawn_threshold = 0.25
+upgrade_threshold = 0.84
+downgrade_threshold = 0.35
+hysteresis_margin = 0.05
+
+[[profiles]]
+id = "commercial_low_default"
+demand_channel = "CommercialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.54
+despawn_threshold = 0.22
+upgrade_threshold = 0.79
+downgrade_threshold = 0.31
+hysteresis_margin = 0.05
+
+[[profiles]]
+id = "commercial_medium_default"
+demand_channel = "CommercialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.57
+despawn_threshold = 0.24
+upgrade_threshold = 0.81
+downgrade_threshold = 0.33
+hysteresis_margin = 0.05
+
+[[profiles]]
+id = "commercial_high_default"
+demand_channel = "CommercialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.60
+despawn_threshold = 0.27
+upgrade_threshold = 0.83
+downgrade_threshold = 0.35
+hysteresis_margin = 0.05
+
+[[profiles]]
+id = "industrial_low_default"
+demand_channel = "IndustrialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.53
+despawn_threshold = 0.23
+upgrade_threshold = 0.78
+downgrade_threshold = 0.32
+hysteresis_margin = 0.05
+
+[[profiles]]
+id = "industrial_medium_default"
+demand_channel = "IndustrialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.56
+despawn_threshold = 0.25
+upgrade_threshold = 0.80
+downgrade_threshold = 0.34
+hysteresis_margin = 0.05
+
+[[profiles]]
+id = "industrial_high_default"
+demand_channel = "IndustrialGrowth"
+cadence_days = 1
+base_pressure_weight = 1.0
+local_modifier_scale = 0.0
+spawn_threshold = 0.60
+despawn_threshold = 0.28
+upgrade_threshold = 0.82
+downgrade_threshold = 0.36
+hysteresis_margin = 0.05

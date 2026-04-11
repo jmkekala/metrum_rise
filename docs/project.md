@@ -17,7 +17,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
 - **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
 - **Economy foundation**: household records, building-centric daily economy, freight jobs, `OWA` fallback, and exact entrance-side freight ETA are live. See [`economy.md`](economy.md).
-- **Demand foundation**: the live `DemandSystem` rebuilds coarse pressure telemetry from runtime state, while [`demand.md`](demand.md) defines the target ownership split for immigration and displacement cleanup.
+- **Demand foundation**: the live `DemandSystem` rebuilds coarse pressure telemetry from runtime state, while [`demand.md`](demand.md) now defines the target ownership split for immigration and displacement cleanup, a shipped default `GrowthProfile` registry for residential/commercial/industrial growth, and deterministic baseline `DemandChannel` formulas for those three families.
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live.
 
 ## Current Priorities

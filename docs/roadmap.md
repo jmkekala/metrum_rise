@@ -23,27 +23,26 @@ Kind values:
 
 ## Active Priorities
 
-| ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
-|----|------|--------|----------|-----------|---------|---------------|
-| `CIV-01` | `feature` | `open` | `P1` | [`economy.md`](economy.md) | City stability still lacks the first real service-building and coverage slice. | At least one service-building class affects live city stability through a documented and verified coverage path. |
-| `DEM-01` | `hardening` | `open` | `P1` | [`demand.md`](demand.md) | Immigration admission and displacement ownership still leaks through allocator and transport leftovers. | Demand-layer outputs fully own immigration and displacement decisions with old cross-system leftovers removed. |
-| `ALLOC-01` | `hardening` | `open` | `P1` | [`building_allocator.md`](building_allocator.md) | The building allocator still has known spec and ownership limitations before it can become the long-term growth executor. | Documented allocator limitations are either removed or explicitly bounded in the owning spec and code. |
-| `DOC-01` | `docs` | `in_progress` | `P1` | [`README.md`](README.md) | The docs restructure is not finished and some live references still point back to old numbered backlog habits. | `project.md` stays dashboard-sized, roadmap IDs remain stable, and remaining numbered live references are retired. |
+| ID         | Kind        | Status        | Priority | Owner doc                                        | Problem                                                                                                                   | Exit criteria                                                                                                      |
+| ------------| -------------| ---------------| ----------| --------------------------------------------------| ---------------------------------------------------------------------------------------------------------------------------| --------------------------------------------------------------------------------------------------------------------|
+| `CIV-01`   | `feature`   | `open`        | `P1`     | [`economy.md`](economy.md)                       | City stability still lacks the first real service-building and coverage slice.                                            | At least one service-building class affects live city stability through a documented and verified coverage path.   |
+| `DEM-01`   | `hardening` | `open`        | `P1`     | [`demand.md`](demand.md)                         | Immigration admission and displacement ownership still leaks through allocator and transport leftovers.                   | Demand-layer outputs fully own immigration and displacement decisions with old cross-system leftovers removed.     |
+| `ALLOC-01` | `hardening` | `open`        | `P1`     | [`building_allocator.md`](building_allocator.md) | The building allocator still has known spec and ownership limitations before it can become the long-term growth executor. | Documented allocator limitations are either removed or explicitly bounded in the owning spec and code.             |
+| `DOC-01`   | `docs`      | `in_progress` | `P1`     | [`README.md`](README.md)                         | The docs restructure is not finished and some live references still point back to old numbered backlog habits.            | `project.md` stays dashboard-sized, roadmap IDs remain stable, and remaining numbered live references are retired. |
 
 ## Code Quality / Technical Debt
 
-| ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
-|----|------|--------|----------|-----------|---------|---------------|
-| `QUAL-01` | `hardening` | `open` | `P1` | [`project.md`](project.md) | The library test suite is not currently clean: `cargo test --lib` still has asset-contract and agent-movement failures. | `cargo test --lib` passes cleanly, or any intentionally deferred failures are split into stable tracked IDs and removed from the default failing set. |
-| `CODE-01` | `refactor` | `open` | `P1` | [`entrance_and_exit.md`](entrance_and_exit.md) | `rust/src/simulation/economy/agents/tick.rs` mixes trip planning, local-access geometry, unsafe SoA movement, congestion, and cache maintenance in one hotspot module. | Agent trip planning, movement, and congestion/cache responsibilities live in smaller focused modules with current behavior and test coverage preserved. |
-| `CODE-02` | `refactor` | `open` | `P2` | [`asset_editor.md`](asset_editor.md) | `godot/scripts/asset_editor.gd` combines editor shell UI, economy-catalog loading, import/export flow, and viewport interaction in one oversized bridge script. | The asset editor shell is split into smaller focused bridges/helpers without changing the current authoring workflow or content contract. |
-| `CODE-03` | `refactor` | `open` | `P2` | [`economy.md`](economy.md) | `rust/src/simulation/economy/definitions.rs` combines authored-economy schema, validation, sandbox simulation, and export/index IO in one module. | Authored economy schema, validation, sandbox execution, and export/index generation are separated into focused modules with the same external behavior. |
+| ID        | Kind        | Status | Priority | Owner doc                                      | Problem                                                                                                                                                                | Exit criteria                                                                                                                                           |
+| -----------| -------------| --------| ----------| ------------------------------------------------| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------| ---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `CODE-01` | `refactor`  | `open` | `P1`     | [`entrance_and_exit.md`](entrance_and_exit.md) | `rust/src/simulation/economy/agents/tick.rs` mixes trip planning, local-access geometry, unsafe SoA movement, congestion, and cache maintenance in one hotspot module. | Agent trip planning, movement, and congestion/cache responsibilities live in smaller focused modules with current behavior and test coverage preserved. |
+| `CODE-02` | `refactor`  | `open` | `P2`     | [`asset_editor.md`](asset_editor.md)           | `godot/scripts/asset_editor.gd` combines editor shell UI, economy-catalog loading, import/export flow, and viewport interaction in one oversized bridge script.        | The asset editor shell is split into smaller focused bridges/helpers without changing the current authoring workflow or content contract.               |
+| `CODE-03` | `refactor`  | `open` | `P2`     | [`economy.md`](economy.md)                     | `rust/src/simulation/economy/definitions.rs` combines authored-economy schema, validation, sandbox simulation, and export/index IO in one module.                      | Authored economy schema, validation, sandbox execution, and export/index generation are separated into focused modules with the same external behavior. |
 
 ## Validated Bugs
 
-| ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
-|----|------|--------|----------|-----------|---------|---------------|
-| `QA-01` | `bug` | `parked` | `P2` | [`project.md`](project.md) | There are historical reports of a long-run simulation-thread panic, but it has not reproduced recently enough to keep as an active blocker. | A reliable repro plus logs promotes this back to active work, or a sustained revalidation window closes it with confidence. |
+| ID      | Kind  | Status   | Priority | Owner doc                  | Problem                                                                                                                                     | Exit criteria                                                                                                               |
+| ---------| -------| ----------| ----------| ----------------------------| ---------------------------------------------------------------------------------------------------------------------------------------------| -----------------------------------------------------------------------------------------------------------------------------|
+| `QA-01` | `bug` | `parked` | `P2`     | [`project.md`](project.md) | There are historical reports of a long-run simulation-thread panic, but it has not reproduced recently enough to keep as an active blocker. | A reliable repro plus logs promotes this back to active work, or a sustained revalidation window closes it with confidence. |
 
 ### `QA-01`
 
@@ -67,6 +66,9 @@ Kind values:
 | `TRANSIT-03` | `feature` | `open` | `P2` | [`project.md`](project.md) | Harbor-linked ship and ferry transport does not exist yet. | Water transport is supported through harbor-linked water routes with live routing behavior. |
 | `TRANSIT-04` | `feature` | `open` | `P2` | [`project.md`](project.md) | Air and border travel support are still absent. | Airport and border-node travel paths are implemented with live routing support. |
 | `TRANSIT-05` | `feature` | `open` | `P1` | [`project.md`](project.md) | Bicycle support is still the next missing real transport mode on top of the multi-modal foundation. | Bicycles are supported as a live transport mode with routing, movement, and gameplay-facing behavior. |
+| `TRANSIT-06` | `feature` | `open` | `P1` | [`project.md`](project.md) | Pedestrian and bicycle movement still lacks bounded local steering, and future high-density station crowds need a dedicated waiting model. | Active pedestrians and bicycles use deterministic corridor-local steering, while dense passenger waiting uses a separate slot/queue model instead of naive all-to-all crowd steering. |
+
+- Steering reference for `TRANSIT-06`: Craig W. Reynolds, [*Steering Behaviors For Autonomous Characters*](https://www.red3d.com/cwr/steer/gdc99/). Treat it as a local-movement reference rather than a replacement for exact route planning or dense waiting-state simulation.
 
 ## Tools And Content
 
