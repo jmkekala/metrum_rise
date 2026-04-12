@@ -6,6 +6,7 @@ use crate::simulation::buildings::allocator::{
     zone_class_to_zone_type,
 };
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
 };
@@ -500,6 +501,18 @@ impl BuildingAllocator {
         building.level = target_building.level;
         building.economy_profile_runtime_id = economy_binding.runtime_id;
         building.economy_broken = economy_binding.economy_broken;
+        let profile = load_runtime_economy_catalog()
+            .ok()
+            .and_then(|catalog| {
+                catalog
+                    .profile_by_runtime_id(building.economy_profile_runtime_id)
+                    .cloned()
+            })
+            .map(Box::new);
+        let resource_count = load_runtime_economy_catalog()
+            .map(|catalog| catalog.resource_count())
+            .unwrap_or(0);
+        building.retain_inventory_for_profile(profile.as_deref(), resource_count);
         building.pending_redevelopment = false;
         building.rezone_grace_days_remaining = 0;
         self.dirty = true;

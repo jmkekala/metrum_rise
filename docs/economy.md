@@ -821,13 +821,12 @@ Current live note:
   runtime
 - commercial and industrial level changes now use staffing, operating-buffer, and
   utility-availability gates in the live runtime
-- the live runtime now uses a narrow starter industrial inventory slice:
-  - `input_stock` for industrial required-input coverage
-  - `stock` as the current output or saleable-stock buffer
-- industrial viability now reads explicit input coverage and output headroom from that starter
-  runtime state
-- full generic typed inventories, per-resource reservations, and broader multi-resource freight are
-  still a later extension rather than part of this narrow starter slice
+- the live runtime now uses typed per-resource building inventories and per-resource shipment
+  reservations instead of the old `stock` / `input_stock` split
+- industrial viability now reads explicit input coverage and output headroom from that typed
+  inventory state
+- the remaining later work is no longer inventory generalization itself; it is broader fiscal,
+  utility, and content-side expansion on top of the generalized runtime
 
 ## Product Shape
 
@@ -1817,7 +1816,7 @@ Current status summary:
 - Phase 1 is complete in the live runtime.
 - Phase 2 is complete in the live runtime.
 - Phase 3 is complete in the live runtime.
-- Phase 4 is partially implemented.
+- Phase 4 is complete in the live runtime.
 - Phase 5 is not started in a meaningful runtime form.
 - Phase 6 is not started in its intended authored/runtime form.
 - Phase 7 is largely complete already.
@@ -1825,10 +1824,9 @@ Current status summary:
 
 Recommended continuation order from the current runtime:
 
-1. finish Phase 4 generalized inventories and freight
-2. then land Phase 5 treasury and fiscal settlement
-3. then land Phase 6 utility/service runtime actors
-4. keep Phase 8 cleanup running alongside those phases instead of treating it as one final isolated pass
+1. land Phase 5 treasury and fiscal settlement
+2. then land Phase 6 utility/service runtime actors
+3. keep Phase 8 cleanup running alongside those phases instead of treating it as one final isolated pass
 
 ### Phase 1 - Stabilize the current starter loop
 
@@ -1881,28 +1879,30 @@ Current status:
   `economy_broken` state when authored profiles are missing or unsupported
 - starter work schedules, freight timing, wages, prices, throughput, reorder thresholds, and
   viability gates now read authored economy-profile data instead of broad-zone starter constants
-- the current runtime catalog still executes only the shipped starter one-input-or-output profile
-  slice; broader multi-resource chains remain Phase 4 work rather than unresolved Phase 3 drift
+- the current runtime catalog now compiles typed input/output ports and profile-backed work or
+  freight timing, while broader fiscal and utility layers remain later phases rather than Phase 3
+  drift
 
 Goal: stop duplicating economy rules between runtime code, packs, and the editor data model.
 
 ### Phase 4 - Generalize inventories and freight one resource at a time
 
-- Move from the current starter stock-plus-industrial-input buffers toward fully resource-typed building inventories, reservations, and shortage state.
+- Move from the old starter stock-plus-industrial-input buffers toward fully resource-typed building inventories, reservations, and shortage state.
 - Keep shipment creation bounded, batched, and entrance-aware; do not regress into per-order or per-agent freight.
 - Expand to additional resources only after the starter household-supply loop still works cleanly on the generalized runtime.
 
 Current status:
 
-- partially implemented
-- the runtime already has household stock, building stock, and the starter industrial input/output
-  buffers
-- the compiled runtime catalog currently supports one starter input port plus one starter output
-  port per live profile, and the shipped `food_processor_basic` starter producer is intentionally
-  inputless, so industrial input-coverage gating exists in runtime but is not yet exercised by a
-  built-in input-consuming industrial profile
-- it does not yet have fully generalized resource-typed building inventories, per-resource
-  reservations, or multiple authored production chains running through one shared runtime model
+- complete
+- live buildings now carry typed per-resource inventories instead of the old `stock` /
+  `input_stock` split
+- shipment reservations and in-flight freight are now tracked by `(building, resource)` rather
+  than by building only
+- the compiled runtime economy catalog now resolves authored resource ids plus typed input/output
+  ports, so new production chains can reuse the same inventory and freight model without another
+  runtime rewrite
+- the shipped starter content still only exercises a narrow baseline household-supply chain, but
+  that is now a content choice rather than a runtime inventory limitation
 
 Goal: support more than one production chain without rewriting the logistics foundation again.
 

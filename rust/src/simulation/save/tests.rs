@@ -6,11 +6,11 @@ use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::agents::{ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_NETWORK};
+use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::{Household, HouseholdSystem, REPLENISHMENT_STABLE};
 use crate::simulation::economy::logistics::{
-    CARRIER_TRUCK, RESOURCE_HOUSEHOLD_SUPPLIES, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_OWA, Shipment,
-    ShipmentSystem,
+    CARRIER_TRUCK, SHIPMENT_IN_TRANSIT, SHIPMENT_SOURCE_OWA, Shipment, ShipmentSystem,
 };
 use crate::simulation::grid::noise::NoiseSystem;
 use crate::simulation::grid::pollution::PollutionSystem;
@@ -190,8 +190,15 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         broken: false,
         economy_profile_runtime_id: 0,
         economy_broken: false,
-        stock: 0.0,
-        input_stock: 42.0,
+        resource_inventory: {
+            let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+            let staple_food = catalog
+                .resource_runtime_id_for_id("staple_food")
+                .expect("staple food resource");
+            let mut inventory = vec![0.0; catalog.resource_count()];
+            inventory[staple_food as usize - 1] = 42.0;
+            inventory
+        },
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: false,
@@ -222,8 +229,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         replenishment_offset_hours: 0,
     });
     let mut logistics = ShipmentSystem::new();
+    let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+    let household_supplies = catalog
+        .resource_runtime_id_for_id("household_supplies")
+        .expect("household supplies resource");
     logistics.shipments.push(Shipment {
-        resource_type: RESOURCE_HOUSEHOLD_SUPPLIES,
+        resource_runtime_id: household_supplies,
         amount: 80.0,
         source_kind: SHIPMENT_SOURCE_OWA,
         source_building_id: usize::MAX,
@@ -402,7 +413,13 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(loaded.agents.next_replan_time[0], 9.5);
     assert_eq!(loaded.agents.sim_time, agents_sys.sim_time);
     assert_eq!(loaded.allocator.buildings[0].frontage_t, 0.5);
-    assert_eq!(loaded.allocator.buildings[0].input_stock, 42.0);
+    let staple_food = catalog
+        .resource_runtime_id_for_id("staple_food")
+        .expect("staple food resource");
+    assert_eq!(
+        loaded.allocator.buildings[0].inventory_units(staple_food),
+        42.0
+    );
     assert_eq!(loaded.logistics.shipments.len(), 1);
     assert_eq!(loaded.logistics.shipments[0].destination_building_id, 0);
 }

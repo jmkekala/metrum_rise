@@ -8,8 +8,8 @@ use crate::simulation::economy::definitions::{
 };
 use crate::simulation::economy::households::{
     HouseholdSystem, building_operating_buffer_days, building_staffing_ratio,
-    household_reserve_days, industrial_input_coverage_factor, industrial_output_headroom_factor,
-    level_tuning_value,
+    building_total_output_inventory, household_reserve_days, industrial_input_coverage_factor,
+    industrial_output_headroom_factor, level_tuning_value,
 };
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
@@ -982,7 +982,9 @@ fn nonresidential_upgrade_viable(
     if building_operating_buffer_days(&catalog, building) + EPSILON < min_buffer_days {
         return false;
     }
-    if matches!(building.zone_type, ZoneType::Commercial) && building.stock <= EPSILON {
+    if matches!(building.zone_type, ZoneType::Commercial)
+        && building_total_output_inventory(&catalog, building) <= EPSILON
+    {
         return false;
     }
     true
@@ -1013,7 +1015,8 @@ fn nonresidential_downgrade_viable(
                 .nonresidential_max_staffing_ratio_for_downgrade
                 + EPSILON
         || buffer_days <= max_buffer_days + EPSILON
-        || matches!(building.zone_type, ZoneType::Commercial) && building.stock <= EPSILON
+        || matches!(building.zone_type, ZoneType::Commercial)
+            && building_total_output_inventory(&catalog, building) <= EPSILON
 }
 
 fn industrial_upgrade_viable(
@@ -1810,6 +1813,15 @@ mod tests {
         worker_count: u32,
         asset_id: String,
     ) -> Building {
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        let runtime_id = test_economy_runtime_id(zone_type);
+        let mut resource_inventory = vec![0.0; catalog.resource_count()];
+        if stock > 0.0
+            && let Some(profile) = catalog.profile_by_runtime_id(runtime_id)
+            && let Some(output_port) = profile.outputs.first()
+        {
+            resource_inventory[output_port.resource_runtime_id as usize - 1] = stock;
+        }
         Building {
             center_x: 0.0,
             center_y: 0.0,
@@ -1830,10 +1842,9 @@ mod tests {
             asset_id,
             level: 1,
             broken: false,
-            economy_profile_runtime_id: test_economy_runtime_id(zone_type),
+            economy_profile_runtime_id: runtime_id,
             economy_broken: false,
-            stock,
-            input_stock: 0.0,
+            resource_inventory,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: true,
@@ -2184,7 +2195,6 @@ mod tests {
         );
         let mut factory = building(ZoneType::Industrial, 50.0, 0, 4, level_one);
         factory.operating_budget = 2_000.0;
-        factory.input_stock = 0.0;
         allocator.buildings.push(factory);
 
         let households = HouseholdSystem::new();
@@ -2199,7 +2209,7 @@ mod tests {
             .profile_for_id("food_processor_basic")
             .expect("food processor starter profile");
         assert!(
-            starter_factory.input.is_none(),
+            starter_factory.inputs.is_empty(),
             "shipped starter industrial profile is currently inputless"
         );
 
@@ -2213,8 +2223,12 @@ mod tests {
         );
         assert_eq!(starter_headroom.upgrades.len(), 1);
 
-        allocator.buildings[0].input_stock = 320.0;
-        allocator.buildings[0].stock = 50.0;
+        if let Some(input_port) = starter_factory.inputs.first() {
+            allocator.buildings[0].set_inventory_units(input_port.resource_runtime_id, 320.0);
+        }
+        if let Some(output_port) = starter_factory.outputs.first() {
+            allocator.buildings[0].set_inventory_units(output_port.resource_runtime_id, 50.0);
+        }
         let same_profile = demand.collect_existing_building_candidates(
             &allocator,
             &households,
@@ -2225,7 +2239,9 @@ mod tests {
         );
         assert_eq!(same_profile.upgrades.len(), 1);
 
-        allocator.buildings[0].stock = 630.0;
+        if let Some(output_port) = starter_factory.outputs.first() {
+            allocator.buildings[0].set_inventory_units(output_port.resource_runtime_id, 630.0);
+        }
         let jammed_output = demand.collect_existing_building_candidates(
             &allocator,
             &households,

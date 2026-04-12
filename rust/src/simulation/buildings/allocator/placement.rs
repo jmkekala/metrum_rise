@@ -6,6 +6,7 @@ use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, EdgeOccupancy, baseline_private_zone_slot,
     resolve_building_economy_profile_binding, zone_class_to_zone_type, zone_type_to_zone_class,
 };
+use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSpawnCandidate};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
@@ -449,6 +450,9 @@ impl BuildingAllocator {
     fn place_building_instance(&mut self, placement: ResolvedPlacement) -> usize {
         let economy_binding =
             resolve_building_economy_profile_binding(&self.registry, &placement.asset_id);
+        let resource_count = load_runtime_economy_catalog()
+            .map(|catalog| catalog.resource_count())
+            .unwrap_or(0);
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             zone_type: placement.zone_type,
@@ -470,8 +474,7 @@ impl BuildingAllocator {
             broken: false,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
-            stock: 0.0,
-            input_stock: 0.0,
+            resource_inventory: vec![0.0; resource_count],
             revenue: 0.0,
             operating_budget: 0.0,
             utility_service_available: false,

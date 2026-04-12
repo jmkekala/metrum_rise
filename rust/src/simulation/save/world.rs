@@ -3,6 +3,7 @@
 use crate::simulation::buildings::allocator::resolve_building_economy_profile_binding;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
+use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::{Household, HouseholdSystem};
 use crate::simulation::economy::logistics::{Shipment, ShipmentSystem};
@@ -121,20 +122,24 @@ pub(super) fn save_world(
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, stock, input_stock, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)")?;
+    let mut inventory_stmt = tx.prepare(
+        "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
+    )?;
     for (old_bid, b) in buildings.buildings.iter().enumerate() {
         let saved_bid = maps
             .building_old_to_new
             .get(&old_bid)
             .copied()
             .ok_or_else(|| SaveLoadError::custom("missing building mapping"))?;
+        let saved_bid_db = usize_to_i64(saved_bid)?;
         let saved_eid = maps
             .edge_old_to_new
             .get(&b.edge_idx)
             .copied()
             .ok_or_else(|| SaveLoadError::custom("missing building edge mapping"))?;
         bld_stmt.execute(params![
-            usize_to_i64(saved_bid)?,
+            saved_bid_db,
             usize_to_i64(saved_eid)?,
             b.frontage_t,
             i64::from(b.side),
@@ -143,8 +148,6 @@ pub(super) fn save_world(
             i64::from(b.zone_profile_runtime_id),
             u32_to_i64(b.occupancy)?,
             u32_to_i64(b.worker_count)?,
-            b.stock,
-            b.input_stock,
             b.revenue,
             b.operating_budget,
             i64::from(if b.utility_service_available { 1 } else { 0 }),
@@ -157,6 +160,12 @@ pub(super) fn save_world(
             i64::from(if b.pending_redevelopment { 1 } else { 0 }),
             i64::from(b.rezone_grace_days_remaining)
         ])?;
+        for (slot, amount) in b.resource_inventory.iter().enumerate() {
+            if *amount <= 0.0 {
+                continue;
+            }
+            inventory_stmt.execute(params![saved_bid_db, i64::from(slot as u16 + 1), *amount])?;
+        }
     }
     let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_hours, stay_failure_days, replenishment_offset_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")?;
     for (hid, household) in households.households.iter().enumerate() {
@@ -179,11 +188,11 @@ pub(super) fn save_world(
         ])?;
     }
 
-    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_type, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_runtime_id, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
     for (shipment_id, shipment) in logistics.shipments.iter().enumerate() {
         shipment_stmt.execute(params![
             usize_to_i64(shipment_id)?,
-            i64::from(shipment.resource_type),
+            i64::from(shipment.resource_runtime_id),
             shipment.amount,
             i64::from(shipment.source_kind),
             optional_building_to_db(shipment.source_building_id, maps)?,
@@ -275,22 +284,25 @@ pub(super) fn load_buildings(
     profiles: &crate::simulation::grid::zoning::profiles::ZoningProfileRegistry,
 ) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, stock, input_stock, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining FROM buildings ORDER BY building_id")?;
+    let resource_count = load_runtime_economy_catalog()
+        .map_err(SaveLoadError::custom)?
+        .resource_count();
+    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
         if bid != allocator.buildings.len() {
             return Err(SaveLoadError::custom("non-contiguous building ids"));
         }
-        let asset_id: String = row.get(17)?;
-        let broken = (row.get::<_, i64>(19)? != 0) || registry.get(&asset_id).is_none();
+        let asset_id: String = row.get(15)?;
+        let broken = (row.get::<_, i64>(17)? != 0) || registry.get(&asset_id).is_none();
         let economy_binding = resolve_building_economy_profile_binding(registry, &asset_id);
         let profile_runtime_id = i64_to_u16(row.get(6)?)?;
         allocator.buildings.push(Building {
             center_x: 0.0,
             center_y: 0.0,
-            width_cells: i64_to_usize(row.get(15)?)? as u16,
-            depth_cells: i64_to_usize(row.get(16)?)? as u16,
+            width_cells: i64_to_usize(row.get(13)?)? as u16,
+            depth_cells: i64_to_usize(row.get(14)?)? as u16,
             zone_profile_runtime_id: profile_runtime_id,
             zone_type: profiles.zone_type_for_runtime_id(profile_runtime_id),
             facing_dir: Vector2::ZERO,
@@ -304,19 +316,33 @@ pub(super) fn load_buildings(
             occupancy: i64_to_u32(row.get(7)?)?,
             worker_count: i64_to_u32(row.get(8)?)?,
             asset_id,
-            stock: row.get(9)?,
-            input_stock: row.get(10)?,
-            revenue: row.get(11)?,
-            operating_budget: row.get(12)?,
-            utility_service_available: row.get::<_, i64>(13)? != 0,
-            shipment_cooldown_hours: i64_to_u16(row.get(14)?)?,
-            level: row.get::<_, i64>(18)?.clamp(1, 255) as u8,
+            revenue: row.get(9)?,
+            operating_budget: row.get(10)?,
+            utility_service_available: row.get::<_, i64>(11)? != 0,
+            shipment_cooldown_hours: i64_to_u16(row.get(12)?)?,
+            level: row.get::<_, i64>(16)?.clamp(1, 255) as u8,
             broken,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
-            pending_redevelopment: row.get::<_, i64>(20)? != 0,
-            rezone_grace_days_remaining: i64_to_u8(row.get(21)?)?,
+            resource_inventory: vec![0.0; resource_count],
+            pending_redevelopment: row.get::<_, i64>(18)? != 0,
+            rezone_grace_days_remaining: i64_to_u8(row.get(19)?)?,
         });
+    }
+    let mut stmt = conn.prepare(
+        "SELECT building_id, resource_runtime_id, amount FROM building_inventories ORDER BY building_id, resource_runtime_id",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let building_id = i64_to_usize(row.get(0)?)?;
+        let resource_runtime_id = i64_to_u16(row.get(1)?)?;
+        let amount: f32 = row.get(2)?;
+        let Some(building) = allocator.buildings.get_mut(building_id) else {
+            return Err(SaveLoadError::custom(
+                "building inventory references missing building",
+            ));
+        };
+        building.set_inventory_units(resource_runtime_id, amount);
     }
     Ok(allocator)
 }
@@ -352,7 +378,7 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
 
 pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem> {
     let mut logistics = ShipmentSystem::new();
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_type, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_hours FROM shipments ORDER BY shipment_id")?;
+    let mut stmt = conn.prepare("SELECT shipment_id, resource_runtime_id, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_hours FROM shipments ORDER BY shipment_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let shipment_id = i64_to_usize(row.get(0)?)?;
@@ -361,7 +387,7 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
         }
         let raw_border: i64 = row.get(5)?;
         logistics.shipments.push(Shipment {
-            resource_type: i64_to_u8(row.get(1)?)?,
+            resource_runtime_id: i64_to_u16(row.get(1)?)?,
             amount: row.get(2)?,
             source_kind: i64_to_u8(row.get(3)?)?,
             source_building_id: db_to_optional_usize(row.get(4)?)?,

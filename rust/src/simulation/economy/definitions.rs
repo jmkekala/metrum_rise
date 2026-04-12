@@ -237,31 +237,14 @@ pub(crate) struct BuildingViabilityRuntimeTuning {
     pub industrial_max_output_headroom_for_downgrade: f32,
 }
 
-/// Starter resource kinds supported by the live pre-Phase-4 runtime.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum StarterResourceKind {
-    /// Bulk food-like upstream good produced by starter industry.
-    StapleFood,
-    /// Household-facing saleable supplies consumed by households.
-    HouseholdSupplies,
-}
+/// Compact runtime resource id resolved from authored resource names.
+pub(crate) type ResourceRuntimeId = u16;
 
-impl StarterResourceKind {
-    /// Parses one authored resource id into the current starter runtime resource set.
-    pub(crate) fn from_authored_name(name: &str) -> Option<Self> {
-        match name {
-            "staple_food" => Some(Self::StapleFood),
-            "household_supplies" => Some(Self::HouseholdSupplies),
-            _ => None,
-        }
-    }
-}
-
-/// One compiled starter-runtime resource port.
+/// One compiled runtime resource port.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RuntimeResourcePort {
-    /// Starter resource kind carried through this port.
-    pub resource: StarterResourceKind,
+    /// Runtime resource id carried through this port.
+    pub resource_runtime_id: ResourceRuntimeId,
     /// Authored throughput in units per day.
     pub units_per_day: f32,
 }
@@ -293,8 +276,6 @@ pub(crate) struct EconomyProfileRuntime {
     pub work_schedule_profile: Option<String>,
     /// Optional authored freight timing profile id.
     pub freight_timing_profile: Option<String>,
-    /// Authored baseline units-per-day throughput anchor.
-    pub base_rate_units_per_day: f32,
     /// Fixed baseline unit sale price for the profile's main output.
     pub unit_price_currency: f32,
     /// Fixed minimum daily wage offered by this profile.
@@ -312,12 +293,12 @@ pub(crate) struct EconomyProfileRuntime {
     /// Household-demand consumption rate used by abstract sink profiles.
     #[allow(dead_code)]
     pub consumption_rate_per_resident: f32,
-    /// Compiled single input port used by the starter live runtime, if any.
-    pub input: Option<RuntimeResourcePort>,
-    /// Compiled single output port used by the starter live runtime, if any.
-    pub output: Option<RuntimeResourcePort>,
-    /// False when the authored profile exists but the live starter runtime cannot execute it yet.
-    pub starter_runtime_supported: bool,
+    /// Compiled typed input ports used by the live runtime.
+    pub inputs: Vec<RuntimeResourcePort>,
+    /// Compiled typed output ports used by the live runtime.
+    pub outputs: Vec<RuntimeResourcePort>,
+    /// False when the authored profile exists but the live runtime cannot execute it yet.
+    pub runtime_supported: bool,
 }
 
 impl EconomyProfileRuntime {
@@ -326,55 +307,44 @@ impl EconomyProfileRuntime {
         ((self.wage_min_currency_per_day + self.wage_max_currency_per_day) * 0.5).max(0.0)
     }
 
-    /// Returns the primary daily input units consumed by this profile.
-    pub(crate) fn input_units_per_day(&self) -> f32 {
-        self.input
-            .map(|port| port.units_per_day)
-            .unwrap_or(0.0)
-            .max(0.0)
+    /// Returns one compiled input port by resource id.
+    pub(crate) fn input_port(
+        &self,
+        resource_runtime_id: ResourceRuntimeId,
+    ) -> Option<&RuntimeResourcePort> {
+        self.inputs
+            .iter()
+            .find(|port| port.resource_runtime_id == resource_runtime_id)
     }
 
-    /// Returns the primary daily output units produced by this profile.
-    pub(crate) fn output_units_per_day(&self) -> f32 {
-        self.output
-            .map(|port| port.units_per_day)
-            .unwrap_or(self.base_rate_units_per_day)
-            .max(0.0)
+    /// Returns one compiled output port by resource id.
+    pub(crate) fn output_port(
+        &self,
+        resource_runtime_id: ResourceRuntimeId,
+    ) -> Option<&RuntimeResourcePort> {
+        self.outputs
+            .iter()
+            .find(|port| port.resource_runtime_id == resource_runtime_id)
     }
 
-    /// Returns the starter-runtime target units for the primary inventory buffer.
-    pub(crate) fn inventory_target_units(&self) -> f32 {
-        let units_per_day = if self.input.is_some() {
-            self.input_units_per_day()
-        } else {
-            self.output_units_per_day()
-        };
-        (units_per_day * self.stock_target_days.max(0.0)).max(0.0)
+    /// Returns the runtime target units for one tracked inventory port.
+    pub(crate) fn inventory_target_units_for(&self, port: &RuntimeResourcePort) -> f32 {
+        (port.units_per_day.max(0.0) * self.stock_target_days.max(0.0)).max(0.0)
     }
 
-    /// Returns the starter-runtime reorder threshold in units.
-    pub(crate) fn inventory_reorder_units(&self) -> f32 {
-        let units_per_day = if self.input.is_some() {
-            self.input_units_per_day()
-        } else {
-            self.output_units_per_day()
-        };
-        (units_per_day * self.reorder_threshold_days.max(0.0)).max(0.0)
+    /// Returns the runtime reorder threshold in units for one tracked inventory port.
+    pub(crate) fn inventory_reorder_units_for(&self, port: &RuntimeResourcePort) -> f32 {
+        (port.units_per_day.max(0.0) * self.reorder_threshold_days.max(0.0)).max(0.0)
     }
 
-    /// Returns the starter-runtime emergency threshold in units.
-    pub(crate) fn inventory_critical_units(&self) -> f32 {
-        let units_per_day = if self.input.is_some() {
-            self.input_units_per_day()
-        } else {
-            self.output_units_per_day()
-        };
-        (units_per_day * self.critical_threshold_days.max(0.0)).max(0.0)
+    /// Returns the runtime emergency threshold in units for one tracked inventory port.
+    pub(crate) fn inventory_critical_units_for(&self, port: &RuntimeResourcePort) -> f32 {
+        (port.units_per_day.max(0.0) * self.critical_threshold_days.max(0.0)).max(0.0)
     }
 
-    /// Returns the starter-runtime output buffer cap in units.
-    pub(crate) fn output_buffer_capacity_units(&self) -> f32 {
-        let capacity = self.output_units_per_day() * self.stock_target_days.max(0.0);
+    /// Returns the runtime output buffer cap in units for one output resource.
+    pub(crate) fn output_buffer_capacity_units_for(&self, port: &RuntimeResourcePort) -> f32 {
+        let capacity = port.units_per_day.max(0.0) * self.stock_target_days.max(0.0);
         if capacity <= 0.0 { f32::MAX } else { capacity }
     }
 }
@@ -384,7 +354,8 @@ impl EconomyProfileRuntime {
 pub(crate) struct RuntimeEconomyCatalog {
     profiles: Vec<EconomyProfileRuntime>,
     by_id: BTreeMap<String, u16>,
-    price_by_resource: BTreeMap<StarterResourceKind, f32>,
+    resource_by_id: BTreeMap<String, ResourceRuntimeId>,
+    price_by_resource: BTreeMap<ResourceRuntimeId, f32>,
 }
 
 impl RuntimeEconomyCatalog {
@@ -401,8 +372,21 @@ impl RuntimeEconomyCatalog {
             .and_then(|idx| self.profiles.get(idx as usize))
     }
 
-    /// Returns the default starter-runtime unit price for one resource when `OWA` imports it.
-    pub(crate) fn unit_price_for_resource(&self, resource: StarterResourceKind) -> Option<f32> {
+    /// Returns one compiled runtime resource by authored id.
+    pub(crate) fn resource_runtime_id_for_id(
+        &self,
+        resource_id: &str,
+    ) -> Option<ResourceRuntimeId> {
+        self.resource_by_id.get(resource_id).copied()
+    }
+
+    /// Returns the number of compiled runtime resources in the catalog.
+    pub(crate) fn resource_count(&self) -> usize {
+        self.resource_by_id.len()
+    }
+
+    /// Returns the default runtime unit price for one resource when `OWA` imports it.
+    pub(crate) fn unit_price_for_resource(&self, resource: ResourceRuntimeId) -> Option<f32> {
         self.price_by_resource.get(&resource).copied()
     }
 }
@@ -877,6 +861,23 @@ fn compile_runtime_catalog(
         .collect();
 
     let mut catalog = RuntimeEconomyCatalog::default();
+    let mut resource_ids = BTreeSet::new();
+    for profile in authored_profiles {
+        for input in &profile.inputs {
+            resource_ids.insert(input.resource.clone());
+        }
+        for output in &profile.outputs {
+            resource_ids.insert(output.resource.clone());
+        }
+    }
+    for (idx, resource_id) in resource_ids.into_iter().enumerate() {
+        let runtime_id = u16::try_from(idx + 1)
+            .map_err(|_| "runtime economy catalog exceeds u16 resource id range".to_owned())?;
+        catalog
+            .resource_by_id
+            .insert(resource_id.clone(), runtime_id);
+    }
+
     for (idx, profile) in authored_profiles.iter().enumerate() {
         if catalog.by_id.contains_key(&profile.id) {
             return Err(format!(
@@ -903,14 +904,14 @@ fn compile_runtime_catalog(
 
         let runtime_id = u16::try_from(idx + 1)
             .map_err(|_| "runtime economy catalog exceeds u16 profile id range".to_owned())?;
-        let compiled = compile_runtime_profile(runtime_id, profile);
-        if compiled.unit_price_currency > 0.0
-            && let Some(output) = compiled.output
-        {
-            catalog
-                .price_by_resource
-                .entry(output.resource)
-                .or_insert(compiled.unit_price_currency);
+        let compiled = compile_runtime_profile(runtime_id, profile, &catalog.resource_by_id)?;
+        if compiled.unit_price_currency > 0.0 {
+            for output in &compiled.outputs {
+                catalog
+                    .price_by_resource
+                    .entry(output.resource_runtime_id)
+                    .or_insert(compiled.unit_price_currency);
+            }
         }
         catalog.by_id.insert(compiled.id.clone(), runtime_id);
         catalog.profiles.push(compiled);
@@ -919,7 +920,11 @@ fn compile_runtime_catalog(
     Ok(catalog)
 }
 
-fn compile_runtime_profile(runtime_id: u16, profile: &EconomyProfile) -> EconomyProfileRuntime {
+fn compile_runtime_profile(
+    runtime_id: u16,
+    profile: &EconomyProfile,
+    resource_by_id: &BTreeMap<String, ResourceRuntimeId>,
+) -> Result<EconomyProfileRuntime, String> {
     let kind = match profile.kind.as_str() {
         "producer" => EconomyProfileRuntimeKind::Producer,
         "store" => EconomyProfileRuntimeKind::Store,
@@ -927,51 +932,53 @@ fn compile_runtime_profile(runtime_id: u16, profile: &EconomyProfile) -> Economy
         _ => EconomyProfileRuntimeKind::Unsupported,
     };
 
-    let compiled_input = if profile.inputs.len() == 1 {
-        let input = &profile.inputs[0];
-        StarterResourceKind::from_authored_name(input.resource.as_str()).map(|resource| {
-            RuntimeResourcePort {
-                resource,
+    let compiled_inputs = profile
+        .inputs
+        .iter()
+        .map(|input| {
+            let Some(&resource_runtime_id) = resource_by_id.get(input.resource.as_str()) else {
+                return Err(format!(
+                    "profile '{}' references unresolved input resource '{}'",
+                    profile.id, input.resource
+                ));
+            };
+            Ok(RuntimeResourcePort {
+                resource_runtime_id,
                 units_per_day: input.units_per_day.max(0.0),
-            }
+            })
         })
-    } else {
-        None
-    };
-    let compiled_output = if profile.outputs.len() == 1 {
-        let output = &profile.outputs[0];
-        StarterResourceKind::from_authored_name(output.resource.as_str()).map(|resource| {
-            RuntimeResourcePort {
-                resource,
+        .collect::<Result<Vec<_>, String>>()?;
+    let compiled_outputs = profile
+        .outputs
+        .iter()
+        .map(|output| {
+            let Some(&resource_runtime_id) = resource_by_id.get(output.resource.as_str()) else {
+                return Err(format!(
+                    "profile '{}' references unresolved output resource '{}'",
+                    profile.id, output.resource
+                ));
+            };
+            Ok(RuntimeResourcePort {
+                resource_runtime_id,
                 units_per_day: output.units_per_day.max(0.0),
-            }
+            })
         })
-    } else {
-        None
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let runtime_supported = match kind {
+        EconomyProfileRuntimeKind::Producer => !compiled_outputs.is_empty(),
+        EconomyProfileRuntimeKind::Store => {
+            !compiled_inputs.is_empty() && !compiled_outputs.is_empty()
+        }
+        EconomyProfileRuntimeKind::DemandSink | EconomyProfileRuntimeKind::Unsupported => false,
     };
 
-    let starter_runtime_supported = matches!(
-        kind,
-        EconomyProfileRuntimeKind::Producer | EconomyProfileRuntimeKind::Store
-    ) && profile.inputs.len() <= 1
-        && profile.outputs.len() <= 1
-        && profile.inputs.len() == usize::from(compiled_input.is_some())
-        && profile.outputs.len() == usize::from(compiled_output.is_some())
-        && match kind {
-            EconomyProfileRuntimeKind::Producer => compiled_output.is_some(),
-            EconomyProfileRuntimeKind::Store => {
-                compiled_input.is_some() && compiled_output.is_some()
-            }
-            EconomyProfileRuntimeKind::DemandSink | EconomyProfileRuntimeKind::Unsupported => false,
-        };
-
-    EconomyProfileRuntime {
+    Ok(EconomyProfileRuntime {
         runtime_id,
         id: profile.id.clone(),
         kind,
         work_schedule_profile: profile.work_schedule_profile.clone(),
         freight_timing_profile: profile.freight_timing_profile.clone(),
-        base_rate_units_per_day: profile.base_rate_units_per_day.max(0.0),
         unit_price_currency: profile.unit_price_currency.max(0.0),
         wage_min_currency_per_day: profile.wage_min_currency_per_day.max(0.0),
         wage_max_currency_per_day: profile.wage_max_currency_per_day.max(0.0),
@@ -980,10 +987,10 @@ fn compile_runtime_profile(runtime_id: u16, profile: &EconomyProfile) -> Economy
         critical_threshold_days: profile.critical_threshold_days.max(0.0),
         min_shipment_units: profile.min_shipment_units.max(0.0),
         consumption_rate_per_resident: profile.consumption_rate_per_resident.max(0.0),
-        input: compiled_input,
-        output: compiled_output,
-        starter_runtime_supported,
-    }
+        inputs: compiled_inputs,
+        outputs: compiled_outputs,
+        runtime_supported,
+    })
 }
 
 fn parse_toml_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {

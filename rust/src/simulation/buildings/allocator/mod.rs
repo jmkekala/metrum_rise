@@ -18,7 +18,9 @@ mod tests;
 
 use crate::assets::{AssetRegistry, ZoneClass};
 use crate::debug_log;
-use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+use crate::simulation::economy::definitions::{
+    EconomyProfileRuntime, ResourceRuntimeId, load_runtime_economy_catalog,
+};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::VehicleFrontageAccess;
@@ -93,10 +95,10 @@ pub struct Building {
     pub economy_profile_runtime_id: u16,
     /// True when the asset references an unresolved or unsupported economy profile.
     pub economy_broken: bool,
-    /// Current on-site stock buffer for the first-pass economy loop.
-    pub stock: f32,
-    /// Current industrial input stock buffer for the first-pass starter chain.
-    pub input_stock: f32,
+    /// Current typed on-site inventory by runtime resource id.
+    ///
+    /// Slot `resource_runtime_id - 1` stores the amount for that resource.
+    pub resource_inventory: Vec<f32>,
     /// Lifetime gross revenue collected by this building.
     pub revenue: f32,
     /// Current operating budget available for wages, utility fallback, and imports.
@@ -184,6 +186,73 @@ pub(crate) struct EconomyProfileBinding {
     pub economy_broken: bool,
 }
 
+impl Building {
+    /// Returns the current inventory amount for one runtime resource.
+    pub(crate) fn inventory_units(&self, resource_runtime_id: ResourceRuntimeId) -> f32 {
+        if resource_runtime_id == 0 {
+            return 0.0;
+        }
+        self.resource_inventory
+            .get(resource_runtime_id as usize - 1)
+            .copied()
+            .unwrap_or(0.0)
+    }
+
+    /// Sets the current inventory amount for one runtime resource.
+    pub(crate) fn set_inventory_units(
+        &mut self,
+        resource_runtime_id: ResourceRuntimeId,
+        amount: f32,
+    ) {
+        if resource_runtime_id == 0 {
+            return;
+        }
+        let slot = resource_runtime_id as usize - 1;
+        if self.resource_inventory.len() <= slot {
+            self.resource_inventory.resize(slot + 1, 0.0);
+        }
+        self.resource_inventory[slot] = amount.max(0.0);
+    }
+
+    /// Adds one amount to the current inventory for one runtime resource.
+    pub(crate) fn add_inventory_units(
+        &mut self,
+        resource_runtime_id: ResourceRuntimeId,
+        amount: f32,
+    ) {
+        let current = self.inventory_units(resource_runtime_id);
+        self.set_inventory_units(resource_runtime_id, current + amount);
+    }
+
+    /// Removes up to one amount from the current inventory for one runtime resource.
+    pub(crate) fn remove_inventory_units(
+        &mut self,
+        resource_runtime_id: ResourceRuntimeId,
+        amount: f32,
+    ) {
+        let current = self.inventory_units(resource_runtime_id);
+        self.set_inventory_units(resource_runtime_id, (current - amount).max(0.0));
+    }
+
+    /// Drops any inventory slots not referenced by the resolved economy profile.
+    pub(crate) fn retain_inventory_for_profile(
+        &mut self,
+        profile: Option<&EconomyProfileRuntime>,
+        resource_count: usize,
+    ) {
+        let mut retained = vec![0.0; resource_count];
+        if let Some(profile) = profile {
+            for port in profile.inputs.iter().chain(profile.outputs.iter()) {
+                let slot = port.resource_runtime_id as usize - 1;
+                if slot < self.resource_inventory.len() && slot < retained.len() {
+                    retained[slot] = self.resource_inventory[slot];
+                }
+            }
+        }
+        self.resource_inventory = retained;
+    }
+}
+
 /// Resolves the live runtime economy-profile binding for one asset id.
 pub(crate) fn resolve_building_economy_profile_binding(
     registry: &AssetRegistry,
@@ -220,7 +289,7 @@ pub(crate) fn resolve_building_economy_profile_binding(
             economy_broken: true,
         };
     };
-    if !profile.starter_runtime_supported {
+    if !profile.runtime_supported {
         debug_log!(
             "economy",
             "asset_id={} references unsupported runtime economy profile '{}'; building will run economy-broken",

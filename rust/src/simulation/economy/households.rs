@@ -13,8 +13,8 @@ use crate::simulation::economy::agents::{
     AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
 };
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntime, RuntimeEconomyCatalog, StarterResourceKind,
-    load_runtime_economy_catalog, load_runtime_economy_tuning,
+    EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, load_runtime_economy_catalog,
+    load_runtime_economy_tuning,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
@@ -398,20 +398,30 @@ impl HouseholdSystem {
                 industrial_output_headroom_factor(&catalog, &allocator.buildings[idx]);
             let throughput_factor =
                 staffing_factor * input_factor * output_headroom_factor * utility_factor;
-            let hourly_output_units =
-                profile.output_units_per_day() / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
-            let hourly_input_units =
-                profile.input_units_per_day() / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
 
             let building = &mut allocator.buildings[idx];
-            if hourly_input_units > 0.0 {
-                building.input_stock = (building.input_stock - hourly_input_units).max(0.0);
+            for input_port in &profile.inputs {
+                let hourly_input_units =
+                    input_port.units_per_day / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
+                if hourly_input_units > 0.0 {
+                    building
+                        .remove_inventory_units(input_port.resource_runtime_id, hourly_input_units);
+                }
             }
-            if matches!(zone, ZoneType::Commercial | ZoneType::Industrial)
-                && hourly_output_units > 0.0
-            {
-                building.stock = (building.stock + hourly_output_units)
-                    .min(profile.output_buffer_capacity_units());
+            if matches!(zone, ZoneType::Commercial | ZoneType::Industrial) {
+                for output_port in &profile.outputs {
+                    let hourly_output_units =
+                        output_port.units_per_day / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
+                    if hourly_output_units <= 0.0 {
+                        continue;
+                    }
+                    let current = building.inventory_units(output_port.resource_runtime_id);
+                    let capacity = profile.output_buffer_capacity_units_for(output_port);
+                    building.set_inventory_units(
+                        output_port.resource_runtime_id,
+                        (current + hourly_output_units).min(capacity),
+                    );
+                }
             }
         }
     }
@@ -749,6 +759,10 @@ impl HouseholdSystem {
                 continue;
             }
 
+            let Some(household_supply_resource) = household_supply_resource_runtime_id(&catalog)
+            else {
+                continue;
+            };
             let home = &allocator.buildings[household.home_building_id];
             let candidates = allocator.find_nearby_buildings_by_zones(
                 home.center_x,
@@ -765,7 +779,7 @@ impl HouseholdSystem {
 
             for candidate in candidates {
                 let store = &allocator.buildings[candidate];
-                if store.stock <= 0.0
+                if store.inventory_units(household_supply_resource) <= 0.0
                     || !store.utility_service_available
                     || store.broken
                     || store.economy_broken
@@ -775,19 +789,26 @@ impl HouseholdSystem {
                 let Some(store_profile) = economy_profile_for_building(&catalog, store) else {
                     continue;
                 };
-                let amount = desired_amount.min(store.stock);
+                if store_profile
+                    .output_port(household_supply_resource)
+                    .is_none()
+                {
+                    continue;
+                }
+                let available_stock = store.inventory_units(household_supply_resource);
+                let amount = desired_amount.min(available_stock);
                 let total_cost = amount * store_profile.unit_price_currency;
                 if amount > 0.0 && household.budget >= total_cost {
                     found_sale = Some((candidate, amount, total_cost));
                     break;
                 }
-                desired_amount = desired_amount.min(store.stock);
+                desired_amount = desired_amount.min(available_stock);
             }
 
             let household = &mut self.households[hid];
             if let Some((store_idx, amount, total_cost)) = found_sale {
                 let store = &mut allocator.buildings[store_idx];
-                store.stock -= amount;
+                store.remove_inventory_units(household_supply_resource, amount);
                 household.budget -= total_cost;
                 household.reserved_store_building_id = store_idx;
                 household.reserved_amount = amount;
@@ -1013,7 +1034,13 @@ impl HouseholdSystem {
         ) {
             let store_idx = household.reserved_store_building_id;
             if store_idx < allocator.buildings.len() {
-                allocator.buildings[store_idx].stock += household.reserved_amount;
+                if let Ok(catalog) = load_runtime_economy_catalog()
+                    && let Some(resource_runtime_id) =
+                        household_supply_resource_runtime_id(&catalog)
+                {
+                    allocator.buildings[store_idx]
+                        .add_inventory_units(resource_runtime_id, household.reserved_amount);
+                }
             }
         }
 
@@ -1066,10 +1093,30 @@ fn economy_profile_for_building<'a>(
     catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
 }
 
+fn household_supply_resource_runtime_id(
+    catalog: &RuntimeEconomyCatalog,
+) -> Option<ResourceRuntimeId> {
+    catalog.resource_runtime_id_for_id("household_supplies")
+}
+
 fn household_supply_unit_price(catalog: &RuntimeEconomyCatalog) -> f32 {
-    catalog
-        .unit_price_for_resource(StarterResourceKind::HouseholdSupplies)
+    household_supply_resource_runtime_id(catalog)
+        .and_then(|resource_runtime_id| catalog.unit_price_for_resource(resource_runtime_id))
         .unwrap_or(0.0)
+}
+
+pub(crate) fn building_total_output_inventory(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+) -> f32 {
+    let Some(profile) = economy_profile_for_building(catalog, building) else {
+        return 0.0;
+    };
+    profile
+        .outputs
+        .iter()
+        .map(|port| building.inventory_units(port.resource_runtime_id))
+        .sum()
 }
 
 pub(crate) fn household_reserve_days(
@@ -1175,11 +1222,21 @@ pub(crate) fn industrial_input_coverage_factor(
     let Some(profile) = economy_profile_for_building(catalog, building) else {
         return 0.0;
     };
-    let daily_input_need = profile.input_units_per_day();
-    if daily_input_need <= 0.0 {
+    if profile.inputs.is_empty() {
         1.0
     } else {
-        (building.input_stock / daily_input_need).clamp(0.0, 1.0)
+        profile
+            .inputs
+            .iter()
+            .map(|port| {
+                if port.units_per_day <= 0.0 {
+                    1.0
+                } else {
+                    (building.inventory_units(port.resource_runtime_id) / port.units_per_day)
+                        .clamp(0.0, 1.0)
+                }
+            })
+            .fold(1.0, f32::min)
     }
 }
 
@@ -1190,12 +1247,24 @@ pub(crate) fn industrial_output_headroom_factor(
     let Some(profile) = economy_profile_for_building(catalog, building) else {
         return 0.0;
     };
-    let output_capacity_units = profile.output_buffer_capacity_units();
-    if !output_capacity_units.is_finite() || output_capacity_units <= 0.0 {
+    if profile.outputs.is_empty() {
         1.0
     } else {
-        let remaining_headroom = (output_capacity_units - building.stock).max(0.0);
-        (remaining_headroom / output_capacity_units).clamp(0.0, 1.0)
+        profile
+            .outputs
+            .iter()
+            .map(|port| {
+                let output_capacity_units = profile.output_buffer_capacity_units_for(port);
+                if !output_capacity_units.is_finite() || output_capacity_units <= 0.0 {
+                    1.0
+                } else {
+                    let remaining_headroom = (output_capacity_units
+                        - building.inventory_units(port.resource_runtime_id))
+                    .max(0.0);
+                    (remaining_headroom / output_capacity_units).clamp(0.0, 1.0)
+                }
+            })
+            .fold(1.0, f32::min)
     }
 }
 
@@ -1235,6 +1304,15 @@ mod tests {
         stock: f32,
         utility: bool,
     ) -> Building {
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        let runtime_id = test_economy_runtime_id(zone_type);
+        let mut resource_inventory = vec![0.0; catalog.resource_count()];
+        if stock > 0.0
+            && let Some(profile) = catalog.profile_by_runtime_id(runtime_id)
+            && let Some(output_port) = profile.outputs.first()
+        {
+            resource_inventory[output_port.resource_runtime_id as usize - 1] = stock;
+        }
         Building {
             center_x,
             center_y: 0.0,
@@ -1255,10 +1333,9 @@ mod tests {
             asset_id: asset_id.to_owned(),
             level: 1,
             broken: false,
-            economy_profile_runtime_id: test_economy_runtime_id(zone_type),
+            economy_profile_runtime_id: runtime_id,
             economy_broken: false,
-            stock,
-            input_stock: 0.0,
+            resource_inventory,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: utility,
@@ -1381,7 +1458,14 @@ mod tests {
             households.households[0].replenishment_state,
             REPLENISHMENT_RESERVED
         );
-        assert_eq!(allocator.buildings[1].stock, 44.0);
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        let household_supplies = catalog
+            .resource_runtime_id_for_id("household_supplies")
+            .expect("household supplies resource");
+        assert_eq!(
+            allocator.buildings[1].inventory_units(household_supplies),
+            44.0
+        );
         assert_eq!(households.households[0].budget, 164.0);
 
         households.run_household_replenishment(&mut allocator, 0);

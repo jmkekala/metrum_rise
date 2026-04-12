@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{
-    FreightTimingProfile, RuntimeEconomyCatalog, RuntimeEconomyTuning, StarterResourceKind,
+    FreightTimingProfile, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
     load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::grid::zoning::ZoneType;
@@ -17,12 +17,6 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::NodeType;
 
-/// Starter upstream resource produced by industry and consumed by stores.
-pub const RESOURCE_STAPLE_FOOD: u8 = 0;
-/// First-pass shipped household-facing resource used by the starter economy chain.
-pub const RESOURCE_HOUSEHOLD_SUPPLIES: u8 = 1;
-/// Legacy starter industrial-input resource kept as extension space for later profiles.
-pub const RESOURCE_INDUSTRIAL_INPUTS: u8 = 2;
 /// The shipment originates from a local supplier building.
 pub const SHIPMENT_SOURCE_LOCAL: u8 = 0;
 /// The shipment originates from an `OWA` border terminal.
@@ -44,8 +38,8 @@ const OPERATIONAL_HOUR_SECONDS: f32 = 60.0 * 60.0;
 /// One reserved freight job moving stock between buildings or from `OWA`.
 #[derive(Clone, Debug)]
 pub struct Shipment {
-    /// Resource type carried by this shipment.
-    pub resource_type: u8,
+    /// Runtime resource id carried by this shipment.
+    pub resource_runtime_id: ResourceRuntimeId,
     /// Reserved amount in resource units.
     pub amount: f32,
     /// Whether the source is local or `OWA`.
@@ -174,11 +168,13 @@ impl ShipmentSystem {
                     if src_idx >= allocator.buildings.len()
                         || allocator.buildings[src_idx].broken
                         || allocator.buildings[src_idx].economy_broken
-                        || allocator.buildings[src_idx].stock < shipment.amount
+                        || allocator.buildings[src_idx]
+                            .inventory_units(shipment.resource_runtime_id)
+                            < shipment.amount
                         || !building_accepts_input_resource(
                             &catalog,
                             &allocator.buildings[dest_idx],
-                            shipment.resource_type,
+                            shipment.resource_runtime_id,
                         )
                     {
                         allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
@@ -188,17 +184,19 @@ impl ShipmentSystem {
                         continue;
                     }
 
-                    allocator.buildings[src_idx].stock -= shipment.amount;
+                    allocator.buildings[src_idx]
+                        .remove_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     allocator.buildings[src_idx].revenue += shipment.total_cost;
                     allocator.buildings[src_idx].operating_budget += shipment.total_cost;
-                    allocator.buildings[dest_idx].input_stock += shipment.amount;
+                    allocator.buildings[dest_idx]
+                        .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     shipment.status = SHIPMENT_FULFILLED;
                 }
                 SHIPMENT_SOURCE_OWA => {
                     if !building_accepts_input_resource(
                         &catalog,
                         &allocator.buildings[dest_idx],
-                        shipment.resource_type,
+                        shipment.resource_runtime_id,
                     ) {
                         allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
                         allocator.buildings[dest_idx].shipment_cooldown_hours =
@@ -206,7 +204,8 @@ impl ShipmentSystem {
                         shipment.status = SHIPMENT_FAILED;
                         continue;
                     }
-                    allocator.buildings[dest_idx].input_stock += shipment.amount;
+                    allocator.buildings[dest_idx]
+                        .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
                     shipment.status = SHIPMENT_FULFILLED;
                 }
                 _ => {
@@ -233,20 +232,22 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         minute_of_day: u16,
     ) {
-        let (reserved_outbound, reserved_inbound, has_open_inbound, border_job_counts) =
-            self.build_reservation_views();
-        let border_nodes = connected_border_nodes(graph);
         let tuning = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let resource_count = catalog.resource_count();
+        let (reserved_outbound, reserved_inbound, has_open_inbound, border_job_counts) =
+            self.build_reservation_views(resource_count);
+        let border_nodes = connected_border_nodes(graph);
 
         for dest_idx in 0..allocator.buildings.len() {
-            let building = &allocator.buildings[dest_idx];
+            let Some(building) = allocator.buildings.get(dest_idx) else {
+                continue;
+            };
             if building.broken
                 || building.economy_broken
                 || building.edge_idx == usize::MAX
-                || has_open_inbound.get(dest_idx).copied().unwrap_or(false)
                 || building.shipment_cooldown_hours > 0
             {
                 continue;
@@ -255,78 +256,101 @@ impl ShipmentSystem {
             else {
                 continue;
             };
-            let Some(input_port) = profile.input else {
+            if profile.inputs.is_empty() {
                 continue;
-            };
-            let Some(freight_profile) = freight_profile_for_building(&catalog, &tuning, building)
+            }
+            let Some(freight_profile) =
+                freight_profile_for_building(&catalog, &tuning, &allocator.buildings[dest_idx])
             else {
                 continue;
             };
 
-            let target_units = profile.inventory_target_units();
-            if target_units <= 0.0 {
-                continue;
-            }
-            let reorder_units = profile.inventory_reorder_units();
-            let critical_units = profile.inventory_critical_units();
-            let effective_input_stock =
-                building.input_stock + reserved_inbound.get(dest_idx).copied().unwrap_or(0.0);
-            if reorder_units > 0.0 && effective_input_stock >= reorder_units {
-                continue;
-            }
-            if reorder_units <= 0.0 && effective_input_stock >= target_units {
-                continue;
+            let mut failed_any_request = false;
+            for input_port in &profile.inputs {
+                let Some(resource_slot) =
+                    reservation_slot(dest_idx, input_port.resource_runtime_id, resource_count)
+                else {
+                    continue;
+                };
+                if has_open_inbound
+                    .get(resource_slot)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+
+                let target_units = profile.inventory_target_units_for(input_port);
+                if target_units <= 0.0 {
+                    continue;
+                }
+                let reorder_units = profile.inventory_reorder_units_for(input_port);
+                let critical_units = profile.inventory_critical_units_for(input_port);
+                let effective_input_stock = allocator.buildings[dest_idx]
+                    .inventory_units(input_port.resource_runtime_id)
+                    + reserved_inbound.get(resource_slot).copied().unwrap_or(0.0);
+                if reorder_units > 0.0 && effective_input_stock >= reorder_units {
+                    continue;
+                }
+                if reorder_units <= 0.0 && effective_input_stock >= target_units {
+                    continue;
+                }
+
+                let allow_emergency = effective_input_stock <= critical_units;
+                let desired_amount = (target_units - effective_input_stock).max(0.0);
+                if desired_amount <= 0.0 {
+                    continue;
+                }
+                if desired_amount < profile.min_shipment_units && !allow_emergency {
+                    continue;
+                }
+
+                if self.try_local_supplier_for_resource(
+                    dest_idx,
+                    desired_amount,
+                    allow_emergency,
+                    profile.min_shipment_units,
+                    input_port.resource_runtime_id,
+                    allocator,
+                    transit_network,
+                    graph,
+                    &reserved_outbound,
+                    resource_count,
+                    freight_profile,
+                    minute_of_day,
+                    &catalog,
+                ) {
+                    continue;
+                }
+
+                let import_unit_price = catalog
+                    .unit_price_for_resource(input_port.resource_runtime_id)
+                    .unwrap_or(profile.unit_price_currency);
+                if self.try_owa_fallback_for_resource(
+                    dest_idx,
+                    desired_amount,
+                    allow_emergency,
+                    profile.min_shipment_units,
+                    import_unit_price,
+                    input_port.resource_runtime_id,
+                    allocator,
+                    transit_network,
+                    graph,
+                    &border_nodes,
+                    &border_job_counts,
+                    freight_profile,
+                    minute_of_day,
+                ) {
+                    continue;
+                }
+
+                failed_any_request = true;
             }
 
-            let allow_emergency = effective_input_stock <= critical_units;
-            let desired_amount = (target_units - effective_input_stock).max(0.0);
-            if desired_amount <= 0.0 {
-                continue;
+            if failed_any_request {
+                allocator.buildings[dest_idx].shipment_cooldown_hours =
+                    tuning.operational_clock.shipment_retry_cooldown_hours;
             }
-            if desired_amount < profile.min_shipment_units && !allow_emergency {
-                continue;
-            }
-
-            if self.try_local_supplier_for_resource(
-                dest_idx,
-                desired_amount,
-                allow_emergency,
-                profile.min_shipment_units,
-                input_port.resource,
-                allocator,
-                transit_network,
-                graph,
-                &reserved_outbound,
-                freight_profile,
-                minute_of_day,
-                &catalog,
-            ) {
-                continue;
-            }
-
-            let import_unit_price = catalog
-                .unit_price_for_resource(input_port.resource)
-                .unwrap_or(profile.unit_price_currency);
-            if self.try_owa_fallback_for_resource(
-                dest_idx,
-                desired_amount,
-                allow_emergency,
-                profile.min_shipment_units,
-                import_unit_price,
-                resource_kind_to_shipment_type(input_port.resource),
-                allocator,
-                transit_network,
-                graph,
-                &border_nodes,
-                &border_job_counts,
-                freight_profile,
-                minute_of_day,
-            ) {
-                continue;
-            }
-
-            allocator.buildings[dest_idx].shipment_cooldown_hours =
-                tuning.operational_clock.shipment_retry_cooldown_hours;
         }
     }
 
@@ -337,11 +361,12 @@ impl ShipmentSystem {
         desired_amount: f32,
         allow_emergency: bool,
         min_shipment_units: f32,
-        resource: StarterResourceKind,
+        resource_runtime_id: ResourceRuntimeId,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         reserved_outbound: &[f32],
+        resource_count: usize,
         freight_profile: &FreightTimingProfile,
         minute_of_day: u16,
         catalog: &RuntimeEconomyCatalog,
@@ -371,15 +396,17 @@ impl ShipmentSystem {
             else {
                 continue;
             };
-            let Some(output_port) = supplier_profile.output else {
+            let Some(output_port) = supplier_profile.output_port(resource_runtime_id) else {
                 continue;
             };
-            if output_port.resource != resource {
+            let Some(resource_slot) =
+                reservation_slot(candidate_idx, resource_runtime_id, resource_count)
+            else {
                 continue;
-            }
-
-            let reserved = reserved_outbound.get(candidate_idx).copied().unwrap_or(0.0);
-            let available = (supplier.stock - reserved).max(0.0);
+            };
+            let reserved = reserved_outbound.get(resource_slot).copied().unwrap_or(0.0);
+            let available =
+                (supplier.inventory_units(output_port.resource_runtime_id) - reserved).max(0.0);
             if available <= 0.0 {
                 continue;
             }
@@ -410,7 +437,7 @@ impl ShipmentSystem {
 
             allocator.buildings[dest_idx].operating_budget -= total_cost;
             self.shipments.push(Shipment {
-                resource_type: resource_kind_to_shipment_type(resource),
+                resource_runtime_id,
                 amount,
                 source_kind: SHIPMENT_SOURCE_LOCAL,
                 source_building_id: candidate_idx,
@@ -439,7 +466,7 @@ impl ShipmentSystem {
         allow_emergency: bool,
         min_shipment_units: f32,
         unit_price: f32,
-        resource_type: u8,
+        resource_runtime_id: ResourceRuntimeId,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
@@ -492,7 +519,7 @@ impl ShipmentSystem {
 
         allocator.buildings[dest_idx].operating_budget -= total_cost;
         self.shipments.push(Shipment {
-            resource_type,
+            resource_runtime_id,
             amount,
             source_kind: SHIPMENT_SOURCE_OWA,
             source_building_id: usize::MAX,
@@ -510,7 +537,10 @@ impl ShipmentSystem {
         true
     }
 
-    fn build_reservation_views(&self) -> (Vec<f32>, Vec<f32>, Vec<bool>, HashMap<u32, usize>) {
+    fn build_reservation_views(
+        &self,
+        resource_count: usize,
+    ) -> (Vec<f32>, Vec<f32>, Vec<bool>, HashMap<u32, usize>) {
         let mut max_building = 0usize;
         for shipment in &self.shipments {
             max_building = max_building.max(shipment.destination_building_id);
@@ -519,23 +549,36 @@ impl ShipmentSystem {
             }
         }
 
-        let mut reserved_outbound = vec![0.0; max_building.saturating_add(1)];
-        let mut reserved_inbound = vec![0.0; max_building.saturating_add(1)];
-        let mut has_open_inbound = vec![false; max_building.saturating_add(1)];
+        let slot_count = max_building
+            .saturating_add(1)
+            .saturating_mul(resource_count.max(1));
+        let mut reserved_outbound = vec![0.0; slot_count];
+        let mut reserved_inbound = vec![0.0; slot_count];
+        let mut has_open_inbound = vec![false; slot_count];
         let mut border_job_counts = HashMap::new();
 
         for shipment in &self.shipments {
             if shipment.status != SHIPMENT_IN_TRANSIT {
                 continue;
             }
-            if shipment.destination_building_id < reserved_inbound.len() {
-                reserved_inbound[shipment.destination_building_id] += shipment.amount;
-                has_open_inbound[shipment.destination_building_id] = true;
+            if let Some(slot) = reservation_slot(
+                shipment.destination_building_id,
+                shipment.resource_runtime_id,
+                resource_count,
+            ) && slot < reserved_inbound.len()
+            {
+                reserved_inbound[slot] += shipment.amount;
+                has_open_inbound[slot] = true;
             }
             if shipment.source_kind == SHIPMENT_SOURCE_LOCAL
-                && shipment.source_building_id < reserved_outbound.len()
+                && let Some(slot) = reservation_slot(
+                    shipment.source_building_id,
+                    shipment.resource_runtime_id,
+                    resource_count,
+                )
+                && slot < reserved_outbound.len()
             {
-                reserved_outbound[shipment.source_building_id] += shipment.amount;
+                reserved_outbound[slot] += shipment.amount;
             }
             if shipment.source_kind == SHIPMENT_SOURCE_OWA {
                 *border_job_counts
@@ -602,19 +645,17 @@ fn eta_hours_from_travel_seconds(travel_seconds: f32) -> u16 {
     ((travel_seconds / OPERATIONAL_HOUR_SECONDS).ceil() as u16).max(1)
 }
 
-fn resource_kind_to_shipment_type(resource: StarterResourceKind) -> u8 {
-    match resource {
-        StarterResourceKind::StapleFood => RESOURCE_STAPLE_FOOD,
-        StarterResourceKind::HouseholdSupplies => RESOURCE_HOUSEHOLD_SUPPLIES,
+fn reservation_slot(
+    building_idx: usize,
+    resource_runtime_id: ResourceRuntimeId,
+    resource_count: usize,
+) -> Option<usize> {
+    if resource_runtime_id == 0 || resource_count == 0 {
+        return None;
     }
-}
-
-fn shipment_type_to_resource_kind(resource_type: u8) -> Option<StarterResourceKind> {
-    match resource_type {
-        RESOURCE_STAPLE_FOOD => Some(StarterResourceKind::StapleFood),
-        RESOURCE_HOUSEHOLD_SUPPLIES => Some(StarterResourceKind::HouseholdSupplies),
-        _ => None,
-    }
+    building_idx
+        .checked_mul(resource_count)
+        .and_then(|base| base.checked_add(resource_runtime_id as usize - 1))
 }
 
 fn freight_profile_for_building<'a>(
@@ -645,15 +686,11 @@ fn freight_profile_for_building<'a>(
 fn building_accepts_input_resource(
     catalog: &RuntimeEconomyCatalog,
     building: &Building,
-    resource_type: u8,
+    resource_runtime_id: ResourceRuntimeId,
 ) -> bool {
-    let Some(resource) = shipment_type_to_resource_kind(resource_type) else {
-        return false;
-    };
     catalog
         .profile_by_runtime_id(building.economy_profile_runtime_id)
-        .and_then(|profile| profile.input)
-        .is_some_and(|input| input.resource == resource)
+        .is_some_and(|profile| profile.input_port(resource_runtime_id).is_some())
 }
 
 #[cfg(test)]
@@ -741,6 +778,14 @@ mod tests {
     ) -> Building {
         let economy_binding =
             resolve_building_economy_profile_binding(&allocator.registry, asset_id);
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        let mut resource_inventory = vec![0.0; catalog.resource_count()];
+        if stock > 0.0
+            && let Some(profile) = catalog.profile_by_runtime_id(economy_binding.runtime_id)
+            && let Some(output_port) = profile.outputs.first()
+        {
+            resource_inventory[output_port.resource_runtime_id as usize - 1] = stock;
+        }
         Building {
             center_x,
             center_y: 10.0,
@@ -763,8 +808,7 @@ mod tests {
             broken: false,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
-            stock,
-            input_stock: 0.0,
+            resource_inventory,
             revenue: 0.0,
             operating_budget: budget,
             utility_service_available: utility,
@@ -877,18 +921,28 @@ mod tests {
 
         assert_eq!(shipments.shipments.len(), 1);
         assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_LOCAL);
-        assert_eq!(allocator.buildings[1].stock, 100.0);
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        let household_supplies = catalog
+            .resource_runtime_id_for_id("household_supplies")
+            .expect("household supplies resource");
+        let staple_food = catalog
+            .resource_runtime_id_for_id("staple_food")
+            .expect("staple food resource");
+        assert_eq!(
+            allocator.buildings[1].inventory_units(household_supplies),
+            100.0
+        );
 
         shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
-        assert!(allocator.buildings[1].input_stock > 0.0);
-        assert!(allocator.buildings[0].stock < 300.0);
+        assert!(allocator.buildings[1].inventory_units(staple_food) > 0.0);
+        assert!(allocator.buildings[0].inventory_units(staple_food) < 300.0);
         assert!(allocator.buildings[0].revenue > 0.0);
         assert!(
             shipments
                 .shipments
                 .iter()
-                .all(|shipment| shipment.resource_type == RESOURCE_STAPLE_FOOD)
+                .all(|shipment| shipment.resource_runtime_id == staple_food)
         );
     }
 
@@ -926,7 +980,11 @@ mod tests {
 
         shipments.hourly_tick(&mut allocator, &network, &graph, 480);
         assert!(shipments.shipments.is_empty());
-        assert!(allocator.buildings[0].input_stock > 0.0);
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        let staple_food = catalog
+            .resource_runtime_id_for_id("staple_food")
+            .expect("staple food resource");
+        assert!(allocator.buildings[0].inventory_units(staple_food) > 0.0);
     }
 
     #[test]
@@ -964,7 +1022,8 @@ mod tests {
             .profile_for_id("grocery_basic")
             .expect("grocery starter profile");
         assert!(shipments.shipments[0].amount >= grocery.min_shipment_units);
-        assert!(shipments.shipments[0].amount < grocery.inventory_target_units());
+        let grocery_input = grocery.inputs.first().expect("grocery input port");
+        assert!(shipments.shipments[0].amount < grocery.inventory_target_units_for(grocery_input));
         assert!(allocator.buildings[0].operating_budget <= 0.001);
     }
 
@@ -997,6 +1056,10 @@ mod tests {
         shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
         assert!(shipments.shipments.is_empty());
-        assert_eq!(allocator.buildings[0].input_stock, 0.0);
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        let staple_food = catalog
+            .resource_runtime_id_for_id("staple_food")
+            .expect("staple food resource");
+        assert_eq!(allocator.buildings[0].inventory_units(staple_food), 0.0);
     }
 }
