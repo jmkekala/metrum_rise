@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 21;
+pub const SAVE_VERSION: i64 = 22;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -24,7 +24,8 @@ CREATE TABLE map_config(
 CREATE TABLE time_state(
     time_elapsed REAL NOT NULL,
     speed_multiplier REAL NOT NULL,
-    current_day INTEGER NOT NULL,
+    day_index INTEGER NOT NULL,
+    minute_of_day INTEGER NOT NULL,
     seconds_per_day REAL NOT NULL,
     agent_sim_time REAL NOT NULL
 );
@@ -139,7 +140,7 @@ CREATE TABLE buildings(
     revenue REAL NOT NULL,
     operating_budget REAL NOT NULL,
     utility_service_available INTEGER NOT NULL,
-    shipment_cooldown_days INTEGER NOT NULL,
+    shipment_cooldown_hours INTEGER NOT NULL,
     width INTEGER NOT NULL,
     depth INTEGER NOT NULL,
     asset_id TEXT NOT NULL,
@@ -157,12 +158,13 @@ CREATE TABLE households(
     consumption_rate REAL NOT NULL,
     stock_days REAL NOT NULL,
     replenishment_state INTEGER NOT NULL,
-    cooldown_days INTEGER NOT NULL,
+    cooldown_hours INTEGER NOT NULL,
     reserved_store_building_id INTEGER NOT NULL,
     reserved_amount REAL NOT NULL,
     reserved_total_cost REAL NOT NULL,
-    pickup_eta_days INTEGER NOT NULL,
-    stay_failure_days INTEGER NOT NULL
+    pickup_eta_hours INTEGER NOT NULL,
+    stay_failure_days INTEGER NOT NULL,
+    replenishment_offset_hours INTEGER NOT NULL
 );
 CREATE TABLE shipments(
     shipment_id INTEGER PRIMARY KEY,
@@ -175,7 +177,7 @@ CREATE TABLE shipments(
     carrier_class INTEGER NOT NULL,
     status INTEGER NOT NULL,
     total_cost REAL NOT NULL,
-    eta_days INTEGER NOT NULL
+    eta_hours INTEGER NOT NULL
 );
 CREATE TABLE agents(
     agent_id INTEGER PRIMARY KEY,
@@ -205,6 +207,9 @@ CREATE TABLE agents(
     happiness REAL NOT NULL,
     money REAL NOT NULL,
     journey_start_time REAL NOT NULL,
+    schedule_seed INTEGER NOT NULL,
+    cached_commute_minutes INTEGER NOT NULL,
+    next_commute_refresh_time REAL NOT NULL,
     has_car INTEGER NOT NULL,
     vehicle_type INTEGER NOT NULL,
     current_path_index INTEGER NOT NULL

@@ -1815,8 +1815,8 @@ from the current partial implementation, not a claim that every earlier phase is
 Current status summary:
 
 - Phase 1 is complete in the live runtime.
-- Phase 2 is partially implemented.
-- Phase 3 is partially implemented.
+- Phase 2 is complete in the live runtime.
+- Phase 3 is complete in the live runtime.
 - Phase 4 is partially implemented.
 - Phase 5 is not started in a meaningful runtime form.
 - Phase 6 is not started in its intended authored/runtime form.
@@ -1825,12 +1825,10 @@ Current status summary:
 
 Recommended continuation order from the current runtime:
 
-1. finish the remaining Phase 2 timing and schedule-contract work
-2. finish Phase 3 authored `economy_profile` to runtime resolution
-3. finish Phase 4 generalized inventories and freight
-4. then land Phase 5 treasury and fiscal settlement
-5. then land Phase 6 utility/service runtime actors
-6. keep Phase 8 cleanup running alongside those phases instead of treating it as one final isolated pass
+1. finish Phase 4 generalized inventories and freight
+2. then land Phase 5 treasury and fiscal settlement
+3. then land Phase 6 utility/service runtime actors
+4. keep Phase 8 cleanup running alongside those phases instead of treating it as one final isolated pass
 
 ### Phase 1 - Stabilize the current starter loop
 
@@ -1855,11 +1853,15 @@ Goal: keep the already-landed economy slice small, testable, and worth building 
 
 Current status:
 
-- partially implemented
-- the daily economy-settlement to daily-demand handoff now exists and runs in a stable order
-- the full authored operational clock, `minute_of_day`-driven schedule windows, and broader
-  stable-offset timing contract are not fully implemented yet
-- this is the next economy phase that still needs focused runtime work
+- complete
+- runtime time now persists `day_index` plus `minute_of_day` instead of the old coarse day-only
+  handoff
+- household replenishment, building production, utility spending, and freight now run on authored
+  operational-hour cadence derived from the shared minute clock
+- workplace trips now read authored work windows and stable per-agent offsets instead of relying on
+  one implicit global workday
+- commute estimates are cached and periodically refreshed on the agent hot path rather than opened
+  every tick
 
 Goal: give labor, deliveries, and later school or service timing one deterministic time base before more systems depend on it.
 
@@ -1872,11 +1874,15 @@ Goal: give labor, deliveries, and later school or service timing one determinist
 
 Current status:
 
-- partially implemented
-- `economy/profiles.toml` already loads and baseline viability tuning is now runtime-authored
-- some starter rates, buffers, and economy-side gates already read authored data
-- the larger goal of resolving authored `economy_profile` references into general compiled runtime
-  production behavior is not finished yet
+- complete
+- asset-side `economy_profile` references now resolve into a compiled runtime economy catalog during
+  placement, level changes, and save/load
+- live buildings now carry derived runtime `economy_profile` bindings and enter explicit
+  `economy_broken` state when authored profiles are missing or unsupported
+- starter work schedules, freight timing, wages, prices, throughput, reorder thresholds, and
+  viability gates now read authored economy-profile data instead of broad-zone starter constants
+- the current runtime catalog still executes only the shipped starter one-input-or-output profile
+  slice; broader multi-resource chains remain Phase 4 work rather than unresolved Phase 3 drift
 
 Goal: stop duplicating economy rules between runtime code, packs, and the editor data model.
 
@@ -1891,6 +1897,10 @@ Current status:
 - partially implemented
 - the runtime already has household stock, building stock, and the starter industrial input/output
   buffers
+- the compiled runtime catalog currently supports one starter input port plus one starter output
+  port per live profile, and the shipped `food_processor_basic` starter producer is intentionally
+  inputless, so industrial input-coverage gating exists in runtime but is not yet exercised by a
+  built-in input-consuming industrial profile
 - it does not yet have fully generalized resource-typed building inventories, per-resource
   reservations, or multiple authored production chains running through one shared runtime model
 

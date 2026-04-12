@@ -58,7 +58,11 @@ mod tests {
                 residents_capacity,
                 worker_capacity,
                 service_class: None,
-                economy_profile: None,
+                economy_profile: match zone {
+                    ZoneClass::Commercial => Some("grocery_basic".to_owned()),
+                    ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
+                    _ => None,
+                },
                 preview_scale: Some(1.0),
             }),
             prop: None,
@@ -118,12 +122,14 @@ mod tests {
             asset_id: asset_id.to_owned(),
             level: 1,
             broken: false,
+            economy_profile_runtime_id: 0,
+            economy_broken: false,
             stock: 0.0,
             input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: false,
-            shipment_cooldown_days: 0,
+            shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         }
@@ -199,7 +205,7 @@ mod tests {
         agents.access_flags[a_id] = ACCESS_PLAN_VALID;
 
         for _ in 0..500 {
-            agents.tick(&mut allocator, &mut network, &mut graph, 0.1);
+            agents.tick(&mut allocator, &mut network, &mut graph, 0.1, 0, 0);
             if agents.transit[a_id] == TRANSIT_NETWORK {
                 break;
             }

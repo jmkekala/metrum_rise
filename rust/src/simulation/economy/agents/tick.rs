@@ -7,6 +7,10 @@ use super::{
     TRANSIT_IMMIGRATING, TRANSIT_IN_BUILDING, TRANSIT_INTERSECTION, TRANSIT_NETWORK,
 };
 use crate::simulation::buildings::allocator::{BuildingAllocator, BuildingEntrance};
+use crate::simulation::economy::definitions::{
+    OperationalClockRuntimeTuning, RuntimeEconomyCatalog, WorkTimingProfile,
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{TransitFlags, VehicleFrontageAccess};
@@ -1082,6 +1086,174 @@ fn plan_building_origin_trip(
     })
 }
 
+fn estimate_building_origin_trip_minutes(
+    current_building: usize,
+    target_building: usize,
+    has_car: bool,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+) -> Option<u16> {
+    if current_building >= allocator.buildings.len()
+        || target_building >= allocator.buildings.len()
+        || current_building >= allocator.entrances.len()
+        || target_building >= allocator.entrances.len()
+    {
+        return None;
+    }
+
+    let origin_entrance = &allocator.entrances[current_building];
+    let destination_entrance = &allocator.entrances[target_building];
+    let walk_legal =
+        origin_entrance.foot_lane_fwd != usize::MAX || origin_entrance.foot_lane_bkw != usize::MAX;
+    let walk_legal = walk_legal
+        && (destination_entrance.foot_lane_fwd != usize::MAX
+            || destination_entrance.foot_lane_bkw != usize::MAX);
+    let car_legal = has_car
+        && (origin_entrance.car_lane_fwd != usize::MAX
+            || origin_entrance.car_lane_bkw != usize::MAX)
+        && (destination_entrance.car_lane_fwd != usize::MAX
+            || destination_entrance.car_lane_bkw != usize::MAX);
+
+    let mut best_cost_s: Option<f32> = None;
+    for mode in [MODE_WALK, MODE_CAR] {
+        if mode == MODE_CAR && !car_legal {
+            continue;
+        }
+        if mode == MODE_WALK && !walk_legal {
+            continue;
+        }
+        for &(origin_rank, destination_rank) in &[(0_u8, 0_u8), (0, 1), (1, 0), (1, 1)] {
+            if let Some(candidate) = evaluate_planned_trip_candidate(
+                mode,
+                origin_rank,
+                destination_rank,
+                origin_entrance,
+                destination_entrance,
+                transit_network,
+                graph,
+                pathfind_count,
+            ) {
+                if best_cost_s.is_none_or(|best| candidate.total_cost_s < best) {
+                    best_cost_s = Some(candidate.total_cost_s);
+                }
+            }
+        }
+    }
+
+    best_cost_s.map(|seconds| seconds.ceil().clamp(1.0, u16::MAX as f32) as u16)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn maybe_schedule_work_trip(
+    current_building: usize,
+    home_building: usize,
+    work_building: usize,
+    has_car: bool,
+    schedule_seed: u32,
+    cached_commute_minutes: &mut u16,
+    next_commute_refresh_time: &mut f32,
+    sim_time: f32,
+    day_index: u32,
+    minute_of_day: u16,
+    allocator: &BuildingAllocator,
+    transit_network: &TransitNetwork,
+    graph: &RegionGraph,
+    pathfind_count: &AtomicU32,
+    operational_clock: &OperationalClockRuntimeTuning,
+    economy_catalog: &RuntimeEconomyCatalog,
+) -> Option<(usize, u8)> {
+    if home_building == usize::MAX || work_building == usize::MAX {
+        return None;
+    }
+    let work_building_ref = allocator.buildings.get(work_building)?;
+    let work_profile = economy_catalog
+        .profile_by_runtime_id(work_building_ref.economy_profile_runtime_id)
+        .and_then(|profile| profile.work_schedule_profile.as_deref())
+        .and_then(|profile_id| {
+            operational_clock
+                .work_profiles
+                .iter()
+                .find(|profile| profile.id == profile_id)
+        })
+        .or_else(|| {
+            let current_zone = work_building_ref.zone_type;
+            operational_clock.work_profile_for_zone_type(match current_zone {
+                crate::simulation::grid::zoning::ZoneType::Commercial => "commercial",
+                crate::simulation::grid::zoning::ZoneType::Industrial => "industrial",
+                crate::simulation::grid::zoning::ZoneType::Residential
+                | crate::simulation::grid::zoning::ZoneType::Office
+                | crate::simulation::grid::zoning::ZoneType::Mixed
+                | crate::simulation::grid::zoning::ZoneType::None => return None,
+            })
+        })?;
+
+    if (*cached_commute_minutes == 0 || sim_time >= *next_commute_refresh_time)
+        && let Some(estimate) = estimate_building_origin_trip_minutes(
+            home_building,
+            work_building,
+            has_car,
+            allocator,
+            transit_network,
+            graph,
+            pathfind_count,
+        )
+    {
+        *cached_commute_minutes = estimate;
+        *next_commute_refresh_time =
+            sim_time + f32::from(operational_clock.travel_estimate_refresh_minutes);
+    }
+    let commute_minutes = (*cached_commute_minutes).max(1);
+    let shift_index = (schedule_seed % work_profile.arrival_windows.len() as u32) as usize;
+    let arrival_window = &work_profile.arrival_windows[shift_index];
+    let arrival_minute = stable_minute_in_window(work_profile, arrival_window, schedule_seed);
+    let arrival_departure_minute = arrival_minute
+        .saturating_sub(commute_minutes.saturating_add(work_profile.reliability_buffer_minutes));
+    let departure_window = &work_profile.departure_windows[shift_index];
+    let departure_minute = stable_minute_in_window(
+        work_profile,
+        departure_window,
+        schedule_seed.rotate_left(11),
+    );
+
+    if current_building == home_building
+        && minute_reached_schedule(
+            minute_of_day,
+            arrival_departure_minute,
+            arrival_window.end_minute,
+        )
+    {
+        return Some((work_building, 1));
+    }
+    if current_building == work_building
+        && minute_reached_schedule(minute_of_day, departure_minute, departure_window.end_minute)
+    {
+        return Some((home_building, 0));
+    }
+
+    let _ = day_index;
+    None
+}
+
+fn stable_minute_in_window(
+    profile: &WorkTimingProfile,
+    window: &crate::simulation::economy::definitions::MinuteWindow,
+    schedule_seed: u32,
+) -> u16 {
+    let span = window.end_minute.saturating_sub(window.start_minute).max(1);
+    let mixed_seed = schedule_seed ^ profile.id.len() as u32;
+    window.start_minute + (mixed_seed % u32::from(span)) as u16
+}
+
+fn minute_reached_schedule(
+    minute_of_day: u16,
+    scheduled_minute: u16,
+    window_end_minute: u16,
+) -> bool {
+    minute_of_day >= scheduled_minute && minute_of_day < window_end_minute
+}
+
 fn plan_immigration_trip(
     border_node: u32,
     target_building: usize,
@@ -1265,6 +1437,9 @@ pub(crate) struct MovementSlices {
     transit: RawSlice<u8>,
     happiness: RawSlice<f32>,
     jstart: RawSlice<f32>,
+    schedule_seed: RawSlice<u32>,
+    cached_commute_minutes: RawSlice<u16>,
+    next_commute_refresh_time: RawSlice<f32>,
     cur_b: RawSlice<usize>,
     tgt_b: RawSlice<usize>,
     planned_tgt_b: RawSlice<usize>,
@@ -1297,6 +1472,8 @@ impl AgentSystem {
         transit_network: &mut TransitNetwork,
         graph: &mut RegionGraph,
         delta: f32,
+        day_index: u32,
+        minute_of_day: u16,
     ) {
         self.sim_time += delta;
         let n = self.agents.len();
@@ -1461,6 +1638,9 @@ impl AgentSystem {
             transit: RawSlice::new(&mut self.agents.transit),
             happiness: RawSlice::new(&mut self.agents.happiness),
             jstart: RawSlice::new(&mut self.agents.journey_start_time),
+            schedule_seed: RawSlice::new(&mut self.agents.schedule_seed),
+            cached_commute_minutes: RawSlice::new(&mut self.agents.cached_commute_minutes),
+            next_commute_refresh_time: RawSlice::new(&mut self.agents.next_commute_refresh_time),
             cur_b: RawSlice::new(&mut self.agents.current_building),
             tgt_b: RawSlice::new(&mut self.agents.target_building),
             planned_tgt_b: RawSlice::new(&mut self.agents.planned_target_building),
@@ -1489,12 +1669,18 @@ impl AgentSystem {
         let lane_buckets = &self.lane_buckets;
         let lane_attach_claimed = &self.lane_attach_claimed;
         let sim_time = self.sim_time;
+        let economy_tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let economy_catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
 
         dispatch_agents(n, |i| unsafe {
             Self::process_agent_movement(
                 i,
                 delta,
                 sim_time,
+                day_index,
+                minute_of_day,
                 allocator,
                 transit_network,
                 graph,
@@ -1502,6 +1688,8 @@ impl AgentSystem {
                 conn_occupied,
                 lane_buckets,
                 lane_attach_claimed,
+                &economy_tuning.operational_clock,
+                &economy_catalog,
                 &slices,
             );
         });
@@ -1660,6 +1848,8 @@ impl AgentSystem {
         i: usize,
         delta: f32,
         sim_time: f32,
+        day_index: u32,
+        minute_of_day: u16,
         allocator: &BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
@@ -1667,6 +1857,8 @@ impl AgentSystem {
         conn_occupied: &Vec<bool>,
         lane_buckets: &Vec<Vec<(f32, usize)>>,
         lane_attach_claimed: &Vec<AtomicBool>,
+        operational_clock: &OperationalClockRuntimeTuning,
+        economy_catalog: &RuntimeEconomyCatalog,
         slices: &MovementSlices,
     ) {
         let mut rng = rand::thread_rng();
@@ -1686,6 +1878,9 @@ impl AgentSystem {
             let s_plan_b = &slices.planned_tgt_b;
             let s_has_car = &slices.has_car;
             let s_jstart = &slices.jstart;
+            let s_schedule_seed = &slices.schedule_seed;
+            let s_cached_commute_minutes = &slices.cached_commute_minutes;
+            let s_next_commute_refresh_time = &slices.next_commute_refresh_time;
             let s_path = &slices.path;
             let s_path_idx = &slices.path_idx;
             let s_plan_attach_n = &slices.planned_attach_n;
@@ -1716,9 +1911,36 @@ impl AgentSystem {
 
             match *s_transit.get(i) {
                 TRANSIT_IN_BUILDING => {
+                    let curr_bldg = *s_cur_b.get(i);
+                    if *s_plan_b.get(i) == usize::MAX
+                        && curr_bldg != usize::MAX
+                        && curr_bldg < allocator.buildings.len()
+                    {
+                        if let Some((target_building, activity)) = maybe_schedule_work_trip(
+                            curr_bldg,
+                            *s_home.get(i),
+                            *s_work.get(i),
+                            *s_has_car.get(i),
+                            *s_schedule_seed.get(i),
+                            s_cached_commute_minutes.get_mut(i),
+                            s_next_commute_refresh_time.get_mut(i),
+                            sim_time,
+                            day_index,
+                            minute_of_day,
+                            allocator,
+                            transit_network,
+                            graph,
+                            pathfind_count,
+                            operational_clock,
+                            economy_catalog,
+                        ) {
+                            *s_plan_b.get_mut(i) = target_building;
+                            *s_plan_act.get_mut(i) = activity;
+                        }
+                    }
+
                     let next_bldg = *s_plan_b.get(i);
                     let next_act = *s_plan_act.get(i);
-                    let curr_bldg = *s_cur_b.get(i);
                     if next_bldg == usize::MAX
                         || next_bldg >= allocator.buildings.len()
                         || curr_bldg == usize::MAX

@@ -1,3 +1,86 @@
+[runtime_tuning.operational_clock]
+seconds_per_day = 1440.0
+travel_estimate_refresh_minutes = 360
+household_replenishment_check_interval_hours = 6
+household_pickup_eta_hours = 1
+household_replenishment_retry_cooldown_hours = 1
+shipment_retry_cooldown_hours = 1
+
+[runtime_tuning.operational_clock.work_profile_by_zone_type]
+commercial = "daytime_work"
+industrial = "three_shift_work"
+
+[runtime_tuning.operational_clock.freight_profile_by_zone_type]
+commercial = "daytime_receive"
+industrial = "always_open"
+
+[[runtime_tuning.operational_clock.work_profiles]]
+id = "daytime_work"
+reliability_buffer_minutes = 15
+
+[[runtime_tuning.operational_clock.work_profiles.arrival_windows]]
+start_minute = 420
+end_minute = 540
+
+[[runtime_tuning.operational_clock.work_profiles.departure_windows]]
+start_minute = 960
+end_minute = 1080
+
+[[runtime_tuning.operational_clock.work_profiles]]
+id = "three_shift_work"
+reliability_buffer_minutes = 10
+
+[[runtime_tuning.operational_clock.work_profiles.arrival_windows]]
+start_minute = 330
+end_minute = 390
+
+[[runtime_tuning.operational_clock.work_profiles.arrival_windows]]
+start_minute = 810
+end_minute = 870
+
+[[runtime_tuning.operational_clock.work_profiles.arrival_windows]]
+start_minute = 1290
+end_minute = 1350
+
+[[runtime_tuning.operational_clock.work_profiles.departure_windows]]
+start_minute = 780
+end_minute = 840
+
+[[runtime_tuning.operational_clock.work_profiles.departure_windows]]
+start_minute = 1260
+end_minute = 1320
+
+[[runtime_tuning.operational_clock.work_profiles.departure_windows]]
+start_minute = 300
+end_minute = 360
+
+[[runtime_tuning.operational_clock.freight_profiles]]
+id = "always_open"
+outside_window_eta_penalty_minutes = 0
+outside_window_cost_multiplier = 1.0
+
+[[runtime_tuning.operational_clock.freight_profiles.preferred_windows]]
+start_minute = 0
+end_minute = 1440
+
+[[runtime_tuning.operational_clock.freight_profiles]]
+id = "daytime_receive"
+outside_window_eta_penalty_minutes = 60
+outside_window_cost_multiplier = 1.1
+
+[[runtime_tuning.operational_clock.freight_profiles.preferred_windows]]
+start_minute = 420
+end_minute = 1080
+
+[[runtime_tuning.operational_clock.freight_profiles]]
+id = "early_morning_preferred"
+outside_window_eta_penalty_minutes = 60
+outside_window_cost_multiplier = 1.05
+
+[[runtime_tuning.operational_clock.freight_profiles.preferred_windows]]
+start_minute = 240
+end_minute = 480
+
 [runtime_tuning.households]
 residential_move_in_min_reserve_days_by_level = [0.0, 6.0, 12.0]
 residential_stay_min_reserve_days_by_level = [0.0, 4.0, 8.0]
@@ -25,11 +108,13 @@ base_rate_units_per_day = 160.0
 wage_min_currency_per_day = 90.0
 wage_max_currency_per_day = 110.0
 unit_price_currency = 4.0
-stock_target_days = 0.0
+stock_target_days = 4.0
 reorder_threshold_days = 0.0
 critical_threshold_days = 0.0
 min_shipment_units = 0.0
 consumption_rate_per_resident = 0.0
+work_schedule_profile = "three_shift_work"
+freight_timing_profile = "always_open"
 inputs = []
 
 [[profiles.outputs]]
@@ -51,6 +136,8 @@ reorder_threshold_days = 2.0
 critical_threshold_days = 0.5
 min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
+work_schedule_profile = "daytime_work"
+freight_timing_profile = "daytime_receive"
 
 [[profiles.inputs]]
 resource = "staple_food"

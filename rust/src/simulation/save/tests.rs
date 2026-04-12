@@ -107,7 +107,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     let mut time = TimeSystem::new();
     time.speed_multiplier = 2.0;
     time.time_elapsed = 1.25;
-    time.current_day = 3;
+    time.day_index = 3;
+    time.minute_of_day = 480;
     time.seconds_per_day = 4.0;
     let mut terrain = TerrainSystem::new(config.zone_grid_width(), config.zone_grid_height());
     terrain.source_data.fill(1.0);
@@ -187,12 +188,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         asset_id: residential_asset,
         level: 1,
         broken: false,
+        economy_profile_runtime_id: 0,
+        economy_broken: false,
         stock: 0.0,
         input_stock: 42.0,
         revenue: 0.0,
         operating_budget: 500.0,
         utility_service_available: false,
-        shipment_cooldown_days: 0,
+        shipment_cooldown_hours: 0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -210,12 +213,13 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         consumption_rate: 1.0,
         stock_days: 1.5,
         replenishment_state: REPLENISHMENT_STABLE,
-        cooldown_days: 0,
+        cooldown_hours: 0,
         reserved_store_building_id: 0,
         reserved_amount: 2.5,
         reserved_total_cost: 15.0,
-        pickup_eta_days: 1,
+        pickup_eta_hours: 1,
         stay_failure_days: 1,
+        replenishment_offset_hours: 0,
     });
     let mut logistics = ShipmentSystem::new();
     logistics.shipments.push(Shipment {
@@ -228,7 +232,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         carrier_class: CARRIER_TRUCK,
         status: SHIPMENT_IN_TRANSIT,
         total_cost: 640.0,
-        eta_days: 1,
+        eta_hours: 1,
     });
     let mut network_sys = TransitNetwork::new();
     network_sys.lane_system.rebuild(&mut graph);
@@ -263,6 +267,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             happiness: 88.0,
             money: 123.0,
             journey_start_time: 12.5,
+            schedule_seed: 1,
+            cached_commute_minutes: 12,
+            next_commute_refresh_time: 24.0,
             has_car: true,
             vehicle_type: 0,
             current_path_index: 1,
@@ -299,6 +306,9 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             happiness: 77.0,
             money: 55.0,
             journey_start_time: 6.0,
+            schedule_seed: 2,
+            cached_commute_minutes: 8,
+            next_commute_refresh_time: 18.0,
             has_car: false,
             vehicle_type: 0,
             current_path_index: 0,
@@ -332,7 +342,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     fs::remove_file(&path).ok();
 
     assert_eq!(loaded.config.width_m, config.width_m);
-    assert_eq!(loaded.time.current_day, time.current_day);
+    assert_eq!(loaded.time.day_index, time.day_index);
+    assert_eq!(loaded.time.minute_of_day, time.minute_of_day);
     assert_eq!(loaded.terrain.source_data, terrain.source_data);
     assert_eq!(loaded.water.depth, water.depth);
     assert_eq!(loaded.demand.residential, demand.residential);
@@ -377,7 +388,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     );
     assert_eq!(loaded.households.households[0].reserved_amount, 2.5);
     assert_eq!(loaded.households.households[0].reserved_total_cost, 15.0);
-    assert_eq!(loaded.households.households[0].pickup_eta_days, 1);
+    assert_eq!(loaded.households.households[0].pickup_eta_hours, 1);
     assert_eq!(loaded.households.households[0].stay_failure_days, 1);
     assert_eq!(loaded.agents.len(), 2);
     assert_eq!(loaded.agents.current_path[0], vec![0, 1]);

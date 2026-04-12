@@ -4,7 +4,7 @@ use crate::assets::ZoneClass;
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, EdgeOccupancy, baseline_private_zone_slot,
-    zone_class_to_zone_type, zone_type_to_zone_class,
+    resolve_building_economy_profile_binding, zone_class_to_zone_type, zone_type_to_zone_class,
 };
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSpawnCandidate};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
@@ -243,8 +243,15 @@ impl BuildingAllocator {
         if !building.is_zoned_private() {
             return None;
         }
+        let zone_type = zone_class_to_zone_type(building.zone_type?);
+        let economy_binding = resolve_building_economy_profile_binding(&self.registry, asset_id);
+        if matches!(zone_type, ZoneType::Commercial | ZoneType::Industrial)
+            && (economy_binding.economy_broken || economy_binding.runtime_id == 0)
+        {
+            return None;
+        }
         Some(AssetPlacementParams {
-            zone_type: zone_class_to_zone_type(building.zone_type?),
+            zone_type,
             density: building.density_key()?.to_owned(),
             tags: entry.manifest.tags.clone(),
             width_cells: building.lot_width_cells as usize,
@@ -440,6 +447,8 @@ impl BuildingAllocator {
     }
 
     fn place_building_instance(&mut self, placement: ResolvedPlacement) -> usize {
+        let economy_binding =
+            resolve_building_economy_profile_binding(&self.registry, &placement.asset_id);
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             zone_type: placement.zone_type,
@@ -459,12 +468,14 @@ impl BuildingAllocator {
             asset_id: placement.asset_id,
             level: placement.initial_level,
             broken: false,
+            economy_profile_runtime_id: economy_binding.runtime_id,
+            economy_broken: economy_binding.economy_broken,
             stock: 0.0,
             input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 0.0,
             utility_service_available: false,
-            shipment_cooldown_days: 0,
+            shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
             abandoned_timer: 0,

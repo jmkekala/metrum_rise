@@ -17,6 +17,8 @@ mod placement;
 mod tests;
 
 use crate::assets::{AssetRegistry, ZoneClass};
+use crate::debug_log;
+use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::VehicleFrontageAccess;
@@ -87,6 +89,10 @@ pub struct Building {
     pub level: u8,
     /// If true, the asset was missing from the registry during load.
     pub broken: bool,
+    /// Compact runtime economy-profile id resolved from the asset's authored profile reference.
+    pub economy_profile_runtime_id: u16,
+    /// True when the asset references an unresolved or unsupported economy profile.
+    pub economy_broken: bool,
     /// Current on-site stock buffer for the first-pass economy loop.
     pub stock: f32,
     /// Current industrial input stock buffer for the first-pass starter chain.
@@ -97,8 +103,8 @@ pub struct Building {
     pub operating_budget: f32,
     /// Whether the building has resolved utility availability for the current daily pass.
     pub utility_service_available: bool,
-    /// Remaining daily cooldown steps before this building may open another freight request.
-    pub shipment_cooldown_days: u8,
+    /// Remaining hourly cooldown steps before this building may open another freight request.
+    pub shipment_cooldown_hours: u16,
     /// True when the current painted zoning profile is incompatible and the building is waiting
     /// for the rezoning grace timer to expire.
     pub pending_redevelopment: bool,
@@ -167,6 +173,69 @@ pub struct BuildingAllocator {
     pub registry: AssetRegistry,
     /// Derived building entrance/access cache keyed by building index.
     pub(crate) entrances: Vec<BuildingEntrance>,
+}
+
+/// Derived runtime binding from an asset-side `economy_profile` reference.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct EconomyProfileBinding {
+    /// Compact runtime profile id, or `0` when no runtime profile is bound.
+    pub runtime_id: u16,
+    /// True when the asset referenced an economy profile that the live runtime cannot execute.
+    pub economy_broken: bool,
+}
+
+/// Resolves the live runtime economy-profile binding for one asset id.
+pub(crate) fn resolve_building_economy_profile_binding(
+    registry: &AssetRegistry,
+    asset_id: &str,
+) -> EconomyProfileBinding {
+    let Some(profile_id) = registry.economy_profile(asset_id) else {
+        return EconomyProfileBinding::default();
+    };
+    let catalog = match load_runtime_economy_catalog() {
+        Ok(catalog) => catalog,
+        Err(err) => {
+            debug_log!(
+                "economy",
+                "asset_id={} economy profile '{}' could not be resolved because the runtime catalog failed to load: {}",
+                asset_id,
+                profile_id,
+                err
+            );
+            return EconomyProfileBinding {
+                runtime_id: 0,
+                economy_broken: true,
+            };
+        }
+    };
+    let Some(profile) = catalog.profile_for_id(profile_id) else {
+        debug_log!(
+            "economy",
+            "asset_id={} references missing economy profile '{}'; building will run economy-broken",
+            asset_id,
+            profile_id
+        );
+        return EconomyProfileBinding {
+            runtime_id: 0,
+            economy_broken: true,
+        };
+    };
+    if !profile.starter_runtime_supported {
+        debug_log!(
+            "economy",
+            "asset_id={} references unsupported runtime economy profile '{}'; building will run economy-broken",
+            asset_id,
+            profile_id
+        );
+        return EconomyProfileBinding {
+            runtime_id: 0,
+            economy_broken: true,
+        };
+    }
+    EconomyProfileBinding {
+        runtime_id: profile.runtime_id,
+        economy_broken: false,
+    }
 }
 
 /// Tracks which frontage columns along a road edge are claimed by placed buildings.
@@ -306,7 +375,7 @@ impl BuildingAllocator {
     /// Unresolved assets or undeclared capacities count as zero.
     pub fn building_capacity(&self, building_idx: usize) -> u32 {
         let b = &self.buildings[building_idx];
-        if b.broken {
+        if b.broken || b.economy_broken {
             return 0;
         }
         self.registry.capacity(&b.asset_id)
@@ -319,7 +388,7 @@ impl BuildingAllocator {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
         };
-        if b.broken {
+        if b.broken || b.economy_broken {
             return 0;
         }
         self.registry.resident_capacity(&b.asset_id)
@@ -332,7 +401,7 @@ impl BuildingAllocator {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
         };
-        if b.broken {
+        if b.broken || b.economy_broken {
             return 0;
         }
         self.registry.worker_capacity(&b.asset_id)

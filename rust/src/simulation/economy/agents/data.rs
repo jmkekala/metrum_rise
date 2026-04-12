@@ -45,6 +45,12 @@ pub struct Agent {
     pub money: f32,
     /// Internal clock for journey duration calculation.
     pub journey_start_time: f32,
+    /// Stable authored schedule seed used for repeatable departure offsets.
+    pub schedule_seed: u32,
+    /// Cached one-way home-to-work estimate in authored minutes.
+    pub cached_commute_minutes: u16,
+    /// Earliest operational time when the cached commute estimate may be refreshed.
+    pub next_commute_refresh_time: f32,
 
     /// Building the agent is currently inside. `usize::MAX` = on the road.
     pub current_building: usize,
@@ -180,6 +186,7 @@ impl AgentSystem {
     /// Spawns one agent already housed inside a building.
     pub fn spawn_housed_agent(&mut self, home: usize, init_x: f32, init_y: f32) -> usize {
         let mut rng = rand::thread_rng();
+        let schedule_seed = stable_schedule_seed(home, self.agents.len() as u32);
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
@@ -191,6 +198,9 @@ impl AgentSystem {
             happiness: 50.0,
             money: 100.0,
             journey_start_time: self.sim_time,
+            schedule_seed,
+            cached_commute_minutes: 0,
+            next_commute_refresh_time: 0.0,
             current_building: home,
             target_building: usize::MAX,
             planned_target_building: usize::MAX,
@@ -233,6 +243,7 @@ impl AgentSystem {
         init_y: f32,
     ) -> usize {
         let mut rng = rand::thread_rng();
+        let schedule_seed = stable_schedule_seed(home, self.agents.len() as u32);
         let agent = Agent {
             home_building: home,
             household_id: usize::MAX,
@@ -244,6 +255,9 @@ impl AgentSystem {
             happiness: 50.0,
             money: 100.0,
             journey_start_time: self.sim_time,
+            schedule_seed,
+            cached_commute_minutes: 0,
+            next_commute_refresh_time: 0.0,
             current_building: usize::MAX,
             target_building: home,
             planned_target_building: usize::MAX,
@@ -535,6 +549,13 @@ impl AgentSystem {
     }
 }
 
+fn stable_schedule_seed(home_building: usize, spawn_index: u32) -> u32 {
+    let mixed = (home_building as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(u64::from(spawn_index).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+    ((mixed >> 32) as u32) ^ (mixed as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{TRANSIT_IN_BUILDING, TRANSIT_NETWORK};
@@ -627,6 +648,9 @@ mod tests {
             happiness: 50.0,
             money: 100.0,
             journey_start_time: 0.0,
+            schedule_seed: 0,
+            cached_commute_minutes: 0,
+            next_commute_refresh_time: 0.0,
             current_building: usize::MAX,
             target_building: usize::MAX,
             planned_target_building: usize::MAX,
@@ -663,6 +687,9 @@ mod tests {
             happiness: 50.0,
             money: 100.0,
             journey_start_time: 0.0,
+            schedule_seed: 1,
+            cached_commute_minutes: 0,
+            next_commute_refresh_time: 0.0,
             current_building: usize::MAX,
             target_building: usize::MAX,
             planned_target_building: usize::MAX,
@@ -730,6 +757,9 @@ mod tests {
             happiness: 50.0,
             money: 100.0,
             journey_start_time: 0.0,
+            schedule_seed: 0,
+            cached_commute_minutes: 0,
+            next_commute_refresh_time: 0.0,
             current_building: 0,
             target_building: 0,
             planned_target_building: usize::MAX,

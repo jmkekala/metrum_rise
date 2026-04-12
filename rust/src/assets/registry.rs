@@ -177,6 +177,14 @@ impl AssetRegistry {
             .unwrap_or(0)
     }
 
+    /// Returns the authored economy-profile reference declared by a building asset.
+    pub fn economy_profile(&self, qualified_id: &str) -> Option<&str> {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .and_then(|building| building.economy_profile.as_deref())
+    }
+
     /// Returns the occupant capacity declared by a building asset's manifest.
     ///
     /// For residential assets this is `residents_capacity`; for commercial/industrial/office

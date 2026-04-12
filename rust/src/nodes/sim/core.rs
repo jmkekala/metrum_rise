@@ -138,6 +138,8 @@ pub struct RenderSnapshot {
     pub network_dirty: bool,
     /// Current simulation day.
     pub current_day: u32,
+    /// Current minute since operational midnight.
+    pub current_minute_of_day: u16,
     /// Duration of the last daily tick in milliseconds.
     pub last_tick_ms: f64,
     /// Duration of the last agent tick in microseconds.
@@ -165,6 +167,7 @@ impl Default for RenderSnapshot {
             water_dirty: true,
             network_dirty: false,
             current_day: 1,
+            current_minute_of_day: 0,
             last_tick_ms: 0.0,
             last_agent_tick_us: 0,
             pathfind_count: 0,
@@ -198,6 +201,23 @@ pub enum SimCommand {
 }
 
 impl SimCore {
+    /// Executes one coarse operational-hour economy step before the daily settlement boundary.
+    pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
+        let absolute_hour = day_index
+            .saturating_sub(1)
+            .saturating_mul(24)
+            .saturating_add(u32::from(minute_of_day / 60));
+        self.households.operational_hour_tick(
+            &mut self.agents,
+            &mut self.allocator,
+            &mut self.logistics,
+            &self.transit_network,
+            &self.region_graph,
+            absolute_hour,
+            minute_of_day,
+        );
+    }
+
     /// Executes one full economy / daily tick (called once per in-game day).
     pub fn simulate_tick_internal(&mut self) {
         let tick_start = Instant::now();
@@ -237,13 +257,8 @@ impl SimCore {
             .tick(&self.allocator, &self.region_graph, &self.config);
         self.desirability
             .tick(&self.zoning, &self.pollution, &self.noise);
-        self.households.daily_tick(
-            &mut self.agents,
-            &mut self.allocator,
-            &mut self.logistics,
-            &self.transit_network,
-            &self.region_graph,
-        );
+        self.households
+            .daily_settlement_tick(&mut self.agents, &mut self.allocator);
         self.demand.run_daily_pass(
             &self.allocator,
             &self.households,
@@ -521,7 +536,8 @@ impl SimCore {
             water_dirty: self.water_dirty,
             network_dirty: self.network_dirty,
             node_positions,
-            current_day: self.time.current_day,
+            current_day: self.time.day_index,
+            current_minute_of_day: self.time.minute_of_day,
             last_tick_ms: self.last_tick_duration,
             last_agent_tick_us: self.last_agent_tick_us,
             pathfind_count: self
@@ -689,6 +705,8 @@ pub fn run_sim_thread(
                         &mut c.transit_network,
                         &mut c.region_graph,
                         dt,
+                        c.time.day_index,
+                        c.time.minute_of_day,
                     );
                 }));
                 if let Err(e) = tick_result {
@@ -702,21 +720,44 @@ pub fn run_sim_thread(
 
                 core.last_agent_tick_us = t_agent.elapsed().as_micros() as u64;
 
-                if core.time.process_delta(TARGET_DT) {
-                    // Wrap daily tick so a panic here does not poison the mutex.
-                    // Without this, the first daily-tick panic would permanently
-                    // crash every subsequent Godot main-thread lock().unwrap() call.
-                    let daily_result =
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            core.simulate_tick_internal()
-                        }));
-                    if let Err(e) = daily_result {
-                        let msg = e
-                            .downcast_ref::<&str>()
-                            .copied()
-                            .or_else(|| e.downcast_ref::<String>().map(String::as_str))
-                            .unwrap_or("(non-string payload)");
-                        godot_error!("[sim] daily tick panicked — skipping day: {}", msg);
+                let time_advance = core.time.process_delta(TARGET_DT);
+                if time_advance.has_elapsed_minutes() {
+                    for (step_day_index, step_minute_of_day) in time_advance.iter_elapsed_minutes()
+                    {
+                        if step_minute_of_day % 60 == 0 {
+                            let hourly_result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    core.simulate_operational_hour_internal(
+                                        step_day_index,
+                                        step_minute_of_day,
+                                    )
+                                }));
+                            if let Err(e) = hourly_result {
+                                let msg = e
+                                    .downcast_ref::<&str>()
+                                    .copied()
+                                    .or_else(|| e.downcast_ref::<String>().map(String::as_str))
+                                    .unwrap_or("(non-string payload)");
+                                godot_error!(
+                                    "[sim] operational hour tick panicked — skipping hour: {}",
+                                    msg
+                                );
+                            }
+                        }
+                        if step_minute_of_day == 0 {
+                            let daily_result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    core.simulate_tick_internal()
+                                }));
+                            if let Err(e) = daily_result {
+                                let msg = e
+                                    .downcast_ref::<&str>()
+                                    .copied()
+                                    .or_else(|| e.downcast_ref::<String>().map(String::as_str))
+                                    .unwrap_or("(non-string payload)");
+                                godot_error!("[sim] daily tick panicked — skipping day: {}", msg);
+                            }
+                        }
                     }
                 }
             }

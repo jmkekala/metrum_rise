@@ -1,5 +1,6 @@
 //! Serialization for terrain, water, buildings, and zoning systems.
 
+use crate::simulation::buildings::allocator::resolve_building_economy_profile_binding;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::economy::demand::DemandSystem;
@@ -120,7 +121,7 @@ pub(super) fn save_world(
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, stock, input_stock, revenue, operating_budget, utility_service_available, shipment_cooldown_days, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, stock, input_stock, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)")?;
     for (old_bid, b) in buildings.buildings.iter().enumerate() {
         let saved_bid = maps
             .building_old_to_new
@@ -147,7 +148,7 @@ pub(super) fn save_world(
             b.revenue,
             b.operating_budget,
             i64::from(if b.utility_service_available { 1 } else { 0 }),
-            i64::from(b.shipment_cooldown_days),
+            i64::from(b.shipment_cooldown_hours),
             usize_to_i64(b.width_cells as usize)?,
             usize_to_i64(b.depth_cells as usize)?,
             &b.asset_id,
@@ -157,7 +158,7 @@ pub(super) fn save_world(
             i64::from(b.rezone_grace_days_remaining)
         ])?;
     }
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_days, stay_failure_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)")?;
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_hours, stay_failure_days, replenishment_offset_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")?;
     for (hid, household) in households.households.iter().enumerate() {
         household_stmt.execute(params![
             usize_to_i64(hid)?,
@@ -168,16 +169,17 @@ pub(super) fn save_world(
             household.consumption_rate,
             household.stock_days,
             i64::from(household.replenishment_state),
-            i64::from(household.cooldown_days),
+            i64::from(household.cooldown_hours),
             optional_building_to_db(household.reserved_store_building_id, maps)?,
             household.reserved_amount,
             household.reserved_total_cost,
-            i64::from(household.pickup_eta_days),
+            i64::from(household.pickup_eta_hours),
             i64::from(household.stay_failure_days),
+            i64::from(household.replenishment_offset_hours),
         ])?;
     }
 
-    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_type, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_days) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
+    let mut shipment_stmt = tx.prepare("INSERT INTO shipments(shipment_id, resource_type, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)")?;
     for (shipment_id, shipment) in logistics.shipments.iter().enumerate() {
         shipment_stmt.execute(params![
             usize_to_i64(shipment_id)?,
@@ -199,7 +201,7 @@ pub(super) fn save_world(
             i64::from(shipment.carrier_class),
             i64::from(shipment.status),
             shipment.total_cost,
-            i64::from(shipment.eta_days),
+            i64::from(shipment.eta_hours),
         ])?;
     }
 
@@ -273,7 +275,7 @@ pub(super) fn load_buildings(
     profiles: &crate::simulation::grid::zoning::profiles::ZoningProfileRegistry,
 ) -> SaveLoadResult<BuildingAllocator> {
     let mut allocator = BuildingAllocator::new();
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, stock, input_stock, revenue, operating_budget, utility_service_available, shipment_cooldown_days, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining FROM buildings ORDER BY building_id")?;
+    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, stock, input_stock, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -282,6 +284,7 @@ pub(super) fn load_buildings(
         }
         let asset_id: String = row.get(17)?;
         let broken = (row.get::<_, i64>(19)? != 0) || registry.get(&asset_id).is_none();
+        let economy_binding = resolve_building_economy_profile_binding(registry, &asset_id);
         let profile_runtime_id = i64_to_u16(row.get(6)?)?;
         allocator.buildings.push(Building {
             center_x: 0.0,
@@ -306,9 +309,11 @@ pub(super) fn load_buildings(
             revenue: row.get(11)?,
             operating_budget: row.get(12)?,
             utility_service_available: row.get::<_, i64>(13)? != 0,
-            shipment_cooldown_days: i64_to_u8(row.get(14)?)?,
+            shipment_cooldown_hours: i64_to_u16(row.get(14)?)?,
             level: row.get::<_, i64>(18)?.clamp(1, 255) as u8,
             broken,
+            economy_profile_runtime_id: economy_binding.runtime_id,
+            economy_broken: economy_binding.economy_broken,
             pending_redevelopment: row.get::<_, i64>(20)? != 0,
             rezone_grace_days_remaining: i64_to_u8(row.get(21)?)?,
         });
@@ -318,7 +323,7 @@ pub(super) fn load_buildings(
 
 pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
-    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_days, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_days, stay_failure_days FROM households ORDER BY household_id")?;
+    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_hours, stay_failure_days, replenishment_offset_hours FROM households ORDER BY household_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
@@ -333,12 +338,13 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             consumption_rate: row.get(5)?,
             stock_days: row.get(6)?,
             replenishment_state: i64_to_u8(row.get(7)?)?,
-            cooldown_days: i64_to_u8(row.get(8)?)?,
+            cooldown_hours: i64_to_u16(row.get(8)?)?,
             reserved_store_building_id: db_to_optional_usize(row.get(9)?)?,
             reserved_amount: row.get(10)?,
             reserved_total_cost: row.get(11)?,
-            pickup_eta_days: i64_to_u8(row.get(12)?)?,
+            pickup_eta_hours: i64_to_u16(row.get(12)?)?,
             stay_failure_days: i64_to_u32(row.get(13)?)?,
+            replenishment_offset_hours: i64_to_u16(row.get(14)?)?,
         });
     }
     Ok(households)
@@ -346,7 +352,7 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
 
 pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem> {
     let mut logistics = ShipmentSystem::new();
-    let mut stmt = conn.prepare("SELECT shipment_id, resource_type, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_days FROM shipments ORDER BY shipment_id")?;
+    let mut stmt = conn.prepare("SELECT shipment_id, resource_type, amount, source_kind, source_building_id, source_border_node, destination_building_id, carrier_class, status, total_cost, eta_hours FROM shipments ORDER BY shipment_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let shipment_id = i64_to_usize(row.get(0)?)?;
@@ -368,7 +374,7 @@ pub(super) fn load_shipments(conn: &Connection) -> SaveLoadResult<ShipmentSystem
             carrier_class: i64_to_u8(row.get(7)?)?,
             status: i64_to_u8(row.get(8)?)?,
             total_cost: row.get(9)?,
-            eta_days: i64_to_u8(row.get(10)?)?,
+            eta_hours: i64_to_u16(row.get(10)?)?,
         });
     }
     Ok(logistics)

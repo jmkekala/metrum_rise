@@ -464,6 +464,12 @@ impl SimulationNode {
         self.snapshot.read().unwrap().current_day
     }
 
+    /// Returns the current operational minute since midnight.
+    #[func]
+    pub fn get_current_minute_of_day(&self) -> u16 {
+        self.snapshot.read().unwrap().current_minute_of_day
+    }
+
     // ── Agents ──
 
     /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.

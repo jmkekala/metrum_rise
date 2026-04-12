@@ -2,7 +2,8 @@
 
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
-    BuildingAllocator, baseline_private_zone_slot, zone_class_to_zone_type,
+    BuildingAllocator, baseline_private_zone_slot, resolve_building_economy_profile_binding,
+    zone_class_to_zone_type,
 };
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::{
@@ -485,9 +486,20 @@ impl BuildingAllocator {
         if target_zone_type != building.zone_type {
             return None;
         }
+        let economy_binding =
+            resolve_building_economy_profile_binding(&self.registry, &action.target_asset_id);
+        if matches!(
+            target_zone_type,
+            ZoneType::Commercial | ZoneType::Industrial
+        ) && (economy_binding.economy_broken || economy_binding.runtime_id == 0)
+        {
+            return None;
+        }
         let building = &mut self.buildings[building_idx];
         building.asset_id = action.target_asset_id.clone();
         building.level = target_building.level;
+        building.economy_profile_runtime_id = economy_binding.runtime_id;
+        building.economy_broken = economy_binding.economy_broken;
         building.pending_redevelopment = false;
         building.rezone_grace_days_remaining = 0;
         self.dirty = true;

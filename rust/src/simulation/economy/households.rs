@@ -2,8 +2,8 @@
 //!
 //! The v0.1 foundation keeps households explicit, lightweight, and tied to
 //! residential buildings without reviving per-agent grocery trips. This module
-//! owns household stock/budget state, simple building-side economic updates,
-//! daily replenishment requests, and decision-utility-driven work/home planning.
+//! owns household stock/budget state, sub-daily building-side economy updates,
+//! replenishment requests, and decision-utility-driven job assignment.
 
 use crate::debug_log;
 use crate::simulation::buildings::allocator::{
@@ -12,7 +12,10 @@ use crate::simulation::buildings::allocator::{
 use crate::simulation::economy::agents::{
     AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
 };
-use crate::simulation::economy::definitions::load_runtime_economy_tuning;
+use crate::simulation::economy::definitions::{
+    EconomyProfileRuntime, RuntimeEconomyCatalog, StarterResourceKind,
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::TransitNetwork;
@@ -36,20 +39,12 @@ const HOUSEHOLD_TARGET_STOCK_DAYS: f32 = 3.0;
 const HOUSEHOLD_TRIGGER_STOCK_DAYS: f32 = 1.5;
 const IMMIGRANT_STARTING_STOCK_DAYS: f32 = 3.0;
 const IMMIGRANT_STARTING_BUDGET_PER_MEMBER: f32 = 12.0;
-const HOUSEHOLD_SUPPLY_UNIT_PRICE: f32 = 6.0;
 const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 2.0;
 const HOUSEHOLD_STARTING_BUDGET: f32 = 100.0;
 /// Default household size admitted by the first-pass immigration flow.
 pub const DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 2;
 
-const COMMERCIAL_BASE_RATE: f32 = 200.0;
-const INDUSTRIAL_BASE_RATE: f32 = 160.0;
-const INDUSTRIAL_INPUT_UNITS_PER_OUTPUT: f32 = 1.0;
-const INDUSTRIAL_OUTPUT_STORAGE_CAP_UNITS: f32 = 640.0;
 const STARTUP_OPERATING_FLOAT: f32 = 500.0;
-
-const WAGE_INDUSTRIAL: f32 = 100.0;
-const WAGE_COMMERCIAL: f32 = 90.0;
 
 const UTILITY_COST_COMMERCIAL: f32 = 8.0;
 const UTILITY_COST_INDUSTRIAL: f32 = 12.0;
@@ -63,7 +58,7 @@ const JOB_SEARCH_MAX_RING: i32 = 2;
 const JOB_SEARCH_CANDIDATES: usize = 8;
 const GROCERY_SEARCH_MAX_RING: i32 = 2;
 const GROCERY_SEARCH_CANDIDATES: usize = 8;
-const HOUSEHOLD_PICKUP_DELAY_DAYS: u8 = 1;
+const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 
 /// Explicit household runtime record anchored to a residential building.
 #[derive(Clone, Debug)]
@@ -82,18 +77,20 @@ pub struct Household {
     pub stock_days: f32,
     /// Current replenishment state for diagnostics and cooldown handling.
     pub replenishment_state: u8,
-    /// Remaining daily cooldown steps before another replenishment retry.
-    pub cooldown_days: u8,
+    /// Remaining operational-hour cooldown steps before another replenishment retry.
+    pub cooldown_hours: u16,
     /// Reserved source building for the current replenishment request, if any.
     pub reserved_store_building_id: usize,
     /// Reserved amount waiting for household pickup-side fulfillment.
     pub reserved_amount: f32,
     /// Reserved budget waiting to be transferred to the supplying store.
     pub reserved_total_cost: f32,
-    /// Remaining daily steps before the reserved pickup completes.
-    pub pickup_eta_days: u8,
+    /// Remaining operational-hour steps before the reserved pickup completes.
+    pub pickup_eta_hours: u16,
     /// Consecutive daily stay-rule failures for the current home.
     pub stay_failure_days: u32,
+    /// Stable authored cadence offset used for periodic replenishment checks.
+    pub replenishment_offset_hours: u16,
 }
 
 /// Collection of explicit household records for the live simulation.
@@ -134,24 +131,30 @@ impl HouseholdSystem {
             consumption_rate: HOUSEHOLD_CONSUMPTION_RATE,
             stock_days: IMMIGRANT_STARTING_STOCK_DAYS,
             replenishment_state: REPLENISHMENT_STABLE,
-            cooldown_days: 0,
+            cooldown_hours: 0,
             reserved_store_building_id: usize::MAX,
             reserved_amount: 0.0,
             reserved_total_cost: 0.0,
-            pickup_eta_days: 0,
+            pickup_eta_hours: 0,
             stay_failure_days: 0,
+            replenishment_offset_hours: stable_replenishment_offset_hours(
+                home_building_id,
+                self.households.len() as u32,
+            ),
         });
         self.households.len() - 1
     }
 
-    /// Runs the first-pass daily economy update.
-    pub fn daily_tick(
+    /// Runs one coarse operational-hour economy step.
+    pub fn operational_hour_tick(
         &mut self,
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
         logistics: &mut ShipmentSystem,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        absolute_hour: u32,
+        minute_of_day: u16,
     ) {
         self.ensure_agent_households(agents);
         self.rebuild_household_membership(agents);
@@ -159,12 +162,25 @@ impl HouseholdSystem {
         self.ensure_building_startup_float(allocator);
         self.resolve_building_utilities(allocator);
         self.run_building_economy(allocator);
-        logistics.daily_tick(allocator, transit_network, graph);
-        self.pay_daily_wages(agents, allocator);
+        logistics.hourly_tick(allocator, transit_network, graph, minute_of_day);
         self.consume_household_stock(agents);
+        self.run_household_replenishment(allocator, absolute_hour);
+        self.assign_agent_workplaces(agents, allocator);
+        self.sync_agent_money_from_households(agents);
+    }
+
+    /// Runs one daily settlement pass after the final operational-hour step of the day.
+    pub fn daily_settlement_tick(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
+        self.ensure_agent_households(agents);
+        self.rebuild_household_membership(agents);
+        self.recount_worker_assignments(agents, allocator);
+        self.pay_daily_wages(agents, allocator);
         self.resolve_household_housing(agents, allocator);
-        self.run_household_replenishment(allocator);
-        self.plan_agent_work_and_return_trips(agents, allocator);
+        self.assign_agent_workplaces(agents, allocator);
         self.sync_agent_money_from_households(agents);
     }
 
@@ -182,11 +198,13 @@ impl HouseholdSystem {
 
         let mut unhoused_candidates = Vec::new();
         let mut housed_candidates = Vec::new();
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         for (household_id, household) in self.households.iter().enumerate() {
             if household.member_count == 0 {
                 continue;
             }
-            let reserve_days = household_reserve_days(household);
+            let reserve_days = household_reserve_days(&catalog, household);
             let candidate = (household_id, reserve_days, household.stock_days);
             if household_is_housed(household, allocator) {
                 housed_candidates.push(candidate);
@@ -255,12 +273,16 @@ impl HouseholdSystem {
                     consumption_rate: HOUSEHOLD_CONSUMPTION_RATE,
                     stock_days: HOUSEHOLD_TARGET_STOCK_DAYS,
                     replenishment_state: REPLENISHMENT_STABLE,
-                    cooldown_days: 0,
+                    cooldown_hours: 0,
                     reserved_store_building_id: usize::MAX,
                     reserved_amount: 0.0,
                     reserved_total_cost: 0.0,
-                    pickup_eta_days: 0,
+                    pickup_eta_hours: 0,
                     stay_failure_days: 0,
+                    replenishment_offset_hours: stable_replenishment_offset_hours(
+                        home,
+                        self.households.len() as u32,
+                    ),
                 });
                 agents.household_id[i] = self.households.len() - 1;
             }
@@ -316,6 +338,9 @@ impl HouseholdSystem {
             ) {
                 continue;
             }
+            if building.broken || building.economy_broken {
+                continue;
+            }
             if building.operating_budget == 0.0 && building.revenue == 0.0 {
                 building.operating_budget = STARTUP_OPERATING_FLOAT;
             }
@@ -324,20 +349,21 @@ impl HouseholdSystem {
 
     fn resolve_building_utilities(&mut self, allocator: &mut BuildingAllocator) {
         for building in &mut allocator.buildings {
-            let utility_cost = match building.zone_type {
-                ZoneType::Commercial => UTILITY_COST_COMMERCIAL,
-                ZoneType::Industrial => UTILITY_COST_INDUSTRIAL,
+            let utility_cost_per_hour = match building.zone_type {
+                ZoneType::Commercial => UTILITY_COST_COMMERCIAL / OPERATIONAL_HOURS_PER_DAY,
+                ZoneType::Industrial => UTILITY_COST_INDUSTRIAL / OPERATIONAL_HOURS_PER_DAY,
                 _ => {
                     building.utility_service_available = true;
                     continue;
                 }
             };
-            if building.edge_idx == usize::MAX || building.broken {
+            if building.edge_idx == usize::MAX || building.broken || building.economy_broken {
                 building.utility_service_available = false;
                 continue;
             }
-            if building.operating_budget >= utility_cost {
-                building.operating_budget -= utility_cost;
+            if building.operating_budget + f32::EPSILON >= utility_cost_per_hour {
+                building.operating_budget =
+                    (building.operating_budget - utility_cost_per_hour).max(0.0);
                 building.utility_service_available = true;
             } else {
                 building.utility_service_available = false;
@@ -346,8 +372,17 @@ impl HouseholdSystem {
     }
 
     fn run_building_economy(&mut self, allocator: &mut BuildingAllocator) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         for idx in 0..allocator.buildings.len() {
             let zone = allocator.buildings[idx].zone_type;
+            if allocator.buildings[idx].broken || allocator.buildings[idx].economy_broken {
+                continue;
+            }
+            let Some(profile) = economy_profile_for_building(&catalog, &allocator.buildings[idx])
+            else {
+                continue;
+            };
             let worker_capacity = allocator.worker_capacity(idx).max(1);
             let staffing_factor = (allocator.buildings[idx].worker_count as f32
                 / worker_capacity as f32)
@@ -357,35 +392,26 @@ impl HouseholdSystem {
             } else {
                 0.0
             };
-            let input_factor = if zone == ZoneType::Industrial {
-                industrial_input_coverage_factor(&allocator.buildings[idx])
-            } else {
-                1.0
-            };
-            let output_headroom_factor = if zone == ZoneType::Industrial {
-                industrial_output_headroom_factor(&allocator.buildings[idx])
-            } else {
-                1.0
-            };
-            let throughput = match zone {
-                ZoneType::Commercial => COMMERCIAL_BASE_RATE,
-                ZoneType::Industrial => INDUSTRIAL_BASE_RATE,
-                _ => 0.0,
-            } * staffing_factor
-                * input_factor
-                * output_headroom_factor
-                * utility_factor;
+            let input_factor =
+                industrial_input_coverage_factor(&catalog, &allocator.buildings[idx]);
+            let output_headroom_factor =
+                industrial_output_headroom_factor(&catalog, &allocator.buildings[idx]);
+            let throughput_factor =
+                staffing_factor * input_factor * output_headroom_factor * utility_factor;
+            let hourly_output_units =
+                profile.output_units_per_day() / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
+            let hourly_input_units =
+                profile.input_units_per_day() / OPERATIONAL_HOURS_PER_DAY * throughput_factor;
 
             let building = &mut allocator.buildings[idx];
-            match zone {
-                ZoneType::Commercial => {}
-                ZoneType::Industrial => {
-                    let consumed_inputs = throughput * INDUSTRIAL_INPUT_UNITS_PER_OUTPUT;
-                    building.input_stock = (building.input_stock - consumed_inputs).max(0.0);
-                    building.stock =
-                        (building.stock + throughput).min(INDUSTRIAL_OUTPUT_STORAGE_CAP_UNITS);
-                }
-                _ => {}
+            if hourly_input_units > 0.0 {
+                building.input_stock = (building.input_stock - hourly_input_units).max(0.0);
+            }
+            if matches!(zone, ZoneType::Commercial | ZoneType::Industrial)
+                && hourly_output_units > 0.0
+            {
+                building.stock = (building.stock + hourly_output_units)
+                    .min(profile.output_buffer_capacity_units());
             }
         }
     }
@@ -396,10 +422,13 @@ impl HouseholdSystem {
             if household.member_count == 0 {
                 continue;
             }
-            let daily_consumption = household.member_count as f32 * household.consumption_rate;
-            household.stock = (household.stock - daily_consumption).max(0.0);
-            let utility_cost = household.member_count as f32 * HOUSEHOLD_UTILITY_COST_PER_MEMBER;
-            household.budget = (household.budget - utility_cost).max(0.0);
+            let hourly_consumption = household.member_count as f32 * household.consumption_rate
+                / OPERATIONAL_HOURS_PER_DAY;
+            household.stock = (household.stock - hourly_consumption).max(0.0);
+            let hourly_utility_cost = household.member_count as f32
+                * HOUSEHOLD_UTILITY_COST_PER_MEMBER
+                / OPERATIONAL_HOURS_PER_DAY;
+            household.budget = (household.budget - hourly_utility_cost).max(0.0);
             household.stock_days = stock_days(
                 household.stock,
                 household.member_count,
@@ -411,15 +440,13 @@ impl HouseholdSystem {
             ) {
                 continue;
             } else if household.replenishment_state == REPLENISHMENT_FULFILLED {
-                if household.cooldown_days > 0 {
-                    household.cooldown_days -= 1;
+                if household.cooldown_hours > 0 {
+                    household.cooldown_hours -= 1;
                 }
                 household.replenishment_state = REPLENISHMENT_COOLDOWN;
-            } else if household.cooldown_days > 0 {
-                household.cooldown_days -= 1;
+            } else if household.cooldown_hours > 0 {
+                household.cooldown_hours -= 1;
                 household.replenishment_state = REPLENISHMENT_COOLDOWN;
-            } else if household.stock_days < HOUSEHOLD_TRIGGER_STOCK_DAYS {
-                household.replenishment_state = REPLENISHMENT_NEEDS;
             } else {
                 household.replenishment_state = REPLENISHMENT_STABLE;
             }
@@ -439,6 +466,8 @@ impl HouseholdSystem {
         agents: &mut AgentSystem,
         allocator: &mut BuildingAllocator,
     ) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let config = load_runtime_economy_tuning()
             .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
 
@@ -448,7 +477,7 @@ impl HouseholdSystem {
                 continue;
             }
 
-            let reserve_days = household_reserve_days(household);
+            let reserve_days = household_reserve_days(&catalog, household);
             let current_home = household.home_building_id;
             let is_housed = household_is_housed(household, allocator);
 
@@ -548,7 +577,7 @@ impl HouseholdSystem {
                 continue;
             }
             let building = &allocator.buildings[building_idx];
-            if building.broken || building.pending_redevelopment {
+            if building.broken || building.economy_broken || building.pending_redevelopment {
                 continue;
             }
 
@@ -686,7 +715,21 @@ impl HouseholdSystem {
         }
     }
 
-    fn run_household_replenishment(&mut self, allocator: &mut BuildingAllocator) {
+    fn run_household_replenishment(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        absolute_hour: u32,
+    ) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let check_interval = u32::from(
+            tuning
+                .operational_clock
+                .household_replenishment_check_interval_hours,
+        );
+
         for hid in 0..self.households.len() {
             self.progress_household_replenishment(hid, allocator);
         }
@@ -694,9 +737,14 @@ impl HouseholdSystem {
         for hid in 0..self.households.len() {
             let household = &self.households[hid];
             if household.member_count == 0
-                || household.replenishment_state != REPLENISHMENT_NEEDS
                 || household.home_building_id == usize::MAX
                 || household.home_building_id >= allocator.buildings.len()
+                || household.replenishment_state == REPLENISHMENT_RESERVED
+                || household.replenishment_state == REPLENISHMENT_PICKUP_PENDING
+                || household.cooldown_hours > 0
+                || household.stock_days >= HOUSEHOLD_TRIGGER_STOCK_DAYS
+                || absolute_hour % check_interval
+                    != u32::from(household.replenishment_offset_hours % check_interval as u16)
             {
                 continue;
             }
@@ -717,11 +765,18 @@ impl HouseholdSystem {
 
             for candidate in candidates {
                 let store = &allocator.buildings[candidate];
-                if store.stock <= 0.0 || !store.utility_service_available {
+                if store.stock <= 0.0
+                    || !store.utility_service_available
+                    || store.broken
+                    || store.economy_broken
+                {
                     continue;
                 }
+                let Some(store_profile) = economy_profile_for_building(&catalog, store) else {
+                    continue;
+                };
                 let amount = desired_amount.min(store.stock);
-                let total_cost = amount * HOUSEHOLD_SUPPLY_UNIT_PRICE;
+                let total_cost = amount * store_profile.unit_price_currency;
                 if amount > 0.0 && household.budget >= total_cost {
                     found_sale = Some((candidate, amount, total_cost));
                     break;
@@ -737,11 +792,13 @@ impl HouseholdSystem {
                 household.reserved_store_building_id = store_idx;
                 household.reserved_amount = amount;
                 household.reserved_total_cost = total_cost;
-                household.pickup_eta_days = HOUSEHOLD_PICKUP_DELAY_DAYS;
+                household.pickup_eta_hours = tuning.operational_clock.household_pickup_eta_hours;
                 household.replenishment_state = REPLENISHMENT_RESERVED;
             } else {
                 household.replenishment_state = REPLENISHMENT_COOLDOWN;
-                household.cooldown_days = 1;
+                household.cooldown_hours = tuning
+                    .operational_clock
+                    .household_replenishment_retry_cooldown_hours;
             }
         }
     }
@@ -752,18 +809,23 @@ impl HouseholdSystem {
         };
         match household.replenishment_state {
             REPLENISHMENT_RESERVED => {
-                if household.pickup_eta_days > 0 {
-                    household.pickup_eta_days -= 1;
+                if household.pickup_eta_hours > 0 {
+                    household.pickup_eta_hours -= 1;
                 }
                 household.replenishment_state = REPLENISHMENT_PICKUP_PENDING;
             }
             REPLENISHMENT_PICKUP_PENDING => {
                 let store_idx = household.reserved_store_building_id;
                 if store_idx == usize::MAX || store_idx >= allocator.buildings.len() {
+                    let tuning = load_runtime_economy_tuning().unwrap_or_else(|err| {
+                        panic!("could not load built-in economy runtime tuning: {err}")
+                    });
                     household.budget += household.reserved_total_cost;
                     clear_replenishment_request(household);
                     household.replenishment_state = REPLENISHMENT_COOLDOWN;
-                    household.cooldown_days = 1;
+                    household.cooldown_hours = tuning
+                        .operational_clock
+                        .household_replenishment_retry_cooldown_hours;
                     return;
                 }
 
@@ -777,48 +839,29 @@ impl HouseholdSystem {
                     household.consumption_rate,
                 );
                 household.replenishment_state = REPLENISHMENT_FULFILLED;
-                household.cooldown_days = 1;
+                household.cooldown_hours = 1;
                 household.reserved_store_building_id = usize::MAX;
                 household.reserved_amount = 0.0;
                 household.reserved_total_cost = 0.0;
-                household.pickup_eta_days = 0;
+                household.pickup_eta_hours = 0;
             }
             _ => {}
         }
     }
 
-    fn plan_agent_work_and_return_trips(
-        &mut self,
-        agents: &mut AgentSystem,
-        allocator: &BuildingAllocator,
-    ) {
+    fn assign_agent_workplaces(&mut self, agents: &mut AgentSystem, allocator: &BuildingAllocator) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let mut reserved_workers: Vec<u32> =
             allocator.buildings.iter().map(|b| b.worker_count).collect();
 
         for i in 0..agents.len() {
-            agents.planned_activity[i] = 0;
-            agents.planned_target_building[i] = usize::MAX;
-
             if agents.transit[i] != TRANSIT_IN_BUILDING {
                 continue;
             }
 
             let home_idx = agents.home_building[i];
-            let current_idx = agents.current_building[i];
             if home_idx == usize::MAX || home_idx >= allocator.buildings.len() {
-                continue;
-            }
-
-            if current_idx == agents.work_building[i]
-                && current_idx != usize::MAX
-                && current_idx < allocator.buildings.len()
-            {
-                agents.planned_activity[i] = 0;
-                agents.planned_target_building[i] = home_idx;
-                continue;
-            }
-
-            if current_idx != home_idx {
                 continue;
             }
 
@@ -842,7 +885,7 @@ impl HouseholdSystem {
                 candidates.push(agents.work_building[i]);
             }
 
-            let income_pressure = household_income_pressure(household);
+            let income_pressure = household_income_pressure(&catalog, household);
             let stock_pressure = (1.0
                 - (household.stock_days / HOUSEHOLD_TARGET_STOCK_DAYS).clamp(0.0, 1.0))
             .clamp(0.0, 1.0);
@@ -904,8 +947,6 @@ impl HouseholdSystem {
                         stock_pressure
                     );
                 }
-                agents.planned_activity[i] = 1;
-                agents.planned_target_building[i] = best_job;
             }
         }
     }
@@ -928,6 +969,8 @@ impl HouseholdSystem {
 
     /// Pays wages into each employed agent's household budget.
     pub fn pay_daily_wages(&mut self, agents: &mut AgentSystem, allocator: &mut BuildingAllocator) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         for i in 0..agents.len() {
             let work = agents.work_building[i];
             let hid = agents.household_id[i];
@@ -937,11 +980,11 @@ impl HouseholdSystem {
             if work >= allocator.buildings.len() || hid >= self.households.len() {
                 continue;
             }
-            let wage = match allocator.buildings[work].zone_type {
-                ZoneType::Industrial => WAGE_INDUSTRIAL,
-                ZoneType::Commercial => WAGE_COMMERCIAL,
-                _ => 0.0,
+            let Some(profile) = economy_profile_for_building(&catalog, &allocator.buildings[work])
+            else {
+                continue;
             };
+            let wage = profile.average_daily_wage();
             if wage <= 0.0 {
                 continue;
             }
@@ -1013,10 +1056,29 @@ fn stock_days(stock: f32, member_count: u16, consumption_rate: f32) -> f32 {
     }
 }
 
-pub(crate) fn household_reserve_days(household: &Household) -> f32 {
+fn economy_profile_for_building<'a>(
+    catalog: &'a RuntimeEconomyCatalog,
+    building: &Building,
+) -> Option<&'a EconomyProfileRuntime> {
+    if building.economy_broken || building.economy_profile_runtime_id == 0 {
+        return None;
+    }
+    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+}
+
+fn household_supply_unit_price(catalog: &RuntimeEconomyCatalog) -> f32 {
+    catalog
+        .unit_price_for_resource(StarterResourceKind::HouseholdSupplies)
+        .unwrap_or(0.0)
+}
+
+pub(crate) fn household_reserve_days(
+    catalog: &RuntimeEconomyCatalog,
+    household: &Household,
+) -> f32 {
     let members = household.member_count.max(1) as f32;
     let daily_supply_cost =
-        members * household.consumption_rate.max(0.0) * HOUSEHOLD_SUPPLY_UNIT_PRICE;
+        members * household.consumption_rate.max(0.0) * household_supply_unit_price(catalog);
     let daily_utility_cost = members * HOUSEHOLD_UTILITY_COST_PER_MEMBER;
     let daily_essential_cost = daily_supply_cost + daily_utility_cost;
     if daily_essential_cost <= 0.0 {
@@ -1029,21 +1091,29 @@ pub(crate) fn household_reserve_days(household: &Household) -> f32 {
 fn household_is_housed(household: &Household, allocator: &BuildingAllocator) -> bool {
     household.home_building_id < allocator.buildings.len()
         && !allocator.buildings[household.home_building_id].broken
+        && !allocator.buildings[household.home_building_id].economy_broken
 }
 
 fn clear_replenishment_request(household: &mut Household) {
     household.replenishment_state = REPLENISHMENT_STABLE;
-    household.cooldown_days = 0;
+    household.cooldown_hours = 0;
     household.reserved_store_building_id = usize::MAX;
     household.reserved_amount = 0.0;
     household.reserved_total_cost = 0.0;
-    household.pickup_eta_days = 0;
+    household.pickup_eta_hours = 0;
 }
 
-fn household_income_pressure(household: &Household) -> f32 {
+fn stable_replenishment_offset_hours(home_building_id: usize, household_seed: u32) -> u16 {
+    let mixed = (home_building_id as u64)
+        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        .wrapping_add(u64::from(household_seed).wrapping_mul(0xBF58_476D_1CE4_E5B9));
+    (mixed % OPERATIONAL_HOURS_PER_DAY as u64) as u16
+}
+
+fn household_income_pressure(catalog: &RuntimeEconomyCatalog, household: &Household) -> f32 {
     let daily_consumption = household.member_count.max(1) as f32 * household.consumption_rate;
     let reserve_target =
-        daily_consumption * HOUSEHOLD_SUPPLY_UNIT_PRICE * HOUSEHOLD_TARGET_STOCK_DAYS
+        daily_consumption * household_supply_unit_price(catalog) * HOUSEHOLD_TARGET_STOCK_DAYS
             + household.member_count.max(1) as f32
                 * HOUSEHOLD_UTILITY_COST_PER_MEMBER
                 * HOUSEHOLD_TARGET_STOCK_DAYS;
@@ -1065,16 +1135,19 @@ pub(crate) fn level_tuning_value(values: &[f32], level: u8) -> f32 {
         .unwrap_or(0.0)
 }
 
-pub(crate) fn building_operating_buffer_days(building: &Building) -> f32 {
-    let daily_operating_cost = match building.zone_type {
-        ZoneType::Commercial => {
-            building.worker_count as f32 * WAGE_COMMERCIAL + UTILITY_COST_COMMERCIAL
-        }
-        ZoneType::Industrial => {
-            building.worker_count as f32 * WAGE_INDUSTRIAL + UTILITY_COST_INDUSTRIAL
-        }
-        _ => 0.0,
+pub(crate) fn building_operating_buffer_days(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+) -> f32 {
+    let Some(profile) = economy_profile_for_building(catalog, building) else {
+        return 0.0;
     };
+    let daily_operating_cost = building.worker_count as f32 * profile.average_daily_wage()
+        + match building.zone_type {
+            ZoneType::Commercial => UTILITY_COST_COMMERCIAL,
+            ZoneType::Industrial => UTILITY_COST_INDUSTRIAL,
+            _ => 0.0,
+        };
     if daily_operating_cost <= 0.0 {
         0.0
     } else {
@@ -1095,18 +1168,35 @@ pub(crate) fn building_staffing_ratio(
     }
 }
 
-pub(crate) fn industrial_input_coverage_factor(building: &Building) -> f32 {
-    let daily_input_need = INDUSTRIAL_BASE_RATE * INDUSTRIAL_INPUT_UNITS_PER_OUTPUT;
+pub(crate) fn industrial_input_coverage_factor(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+) -> f32 {
+    let Some(profile) = economy_profile_for_building(catalog, building) else {
+        return 0.0;
+    };
+    let daily_input_need = profile.input_units_per_day();
     if daily_input_need <= 0.0 {
-        0.0
+        1.0
     } else {
         (building.input_stock / daily_input_need).clamp(0.0, 1.0)
     }
 }
 
-pub(crate) fn industrial_output_headroom_factor(building: &Building) -> f32 {
-    let remaining_headroom = (INDUSTRIAL_OUTPUT_STORAGE_CAP_UNITS - building.stock).max(0.0);
-    (remaining_headroom / INDUSTRIAL_OUTPUT_STORAGE_CAP_UNITS).clamp(0.0, 1.0)
+pub(crate) fn industrial_output_headroom_factor(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+) -> f32 {
+    let Some(profile) = economy_profile_for_building(catalog, building) else {
+        return 0.0;
+    };
+    let output_capacity_units = profile.output_buffer_capacity_units();
+    if !output_capacity_units.is_finite() || output_capacity_units <= 0.0 {
+        1.0
+    } else {
+        let remaining_headroom = (output_capacity_units - building.stock).max(0.0);
+        (remaining_headroom / output_capacity_units).clamp(0.0, 1.0)
+    }
 }
 
 #[cfg(test)]
@@ -1118,6 +1208,25 @@ mod tests {
     };
     use crate::simulation::economy::agents::TRANSIT_IN_BUILDING;
     use godot::prelude::Vector2;
+
+    fn test_economy_runtime_id(zone_type: ZoneType) -> u16 {
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        match zone_type {
+            ZoneType::Commercial => {
+                catalog
+                    .profile_for_id("grocery_basic")
+                    .expect("grocery starter profile")
+                    .runtime_id
+            }
+            ZoneType::Industrial => {
+                catalog
+                    .profile_for_id("food_processor_basic")
+                    .expect("food processor starter profile")
+                    .runtime_id
+            }
+            _ => 0,
+        }
+    }
 
     fn make_building(
         center_x: f32,
@@ -1146,12 +1255,14 @@ mod tests {
             asset_id: asset_id.to_owned(),
             level: 1,
             broken: false,
+            economy_profile_runtime_id: test_economy_runtime_id(zone_type),
+            economy_broken: false,
             stock,
             input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: utility,
-            shipment_cooldown_days: 0,
+            shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         }
@@ -1199,7 +1310,11 @@ mod tests {
                     residents_capacity,
                     worker_capacity,
                     service_class: None,
-                    economy_profile: None,
+                    economy_profile: match zone {
+                        ZoneClass::Commercial => Some("grocery_basic".to_owned()),
+                        ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
+                        _ => None,
+                    },
                     preview_scale: Some(1.0),
                 }),
                 prop: None,
@@ -1223,12 +1338,13 @@ mod tests {
             consumption_rate: 1.0,
             stock_days: 0.0,
             replenishment_state: REPLENISHMENT_NEEDS,
-            cooldown_days: 0,
+            cooldown_hours: 0,
             reserved_store_building_id: usize::MAX,
             reserved_amount: 0.0,
             reserved_total_cost: 0.0,
-            pickup_eta_days: 0,
+            pickup_eta_hours: 0,
             stay_failure_days: 0,
+            replenishment_offset_hours: 0,
         });
 
         let mut allocator = BuildingAllocator::new();
@@ -1260,7 +1376,7 @@ mod tests {
         ));
         allocator.rebuild_zone_index();
 
-        households.run_household_replenishment(&mut allocator);
+        households.run_household_replenishment(&mut allocator, 0);
         assert_eq!(
             households.households[0].replenishment_state,
             REPLENISHMENT_RESERVED
@@ -1268,13 +1384,13 @@ mod tests {
         assert_eq!(allocator.buildings[1].stock, 44.0);
         assert_eq!(households.households[0].budget, 164.0);
 
-        households.run_household_replenishment(&mut allocator);
+        households.run_household_replenishment(&mut allocator, 0);
         assert_eq!(
             households.households[0].replenishment_state,
             REPLENISHMENT_PICKUP_PENDING
         );
 
-        households.run_household_replenishment(&mut allocator);
+        households.run_household_replenishment(&mut allocator, 0);
         assert_eq!(
             households.households[0].replenishment_state,
             REPLENISHMENT_FULFILLED
@@ -1284,9 +1400,12 @@ mod tests {
     }
 
     #[test]
-    fn immigrant_household_plans_nearby_work_during_founding() {
+    fn immigrant_household_assigns_nearby_work_during_founding() {
         let mut households = HouseholdSystem::new();
         let hid = households.admit_immigrant_household(0, 2);
+        households.households[hid].budget = 0.0;
+        households.households[hid].stock = 1.0;
+        households.households[hid].stock_days = 0.5;
 
         let mut allocator = BuildingAllocator::new();
         let residential_asset =
@@ -1322,11 +1441,11 @@ mod tests {
         }
 
         households.consume_household_stock(&mut agents);
-        households.plan_agent_work_and_return_trips(&mut agents, &allocator);
+        households.assign_agent_workplaces(&mut agents, &allocator);
 
-        assert_eq!(agents.planned_activity[a0], 1);
         assert_eq!(agents.work_building[a0], 1);
-        assert_eq!(agents.planned_target_building[a0], 1);
+        assert_eq!(agents.planned_activity[a0], 0);
+        assert_eq!(agents.planned_target_building[a0], usize::MAX);
     }
 
     fn make_household(
@@ -1335,9 +1454,11 @@ mod tests {
         reserve_days: f32,
         stock_days: f32,
     ) -> Household {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let consumption_rate = 1.0;
         let daily_supply_cost =
-            member_count.max(1) as f32 * consumption_rate * HOUSEHOLD_SUPPLY_UNIT_PRICE;
+            member_count.max(1) as f32 * consumption_rate * household_supply_unit_price(&catalog);
         let daily_utility_cost = member_count.max(1) as f32 * HOUSEHOLD_UTILITY_COST_PER_MEMBER;
         let daily_essential_cost = daily_supply_cost + daily_utility_cost;
         Household {
@@ -1348,12 +1469,13 @@ mod tests {
             consumption_rate,
             stock_days,
             replenishment_state: REPLENISHMENT_STABLE,
-            cooldown_days: 0,
+            cooldown_hours: 0,
             reserved_store_building_id: usize::MAX,
             reserved_amount: 0.0,
             reserved_total_cost: 0.0,
-            pickup_eta_days: 0,
+            pickup_eta_hours: 0,
             stay_failure_days: 0,
+            replenishment_offset_hours: 0,
         }
     }
 

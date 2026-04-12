@@ -194,6 +194,9 @@ impl SimCore {
                 vehicle_type: (i % 4) as u8,
                 pedestrian_type: 0,
                 walk_phase: 0.0,
+                schedule_seed: i as u32,
+                cached_commute_minutes: 0,
+                next_commute_refresh_time: 0.0,
             });
         }
         godot_print!(

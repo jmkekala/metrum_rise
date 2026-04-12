@@ -1,7 +1,11 @@
 //! Demand-driven daily growth pass built from authored baseline tuning.
 
-use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::economy::definitions::{RuntimeEconomyTuning, load_runtime_economy_tuning};
+use crate::simulation::buildings::allocator::{
+    BuildingAllocator, resolve_building_economy_profile_binding,
+};
+use crate::simulation::economy::definitions::{
+    RuntimeEconomyTuning, load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::economy::households::{
     HouseholdSystem, building_operating_buffer_days, building_staffing_ratio,
     household_reserve_days, industrial_input_coverage_factor, industrial_output_headroom_factor,
@@ -650,6 +654,8 @@ struct ResidentialOccupantSnapshot {
 
 impl ResidentialOccupantSnapshot {
     fn from_runtime(allocator: &BuildingAllocator, households: &HouseholdSystem) -> Self {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let mut household_count_by_building = vec![0_u32; allocator.buildings.len()];
         let mut min_reserve_days_by_building = vec![f32::INFINITY; allocator.buildings.len()];
         for household in &households.households {
@@ -659,6 +665,7 @@ impl ResidentialOccupantSnapshot {
             let home_building_id = household.home_building_id;
             if home_building_id >= allocator.buildings.len()
                 || allocator.buildings[home_building_id].broken
+                || allocator.buildings[home_building_id].economy_broken
             {
                 continue;
             }
@@ -666,7 +673,7 @@ impl ResidentialOccupantSnapshot {
                 household_count_by_building[home_building_id].saturating_add(1);
             min_reserve_days_by_building[home_building_id] = min_reserve_days_by_building
                 [home_building_id]
-                .min(household_reserve_days(household));
+                .min(household_reserve_days(&catalog, household));
         }
 
         Self {
@@ -709,7 +716,7 @@ impl DemandSystem {
         let mut candidates = ExistingBuildingCandidates::default();
         for building_idx in building_indices {
             let building = &allocator.buildings[building_idx];
-            if building.broken || building.pending_redevelopment {
+            if building.broken || building.economy_broken || building.pending_redevelopment {
                 continue;
             }
             let Some(entry) = allocator.registry.get(&building.asset_id) else {
@@ -942,6 +949,8 @@ fn nonresidential_upgrade_viable(
     building_idx: usize,
     target_asset_id: &str,
 ) -> bool {
+    let catalog = load_runtime_economy_catalog()
+        .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
@@ -970,7 +979,7 @@ fn nonresidential_upgrade_viable(
             .nonresidential_min_buffer_days_by_level,
         target_level,
     );
-    if building_operating_buffer_days(building) + EPSILON < min_buffer_days {
+    if building_operating_buffer_days(&catalog, building) + EPSILON < min_buffer_days {
         return false;
     }
     if matches!(building.zone_type, ZoneType::Commercial) && building.stock <= EPSILON {
@@ -984,11 +993,13 @@ fn nonresidential_downgrade_viable(
     economy_tuning: &RuntimeEconomyTuning,
     building_idx: usize,
 ) -> bool {
+    let catalog = load_runtime_economy_catalog()
+        .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
     let staffing_ratio = building_staffing_ratio(allocator, building_idx, building);
-    let buffer_days = building_operating_buffer_days(building);
+    let buffer_days = building_operating_buffer_days(&catalog, building);
     let max_buffer_days = level_tuning_value(
         &economy_tuning
             .viability
@@ -1011,15 +1022,17 @@ fn industrial_upgrade_viable(
     building_idx: usize,
     target_asset_id: &str,
 ) -> bool {
+    let catalog = load_runtime_economy_catalog()
+        .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
     nonresidential_upgrade_viable(allocator, economy_tuning, building_idx, target_asset_id)
-        && industrial_input_coverage_factor(building) + EPSILON
+        && industrial_input_coverage_factor(&catalog, building) + EPSILON
             >= economy_tuning
                 .viability
                 .industrial_min_input_coverage_for_upgrade
-        && industrial_output_headroom_factor(building) + EPSILON
+        && industrial_output_headroom_factor(&catalog, building) + EPSILON
             >= economy_tuning
                 .viability
                 .industrial_min_output_headroom_for_upgrade
@@ -1030,16 +1043,18 @@ fn industrial_downgrade_viable(
     economy_tuning: &RuntimeEconomyTuning,
     building_idx: usize,
 ) -> bool {
+    let catalog = load_runtime_economy_catalog()
+        .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
     nonresidential_downgrade_viable(allocator, economy_tuning, building_idx)
-        || industrial_input_coverage_factor(building)
+        || industrial_input_coverage_factor(&catalog, building)
             <= economy_tuning
                 .viability
                 .industrial_max_input_coverage_for_downgrade
                 + EPSILON
-        || industrial_output_headroom_factor(building)
+        || industrial_output_headroom_factor(&catalog, building)
             <= economy_tuning
                 .viability
                 .industrial_max_output_headroom_for_downgrade
@@ -1095,6 +1110,19 @@ fn level_change_is_compatible(
         || target_building.lot_depth_cells != building.depth_cells
     {
         return false;
+    }
+    if matches!(
+        target_building.zone_type,
+        Some(
+            crate::assets::asset::ZoneClass::Commercial
+                | crate::assets::asset::ZoneClass::Industrial
+        )
+    ) {
+        let binding =
+            resolve_building_economy_profile_binding(&allocator.registry, target_asset_id);
+        if binding.economy_broken || binding.runtime_id == 0 {
+            return false;
+        }
     }
     allocator.registry.resident_capacity(target_asset_id) >= building.occupancy
         && allocator.registry.worker_capacity(target_asset_id) >= building.worker_count
@@ -1518,7 +1546,7 @@ impl DailyDemandSnapshot {
         let mut utility_service_satisfied_count = 0_u32;
 
         for (idx, building) in allocator.buildings.iter().enumerate() {
-            if building.broken {
+            if building.broken || building.economy_broken {
                 continue;
             }
 
@@ -1562,6 +1590,8 @@ impl DailyDemandSnapshot {
         let total_reachable_job_slots =
             occupied_reachable_job_slots.saturating_add(open_reachable_job_slots);
 
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let mut housed_resident_count = 0_u32;
         let mut housed_household_count = 0_u32;
         let mut unhoused_household_count = 0_u32;
@@ -1573,13 +1603,14 @@ impl DailyDemandSnapshot {
                 continue;
             }
             let is_housed = household.home_building_id < allocator.buildings.len()
-                && !allocator.buildings[household.home_building_id].broken;
+                && !allocator.buildings[household.home_building_id].broken
+                && !allocator.buildings[household.home_building_id].economy_broken;
             if is_housed {
                 housed_household_count = housed_household_count.saturating_add(1);
                 housed_resident_count =
                     housed_resident_count.saturating_add(household.member_count as u32);
                 household_affordability_sum += clamp01(
-                    household_reserve_days(household)
+                    household_reserve_days(&catalog, household)
                         / config
                             .signal_normalization
                             .household_affordability_target_reserve_days,
@@ -1685,6 +1716,25 @@ mod tests {
     };
     use godot::prelude::{Vector2, Vector3};
 
+    fn test_economy_runtime_id(zone_type: ZoneType) -> u16 {
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        match zone_type {
+            ZoneType::Commercial => {
+                catalog
+                    .profile_for_id("grocery_basic")
+                    .expect("grocery starter profile")
+                    .runtime_id
+            }
+            ZoneType::Industrial => {
+                catalog
+                    .profile_for_id("food_processor_basic")
+                    .expect("food processor starter profile")
+                    .runtime_id
+            }
+            _ => 0,
+        }
+    }
+
     fn register_test_asset(
         allocator: &mut BuildingAllocator,
         asset_id: &str,
@@ -1737,7 +1787,11 @@ mod tests {
                 residents_capacity,
                 worker_capacity,
                 service_class: None,
-                economy_profile: None,
+                economy_profile: match zone_type {
+                    ZoneType::Commercial => Some("grocery_basic".to_owned()),
+                    ZoneType::Industrial => Some("food_processor_basic".to_owned()),
+                    _ => None,
+                },
                 preview_scale: Some(1.0),
             }),
             prop: None,
@@ -1776,12 +1830,14 @@ mod tests {
             asset_id,
             level: 1,
             broken: false,
+            economy_profile_runtime_id: test_economy_runtime_id(zone_type),
+            economy_broken: false,
             stock,
             input_stock: 0.0,
             revenue: 0.0,
             operating_budget: 500.0,
             utility_service_available: true,
-            shipment_cooldown_days: 0,
+            shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         }
@@ -1801,12 +1857,13 @@ mod tests {
             consumption_rate: 1.0,
             stock_days,
             replenishment_state: REPLENISHMENT_STABLE,
-            cooldown_days: 0,
+            cooldown_hours: 0,
             reserved_store_building_id: usize::MAX,
             reserved_amount: 0.0,
             reserved_total_cost: 0.0,
-            pickup_eta_days: 0,
+            pickup_eta_hours: 0,
             stay_failure_days: 0,
+            replenishment_offset_hours: 0,
         }
     }
 
@@ -2109,7 +2166,7 @@ mod tests {
     }
 
     #[test]
-    fn industrial_upgrade_requires_input_coverage_and_output_headroom() {
+    fn industrial_upgrade_uses_shipped_profile_viability_gates() {
         let mut allocator = BuildingAllocator::new();
         let level_one = register_family_asset(
             &mut allocator,
@@ -2137,7 +2194,16 @@ mod tests {
         let residential_occupants =
             ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
 
-        let weak_inputs = demand.collect_existing_building_candidates(
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog must load");
+        let starter_factory = catalog
+            .profile_for_id("food_processor_basic")
+            .expect("food processor starter profile");
+        assert!(
+            starter_factory.input.is_none(),
+            "shipped starter industrial profile is currently inputless"
+        );
+
+        let starter_headroom = demand.collect_existing_building_candidates(
             &allocator,
             &households,
             economy_tuning.as_ref(),
@@ -2145,11 +2211,11 @@ mod tests {
             ZoneType::Industrial,
             0.95,
         );
-        assert!(weak_inputs.upgrades.is_empty());
+        assert_eq!(starter_headroom.upgrades.len(), 1);
 
         allocator.buildings[0].input_stock = 320.0;
         allocator.buildings[0].stock = 50.0;
-        let strong_inputs = demand.collect_existing_building_candidates(
+        let same_profile = demand.collect_existing_building_candidates(
             &allocator,
             &households,
             economy_tuning.as_ref(),
@@ -2157,7 +2223,7 @@ mod tests {
             ZoneType::Industrial,
             0.95,
         );
-        assert_eq!(strong_inputs.upgrades.len(), 1);
+        assert_eq!(same_profile.upgrades.len(), 1);
 
         allocator.buildings[0].stock = 630.0;
         let jammed_output = demand.collect_existing_building_candidates(

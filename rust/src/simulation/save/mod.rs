@@ -130,7 +130,7 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
         ],
     )?;
     tx.execute("INSERT INTO map_config(width_m, height_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4)", params![view.config.width_m, view.config.height_m, view.config.env_cell_m, view.config.zone_cell_m])?;
-    tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, current_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.current_day), view.time.seconds_per_day, view.agents.sim_time])?;
+    tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.day_index), i64::from(view.time.minute_of_day), view.time.seconds_per_day, view.agents.sim_time])?;
 
     world::save_world(
         &tx,
@@ -169,12 +169,13 @@ pub(crate) fn load_from_sqlite(
         [],
         |r| Ok(MapConfig::new(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
-    let time_r: (f64, f32, i64, f64, f32) = conn.query_row("SELECT time_elapsed, speed_multiplier, current_day, seconds_per_day, agent_sim_time FROM time_state LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
+    let time_r: (f64, f32, i64, i64, f64, f32) = conn.query_row("SELECT time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time FROM time_state LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
     let time = TimeSystem {
         time_elapsed: time_r.0,
         speed_multiplier: time_r.1,
-        current_day: i64_to_u32(time_r.2)?,
-        seconds_per_day: time_r.3,
+        day_index: i64_to_u32(time_r.2)?,
+        minute_of_day: i64_to_u16(time_r.3)?,
+        seconds_per_day: time_r.4,
     };
 
     let mut terrain = world::load_terrain(&conn, &config)?;
@@ -248,7 +249,7 @@ pub(crate) fn load_from_sqlite(
     let mut allocator = world::load_buildings(&conn, registry, &zoning.profiles)?;
     let households = world::load_households(&conn)?;
     let logistics = world::load_shipments(&conn)?;
-    let mut agents = agents::load_agents(&conn, time_r.4)?;
+    let mut agents = agents::load_agents(&conn, time_r.5)?;
 
     let mut transit_network = TransitNetwork::new();
     network::rebuild_loaded_graph_runtime(&mut graph, &mut transit_network, &mut terrain);

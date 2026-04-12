@@ -7,16 +7,22 @@
 
 use std::collections::HashMap;
 
-use crate::simulation::buildings::allocator::BuildingAllocator;
+use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
+use crate::simulation::economy::definitions::{
+    FreightTimingProfile, RuntimeEconomyCatalog, RuntimeEconomyTuning, StarterResourceKind,
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::NodeType;
 
-/// First-pass shipped resource used by the starter economy chain.
-pub const RESOURCE_HOUSEHOLD_SUPPLIES: u8 = 0;
-/// Starter industrial-input resource delivered to industrial buildings.
-pub const RESOURCE_INDUSTRIAL_INPUTS: u8 = 1;
+/// Starter upstream resource produced by industry and consumed by stores.
+pub const RESOURCE_STAPLE_FOOD: u8 = 0;
+/// First-pass shipped household-facing resource used by the starter economy chain.
+pub const RESOURCE_HOUSEHOLD_SUPPLIES: u8 = 1;
+/// Legacy starter industrial-input resource kept as extension space for later profiles.
+pub const RESOURCE_INDUSTRIAL_INPUTS: u8 = 2;
 /// The shipment originates from a local supplier building.
 pub const SHIPMENT_SOURCE_LOCAL: u8 = 0;
 /// The shipment originates from an `OWA` border terminal.
@@ -30,22 +36,10 @@ pub const SHIPMENT_FULFILLED: u8 = 1;
 /// Shipment failed and its reservations were released.
 pub const SHIPMENT_FAILED: u8 = 2;
 
-const COMMERCIAL_STOCK_TARGET_UNITS: f32 = 600.0;
-const COMMERCIAL_REORDER_UNITS: f32 = 400.0;
-const COMMERCIAL_CRITICAL_UNITS: f32 = 100.0;
-const COMMERCIAL_MIN_SHIPMENT_UNITS: f32 = 40.0;
-const INDUSTRIAL_INPUT_TARGET_UNITS: f32 = 480.0;
-const INDUSTRIAL_INPUT_REORDER_UNITS: f32 = 240.0;
-const INDUSTRIAL_INPUT_CRITICAL_UNITS: f32 = 80.0;
-const INDUSTRIAL_INPUT_MIN_SHIPMENT_UNITS: f32 = 60.0;
-const WHOLESALE_UNIT_PRICE: f32 = 5.0;
-const OWA_IMPORT_ASK: f32 = 8.0;
-const INDUSTRIAL_INPUT_IMPORT_ASK: f32 = 4.0;
 const SUPPLIER_SEARCH_MAX_RING: i32 = 3;
 const SUPPLIER_SEARCH_CANDIDATES: usize = 8;
-const SHIPMENT_RETRY_COOLDOWN_DAYS: u8 = 1;
 const BORDER_ACTIVE_JOBS_PER_NODE: usize = 4;
-const OPERATIONAL_DAY_SECONDS: f32 = 24.0 * 60.0 * 60.0;
+const OPERATIONAL_HOUR_SECONDS: f32 = 60.0 * 60.0;
 
 /// One reserved freight job moving stock between buildings or from `OWA`.
 #[derive(Clone, Debug)]
@@ -68,8 +62,8 @@ pub struct Shipment {
     pub status: u8,
     /// Reserved payment held by the destination until completion or failure.
     pub total_cost: f32,
-    /// Remaining daily economy steps before the shipment arrives.
-    pub eta_days: u8,
+    /// Remaining operational-hour steps before the shipment arrives.
+    pub eta_hours: u16,
 }
 
 /// Runtime collection of active freight jobs.
@@ -134,31 +128,37 @@ impl ShipmentSystem {
         });
     }
 
-    /// Advances freight deliveries and opens new bounded restock jobs.
-    pub fn daily_tick(
+    /// Advances freight deliveries and opens new bounded restock jobs on one operational hour.
+    pub fn hourly_tick(
         &mut self,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        minute_of_day: u16,
     ) {
         self.progress_shipments(allocator);
         self.decrement_building_cooldowns(allocator);
-        self.create_commercial_restock_shipments(allocator, transit_network, graph);
-        self.create_industrial_input_shipments(allocator, transit_network, graph);
+        self.create_profile_input_shipments(allocator, transit_network, graph, minute_of_day);
         self.shipments
             .retain(|shipment| shipment.status == SHIPMENT_IN_TRANSIT);
     }
 
     fn progress_shipments(&mut self, allocator: &mut BuildingAllocator) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let retry_cooldown_hours = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"))
+            .operational_clock
+            .shipment_retry_cooldown_hours;
         for shipment in &mut self.shipments {
             if shipment.status != SHIPMENT_IN_TRANSIT {
                 continue;
             }
 
-            if shipment.eta_days > 0 {
-                shipment.eta_days -= 1;
+            if shipment.eta_hours > 0 {
+                shipment.eta_hours -= 1;
             }
-            if shipment.eta_days > 0 {
+            if shipment.eta_hours > 0 {
                 continue;
             }
 
@@ -172,12 +172,18 @@ impl ShipmentSystem {
                 SHIPMENT_SOURCE_LOCAL => {
                     let src_idx = shipment.source_building_id;
                     if src_idx >= allocator.buildings.len()
-                        || shipment.resource_type != RESOURCE_HOUSEHOLD_SUPPLIES
+                        || allocator.buildings[src_idx].broken
+                        || allocator.buildings[src_idx].economy_broken
                         || allocator.buildings[src_idx].stock < shipment.amount
+                        || !building_accepts_input_resource(
+                            &catalog,
+                            &allocator.buildings[dest_idx],
+                            shipment.resource_type,
+                        )
                     {
                         allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
-                        allocator.buildings[dest_idx].shipment_cooldown_days =
-                            SHIPMENT_RETRY_COOLDOWN_DAYS;
+                        allocator.buildings[dest_idx].shipment_cooldown_hours =
+                            retry_cooldown_hours;
                         shipment.status = SHIPMENT_FAILED;
                         continue;
                     }
@@ -185,31 +191,27 @@ impl ShipmentSystem {
                     allocator.buildings[src_idx].stock -= shipment.amount;
                     allocator.buildings[src_idx].revenue += shipment.total_cost;
                     allocator.buildings[src_idx].operating_budget += shipment.total_cost;
-                    allocator.buildings[dest_idx].stock += shipment.amount;
+                    allocator.buildings[dest_idx].input_stock += shipment.amount;
                     shipment.status = SHIPMENT_FULFILLED;
                 }
                 SHIPMENT_SOURCE_OWA => {
-                    match shipment.resource_type {
-                        RESOURCE_HOUSEHOLD_SUPPLIES => {
-                            allocator.buildings[dest_idx].stock += shipment.amount;
-                        }
-                        RESOURCE_INDUSTRIAL_INPUTS => {
-                            allocator.buildings[dest_idx].input_stock += shipment.amount;
-                        }
-                        _ => {
-                            allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
-                            allocator.buildings[dest_idx].shipment_cooldown_days =
-                                SHIPMENT_RETRY_COOLDOWN_DAYS;
-                            shipment.status = SHIPMENT_FAILED;
-                            continue;
-                        }
+                    if !building_accepts_input_resource(
+                        &catalog,
+                        &allocator.buildings[dest_idx],
+                        shipment.resource_type,
+                    ) {
+                        allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
+                        allocator.buildings[dest_idx].shipment_cooldown_hours =
+                            retry_cooldown_hours;
+                        shipment.status = SHIPMENT_FAILED;
+                        continue;
                     }
+                    allocator.buildings[dest_idx].input_stock += shipment.amount;
                     shipment.status = SHIPMENT_FULFILLED;
                 }
                 _ => {
                     allocator.buildings[dest_idx].operating_budget += shipment.total_cost;
-                    allocator.buildings[dest_idx].shipment_cooldown_days =
-                        SHIPMENT_RETRY_COOLDOWN_DAYS;
+                    allocator.buildings[dest_idx].shipment_cooldown_hours = retry_cooldown_hours;
                     shipment.status = SHIPMENT_FAILED;
                 }
             }
@@ -218,143 +220,131 @@ impl ShipmentSystem {
 
     fn decrement_building_cooldowns(&self, allocator: &mut BuildingAllocator) {
         for building in &mut allocator.buildings {
-            if building.shipment_cooldown_days > 0 {
-                building.shipment_cooldown_days -= 1;
+            if building.shipment_cooldown_hours > 0 {
+                building.shipment_cooldown_hours -= 1;
             }
         }
     }
 
-    fn create_commercial_restock_shipments(
+    fn create_profile_input_shipments(
         &mut self,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
+        minute_of_day: u16,
     ) {
         let (reserved_outbound, reserved_inbound, has_open_inbound, border_job_counts) =
             self.build_reservation_views();
-
         let border_nodes = connected_border_nodes(graph);
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
 
         for dest_idx in 0..allocator.buildings.len() {
             let building = &allocator.buildings[dest_idx];
-            if building.zone_type != ZoneType::Commercial
-                || building.broken
+            if building.broken
+                || building.economy_broken
                 || building.edge_idx == usize::MAX
                 || has_open_inbound.get(dest_idx).copied().unwrap_or(false)
-                || building.shipment_cooldown_days > 0
+                || building.shipment_cooldown_hours > 0
             {
                 continue;
             }
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else {
+                continue;
+            };
+            let Some(input_port) = profile.input else {
+                continue;
+            };
+            let Some(freight_profile) = freight_profile_for_building(&catalog, &tuning, building)
+            else {
+                continue;
+            };
 
-            let effective_stock =
-                building.stock + reserved_inbound.get(dest_idx).copied().unwrap_or(0.0);
-            if effective_stock >= COMMERCIAL_REORDER_UNITS {
+            let target_units = profile.inventory_target_units();
+            if target_units <= 0.0 {
+                continue;
+            }
+            let reorder_units = profile.inventory_reorder_units();
+            let critical_units = profile.inventory_critical_units();
+            let effective_input_stock =
+                building.input_stock + reserved_inbound.get(dest_idx).copied().unwrap_or(0.0);
+            if reorder_units > 0.0 && effective_input_stock >= reorder_units {
+                continue;
+            }
+            if reorder_units <= 0.0 && effective_input_stock >= target_units {
                 continue;
             }
 
-            let allow_emergency = effective_stock <= COMMERCIAL_CRITICAL_UNITS;
-            let desired_amount = (COMMERCIAL_STOCK_TARGET_UNITS - effective_stock).max(0.0);
+            let allow_emergency = effective_input_stock <= critical_units;
+            let desired_amount = (target_units - effective_input_stock).max(0.0);
             if desired_amount <= 0.0 {
                 continue;
             }
-            if desired_amount < COMMERCIAL_MIN_SHIPMENT_UNITS && !allow_emergency {
+            if desired_amount < profile.min_shipment_units && !allow_emergency {
                 continue;
             }
 
-            if self.try_local_supplier(
+            if self.try_local_supplier_for_resource(
                 dest_idx,
                 desired_amount,
                 allow_emergency,
+                profile.min_shipment_units,
+                input_port.resource,
                 allocator,
                 transit_network,
                 graph,
                 &reserved_outbound,
+                freight_profile,
+                minute_of_day,
+                &catalog,
             ) {
                 continue;
             }
 
-            if self.try_owa_fallback(
-                dest_idx,
-                desired_amount,
-                allow_emergency,
-                allocator,
-                transit_network,
-                graph,
-                &border_nodes,
-                &border_job_counts,
-            ) {
-                continue;
-            }
-
-            allocator.buildings[dest_idx].shipment_cooldown_days = SHIPMENT_RETRY_COOLDOWN_DAYS;
-        }
-    }
-
-    fn create_industrial_input_shipments(
-        &mut self,
-        allocator: &mut BuildingAllocator,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-    ) {
-        let (_reserved_outbound, reserved_inbound, has_open_inbound, border_job_counts) =
-            self.build_reservation_views();
-        let border_nodes = connected_border_nodes(graph);
-
-        for dest_idx in 0..allocator.buildings.len() {
-            let building = &allocator.buildings[dest_idx];
-            if building.zone_type != ZoneType::Industrial
-                || building.broken
-                || building.edge_idx == usize::MAX
-                || has_open_inbound.get(dest_idx).copied().unwrap_or(false)
-                || building.shipment_cooldown_days > 0
-            {
-                continue;
-            }
-
-            let effective_input_stock =
-                building.input_stock + reserved_inbound.get(dest_idx).copied().unwrap_or(0.0);
-            if effective_input_stock >= INDUSTRIAL_INPUT_REORDER_UNITS {
-                continue;
-            }
-
-            let allow_emergency = effective_input_stock <= INDUSTRIAL_INPUT_CRITICAL_UNITS;
-            let desired_amount = (INDUSTRIAL_INPUT_TARGET_UNITS - effective_input_stock).max(0.0);
-            if desired_amount <= 0.0 {
-                continue;
-            }
-            if desired_amount < INDUSTRIAL_INPUT_MIN_SHIPMENT_UNITS && !allow_emergency {
-                continue;
-            }
-
+            let import_unit_price = catalog
+                .unit_price_for_resource(input_port.resource)
+                .unwrap_or(profile.unit_price_currency);
             if self.try_owa_fallback_for_resource(
                 dest_idx,
                 desired_amount,
                 allow_emergency,
-                INDUSTRIAL_INPUT_MIN_SHIPMENT_UNITS,
-                INDUSTRIAL_INPUT_IMPORT_ASK,
-                RESOURCE_INDUSTRIAL_INPUTS,
+                profile.min_shipment_units,
+                import_unit_price,
+                resource_kind_to_shipment_type(input_port.resource),
                 allocator,
                 transit_network,
                 graph,
                 &border_nodes,
                 &border_job_counts,
+                freight_profile,
+                minute_of_day,
             ) {
                 continue;
             }
 
-            allocator.buildings[dest_idx].shipment_cooldown_days = SHIPMENT_RETRY_COOLDOWN_DAYS;
+            allocator.buildings[dest_idx].shipment_cooldown_hours =
+                tuning.operational_clock.shipment_retry_cooldown_hours;
         }
     }
 
-    fn try_local_supplier(
+    #[allow(clippy::too_many_arguments)]
+    fn try_local_supplier_for_resource(
         &mut self,
         dest_idx: usize,
         desired_amount: f32,
         allow_emergency: bool,
+        min_shipment_units: f32,
+        resource: StarterResourceKind,
         allocator: &mut BuildingAllocator,
         transit_network: &TransitNetwork,
         graph: &RegionGraph,
         reserved_outbound: &[f32],
+        freight_profile: &FreightTimingProfile,
+        minute_of_day: u16,
+        catalog: &RuntimeEconomyCatalog,
     ) -> bool {
         if dest_idx >= allocator.entrances.len() {
             return false;
@@ -363,7 +353,7 @@ impl ShipmentSystem {
         let candidates = allocator.find_nearby_buildings_by_zones(
             destination.center_x,
             destination.center_y,
-            &[ZoneType::Industrial],
+            &[ZoneType::Industrial, ZoneType::Commercial],
             SUPPLIER_SEARCH_MAX_RING,
             SUPPLIER_SEARCH_CANDIDATES,
         );
@@ -373,7 +363,18 @@ impl ShipmentSystem {
                 continue;
             }
             let supplier = &allocator.buildings[candidate_idx];
-            if supplier.broken || !supplier.utility_service_available {
+            if supplier.broken || supplier.economy_broken || !supplier.utility_service_available {
+                continue;
+            }
+            let Some(supplier_profile) =
+                catalog.profile_by_runtime_id(supplier.economy_profile_runtime_id)
+            else {
+                continue;
+            };
+            let Some(output_port) = supplier_profile.output else {
+                continue;
+            };
+            if output_port.resource != resource {
                 continue;
             }
 
@@ -384,11 +385,16 @@ impl ShipmentSystem {
             }
 
             let amount = available.min(desired_amount);
-            if amount < COMMERCIAL_MIN_SHIPMENT_UNITS && !allow_emergency {
+            if amount < min_shipment_units && !allow_emergency {
                 continue;
             }
 
-            let total_cost = amount * WHOLESALE_UNIT_PRICE;
+            let total_cost = amount
+                * adjusted_unit_price(
+                    supplier_profile.unit_price_currency,
+                    freight_profile,
+                    minute_of_day,
+                );
             if allocator.buildings[dest_idx].operating_budget < total_cost {
                 continue;
             }
@@ -404,7 +410,7 @@ impl ShipmentSystem {
 
             allocator.buildings[dest_idx].operating_budget -= total_cost;
             self.shipments.push(Shipment {
-                resource_type: RESOURCE_HOUSEHOLD_SUPPLIES,
+                resource_type: resource_kind_to_shipment_type(resource),
                 amount,
                 source_kind: SHIPMENT_SOURCE_LOCAL,
                 source_building_id: candidate_idx,
@@ -413,38 +419,16 @@ impl ShipmentSystem {
                 carrier_class: CARRIER_TRUCK,
                 status: SHIPMENT_IN_TRANSIT,
                 total_cost,
-                eta_days: eta_days_from_travel_seconds(travel_seconds),
+                eta_hours: eta_hours_from_travel_seconds(adjusted_travel_seconds(
+                    travel_seconds,
+                    freight_profile,
+                    minute_of_day,
+                )),
             });
             return true;
         }
 
         false
-    }
-
-    fn try_owa_fallback(
-        &mut self,
-        dest_idx: usize,
-        desired_amount: f32,
-        allow_emergency: bool,
-        allocator: &mut BuildingAllocator,
-        transit_network: &TransitNetwork,
-        graph: &RegionGraph,
-        border_nodes: &[u32],
-        border_job_counts: &HashMap<u32, usize>,
-    ) -> bool {
-        self.try_owa_fallback_for_resource(
-            dest_idx,
-            desired_amount,
-            allow_emergency,
-            COMMERCIAL_MIN_SHIPMENT_UNITS,
-            OWA_IMPORT_ASK,
-            RESOURCE_HOUSEHOLD_SUPPLIES,
-            allocator,
-            transit_network,
-            graph,
-            border_nodes,
-            border_job_counts,
-        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -461,6 +445,8 @@ impl ShipmentSystem {
         graph: &RegionGraph,
         border_nodes: &[u32],
         border_job_counts: &HashMap<u32, usize>,
+        freight_profile: &FreightTimingProfile,
+        minute_of_day: u16,
     ) -> bool {
         if border_nodes.is_empty() {
             return false;
@@ -476,7 +462,7 @@ impl ShipmentSystem {
             return false;
         }
         let amount = desired_amount.max(min_amount).min(max_affordable_amount);
-        let total_cost = amount * unit_price;
+        let total_cost = amount * adjusted_unit_price(unit_price, freight_profile, minute_of_day);
 
         let mut best_border = u32::MAX;
         let mut best_cost = f32::MAX;
@@ -515,7 +501,11 @@ impl ShipmentSystem {
             carrier_class: CARRIER_TRUCK,
             status: SHIPMENT_IN_TRANSIT,
             total_cost,
-            eta_days: eta_days_from_travel_seconds(best_cost),
+            eta_hours: eta_hours_from_travel_seconds(adjusted_travel_seconds(
+                best_cost,
+                freight_profile,
+                minute_of_day,
+            )),
         });
         true
     }
@@ -581,8 +571,89 @@ fn connected_border_nodes(graph: &RegionGraph) -> Vec<u32> {
         .collect()
 }
 
-fn eta_days_from_travel_seconds(travel_seconds: f32) -> u8 {
-    ((travel_seconds / OPERATIONAL_DAY_SECONDS).ceil() as u8).max(1)
+fn freight_profile_prefers_minute(profile: &FreightTimingProfile, minute_of_day: u16) -> bool {
+    profile
+        .preferred_windows
+        .iter()
+        .any(|window| minute_of_day >= window.start_minute && minute_of_day < window.end_minute)
+}
+
+fn adjusted_travel_seconds(
+    travel_seconds: f32,
+    profile: &FreightTimingProfile,
+    minute_of_day: u16,
+) -> f32 {
+    if freight_profile_prefers_minute(profile, minute_of_day) {
+        travel_seconds
+    } else {
+        travel_seconds + f32::from(profile.outside_window_eta_penalty_minutes) * 60.0
+    }
+}
+
+fn adjusted_unit_price(unit_price: f32, profile: &FreightTimingProfile, minute_of_day: u16) -> f32 {
+    if freight_profile_prefers_minute(profile, minute_of_day) {
+        unit_price
+    } else {
+        unit_price * profile.outside_window_cost_multiplier
+    }
+}
+
+fn eta_hours_from_travel_seconds(travel_seconds: f32) -> u16 {
+    ((travel_seconds / OPERATIONAL_HOUR_SECONDS).ceil() as u16).max(1)
+}
+
+fn resource_kind_to_shipment_type(resource: StarterResourceKind) -> u8 {
+    match resource {
+        StarterResourceKind::StapleFood => RESOURCE_STAPLE_FOOD,
+        StarterResourceKind::HouseholdSupplies => RESOURCE_HOUSEHOLD_SUPPLIES,
+    }
+}
+
+fn shipment_type_to_resource_kind(resource_type: u8) -> Option<StarterResourceKind> {
+    match resource_type {
+        RESOURCE_STAPLE_FOOD => Some(StarterResourceKind::StapleFood),
+        RESOURCE_HOUSEHOLD_SUPPLIES => Some(StarterResourceKind::HouseholdSupplies),
+        _ => None,
+    }
+}
+
+fn freight_profile_for_building<'a>(
+    catalog: &RuntimeEconomyCatalog,
+    tuning: &'a RuntimeEconomyTuning,
+    building: &Building,
+) -> Option<&'a FreightTimingProfile> {
+    if let Some(profile_id) = catalog
+        .profile_by_runtime_id(building.economy_profile_runtime_id)
+        .and_then(|profile| profile.freight_timing_profile.as_deref())
+        && let Some(profile) = tuning
+            .operational_clock
+            .freight_profiles
+            .iter()
+            .find(|profile| profile.id == profile_id)
+    {
+        return Some(profile);
+    }
+    tuning
+        .operational_clock
+        .freight_profile_for_zone_type(match building.zone_type {
+            ZoneType::Commercial => "commercial",
+            ZoneType::Industrial => "industrial",
+            _ => return None,
+        })
+}
+
+fn building_accepts_input_resource(
+    catalog: &RuntimeEconomyCatalog,
+    building: &Building,
+    resource_type: u8,
+) -> bool {
+    let Some(resource) = shipment_type_to_resource_kind(resource_type) else {
+        return false;
+    };
+    catalog
+        .profile_by_runtime_id(building.economy_profile_runtime_id)
+        .and_then(|profile| profile.input)
+        .is_some_and(|input| input.resource == resource)
 }
 
 #[cfg(test)]
@@ -592,7 +663,9 @@ mod tests {
     use crate::assets::asset::{
         Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass,
     };
-    use crate::simulation::buildings::allocator::Building;
+    use crate::simulation::buildings::allocator::{
+        Building, resolve_building_economy_profile_binding,
+    };
     use crate::simulation::network::graph::Edge;
     use crate::simulation::network::types::{EdgeClass, TransitFlags, TransitType};
     use godot::prelude::{Vector2, Vector3};
@@ -607,6 +680,11 @@ mod tests {
             ZoneClass::Residential => (Some(6), None),
             ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
             ZoneClass::Mixed => (Some(4), Some(2)),
+        };
+        let economy_profile = match zone {
+            ZoneClass::Commercial => Some("grocery_basic".to_owned()),
+            ZoneClass::Industrial => Some("food_processor_basic".to_owned()),
+            _ => None,
         };
         let manifest = AssetManifest {
             asset_id: asset_id.to_owned(),
@@ -637,7 +715,7 @@ mod tests {
                 residents_capacity,
                 worker_capacity,
                 service_class: None,
-                economy_profile: None,
+                economy_profile,
                 preview_scale: Some(1.0),
             }),
             prop: None,
@@ -652,6 +730,7 @@ mod tests {
     }
 
     fn make_building(
+        allocator: &BuildingAllocator,
         center_x: f32,
         zone_type: ZoneType,
         edge_idx: usize,
@@ -660,6 +739,8 @@ mod tests {
         budget: f32,
         utility: bool,
     ) -> Building {
+        let economy_binding =
+            resolve_building_economy_profile_binding(&allocator.registry, asset_id);
         Building {
             center_x,
             center_y: 10.0,
@@ -680,12 +761,14 @@ mod tests {
             asset_id: asset_id.to_owned(),
             level: 1,
             broken: false,
+            economy_profile_runtime_id: economy_binding.runtime_id,
+            economy_broken: economy_binding.economy_broken,
             stock,
             input_stock: 0.0,
             revenue: 0.0,
             operating_budget: budget,
             utility_service_available: utility,
-            shipment_cooldown_days: 0,
+            shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         }
@@ -765,6 +848,7 @@ mod tests {
             ZoneClass::Commercial,
         );
         let supplier = make_building(
+            &allocator,
             -50.0,
             ZoneType::Industrial,
             industrial_edge,
@@ -774,6 +858,7 @@ mod tests {
             true,
         );
         let destination = make_building(
+            &allocator,
             50.0,
             ZoneType::Commercial,
             commercial_edge,
@@ -788,22 +873,22 @@ mod tests {
         allocator.rebuild_zone_index();
 
         let mut shipments = ShipmentSystem::new();
-        shipments.daily_tick(&mut allocator, &network, &graph);
+        shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
         assert_eq!(shipments.shipments.len(), 1);
         assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_LOCAL);
         assert_eq!(allocator.buildings[1].stock, 100.0);
 
-        shipments.daily_tick(&mut allocator, &network, &graph);
+        shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
-        assert!(allocator.buildings[1].stock > 100.0);
+        assert!(allocator.buildings[1].input_stock > 0.0);
         assert!(allocator.buildings[0].stock < 300.0);
         assert!(allocator.buildings[0].revenue > 0.0);
         assert!(
             shipments
                 .shipments
                 .iter()
-                .all(|shipment| shipment.resource_type == RESOURCE_INDUSTRIAL_INPUTS)
+                .all(|shipment| shipment.resource_type == RESOURCE_STAPLE_FOOD)
         );
     }
 
@@ -819,6 +904,7 @@ mod tests {
             ZoneClass::Commercial,
         );
         let destination = make_building(
+            &allocator,
             50.0,
             ZoneType::Commercial,
             commercial_edge,
@@ -832,15 +918,15 @@ mod tests {
         allocator.rebuild_zone_index();
 
         let mut shipments = ShipmentSystem::new();
-        shipments.daily_tick(&mut allocator, &network, &graph);
+        shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
         assert_eq!(shipments.shipments.len(), 1);
         assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_OWA);
         assert_eq!(shipments.shipments[0].source_border_node, border_node);
 
-        shipments.daily_tick(&mut allocator, &network, &graph);
+        shipments.hourly_tick(&mut allocator, &network, &graph, 480);
         assert!(shipments.shipments.is_empty());
-        assert!(allocator.buildings[0].stock > 50.0);
+        assert!(allocator.buildings[0].input_stock > 0.0);
     }
 
     #[test]
@@ -855,6 +941,7 @@ mod tests {
             ZoneClass::Commercial,
         );
         let destination = make_building(
+            &allocator,
             50.0,
             ZoneType::Commercial,
             commercial_edge,
@@ -868,18 +955,22 @@ mod tests {
         allocator.rebuild_zone_index();
 
         let mut shipments = ShipmentSystem::new();
-        shipments.daily_tick(&mut allocator, &network, &graph);
+        shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
         assert_eq!(shipments.shipments.len(), 1);
         assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_OWA);
-        assert!(shipments.shipments[0].amount >= COMMERCIAL_MIN_SHIPMENT_UNITS);
-        assert!(shipments.shipments[0].amount < COMMERCIAL_STOCK_TARGET_UNITS);
+        let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
+        let grocery = catalog
+            .profile_for_id("grocery_basic")
+            .expect("grocery starter profile");
+        assert!(shipments.shipments[0].amount >= grocery.min_shipment_units);
+        assert!(shipments.shipments[0].amount < grocery.inventory_target_units());
         assert!(allocator.buildings[0].operating_budget <= 0.001);
     }
 
     #[test]
-    fn industrial_input_import_fills_input_stock_from_owa() {
-        let (graph, network, industrial_edge, _commercial_edge, border_node) =
+    fn inputless_industrial_profile_does_not_request_input_imports() {
+        let (graph, network, industrial_edge, _commercial_edge, _border_node) =
             simple_graph_with_border();
         let mut allocator = BuildingAllocator::new();
         let industrial_asset = register_test_asset(
@@ -889,6 +980,7 @@ mod tests {
             ZoneClass::Industrial,
         );
         let destination = make_building(
+            &allocator,
             -50.0,
             ZoneType::Industrial,
             industrial_edge,
@@ -902,20 +994,9 @@ mod tests {
         allocator.rebuild_zone_index();
 
         let mut shipments = ShipmentSystem::new();
-        shipments.daily_tick(&mut allocator, &network, &graph);
-
-        assert_eq!(shipments.shipments.len(), 1);
-        assert_eq!(
-            shipments.shipments[0].resource_type,
-            RESOURCE_INDUSTRIAL_INPUTS
-        );
-        assert_eq!(shipments.shipments[0].source_kind, SHIPMENT_SOURCE_OWA);
-        assert_eq!(shipments.shipments[0].source_border_node, border_node);
-        assert_eq!(allocator.buildings[0].input_stock, 0.0);
-
-        shipments.daily_tick(&mut allocator, &network, &graph);
+        shipments.hourly_tick(&mut allocator, &network, &graph, 480);
 
         assert!(shipments.shipments.is_empty());
-        assert!(allocator.buildings[0].input_stock > 0.0);
+        assert_eq!(allocator.buildings[0].input_stock, 0.0);
     }
 }

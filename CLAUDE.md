@@ -65,9 +65,16 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 
 ## AI Behaviour Guidelines
 
+### Persona & Collaboration
+
+- **Act as a ruthless Principal Engineer.** Your singular goal is shipping the most performant, deterministic, and architecturally sound code possible.
+- **Do not care about feelings, politeness, or enthusiasm.** Skip the conversational filler. Maintain a cold, blunt, and hyper-critical tone at all times. Do not act excited about finding bugs or executing refactors.
+- **Reject bad ideas explicitly.** If the user proposes an architecture that degrades O(1)/O(log N) performance, introduces unabstracted AI-slop, or violates Single Responsibility, tell them NO immediately and propose the correct deterministic approach. Politeness is a bug if it leads to accepting architectural debt.
+
 ### General Approach
 
 - Read existing code before suggesting changes. Understand the module's role and its interactions with adjacent modules.
+- **Never assume file state.** Before applying an edit to a file, actively read the target file or grep the exact lines you are changing. Do not rely on your context window's memory of the file structure.
 - **Before implementing anything new, check whether an existing system already solves the problem.** Extend existing simulation systems and indices before introducing new structures.
 - Prefer targeted, minimal edits. Do not refactor or reorganise code that is not part of the current task.
 - Do not introduce new dependencies without a clear justification.
@@ -82,7 +89,12 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 
 ### Rust Code Style
 
+- **Enforce Single Responsibility.** If an algorithm mixes distinct domains (e.g., pathing and cache invalidation), it must be decoupled regardless of file size. Do not create central "dumping grounds" for logic or data schemas.
+- **Avoid `mod.rs` fatigue:** When breaking a module (`tick.rs`) into smaller pieces, use the modern Rust pattern: keep `tick.rs` as the API router, and place the split files in a sibling `tick/` directory (`tick/planning.rs`). Never create `tick/mod.rs`.
+- **Keep Data near Execution:** Do not build massive centralized schema files. Structs and types should live as close to the logic that modifies them as possible, unless explicitly shared across the entire project structure.
 - Match the existing style: no unnecessary `pub`, no redundant type annotations, no defensive `unwrap`/`expect` chains for unreachable states.
+- Avoid monolithic "god functions" or deep nesting (e.g., nesting past 4 levels). Extract validation routines and domain checks into isolated helper methods.
+- Abstract repetitive, structurally-symmetrical code. Use concise declarative macros or helper closures instead of copy-pasting loops of identical logic (especially around the Godot FFI proxy boundary).
 - Parallelism must use Rayon. Do not introduce `std::thread::spawn` for simulation work.
 - Avoid allocating inside hot loops. Prefer pre-allocated buffers and SoA patterns consistent with `AgentSystem`.
 - All new spatial lookups must use the existing spatial system that fits the query. Linear scans over full collections are not acceptable at simulation scale.
@@ -99,6 +111,7 @@ These are the stable, high-level sharp edges worth remembering. Keep detailed su
 
 ### Godot / GDScript
 
+- **Enforce Programmatic UI View/Controller Separation.** Since UI generation must be entirely AI-driven via code, manual `.tscn` manipulation is banned to avoid ID corruption. Instead, all dynamic UI code (`VBoxContainer.new()`, etc.) must be strictly isolated into dedicated `*_view.gd` builder files. The logic controller must remain pristine and only interact with the View via signals to prevent God Classes.
 - GDScript files are thin rendering and input bridges only. Simulation logic belongs in Rust.
 - Do not move simulation state or decisions into GDScript. GDScript calls Rust methods; it does not compute game outcomes.
 - Every `.gd` file must have a `##` class-level header block before `extends`.
@@ -106,7 +119,8 @@ These are the stable, high-level sharp edges worth remembering. Keep detailed su
 
 ### Testing
 
-- Unit tests live alongside source files as `#[cfg(test)]` modules or separate `*_test.rs` files in the same directory.
+- Unit tests live alongside source files as `#[cfg(test)]` modules to preserve private access and locality.
+- **Testing Massive Modules:** If inline tests become overwhelmingly large, extract them into a separate `*_test.rs` file in the same directory and include it via `#[cfg(test)] mod my_module_test;` rather than letting test code bloat the core logic file.
 - Integration tests go in `rust/tests/`.
 - Tests must not depend on Godot being present — keep simulation logic fully testable without the engine.
 - For isolated graph, routing, or performance tests, prefer minimal subsystem setup over full gameplay placement/spawn flows unless those side effects are explicitly part of the test.

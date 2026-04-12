@@ -128,10 +128,75 @@ struct EconomyProject {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(default)]
 pub(crate) struct RuntimeEconomyTuning {
+    /// Shared operational clock state and authored schedule profiles.
+    pub operational_clock: OperationalClockRuntimeTuning,
     /// Household relocation and eviction thresholds.
     pub households: HouseholdRuntimeTuning,
     /// Building viability thresholds used by demand-owned level changes.
     pub viability: BuildingViabilityRuntimeTuning,
+}
+
+/// Shared operational-clock tuning used by labor, replenishment, and freight.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub(crate) struct OperationalClockRuntimeTuning {
+    /// Real seconds required to advance one authored operational day at `1.0x`.
+    pub seconds_per_day: f64,
+    /// Minutes between cached commute-estimate refreshes.
+    pub travel_estimate_refresh_minutes: u16,
+    /// Hours between household replenishment checks.
+    pub household_replenishment_check_interval_hours: u16,
+    /// Hours between reserve creation and household pickup completion.
+    pub household_pickup_eta_hours: u16,
+    /// Hours to wait before retrying a failed household replenishment.
+    pub household_replenishment_retry_cooldown_hours: u16,
+    /// Hours to wait before retrying a failed freight request.
+    pub shipment_retry_cooldown_hours: u16,
+    /// Named work timing profiles keyed by authored id.
+    pub work_profiles: Vec<WorkTimingProfile>,
+    /// Named freight timing preference profiles keyed by authored id.
+    pub freight_profiles: Vec<FreightTimingProfile>,
+    /// Broad zone-type to work profile mapping for the live baseline runtime.
+    pub work_profile_by_zone_type: BTreeMap<String, String>,
+    /// Broad zone-type to freight profile mapping for the live baseline runtime.
+    pub freight_profile_by_zone_type: BTreeMap<String, String>,
+}
+
+/// One authored minute range from operational midnight.
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+pub(crate) struct MinuteWindow {
+    /// Inclusive start minute from midnight.
+    pub start_minute: u16,
+    /// Exclusive end minute from midnight.
+    pub end_minute: u16,
+}
+
+/// Authored arrival and departure windows for one repeated traveler profile.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub(crate) struct WorkTimingProfile {
+    /// Stable id used by the broad zone-type lookup table.
+    pub id: String,
+    /// Acceptable arrival windows for this schedule.
+    pub arrival_windows: Vec<MinuteWindow>,
+    /// Acceptable return-home departure windows for this schedule.
+    pub departure_windows: Vec<MinuteWindow>,
+    /// Fixed authored arrival buffer in minutes.
+    pub reliability_buffer_minutes: u16,
+}
+
+/// Soft preferred freight receive or dispatch timing profile.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(default)]
+pub(crate) struct FreightTimingProfile {
+    /// Stable id used by the broad zone-type lookup table.
+    pub id: String,
+    /// Preferred receive or dispatch windows for this profile.
+    pub preferred_windows: Vec<MinuteWindow>,
+    /// Extra ETA penalty applied outside the preferred window.
+    pub outside_window_eta_penalty_minutes: u16,
+    /// Cost multiplier applied outside the preferred window.
+    pub outside_window_cost_multiplier: f32,
 }
 
 /// Household-side runtime tuning values derived from `economy/profiles.toml`.
@@ -172,12 +237,318 @@ pub(crate) struct BuildingViabilityRuntimeTuning {
     pub industrial_max_output_headroom_for_downgrade: f32,
 }
 
+/// Starter resource kinds supported by the live pre-Phase-4 runtime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum StarterResourceKind {
+    /// Bulk food-like upstream good produced by starter industry.
+    StapleFood,
+    /// Household-facing saleable supplies consumed by households.
+    HouseholdSupplies,
+}
+
+impl StarterResourceKind {
+    /// Parses one authored resource id into the current starter runtime resource set.
+    pub(crate) fn from_authored_name(name: &str) -> Option<Self> {
+        match name {
+            "staple_food" => Some(Self::StapleFood),
+            "household_supplies" => Some(Self::HouseholdSupplies),
+            _ => None,
+        }
+    }
+}
+
+/// One compiled starter-runtime resource port.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RuntimeResourcePort {
+    /// Starter resource kind carried through this port.
+    pub resource: StarterResourceKind,
+    /// Authored throughput in units per day.
+    pub units_per_day: f32,
+}
+
+/// Broad runtime behavior class compiled from one authored economy profile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EconomyProfileRuntimeKind {
+    /// Upstream producing building that writes directly into its output stock buffer.
+    Producer,
+    /// Throughput building that converts one input buffer into one output buffer.
+    Store,
+    /// Non-building aggregate sink profile used by sandbox and household-side graphs.
+    DemandSink,
+    /// Authored profile kind that the live starter runtime does not execute yet.
+    Unsupported,
+}
+
+/// Compiled runtime view of one authored `economy_profile`.
+#[derive(Clone, Debug)]
+pub(crate) struct EconomyProfileRuntime {
+    /// Stable compact runtime id used on live buildings.
+    pub runtime_id: u16,
+    /// Authored stable profile id.
+    pub id: String,
+    /// Broad runtime behavior kind used by the starter live economy.
+    #[allow(dead_code)]
+    pub kind: EconomyProfileRuntimeKind,
+    /// Optional authored work schedule profile id.
+    pub work_schedule_profile: Option<String>,
+    /// Optional authored freight timing profile id.
+    pub freight_timing_profile: Option<String>,
+    /// Authored baseline units-per-day throughput anchor.
+    pub base_rate_units_per_day: f32,
+    /// Fixed baseline unit sale price for the profile's main output.
+    pub unit_price_currency: f32,
+    /// Fixed minimum daily wage offered by this profile.
+    pub wage_min_currency_per_day: f32,
+    /// Fixed maximum daily wage offered by this profile.
+    pub wage_max_currency_per_day: f32,
+    /// Authored target stock horizon in days for the starter live runtime.
+    pub stock_target_days: f32,
+    /// Authored reorder threshold in days for the starter live runtime.
+    pub reorder_threshold_days: f32,
+    /// Authored critical threshold in days for emergency freight.
+    pub critical_threshold_days: f32,
+    /// Authored lower shipment bound for ordinary freight requests.
+    pub min_shipment_units: f32,
+    /// Household-demand consumption rate used by abstract sink profiles.
+    #[allow(dead_code)]
+    pub consumption_rate_per_resident: f32,
+    /// Compiled single input port used by the starter live runtime, if any.
+    pub input: Option<RuntimeResourcePort>,
+    /// Compiled single output port used by the starter live runtime, if any.
+    pub output: Option<RuntimeResourcePort>,
+    /// False when the authored profile exists but the live starter runtime cannot execute it yet.
+    pub starter_runtime_supported: bool,
+}
+
+impl EconomyProfileRuntime {
+    /// Returns the authored average daily wage for the profile.
+    pub(crate) fn average_daily_wage(&self) -> f32 {
+        ((self.wage_min_currency_per_day + self.wage_max_currency_per_day) * 0.5).max(0.0)
+    }
+
+    /// Returns the primary daily input units consumed by this profile.
+    pub(crate) fn input_units_per_day(&self) -> f32 {
+        self.input
+            .map(|port| port.units_per_day)
+            .unwrap_or(0.0)
+            .max(0.0)
+    }
+
+    /// Returns the primary daily output units produced by this profile.
+    pub(crate) fn output_units_per_day(&self) -> f32 {
+        self.output
+            .map(|port| port.units_per_day)
+            .unwrap_or(self.base_rate_units_per_day)
+            .max(0.0)
+    }
+
+    /// Returns the starter-runtime target units for the primary inventory buffer.
+    pub(crate) fn inventory_target_units(&self) -> f32 {
+        let units_per_day = if self.input.is_some() {
+            self.input_units_per_day()
+        } else {
+            self.output_units_per_day()
+        };
+        (units_per_day * self.stock_target_days.max(0.0)).max(0.0)
+    }
+
+    /// Returns the starter-runtime reorder threshold in units.
+    pub(crate) fn inventory_reorder_units(&self) -> f32 {
+        let units_per_day = if self.input.is_some() {
+            self.input_units_per_day()
+        } else {
+            self.output_units_per_day()
+        };
+        (units_per_day * self.reorder_threshold_days.max(0.0)).max(0.0)
+    }
+
+    /// Returns the starter-runtime emergency threshold in units.
+    pub(crate) fn inventory_critical_units(&self) -> f32 {
+        let units_per_day = if self.input.is_some() {
+            self.input_units_per_day()
+        } else {
+            self.output_units_per_day()
+        };
+        (units_per_day * self.critical_threshold_days.max(0.0)).max(0.0)
+    }
+
+    /// Returns the starter-runtime output buffer cap in units.
+    pub(crate) fn output_buffer_capacity_units(&self) -> f32 {
+        let capacity = self.output_units_per_day() * self.stock_target_days.max(0.0);
+        if capacity <= 0.0 { f32::MAX } else { capacity }
+    }
+}
+
+/// Cached compiled runtime economy catalog derived from authored `economy_profile` data.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct RuntimeEconomyCatalog {
+    profiles: Vec<EconomyProfileRuntime>,
+    by_id: BTreeMap<String, u16>,
+    price_by_resource: BTreeMap<StarterResourceKind, f32>,
+}
+
+impl RuntimeEconomyCatalog {
+    /// Returns one compiled runtime profile by authored id.
+    pub(crate) fn profile_for_id(&self, profile_id: &str) -> Option<&EconomyProfileRuntime> {
+        let runtime_id = *self.by_id.get(profile_id)?;
+        self.profile_by_runtime_id(runtime_id)
+    }
+
+    /// Returns one compiled runtime profile by compact runtime id.
+    pub(crate) fn profile_by_runtime_id(&self, runtime_id: u16) -> Option<&EconomyProfileRuntime> {
+        runtime_id
+            .checked_sub(1)
+            .and_then(|idx| self.profiles.get(idx as usize))
+    }
+
+    /// Returns the default starter-runtime unit price for one resource when `OWA` imports it.
+    pub(crate) fn unit_price_for_resource(&self, resource: StarterResourceKind) -> Option<f32> {
+        self.price_by_resource.get(&resource).copied()
+    }
+}
+
 impl Default for RuntimeEconomyTuning {
     fn default() -> Self {
         Self {
+            operational_clock: OperationalClockRuntimeTuning::default(),
             households: HouseholdRuntimeTuning::default(),
             viability: BuildingViabilityRuntimeTuning::default(),
         }
+    }
+}
+
+impl Default for OperationalClockRuntimeTuning {
+    fn default() -> Self {
+        let daytime = WorkTimingProfile {
+            id: "daytime_work".to_owned(),
+            arrival_windows: vec![MinuteWindow {
+                start_minute: 7 * 60,
+                end_minute: 9 * 60,
+            }],
+            departure_windows: vec![MinuteWindow {
+                start_minute: 16 * 60,
+                end_minute: 18 * 60,
+            }],
+            reliability_buffer_minutes: 15,
+        };
+        let three_shift = WorkTimingProfile {
+            id: "three_shift_work".to_owned(),
+            arrival_windows: vec![
+                MinuteWindow {
+                    start_minute: 5 * 60 + 30,
+                    end_minute: 6 * 60 + 30,
+                },
+                MinuteWindow {
+                    start_minute: 13 * 60 + 30,
+                    end_minute: 14 * 60 + 30,
+                },
+                MinuteWindow {
+                    start_minute: 21 * 60 + 30,
+                    end_minute: 22 * 60 + 30,
+                },
+            ],
+            departure_windows: vec![
+                MinuteWindow {
+                    start_minute: 13 * 60,
+                    end_minute: 14 * 60,
+                },
+                MinuteWindow {
+                    start_minute: 21 * 60,
+                    end_minute: 22 * 60,
+                },
+                MinuteWindow {
+                    start_minute: 5 * 60,
+                    end_minute: 6 * 60,
+                },
+            ],
+            reliability_buffer_minutes: 10,
+        };
+        Self {
+            seconds_per_day: 24.0 * 60.0,
+            travel_estimate_refresh_minutes: 360,
+            household_replenishment_check_interval_hours: 6,
+            household_pickup_eta_hours: 1,
+            household_replenishment_retry_cooldown_hours: 1,
+            shipment_retry_cooldown_hours: 1,
+            work_profiles: vec![daytime, three_shift],
+            freight_profiles: vec![
+                FreightTimingProfile {
+                    id: "always_open".to_owned(),
+                    preferred_windows: vec![MinuteWindow {
+                        start_minute: 0,
+                        end_minute: 24 * 60,
+                    }],
+                    outside_window_eta_penalty_minutes: 0,
+                    outside_window_cost_multiplier: 1.0,
+                },
+                FreightTimingProfile {
+                    id: "daytime_receive".to_owned(),
+                    preferred_windows: vec![MinuteWindow {
+                        start_minute: 7 * 60,
+                        end_minute: 18 * 60,
+                    }],
+                    outside_window_eta_penalty_minutes: 60,
+                    outside_window_cost_multiplier: 1.1,
+                },
+                FreightTimingProfile {
+                    id: "early_morning_preferred".to_owned(),
+                    preferred_windows: vec![MinuteWindow {
+                        start_minute: 4 * 60,
+                        end_minute: 8 * 60,
+                    }],
+                    outside_window_eta_penalty_minutes: 60,
+                    outside_window_cost_multiplier: 1.05,
+                },
+            ],
+            work_profile_by_zone_type: BTreeMap::from([
+                ("commercial".to_owned(), "daytime_work".to_owned()),
+                ("industrial".to_owned(), "three_shift_work".to_owned()),
+            ]),
+            freight_profile_by_zone_type: BTreeMap::from([
+                ("commercial".to_owned(), "daytime_receive".to_owned()),
+                ("industrial".to_owned(), "always_open".to_owned()),
+            ]),
+        }
+    }
+}
+
+impl Default for WorkTimingProfile {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            arrival_windows: Vec::new(),
+            departure_windows: Vec::new(),
+            reliability_buffer_minutes: 0,
+        }
+    }
+}
+
+impl Default for FreightTimingProfile {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            preferred_windows: Vec::new(),
+            outside_window_eta_penalty_minutes: 0,
+            outside_window_cost_multiplier: 1.0,
+        }
+    }
+}
+
+impl OperationalClockRuntimeTuning {
+    /// Returns the authored work profile configured for one broad zone type.
+    pub fn work_profile_for_zone_type(&self, zone_type: &str) -> Option<&WorkTimingProfile> {
+        let profile_id = self.work_profile_by_zone_type.get(zone_type)?;
+        self.work_profiles
+            .iter()
+            .find(|profile| profile.id == *profile_id)
+    }
+
+    /// Returns the authored freight timing profile configured for one broad zone type.
+    pub fn freight_profile_for_zone_type(&self, zone_type: &str) -> Option<&FreightTimingProfile> {
+        let profile_id = self.freight_profile_by_zone_type.get(zone_type)?;
+        self.freight_profiles
+            .iter()
+            .find(|profile| profile.id == *profile_id)
     }
 }
 
@@ -236,6 +607,10 @@ struct EconomyProfile {
     min_shipment_units: f32,
     #[serde(default)]
     consumption_rate_per_resident: f32,
+    #[serde(default)]
+    work_schedule_profile: Option<String>,
+    #[serde(default)]
+    freight_timing_profile: Option<String>,
     #[serde(default)]
     inputs: Vec<ResourcePort>,
     #[serde(default)]
@@ -446,6 +821,7 @@ fn load_project(dir_path: &Path) -> Result<EconomyProject, String> {
 }
 
 static BUILTIN_RUNTIME_TUNING: OnceLock<Result<RuntimeEconomyTuning, String>> = OnceLock::new();
+static BUILTIN_RUNTIME_CATALOG: OnceLock<Result<RuntimeEconomyCatalog, String>> = OnceLock::new();
 
 /// Loads the shipped economy-side runtime tuning from `economy/profiles.toml`.
 pub(crate) fn load_runtime_economy_tuning() -> Result<Arc<RuntimeEconomyTuning>, String> {
@@ -463,6 +839,151 @@ fn load_runtime_economy_tuning_from_disk() -> Result<RuntimeEconomyTuning, Strin
     let profiles: ProfilesFile = parse_toml_file(&path)?;
     validate_runtime_tuning(&profiles.runtime_tuning)?;
     Ok(profiles.runtime_tuning)
+}
+
+/// Loads the shipped compiled runtime economy catalog from `economy/profiles.toml`.
+pub(crate) fn load_runtime_economy_catalog() -> Result<Arc<RuntimeEconomyCatalog>, String> {
+    match BUILTIN_RUNTIME_CATALOG.get_or_init(load_runtime_economy_catalog_from_disk) {
+        Ok(catalog) => Ok(Arc::new(catalog.clone())),
+        Err(err) => Err(err.clone()),
+    }
+}
+
+fn load_runtime_economy_catalog_from_disk() -> Result<RuntimeEconomyCatalog, String> {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("economy")
+        .join(PROFILES_FILE);
+    let profiles: ProfilesFile = parse_toml_file(&path)?;
+    validate_runtime_tuning(&profiles.runtime_tuning)?;
+    compile_runtime_catalog(&profiles.profiles, &profiles.runtime_tuning)
+}
+
+fn compile_runtime_catalog(
+    authored_profiles: &[EconomyProfile],
+    runtime_tuning: &RuntimeEconomyTuning,
+) -> Result<RuntimeEconomyCatalog, String> {
+    let work_profile_ids: BTreeSet<&str> = runtime_tuning
+        .operational_clock
+        .work_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect();
+    let freight_profile_ids: BTreeSet<&str> = runtime_tuning
+        .operational_clock
+        .freight_profiles
+        .iter()
+        .map(|profile| profile.id.as_str())
+        .collect();
+
+    let mut catalog = RuntimeEconomyCatalog::default();
+    for (idx, profile) in authored_profiles.iter().enumerate() {
+        if catalog.by_id.contains_key(&profile.id) {
+            return Err(format!(
+                "runtime economy catalog contains duplicate profile id '{}'",
+                profile.id
+            ));
+        }
+        if let Some(work_profile) = profile.work_schedule_profile.as_deref()
+            && !work_profile_ids.contains(work_profile)
+        {
+            return Err(format!(
+                "profile '{}' references missing work_schedule_profile '{}'",
+                profile.id, work_profile
+            ));
+        }
+        if let Some(freight_profile) = profile.freight_timing_profile.as_deref()
+            && !freight_profile_ids.contains(freight_profile)
+        {
+            return Err(format!(
+                "profile '{}' references missing freight_timing_profile '{}'",
+                profile.id, freight_profile
+            ));
+        }
+
+        let runtime_id = u16::try_from(idx + 1)
+            .map_err(|_| "runtime economy catalog exceeds u16 profile id range".to_owned())?;
+        let compiled = compile_runtime_profile(runtime_id, profile);
+        if compiled.unit_price_currency > 0.0
+            && let Some(output) = compiled.output
+        {
+            catalog
+                .price_by_resource
+                .entry(output.resource)
+                .or_insert(compiled.unit_price_currency);
+        }
+        catalog.by_id.insert(compiled.id.clone(), runtime_id);
+        catalog.profiles.push(compiled);
+    }
+
+    Ok(catalog)
+}
+
+fn compile_runtime_profile(runtime_id: u16, profile: &EconomyProfile) -> EconomyProfileRuntime {
+    let kind = match profile.kind.as_str() {
+        "producer" => EconomyProfileRuntimeKind::Producer,
+        "store" => EconomyProfileRuntimeKind::Store,
+        "demand_sink" => EconomyProfileRuntimeKind::DemandSink,
+        _ => EconomyProfileRuntimeKind::Unsupported,
+    };
+
+    let compiled_input = if profile.inputs.len() == 1 {
+        let input = &profile.inputs[0];
+        StarterResourceKind::from_authored_name(input.resource.as_str()).map(|resource| {
+            RuntimeResourcePort {
+                resource,
+                units_per_day: input.units_per_day.max(0.0),
+            }
+        })
+    } else {
+        None
+    };
+    let compiled_output = if profile.outputs.len() == 1 {
+        let output = &profile.outputs[0];
+        StarterResourceKind::from_authored_name(output.resource.as_str()).map(|resource| {
+            RuntimeResourcePort {
+                resource,
+                units_per_day: output.units_per_day.max(0.0),
+            }
+        })
+    } else {
+        None
+    };
+
+    let starter_runtime_supported = matches!(
+        kind,
+        EconomyProfileRuntimeKind::Producer | EconomyProfileRuntimeKind::Store
+    ) && profile.inputs.len() <= 1
+        && profile.outputs.len() <= 1
+        && profile.inputs.len() == usize::from(compiled_input.is_some())
+        && profile.outputs.len() == usize::from(compiled_output.is_some())
+        && match kind {
+            EconomyProfileRuntimeKind::Producer => compiled_output.is_some(),
+            EconomyProfileRuntimeKind::Store => {
+                compiled_input.is_some() && compiled_output.is_some()
+            }
+            EconomyProfileRuntimeKind::DemandSink | EconomyProfileRuntimeKind::Unsupported => false,
+        };
+
+    EconomyProfileRuntime {
+        runtime_id,
+        id: profile.id.clone(),
+        kind,
+        work_schedule_profile: profile.work_schedule_profile.clone(),
+        freight_timing_profile: profile.freight_timing_profile.clone(),
+        base_rate_units_per_day: profile.base_rate_units_per_day.max(0.0),
+        unit_price_currency: profile.unit_price_currency.max(0.0),
+        wage_min_currency_per_day: profile.wage_min_currency_per_day.max(0.0),
+        wage_max_currency_per_day: profile.wage_max_currency_per_day.max(0.0),
+        stock_target_days: profile.stock_target_days.max(0.0),
+        reorder_threshold_days: profile.reorder_threshold_days.max(0.0),
+        critical_threshold_days: profile.critical_threshold_days.max(0.0),
+        min_shipment_units: profile.min_shipment_units.max(0.0),
+        consumption_rate_per_resident: profile.consumption_rate_per_resident.max(0.0),
+        input: compiled_input,
+        output: compiled_output,
+        starter_runtime_supported,
+    }
 }
 
 fn parse_toml_file<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
@@ -584,6 +1105,50 @@ fn validate_runtime_tuning_messages(
 }
 
 fn validate_runtime_tuning(tuning: &RuntimeEconomyTuning) -> Result<(), String> {
+    validate_range(
+        tuning.operational_clock.seconds_per_day as f32,
+        60.0,
+        f32::INFINITY,
+        "runtime_tuning.operational_clock.seconds_per_day",
+    )?;
+    if tuning.operational_clock.travel_estimate_refresh_minutes == 0 {
+        return Err(
+            "runtime_tuning.operational_clock.travel_estimate_refresh_minutes must be > 0"
+                .to_owned(),
+        );
+    }
+    if tuning
+        .operational_clock
+        .household_replenishment_check_interval_hours
+        == 0
+    {
+        return Err(
+            "runtime_tuning.operational_clock.household_replenishment_check_interval_hours must be > 0"
+                .to_owned(),
+        );
+    }
+    if tuning.operational_clock.household_pickup_eta_hours == 0 {
+        return Err(
+            "runtime_tuning.operational_clock.household_pickup_eta_hours must be > 0".to_owned(),
+        );
+    }
+    if tuning
+        .operational_clock
+        .household_replenishment_retry_cooldown_hours
+        == 0
+    {
+        return Err(
+            "runtime_tuning.operational_clock.household_replenishment_retry_cooldown_hours must be > 0"
+                .to_owned(),
+        );
+    }
+    if tuning.operational_clock.shipment_retry_cooldown_hours == 0 {
+        return Err(
+            "runtime_tuning.operational_clock.shipment_retry_cooldown_hours must be > 0".to_owned(),
+        );
+    }
+    validate_work_profiles(&tuning.operational_clock)?;
+    validate_freight_profiles(&tuning.operational_clock)?;
     validate_nonempty_level_array(
         &tuning
             .households
@@ -674,6 +1239,172 @@ fn validate_runtime_tuning(tuning: &RuntimeEconomyTuning) -> Result<(), String> 
         "runtime_tuning.viability.industrial_max_output_headroom_for_downgrade",
     )?;
     Ok(())
+}
+
+fn validate_work_profiles(clock: &OperationalClockRuntimeTuning) -> Result<(), String> {
+    if clock.work_profiles.is_empty() {
+        return Err("runtime_tuning.operational_clock.work_profiles must not be empty".to_owned());
+    }
+    let duplicates = duplicate_ids(
+        clock
+            .work_profiles
+            .iter()
+            .map(|profile| profile.id.as_str()),
+    );
+    if let Some(duplicate) = duplicates.into_iter().next() {
+        return Err(format!(
+            "runtime_tuning.operational_clock.work_profiles contains duplicate id '{duplicate}'"
+        ));
+    }
+    for profile in &clock.work_profiles {
+        if profile.id.trim().is_empty() {
+            return Err(
+                "runtime_tuning.operational_clock.work_profiles[*].id must not be empty".to_owned(),
+            );
+        }
+        if profile.arrival_windows.is_empty() || profile.departure_windows.is_empty() {
+            return Err(format!(
+                "runtime_tuning.operational_clock.work_profiles.{} must define arrival_windows and departure_windows",
+                profile.id
+            ));
+        }
+        if profile.arrival_windows.len() != profile.departure_windows.len() {
+            return Err(format!(
+                "runtime_tuning.operational_clock.work_profiles.{} must use matching arrival/departure window counts",
+                profile.id
+            ));
+        }
+        if profile.reliability_buffer_minutes == 0 {
+            return Err(format!(
+                "runtime_tuning.operational_clock.work_profiles.{}.reliability_buffer_minutes must be > 0",
+                profile.id
+            ));
+        }
+        for (idx, window) in profile.arrival_windows.iter().enumerate() {
+            validate_minute_window(
+                *window,
+                &format!(
+                    "runtime_tuning.operational_clock.work_profiles.{}.arrival_windows[{idx}]",
+                    profile.id
+                ),
+            )?;
+        }
+        for (idx, window) in profile.departure_windows.iter().enumerate() {
+            validate_minute_window(
+                *window,
+                &format!(
+                    "runtime_tuning.operational_clock.work_profiles.{}.departure_windows[{idx}]",
+                    profile.id
+                ),
+            )?;
+        }
+    }
+    for (zone_type, profile_id) in &clock.work_profile_by_zone_type {
+        validate_zone_type_key(
+            zone_type,
+            "runtime_tuning.operational_clock.work_profile_by_zone_type",
+        )?;
+        if !clock
+            .work_profiles
+            .iter()
+            .any(|profile| profile.id == *profile_id)
+        {
+            return Err(format!(
+                "runtime_tuning.operational_clock.work_profile_by_zone_type.{zone_type} references missing profile '{profile_id}'"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_freight_profiles(clock: &OperationalClockRuntimeTuning) -> Result<(), String> {
+    if clock.freight_profiles.is_empty() {
+        return Err(
+            "runtime_tuning.operational_clock.freight_profiles must not be empty".to_owned(),
+        );
+    }
+    let duplicates = duplicate_ids(
+        clock
+            .freight_profiles
+            .iter()
+            .map(|profile| profile.id.as_str()),
+    );
+    if let Some(duplicate) = duplicates.into_iter().next() {
+        return Err(format!(
+            "runtime_tuning.operational_clock.freight_profiles contains duplicate id '{duplicate}'"
+        ));
+    }
+    for profile in &clock.freight_profiles {
+        if profile.id.trim().is_empty() {
+            return Err(
+                "runtime_tuning.operational_clock.freight_profiles[*].id must not be empty"
+                    .to_owned(),
+            );
+        }
+        if profile.preferred_windows.is_empty() {
+            return Err(format!(
+                "runtime_tuning.operational_clock.freight_profiles.{} must define preferred_windows",
+                profile.id
+            ));
+        }
+        for (idx, window) in profile.preferred_windows.iter().enumerate() {
+            validate_minute_window(
+                *window,
+                &format!(
+                    "runtime_tuning.operational_clock.freight_profiles.{}.preferred_windows[{idx}]",
+                    profile.id
+                ),
+            )?;
+        }
+        validate_range(
+            profile.outside_window_cost_multiplier,
+            1.0,
+            10.0,
+            &format!(
+                "runtime_tuning.operational_clock.freight_profiles.{}.outside_window_cost_multiplier",
+                profile.id
+            ),
+        )?;
+    }
+    for (zone_type, profile_id) in &clock.freight_profile_by_zone_type {
+        validate_zone_type_key(
+            zone_type,
+            "runtime_tuning.operational_clock.freight_profile_by_zone_type",
+        )?;
+        if !clock
+            .freight_profiles
+            .iter()
+            .any(|profile| profile.id == *profile_id)
+        {
+            return Err(format!(
+                "runtime_tuning.operational_clock.freight_profile_by_zone_type.{zone_type} references missing profile '{profile_id}'"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_minute_window(window: MinuteWindow, label: &str) -> Result<(), String> {
+    let day_minutes: u16 = 24 * 60;
+    if window.start_minute >= day_minutes
+        || window.end_minute > day_minutes
+        || window.start_minute >= window.end_minute
+    {
+        return Err(format!(
+            "{label} must satisfy 0 <= start_minute < end_minute <= {}",
+            day_minutes
+        ));
+    }
+    Ok(())
+}
+
+fn validate_zone_type_key(zone_type: &str, label: &str) -> Result<(), String> {
+    match zone_type {
+        "commercial" | "industrial" | "residential" => Ok(()),
+        other => Err(format!(
+            "{label} contains unsupported zone_type key '{other}'"
+        )),
+    }
 }
 
 fn validate_nonempty_level_array(
