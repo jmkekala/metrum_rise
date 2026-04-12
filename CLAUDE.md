@@ -90,7 +90,7 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 ### Rust Code Style
 
 - **Enforce clear ownership.** If an algorithm mixes distinct domains (e.g., pathing and cache invalidation), prefer separating them. Do not create central dumping grounds for unrelated logic or data schemas.
-- **Prefer modern module splits when they help.** When breaking a large module (`tick.rs`) into smaller pieces, prefer keeping `tick.rs` as the API router and placing split files in a sibling `tick/` directory (`tick/planning.rs`). Use `mod.rs` only if it is already the local pattern or clearly the cleaner fit.
+- **Prefer modern module splits when they help.** When breaking a large module file into smaller pieces, prefer keeping the original top-level module file as the API router and placing split files in a same-named sibling directory. Use `mod.rs` only if it is already the local pattern or clearly the cleaner fit.
 - **Keep data near execution unless it is truly shared.** Avoid massive centralized schema files. Put structs and types close to the logic that owns them unless they are explicitly cross-cutting project-wide contracts.
 - Match the existing style: no unnecessary `pub`, no redundant type annotations, no defensive `unwrap`/`expect` chains for unreachable states.
 - Avoid monolithic "god functions" and excessive nesting. Extract validation routines and domain checks into isolated helper methods when that improves readability and ownership.
@@ -120,7 +120,7 @@ These are the stable, high-level sharp edges worth remembering. Keep detailed su
 ### Testing
 
 - Unit tests live alongside source files as `#[cfg(test)]` modules to preserve private access and locality.
-- **Testing Massive Modules:** If inline tests become overwhelmingly large, extract them into a separate `*_test.rs` file in the same directory and include it via `#[cfg(test)] mod my_module_test;` rather than letting test code bloat the core logic file.
+- **Testing Massive Modules:** If inline tests become overwhelmingly large, extract them into a separate same-directory test module and include it through `#[cfg(test)] mod ...;` rather than letting test code bloat the core logic file.
 - Integration tests go in `rust/tests/`.
 - Tests must not depend on Godot being present — keep simulation logic fully testable without the engine.
 - For isolated graph, routing, or performance tests, prefer minimal subsystem setup over full gameplay placement/spawn flows unless those side effects are explicitly part of the test.
