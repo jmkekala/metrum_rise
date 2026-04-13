@@ -3,6 +3,7 @@
 //! Controlled at runtime via environment variables:
 //! - `METRUM_DEBUG=1` — general debug logging (`./run.sh --debug`)
 //! - `METRUM_DEBUG_TRAFFIC=1` — traffic/routing debug (`./run.sh --debug traffic`)
+//! - `METRUM_DEBUG_SIM=1` — hourly simulation summaries (`./run.sh --debug-sim`)
 //! - `METRUM_DEBUG_FILTER=economy,border,...` — optional category filter for general debug logs
 //!
 //! Output goes to stdout so it appears in the terminal alongside Godot's output.
@@ -17,11 +18,14 @@ pub static ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Traffic/routing debug flag — set by `METRUM_DEBUG_TRAFFIC=1` / `./run.sh --debug traffic`.
 pub static TRAFFIC_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Simulation-summary debug flag — set by `METRUM_DEBUG_SIM=1` / `./run.sh --debug-sim`.
+pub static SIM_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Optional comma-separated category filter for general debug logs.
 static FILTER: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Reads `METRUM_DEBUG` and `METRUM_DEBUG_TRAFFIC` from the environment and arms
+/// Reads `METRUM_DEBUG`, `METRUM_DEBUG_TRAFFIC`, and `METRUM_DEBUG_SIM` from the
+/// environment and arms
 /// the global flags. Call once from the GDExtension init hook; safe to call multiple times.
 pub fn init() {
     let on = std::env::var("METRUM_DEBUG")
@@ -57,6 +61,14 @@ pub fn init() {
     if traffic_on {
         println!("[DEBUG] Traffic/routing debug logging enabled (METRUM_DEBUG_TRAFFIC=1)");
     }
+
+    let sim_on = std::env::var("METRUM_DEBUG_SIM")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+    SIM_ENABLED.store(sim_on, Ordering::Relaxed);
+    if sim_on {
+        println!("[DEBUG] Simulation console debug enabled (METRUM_DEBUG_SIM=1)");
+    }
 }
 
 /// Returns `true` if general debug logging is currently enabled.
@@ -85,6 +97,12 @@ pub fn category_enabled(category: &str) -> bool {
 #[inline(always)]
 pub fn is_traffic_enabled() -> bool {
     TRAFFIC_ENABLED.load(Ordering::Relaxed)
+}
+
+/// Returns `true` if hourly simulation summaries should currently be emitted.
+#[inline(always)]
+pub fn is_sim_enabled() -> bool {
+    SIM_ENABLED.load(Ordering::Relaxed)
 }
 
 /// Logs a categorised debug message to stdout when general debug mode is on.

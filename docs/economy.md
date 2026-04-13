@@ -149,8 +149,14 @@ Deterministic day-boundary rule:
      external-connection state
 4. Freeze that post-settlement city snapshot.
 5. Run the daily demand pass exactly once from that frozen snapshot.
-6. Apply the resulting demand-owned daily household outputs and building-action budgets before the
-   next operational day's sub-daily economy steps begin.
+6. Apply the resulting demand-owned daily outputs in this exact order before the next operational
+   day's sub-daily economy steps begin:
+   - execute `households_to_remove_today` first from the already-frozen settled household snapshot
+   - execute the demand-owned private building actions next
+   - execute `households_to_admit_today` after those building actions so fresh residential spawns
+     may contribute same-boundary vacancy
+   - run one lightweight post-admission workplace-assignment pass for newly admitted households,
+     without rerunning daily settlement or the daily demand pass
 
 Interpretation:
 
@@ -159,6 +165,12 @@ Interpretation:
   that demand pass do not rewrite the same day's demand inputs
 - those changes become part of the next operational day's economy state and therefore affect the
   next daily demand pass
+- same-boundary admissions are not eligible for same-boundary removals, because removal executes
+  first from the settled candidate list
+- same-boundary fresh residential spawns may be filled immediately by admissions later on that same
+  midnight boundary
+- newly admitted households may receive workplaces before the first daytime departure window, but
+  that post-admission assignment pass does not rewrite the already-frozen daily demand inputs
 
 ### Operational clock runtime state
 
@@ -1817,8 +1829,8 @@ Current status summary:
 - Phase 2 is complete in the live runtime.
 - Phase 3 is complete in the live runtime.
 - Phase 4 is complete in the live runtime.
-- Phase 5 is not started in a meaningful runtime form.
-- Phase 6 is not started in its intended authored/runtime form.
+- Phase 5 is complete in the live runtime.
+- Phase 6 is complete in the live runtime.
 - Phase 7 is largely complete already.
 - Phase 8 is ongoing cleanup rather than untouched future work.
 
@@ -1912,11 +1924,29 @@ Goal: support more than one production chain without rewriting the logistics fou
 - Land build cost, upkeep, utility charges, operator revenue, and later `VAT` or subsidy hooks on the daily fiscal settlement cadence.
 - Keep `v0.1` pricing and wage response fixed while this ledger split stabilizes.
 
+Why this is needed before Phase 6:
+
+- The grocery store (`grocery_basic`) requires `staple_food` input to produce `household_supplies`.
+  Until a producing building and freight chain exist, stores produce nothing and household stock
+  drains to zero.
+- Once stock hits zero, `household_stock_stability` collapses to `0.0`, which kills
+  `city_stability_factor` and drives admission pressure to zero regardless of startup support.
+  Population cannot grow past the first wave of immigrants.
+- Phase 5 must introduce either a seeded starting inventory for stores or a no-input starter
+  profile, so the first household supply loop closes before the full production chain is in place.
+  Without this, startup support cannot bootstrap the city population as designed.
+
 Current status:
 
-- pending
-- household and building money already exist in starter form, but the city treasury and explicit
-  fiscal-ledger split do not
+- complete
+- `CityTreasury { balance, lifetime_build_cost, last_daily_upkeep }` lives in `SimCore`
+- startup balance initialised at `100,000` currency
+- road placement deducts `100 currency/meter` from the treasury; balance may go negative per spec
+- daily road upkeep deducts `0.1 currency/meter/day` on the daily fiscal settlement pass
+- `grocery_basic` now spawns with `starting_inventory_days = 3.0` (600 units of `household_supplies`)
+  seeded in output slots, closing the first supply loop before the full production chain exists
+- save version bumped to 24; treasury is persisted in the `city_treasury` SQLite table
+- `get_treasury_balance()` Godot func exposes the live balance for UI display
 
 Goal: make money flow explicit before adding richer service or policy behavior.
 
@@ -1928,9 +1958,18 @@ Goal: make money flow explicit before adding richer service or policy behavior.
 
 Current status:
 
-- pending in its intended final form
-- placeholder utility availability and `OWA` fallback exist, but authored local utility producers,
-  processors, and the first real service-building slice do not
+- complete
+- `EconomyProfileRuntimeKind::UtilityProducer` and `UtilityProcessor` variants added; `utility_service`
+  field (`"power"`, `"water"`, `"sewage"`) propagated from authored TOML through compiled runtime profile
+- three profiles landed in `economy/profiles.toml`: `power_plant_basic` (power, 4 workers, three-shift),
+  `water_plant_basic` (water, 3 workers), `wastewater_treatment_basic` (sewage, 3 workers)
+- `resolve_building_utilities` rewritten as a three-phase pass: (1) scan for active providers and
+  determine service availability, (2) charge consumers at local rates (6.5/day total) when all three
+  services are locally present, or OWA rates (8.0/12.0/day) otherwise, (3) distribute local revenue
+  evenly to active utility providers
+- `ensure_building_startup_float` extended to seed `STARTUP_OPERATING_FLOAT` for utility buildings
+  (ZoneType::None with UtilityProducer or UtilityProcessor profile) so they can pay wages on spawn
+- city assets for these profiles must be added via the asset editor; no invisible buildings exist
 
 Goal: turn baseline services into real runtime constraints without treating utilities as trucked goods.
 

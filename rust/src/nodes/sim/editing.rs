@@ -2,7 +2,7 @@
 
 use crate::config;
 use crate::debug_log;
-use crate::nodes::sim::core::SimCore;
+use crate::nodes::sim::core::{ROAD_BUILD_COST_PER_METER, SimCore};
 use crate::simulation::terrain::TerrainSystem;
 use crate::traffic_log;
 use godot::prelude::*;
@@ -211,6 +211,17 @@ impl SimCore {
             }
         }
 
+        // Compute polyline length before fixed_points is moved into add_road.
+        let build_length_m: f64 = fixed_points
+            .windows(2)
+            .map(|w| {
+                let dx = (w[1].x - w[0].x) as f64;
+                let dy = (w[1].y - w[0].y) as f64;
+                let dz = (w[1].z - w[0].z) as f64;
+                (dx * dx + dy * dy + dz * dz).sqrt()
+            })
+            .sum();
+
         let t_topo = Instant::now();
         self.transit_network.add_road(
             &mut self.region_graph,
@@ -222,6 +233,12 @@ impl SimCore {
             &mut self.allocator,
         );
         let dt_topo_us = t_topo.elapsed().as_micros();
+
+        // Deduct road build cost from city treasury (skipped in benchmark mode).
+        if !self.benchmark_mode {
+            self.treasury
+                .deduct_build_cost(build_length_m * ROAD_BUILD_COST_PER_METER);
+        }
 
         self.network_dirty = true;
 
@@ -636,6 +653,7 @@ mod tests {
     use std::collections::VecDeque;
 
     fn test_core() -> SimCore {
+        use crate::nodes::sim::core::CityTreasury;
         let config = MapConfig::default();
         let w = config.zone_grid_width();
         let h = config.zone_grid_height();
@@ -655,6 +673,7 @@ mod tests {
             households: HouseholdSystem::new(),
             logistics: ShipmentSystem::new(),
             config,
+            treasury: CityTreasury::new(0.0),
             undo_stack: VecDeque::new(),
             terrain_dirty: false,
             water_dirty: false,

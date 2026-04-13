@@ -4,6 +4,7 @@
 RELEASE=0
 DEBUG=0
 DEBUG_TRAFFIC=0
+DEBUG_SIM=0
 DEBUG_CATEGORY=""
 GODOT_ARGS=()
 export RUST_BACKTRACE=1
@@ -12,6 +13,8 @@ while [ $i -le $# ]; do
     arg="${!i}"
     if [ "$arg" = "--release" ]; then
         RELEASE=1
+    elif [ "$arg" = "--debug-sim" ]; then
+        DEBUG_SIM=1
     elif [ "$arg" = "--debug" ]; then
         next_index=$((i + 1))
         if [ $next_index -le $# ]; then
@@ -48,6 +51,10 @@ fi
 if [ $DEBUG_TRAFFIC -eq 1 ]; then
     export METRUM_DEBUG_TRAFFIC=1
     echo "Traffic/routing debug logging enabled (output goes to stderr)"
+fi
+if [ $DEBUG_SIM -eq 1 ]; then
+    export METRUM_DEBUG_SIM=1
+    echo "Simulation console debug enabled (hourly summaries go to stdout)"
 fi
 
 echo "Building Rust library..."

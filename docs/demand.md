@@ -332,23 +332,23 @@ household_affordability_target_reserve_days = 7.0
 household_stock_stability_target_days = 3.0
 
 [startup_support]
-target_housed_residents = 200
-target_private_building_count = 24
-target_filled_job_slots = 80
-household_bonus = 1.5
+target_housed_residents = 120
+target_private_building_count = 14
+target_filled_job_slots = 48
+household_bonus = 1.0
 
 [startup_support.growth_floor_by_use]
-residential = 0.70
-commercial = 0.68
-industrial = 0.66
+residential = 0.60
+commercial = 0.56
+industrial = 0.54
 
 [startup_support.spawn_bonus_by_use]
-residential = 8.0
-commercial = 3.0
-industrial = 2.0
+residential = 2.0
+commercial = 1.0
+industrial = 0.75
 
 [action_budget]
-max_households_per_day = 12
+max_households_per_day = 8
 
 [household_action]
 base_inflow = 0.55
@@ -356,9 +356,9 @@ admission_threshold = 0.25
 removal_threshold = 0.35
 
 [action_budget.spawn_batch_fraction_by_use]
-residential = 0.30
-commercial = 0.20
-industrial = 0.15
+residential = 0.18
+commercial = 0.12
+industrial = 0.10
 
 [action_budget.upgrade_batch_fraction_by_use]
 residential = 0.10
@@ -961,6 +961,14 @@ Authoring rule:
 
 Deterministic execution order:
 
+- daily demand outputs consume in this exact order at the midnight boundary:
+  `households_to_remove_today`, then all private building actions, then
+  `households_to_admit_today`, then one lightweight post-admission workplace-assignment pass for
+  the newly admitted households
+- `households_to_remove_today` uses only the deterministic settled-snapshot candidate order owned
+  by [`economy.md`](economy.md); same-boundary admissions must not enter that candidate set
+- household admission claims vacancy only after the same-boundary building actions complete, so
+  fresh residential spawns may be filled immediately on that same midnight boundary
 - demand builds all eligible candidate lists once per daily pass before any building change is
   executed
 - use families iterate in this exact order for the daily pass: `residential`, then `commercial`,
@@ -982,6 +990,9 @@ Interpretation:
 - weak but persistent pressure still produces deterministic building change over multiple days
 - startup support can intentionally make early-city spawn batches larger so the city forms a real
   starter neighborhood instead of stalling at tiny-village scale
+- newly admitted households may receive workplaces before the next daytime trip window, but that
+  post-admission assignment does not rerun the daily demand pass or rewrite the frozen daily
+  demand snapshot
 
 Ongoing building-growth pressure outputs:
 

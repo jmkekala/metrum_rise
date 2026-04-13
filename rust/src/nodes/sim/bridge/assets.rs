@@ -1,4 +1,6 @@
 //! Godot-Rust bridge helpers for asset management and content registries.
+use crate::assets::asset::ZoneClass;
+use crate::debug_log;
 use crate::nodes::sim::core::SimCore;
 use godot::prelude::*;
 use std::path::Path;
@@ -28,6 +30,20 @@ pub fn load_asset_packs(
                 .register(&pack.pack.pack_id, asset, asset_dir);
         }
     }
+    let reg = &core.allocator.registry;
+    debug_log!(
+        "spawn",
+        "asset_packs loaded: total={} \
+         res_low={} com_low={} ind_low={} \
+         res_med={} com_med={} ind_med={}",
+        reg.len(),
+        reg.buildings_for_zone_density(ZoneClass::Residential, "low").len(),
+        reg.buildings_for_zone_density(ZoneClass::Commercial, "low").len(),
+        reg.buildings_for_zone_density(ZoneClass::Industrial, "low").len(),
+        reg.buildings_for_zone_density(ZoneClass::Residential, "medium").len(),
+        reg.buildings_for_zone_density(ZoneClass::Commercial, "medium").len(),
+        reg.buildings_for_zone_density(ZoneClass::Industrial, "medium").len(),
+    );
     GString::from(result.warnings.join("\n").as_str())
 }
 

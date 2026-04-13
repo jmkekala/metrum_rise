@@ -13,8 +13,8 @@ use crate::simulation::economy::agents::{
     AgentSystem, TRANSIT_ACCESS_INGRESS, TRANSIT_IN_BUILDING,
 };
 use crate::simulation::economy::definitions::{
-    EconomyProfileRuntime, ResourceRuntimeId, RuntimeEconomyCatalog, load_runtime_economy_catalog,
-    load_runtime_economy_tuning,
+    EconomyProfileRuntime, EconomyProfileRuntimeKind, ResourceRuntimeId, RuntimeEconomyCatalog,
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
 };
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
@@ -45,18 +45,30 @@ const HOUSEHOLD_STARTING_BUDGET: f32 = 100.0;
 pub const DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 2;
 
 const STARTUP_OPERATING_FLOAT: f32 = 500.0;
+// Refill the startup float whenever budget falls below this level and the
+// building has never earned revenue. Set to a full day's worth of the
+// higher industrial OWA utility cost so the condition fires before utility
+// service lapses on a building with a tiny floating-point residual budget.
+const STARTUP_FLOAT_REFILL_THRESHOLD: f32 = 13.0;
 
 const UTILITY_COST_COMMERCIAL: f32 = 8.0;
 const UTILITY_COST_INDUSTRIAL: f32 = 12.0;
+
+// Local rates charged to consumers when all three utility buildings are present.
+// Combined total (6.5/day) is lower than either OWA rate, making local utilities cheaper.
+const UTILITY_LOCAL_POWER: f32 = 3.0;
+const UTILITY_LOCAL_WATER: f32 = 2.0;
+const UTILITY_LOCAL_SEWAGE: f32 = 1.5;
+const UTILITY_LOCAL_TOTAL: f32 = UTILITY_LOCAL_POWER + UTILITY_LOCAL_WATER + UTILITY_LOCAL_SEWAGE;
 
 const W_INCOME: f32 = 0.35;
 const W_STOCK: f32 = 0.35;
 const W_JOB: f32 = 0.20;
 const W_COMMUTE: f32 = 0.10;
-const GO_TO_WORK_THRESHOLD: f32 = 0.45;
+const GO_TO_WORK_THRESHOLD: f32 = 0.10;
 const JOB_SEARCH_MAX_RING: i32 = 2;
 const JOB_SEARCH_CANDIDATES: usize = 8;
-const GROCERY_SEARCH_MAX_RING: i32 = 2;
+const GROCERY_SEARCH_MAX_RING: i32 = 6;
 const GROCERY_SEARCH_CANDIDATES: usize = 8;
 const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 
@@ -331,42 +343,129 @@ impl HouseholdSystem {
     }
 
     fn ensure_building_startup_float(&mut self, allocator: &mut BuildingAllocator) {
+        let catalog = load_runtime_economy_catalog().ok();
         for building in &mut allocator.buildings {
-            if !matches!(
-                building.zone_type,
-                ZoneType::Commercial | ZoneType::Industrial
-            ) {
-                continue;
-            }
             if building.broken || building.economy_broken {
                 continue;
             }
-            if building.operating_budget == 0.0 && building.revenue == 0.0 {
+            let eligible = match building.zone_type {
+                ZoneType::Commercial | ZoneType::Industrial => true,
+                ZoneType::None => catalog
+                    .as_ref()
+                    .and_then(|c| c.profile_by_runtime_id(building.economy_profile_runtime_id))
+                    .map(|p| {
+                        matches!(
+                            p.kind,
+                            EconomyProfileRuntimeKind::UtilityProducer
+                                | EconomyProfileRuntimeKind::UtilityProcessor
+                        )
+                    })
+                    .unwrap_or(false),
+                _ => false,
+            };
+            if !eligible {
+                continue;
+            }
+            if building.operating_budget < STARTUP_FLOAT_REFILL_THRESHOLD
+                && building.revenue == 0.0
+            {
                 building.operating_budget = STARTUP_OPERATING_FLOAT;
             }
         }
     }
 
     fn resolve_building_utilities(&mut self, allocator: &mut BuildingAllocator) {
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+
+        // Phase 1: find operational utility provider buildings and determine which services
+        // are locally available.
+        let mut utility_provider_indices: Vec<usize> = Vec::new();
+        let mut power_available = false;
+        let mut water_available = false;
+        let mut sewage_available = false;
+
+        for (idx, building) in allocator.buildings.iter().enumerate() {
+            if building.broken || building.economy_broken || building.edge_idx == usize::MAX {
+                continue;
+            }
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else {
+                continue;
+            };
+            if !matches!(
+                profile.kind,
+                EconomyProfileRuntimeKind::UtilityProducer
+                    | EconomyProfileRuntimeKind::UtilityProcessor
+            ) {
+                continue;
+            }
+            utility_provider_indices.push(idx);
+            match profile.utility_service.as_deref() {
+                Some("power") => power_available = true,
+                Some("water") => water_available = true,
+                Some("sewage") => sewage_available = true,
+                _ => {}
+            }
+        }
+
+        let all_local = power_available && water_available && sewage_available;
+
+        // Phase 2: charge consumer buildings (commercial/industrial). Residential and utility
+        // buildings are marked available without charge. When all three local services are
+        // present, local rates apply and the paid amount flows to providers; otherwise OWA
+        // rates apply (money leaves the system as before).
+        let mut local_utility_revenue = 0.0f32;
+
         for building in &mut allocator.buildings {
-            let utility_cost_per_hour = match building.zone_type {
-                ZoneType::Commercial => UTILITY_COST_COMMERCIAL / OPERATIONAL_HOURS_PER_DAY,
-                ZoneType::Industrial => UTILITY_COST_INDUSTRIAL / OPERATIONAL_HOURS_PER_DAY,
+            match building.zone_type {
+                ZoneType::Residential | ZoneType::None => {
+                    building.utility_service_available = true;
+                    continue;
+                }
+                _ => {}
+            }
+            if building.edge_idx == usize::MAX || building.broken || building.economy_broken {
+                building.utility_service_available = false;
+                continue;
+            }
+            let (hourly_cost, is_local) = match building.zone_type {
+                ZoneType::Commercial => {
+                    if all_local {
+                        (UTILITY_LOCAL_TOTAL / OPERATIONAL_HOURS_PER_DAY, true)
+                    } else {
+                        (UTILITY_COST_COMMERCIAL / OPERATIONAL_HOURS_PER_DAY, false)
+                    }
+                }
+                ZoneType::Industrial => {
+                    if all_local {
+                        (UTILITY_LOCAL_TOTAL / OPERATIONAL_HOURS_PER_DAY, true)
+                    } else {
+                        (UTILITY_COST_INDUSTRIAL / OPERATIONAL_HOURS_PER_DAY, false)
+                    }
+                }
                 _ => {
                     building.utility_service_available = true;
                     continue;
                 }
             };
-            if building.edge_idx == usize::MAX || building.broken || building.economy_broken {
-                building.utility_service_available = false;
-                continue;
-            }
-            if building.operating_budget + f32::EPSILON >= utility_cost_per_hour {
-                building.operating_budget =
-                    (building.operating_budget - utility_cost_per_hour).max(0.0);
+            if building.operating_budget + f32::EPSILON >= hourly_cost {
+                building.operating_budget = (building.operating_budget - hourly_cost).max(0.0);
                 building.utility_service_available = true;
+                if is_local {
+                    local_utility_revenue += hourly_cost;
+                }
             } else {
                 building.utility_service_available = false;
+            }
+        }
+
+        // Phase 3: distribute local revenue evenly across active utility providers.
+        if local_utility_revenue > 0.0 && !utility_provider_indices.is_empty() {
+            let share = local_utility_revenue / utility_provider_indices.len() as f32;
+            for &idx in &utility_provider_indices {
+                allocator.buildings[idx].revenue += share;
+                allocator.buildings[idx].operating_budget += share;
             }
         }
     }
@@ -779,8 +878,10 @@ impl HouseholdSystem {
 
             for candidate in candidates {
                 let store = &allocator.buildings[candidate];
+                // A store can sell from existing inventory even when utility
+                // service is temporarily unavailable — only broken or
+                // economy_broken stores are excluded.
                 if store.inventory_units(household_supply_resource) <= 0.0
-                    || !store.utility_service_available
                     || store.broken
                     || store.economy_broken
                 {

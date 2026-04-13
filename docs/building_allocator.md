@@ -45,6 +45,10 @@ Important ownership note:
   `execute_demand_building_actions(...)` after the daily demand pass
 - fresh-map startup no longer uses an allocator-owned founding placement exception; the live runtime
   now relies on the demand-owned `startup_support` path described in [`demand.md`](demand.md)
+- the deterministic midnight application order is now:
+  `execute_demand_household_removal(...)`, then `execute_demand_building_actions(...)`, then
+  `execute_demand_household_admission(...)`; any post-admission workplace assignment happens
+  outside allocator ownership
 
 ## Core Data Model
 

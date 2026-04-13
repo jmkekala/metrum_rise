@@ -25,6 +25,7 @@ impl SimCore {
                 logistics: &self.logistics,
                 agents: &self.agents,
                 network: &self.transit_network,
+                treasury: &self.treasury,
             },
         )
         .map_err(|err| err.to_string())
@@ -56,6 +57,7 @@ impl SimCore {
         self.households = loaded.households;
         self.logistics = loaded.logistics;
         self.agents = loaded.agents;
+        self.treasury = loaded.treasury;
         self.transit_network.flow_fields.mark_all_dirty();
         self.undo_stack.clear();
         self.terrain_dirty = true;

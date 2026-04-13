@@ -25,6 +25,11 @@ impl BuildingAllocator {
         };
         let mut reserved_frontage: BTreeMap<(usize, i8), Vec<bool>> = BTreeMap::new();
         let mut candidates = Vec::new();
+        let mut dbg_edges_no_spawn = 0_u32;
+        let mut dbg_edges_active = 0_u32;
+        let mut dbg_cells_no_profile = 0_u32;
+        let mut dbg_cells_wrong_zone = 0_u32;
+        let mut dbg_cells_no_asset = 0_u32;
 
         for edge_idx in 0..graph.edge_count() {
             let edge = graph.edge(edge_idx);
@@ -33,8 +38,12 @@ impl BuildingAllocator {
                 || edge.physical_length < 0.1
                 || edge.physical_geometry.len() < 2
             {
+                if !edge.deleted && edge.no_building_spawn {
+                    dbg_edges_no_spawn += 1;
+                }
                 continue;
             }
+            dbg_edges_active += 1;
 
             let zone_cell_m = zoning.config.zone_cell_m;
             let cells_long = (edge.physical_length / zone_cell_m).floor() as usize;
@@ -54,13 +63,16 @@ impl BuildingAllocator {
                     let Some(profile_runtime_id) = self.frontage_profile_runtime_id_for_site(
                         edge_idx, side, cell_x, zoning, graph,
                     ) else {
+                        dbg_cells_no_profile += 1;
                         continue;
                     };
                     let Some(profile) = zoning.profiles.profile_by_runtime_id(profile_runtime_id)
                     else {
+                        dbg_cells_no_profile += 1;
                         continue;
                     };
                     if profile.zone_type != zone_type {
+                        dbg_cells_wrong_zone += 1;
                         continue;
                     }
 
@@ -74,6 +86,7 @@ impl BuildingAllocator {
                         zoning,
                         graph,
                     ) else {
+                        dbg_cells_no_asset += 1;
                         continue;
                     };
 
@@ -106,6 +119,18 @@ impl BuildingAllocator {
             }
         }
 
+        debug_log!(
+            "spawn",
+            "collect_candidates zone={:?}: active_edges={} no_spawn_flag={} \
+             cells_no_profile={} cells_wrong_zone={} cells_no_asset={} candidates={}",
+            zone_type,
+            dbg_edges_active,
+            dbg_edges_no_spawn,
+            dbg_cells_no_profile,
+            dbg_cells_wrong_zone,
+            dbg_cells_no_asset,
+            candidates.len(),
+        );
         candidates
     }
 
@@ -149,10 +174,18 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
         graph: &RegionGraph,
     ) -> Option<ResolvedPlacement> {
+        let zone_density_assets = self.registry.buildings_for_zone_density(zone_class, density);
+        if zone_density_assets.is_empty() {
+            debug_log!(
+                "spawn",
+                "select_spawn_asset: registry has 0 assets for zone={:?} density={}",
+                zone_class,
+                density,
+            );
+            return None;
+        }
         let mut families: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for qualified_id in self
-            .registry
-            .buildings_for_zone_density(zone_class, density)
+        for qualified_id in zone_density_assets
         {
             let Some(entry) = self.registry.get(qualified_id) else {
                 continue;
@@ -249,6 +282,13 @@ impl BuildingAllocator {
         if matches!(zone_type, ZoneType::Commercial | ZoneType::Industrial)
             && (economy_binding.economy_broken || economy_binding.runtime_id == 0)
         {
+            debug_log!(
+                "spawn",
+                "asset_params: {} rejected — economy_broken={} runtime_id={}",
+                asset_id,
+                economy_binding.economy_broken,
+                economy_binding.runtime_id,
+            );
             return None;
         }
         Some(AssetPlacementParams {
@@ -450,9 +490,30 @@ impl BuildingAllocator {
     fn place_building_instance(&mut self, placement: ResolvedPlacement) -> usize {
         let economy_binding =
             resolve_building_economy_profile_binding(&self.registry, &placement.asset_id);
-        let resource_count = load_runtime_economy_catalog()
-            .map(|catalog| catalog.resource_count())
-            .unwrap_or(0);
+        let catalog = load_runtime_economy_catalog();
+        let resource_count = catalog.as_ref().map(|c| c.resource_count()).unwrap_or(0);
+
+        // Seed starting inventory for output ports when the profile specifies it.
+        // This lets stores open with stock already on shelves before the first freight
+        // delivery arrives, which is critical during the startup phase.
+        let mut resource_inventory = vec![0.0f32; resource_count];
+        if let Ok(catalog) = catalog.as_ref() {
+            if let Some(profile) = catalog.profile_by_runtime_id(economy_binding.runtime_id) {
+                if profile.starting_inventory_days > 0.0 {
+                    for output in &profile.outputs {
+                        let cap = profile.output_buffer_capacity_units_for(output);
+                        let seed =
+                            (output.units_per_day * profile.starting_inventory_days).min(cap);
+                        // resource_inventory is 0-indexed; runtime_id is 1-based.
+                        let slot = output.resource_runtime_id as usize;
+                        if slot > 0 && slot <= resource_count {
+                            resource_inventory[slot - 1] = seed;
+                        }
+                    }
+                }
+            }
+        }
+
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             zone_type: placement.zone_type,
@@ -474,7 +535,7 @@ impl BuildingAllocator {
             broken: false,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
-            resource_inventory: vec![0.0; resource_count],
+            resource_inventory,
             revenue: 0.0,
             operating_budget: 0.0,
             utility_service_available: false,

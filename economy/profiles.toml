@@ -128,6 +128,7 @@ kind = "store"
 description = "Starter store throughput node converting staple food into household supplies."
 worker_capacity = 3
 base_rate_units_per_day = 200.0
+starting_inventory_days = 3.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
 unit_price_currency = 6.0
@@ -167,3 +168,46 @@ outputs = []
 [[profiles.inputs]]
 resource = "household_supplies"
 units_per_day = 1.0
+
+[[profiles]]
+id = "power_plant_basic"
+display_name = "Power Plant"
+kind = "utility_producer"
+utility_service = "power"
+description = "Basic power station providing electricity to commercial and industrial buildings. If absent, the city falls back to OWA power at higher cost."
+worker_capacity = 4
+base_rate_units_per_day = 0.0
+wage_min_currency_per_day = 100.0
+wage_max_currency_per_day = 130.0
+unit_price_currency = 3.0
+work_schedule_profile = "three_shift_work"
+inputs = []
+outputs = []
+
+[[profiles]]
+id = "water_plant_basic"
+display_name = "Water Treatment Plant"
+kind = "utility_producer"
+utility_service = "water"
+description = "Basic water treatment plant supplying water to connected buildings. If absent, the city falls back to OWA water at higher cost."
+worker_capacity = 3
+base_rate_units_per_day = 0.0
+wage_min_currency_per_day = 90.0
+wage_max_currency_per_day = 110.0
+unit_price_currency = 2.0
+inputs = []
+outputs = []
+
+[[profiles]]
+id = "wastewater_treatment_basic"
+display_name = "Wastewater Treatment"
+kind = "utility_processor"
+utility_service = "sewage"
+description = "Basic wastewater treatment plant handling sewage from connected buildings. If absent, the city falls back to OWA sewage at higher cost."
+worker_capacity = 3
+base_rate_units_per_day = 0.0
+wage_min_currency_per_day = 90.0
+wage_max_currency_per_day = 110.0
+unit_price_currency = 1.5
+inputs = []
+outputs = []

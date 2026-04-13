@@ -1,5 +1,6 @@
 //! SQLite save/load infrastructure for simulation snapshots.
 
+use crate::nodes::sim::core::CityTreasury;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -48,6 +49,7 @@ pub(crate) struct SaveGameView<'a> {
     pub logistics: &'a ShipmentSystem,
     pub agents: &'a AgentSystem,
     pub network: &'a TransitNetwork,
+    pub treasury: &'a CityTreasury,
 }
 
 /// Fully hydrated simulation state after loading from disk.
@@ -67,6 +69,7 @@ pub(crate) struct LoadedSimulation {
     pub households: HouseholdSystem,
     pub logistics: ShipmentSystem,
     pub agents: AgentSystem,
+    pub treasury: CityTreasury,
 }
 
 #[derive(Debug)]
@@ -131,6 +134,14 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
     )?;
     tx.execute("INSERT INTO map_config(width_m, height_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4)", params![view.config.width_m, view.config.height_m, view.config.env_cell_m, view.config.zone_cell_m])?;
     tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.day_index), i64::from(view.time.minute_of_day), view.time.seconds_per_day, view.agents.sim_time])?;
+    tx.execute(
+        "INSERT INTO city_treasury(balance, lifetime_build_cost, last_daily_upkeep) VALUES (?1, ?2, ?3)",
+        params![
+            view.treasury.balance,
+            view.treasury.lifetime_build_cost,
+            view.treasury.last_daily_upkeep
+        ],
+    )?;
 
     world::save_world(
         &tx,
@@ -279,6 +290,17 @@ pub(crate) fn load_from_sqlite(
     let mut desirability = DesirabilitySystem::new(&config);
     desirability.tick(&zoning, &pollution, &noise);
 
+    let treasury_row: (f64, f64, f64) = conn.query_row(
+        "SELECT balance, lifetime_build_cost, last_daily_upkeep FROM city_treasury LIMIT 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let treasury = CityTreasury {
+        balance: treasury_row.0,
+        lifetime_build_cost: treasury_row.1,
+        last_daily_upkeep: treasury_row.2,
+    };
+
     Ok(LoadedSimulation {
         config,
         time,
@@ -295,6 +317,7 @@ pub(crate) fn load_from_sqlite(
         households,
         logistics,
         agents,
+        treasury,
     })
 }
 

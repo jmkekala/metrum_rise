@@ -37,10 +37,23 @@ var zoning_combined_hbox: HBoxContainer
 var zoning_sub_menu: HBoxContainer
 var select_main_btn: Button
 var road_properties_panel: PanelContainer
+var clock_panel: PanelContainer
+var clock_label: Label
+var speed_label: Label
+var speed_down_btn: Button
+var speed_up_btn: Button
+var _display_day: int = -1
+var _display_minute_of_day: int = -1
+var _display_speed: float = -1.0
 
 func _ready():
 	_build_ui()
 	_connect_signals()
+	_refresh_clock_display(true)
+	set_sim_speed_display(0.0)
+
+func _process(_delta):
+	_refresh_clock_display(false)
 
 func _build_ui():
 	# Foolproof method for Godot 4 programmatic UI: Full screen root, push to bottom
@@ -392,6 +405,57 @@ func _build_ui():
 	)
 	road_properties_panel.set_meta("no_build_check", no_build_check)
 
+	# --- Bottom-left Clock And Speed Panel ---
+	clock_panel = PanelContainer.new()
+	root.add_child(clock_panel)
+	clock_panel.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
+	clock_panel.offset_left = 20
+	clock_panel.offset_right = 220
+	clock_panel.offset_top = -90
+	clock_panel.offset_bottom = -20
+
+	var clock_style = StyleBoxFlat.new()
+	clock_style.bg_color = Color(0.08, 0.08, 0.08, 0.78)
+	clock_style.set_corner_radius_all(12)
+	clock_panel.add_theme_stylebox_override("panel", clock_style)
+
+	var clock_padding = MarginContainer.new()
+	clock_padding.add_theme_constant_override("margin_left", 12)
+	clock_padding.add_theme_constant_override("margin_right", 12)
+	clock_padding.add_theme_constant_override("margin_top", 10)
+	clock_padding.add_theme_constant_override("margin_bottom", 10)
+	clock_panel.add_child(clock_padding)
+
+	var clock_vbox = VBoxContainer.new()
+	clock_vbox.add_theme_constant_override("separation", 8)
+	clock_padding.add_child(clock_vbox)
+
+	clock_label = Label.new()
+	clock_label.text = "Day 1 00:00"
+	clock_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	clock_label.add_theme_font_size_override("font_size", 20)
+	clock_vbox.add_child(clock_label)
+
+	var speed_hbox = HBoxContainer.new()
+	speed_hbox.add_theme_constant_override("separation", 8)
+	clock_vbox.add_child(speed_hbox)
+
+	speed_down_btn = Button.new()
+	speed_down_btn.text = "-"
+	speed_down_btn.custom_minimum_size = Vector2(36, 32)
+	speed_hbox.add_child(speed_down_btn)
+
+	speed_label = Label.new()
+	speed_label.text = "Paused"
+	speed_label.custom_minimum_size = Vector2(90, 0)
+	speed_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	speed_hbox.add_child(speed_label)
+
+	speed_up_btn = Button.new()
+	speed_up_btn.text = "+"
+	speed_up_btn.custom_minimum_size = Vector2(36, 32)
+	speed_hbox.add_child(speed_up_btn)
+
 	# Wrapper to center main toolbar
 	var hbox_main_center = HBoxContainer.new()
 	hbox_main_center.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -411,6 +475,8 @@ func _connect_signals():
 	
 	straight_btn.pressed.connect(func(): _set_draw_mode(0))
 	spline_btn.pressed.connect(func(): _set_draw_mode(1))
+	speed_down_btn.pressed.connect(func(): input_manager.step_simulation_speed(-1))
+	speed_up_btn.pressed.connect(func(): input_manager.step_simulation_speed(1))
 
 func _on_road_main_pressed():
 	terrain_sub_menu.visible = false
@@ -528,6 +594,28 @@ func _color_from_hex(hex: String, alpha: float) -> Color:
 		var b := hex.substr(5, 2).hex_to_int()
 		return Color8(r, g, b, int(clampf(alpha, 0.0, 1.0) * 255.0))
 	return Color(0.5, 0.5, 0.5, alpha)
+
+func _refresh_clock_display(force: bool):
+	if not clock_label or not simulation_node:
+		return
+	var day := int(simulation_node.get_current_day())
+	var minute_of_day := int(simulation_node.get_current_minute_of_day())
+	if not force and day == _display_day and minute_of_day == _display_minute_of_day:
+		return
+	_display_day = day
+	_display_minute_of_day = minute_of_day
+	var hours := minute_of_day / 60
+	var minutes := minute_of_day % 60
+	clock_label.text = "Day %d %02d:%02d" % [day, hours, minutes]
+
+func set_sim_speed_display(speed: float):
+	_display_speed = speed
+	if not speed_label:
+		return
+	if speed <= 0.001:
+		speed_label.text = "Paused"
+	else:
+		speed_label.text = "%.1fx" % speed
 
 var _pack_manager: Window = null
 

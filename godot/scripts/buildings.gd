@@ -109,12 +109,19 @@ func _load_mesh_for_asset(asset_id: String) -> Mesh:
 	if not FileAccess.file_exists(godot_path):
 		push_warning("Buildings: LOD0 file not found for '%s': %s" % [asset_id, godot_path])
 		return null
-	var doc := GLTFDocument.new()
-	var state := GLTFState.new()
+	var ext := native_path.get_extension().to_lower()
+	var doc: Resource
+	var state: Resource
+	if ext == "fbx":
+		doc = FBXDocument.new()
+		state = FBXState.new()
+	else:
+		doc = GLTFDocument.new()
+		state = GLTFState.new()
 	if doc.append_from_file(native_path, state) != OK:
-		push_warning("Buildings: failed to load GLB for '%s': %s" % [asset_id, native_path])
+		push_warning("Buildings: failed to load mesh for '%s': %s" % [asset_id, native_path])
 		return null
-	var scene := doc.generate_scene(state)
+	var scene: Node = doc.generate_scene(state)
 	if not scene:
 		return null
 	var mesh := _bake_scene_to_mesh(scene)

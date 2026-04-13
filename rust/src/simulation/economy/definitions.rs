@@ -258,6 +258,10 @@ pub(crate) enum EconomyProfileRuntimeKind {
     Store,
     /// Non-building aggregate sink profile used by sandbox and household-side graphs.
     DemandSink,
+    /// City utility building that generates a service signal (power, water).
+    UtilityProducer,
+    /// City utility building that processes a service output (sewage treatment).
+    UtilityProcessor,
     /// Authored profile kind that the live starter runtime does not execute yet.
     Unsupported,
 }
@@ -284,6 +288,9 @@ pub(crate) struct EconomyProfileRuntime {
     pub wage_max_currency_per_day: f32,
     /// Authored target stock horizon in days for the starter live runtime.
     pub stock_target_days: f32,
+    /// Output units pre-seeded into inventory when the building is first placed.
+    /// Expressed as days of output throughput. Zero disables seeding.
+    pub starting_inventory_days: f32,
     /// Authored reorder threshold in days for the starter live runtime.
     pub reorder_threshold_days: f32,
     /// Authored critical threshold in days for emergency freight.
@@ -293,6 +300,9 @@ pub(crate) struct EconomyProfileRuntime {
     /// Household-demand consumption rate used by abstract sink profiles.
     #[allow(dead_code)]
     pub consumption_rate_per_resident: f32,
+    /// Which utility service this building provides ("power", "water", or "sewage").
+    /// `None` for non-utility profiles.
+    pub utility_service: Option<String>,
     /// Compiled typed input ports used by the live runtime.
     pub inputs: Vec<RuntimeResourcePort>,
     /// Compiled typed output ports used by the live runtime.
@@ -383,6 +393,16 @@ impl RuntimeEconomyCatalog {
     /// Returns the number of compiled runtime resources in the catalog.
     pub(crate) fn resource_count(&self) -> usize {
         self.resource_by_id.len()
+    }
+
+    /// Returns the authored resource id string for a given compact runtime id, or `None`.
+    ///
+    /// Linear scan over the resource map — only call on user-triggered events, not hot paths.
+    pub(crate) fn resource_id_for_runtime_id(&self, runtime_id: u16) -> Option<&str> {
+        self.resource_by_id
+            .iter()
+            .find(|&(_, id)| *id == runtime_id)
+            .map(|(name, _)| name.as_str())
     }
 
     /// Returns the default runtime unit price for one resource when `OWA` imports it.
@@ -591,6 +611,10 @@ struct EconomyProfile {
     min_shipment_units: f32,
     #[serde(default)]
     consumption_rate_per_resident: f32,
+    #[serde(default)]
+    starting_inventory_days: f32,
+    #[serde(default)]
+    utility_service: Option<String>,
     #[serde(default)]
     work_schedule_profile: Option<String>,
     #[serde(default)]
@@ -929,6 +953,8 @@ fn compile_runtime_profile(
         "producer" => EconomyProfileRuntimeKind::Producer,
         "store" => EconomyProfileRuntimeKind::Store,
         "demand_sink" => EconomyProfileRuntimeKind::DemandSink,
+        "utility_producer" => EconomyProfileRuntimeKind::UtilityProducer,
+        "utility_processor" => EconomyProfileRuntimeKind::UtilityProcessor,
         _ => EconomyProfileRuntimeKind::Unsupported,
     };
 
@@ -970,6 +996,9 @@ fn compile_runtime_profile(
         EconomyProfileRuntimeKind::Store => {
             !compiled_inputs.is_empty() && !compiled_outputs.is_empty()
         }
+        EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor => {
+            true
+        }
         EconomyProfileRuntimeKind::DemandSink | EconomyProfileRuntimeKind::Unsupported => false,
     };
 
@@ -983,10 +1012,12 @@ fn compile_runtime_profile(
         wage_min_currency_per_day: profile.wage_min_currency_per_day.max(0.0),
         wage_max_currency_per_day: profile.wage_max_currency_per_day.max(0.0),
         stock_target_days: profile.stock_target_days.max(0.0),
+        starting_inventory_days: profile.starting_inventory_days.max(0.0),
         reorder_threshold_days: profile.reorder_threshold_days.max(0.0),
         critical_threshold_days: profile.critical_threshold_days.max(0.0),
         min_shipment_units: profile.min_shipment_units.max(0.0),
         consumption_rate_per_resident: profile.consumption_rate_per_resident.max(0.0),
+        utility_service: profile.utility_service.clone(),
         inputs: compiled_inputs,
         outputs: compiled_outputs,
         runtime_supported,

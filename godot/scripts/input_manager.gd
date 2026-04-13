@@ -3,6 +3,9 @@
 ## Routes input events to the active tool node (RoadTool, ZoningTool,
 ## MoveTool, LaneTool, CulDeSacTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
+##
+## When no tool is active (Tool.NONE) left-clicking any building opens the
+## building stats panel via InspectTool, which is always present in the scene.
 extends Node
 
 @onready var simulation_node = $"../SimulationNode"
@@ -17,9 +20,11 @@ var cul_de_sac_tool: Node3D
 @onready var agents_node = $"../Agents"
 @onready var buildings_node = $"../Buildings"
 var select_tool: Node3D
+var inspect_tool: Node
 
 enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
 var current_tool: Tool = Tool.NONE
+const SIM_SPEED_STEPS := [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32]
 
 func _ready():
 	if not has_node("../CulDeSacTool"):
@@ -35,7 +40,14 @@ func _ready():
 		st.set_script(load("res://scripts/select_tool.gd"))
 		get_parent().call_deferred("add_child", st)
 		select_tool = st
-	
+
+	if not has_node("../InspectTool"):
+		var it := Node.new()
+		it.name = "InspectTool"
+		it.set_script(load("res://scripts/inspect_tool.gd"))
+		get_parent().call_deferred("add_child", it)
+		inspect_tool = it
+
 	# Hide overlay mesh if exists in cul-de-sac tool
 	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
 		cul_de_sac_tool.get_node("PreviewMesh").visible = false
@@ -159,6 +171,9 @@ func _cancel_active_tool():
 		current_tool = Tool.NONE
 
 func _activate_tool_logic(tool_type: Tool, enabled: bool):
+	# Close the building inspector whenever any dedicated tool activates.
+	if enabled and inspect_tool:
+		inspect_tool.close_window()
 	match tool_type:
 		Tool.MOVE: if move_tool: move_tool.active = enabled
 		Tool.ROAD:
@@ -241,10 +256,33 @@ func _handle_load_game():
 		push_error("Load failed: " + path)
 
 func _toggle_pause():
-	var speed = 0.0 if terrain_node.sim_speed > 0.0 else 1.0
-	terrain_node.sim_speed = speed
-	simulation_node.set_simulation_speed(speed)
-	print("Sim speed set to: ", speed)
+	var speed: float = 0.0 if terrain_node.sim_speed > 0.0 else 1.0
+	set_simulation_speed(speed)
+
+func set_simulation_speed(speed: float):
+	var clamped_speed: float = maxf(speed, 0.0)
+	terrain_node.sim_speed = clamped_speed
+	simulation_node.set_simulation_speed(clamped_speed)
+	if main_ui and main_ui.has_method("set_sim_speed_display"):
+		main_ui.set_sim_speed_display(clamped_speed)
+	print("Sim speed set to: ", clamped_speed)
+
+func step_simulation_speed(direction: int):
+	var current_speed: float = terrain_node.sim_speed
+	var target_index := 0
+	if direction > 0:
+		target_index = SIM_SPEED_STEPS.size() - 1
+		for i in range(SIM_SPEED_STEPS.size()):
+			if SIM_SPEED_STEPS[i] > current_speed + 0.001:
+				target_index = i
+				break
+	else:
+		target_index = 0
+		for i in range(SIM_SPEED_STEPS.size() - 1, -1, -1):
+			if SIM_SPEED_STEPS[i] < current_speed - 0.001:
+				target_index = i
+				break
+	set_simulation_speed(SIM_SPEED_STEPS[target_index])
 
 func _handle_export():
 	if terrain_node: terrain_node.export_heightmap("user://map_export.png")
@@ -284,8 +322,24 @@ func set_zoning_paint_mode(mode: String) -> void:
 		zoning_tool.set_paint_mode(mode)
 
 func _handle_mouse(event):
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		# In default (no-tool) mode a left-click tries to inspect a building.
+		if current_tool == Tool.NONE and inspect_tool:
+			_handle_inspect_click(event.position)
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		_handle_right_click()
+
+func _handle_inspect_click(mouse_pos: Vector2) -> void:
+	var camera := get_viewport().get_camera_3d()
+	if not camera:
+		return
+	var pos = simulation_node.intersect_terrain(
+		camera.project_ray_origin(mouse_pos),
+		camera.project_ray_normal(mouse_pos)
+	)
+	if pos == null:
+		return
+	inspect_tool.try_inspect(pos)
 
 func _handle_right_click():
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:

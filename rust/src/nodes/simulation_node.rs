@@ -48,7 +48,9 @@ use godot::classes::{INode3D, Node3D};
 use godot::prelude::*;
 
 use crate::config;
-use crate::nodes::sim::core::{RenderSnapshot, SimCommand, SimCore, run_sim_thread};
+use crate::nodes::sim::core::{
+    CityTreasury, RenderSnapshot, SimCommand, SimCore, STARTUP_TREASURY_BALANCE, run_sim_thread,
+};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -615,6 +617,94 @@ impl SimulationNode {
             .get_building_plot_transforms_internal(zone_type_int)
     }
 
+    /// Returns a Dictionary of live stats for the building whose centre is closest to
+    /// (`world_x`, `world_z`) within a 30 m pick radius.
+    ///
+    /// Returns an empty Dictionary when no building is within range.
+    /// Keys: `asset_id`, `zone_type`, `level`, `occupancy`, `worker_count`,
+    /// `worker_capacity`, `operating_budget`, `revenue`, `utility_service_available`,
+    /// `economy_broken`, `broken`, `pending_redevelopment`, `rezone_grace_days`,
+    /// `economy_profile`, `inventory` (Array of `{name, amount}` Dictionaries).
+    #[func]
+    pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
+        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+        use crate::simulation::grid::zoning::ZoneType;
+
+        let core = self.lock_core();
+
+        // Linear scan — only called on explicit user clicks, never on the hot path.
+        let pick_radius_sq = 30.0_f32 * 30.0;
+        let mut best_idx = usize::MAX;
+        let mut best_dist_sq = pick_radius_sq;
+        for (i, b) in core.allocator.buildings.iter().enumerate() {
+            let dx = b.center_x - world_x;
+            let dz = b.center_y - world_z; // center_y is world-Z in the building struct
+            let dist_sq = dx * dx + dz * dz;
+            if dist_sq < best_dist_sq {
+                best_dist_sq = dist_sq;
+                best_idx = i;
+            }
+        }
+        if best_idx == usize::MAX {
+            return VarDictionary::new();
+        }
+
+        let b = &core.allocator.buildings[best_idx];
+        let catalog = load_runtime_economy_catalog().ok();
+
+        let zone_type_str = match b.zone_type {
+            ZoneType::None => "utility",
+            ZoneType::Residential => "residential",
+            ZoneType::Commercial => "commercial",
+            ZoneType::Industrial => "industrial",
+            ZoneType::Office => "office",
+            ZoneType::Mixed => "mixed",
+        };
+
+        let profile_id = catalog
+            .as_ref()
+            .and_then(|c| c.profile_by_runtime_id(b.economy_profile_runtime_id))
+            .map(|p| p.id.clone())
+            .unwrap_or_default();
+
+        let worker_capacity = core.allocator.worker_capacity(best_idx);
+
+        // Inventory: only non-zero resource slots.
+        let mut inv_arr = VarArray::new();
+        if let Some(cat) = &catalog {
+            for (slot, &amount) in b.resource_inventory.iter().enumerate() {
+                if amount > 0.001 {
+                    let runtime_id = (slot + 1) as u16;
+                    let name = cat
+                        .resource_id_for_runtime_id(runtime_id)
+                        .unwrap_or("unknown");
+                    let mut entry = VarDictionary::new();
+                    entry.set("name", GString::from(name));
+                    entry.set("amount", amount as f64);
+                    inv_arr.push(&entry.to_variant());
+                }
+            }
+        }
+
+        let mut dict = VarDictionary::new();
+        dict.set("asset_id", GString::from(b.asset_id.as_str()));
+        dict.set("zone_type", GString::from(zone_type_str));
+        dict.set("level", b.level as i32);
+        dict.set("occupancy", b.occupancy as i32);
+        dict.set("worker_count", b.worker_count as i32);
+        dict.set("worker_capacity", worker_capacity as i32);
+        dict.set("operating_budget", b.operating_budget as f64);
+        dict.set("revenue", b.revenue as f64);
+        dict.set("utility_service_available", b.utility_service_available);
+        dict.set("economy_broken", b.economy_broken);
+        dict.set("broken", b.broken);
+        dict.set("pending_redevelopment", b.pending_redevelopment);
+        dict.set("rezone_grace_days", b.rezone_grace_days_remaining as i32);
+        dict.set("economy_profile", GString::from(profile_id.as_str()));
+        dict.set("inventory", inv_arr.to_variant());
+        dict
+    }
+
     /// Validates the JSON export params, writes `pack.toml` (if absent) and
     /// `assets/<asset_id>/asset.toml` under `output_dir`, and returns an error
     /// string or `""` on success.
@@ -1056,6 +1146,12 @@ impl SimulationNode {
         }
     }
 
+    /// Returns the current city treasury balance in currency units. May be negative.
+    #[func]
+    pub fn get_treasury_balance(&self) -> f64 {
+        self.lock_core().treasury.balance
+    }
+
     /// Returns global lane width.
     #[func]
     pub fn get_lane_width(&self) -> f32 {
@@ -1154,6 +1250,7 @@ impl INode3D for SimulationNode {
             households: HouseholdSystem::new(),
             logistics: ShipmentSystem::new(),
             config,
+            treasury: CityTreasury::new(STARTUP_TREASURY_BALANCE),
             undo_stack: VecDeque::new(),
             terrain_dirty: true,
             water_dirty: true,

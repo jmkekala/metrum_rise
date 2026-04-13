@@ -15,7 +15,9 @@ use godot::prelude::{Vector3, godot_error};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
-use crate::simulation::economy::agents::{AgentSystem, MODE_CAR, transit_is_visible};
+use crate::simulation::economy::agents::{
+    AgentSystem, MODE_CAR, TRANSIT_IN_BUILDING, transit_is_visible,
+};
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -46,6 +48,49 @@ fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option
         }
     } else {
         Some(Vector3::new(entrance.door_pos.x, 0.0, entrance.door_pos.y))
+    }
+}
+
+/// Currency cost per meter of new road laid, deducted from the city treasury at placement.
+pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 100.0;
+/// Currency upkeep per meter of road per day, settled from the city treasury each day.
+pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
+/// Starting city treasury balance at game start.
+pub(crate) const STARTUP_TREASURY_BALANCE: f64 = 100_000.0;
+
+/// City-level fiscal ledger, separate from household budgets and building budgets.
+///
+/// The balance may go negative: deficits are an explicit fiscal state rather than
+/// a blocked operation. Future debt/credit systems may add consequences later.
+pub struct CityTreasury {
+    /// Current balance in currency units. May be negative.
+    pub balance: f64,
+    /// Running total of all infrastructure build costs since game start.
+    pub lifetime_build_cost: f64,
+    /// Road upkeep deducted in the most recent daily settlement.
+    pub last_daily_upkeep: f64,
+}
+
+impl CityTreasury {
+    /// Initialises the treasury with the given startup balance.
+    pub(crate) fn new(startup_balance: f64) -> Self {
+        Self {
+            balance: startup_balance,
+            lifetime_build_cost: 0.0,
+            last_daily_upkeep: 0.0,
+        }
+    }
+
+    /// Deducts an infrastructure build cost from the treasury. Balance may go negative.
+    pub(crate) fn deduct_build_cost(&mut self, amount: f64) {
+        self.balance -= amount;
+        self.lifetime_build_cost += amount;
+    }
+
+    /// Settles one day's infrastructure upkeep cost. Balance may go negative.
+    pub(crate) fn settle_daily_upkeep(&mut self, amount: f64) {
+        self.balance -= amount;
+        self.last_daily_upkeep = amount;
     }
 }
 
@@ -96,6 +141,8 @@ pub struct SimCore {
     pub logistics: ShipmentSystem,
     /// Map configuration (dimensions, cell sizes).
     pub config: MapConfig,
+    /// City-level fiscal ledger tracking infrastructure build cost and daily upkeep.
+    pub treasury: CityTreasury,
     /// Undo history stack — kept in SimCore so all mutations are co-located.
     pub undo_stack: VecDeque<SimulationSnapshot>,
     /// Set by terrain mutations; cleared by the Godot render layer.
@@ -201,6 +248,169 @@ pub enum SimCommand {
 }
 
 impl SimCore {
+    fn print_sim_console_summary(&self, day_index: u32, minute_of_day: u16) {
+        let mut at_home = 0usize;
+        let mut at_work = 0usize;
+        let mut shopping = 0usize;
+        let mut travelling = 0usize;
+        let mut other = 0usize;
+
+        for i in 0..self.agents.len() {
+            if self.agents.transit[i] != TRANSIT_IN_BUILDING {
+                travelling += 1;
+                continue;
+            }
+
+            match self.agents.activity[i] {
+                0 => at_home += 1,
+                1 => at_work += 1,
+                2 => shopping += 1,
+                _ => other += 1,
+            }
+        }
+
+        let household_count = self
+            .households
+            .households
+            .iter()
+            .filter(|household| household.member_count > 0)
+            .count();
+        let hours = minute_of_day / 60;
+        let minutes = minute_of_day % 60;
+
+        println!(
+            "[SIM_DEBUG] Day {} {:02}:{:02} demand=(R {:.0}%, C {:.0}%, I {:.0}%) startup={:.2} admit={} remove={} buildings={} households={} agents={} states=(home={}, work={}, shopping={}, travelling={}, other={}) actions=spawn({}/{}/{}) upgrade({}/{}/{}) downgrade({}/{}/{}) despawn({}/{}/{})",
+            day_index,
+            hours,
+            minutes,
+            self.demand.residential * 100.0,
+            self.demand.commercial * 100.0,
+            self.demand.industrial * 100.0,
+            self.demand.startup_support_factor,
+            self.demand.households_to_admit_today,
+            self.demand.households_to_remove_today,
+            self.allocator.buildings.len(),
+            household_count,
+            self.agents.len(),
+            at_home,
+            at_work,
+            shopping,
+            travelling,
+            other,
+            self.demand.building_actions.residential.spawns.len(),
+            self.demand.building_actions.commercial.spawns.len(),
+            self.demand.building_actions.industrial.spawns.len(),
+            self.demand.building_actions.residential.upgrades.len(),
+            self.demand.building_actions.commercial.upgrades.len(),
+            self.demand.building_actions.industrial.upgrades.len(),
+            self.demand.building_actions.residential.downgrades.len(),
+            self.demand.building_actions.commercial.downgrades.len(),
+            self.demand.building_actions.industrial.downgrades.len(),
+            self.demand.building_actions.residential.despawns.len(),
+            self.demand.building_actions.commercial.despawns.len(),
+            self.demand.building_actions.industrial.despawns.len(),
+        );
+    }
+
+    fn print_daily_building_economy(&self, day_index: u32) {
+        use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+        use crate::simulation::grid::zoning::ZoneType;
+
+        if !crate::debug::category_enabled("economy") {
+            return;
+        }
+        let Ok(catalog) = load_runtime_economy_catalog() else {
+            return;
+        };
+
+        for (idx, b) in self.allocator.buildings.iter().enumerate() {
+            let zone_tag = match b.zone_type {
+                ZoneType::Residential => "RES",
+                ZoneType::Commercial => "COM",
+                ZoneType::Industrial => "IND",
+                _ => "OTHER",
+            };
+            let worker_cap = self.allocator.worker_capacity(idx);
+            let resident_cap = self.allocator.resident_capacity(idx);
+            let profile_id = catalog
+                .profile_by_runtime_id(b.economy_profile_runtime_id)
+                .map(|p| p.id.as_str())
+                .unwrap_or("none");
+
+            // Build inventory snapshot string for all non-zero resources.
+            let mut inv_parts = Vec::new();
+            for (slot, &amount) in b.resource_inventory.iter().enumerate() {
+                if amount <= 0.0 {
+                    continue;
+                }
+                let rid = (slot + 1) as u16;
+                let name = catalog
+                    .resource_id_for_runtime_id(rid)
+                    .unwrap_or("?");
+                // capacity from output port if available
+                let cap = if let Some(p) = catalog.profile_by_runtime_id(b.economy_profile_runtime_id) {
+                    p.outputs
+                        .iter()
+                        .find(|o| o.resource_runtime_id == rid)
+                        .map(|o| p.output_buffer_capacity_units_for(o))
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                if cap > 0.0 {
+                    inv_parts.push(format!("{}={:.1}/{:.1}", name, amount, cap));
+                } else {
+                    inv_parts.push(format!("{}={:.1}", name, amount));
+                }
+            }
+            let inv_str = if inv_parts.is_empty() {
+                "none".to_owned()
+            } else {
+                inv_parts.join(" ")
+            };
+
+            // Daily I/O from profile (per-day throughput at full capacity).
+            let mut io_parts = Vec::new();
+            if let Some(p) = catalog.profile_by_runtime_id(b.economy_profile_runtime_id) {
+                for port in &p.inputs {
+                    let name = catalog.resource_id_for_runtime_id(port.resource_runtime_id).unwrap_or("?");
+                    io_parts.push(format!("-{:.1}{}/day", port.units_per_day, name));
+                }
+                for port in &p.outputs {
+                    let name = catalog.resource_id_for_runtime_id(port.resource_runtime_id).unwrap_or("?");
+                    io_parts.push(format!("+{:.1}{}/day", port.units_per_day, name));
+                }
+            }
+            let io_str = if io_parts.is_empty() { "none".to_owned() } else { io_parts.join(" ") };
+
+            if zone_tag == "RES" {
+                println!(
+                    "[ECON] Day {:>4} idx={} {} asset={} profile={} occupancy={}/{} budget={:.1} utility={} stock={:.2}days inventory=[{}]",
+                    day_index, idx, zone_tag,
+                    b.asset_id, profile_id,
+                    b.occupancy, resident_cap,
+                    b.operating_budget,
+                    if b.utility_service_available { "Y" } else { "N" },
+                    0.0_f32, // residential stock lives on households, not building
+                    inv_str,
+                );
+            } else {
+                println!(
+                    "[ECON] Day {:>4} idx={} {} asset={} profile={} workers={}/{} budget={:.1} revenue={:.1} utility={} broken={} io=[{}] inventory=[{}]",
+                    day_index, idx, zone_tag,
+                    b.asset_id, profile_id,
+                    b.worker_count, worker_cap,
+                    b.operating_budget,
+                    b.revenue,
+                    if b.utility_service_available { "Y" } else { "N" },
+                    if b.broken || b.economy_broken { "Y" } else { "N" },
+                    io_str,
+                    inv_str,
+                );
+            }
+        }
+    }
+
     /// Executes one coarse operational-hour economy step before the daily settlement boundary.
     pub fn simulate_operational_hour_internal(&mut self, day_index: u32, minute_of_day: u16) {
         let absolute_hour = day_index
@@ -259,6 +469,16 @@ impl SimCore {
             .tick(&self.zoning, &self.pollution, &self.noise);
         self.households
             .daily_settlement_tick(&mut self.agents, &mut self.allocator);
+        // City treasury: settle daily road upkeep on the fiscal cadence.
+        let road_length_m: f64 = self
+            .region_graph
+            .edges()
+            .iter()
+            .filter(|e| !e.deleted)
+            .map(|e| e.physical_length as f64)
+            .sum();
+        self.treasury
+            .settle_daily_upkeep(road_length_m * ROAD_UPKEEP_PER_METER_PER_DAY);
         self.demand.run_daily_pass(
             &self.allocator,
             &self.households,
@@ -317,6 +537,11 @@ impl SimCore {
             .store(0, std::sync::atomic::Ordering::Relaxed);
 
         self.last_tick_duration = tick_start.elapsed().as_secs_f64() * 1000.0;
+    }
+
+    /// Called once per in-game day by the tick loop to emit per-building economy lines.
+    pub fn print_daily_building_economy_for_day(&self, day_index: u32) {
+        self.print_daily_building_economy(day_index);
     }
 
     /// Pre-computes all per-frame rendering data into a `RenderSnapshot`.
@@ -743,6 +968,9 @@ pub fn run_sim_thread(
                                     msg
                                 );
                             }
+                            if step_minute_of_day != 0 && crate::debug::is_sim_enabled() {
+                                core.print_sim_console_summary(step_day_index, step_minute_of_day);
+                            }
                         }
                         if step_minute_of_day == 0 {
                             let daily_result =
@@ -757,6 +985,10 @@ pub fn run_sim_thread(
                                     .unwrap_or("(non-string payload)");
                                 godot_error!("[sim] daily tick panicked — skipping day: {}", msg);
                             }
+                            if crate::debug::is_sim_enabled() {
+                                core.print_sim_console_summary(step_day_index, step_minute_of_day);
+                            }
+                            core.print_daily_building_economy_for_day(step_day_index);
                         }
                     }
                 }
