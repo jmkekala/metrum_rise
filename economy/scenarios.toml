@@ -2,10 +2,10 @@
 id = "grocery_bottleneck"
 display_name = "Grocery Bottleneck"
 description = "Starter playback case for the food processor, grocery, and household demand chain."
-duration_days = 30
+duration_days = 7
 household_count = 130
 average_household_size = 2.0
-starting_household_stock_days = 3.0
+starting_household_stock_days = 2.0
 replenishment_target_days = 3.0
 replenishment_trigger_days = 1.5
 pickup_cadence_hours = 6.0

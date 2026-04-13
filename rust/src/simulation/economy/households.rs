@@ -40,7 +40,7 @@ const HOUSEHOLD_TRIGGER_STOCK_DAYS: f32 = 1.5;
 const IMMIGRANT_STARTING_STOCK_DAYS: f32 = 3.0;
 const IMMIGRANT_STARTING_BUDGET_PER_MEMBER: f32 = 12.0;
 const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 2.0;
-const HOUSEHOLD_STARTING_BUDGET: f32 = 100.0;
+const HOUSEHOLD_STARTING_BUDGET: f32 = 10.0;
 /// Default household size admitted by the first-pass immigration flow.
 pub const DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 2;
 
@@ -66,7 +66,7 @@ const W_STOCK: f32 = 0.35;
 const W_JOB: f32 = 0.20;
 const W_COMMUTE: f32 = 0.10;
 const GO_TO_WORK_THRESHOLD: f32 = 0.10;
-const JOB_SEARCH_MAX_RING: i32 = 2;
+const JOB_SEARCH_MAX_RING: i32 = 6;
 const JOB_SEARCH_CANDIDATES: usize = 8;
 const GROCERY_SEARCH_MAX_RING: i32 = 6;
 const GROCERY_SEARCH_CANDIDATES: usize = 8;

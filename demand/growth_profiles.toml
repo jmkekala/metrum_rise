@@ -12,21 +12,7 @@ resident_presence_saturation_residents = 500
 household_affordability_target_reserve_days = 7.0
 household_stock_stability_target_days = 3.0
 
-[startup_support]
-target_housed_residents = 120
-target_private_building_count = 14
-target_filled_job_slots = 48
-household_bonus = 1.0
 
-[startup_support.growth_floor_by_use]
-residential = 0.60
-commercial = 0.56
-industrial = 0.54
-
-[startup_support.spawn_bonus_by_use]
-residential = 2.0
-commercial = 1.0
-industrial = 0.75
 
 [action_budget]
 max_households_per_day = 8
@@ -37,24 +23,12 @@ admission_threshold = 0.25
 removal_threshold = 0.35
 
 [action_budget.spawn_batch_fraction_by_use]
-residential = 0.18
-commercial = 0.12
-industrial = 0.10
 
 [action_budget.upgrade_batch_fraction_by_use]
-residential = 0.10
-commercial = 0.08
-industrial = 0.08
 
 [action_budget.downgrade_batch_fraction_by_use]
-residential = 0.08
-commercial = 0.08
-industrial = 0.08
 
 [action_budget.despawn_batch_fraction_by_use]
-residential = 0.05
-commercial = 0.05
-industrial = 0.05
 
 [[profiles]]
 id = "residential_low_default"
