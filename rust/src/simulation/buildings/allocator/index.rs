@@ -25,7 +25,7 @@ impl BuildingAllocator {
                     RegionGraph::get_chunk_coords(Vector3::new(b.center_x, 0.0, b.center_y));
                 self.building_chunks.entry(chunk).or_default().push(idx);
 
-                let resident_cap = self.resident_capacity(idx);
+                let resident_cap = self.household_capacity(idx);
                 if resident_cap > 0 && b.occupancy < resident_cap {
                     let v_idx = self.vacancy_index[zi].len();
                     self.vacancy_index[zi].push(idx);
@@ -41,7 +41,7 @@ impl BuildingAllocator {
         if building_idx >= self.buildings.len() {
             return;
         }
-        let cap = self.resident_capacity(building_idx);
+        let cap = self.household_capacity(building_idx);
         let b = &mut self.buildings[building_idx];
         b.occupancy += 1;
 
@@ -66,7 +66,7 @@ impl BuildingAllocator {
         if building_idx >= self.buildings.len() {
             return;
         }
-        let cap = self.resident_capacity(building_idx);
+        let cap = self.household_capacity(building_idx);
         let b = &mut self.buildings[building_idx];
         b.occupancy = b.occupancy.saturating_sub(1);
 

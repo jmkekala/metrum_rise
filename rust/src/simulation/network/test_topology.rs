@@ -18,7 +18,7 @@ mod tests {
         asset_id: &str,
         zone: ZoneClass,
     ) -> String {
-        let (residents_capacity, worker_capacity) = match zone {
+        let (household_capacity, worker_capacity) = match zone {
             ZoneClass::Residential => (Some(6), None),
             ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
             ZoneClass::Mixed => (Some(4), Some(2)),
@@ -37,7 +37,7 @@ mod tests {
                     distance_max_m: None,
                 }],
                 anchors: vec![],
-                building: Some(BuildingData {
+                building: Some(BuildingData { flat_size_m2: None,
                     placement_mode: PlacementMode::ZonedPrivate,
                     zone_type: Some(zone),
                     density: Some("low".to_owned()),
@@ -46,7 +46,7 @@ mod tests {
                     min_zone_width_cells: None,
                     min_zone_depth_cells: None,
                     level: 1,
-                    residents_capacity,
+                    household_capacity,
                     worker_capacity,
                     service_class: None,
                     economy_profile: None,

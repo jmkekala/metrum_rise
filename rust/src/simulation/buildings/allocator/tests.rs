@@ -59,7 +59,7 @@ fn register_test_asset_with_family_level(
     asset_set: Option<&str>,
     level: u8,
 ) -> String {
-    let (residents_capacity, worker_capacity) = match zone {
+    let (household_capacity, worker_capacity) = match zone {
         ZoneClass::Residential => (Some(6), None),
         ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
         ZoneClass::Mixed => (Some(4), Some(2)),
@@ -81,7 +81,7 @@ fn register_test_asset_with_family_level(
             position: [0.0, 0.0, 0.5],
             forward: [0.0, 0.0, 1.0],
         }],
-        building: Some(BuildingData {
+        building: Some(BuildingData { flat_size_m2: None,
             placement_mode: PlacementMode::ZonedPrivate,
             zone_type: Some(zone),
             density: Some("low".to_owned()),
@@ -90,7 +90,7 @@ fn register_test_asset_with_family_level(
             min_zone_width_cells: None,
             min_zone_depth_cells: None,
             level,
-            residents_capacity,
+            household_capacity,
             worker_capacity,
             service_class: None,
             economy_profile: match zone {
@@ -965,7 +965,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             position: [1.0, 0.0, 0.5],
             forward: [0.0, 0.0, 1.0],
         }],
-        building: Some(BuildingData {
+        building: Some(BuildingData { flat_size_m2: None,
             placement_mode: PlacementMode::ZonedPrivate,
             zone_type: Some(ZoneClass::Residential),
             density: Some("low".to_owned()),
@@ -974,7 +974,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             min_zone_width_cells: None,
             min_zone_depth_cells: None,
             level: 1,
-            residents_capacity: Some(6),
+            household_capacity: Some(6),
             worker_capacity: None,
             service_class: None,
             economy_profile: None,

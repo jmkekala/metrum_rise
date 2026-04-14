@@ -878,11 +878,11 @@ fn residential_upgrade_viable(
     else {
         return false;
     };
-    let resident_capacity = allocator.resident_capacity(building_idx);
-    if resident_capacity == 0 {
+    let household_capacity = allocator.household_capacity(building_idx);
+    if household_capacity == 0 {
         return false;
     }
-    let occupancy_ratio = clamp01(building.occupancy as f32 / resident_capacity as f32);
+    let occupancy_ratio = clamp01(building.occupancy as f32 / household_capacity as f32);
     let min_occupancy_ratio = level_tuning_value(
         &economy_tuning
             .viability
@@ -922,11 +922,11 @@ fn residential_downgrade_viable(
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
-    let resident_capacity = allocator.resident_capacity(building_idx);
-    if resident_capacity == 0 {
+    let household_capacity = allocator.household_capacity(building_idx);
+    if household_capacity == 0 {
         return false;
     }
-    let occupancy_ratio = clamp01(building.occupancy as f32 / resident_capacity as f32);
+    let occupancy_ratio = clamp01(building.occupancy as f32 / household_capacity as f32);
     let max_occupancy_ratio = level_tuning_value(
         &economy_tuning
             .viability
@@ -1130,7 +1130,7 @@ fn level_change_is_compatible(
             return false;
         }
     }
-    allocator.registry.resident_capacity(target_asset_id) >= building.occupancy
+    allocator.registry.household_capacity(target_asset_id) >= building.occupancy
         && allocator.registry.worker_capacity(target_asset_id) >= building.worker_count
 }
 
@@ -1524,10 +1524,10 @@ impl DailyDemandSnapshot {
             }
 
             if matches!(building.zone_type, ZoneType::Residential) {
-                let resident_capacity = allocator.resident_capacity(idx);
-                total_household_slots = total_household_slots.saturating_add(resident_capacity);
+                let household_capacity = allocator.household_capacity(idx);
+                total_household_slots = total_household_slots.saturating_add(household_capacity);
                 occupied_household_slots = occupied_household_slots
-                    .saturating_add(building.occupancy.min(resident_capacity));
+                    .saturating_add(building.occupancy.min(household_capacity));
             }
 
             if matches!(
@@ -1807,7 +1807,7 @@ mod tests {
         asset_set: Option<&str>,
         level: u8,
     ) -> String {
-        let (zone_class, residents_capacity, worker_capacity) = match zone_type {
+        let (zone_class, household_capacity, worker_capacity) = match zone_type {
             ZoneType::Residential => (ZoneClass::Residential, Some(6), None),
             ZoneType::Commercial => (ZoneClass::Commercial, None, Some(4)),
             ZoneType::Industrial => (ZoneClass::Industrial, None, Some(4)),
@@ -1832,7 +1832,7 @@ mod tests {
                 position: [0.0, 0.0, 0.5],
                 forward: [0.0, 0.0, 1.0],
             }],
-            building: Some(BuildingData {
+            building: Some(BuildingData { flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,
                 zone_type: Some(zone_class),
                 density: Some("low".to_owned()),
@@ -1841,7 +1841,7 @@ mod tests {
                 min_zone_width_cells: None,
                 min_zone_depth_cells: None,
                 level,
-                residents_capacity,
+                household_capacity,
                 worker_capacity,
                 service_class: None,
                 economy_profile: match zone_type {

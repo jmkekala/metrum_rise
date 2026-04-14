@@ -180,7 +180,7 @@ zone_type = "residential"
 density = "low"
 lot_width_cells = 2
 lot_depth_cells = 2
-residents_capacity = 6
+household_capacity = 6
 "#;
 
     #[test]
@@ -315,7 +315,7 @@ zone_type = "residential"
 lot_width_cells = 1
 lot_depth_cells = 1
 level = 1
-residents_capacity = 5
+household_capacity = 5
 preview_scale = 7.18
 density = "low"
 

@@ -92,12 +92,15 @@ pub struct ExportParams {
     /// Development level (1 = lowest density / newest; higher = denser / upgraded).
     #[serde(default = "default_level")]
     pub level: u8,
-    /// Maximum number of residents this building can house.
+    /// Maximum number of households this building can house.
     #[serde(default)]
-    pub residents_capacity: Option<u32>,
+    pub household_capacity: Option<u32>,
     /// Maximum number of workers this building can employ.
     #[serde(default)]
     pub worker_capacity: Option<u32>,
+    /// Target floor area per household in square meters.
+    #[serde(default)]
+    pub flat_size_m2: Option<f32>,
     /// Service class tag for civic buildings (e.g. `"fire_station"`).
     #[serde(default)]
     pub service_class: Option<String>,
@@ -197,14 +200,19 @@ fn build_asset_toml(p: &ExportParams) -> String {
                 }
             }
             out.push_str(&format!("level = {}\n", p.level));
-            if let Some(r) = p.residents_capacity {
-                if r > 0 {
-                    out.push_str(&format!("residents_capacity = {r}\n"));
+            if let Some(h) = p.household_capacity {
+                if h > 0 {
+                    out.push_str(&format!("household_capacity = {h}\n"));
                 }
             }
             if let Some(w) = p.worker_capacity {
                 if w > 0 {
                     out.push_str(&format!("worker_capacity = {w}\n"));
+                }
+            }
+            if let Some(f) = p.flat_size_m2 {
+                if f > 0.0 {
+                    out.push_str(&format!("flat_size_m2 = {f:.1}\n"));
                 }
             }
             if let Some(sc) = &p.service_class {
@@ -312,9 +320,9 @@ fn validate_building_export_contract(params: &ExportParams) -> Result<(), String
             validate_against_builtin_zoning(params)?;
             match zone_type {
                 "residential" => {
-                    if params.residents_capacity.unwrap_or(0) == 0 {
+                    if params.household_capacity.unwrap_or(0) == 0 {
                         return Err(
-                            "residential zoned_private buildings require residents_capacity"
+                            "residential zoned_private buildings require household_capacity"
                                 .to_owned(),
                         );
                     }
@@ -504,7 +512,8 @@ pub fn get_asset_manifest_json_internal(
         obj["min_zone_width_cells"] = serde_json::json!(b.min_zone_width_cells);
         obj["min_zone_depth_cells"] = serde_json::json!(b.min_zone_depth_cells);
         obj["level"] = serde_json::json!(b.level);
-        obj["residents_capacity"] = serde_json::json!(b.residents_capacity);
+        obj["household_capacity"] = serde_json::json!(b.household_capacity);
+        obj["flat_size_m2"] = serde_json::json!(b.flat_size_m2);
         obj["worker_capacity"] = serde_json::json!(b.worker_capacity);
         obj["service_class"] = serde_json::json!(b.service_class.as_deref().unwrap_or("none"));
         obj["economy_profile"] = serde_json::json!(b.economy_profile);
@@ -569,7 +578,7 @@ mod tests {
             "lot_width_cells": 2,
             "lot_depth_cells": 2,
             "level": 1,
-            "residents_capacity": 6,
+            "household_capacity": 6,
             "lods": [{"file": "lod0.glb", "distance_min_m": 0.0}],
             "anchors": [{
                 "anchor_type": "entrance",

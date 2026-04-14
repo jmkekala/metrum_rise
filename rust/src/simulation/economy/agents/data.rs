@@ -350,11 +350,8 @@ impl AgentSystem {
             return;
         }
 
-        // Release vacancy if they had a home
-        let home = self.agents.home_building[index];
-        if home != usize::MAX {
-            allocator.release_vacancy(home);
-        }
+        // Vacancy for residential is now household-based and managed by the HouseholdSystem.
+        // Worker count for non-residential remains agent-based.
 
         let work = self.agents.work_building[index];
         if work != usize::MAX && work < allocator.buildings.len() {

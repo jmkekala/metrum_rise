@@ -698,8 +698,7 @@ impl HouseholdSystem {
         current_home: Option<usize>,
         config: &crate::simulation::economy::definitions::HouseholdRuntimeTuning,
     ) -> Option<usize> {
-        let household = &self.households[household_id];
-        let required_slots = household.member_count.max(1) as u32;
+        let _household = &self.households[household_id];
         let current_center = current_home.and_then(|building_idx| {
             allocator
                 .buildings
@@ -721,9 +720,9 @@ impl HouseholdSystem {
             }
 
             let free_slots = allocator
-                .resident_capacity(building_idx)
+                .household_capacity(building_idx)
                 .saturating_sub(building.occupancy);
-            if free_slots < required_slots {
+            if free_slots == 0 {
                 continue;
             }
 
@@ -768,16 +767,10 @@ impl HouseholdSystem {
         if household_id >= self.households.len() || new_home >= allocator.buildings.len() {
             return;
         }
-
-        let member_count = self.households[household_id].member_count as u32;
         if old_home < allocator.buildings.len() {
-            for _ in 0..member_count {
-                allocator.release_vacancy(old_home);
-            }
+            allocator.release_vacancy(old_home);
         }
-        for _ in 0..member_count {
-            allocator.claim_vacancy(new_home);
-        }
+        allocator.claim_vacancy(new_home);
 
         self.households[household_id].home_building_id = new_home;
         self.households[household_id].stay_failure_days = 0;
@@ -820,12 +813,8 @@ impl HouseholdSystem {
         if household_id >= self.households.len() {
             return;
         }
-
-        let member_count = self.households[household_id].member_count as u32;
         if old_home < allocator.buildings.len() {
-            for _ in 0..member_count {
-                allocator.release_vacancy(old_home);
-            }
+            allocator.release_vacancy(old_home);
         }
 
         let household = &mut self.households[household_id];
@@ -1205,6 +1194,12 @@ impl HouseholdSystem {
             agents.kill_agent(agent_idx, allocator);
         }
 
+        // Release the household's residential slot if they had a home.
+        let home_idx = self.households[household_id].home_building_id;
+        if home_idx < allocator.buildings.len() {
+            allocator.release_vacancy(home_idx);
+        }
+
         let last_household_id = self.households.len() - 1;
         self.households.swap_remove(household_id);
         if household_id < self.households.len() {
@@ -1492,7 +1487,7 @@ mod tests {
         asset_id: &str,
         zone: ZoneClass,
     ) -> String {
-        let (residents_capacity, worker_capacity) = match zone {
+        let (household_capacity, worker_capacity) = match zone {
             ZoneClass::Residential => (Some(6), None),
             ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
             ZoneClass::Mixed => (Some(4), Some(2)),
@@ -1516,7 +1511,7 @@ mod tests {
                     position: [0.0, 0.0, 0.5],
                     forward: [0.0, 0.0, 1.0],
                 }],
-                building: Some(BuildingData {
+                building: Some(BuildingData { flat_size_m2: None,
                     placement_mode: PlacementMode::ZonedPrivate,
                     zone_type: Some(zone),
                     density: Some("low".to_owned()),
@@ -1525,7 +1520,7 @@ mod tests {
                     min_zone_width_cells: None,
                     min_zone_depth_cells: None,
                     level: 1,
-                    residents_capacity,
+                    household_capacity,
                     worker_capacity,
                     service_class: None,
                     economy_profile: match zone {

@@ -333,7 +333,7 @@ impl SimCore {
                 _ => "OTHER",
             };
             let worker_cap = self.allocator.worker_capacity(idx);
-            let _resident_cap = self.allocator.resident_capacity(idx);
+            let _resident_cap = self.allocator.household_capacity(idx);
             let profile_id = catalog
                 .profile_by_runtime_id(b.economy_profile_runtime_id)
                 .map(|p| p.id.as_str())

@@ -237,6 +237,8 @@ impl BuildingAllocator {
             };
             let home_door = self.entrances[home_idx].door_pos;
             let household_id = households.admit_immigrant_household(home_idx, household_size);
+            // One household consumes 1 slot of household_capacity regardless of size.
+            self.claim_vacancy(home_idx);
             debug_log!(
                 "economy",
                 "demand-owned household admission created household_id={} size={} home_building={}",
@@ -410,26 +412,26 @@ impl BuildingAllocator {
             let Some(zone_idx) = baseline_private_zone_slot(zone) else {
                 continue;
             };
-            for &building_idx in &self.vacancy_index[zone_idx] {
-                let free_slots = self
-                    .resident_capacity(building_idx)
-                    .saturating_sub(self.buildings[building_idx].occupancy);
-                if free_slots == 0 {
-                    continue;
-                }
-                fallback_idx = building_idx;
-                fallback_size = free_slots.min(desired_size).max(1) as u16;
-                break 'fallback;
+        for &building_idx in &self.vacancy_index[zone_idx] {
+            let free_slots = self
+                .household_capacity(building_idx)
+                .saturating_sub(self.buildings[building_idx].occupancy);
+            if free_slots == 0 {
+                continue;
             }
+            fallback_idx = building_idx;
+            // For residential, one household takes 1 slot.
+            fallback_size = desired_size as u16; 
+            break 'fallback;
         }
-        if fallback_idx == usize::MAX {
-            return None;
-        }
-        for _ in 0..fallback_size {
-            self.claim_vacancy(fallback_idx);
-        }
-        Some((fallback_idx, fallback_size))
     }
+    if fallback_idx == usize::MAX {
+        return None;
+    }
+    // Note: vacancy count for residential is now household-based.
+    // The vacancy is claimed by the caller in admit_households_from_demand or relocation.
+    Some((fallback_idx, fallback_size))
+}
 }
 
 fn demand_building_action_key(
@@ -477,7 +479,7 @@ impl BuildingAllocator {
         }
         if target_building.lot_width_cells != building.width_cells
             || target_building.lot_depth_cells != building.depth_cells
-            || self.registry.resident_capacity(&action.target_asset_id) < building.occupancy
+            || self.registry.household_capacity(&action.target_asset_id) < building.occupancy
             || self.registry.worker_capacity(&action.target_asset_id) < building.worker_count
         {
             return None;

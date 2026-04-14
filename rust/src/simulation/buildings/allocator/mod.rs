@@ -450,17 +450,17 @@ impl BuildingAllocator {
         self.registry.capacity(&b.asset_id)
     }
 
-    /// Returns the residential capacity declared by a building asset.
+    /// Returns the household capacity declared by a building asset.
     ///
     /// Unresolved assets or undeclared capacities count as zero.
-    pub fn resident_capacity(&self, building_idx: usize) -> u32 {
+    pub fn household_capacity(&self, building_idx: usize) -> u32 {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
         };
         if b.broken || b.economy_broken {
             return 0;
         }
-        self.registry.resident_capacity(&b.asset_id)
+        self.registry.household_capacity(&b.asset_id)
     }
 
     /// Returns the worker capacity declared by a building asset.

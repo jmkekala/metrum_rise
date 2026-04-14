@@ -155,14 +155,14 @@ impl AssetRegistry {
             .map(String::as_str)
     }
 
-    /// Returns the residential capacity declared by a building asset's manifest.
+    /// Returns the household capacity declared by a building asset's manifest.
     ///
-    /// Returns `0` if the asset is not a building or has no declared residential capacity.
-    pub fn resident_capacity(&self, qualified_id: &str) -> u32 {
+    /// Returns `0` if the asset is not a building or has no declared household capacity.
+    pub fn household_capacity(&self, qualified_id: &str) -> u32 {
         self.entries
             .get(qualified_id)
             .and_then(|entry| entry.manifest.building.as_ref())
-            .and_then(|building| building.residents_capacity)
+            .and_then(|building| building.household_capacity)
             .unwrap_or(0)
     }
 
@@ -187,11 +187,11 @@ impl AssetRegistry {
 
     /// Returns the occupant capacity declared by a building asset's manifest.
     ///
-    /// For residential assets this is `residents_capacity`; for commercial/industrial/office
+    /// For residential assets this is `household_capacity`; for commercial/industrial/office
     /// assets this is `worker_capacity`; for mixed assets this is the sum of both.
     /// Returns `0` if the asset is not a building or has no declared capacity.
     pub fn capacity(&self, qualified_id: &str) -> u32 {
-        self.resident_capacity(qualified_id) + self.worker_capacity(qualified_id)
+        self.household_capacity(qualified_id) + self.worker_capacity(qualified_id)
     }
 
     /// Returns the entry for a qualified ID, or `None` if not registered.
@@ -265,7 +265,7 @@ mod tests {
     use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
 
     fn make_building_manifest(asset_id: &str, zone: ZoneClass, w: u16, d: u16) -> AssetManifest {
-        let (residents_capacity, worker_capacity) = match zone {
+        let (household_capacity, worker_capacity) = match zone {
             ZoneClass::Residential => (Some(6), None),
             ZoneClass::Commercial | ZoneClass::Industrial | ZoneClass::Office => (None, Some(4)),
             ZoneClass::Mixed => (Some(4), Some(2)),
@@ -282,7 +282,7 @@ mod tests {
                 distance_max_m: None,
             }],
             anchors: vec![],
-            building: Some(BuildingData {
+            building: Some(BuildingData { flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,
                 zone_type: Some(zone),
                 density: Some("low".to_owned()),
@@ -291,7 +291,7 @@ mod tests {
                 min_zone_width_cells: None,
                 min_zone_depth_cells: None,
                 level: 1,
-                residents_capacity,
+                household_capacity,
                 worker_capacity,
                 service_class: None,
                 economy_profile: None,

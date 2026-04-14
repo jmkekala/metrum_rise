@@ -64,6 +64,7 @@ var _min_zone_width_spin: SpinBox
 var _min_zone_depth_spin: SpinBox
 var _level_spin: SpinBox
 var _residents_spin: SpinBox
+var _flat_size_spin: SpinBox
 var _workers_spin: SpinBox
 var _service_class_btn: OptionButton
 var _economy_profile_btn: OptionButton
@@ -105,6 +106,7 @@ var _font_size_header:  int = 14   # section title labels ("Asset Browser", "Bui
 var _font_size_section: int = 12   # sub-section labels ("Pack", "Asset", "Building", etc.)
 var _font_size_label:   int = 11   # spinbox labels and small info text
 var _economy_profile_ids: Array[String] = []
+var _economy_profiles_cache: Dictionary = {}
 var _unresolved_economy_profile_id: String = ""
 var _economy_catalog_loaded: bool = false
 var _economy_catalog_warning_count: int = 0
@@ -336,7 +338,9 @@ func _build_right_panel(parent: Control) -> void:
 	_min_zone_width_spin = _add_spinbox(_zoned_only_box, "Min Zoned Width (cells)", 1, 20, 2)
 	_min_zone_depth_spin = _add_spinbox(_zoned_only_box, "Min Zoned Depth (cells)", 1, 20, 2)
 	_level_spin    = _add_spinbox(vbox, "Level", 1, 255, 1)
-	_residents_spin = _add_spinbox(vbox, "Residents Capacity", 0, 9999, 0)
+	_residents_spin = _add_spinbox(vbox, "Household Capacity", 0, 9999, 0)
+	_flat_size_spin = _add_spinbox(vbox, "Avg Flat Size (m²)", 0, 9999, 60.0)
+	_flat_size_spin.step = 0.5
 	_workers_spin  = _add_spinbox(vbox, "Worker Capacity", 0, 9999, 0)
 	_add_label(vbox, "Service Class", _font_size_label)
 	_service_class_btn = OptionButton.new()
@@ -364,7 +368,7 @@ func _build_right_panel(parent: Control) -> void:
 	_economy_profile_status_lbl.add_theme_font_size_override("font_size", _font_size_label)
 	vbox.add_child(_economy_profile_status_lbl)
 	var suggest_btn := Button.new()
-	suggest_btn.text = "Suggest Capacity"
+	suggest_btn.text = "Suggest Flat Size"
 	suggest_btn.pressed.connect(_suggest_capacity)
 	vbox.add_child(suggest_btn)
 
@@ -601,7 +605,18 @@ func _populate_inspector_from(data: Dictionary) -> void:
 	_last_lot_width_cells = lot_width
 	_last_lot_depth_cells = lot_depth
 	_level_spin.value       = data.get("level", 1)
-	_residents_spin.value   = data.get("residents_capacity", 0) if data.get("residents_capacity") != null else 0
+	_residents_spin.value   = data.get("household_capacity", 0) if data.get("household_capacity") != null else 0
+	var fsm2 = data.get("flat_size_m2", null)
+	if fsm2 != null:
+		_flat_size_spin.value = float(fsm2)
+	else:
+		# Fallback to defaults based on density if missing in manifest
+		var d = data.get("density", "low")
+		var default_sqm := 60.0
+		if d == "medium": default_sqm = 45.0
+		elif d == "high": default_sqm = 30.0
+		_flat_size_spin.value = default_sqm
+
 	_workers_spin.value     = data.get("worker_capacity", 0) if data.get("worker_capacity") != null else 0
 	_preview_scale_spin.value = data.get("preview_scale", 1.0) if data.get("preview_scale") != null else 1.0
 	_preview.set_preview_scale(_preview_scale_spin.value)
@@ -809,6 +824,7 @@ func _load_economy_profiles() -> void:
 
 	var current_id := _selected_economy_profile_id()
 	_economy_profile_ids.clear()
+	_economy_profiles_cache.clear()
 	_economy_catalog_loaded = false
 	_economy_catalog_warning_count = 0
 	_economy_catalog_error = ""
@@ -856,6 +872,7 @@ func _load_economy_profiles() -> void:
 		var idx := _economy_profile_btn.get_item_count() - 1
 		_economy_profile_btn.set_item_metadata(idx, profile_id)
 		_economy_profile_ids.append(profile_id)
+		_economy_profiles_cache[profile_id] = profile
 
 	var validation: Array = payload.get("validation", [])
 	for message in validation:
@@ -918,6 +935,7 @@ func _on_economy_profile_selected(_idx: int) -> void:
 	_update_economy_profile_status()
 
 func _update_economy_profile_status() -> void:
+	_sync_workers_to_profile()
 	if not _economy_profile_status_lbl:
 		return
 
@@ -1009,6 +1027,24 @@ func _auto_suggest_asset_id() -> void:
 	_asset_id_edit.text_changed.disconnect(_on_asset_id_text_changed)
 	_asset_id_edit.text = "building.%s.%s" % [prefix, clean]
 	_asset_id_edit.text_changed.connect(_on_asset_id_text_changed)
+
+func _sync_workers_to_profile() -> void:
+	if not _workers_spin:
+		return
+	var selected_id := _selected_economy_profile_id()
+	if selected_id.is_empty():
+		_workers_spin.editable = true
+		return
+
+	var profile = _economy_profiles_cache.get(selected_id)
+	if profile is Dictionary:
+		var cap = int(profile.get("worker_capacity", 0))
+		_workers_spin.value = cap
+		_workers_spin.editable = false
+	else:
+		# Unresolved profile (missing from catalog) — allow manual override
+		# but default to current value.
+		_workers_spin.editable = true
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Import GLB
@@ -1186,7 +1222,8 @@ func _on_export_pressed() -> void:
 		"economy_profile":   economy_profile_id if not economy_profile_id.is_empty() else null,
 		"preview_scale":     _preview_scale_spin.value,
 		"pivot_offset":      [_pivot_offset.x, _pivot_offset.y, _pivot_offset.z],
-		"residents_capacity": int(_residents_spin.value) if _residents_spin.value > 0 else null,
+		"household_capacity": int(_residents_spin.value) if _residents_spin.value > 0 else null,
+		"flat_size_m2":      _flat_size_spin.value if _flat_size_spin.value > 0 else null,
 		"worker_capacity":    int(_workers_spin.value)   if _workers_spin.value > 0 else null,
 		"lods":    lods,
 		"anchors": anchors,
@@ -1495,27 +1532,28 @@ func _suggest_capacity() -> void:
 	var density := _selected_density()
 	# m² per person/worker by zone and density. Level does not affect capacity yet
 	# (deferred until wealth/money system is implemented).
-	var sqm_res := 30.0
 	var sqm_wrk := 20.0
 	match density:
-		"medium": sqm_res = 20.0; sqm_wrk = 15.0
-		"high":   sqm_res = 12.0; sqm_wrk = 10.0
+		"medium": sqm_wrk = 15.0
+		"high":   sqm_wrk = 10.0
 	match zone:
 		"residential":
-			var lot_cells := int(_width_spin.value) * int(_depth_spin.value)
-			var cap_per_floor := 4 * lot_cells  # hard cap: 4 residents per lot cell per floor
-			var suggested := mini(
-				maxi(1, roundi(footprint * res_floors / sqm_res)),
-				cap_per_floor * res_floors)
-			_residents_spin.value = suggested
+			var hh_count := int(_residents_spin.value)
+			if hh_count <= 0:
+				hh_count = 1
+			
+			var suggested_sqm := snappedf((footprint * res_floors) / float(hh_count), 0.1)
+			_flat_size_spin.value = suggested_sqm
 			_workers_spin.value = 0
 		"commercial":
 			_residents_spin.value = 0
-			_workers_spin.value = maxi(1, roundi(footprint * floors / sqm_wrk))
+			if _workers_spin.editable:
+				_workers_spin.value = maxi(1, roundi(footprint * floors / sqm_wrk))
 		"industrial":
 			_residents_spin.value = 0
 			# Industrial is slightly less dense than commercial
-			_workers_spin.value = maxi(1, roundi(footprint * floors / (sqm_wrk * 1.25)))
+			if _workers_spin.editable:
+				_workers_spin.value = maxi(1, roundi(footprint * floors / (sqm_wrk * 1.25)))
 
 func _update_dim_label() -> void:
 	if _mesh_aabb.size.length() < 0.001 or not _dim_label:

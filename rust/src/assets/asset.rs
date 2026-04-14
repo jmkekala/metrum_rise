@@ -112,10 +112,12 @@ pub struct BuildingData {
     /// `1` = base tier (default). Buildings without `asset_set` ignore this field.
     #[serde(default = "default_level")]
     pub level: u8,
-    /// Maximum number of residents this building can house. Required for residential zones.
-    pub residents_capacity: Option<u32>,
+    /// Maximum number of households this building can house. Required for residential zones.
+    pub household_capacity: Option<u32>,
     /// Maximum number of workers this building can employ. Required for commercial/industrial zones.
     pub worker_capacity: Option<u32>,
+    /// Target floor area per household in square meters.
+    pub flat_size_m2: Option<f32>,
     /// Service tier label used by demand weighting (e.g. `"standard"`, `"premium"`).
     pub service_class: Option<String>,
     /// Reference to an authored economy profile defined in the exported economy catalog.
@@ -457,9 +459,9 @@ impl AssetManifest {
                     }
                     match zone_type {
                         ZoneClass::Residential => {
-                            if b.residents_capacity.is_none() {
+                            if b.household_capacity.is_none() {
                                 return Err(ManifestError::Validation(format!(
-                                    "asset_id '{}': residential zoned_private buildings require residents_capacity",
+                                    "asset_id '{}': residential zoned_private buildings require household_capacity",
                                     self.asset_id
                                 )));
                             }
@@ -548,7 +550,7 @@ impl AssetManifest {
 mod tests {
     use super::*;
 
-    // ── Building ───────────────���────────────────────��─────────────────────────
+    // ── Building ────────────────────────────────────────────────────────────
 
     const BUILDING_TOML: &str = r#"
 asset_id = "building.residential.lowrise_corner"
@@ -562,7 +564,7 @@ zone_type = "residential"
 density = "low"
 lot_width_cells = 3
 lot_depth_cells = 3
-residents_capacity = 12
+household_capacity = 12
 service_class = "standard"
 economy_profile = "residential_basic"
 
@@ -594,7 +596,7 @@ distance_max_m = 600.0
         assert_eq!(b.placement_mode, PlacementMode::ZonedPrivate);
         assert_eq!(b.lot_width_cells, 3);
         assert_eq!(b.lot_depth_cells, 3);
-        assert_eq!(b.residents_capacity, Some(12));
+        assert_eq!(b.household_capacity, Some(12));
         assert_eq!(b.economy_profile.as_deref(), Some("residential_basic"));
         assert_eq!(m.lods.len(), 2);
         assert_eq!(m.anchors.len(), 1);
@@ -695,7 +697,7 @@ forward = [0.0, 0.0, -1.0]
         assert!(AssetManifest::from_str(toml).is_err());
     }
 
-    // ── Prop ─────────────────────────────────────────��──────────────────────���─
+    // ── Prop ────────────────────────────────────────────────────────────────
 
     const PROP_TOML: &str = r#"
 asset_id = "prop.street.bench_01"
@@ -725,7 +727,7 @@ distance_min_m = 0.0
         assert_eq!(m.lods[0].distance_max_m, None);
     }
 
-    // ── Vehicle ──────────────────────────────────��──────────────────────────��─
+    // ── Vehicle ─────────────────────────────────────────────────────────────
 
     const VEHICLE_TOML: &str = r#"
 asset_id = "vehicle.civil.sedan_compact"
@@ -787,7 +789,7 @@ height_m = 1.5
         assert!(AssetManifest::from_str(toml).is_err());
     }
 
-    // ── Character ───────────────────────────────────────────────────────────��─
+    // ── Character ────────────────────────────────────────────────────────────
 
     const CHARACTER_TOML: &str = r#"
 asset_id = "character.pedestrian.adult_male_01"
