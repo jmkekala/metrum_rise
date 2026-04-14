@@ -78,10 +78,11 @@ pub struct Building {
     pub cell_x: usize,
     /// Depth offset of the building's leading cell (0 = frontage row).
     pub cell_y: u16,
-    /// Total agents currently residing or working in this building.
+    /// Total households (for residential) or general occupants currently in this building.
     ///
-    /// In the current foundation slice this is the residential occupant count
-    /// used for housing capacity and household anchoring.
+    /// For residential buildings, this is the count of assigned households (family slots),
+    /// which must be <= `household_capacity`. Total residents (agents) are tracked
+    /// by the AgentSystem referencing these households.
     pub occupancy: u32,
     /// Total workers currently assigned to this building.
     pub worker_count: u32,
@@ -461,6 +462,14 @@ impl BuildingAllocator {
             return 0;
         }
         self.registry.household_capacity(&b.asset_id)
+    }
+
+    /// Returns the target floor area per household for a building.
+    pub fn flat_size_m2(&self, building_idx: usize) -> f32 {
+        let Some(b) = self.buildings.get(building_idx) else {
+            return 0.0;
+        };
+        self.registry.flat_size_m2(&b.asset_id)
     }
 
     /// Returns the worker capacity declared by a building asset.

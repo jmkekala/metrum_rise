@@ -113,7 +113,8 @@ func _populate(info: Dictionary) -> void:
 
 	# Residents only matter for residential; workers for everything else
 	if zone == "residential":
-		_add_row("Residents", str(info.get("occupancy", 0)))
+		_add_row("Households", str(info.get("occupancy", 0)))
+		_add_row("Residents", str(info.get("agent_count", 0)))
 	else:
 		_add_section("Staff")
 		_add_row("Workers", "%d / %d" % [info.get("worker_count", 0), info.get("worker_capacity", 0)])

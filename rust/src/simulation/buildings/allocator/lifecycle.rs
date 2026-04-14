@@ -10,7 +10,7 @@ use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::{
     DemandBuildingActionKey, DemandBuildingActionPlan, DemandLevelChangeAction,
 };
-use crate::simulation::economy::households::{DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE, HouseholdSystem};
+use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
 use crate::simulation::grid::zoning::ZoneType;
 use crate::simulation::grid::zoning::ZoningSystem;
@@ -226,8 +226,7 @@ impl BuildingAllocator {
             households_to_spawn,
         );
         for _ in 0..households_to_spawn {
-            let Some((home_idx, household_size)) =
-                self.claim_home_for_household(DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE as u32)
+            let Some((home_idx, household_size)) = self.claim_home_for_household()
             else {
                 debug_log!(
                     "economy",
@@ -403,7 +402,7 @@ impl BuildingAllocator {
 }
 
 impl BuildingAllocator {
-    fn claim_home_for_household(&mut self, desired_size: u32) -> Option<(usize, u16)> {
+    fn claim_home_for_household(&mut self) -> Option<(usize, u16)> {
         let target_zones = [ZoneType::Residential];
 
         let mut fallback_idx = usize::MAX;
@@ -420,8 +419,17 @@ impl BuildingAllocator {
                 continue;
             }
             fallback_idx = building_idx;
-            // For residential, one household takes 1 slot.
-            fallback_size = desired_size as u16; 
+            
+            // Derive household size from the building's authored flat size.
+            // Baseline: 40m2 per person, minimum 1, maximum 5.
+            let flat_size = self.flat_size_m2(building_idx);
+            let derived_size = if flat_size > 1.0 {
+                ((flat_size / 40.0).ceil() as u16).clamp(1, 5)
+            } else {
+                2 // Legacy absolute fallback
+            };
+            
+            fallback_size = derived_size; 
             break 'fallback;
         }
     }

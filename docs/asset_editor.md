@@ -1045,7 +1045,7 @@ Building asset data:
   - `zone_type` and `density` when `placement_mode = "zoned_private"`
   - `lot_width_cells`
   - `lot_depth_cells`
-  - `residents_capacity`, `worker_capacity`, or both depending on `placement_mode` and
+  - `household_capacity`, `worker_capacity`, `flat_size_m2`, or combinations depending on `placement_mode` and
     `zone_type` when zoned
   - `service_class`
   - `economy_profile` reference
@@ -1293,7 +1293,7 @@ Thumbnail generation rules:
 
 V1 inspector and viewport contract:
 
-- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `residents_capacity`, `worker_capacity`), optional material paths, entrance/service/prop_socket anchors, and `[[lods]]`.
+- Building mode inspector edits shared asset fields (`asset_id`, `display_name`, `thumbnail`, `asset_set`, `tags`, optional attribution), building fields (`placement_mode`, conditional `zone_type` and `density`, `service_class`, `economy_profile`, `lot_width_cells`, `lot_depth_cells`, `min_zone_width_cells`, `min_zone_depth_cells`, `household_capacity`, `worker_capacity`, `flat_size_m2`), optional material paths, entrance/service/prop_socket anchors, and `[[lods]]`.
 - If `placement_mode = "zoned_private"`, the zoning-choice controls in building mode should load their available categories and density-band combinations from the shipped zoning-profile registry rather than from hardcoded editor-only lists.
 - If `placement_mode = "explicit"`, the zoning-choice controls are hidden and the building is authored outside the painted-zoning path.
 - Building mode viewport shows the lot rectangle, frontage arrow, sidewalk/road reference, entrance anchor gizmo, orientation validation, and footprint overflow warnings.
@@ -1576,8 +1576,9 @@ Optional fields:
 - `service_class`: enum, one of `none`, `police`, `fire`, `healthcare`, `education`, `power`, `water`, `waste`, `transit`, `parks`, `government`; default `none`
 - `min_zone_width_cells`: integer, default `lot_width_cells`
 - `min_zone_depth_cells`: integer, default `lot_depth_cells`
-- `residents_capacity`: integer, `>= 0`
-- `worker_capacity`: integer, `>= 0`
+- `household_capacity`: integer, `>= 0`. Defines the number of distinct household slots (families). Required for residential.
+- `worker_capacity`: integer, `>= 0`. Defines the total staffing capacity. Required for commercial/industrial. Note: if an `economy_profile` is selected, this value is read authoritatively from the profile and cannot be overridden at the asset level.
+- `flat_size_m2`: float, `>= 0.0`. The average interior living area per household. Used to filter which household sizes (e.g. 1-person vs 5-person) are compatible with the building.
 
 Placement-mode interpretation:
 
@@ -1606,7 +1607,7 @@ Building families and upgrade levels:
 - Each family member is independently authorable. Creating a level-2 variant later never requires editing the level-1 file.
 - A building with no `upgrade_family` belongs to no family and never upgrades. This is valid for true one-off buildings and landmarks, but it is risky as an accidental omission on ordinary zoned private buildings.
 - `lot_width_cells` and `lot_depth_cells` must be identical for all members of a family. The footprint does not change on upgrade; only the mesh and capacities change.
-- `residents_capacity` and `worker_capacity` are tier-specific. A level-2 building may house more residents than a level-1 building of the same family.
+- `household_capacity`, `worker_capacity`, and `flat_size_m2` are tier-specific. A level-2 building may house more households or provide larger flats than a level-1 building of the same family.
 - Cross-density change is not an ordinary family upgrade. If gameplay later wants a building to move
   into a different density band, that must happen through rezoning plus redevelopment or
   replacement rather than by crossing density inside one `upgrade_family`.
@@ -1677,7 +1678,7 @@ Building rules:
 - `placement_mode = "zoned_private"` requires both `zone_type` and `density`.
 - `placement_mode = "explicit"` forbids `zone_type` and `density`.
 - `placement_mode = "zoned_private"` and `zone_type = "residential"` requires
-  `residents_capacity` and must not use `worker_capacity`.
+  `household_capacity` and must not use `worker_capacity`.
 - `placement_mode = "zoned_private"` and `zone_type = "commercial"` or `industrial` requires
   `worker_capacity`.
 - `density` is independent of `zone_type` when `placement_mode = "zoned_private"`. A
@@ -1793,7 +1794,8 @@ lot_width_cells = 3
 lot_depth_cells = 3
 min_zone_width_cells = 3
 min_zone_depth_cells = 3
-residents_capacity = 12
+household_capacity = 6
+flat_size_m2 = 85.0
 tags = ["lowrise", "starter", "suburban"]
 
 [attribution]

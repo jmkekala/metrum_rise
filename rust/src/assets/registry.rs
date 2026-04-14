@@ -185,6 +185,15 @@ impl AssetRegistry {
             .and_then(|building| building.economy_profile.as_deref())
     }
 
+    /// Returns the target floor area per household in square meters.
+    pub fn flat_size_m2(&self, qualified_id: &str) -> f32 {
+        self.entries
+            .get(qualified_id)
+            .and_then(|entry| entry.manifest.building.as_ref())
+            .and_then(|building| building.flat_size_m2)
+            .unwrap_or(0.0)
+    }
+
     /// Returns the occupant capacity declared by a building asset's manifest.
     ///
     /// For residential assets this is `household_capacity`; for commercial/industrial/office

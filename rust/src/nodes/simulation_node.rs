@@ -691,6 +691,16 @@ impl SimulationNode {
         dict.set("zone_type", GString::from(zone_type_str));
         dict.set("level", b.level as i32);
         dict.set("occupancy", b.occupancy as i32);
+        
+        let mut total_agents = 0i32;
+        if b.zone_type == ZoneType::Residential {
+            for h in &core.households.households {
+                if h.home_building_id == best_idx && h.member_count > 0 {
+                    total_agents += h.member_count as i32;
+                }
+            }
+        }
+        dict.set("agent_count", total_agents);
         dict.set("worker_count", b.worker_count as i32);
         dict.set("worker_capacity", worker_capacity as i32);
         dict.set("operating_budget", b.operating_budget as f64);

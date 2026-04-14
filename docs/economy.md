@@ -891,8 +891,8 @@ The asset editor defines the asset's stable identity and base building metadata.
 
 Examples:
 
-- a residential building asset declares `residential_capacity`
-- a workplace asset declares `worker_capacity`
+- a residential building asset declares `household_capacity`
+- a workplace asset defines `worker_capacity` (either in `asset.toml` or authoritatively in its bound economy profile)
 - an asset may store one `economy_profile` reference that points at an existing live economy profile
 - lot size, service class, and similar building facts remain asset-authored metadata
 - those values may be derived from floor area or other building-shape logic inside the asset toolchain
@@ -1107,7 +1107,7 @@ Example:
   - outputs: `staple_food`
   - variables: `base_cycle_time`, `input_buffer_cap`, `output_buffer_cap`, `schedule_profile`
 
-Base capacities such as `worker_capacity` or `residential_capacity` remain asset-authored metadata and are consumed by the profile rather than redefined inside it.
+Base capacities such as `household_capacity` remain asset-authored metadata. However, `worker_capacity` is authoritatively derived from the building's bound economy profile if one is present, overriding any value in the asset manifest. Living standards for households are defined by the asset's `flat_size_m2` (authored in `asset.toml`).
 
 The baseline utility defaults from the `Utility Service Layer` apply unless a profile or building defines a documented special case.
 

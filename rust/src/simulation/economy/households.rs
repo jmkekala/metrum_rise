@@ -46,8 +46,7 @@ const IMMIGRANT_STARTING_BUDGET_PER_MEMBER: f32 = 15.0;
 // ($8–12/day). Previously $2/member felt too low relative to wages.
 const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 3.0;
 const HOUSEHOLD_STARTING_BUDGET: f32 = 10.0;
-/// Default household size admitted by the first-pass immigration flow.
-pub const DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 2;
+
 
 // Minimum startup capital regardless of worker count or wages.
 const STARTUP_OPERATING_FLOAT: f32 = 500.0;

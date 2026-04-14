@@ -48,6 +48,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 
 ## Recent Structural Changes
 
+- Transitioned the residential simulation to a **household-centric occupancy model**, replacing legacy per-resident capacity with family slots (`household_capacity`).
+- Added `flat_size_m2` to building assets to control household compatibility.
+- Enforced authoritative `worker_capacity` derivation from Economy Profiles, removing redundant asset-level overrides for businesses.
+- Updated the Inspector UI to display both Household occupancy and total Agent counts.
 - `project.md` was reduced from a monolithic implementation ledger into this dashboard.
 - `roadmap.md` now owns active tracked work through stable IDs instead of positional numbering.
 - `README.md` now serves as the docs index and ownership map.

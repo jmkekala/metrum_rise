@@ -149,7 +149,7 @@ The current fallback behavior frequently hides the agent when planning or access
 
 ### 7. The building occupancy counters are not entrance state
 
-`occupancy` currently tracks housing capacity and assignment bookkeeping. It is not:
+`occupancy` currently tracks household count (for residential) and assignment bookkeeping. It is not:
 
 - who is physically inside this building right now
 - who is waiting at the entrance

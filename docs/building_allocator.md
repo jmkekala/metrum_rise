@@ -198,10 +198,10 @@ Important invariant:
 
 Current vacancy rule:
 
-- a building enters the residential vacancy index when `resident_capacity(idx) > occupancy`
+- a building enters the residential vacancy index when `household_capacity(idx) > occupancy`
 - `claim_vacancy()` and `release_vacancy()` update that index in O(1)
-- `resident_capacity(idx)` now comes only from the resolved authored asset manifest; the live
-  runtime no longer invents fallback residential or worker capacities when asset data is missing
+- `household_capacity(idx)` and `worker_capacity(idx)` now come only from the resolved authored asset manifest; the live runtime no longer invents fallback capacities when asset data is missing.
+- Note: `worker_capacity(idx)` is authoritatively overridden by the building's bound economy profile if one is present.
 
 This index is allocator-owned because household admission and home claiming still route through the
 allocator today.
