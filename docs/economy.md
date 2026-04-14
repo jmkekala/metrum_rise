@@ -921,6 +921,23 @@ It is also the main developer surface for validating and debugging shortages, de
 
 If a profile is renamed or deleted while still referenced by assets or authored economy content, the economy editor should show reverse-reference warnings before export. It must not silently remap dependent assets to a different profile.
 
+#### Business Solvency Validation
+
+The economy editor sandbox must validate financial solvency alongside physical logistics flow. A supply chain that circulates goods perfectly but leaves businesses fundamentally bankrupt is a failed economy design that causes "zombie businesses" at runtime.
+
+During a sandbox playback, the editor must ensure that simulated business nodes are financially viable. 
+
+Deterministic sandbox solvency rule:
+
+1. For each simulation day and each profile node, calculate the `daily_labor_cost`. The sandbox assumes businesses are fully staffed, so `daily_labor_cost = worker_capacity * wage_max_currency_per_day`.
+2. Calculate the `daily_input_cost` based on the actual units of input consumed that day, multiplied by the inferred unit prices of those inputs.
+3. Calculate the `daily_revenue` based on the actual units of output produced that day, multiplied by the profile's `unit_price_currency`.
+4. Calculate net daily profit: `daily_profit = daily_revenue - (daily_labor_cost + daily_input_cost)`.
+5. Track the cumulative profit for each node over the duration of the scenario.
+6. A scenario fails validation with an `insolvent_profile` error if any profile node finishes the sandbox run with a cumulative profit less than zero.
+
+This guarantees that both physical volume bottlenecks and financial deficits are caught in the editor before the tuning values reach the live game.
+
 ### Runtime Simulation
 
 The runtime consumes exported economy definitions and simulates:
@@ -2030,7 +2047,50 @@ The current spec replaces these legacy assumptions:
 - auto-spawned city-owned facilities instead of explicit player placement for city-owned buildings
 - city-grant startup funding for private businesses instead of private startup float or owner equity
 
-This section is the cleanup checklist for retiring pre-spec economy assumptions during implementation.
+## Current Simulation Status: The Pioneer Phase (v0.1.x)
+
+As of the first full implementation of the agent-driven demand system, the simulation has encountered a specific "Pioneer Bootstrap Phase" deadlock that prevents organic growth without manual intervention.
+
+### 1. ~~The "Salary Bomb" Deadlock~~ — Fixed
+
+Startup capital is now computed as `max(500, worker_capacity × avg_daily_wage × 7)` for all commercial and industrial buildings at spawn. The same formula is used in the pre-revenue hourly refill (`ensure_building_startup_float`). A 16-worker farm at $100/day receives **$11,200** on spawn instead of $500 — enough to pay all workers for a full week. The `$500` floor still applies to low-wage or zero-worker buildings.
+
+### 2. The "Starving Pioneer" Trap — Mostly Resolved
+
+Immigrant households arrive with a starting budget of **$15/member** ($30 for a standard 2-person household).
+- **Utility Drain**: Daily utility costs average **$6/day** ($3/member/day). Budget runway on utilities alone: ~5 days.
+- **Starting stock**: 3 days of household supplies pre-loaded on spawn.
+- **Gap**: Starting stock runs out around day 4. From day 4 to ~day 7 (first wages), households may be unable to restock.
+
+With the salary bomb resolved, business wages reach workers by day 7. The 2–3 day starvation window (days 4–7) is the remaining residual of this trap and is acceptable for the pioneer phase. The circular deadlock that previously kept households permanently broke is broken.
+
+### 3. ~~Circular Dependency Failure~~ — Resolved by fix #1
+
+~~Because the starter households cannot buy, the **Grocery Store** earns $0 revenue. Because the store earns no revenue, it never places a paid shipment order with the **Farm**. The Farm remains at $0 revenue and continues to fail its wage checks, completing the deadlock.~~
+
+With businesses now seeded with a full 7-day wage runway, this chain no longer jams on first boot.
+
+### 4. The "Ghost Business" (The Bankruptcy Gap)
+Currently, a business can reach a $0.0 budget and 100% unemployment but remain on the map indefinitely.
+- **Logic Gap**: The `DemandSystem` only considers a building for removal (despawn) if **Demand Pressure** for that zone falls below the `despawn_threshold` (e.g., < 0.15).
+- **Missing Trigger**: There is no "Liquidation" or "Bankruptcy" event triggered by the building's internal economy. Even if a business is economically dead, it is kept "on life support" by the city's overall scarcity signals.
+- **Result**: The city results in a collection of non-functional shell buildings that take up valuable land but cannot produce goods or pay workers.
+
+### 5. The "Starving Pioneer" Glue (Low Emigration)
+Households that find themselves broke and starving are currently "trapped" in the city rather than emigrating.
+- **Logic Gap**: The `pioneer_demand` floor (0.70) designed to attract the first wave of immigrants is also being used as a floor for **City Stability**.
+- **Result**: Because stability never falls below 0.70, the calculated **removal pressure** remains artificially low. The simulation "protects" the pioneer wave so hard that they are unable to leave even when their economic situation is hopeless.
+- **Calibration Target**: De-couple the bootstrap floor from removal calculations so that "despair-driven emigration" can function independently of "attraction-driven immigration."
+
+## Future Calibration Targets
+
+Remaining open items for the pioneer phase:
+- **Dynamic Wage Scaling**: Allow buildings to pay partial wages from available budget instead of stopping at the first worker the budget cannot cover.
+- **Liquidation Logic**: Implement an "Economic Death" trigger — despawn a business that stays at $0 budget for a sustained period even when demand pressure is high (Ghost Business problem, issue #4 above).
+- **Selective Emigration Pressure**: De-couple `pioneer_demand` floor from the removal/instability signal so starving households can emigrate (issue #5 above).
+- **Household bootstrap gap**: The 2–3 day starvation window (days 4–7, between starting-stock depletion and first wages) is the remaining residual from issue #2. If it causes visible problems, increase `IMMIGRANT_STARTING_BUDGET_PER_MEMBER` further, but stay below the work-incentive floor: starting budget must satisfy `budget/reserve_target < 0.70` or `income_pressure < 0.30` will not reliably push agents into the job market.
+
+
 
 ## Summary
 

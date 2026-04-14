@@ -514,6 +514,26 @@ impl BuildingAllocator {
             }
         }
 
+        // Seed startup operating capital so commercial and industrial buildings can pay
+        // workers for STARTUP_RUNWAY_DAYS before first revenue arrives. Computed from
+        // profile worker capacity × avg wage so it scales with the building, not a flat
+        // constant that breaks for large-capacity buildings.
+        const STARTUP_RUNWAY_DAYS: f32 = 7.0;
+        const STARTUP_MIN_BUDGET: f32 = 500.0;
+        let startup_budget = match placement.zone_type {
+            ZoneType::Commercial | ZoneType::Industrial => {
+                let worker_cap = self.registry.worker_capacity(&placement.asset_id);
+                let daily_wage = catalog
+                    .as_ref()
+                    .ok()
+                    .and_then(|c| c.profile_by_runtime_id(economy_binding.runtime_id))
+                    .map(|p| p.average_daily_wage())
+                    .unwrap_or(0.0);
+                (worker_cap as f32 * daily_wage * STARTUP_RUNWAY_DAYS).max(STARTUP_MIN_BUDGET)
+            }
+            _ => 0.0,
+        };
+
         self.buildings.push(Building {
             zone_profile_runtime_id: placement.zone_profile_runtime_id,
             zone_type: placement.zone_type,
@@ -537,7 +557,7 @@ impl BuildingAllocator {
             economy_broken: economy_binding.economy_broken,
             resource_inventory,
             revenue: 0.0,
-            operating_budget: 0.0,
+            operating_budget: startup_budget,
             utility_service_available: false,
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,

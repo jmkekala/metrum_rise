@@ -2,8 +2,8 @@
 id = "grocery_bottleneck"
 display_name = "Grocery Bottleneck"
 description = "Starter playback case for the food processor, grocery, and household demand chain."
-duration_days = 7
-household_count = 130
+duration_days = 180
+household_count = 10
 average_household_size = 2.0
 starting_household_stock_days = 2.0
 replenishment_target_days = 3.0
@@ -15,8 +15,8 @@ id = "food_processor"
 ref_kind = "profile"
 ref_id = "food_processor_basic"
 position = [
-    120.0,
-    180.0,
+    110.0,
+    188.0,
 ]
 
 [[scenarios.nodes]]
@@ -24,8 +24,8 @@ id = "grocery"
 ref_kind = "profile"
 ref_id = "grocery_basic"
 position = [
-    460.0,
-    180.0,
+    484.0,
+    185.0,
 ]
 
 [[scenarios.nodes]]

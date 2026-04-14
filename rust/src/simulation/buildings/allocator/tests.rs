@@ -242,6 +242,12 @@ fn setup_startup_spawn_city_for_rezoning() -> (
     paint_zone_rect(&mut zoning, 55.0, -50.0, 150.0, 50.0, ZoneType::Commercial);
 
     let mut demand = DemandSystem::new();
+    // Jack up demand and credits to ensure we get buildings in the first tick
+    demand.residential = 1.0;
+    demand.commercial = 1.0;
+    demand.spawn_action_credit.residential = 10.0;
+    demand.spawn_action_credit.commercial = 10.0;
+
     demand.run_daily_pass(&allocator, &households, &graph, &zoning);
     let mut startup_plan = DemandBuildingActionPlan::default();
     if let Some(action) = demand.building_actions.residential.spawns.first() {
@@ -263,7 +269,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         .buildings
         .iter()
         .position(|building| building.zone_type == ZoneType::Residential)
-        .expect("startup demand should create one seeded residential building for rezoning tests");
+        .expect("pioneer demand should create one seeded residential building for rezoning tests");
 
     (
         allocator,
@@ -632,7 +638,7 @@ fn test_startup_demand_residential_family_selection_uses_strip_hash_order() {
         .buildings
         .iter()
         .find(|building| building.zone_type == ZoneType::Residential)
-        .expect("startup demand should place a residential building");
+        .expect("pioneer demand should place a residential building");
     let profile_runtime_id =
         frontage_profile_runtime_id_for_building(&allocator, residential, &zoning, &graph);
     let expected_asset_id = if stable_strip_family_hash(
@@ -712,7 +718,7 @@ fn test_startup_demand_residential_variant_selection_uses_site_hash() {
         .buildings
         .iter()
         .find(|building| building.zone_type == ZoneType::Residential)
-        .expect("startup demand should place a residential building");
+        .expect("pioneer demand should place a residential building");
     let profile_runtime_id =
         frontage_profile_runtime_id_for_building(&allocator, residential, &zoning, &graph);
     let expected_asset_id = if stable_site_variant_hash(
@@ -1372,7 +1378,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
     demand.run_daily_pass(&allocator, &households, &graph, &zoning);
     assert!(
         demand.households_to_admit_today > 0,
-        "startup support should produce a demand-owned household-admission output"
+        "demand should produce a household-admission output using pioneer demand limit"
     );
     allocator.execute_demand_household_admission(
         demand.households_to_admit_today,
@@ -1421,7 +1427,7 @@ fn test_demand_building_spawn_plan_executes_from_daily_budget() {
     demand.run_daily_pass(&allocator, &households, &graph, &zoning);
     assert!(
         !demand.building_actions.residential.spawns.is_empty(),
-        "startup support and legal zoning should produce at least one residential spawn action"
+        "pioneer demand and legal zoning should produce at least one residential spawn action"
     );
 
     allocator.execute_demand_building_actions(

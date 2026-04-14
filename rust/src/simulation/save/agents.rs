@@ -262,6 +262,9 @@ pub(super) fn push_loaded_agent(agents: &mut AgentSystem, rec: LoadedAgentRecord
         vehicle_type: rec.vehicle_type,
         pedestrian_type: rec.pedestrian_type,
         walk_phase: rec.walk_phase,
+        // Transient: recalculate from zero on load, not persisted.
+        job_lock_days: 0,
+        consecutive_unpaid_days: 0,
     });
 }
 

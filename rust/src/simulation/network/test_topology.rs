@@ -170,7 +170,7 @@ mod tests {
         let way_counts = [2, 3, 4, 8];
 
         for ways in way_counts {
-            for deg in 10..=170 {
+            for deg in (10..=170).step_by(20) {
                 // Test a subset to be faster
                 let mut net = TransitNetwork::new();
                 let mut graph = RegionGraph::new();

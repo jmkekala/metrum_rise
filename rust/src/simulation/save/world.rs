@@ -62,14 +62,13 @@ pub(super) fn save_world(
     let downgrade_action_credit = demand.downgrade_action_credit.as_array();
     let despawn_action_credit = demand.despawn_action_credit.as_array();
     tx.execute(
-        "INSERT INTO demand_state(residential, commercial, industrial, households_to_admit_today, households_to_remove_today, startup_support_factor, admission_action_credit, removal_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+        "INSERT INTO demand_state(residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         params![
             demand.residential,
             demand.commercial,
             demand.industrial,
             i64::from(demand.households_to_admit_today),
             i64::from(demand.households_to_remove_today),
-            demand.startup_support_factor,
             demand.admission_action_credit,
             demand.removal_action_credit,
             spawn_action_credit[0],

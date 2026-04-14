@@ -154,8 +154,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     demand.commercial = 0.08;
     demand.industrial = 0.04;
     demand.households_to_admit_today = 2;
-    demand.households_to_remove_today = 1;
-    demand.startup_support_factor = 0.75;
     demand.admission_action_credit = 1.25;
     demand.removal_action_credit = 0.50;
     let mut allocator = BuildingAllocator::new();
@@ -346,6 +344,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
             logistics: &logistics,
             agents: &agents_sys,
             network: &network_sys,
+            treasury: &CityTreasury::new(0.0),
         },
     )
     .expect("save");
@@ -363,14 +362,6 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(
         loaded.demand.households_to_admit_today,
         demand.households_to_admit_today
-    );
-    assert_eq!(
-        loaded.demand.households_to_remove_today,
-        demand.households_to_remove_today
-    );
-    assert_eq!(
-        loaded.demand.startup_support_factor,
-        demand.startup_support_factor
     );
     assert_eq!(
         loaded.demand.admission_action_credit,

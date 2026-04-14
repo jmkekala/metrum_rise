@@ -211,9 +211,8 @@ pub(crate) fn load_from_sqlite(
         f32,
         f32,
         f32,
-        f32,
     ) = conn.query_row(
-        "SELECT residential, commercial, industrial, households_to_admit_today, households_to_remove_today, startup_support_factor, admission_action_credit, removal_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial FROM demand_state LIMIT 1",
+        "SELECT residential, commercial, industrial, households_to_admit_today, households_to_remove_today, admission_action_credit, removal_action_credit, spawn_action_credit_residential, spawn_action_credit_commercial, spawn_action_credit_industrial, upgrade_action_credit_residential, upgrade_action_credit_commercial, upgrade_action_credit_industrial, downgrade_action_credit_residential, downgrade_action_credit_commercial, downgrade_action_credit_industrial, despawn_action_credit_residential, despawn_action_credit_commercial, despawn_action_credit_industrial FROM demand_state LIMIT 1",
         [],
         |r| Ok((
             r.get(0)?,
@@ -235,7 +234,6 @@ pub(crate) fn load_from_sqlite(
             r.get(16)?,
             r.get(17)?,
             r.get(18)?,
-            r.get(19)?,
         )),
     )?;
     let demand = DemandSystem::with_persisted_state(
@@ -246,11 +244,10 @@ pub(crate) fn load_from_sqlite(
         i64_to_u32(demand_row.4)?,
         demand_row.5,
         demand_row.6,
-        demand_row.7,
-        [demand_row.8, demand_row.9, demand_row.10],
-        [demand_row.11, demand_row.12, demand_row.13],
-        [demand_row.14, demand_row.15, demand_row.16],
-        [demand_row.17, demand_row.18, demand_row.19],
+        [demand_row.7, demand_row.8, demand_row.9],
+        [demand_row.10, demand_row.11, demand_row.12],
+        [demand_row.13, demand_row.14, demand_row.15],
+        [demand_row.16, demand_row.17, demand_row.18],
     );
     let pollution = world::load_grid_system::<PollutionSystem>(&conn, &config, "pollution_state")?;
     let noise = world::load_grid_system::<NoiseSystem>(&conn, &config, "noise_state")?;

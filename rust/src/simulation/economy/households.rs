@@ -38,13 +38,22 @@ const HOUSEHOLD_CONSUMPTION_RATE: f32 = 1.0;
 const HOUSEHOLD_TARGET_STOCK_DAYS: f32 = 3.0;
 const HOUSEHOLD_TRIGGER_STOCK_DAYS: f32 = 1.5;
 const IMMIGRANT_STARTING_STOCK_DAYS: f32 = 3.0;
-const IMMIGRANT_STARTING_BUDGET_PER_MEMBER: f32 = 12.0;
-const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 2.0;
+// $15/member gives a 2-member household $30 starting — roughly 5 days of utility runway
+// ($6/day) before wages arrive, while keeping income_pressure ≈ 0.44 at spawn so agents
+// remain motivated to seek work.
+const IMMIGRANT_STARTING_BUDGET_PER_MEMBER: f32 = 15.0;
+// $3/member/day ≈ 6% of a single $100 wage, consistent with the business OWA utility bands
+// ($8–12/day). Previously $2/member felt too low relative to wages.
+const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 3.0;
 const HOUSEHOLD_STARTING_BUDGET: f32 = 10.0;
 /// Default household size admitted by the first-pass immigration flow.
 pub const DEFAULT_IMMIGRANT_HOUSEHOLD_SIZE: u16 = 2;
 
+// Minimum startup capital regardless of worker count or wages.
 const STARTUP_OPERATING_FLOAT: f32 = 500.0;
+// Days of full-capacity wage coverage seeded into a new commercial/industrial building.
+// Must match the constant in placement.rs so spawn and refill are consistent.
+const STARTUP_RUNWAY_DAYS: f32 = 7.0;
 // Refill the startup float whenever budget falls below this level and the
 // building has never earned revenue. Set to a full day's worth of the
 // higher industrial OWA utility cost so the condition fires before utility
@@ -66,6 +75,11 @@ const W_STOCK: f32 = 0.35;
 const W_JOB: f32 = 0.20;
 const W_COMMUTE: f32 = 0.10;
 const GO_TO_WORK_THRESHOLD: f32 = 0.10;
+// Days an agent is locked to a voluntarily-chosen job before they may switch.
+const JOB_LOCK_DAYS: u8 = 7;
+// Consecutive unpaid days that override the lock — lets agents escape a failing employer
+// before the full lock expires.
+const JOB_UNPAID_ABANDON_DAYS: u8 = 3;
 const JOB_SEARCH_MAX_RING: i32 = 6;
 const JOB_SEARCH_CANDIDATES: usize = 8;
 const GROCERY_SEARCH_MAX_RING: i32 = 6;
@@ -190,6 +204,12 @@ impl HouseholdSystem {
         self.ensure_agent_households(agents);
         self.rebuild_household_membership(agents);
         self.recount_worker_assignments(agents, allocator);
+        // Advance per-agent job-lock countdown once per day.
+        for i in 0..agents.len() {
+            if agents.job_lock_days[i] > 0 {
+                agents.job_lock_days[i] -= 1;
+            }
+        }
         self.pay_daily_wages(agents, allocator);
         self.resolve_household_housing(agents, allocator);
         self.assign_agent_workplaces(agents, allocator);
@@ -344,6 +364,8 @@ impl HouseholdSystem {
 
     fn ensure_building_startup_float(&mut self, allocator: &mut BuildingAllocator) {
         let catalog = load_runtime_economy_catalog().ok();
+        // Split borrow: registry is read-only, buildings is mutated.
+        let registry = &allocator.registry;
         for building in &mut allocator.buildings {
             if building.broken || building.economy_broken {
                 continue;
@@ -368,8 +390,16 @@ impl HouseholdSystem {
             }
             if building.operating_budget < STARTUP_FLOAT_REFILL_THRESHOLD
                 && building.revenue == 0.0
+                && building.worker_count == 0
             {
-                building.operating_budget = STARTUP_OPERATING_FLOAT;
+                let worker_cap = registry.worker_capacity(&building.asset_id);
+                let daily_wage = catalog
+                    .as_ref()
+                    .and_then(|c| c.profile_by_runtime_id(building.economy_profile_runtime_id))
+                    .map(|p| p.average_daily_wage())
+                    .unwrap_or(0.0);
+                let runway = worker_cap as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
+                building.operating_budget = runway.max(STARTUP_OPERATING_FLOAT);
             }
         }
     }
@@ -1052,12 +1082,18 @@ impl HouseholdSystem {
 
             if best_job != usize::MAX && best_score >= GO_TO_WORK_THRESHOLD {
                 let old_job = agents.work_building[i];
-                if old_job != best_job {
+                // Allow switching only if: no current job, lock expired, or employer
+                // has not paid for JOB_UNPAID_ABANDON_DAYS consecutive days.
+                let can_switch = old_job == usize::MAX
+                    || agents.job_lock_days[i] == 0
+                    || agents.consecutive_unpaid_days[i] >= JOB_UNPAID_ABANDON_DAYS;
+                if old_job != best_job && can_switch {
                     if old_job != usize::MAX && old_job < reserved_workers.len() {
                         reserved_workers[old_job] = reserved_workers[old_job].saturating_sub(1);
                     }
                     reserved_workers[best_job] = reserved_workers[best_job].saturating_add(1);
                     agents.work_building[i] = best_job;
+                    agents.job_lock_days[i] = JOB_LOCK_DAYS;
                     debug_log!(
                         "economy",
                         "agent_idx={} accepted job building={} zone={:?} score={:.2} income_pressure={:.2} stock_pressure={:.2}",
@@ -1113,6 +1149,10 @@ impl HouseholdSystem {
             if allocator.buildings[work].operating_budget >= wage {
                 allocator.buildings[work].operating_budget -= wage;
                 self.households[hid].budget += wage;
+                agents.consecutive_unpaid_days[i] = 0;
+            } else {
+                agents.consecutive_unpaid_days[i] =
+                    agents.consecutive_unpaid_days[i].saturating_add(1);
             }
         }
         self.sync_agent_money_from_households(agents);

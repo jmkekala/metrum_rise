@@ -350,7 +350,19 @@ func _build_profile_inspector() -> void:
 	_add_spin_field("Critical Threshold", float(profile.get("critical_threshold_days", 0.0)), 0, 30, 0.1, _update_selected_entry.bind("critical_threshold_days"))
 	_add_spin_field("Min Shipment Units", float(profile.get("min_shipment_units", 0.0)), 0, 10000, 1, _update_selected_entry.bind("min_shipment_units"))
 	_add_spin_field("Consumption / Resident / Day", float(profile.get("consumption_rate_per_resident", 0.0)), 0, 10, 0.1, _update_selected_entry.bind("consumption_rate_per_resident"))
-	_add_read_only_block("Ports", _ports_summary(profile))
+	
+	var inputs: Array = profile.get("inputs", [])
+	for i in range(inputs.size()):
+		var res_name = str(inputs[i].get("resource", ""))
+		var amt = float(inputs[i].get("units_per_day", 0.0))
+		_add_spin_field("Input (%s)" % res_name, amt, 0, 100000, 1, _update_port_value.bind("inputs", i))
+		
+	var outputs: Array = profile.get("outputs", [])
+	for i in range(outputs.size()):
+		var res_name = str(outputs[i].get("resource", ""))
+		var amt = float(outputs[i].get("units_per_day", 0.0))
+		_add_spin_field("Output (%s)" % res_name, amt, 0, 100000, 1, _update_port_value.bind("outputs", i))
+		
 	_add_selected_node_position_fields()
 
 func _build_controller_inspector() -> void:
@@ -400,7 +412,14 @@ func _add_line_field(label_text: String, value: String, editable: bool, callback
 	field.text = value
 	field.editable = editable
 	if editable and callback.is_valid():
-		field.text_changed.connect(func(new_text): callback.call(new_text))
+		# Only commit on submit/focus-exit, never on text_changed.
+		# text_changed rebuilds the inspector and steals focus every keystroke.
+		field.text_submitted.connect(func(new_text):
+			callback.call(new_text)
+			_commit())
+		field.focus_exited.connect(func():
+			callback.call(field.text)
+			_commit())
 	_inspector_body.add_child(field)
 
 func _add_spin_field(label_text: String, value: float, min_value: float, max_value: float, step: float, callback: Callable) -> void:
@@ -412,6 +431,8 @@ func _add_spin_field(label_text: String, value: float, min_value: float, max_val
 	spin.max_value = max_value
 	spin.step = step
 	spin.value = value
+	# Use focus_exited so we don't export on every arrow-key tick.
+	spin.get_line_edit().focus_exited.connect(func(): callback.call(spin.value); _commit())
 	spin.value_changed.connect(func(new_value): callback.call(new_value))
 	_inspector_body.add_child(spin)
 
@@ -446,11 +467,11 @@ func _refresh_diagnostics() -> void:
 		lines.append("- no sandbox run yet")
 	else:
 		lines.append("- scenario: %s" % str(_sandbox_result.get("display_name", _sandbox_result.get("scenario_id", ""))))
-		lines.append("- daily demand: %.2f" % float(_sandbox_result.get("daily_household_demand_units", 0.0)))
-		lines.append("- final household stock days: %.2f" % float(_sandbox_result.get("final_household_stock_days", 0.0)))
-		lines.append("- lowest household stock days: %.2f" % float(_sandbox_result.get("lowest_household_stock_days", 0.0)))
-		lines.append("- total unmet units: %.2f" % float(_sandbox_result.get("total_unmet_units", 0.0)))
-		lines.append("- avg household cost/day: %.2f" % float(_sandbox_result.get("average_household_cost_per_day", 0.0)))
+		lines.append("- daily consumption: %.1f units/day" % float(_sandbox_result.get("daily_household_demand_units", 0.0)))
+		lines.append("- end-of-run stock: %.2f days" % float(_sandbox_result.get("final_household_stock_days", 0.0)))
+		lines.append("- lowest stock reached: %.2f days" % float(_sandbox_result.get("lowest_household_stock_days", 0.0)))
+		lines.append("- total undelivered: %.0f units" % float(_sandbox_result.get("total_unmet_units", 0.0)))
+		lines.append("- avg cost per household/day: %.2f" % float(_sandbox_result.get("average_household_cost_per_day", 0.0)))
 		for bottleneck in _sandbox_result.get("bottlenecks", []):
 			lines.append("- bottleneck: %s" % str(bottleneck))
 		var daily: Array = _sandbox_result.get("daily", [])
@@ -471,10 +492,41 @@ func _update_selected_entry(value, field: String) -> void:
 	entry[field] = value
 	items[index] = entry
 	_project[section] = items
-	_rebuild_browser()
-	_rebuild_scenario_picker()
+	# Only rebuild the browser tree when display_name changes — it's the only
+	# field visible there. Rebuilding on every keystroke steals keyboard focus.
+	if field == "display_name":
+		_rebuild_browser()
+		_rebuild_scenario_picker()
 	_refresh_graph()
-	_refresh_inspector()
+
+func _commit() -> void:
+	if _project.is_empty():
+		return
+	var payload := _parse_json(sim.export_economy_project(JSON.stringify(_project), _economy_dir))
+	_validation = payload.get("validation", [])
+	_refresh_diagnostics()
+	if not payload.get("ok", false):
+		_set_status("Auto-save failed: %s" % str(payload.get("error", "")), true)
+	else:
+		_set_status("Saved")
+
+func _update_port_value(value: float, port_list_key: String, port_index: int) -> void:
+	var section := "profiles"
+	var index := _find_entry_index(section, _selected_id)
+	if index == -1:
+		return
+	var items: Array = _project.get(section, [])
+	var entry: Dictionary = items[index].duplicate()
+	var ports: Array = entry.get(port_list_key, []).duplicate()
+	if port_index >= 0 and port_index < ports.size():
+		var port: Dictionary = ports[port_index].duplicate()
+		port["units_per_day"] = value
+		ports[port_index] = port
+		entry[port_list_key] = ports
+		items[index] = entry
+		_project[section] = items
+		_rebuild_browser()
+		_refresh_graph()
 
 func _update_selected_node_position(value: float, axis: int) -> void:
 	if _selected_node_id.is_empty():

@@ -998,7 +998,7 @@ Completed in the current implementation:
 
 - The demand-owned `GrowthProfile` registry is now shipped and `growth_profile_id` from zoning
   resolves against it.
-- The baseline demand signal normalization, `DemandChannel` formulas, startup-support rules, and
+- The baseline demand signal normalization, `DemandChannel` formulas, pioneer-demand bootstrap rules, and
   household admission or removal formulas from [`demand.md`](demand.md) are now implemented.
 - The daily demand pass now runs from the settled snapshot handoff described in [`demand.md`](demand.md)
   instead of as a separate allocator-owned pressure pass.
@@ -1009,8 +1009,8 @@ Completed in the current implementation:
 - Private building spawn, despawn, upgrade, and downgrade decisions now execute from
   demand-owned daily building-action budgets and deterministic action plans in the live runtime.
 - Fresh-map startup no longer uses allocator-owned founding placement; the live runtime now relies
-  on the authored demand-side `startup_support` path to begin growth without a hidden bootstrap
-  exception.
+  on the organic pioneer-demand bootstrap described in [`demand.md`](demand.md) to begin growth
+  without a hidden placement exception.
 - Silent runtime fallback capacities were removed; resident and worker capacities now come from
   authored asset data or resolve to zero if the asset data is missing.
 - [`building_allocator.md`](building_allocator.md) is now aligned with the live profile-based

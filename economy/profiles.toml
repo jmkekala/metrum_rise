@@ -1,3 +1,137 @@
+[[profiles]]
+id = "food_processor_basic"
+display_name = "Farm"
+kind = "producer"
+description = "Starter industrial supplier for the first household essentials chain."
+worker_capacity = 5
+base_rate_units_per_day = 160.0
+wage_min_currency_per_day = 80.0
+wage_max_currency_per_day = 100.0
+unit_price_currency = 4.0
+stock_target_days = 4.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 0.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+work_schedule_profile = "three_shift_work"
+freight_timing_profile = "always_open"
+inputs = []
+
+[[profiles.outputs]]
+resource = "staple_food"
+units_per_day = 160.0
+
+[[profiles]]
+id = "grocery_basic"
+display_name = "Grocery"
+kind = "store"
+description = "Starter store throughput node converting staple food into household supplies."
+worker_capacity = 5
+base_rate_units_per_day = 200.0
+wage_min_currency_per_day = 80.0
+wage_max_currency_per_day = 100.0
+unit_price_currency = 6.0
+stock_target_days = 3.0
+reorder_threshold_days = 2.0
+critical_threshold_days = 0.5
+min_shipment_units = 40.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 3.0
+work_schedule_profile = "daytime_work"
+freight_timing_profile = "daytime_receive"
+
+[[profiles.inputs]]
+resource = "staple_food"
+units_per_day = 160.0
+
+[[profiles.outputs]]
+resource = "household_supplies"
+units_per_day = 200.0
+
+[[profiles]]
+id = "household_demand_sink"
+display_name = "Household Demand Sink"
+kind = "demand_sink"
+description = "Aggregated household-side stock sink for the first playable economy loop."
+worker_capacity = 0
+base_rate_units_per_day = 0.0
+wage_min_currency_per_day = 0.0
+wage_max_currency_per_day = 0.0
+unit_price_currency = 0.0
+stock_target_days = 0.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 0.0
+consumption_rate_per_resident = 1.0
+starting_inventory_days = 0.0
+outputs = []
+
+[[profiles.inputs]]
+resource = "household_supplies"
+units_per_day = 1.0
+
+[[profiles]]
+id = "power_plant_basic"
+display_name = "Power Plant"
+kind = "utility_producer"
+description = "Basic power station providing electricity to commercial and industrial buildings. If absent, the city falls back to OWA power at higher cost."
+worker_capacity = 4
+base_rate_units_per_day = 0.0
+wage_min_currency_per_day = 100.0
+wage_max_currency_per_day = 130.0
+unit_price_currency = 3.0
+stock_target_days = 0.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 0.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+utility_service = "power"
+work_schedule_profile = "three_shift_work"
+inputs = []
+outputs = []
+
+[[profiles]]
+id = "water_plant_basic"
+display_name = "Water Treatment Plant"
+kind = "utility_producer"
+description = "Basic water treatment plant supplying water to connected buildings. If absent, the city falls back to OWA water at higher cost."
+worker_capacity = 3
+base_rate_units_per_day = 0.0
+wage_min_currency_per_day = 90.0
+wage_max_currency_per_day = 110.0
+unit_price_currency = 2.0
+stock_target_days = 0.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 0.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+utility_service = "water"
+inputs = []
+outputs = []
+
+[[profiles]]
+id = "wastewater_treatment_basic"
+display_name = "Wastewater Treatment"
+kind = "utility_processor"
+description = "Basic wastewater treatment plant handling sewage from connected buildings. If absent, the city falls back to OWA sewage at higher cost."
+worker_capacity = 3
+base_rate_units_per_day = 0.0
+wage_min_currency_per_day = 90.0
+wage_max_currency_per_day = 110.0
+unit_price_currency = 1.5
+stock_target_days = 0.0
+reorder_threshold_days = 0.0
+critical_threshold_days = 0.0
+min_shipment_units = 0.0
+consumption_rate_per_resident = 0.0
+starting_inventory_days = 0.0
+utility_service = "sewage"
+inputs = []
+outputs = []
+
 [runtime_tuning.operational_clock]
 seconds_per_day = 1440.0
 travel_estimate_refresh_minutes = 360
@@ -5,14 +139,6 @@ household_replenishment_check_interval_hours = 6
 household_pickup_eta_hours = 1
 household_replenishment_retry_cooldown_hours = 1
 shipment_retry_cooldown_hours = 1
-
-[runtime_tuning.operational_clock.work_profile_by_zone_type]
-commercial = "daytime_work"
-industrial = "three_shift_work"
-
-[runtime_tuning.operational_clock.freight_profile_by_zone_type]
-commercial = "daytime_receive"
-industrial = "always_open"
 
 [[runtime_tuning.operational_clock.work_profiles]]
 id = "daytime_work"
@@ -66,7 +192,7 @@ end_minute = 1440
 [[runtime_tuning.operational_clock.freight_profiles]]
 id = "daytime_receive"
 outside_window_eta_penalty_minutes = 60
-outside_window_cost_multiplier = 1.1
+outside_window_cost_multiplier = 1.100000023841858
 
 [[runtime_tuning.operational_clock.freight_profiles.preferred_windows]]
 start_minute = 420
@@ -75,139 +201,57 @@ end_minute = 1080
 [[runtime_tuning.operational_clock.freight_profiles]]
 id = "early_morning_preferred"
 outside_window_eta_penalty_minutes = 60
-outside_window_cost_multiplier = 1.05
+outside_window_cost_multiplier = 1.0499999523162842
 
 [[runtime_tuning.operational_clock.freight_profiles.preferred_windows]]
 start_minute = 240
 end_minute = 480
 
+[runtime_tuning.operational_clock.work_profile_by_zone_type]
+commercial = "daytime_work"
+industrial = "three_shift_work"
+
+[runtime_tuning.operational_clock.freight_profile_by_zone_type]
+commercial = "daytime_receive"
+industrial = "always_open"
+
 [runtime_tuning.households]
-residential_move_in_min_reserve_days_by_level = [0.0, 6.0, 12.0]
-residential_stay_min_reserve_days_by_level = [0.0, 4.0, 8.0]
+residential_move_in_min_reserve_days_by_level = [
+    0.0,
+    6.0,
+    12.0,
+]
+residential_stay_min_reserve_days_by_level = [
+    0.0,
+    4.0,
+    8.0,
+]
 stay_failure_days_before_eviction = 2
 
 [runtime_tuning.viability]
-residential_min_occupancy_ratio_for_upgrade = [0.0, 0.65, 0.85]
-residential_max_occupancy_ratio_for_downgrade = [1.0, 0.20, 0.15]
-nonresidential_min_buffer_days_by_level = [0.0, 4.0, 8.0]
-nonresidential_max_buffer_days_for_downgrade = [1.0, 1.5, 2.0]
-nonresidential_min_staffing_ratio_for_upgrade = 0.85
+residential_min_occupancy_ratio_for_upgrade = [
+    0.0,
+    0.6499999761581421,
+    0.8500000238418579,
+]
+residential_max_occupancy_ratio_for_downgrade = [
+    1.0,
+    0.20000000298023224,
+    0.15000000596046448,
+]
+nonresidential_min_buffer_days_by_level = [
+    0.0,
+    4.0,
+    8.0,
+]
+nonresidential_max_buffer_days_for_downgrade = [
+    1.0,
+    1.5,
+    2.0,
+]
+nonresidential_min_staffing_ratio_for_upgrade = 0.8500000238418579
 nonresidential_max_staffing_ratio_for_downgrade = 0.25
 industrial_min_input_coverage_for_upgrade = 0.75
 industrial_min_output_headroom_for_upgrade = 0.25
-industrial_max_input_coverage_for_downgrade = 0.20
-industrial_max_output_headroom_for_downgrade = 0.10
-
-[[profiles]]
-id = "food_processor_basic"
-display_name = "Food Processor"
-kind = "producer"
-description = "Starter industrial supplier for the first household essentials chain."
-worker_capacity = 4
-base_rate_units_per_day = 160.0
-wage_min_currency_per_day = 90.0
-wage_max_currency_per_day = 110.0
-unit_price_currency = 4.0
-stock_target_days = 4.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 0.0
-consumption_rate_per_resident = 0.0
-work_schedule_profile = "three_shift_work"
-freight_timing_profile = "always_open"
-inputs = []
-
-[[profiles.outputs]]
-resource = "staple_food"
-units_per_day = 160.0
-
-[[profiles]]
-id = "grocery_basic"
-display_name = "Grocery"
-kind = "store"
-description = "Starter store throughput node converting staple food into household supplies."
-worker_capacity = 3
-base_rate_units_per_day = 200.0
-starting_inventory_days = 3.0
-wage_min_currency_per_day = 80.0
-wage_max_currency_per_day = 100.0
-unit_price_currency = 6.0
-stock_target_days = 3.0
-reorder_threshold_days = 2.0
-critical_threshold_days = 0.5
-min_shipment_units = 40.0
-consumption_rate_per_resident = 0.0
-work_schedule_profile = "daytime_work"
-freight_timing_profile = "daytime_receive"
-
-[[profiles.inputs]]
-resource = "staple_food"
-units_per_day = 160.0
-
-[[profiles.outputs]]
-resource = "household_supplies"
-units_per_day = 200.0
-
-[[profiles]]
-id = "household_demand_sink"
-display_name = "Household Demand Sink"
-kind = "demand_sink"
-description = "Aggregated household-side stock sink for the first playable economy loop."
-worker_capacity = 0
-base_rate_units_per_day = 0.0
-wage_min_currency_per_day = 0.0
-wage_max_currency_per_day = 0.0
-unit_price_currency = 0.0
-stock_target_days = 0.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 0.0
-consumption_rate_per_resident = 1.0
-outputs = []
-
-[[profiles.inputs]]
-resource = "household_supplies"
-units_per_day = 1.0
-
-[[profiles]]
-id = "power_plant_basic"
-display_name = "Power Plant"
-kind = "utility_producer"
-utility_service = "power"
-description = "Basic power station providing electricity to commercial and industrial buildings. If absent, the city falls back to OWA power at higher cost."
-worker_capacity = 4
-base_rate_units_per_day = 0.0
-wage_min_currency_per_day = 100.0
-wage_max_currency_per_day = 130.0
-unit_price_currency = 3.0
-work_schedule_profile = "three_shift_work"
-inputs = []
-outputs = []
-
-[[profiles]]
-id = "water_plant_basic"
-display_name = "Water Treatment Plant"
-kind = "utility_producer"
-utility_service = "water"
-description = "Basic water treatment plant supplying water to connected buildings. If absent, the city falls back to OWA water at higher cost."
-worker_capacity = 3
-base_rate_units_per_day = 0.0
-wage_min_currency_per_day = 90.0
-wage_max_currency_per_day = 110.0
-unit_price_currency = 2.0
-inputs = []
-outputs = []
-
-[[profiles]]
-id = "wastewater_treatment_basic"
-display_name = "Wastewater Treatment"
-kind = "utility_processor"
-utility_service = "sewage"
-description = "Basic wastewater treatment plant handling sewage from connected buildings. If absent, the city falls back to OWA sewage at higher cost."
-worker_capacity = 3
-base_rate_units_per_day = 0.0
-wage_min_currency_per_day = 90.0
-wage_max_currency_per_day = 110.0
-unit_price_currency = 1.5
-inputs = []
-outputs = []
+industrial_max_input_coverage_for_downgrade = 0.20000000298023224
+industrial_max_output_headroom_for_downgrade = 0.10000000149011612

@@ -197,6 +197,8 @@ impl SimCore {
                 schedule_seed: i as u32,
                 cached_commute_minutes: 0,
                 next_commute_refresh_time: 0.0,
+                job_lock_days: 0,
+                consecutive_unpaid_days: 0,
             });
         }
         godot_print!(

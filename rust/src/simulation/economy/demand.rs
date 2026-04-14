@@ -88,9 +88,9 @@ struct GrowthProfileRuntime {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct UseTuningF32 {
-    residential: f32,
-    commercial: f32,
-    industrial: f32,
+    pub(crate) residential: f32,
+    pub(crate) commercial: f32,
+    pub(crate) industrial: f32,
 }
 
 impl UseTuningF32 {
@@ -172,16 +172,6 @@ struct SignalNormalizationConfig {
     household_stock_stability_target_days: f32,
 }
 
-#[allow(dead_code)]
-#[derive(Clone, Debug)]
-struct StartupSupportConfig {
-    target_housed_residents: u32,
-    target_private_building_count: u32,
-    target_filled_job_slots: u32,
-    household_bonus: f32,
-    growth_floor_by_use: UseTuningF32,
-    spawn_bonus_by_use: UseTuningF32,
-}
 
 #[derive(Clone, Debug)]
 struct HouseholdActionConfig {
@@ -204,7 +194,6 @@ struct ActionBudgetConfig {
 #[derive(Clone, Debug)]
 struct DemandConfig {
     signal_normalization: SignalNormalizationConfig,
-    startup_support: StartupSupportConfig,
     household_action: HouseholdActionConfig,
     action_budget: ActionBudgetConfig,
     profiles: Vec<GrowthProfileRuntime>,
@@ -236,7 +225,6 @@ impl DemandConfig {
 #[serde(deny_unknown_fields)]
 struct AuthoredGrowthProfilesFile {
     signal_normalization: AuthoredSignalNormalization,
-    startup_support: AuthoredStartupSupport,
     household_action: AuthoredHouseholdAction,
     action_budget: AuthoredActionBudget,
     profiles: Vec<AuthoredGrowthProfile>,
@@ -250,16 +238,6 @@ struct AuthoredSignalNormalization {
     household_stock_stability_target_days: f32,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AuthoredStartupSupport {
-    target_housed_residents: u32,
-    target_private_building_count: u32,
-    target_filled_job_slots: u32,
-    household_bonus: f32,
-    growth_floor_by_use: AuthoredUseTuningF32,
-    spawn_bonus_by_use: AuthoredUseTuningF32,
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -312,7 +290,6 @@ pub struct DemandSystem {
     pub(crate) industrial: f32,
     pub(crate) households_to_admit_today: u32,
     pub(crate) households_to_remove_today: u32,
-    pub(crate) startup_support_factor: f32,
     pub(crate) admission_action_credit: f32,
     pub(crate) removal_action_credit: f32,
     pub(crate) spawn_action_credit: UseTuningF32,
@@ -334,7 +311,6 @@ impl DemandSystem {
             industrial: 0.0,
             households_to_admit_today: 0,
             households_to_remove_today: 0,
-            startup_support_factor: 0.0,
             admission_action_credit: 0.0,
             removal_action_credit: 0.0,
             spawn_action_credit: UseTuningF32::default(),
@@ -351,7 +327,6 @@ impl DemandSystem {
         industrial: f32,
         households_to_admit_today: u32,
         households_to_remove_today: u32,
-        startup_support_factor: f32,
         admission_action_credit: f32,
         removal_action_credit: f32,
         spawn_action_credit: [f32; 3],
@@ -365,7 +340,6 @@ impl DemandSystem {
         system.industrial = industrial;
         system.households_to_admit_today = households_to_admit_today;
         system.households_to_remove_today = households_to_remove_today;
-        system.startup_support_factor = startup_support_factor;
         system.admission_action_credit = admission_action_credit;
         system.removal_action_credit = removal_action_credit;
         system.spawn_action_credit = UseTuningF32 {
@@ -426,44 +400,11 @@ impl DemandSystem {
         );
         let base_industrial = clamp01(snapshot.resident_presence * goods_shortage * service_gate);
 
-        let startup_progress = (ratio_u32(
-            snapshot.housed_resident_count,
-            self.config.startup_support.target_housed_residents,
-        ) + ratio_u32(
-            snapshot.existing_private_building_count,
-            self.config.startup_support.target_private_building_count,
-        ) + ratio_u32(
-            snapshot.filled_job_slots,
-            self.config.startup_support.target_filled_job_slots,
-        )) / 3.0;
+        let pioneer_demand = 0.70 * snapshot.external_connection_available;
 
-        self.startup_support_factor =
-            clamp01(snapshot.external_connection_available * (1.0 - startup_progress));
-
-        self.residential = base_residential.max(
-            self.startup_support_factor
-                * self
-                    .config
-                    .startup_support
-                    .growth_floor_by_use
-                    .get(DemandUse::Residential),
-        );
-        self.commercial = base_commercial.max(
-            self.startup_support_factor
-                * self
-                    .config
-                    .startup_support
-                    .growth_floor_by_use
-                    .get(DemandUse::Commercial),
-        );
-        self.industrial = base_industrial.max(
-            self.startup_support_factor
-                * self
-                    .config
-                    .startup_support
-                    .growth_floor_by_use
-                    .get(DemandUse::Industrial),
-        );
+        self.residential = base_residential.max(pioneer_demand);
+        self.commercial = base_commercial.max(pioneer_demand);
+        self.industrial = base_industrial.max(pioneer_demand);
 
         let city_stability_factor = snapshot
             .household_stock_stability
@@ -472,13 +413,12 @@ impl DemandSystem {
             // stability can collapse to zero and freeze admission entirely.
             // Floor at startup_support_factor so the bootstrap phase can still
             // admit households before the first production chain is operational.
-            .max(self.startup_support_factor);
+            .max(pioneer_demand);
         let admission_pressure = clamp01(
             self.config.household_action.base_inflow
                 * snapshot.external_connection_available
-                * (1.0 + self.startup_support_factor * self.config.startup_support.household_bonus)
                 * snapshot.housing_availability
-                * snapshot.job_availability
+                * snapshot.job_availability.max(pioneer_demand)
                 * city_stability_factor,
         );
         self.households_to_admit_today = advance_household_action_credit(
@@ -530,14 +470,18 @@ impl DemandSystem {
                         })
                 })
                 .sum::<f32>();
+            let spawn_limit = match zone_type {
+                ZoneType::Residential => housing_shortage.powi(2),
+                _ => snapshot.resident_presence.max(pioneer_demand * 0.25),
+            };
+
             let spawn_budget_units = normalized_spawn_pressure
                 * self
                     .config
                     .action_budget
                     .spawn_batch_fraction_by_use
                     .get(use_kind)
-                + self.startup_support_factor
-                    * self.config.startup_support.spawn_bonus_by_use.get(use_kind);
+                * spawn_limit;
             let spawns_today = advance_building_action_credit(
                 self.spawn_action_credit.get_mut(use_kind),
                 spawn_budget_units,
@@ -545,21 +489,62 @@ impl DemandSystem {
             );
             debug_log!(
                 "spawn",
-                "daily_pass zone={:?}: pressure={:.3} startup_support={:.3} \
-                 candidates={} norm_pressure={:.3} budget_units={:.3} spawns_today={}",
+                "daily_pass zone={:?}: pressure={:.3} pioneer={:.3} \
+                 candidates={} norm_pressure={:.3} spawn_limit={:.3} \
+                 budget_units={:.3} spawns_today={}",
                 zone_type,
                 growth_pressure,
-                self.startup_support_factor,
+                pioneer_demand,
                 spawn_candidates.len(),
                 normalized_spawn_pressure,
+                spawn_limit,
                 spawn_budget_units,
                 spawns_today,
             );
-            let selected_spawns: Vec<_> = spawn_candidates
-                .into_iter()
-                .take(spawns_today)
-                .map(|candidate| candidate.action)
-                .collect();
+            let selected_spawns: Vec<_> = if zone_type == ZoneType::Residential {
+                spawn_candidates
+                    .into_iter()
+                    .take(spawns_today)
+                    .map(|candidate| candidate.action)
+                    .collect()
+            } else {
+                // Non-residential: apply labour and output-absorption gates per candidate.
+                // available_unemployed tracks remaining open jobs after each passing candidate
+                // claims its worker_capacity.
+                let catalog = load_runtime_economy_catalog()
+                    .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+                let mut available_unemployed = snapshot.open_reachable_job_slots;
+                let mut passed = 0;
+                spawn_candidates
+                    .into_iter()
+                    .filter(|candidate| {
+                        if passed >= spawns_today {
+                            return false;
+                        }
+                        if !nonresidential_passes_labour_gate(
+                            allocator,
+                            &candidate.action.asset_id,
+                            available_unemployed,
+                        ) {
+                            return false;
+                        }
+                        if !nonresidential_passes_absorption_gate(
+                            allocator,
+                            &catalog,
+                            &candidate.action.asset_id,
+                            snapshot.housed_resident_count,
+                        ) {
+                            return false;
+                        }
+                        // Consume workers from the running pool.
+                        let req = allocator.registry.worker_capacity(&candidate.action.asset_id);
+                        available_unemployed = available_unemployed.saturating_sub(req);
+                        passed += 1;
+                        true
+                    })
+                    .map(|candidate| candidate.action)
+                    .collect()
+            };
 
             let normalized_upgrade_pressure = existing_candidates
                 .upgrades
@@ -1191,36 +1176,7 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
         "signal_normalization.household_stock_stability_target_days",
     )?;
 
-    validate_positive_u32(
-        authored.startup_support.target_housed_residents,
-        "startup_support.target_housed_residents",
-    )?;
-    validate_positive_u32(
-        authored.startup_support.target_private_building_count,
-        "startup_support.target_private_building_count",
-    )?;
-    validate_positive_u32(
-        authored.startup_support.target_filled_job_slots,
-        "startup_support.target_filled_job_slots",
-    )?;
-    validate_range_f32(
-        authored.startup_support.household_bonus,
-        0.0,
-        f32::INFINITY,
-        "startup_support.household_bonus",
-    )?;
-    let growth_floor_by_use = validate_use_tuning(
-        authored.startup_support.growth_floor_by_use,
-        0.0,
-        1.0,
-        "startup_support.growth_floor_by_use",
-    )?;
-    let spawn_bonus_by_use = validate_use_tuning(
-        authored.startup_support.spawn_bonus_by_use,
-        0.0,
-        f32::INFINITY,
-        "startup_support.spawn_bonus_by_use",
-    )?;
+
 
     validate_range_f32(
         authored.household_action.base_inflow,
@@ -1392,14 +1348,7 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
                 .signal_normalization
                 .household_stock_stability_target_days,
         },
-        startup_support: StartupSupportConfig {
-            target_housed_residents: authored.startup_support.target_housed_residents,
-            target_private_building_count: authored.startup_support.target_private_building_count,
-            target_filled_job_slots: authored.startup_support.target_filled_job_slots,
-            household_bonus: authored.startup_support.household_bonus,
-            growth_floor_by_use,
-            spawn_bonus_by_use,
-        },
+
         household_action: HouseholdActionConfig {
             base_inflow: authored.household_action.base_inflow,
             admission_threshold: authored.household_action.admission_threshold,
@@ -1479,13 +1428,6 @@ fn clamp01(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }
 
-fn ratio_u32(value: u32, target: u32) -> f32 {
-    if target == 0 {
-        0.0
-    } else {
-        clamp01(value as f32 / target as f32)
-    }
-}
 
 fn advance_household_action_credit(
     credit: &mut f32,
@@ -1536,11 +1478,8 @@ fn normalized_negative_pressure(pressure: f32, threshold: f32) -> f32 {
 
 struct DailyDemandSnapshot {
     vacant_household_slots: u32,
-    housed_resident_count: u32,
     total_household_count: u32,
     unhoused_household_ratio: f32,
-    existing_private_building_count: u32,
-    filled_job_slots: u32,
     housing_availability: f32,
     resident_presence: f32,
     job_availability: f32,
@@ -1548,6 +1487,9 @@ struct DailyDemandSnapshot {
     household_stock_stability: f32,
     utility_service_stability: f32,
     external_connection_available: f32,
+    // Raw counts needed for non-residential spawn gates.
+    open_reachable_job_slots: u32,
+    housed_resident_count: u32,
 }
 
 impl DailyDemandSnapshot {
@@ -1719,11 +1661,8 @@ impl DailyDemandSnapshot {
 
         Self {
             vacant_household_slots,
-            housed_resident_count,
             total_household_count,
             unhoused_household_ratio,
-            existing_private_building_count,
-            filled_job_slots,
             housing_availability,
             resident_presence,
             job_availability,
@@ -1731,8 +1670,88 @@ impl DailyDemandSnapshot {
             household_stock_stability,
             utility_service_stability,
             external_connection_available,
+            open_reachable_job_slots,
+            housed_resident_count,
         }
     }
+}
+
+/// Returns true if the city has enough open jobs to staff the spawning asset.
+/// `available_unemployed` is the running remaining pool for this daily pass.
+fn nonresidential_passes_labour_gate(
+    allocator: &BuildingAllocator,
+    asset_id: &str,
+    available_unemployed: u32,
+) -> bool {
+    let required = allocator.registry.worker_capacity(asset_id);
+    // Buildings with no workers (e.g. utility nodes) always pass.
+    required == 0 || available_unemployed >= required
+}
+
+/// Returns true if the resident population can absorb more output from the spawning asset.
+/// Compares total placed output capacity against total derived consumer demand.
+fn nonresidential_passes_absorption_gate(
+    allocator: &BuildingAllocator,
+    catalog: &crate::simulation::economy::definitions::RuntimeEconomyCatalog,
+    asset_id: &str,
+    housed_resident_count: u32,
+) -> bool {
+    use crate::simulation::economy::definitions::EconomyProfileRuntimeKind;
+    // Resolve the candidate profile from the asset registry.
+    let Some(profile_id) = allocator.registry.economy_profile(asset_id) else {
+        // No economy profile binding → no capacity limit, pass.
+        return true;
+    };
+    let Some(candidate_profile) = catalog.profile_for_id(profile_id) else {
+        return true;
+    };
+    // Buildings with no declared outputs are not capacity-limited.
+    if candidate_profile.outputs.is_empty() {
+        return true;
+    }
+    let candidate_output_resource_ids: Vec<_> = candidate_profile
+        .outputs
+        .iter()
+        .map(|p| p.resource_runtime_id)
+        .collect();
+
+    // Sum output capacity (units/day) already placed for matching resource types.
+    let placed_capacity: f32 = allocator
+        .buildings
+        .iter()
+        .filter(|b| !b.broken && !b.economy_broken)
+        .filter_map(|b| {
+            let p = catalog.profile_by_runtime_id(b.economy_profile_runtime_id)?;
+            let overlaps = p
+                .outputs
+                .iter()
+                .any(|port| candidate_output_resource_ids.contains(&port.resource_runtime_id));
+            if overlaps {
+                Some(p.outputs.iter().map(|port| port.units_per_day).sum::<f32>())
+            } else {
+                None
+            }
+        })
+        .sum();
+
+    // Derive consumer demand from housed residents and demand-sink consumption rates.
+    let consumer_demand: f32 = catalog
+        .all_profiles()
+        .iter()
+        .filter(|p| p.kind == EconomyProfileRuntimeKind::DemandSink)
+        .filter(|p| {
+            p.inputs
+                .iter()
+                .any(|port| candidate_output_resource_ids.contains(&port.resource_runtime_id))
+        })
+        .map(|p| p.consumption_rate_per_resident * housed_resident_count as f32)
+        .sum();
+
+    // If no demand-sink found for this resource, gate is not applicable → pass.
+    if consumer_demand == 0.0 {
+        return true;
+    }
+    placed_capacity < consumer_demand
 }
 
 #[cfg(test)]
@@ -2074,7 +2093,6 @@ mod tests {
         demand.run_daily_pass(&allocator, &households, &graph, &zoning);
 
         assert!(demand.households_to_admit_today > 0);
-        assert!(demand.startup_support_factor > 0.0);
     }
 
     #[test]

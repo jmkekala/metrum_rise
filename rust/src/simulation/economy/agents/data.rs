@@ -98,6 +98,13 @@ pub struct Agent {
 
     /// `true` if the agent owns a car and drove to their current location.
     pub has_car: bool,
+    /// Remaining days the agent is locked to their current job after a voluntary switch.
+    /// Zero means the agent may freely seek a better position.
+    pub job_lock_days: u8,
+    /// Consecutive days the agent has gone without receiving wages from their employer.
+    /// Resets to zero when wages are paid. Rises above `JOB_UNPAID_ABANDON_DAYS` to
+    /// allow breaking the lock early at a failing employer.
+    pub consecutive_unpaid_days: u8,
     /// Type of vehicle the agent uses (if driving). One of the `VEHICLE_*` constants.
     pub vehicle_type: u8,
 
@@ -225,6 +232,8 @@ impl AgentSystem {
             vehicle_type: rng.gen_range(0..4) as u8,
             pedestrian_type: rng.gen_range(0..4) as u8,
             walk_phase: rng.gen_range(0.0..1.0),
+            job_lock_days: 0,
+            consecutive_unpaid_days: 0,
         };
 
         self.agents.push(agent);
@@ -282,6 +291,8 @@ impl AgentSystem {
             vehicle_type: rng.gen_range(0..4) as u8,
             pedestrian_type: rng.gen_range(0..4) as u8,
             walk_phase: rng.gen_range(0.0..1.0),
+            job_lock_days: 0,
+            consecutive_unpaid_days: 0,
         };
 
         self.agents.push(agent);
@@ -675,6 +686,8 @@ mod tests {
             vehicle_type: 0,
             pedestrian_type: 0,
             walk_phase: 0.0,
+            job_lock_days: 0,
+            consecutive_unpaid_days: 0,
         });
         sys.agents.push(Agent {
             home_building: usize::MAX,
@@ -714,6 +727,8 @@ mod tests {
             vehicle_type: 0,
             pedestrian_type: 0,
             walk_phase: 0.0,
+            job_lock_days: 0,
+            consecutive_unpaid_days: 0,
         });
 
         // Invalidate only edge 0.
@@ -784,6 +799,8 @@ mod tests {
             vehicle_type: 0,
             pedestrian_type: 0,
             walk_phase: 0.0,
+            job_lock_days: 0,
+            consecutive_unpaid_days: 0,
         });
 
         let mut affected = HashSet::new();

@@ -279,14 +279,13 @@ impl SimCore {
         let minutes = minute_of_day % 60;
 
         println!(
-            "[SIM_DEBUG] Day {} {:02}:{:02} demand=(R {:.0}%, C {:.0}%, I {:.0}%) startup={:.2} admit={} remove={} buildings={} households={} agents={} states=(home={}, work={}, shopping={}, travelling={}, other={}) actions=spawn({}/{}/{}) upgrade({}/{}/{}) downgrade({}/{}/{}) despawn({}/{}/{})",
+            "[SIM_DEBUG] Day {} {:02}:{:02} demand=(R {:.0}%, C {:.0}%, I {:.0}%) admit={} remove={} buildings={} households={} agents={} states=(home={}, work={}, shopping={}, travelling={}, other={}) actions=spawn({}/{}/{}) upgrade({}/{}/{}) downgrade({}/{}/{}) despawn({}/{}/{})",
             day_index,
             hours,
             minutes,
             self.demand.residential * 100.0,
             self.demand.commercial * 100.0,
             self.demand.industrial * 100.0,
-            self.demand.startup_support_factor,
             self.demand.households_to_admit_today,
             self.demand.households_to_remove_today,
             self.allocator.buildings.len(),
@@ -324,6 +323,9 @@ impl SimCore {
         };
 
         for (idx, b) in self.allocator.buildings.iter().enumerate() {
+            if b.zone_type == ZoneType::Residential {
+                continue;
+            }
             let zone_tag = match b.zone_type {
                 ZoneType::Residential => "RES",
                 ZoneType::Commercial => "COM",
@@ -331,7 +333,7 @@ impl SimCore {
                 _ => "OTHER",
             };
             let worker_cap = self.allocator.worker_capacity(idx);
-            let resident_cap = self.allocator.resident_capacity(idx);
+            let _resident_cap = self.allocator.resident_capacity(idx);
             let profile_id = catalog
                 .profile_by_runtime_id(b.economy_profile_runtime_id)
                 .map(|p| p.id.as_str())
@@ -383,31 +385,52 @@ impl SimCore {
             }
             let io_str = if io_parts.is_empty() { "none".to_owned() } else { io_parts.join(" ") };
 
-            if zone_tag == "RES" {
-                println!(
-                    "[ECON] Day {:>4} idx={} {} asset={} profile={} occupancy={}/{} budget={:.1} utility={} stock={:.2}days inventory=[{}]",
-                    day_index, idx, zone_tag,
-                    b.asset_id, profile_id,
-                    b.occupancy, resident_cap,
-                    b.operating_budget,
-                    if b.utility_service_available { "Y" } else { "N" },
-                    0.0_f32, // residential stock lives on households, not building
-                    inv_str,
-                );
-            } else {
-                println!(
-                    "[ECON] Day {:>4} idx={} {} asset={} profile={} workers={}/{} budget={:.1} revenue={:.1} utility={} broken={} io=[{}] inventory=[{}]",
-                    day_index, idx, zone_tag,
-                    b.asset_id, profile_id,
-                    b.worker_count, worker_cap,
-                    b.operating_budget,
-                    b.revenue,
-                    if b.utility_service_available { "Y" } else { "N" },
-                    if b.broken || b.economy_broken { "Y" } else { "N" },
-                    io_str,
-                    inv_str,
-                );
+            println!(
+                "[ECON] Day {:>4} idx={} {} asset={} profile={} workers={}/{} budget={:.1} revenue={:.1} utility={} broken={} io=[{}] inventory=[{}]",
+                day_index, idx, zone_tag,
+                b.asset_id, profile_id,
+                b.worker_count, worker_cap,
+                b.operating_budget,
+                b.revenue,
+                if b.utility_service_available { "Y" } else { "N" },
+                if b.broken || b.economy_broken { "Y" } else { "N" },
+                io_str,
+                inv_str,
+            );
+        }
+
+        for (idx, h) in self.households.households.iter().enumerate() {
+            if h.member_count == 0 {
+                continue;
             }
+            let home_asset = self
+                .allocator
+                .buildings
+                .get(h.home_building_id)
+                .map(|b| b.asset_id.as_str())
+                .unwrap_or("none");
+
+            let state_str = match h.replenishment_state {
+                0 => "STABLE",
+                1 => "NEEDS",
+                2 => "RESERVED",
+                3 => "PICKUP",
+                4 => "FULFILLED",
+                5 => "COOLDOWN",
+                _ => "UNKNOWN",
+            };
+
+            println!(
+                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} agents={} budget={:<5.1} stock={:<4.2}days state={}",
+                day_index,
+                idx,
+                h.home_building_id,
+                home_asset,
+                h.member_count,
+                h.budget,
+                h.stock_days,
+                state_str,
+            );
         }
     }
 

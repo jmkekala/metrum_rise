@@ -143,14 +143,19 @@ pub(crate) struct OperationalClockRuntimeTuning {
     /// Real seconds required to advance one authored operational day at `1.0x`.
     pub seconds_per_day: f64,
     /// Minutes between cached commute-estimate refreshes.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub travel_estimate_refresh_minutes: u16,
     /// Hours between household replenishment checks.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub household_replenishment_check_interval_hours: u16,
     /// Hours between reserve creation and household pickup completion.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub household_pickup_eta_hours: u16,
     /// Hours to wait before retrying a failed household replenishment.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub household_replenishment_retry_cooldown_hours: u16,
     /// Hours to wait before retrying a failed freight request.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub shipment_retry_cooldown_hours: u16,
     /// Named work timing profiles keyed by authored id.
     pub work_profiles: Vec<WorkTimingProfile>,
@@ -166,8 +171,10 @@ pub(crate) struct OperationalClockRuntimeTuning {
 #[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub(crate) struct MinuteWindow {
     /// Inclusive start minute from midnight.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub start_minute: u16,
     /// Exclusive end minute from midnight.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub end_minute: u16,
 }
 
@@ -182,6 +189,7 @@ pub(crate) struct WorkTimingProfile {
     /// Acceptable return-home departure windows for this schedule.
     pub departure_windows: Vec<MinuteWindow>,
     /// Fixed authored arrival buffer in minutes.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub reliability_buffer_minutes: u16,
 }
 
@@ -194,6 +202,7 @@ pub(crate) struct FreightTimingProfile {
     /// Preferred receive or dispatch windows for this profile.
     pub preferred_windows: Vec<MinuteWindow>,
     /// Extra ETA penalty applied outside the preferred window.
+    #[serde(default, deserialize_with = "deserialize_u16_from_number")]
     pub outside_window_eta_penalty_minutes: u16,
     /// Cost multiplier applied outside the preferred window.
     pub outside_window_cost_multiplier: f32,
@@ -208,7 +217,12 @@ pub(crate) struct HouseholdRuntimeTuning {
     /// Minimum reserve-days required to remain in each residential level.
     pub residential_stay_min_reserve_days_by_level: Vec<f32>,
     /// Number of consecutive failed stay checks before eviction is allowed.
+    #[serde(default = "default_stay_failure_days", deserialize_with = "deserialize_u32_from_number")]
     pub stay_failure_days_before_eviction: u32,
+}
+
+fn default_stay_failure_days() -> u32 {
+    2
 }
 
 /// Building-side viability thresholds derived from `economy/profiles.toml`.
@@ -408,6 +422,11 @@ impl RuntimeEconomyCatalog {
     /// Returns the default runtime unit price for one resource when `OWA` imports it.
     pub(crate) fn unit_price_for_resource(&self, resource: ResourceRuntimeId) -> Option<f32> {
         self.price_by_resource.get(&resource).copied()
+    }
+
+    /// Returns a slice of all compiled runtime profiles in this catalog.
+    pub(crate) fn all_profiles(&self) -> &[EconomyProfileRuntime] {
+        &self.profiles
     }
 }
 
@@ -812,6 +831,48 @@ where
         serde_json::Value::Null => Ok(0),
         other => Err(serde::de::Error::custom(format!(
             "expected numeric value for u32 field, got {other}"
+        ))),
+    }
+}
+
+fn deserialize_u16_from_number<'de, D>(deserializer: D) -> Result<u16, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Number(number) => {
+            if let Some(unsigned) = number.as_u64() {
+                return u16::try_from(unsigned)
+                    .map_err(|_| serde::de::Error::custom("numeric value exceeds u16 range"));
+            }
+            if let Some(signed) = number.as_i64() {
+                return u16::try_from(signed).map_err(|_| {
+                    serde::de::Error::custom("numeric value must be >= 0 and within u16 range")
+                });
+            }
+            if let Some(float) = number.as_f64() {
+                if !float.is_finite() || float < 0.0 {
+                    return Err(serde::de::Error::custom(
+                        "numeric value must be finite and >= 0",
+                    ));
+                }
+                let rounded = float.round();
+                if (float - rounded).abs() > f64::EPSILON {
+                    return Err(serde::de::Error::custom(
+                        "numeric value must be a whole number",
+                    ));
+                }
+                return u16::try_from(rounded as i64)
+                    .map_err(|_| serde::de::Error::custom("numeric value exceeds u16 range"));
+            }
+            Err(serde::de::Error::custom(
+                "unsupported numeric representation",
+            ))
+        }
+        serde_json::Value::Null => Ok(0),
+        other => Err(serde::de::Error::custom(format!(
+            "expected numeric value for u16 field, got {other}"
         ))),
     }
 }
@@ -1772,8 +1833,12 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
     let mut total_delivered_units = 0.0;
     let mut total_unmet_units = 0.0;
     let mut total_household_cost = 0.0;
+    let mut total_daily_supply = 0.0f32;
+    let mut supply_day_count = 0u32;
+    let mut day_stock_zeroed: Option<u32> = None;
     let mut daily = Vec::with_capacity(scenario.duration_days as usize);
     let mut inventories: BTreeMap<String, BTreeMap<String, f32>> = BTreeMap::new();
+    let mut node_cumulative_profits: BTreeMap<String, f32> = BTreeMap::new();
 
     let outgoing_edges = build_outgoing_edges(scenario);
     let household_price_multiplier = household_cost_multiplier(
@@ -1823,10 +1888,12 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
             }
 
             let throughput = compute_throughput(profile, &inventories, node.id.as_str());
+            let mut scale = 0.0;
             if profile.inputs.is_empty() {
                 add_outputs_to_inventory(&mut inventories, node.id.as_str(), &profile.outputs, 1.0);
+                scale = 1.0;
             } else if throughput > 0.0 && profile.base_rate_units_per_day > 0.0 {
-                let scale = throughput / profile.base_rate_units_per_day;
+                scale = throughput / profile.base_rate_units_per_day;
                 consume_inputs_from_inventory(
                     &mut inventories,
                     node.id.as_str(),
@@ -1841,6 +1908,22 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
                 );
             }
 
+            let daily_labor_cost = profile.worker_capacity as f32 * profile.wage_max_currency_per_day;
+            
+            let mut daily_input_cost = 0.0;
+            for input in &profile.inputs {
+                let unit_price = input_unit_price(node.id.as_str(), input.resource.as_str(), scenario, &node_map, &profile_map);
+                daily_input_cost += input.units_per_day * scale * unit_price;
+            }
+
+            let mut daily_revenue = 0.0;
+            for output in &profile.outputs {
+                daily_revenue += output.units_per_day * scale * profile.unit_price_currency;
+            }
+            
+            let daily_profit = daily_revenue - (daily_labor_cost + daily_input_cost);
+            *node_cumulative_profits.entry(node.id.clone()).or_insert(0.0) += daily_profit;
+
             transfer_outgoing_stock(
                 &mut inventories,
                 node.id.as_str(),
@@ -1854,6 +1937,11 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
             0.0
         };
         lowest_stock_days = lowest_stock_days.min(stock_days);
+        if stock_days == 0.0 && day_stock_zeroed.is_none() {
+            day_stock_zeroed = Some(day);
+        }
+        total_daily_supply += delivered_today;
+        supply_day_count += 1;
         total_delivered_units += delivered_today;
         total_unmet_units += unmet_today;
         total_household_cost += household_cost_today;
@@ -1877,18 +1965,65 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
     };
 
     let mut bottlenecks = Vec::new();
+
+    // Average daily supply actually delivered over the run.
+    let avg_daily_supply = if supply_day_count > 0 {
+        total_daily_supply / supply_day_count as f32
+    } else {
+        0.0
+    };
+    let daily_deficit = household_demand_per_day - avg_daily_supply;
+
     if lowest_stock_days < 1.0 {
-        bottlenecks.push(format!(
-            "Household stock drops below 1.0 days and bottoms out at {:.2} days.",
-            lowest_stock_days
-        ));
+        if let Some(zero_day) = day_stock_zeroed {
+            bottlenecks.push(format!(
+                "Households ran out of supplies on day {zero_day} (of {}) and never recovered. \
+                 Supply ({:.1}/day) covers only {:.0}% of the {:.1}/day demand. \
+                 To keep up, increase the final node's output by at least {:.1} units/day.",
+                scenario.duration_days,
+                avg_daily_supply,
+                if household_demand_per_day > 0.0 { avg_daily_supply / household_demand_per_day * 100.0 } else { 0.0 },
+                household_demand_per_day,
+                daily_deficit.max(0.0),
+            ));
+        } else {
+            bottlenecks.push(format!(
+                "Household stock fell below 1 day's worth of supplies (lowest: {:.2} days). \
+                 The chain is under-supplied by {:.1} units/day on average.",
+                lowest_stock_days, daily_deficit.max(0.0)
+            ));
+        }
     }
     if total_unmet_units > 0.0 {
+        let days_covered_by_buffer = if daily_deficit > 0.0 {
+            let starting_buffer = household_demand_per_day * scenario.starting_household_stock_days as f32;
+            starting_buffer / daily_deficit
+        } else {
+            scenario.duration_days as f32
+        };
         bottlenecks.push(format!(
-            "Sandbox leaves {:.1} household_supplies units unmet across {} days.",
-            total_unmet_units, scenario.duration_days
+            "{:.0} units went undelivered over {} days (avg {:.1} unmet/day after buffer ran out ~day {:.0}). \
+             Households consumed their starting stock in the first {:.1} days before supply fell short.",
+            total_unmet_units,
+            scenario.duration_days,
+            if scenario.duration_days as f32 - days_covered_by_buffer > 0.0 {
+                total_unmet_units / (scenario.duration_days as f32 - days_covered_by_buffer).max(1.0)
+            } else { 0.0 },
+            days_covered_by_buffer.min(scenario.duration_days as f32),
+            days_covered_by_buffer.min(scenario.duration_days as f32),
         ));
     }
+
+    for (node_id, cumulative_profit) in &node_cumulative_profits {
+        if *cumulative_profit < 0.0 {
+            bottlenecks.push(format!(
+                "Node '{}' is insolvent: it lost {:.1} currency over {} days. \
+                 Wages and input costs exceed revenue — raise the unit price or reduce worker count.",
+                node_id, cumulative_profit.abs(), scenario.duration_days
+            ));
+        }
+    }
+
     if bottlenecks.is_empty() {
         bottlenecks.push("Starter chain remains stocked for the whole sandbox run.".to_owned());
     }
@@ -2024,6 +2159,27 @@ fn inferred_unit_price(
             };
             if source_profile.unit_price_currency > 0.0 {
                 return source_profile.unit_price_currency;
+            }
+        }
+    }
+    0.0
+}
+
+fn input_unit_price(
+    node_id: &str,
+    resource: &str,
+    scenario: &EconomyScenario,
+    node_map: &BTreeMap<&str, &ScenarioNode>,
+    profile_map: &BTreeMap<&str, &EconomyProfile>,
+) -> f32 {
+    for edge in &scenario.edges {
+        if edge.to == node_id && edge.resource == resource {
+            if let Some(source_node) = node_map.get(edge.from.as_str()) {
+                if let Some(source_profile) = profile_map.get(source_node.ref_id.as_str()) {
+                    if source_profile.unit_price_currency > 0.0 {
+                        return source_profile.unit_price_currency;
+                    }
+                }
             }
         }
     }

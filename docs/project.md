@@ -17,7 +17,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
 - **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
 - **Economy foundation**: household records, building-centric daily economy, freight jobs, `OWA` fallback, and exact entrance-side freight ETA are live. See [`economy.md`](economy.md).
-- **Demand foundation**: the live `DemandSystem` rebuilds coarse pressure telemetry from runtime state, while [`demand.md`](demand.md) defines the target ownership split for immigration and displacement cleanup.
+- **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure through a strictly agent-driven model. The legacy startup system has been replaced with organic pioneer growth floors. See [`demand.md`](demand.md).
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live.
 
 ## Current Priorities
@@ -27,7 +27,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: add service-building coverage so city stability is not only conceptual.
 - `MOB-01`: ship bicycle support as the next transport mode.
-- `DEM-01`: finish moving immigration and displacement ownership behind the demand layer.
+- `ALLOC-01`: harden building allocator ownership and spec limits.
 - `DOC-01`: finish replacing old numbered backlog references in live docs.
 
 `QA-01` is now parked in [`roadmap.md`](roadmap.md): the old long-run sim-thread panic has not reproduced recently, including at least one overnight run, so it is no longer treated as an active blocker.
