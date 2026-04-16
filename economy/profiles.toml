@@ -7,11 +7,11 @@ worker_capacity = 5
 base_rate_units_per_day = 160.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
-unit_price_currency = 4.0
+unit_price_currency = 5.0
 stock_target_days = 4.0
 reorder_threshold_days = 0.0
 critical_threshold_days = 0.0
-min_shipment_units = 0.0
+min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
 starting_inventory_days = 0.0
 work_schedule_profile = "three_shift_work"
@@ -31,7 +31,7 @@ worker_capacity = 5
 base_rate_units_per_day = 200.0
 wage_min_currency_per_day = 80.0
 wage_max_currency_per_day = 100.0
-unit_price_currency = 6.0
+unit_price_currency = 10.0
 stock_target_days = 3.0
 reorder_threshold_days = 2.0
 critical_threshold_days = 0.5
@@ -50,26 +50,26 @@ resource = "household_supplies"
 units_per_day = 200.0
 
 [[profiles]]
-id = "household_demand_sink"
-display_name = "Household Demand Sink"
+id = "basic_household_demand"
+display_name = "Household Demand"
 kind = "demand_sink"
-description = "Aggregated household-side stock sink for the first playable economy loop."
+description = "Aggregated household-side stock sink for the economy loop."
 worker_capacity = 0
 base_rate_units_per_day = 0.0
 wage_min_currency_per_day = 0.0
 wage_max_currency_per_day = 0.0
 unit_price_currency = 0.0
-stock_target_days = 0.0
-reorder_threshold_days = 0.0
-critical_threshold_days = 0.0
-min_shipment_units = 0.0
+stock_target_days = 5.0
+reorder_threshold_days = 2.5
+critical_threshold_days = 1.0
+min_shipment_units = 1.0
 consumption_rate_per_resident = 1.0
 starting_inventory_days = 0.0
 outputs = []
 
 [[profiles.inputs]]
 resource = "household_supplies"
-units_per_day = 1.0
+units_per_day = 2.0
 
 [[profiles]]
 id = "power_plant_basic"
@@ -131,6 +131,10 @@ starting_inventory_days = 0.0
 utility_service = "sewage"
 inputs = []
 outputs = []
+
+[runtime_tuning]
+owa_import_price_multiplier = 1.75
+owa_export_price_multiplier = 0.6000000238418579
 
 [runtime_tuning.operational_clock]
 seconds_per_day = 1440.0

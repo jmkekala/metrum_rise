@@ -24,6 +24,7 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 For active tracked work, use [`roadmap.md`](roadmap.md).
 
+- `NET-01` **(P0 blocker)**: parallel/overlapping road placement creates topologically disconnected edge segments; CCH cannot route across them; all freight falls back to OWA permanently. Fix `collect_crossing_splits` in `topology.rs`.
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: add service-building coverage so city stability is not only conceptual.
 - `MOB-01`: ship bicycle support as the next transport mode.

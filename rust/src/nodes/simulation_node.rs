@@ -610,6 +610,16 @@ impl SimulationNode {
             .get_building_transforms_for_asset_internal(&asset_id.to_string())
     }
 
+    /// Returns the packed 12-float transforms for all deserted buildings with the given asset ID.
+    #[func]
+    pub fn get_deserted_building_transforms_for_asset(
+        &self,
+        asset_id: GString,
+    ) -> PackedFloat32Array {
+        self.lock_core()
+            .get_deserted_building_transforms_for_asset_internal(&asset_id.to_string())
+    }
+
     /// Returns the packed transforms for building plots/foundations of a specific zone type.
     #[func]
     pub fn get_building_plot_transforms(&self, zone_type_int: u8) -> PackedFloat32Array {

@@ -49,7 +49,15 @@ Kind values:
 
 | ID      | Kind  | Status   | Priority | Owner doc                  | Problem                                                                                                                                     | Exit criteria                                                                                                               |
 | ---------| -------| ----------| ----------| ----------------------------| ---------------------------------------------------------------------------------------------------------------------------------------------| -----------------------------------------------------------------------------------------------------------------------------|
+| `NET-01` | `bug` | `open` | `P0`     | [`project.md`](project.md) | Parallel or overlapping road placement silently skips junction creation, producing topologically disconnected edge segments that CCH cannot route across. All freight between affected buildings falls back to OWA permanently. | `collect_crossing_splits` correctly detects and splits parallel/overlapping distinct edges; local freight routes successfully between buildings without OWA fallback. |
 | `QA-01` | `bug` | `parked` | `P2`     | [`project.md`](project.md) | There are historical reports of a long-run simulation-thread panic, but it has not reproduced recently enough to keep as an active blocker. | A reliable repro plus logs promotes this back to active work, or a sustained revalidation window closes it with confidence. |
+
+### `NET-01`
+
+- **Root cause**: `collect_crossing_splits` in `rust/src/simulation/network/topology.rs` skips any segment pair where `v1.dot(v2).abs() > 0.98`. This guard was intended to avoid false intersections on near-parallel roads, but it also fires for two distinct edges that are drawn in the same direction — including when the player draws a road overlapping or branching off an existing road. No junction node is created, and the two edge objects remain topologically disconnected.
+- **Downstream effect**: `freight_car_eta_between_buildings` calls `cch_graph.find_path` between the two disconnected segments and gets `None`. `try_local_supplier_for_resource` returns `false` for every local candidate. All freight falls back to OWA permanently — local supply chains never form.
+- **Observed in gameplay**: grocery imported 474 staple_food from OWA at 1.75× local price on first order despite operational local farms; farms earned only OWA export revenue (60% of local price), insufficient to cover wages, trending toward bankruptcy by day 26.
+- **Fix direction**: remove or scope-limit the `v1.dot(v2).abs() > 0.98` guard so it only suppresses checks within the same edge (already guarded by `edge_id == other_id`), not between distinct edges. Add endpoint-snap or overlap-merge handling for parallel segments that share a spatial region.
 
 ### `QA-01`
 

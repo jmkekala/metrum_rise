@@ -23,6 +23,7 @@ Current stack summary. For exact versions, check `rust/Cargo.toml` and the Godot
 - `rust/src/assets/` contains asset packs, registry, and validation.
 - `godot/scripts/` contains thin UI/input/render bridges.
 - `docs/` contains the dashboard, roadmap, reference tables, subsystem specs, and archive.
+- `$HOME/.local/share/godot/app_userdata/Metrum\ Rise/mods/` contains all the user assets
 
 ## Building and Running
 

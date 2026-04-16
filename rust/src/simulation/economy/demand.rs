@@ -471,8 +471,16 @@ impl DemandSystem {
                 })
                 .sum::<f32>();
             let spawn_limit = match zone_type {
-                ZoneType::Residential => housing_shortage.powi(2),
-                _ => snapshot.resident_presence.max(pioneer_demand * 0.25),
+                ZoneType::Residential => {
+                    // During bootstrap (low resident count), allow spawning even if
+                    // current shortage is low, to fill initial zones.
+                    let bootstrap_boost = (1.0 - snapshot.resident_presence).powi(2) * 0.5;
+                    (housing_shortage.powi(2) + bootstrap_boost).min(1.0)
+                }
+                _ => {
+                    // Non-residential boost during startup.
+                    snapshot.resident_presence.max(pioneer_demand * 0.5)
+                }
             };
 
             let spawn_budget_units = normalized_spawn_pressure
@@ -509,11 +517,15 @@ impl DemandSystem {
                     .collect()
             } else {
                 // Non-residential: apply labour and output-absorption gates per candidate.
-                // available_unemployed tracks remaining open jobs after each passing candidate
-                // claims its worker_capacity.
+                // available_unemployed starts from the housed resident count (the city's
+                // potential workforce) and decreases as each passing candidate claims
+                // its worker_capacity, preventing spawning more capacity than people exist
+                // to fill it.  Using open_reachable_job_slots here was wrong: that value
+                // counts unfilled slots in already-existing buildings (demand for workers),
+                // not the supply of workers, and is 0 at bootstrap causing a permanent deadlock.
                 let catalog = load_runtime_economy_catalog()
                     .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
-                let mut available_unemployed = snapshot.open_reachable_job_slots;
+                let mut available_unemployed = snapshot.housed_resident_count;
                 let mut passed = 0;
                 spawn_candidates
                     .into_iter()
@@ -1488,7 +1500,6 @@ struct DailyDemandSnapshot {
     utility_service_stability: f32,
     external_connection_available: f32,
     // Raw counts needed for non-residential spawn gates.
-    open_reachable_job_slots: u32,
     housed_resident_count: u32,
 }
 
@@ -1670,14 +1681,14 @@ impl DailyDemandSnapshot {
             household_stock_stability,
             utility_service_stability,
             external_connection_available,
-            open_reachable_job_slots,
             housed_resident_count,
         }
     }
 }
 
-/// Returns true if the city has enough open jobs to staff the spawning asset.
-/// `available_unemployed` is the running remaining pool for this daily pass.
+/// Returns true if the housed population is large enough to staff the spawning asset.
+/// `available_unemployed` is the remaining workforce pool for this daily pass (starts
+/// from `housed_resident_count` and is decremented by each approved spawn).
 fn nonresidential_passes_labour_gate(
     allocator: &BuildingAllocator,
     asset_id: &str,
@@ -1716,10 +1727,11 @@ fn nonresidential_passes_absorption_gate(
         .collect();
 
     // Sum output capacity (units/day) already placed for matching resource types.
+    // Deserted buildings are excluded: they produce nothing and must not block a replacement spawn.
     let placed_capacity: f32 = allocator
         .buildings
         .iter()
-        .filter(|b| !b.broken && !b.economy_broken)
+        .filter(|b| !b.broken && !b.economy_broken && !b.is_deserted)
         .filter_map(|b| {
             let p = catalog.profile_by_runtime_id(b.economy_profile_runtime_id)?;
             let overlaps = p
@@ -1886,7 +1898,8 @@ mod tests {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 1.0,
-            abandoned_timer: 0,
+            economy_dead_days: 0,
+            is_deserted: false,
             edge_idx: 0,
             side: 1,
             cell_x: 0,
@@ -1905,6 +1918,7 @@ mod tests {
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
+            startup_reset_used: false,
         }
     }
 

@@ -140,8 +140,6 @@ func _unhandled_input(event):
 func _handle_escape():
 	if current_tool != Tool.NONE:
 		_cancel_active_tool()
-	elif terrain_node and terrain_node.show_global_zoning:
-		_toggle_zoning_overlay()
 
 func _handle_lane_adjust(fwd, bkw):
 	if current_tool == Tool.ROAD and road_tool:

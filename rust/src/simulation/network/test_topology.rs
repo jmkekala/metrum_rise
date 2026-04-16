@@ -293,7 +293,8 @@ mod tests {
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.75,
                 side_offset: 5.0,
-                abandoned_timer: 0,
+                economy_dead_days: 0,
+                is_deserted: false,
                 edge_idx: old_edge_id,
                 side: 1,
                 cell_x: 7,
@@ -312,6 +313,7 @@ mod tests {
                 shipment_cooldown_hours: 0,
                 pending_redevelopment: false,
                 rezone_grace_days_remaining: 0,
+                startup_reset_used: false,
             });
 
         // 3. Create a split node at 40m

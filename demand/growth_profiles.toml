@@ -11,15 +11,15 @@ resident_presence_saturation_residents = 500
 household_affordability_target_reserve_days = 7.0
 household_stock_stability_target_days = 3.0
 [action_budget]
-max_households_per_day = 24
+max_households_per_day = 48
 [household_action]
-base_inflow = 0.80
+base_inflow = 1.0
 admission_threshold = 0.25
 removal_threshold = 0.35
 [action_budget.spawn_batch_fraction_by_use]
 residential = 0.50
-commercial = 0.25
-industrial = 0.25
+commercial = 0.40
+industrial = 0.40
 
 [action_budget.upgrade_batch_fraction_by_use]
 residential = 0.25

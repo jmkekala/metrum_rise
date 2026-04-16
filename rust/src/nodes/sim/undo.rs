@@ -68,8 +68,7 @@ impl SimCore {
                 self.transit_network
                     .lane_system
                     .rebuild(&mut self.region_graph);
-                self.transit_network.cch_graph =
-                    crate::simulation::pathing::cch::CchGraph::build(&self.region_graph);
+                self.transit_network.rebuild_cch_and_check(&self.region_graph);
             }
             return true;
         }

@@ -1,5 +1,15 @@
 #!/bin/bash
 # Metrum Rise Run Script
+#
+# Debug modes:
+#   --debug              General debug logging (stdout)
+#   --debug <category>   Category-filtered debug logging (stdout)
+#                        Common categories: isect, economy, demand, road, border
+#   --debug traffic      Traffic/routing + road-network connectivity (stderr)
+#   --debug-traffic      Alias for --debug traffic
+#                        Shows per-road-placement split details, CCH rebuild connectivity
+#                        reports, and agent routing decisions.
+#   --debug-sim          Hourly simulation summaries (stdout)
 
 RELEASE=0
 DEBUG=0
@@ -15,6 +25,8 @@ while [ $i -le $# ]; do
         RELEASE=1
     elif [ "$arg" = "--debug-sim" ]; then
         DEBUG_SIM=1
+    elif [ "$arg" = "--debug-traffic" ]; then
+        DEBUG_TRAFFIC=1
     elif [ "$arg" = "--debug" ]; then
         next_index=$((i + 1))
         if [ $next_index -le $# ]; then
@@ -50,7 +62,9 @@ if [ $DEBUG -eq 1 ]; then
 fi
 if [ $DEBUG_TRAFFIC -eq 1 ]; then
     export METRUM_DEBUG_TRAFFIC=1
-    echo "Traffic/routing debug logging enabled (output goes to stderr)"
+    echo "Traffic/routing + road-network debug logging enabled (output goes to stderr)"
+    echo "  Per road placement: [ROAD] split details"
+    echo "  After CCH rebuild:  [ROAD_NET] connectivity report (1 line if OK, component list if disconnected)"
 fi
 if [ $DEBUG_SIM -eq 1 ]; then
     export METRUM_DEBUG_SIM=1

@@ -121,7 +121,7 @@ pub(super) fn save_world(
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, startup_reset_used, economy_dead_days, is_deserted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -157,7 +157,10 @@ pub(super) fn save_world(
             i64::from(b.level),
             i64::from(if b.broken { 1 } else { 0 }),
             i64::from(if b.pending_redevelopment { 1 } else { 0 }),
-            i64::from(b.rezone_grace_days_remaining)
+            i64::from(b.rezone_grace_days_remaining),
+            i64::from(if b.startup_reset_used { 1 } else { 0 }),
+            u32_to_i64(b.economy_dead_days)?,
+            i64::from(if b.is_deserted { 1 } else { 0 })
         ])?;
         for (slot, amount) in b.resource_inventory.iter().enumerate() {
             if *amount <= 0.0 {
@@ -286,7 +289,20 @@ pub(super) fn load_buildings(
     let resource_count = load_runtime_economy_catalog()
         .map_err(SaveLoadError::custom)?
         .resource_count();
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining FROM buildings ORDER BY building_id")?;
+    // Forward-compatible migrations: add columns absent in older saves.
+    let _ = conn.execute(
+        "ALTER TABLE buildings ADD COLUMN startup_reset_used INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE buildings ADD COLUMN economy_dead_days INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let _ = conn.execute(
+        "ALTER TABLE buildings ADD COLUMN is_deserted INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, startup_reset_used, economy_dead_days, is_deserted FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
@@ -307,7 +323,8 @@ pub(super) fn load_buildings(
             facing_dir: Vector2::ZERO,
             frontage_t: row.get(2)?,
             side_offset: 0.0,
-            abandoned_timer: 0,
+            economy_dead_days: i64_to_u32(row.get(21)?)?,
+            is_deserted: row.get::<_, i64>(22)? != 0,
             edge_idx: i64_to_usize(row.get(1)?)?,
             side: (row.get::<_, i64>(3)?) as i8,
             cell_x: i64_to_usize(row.get(4)?)?,
@@ -326,6 +343,7 @@ pub(super) fn load_buildings(
             resource_inventory: vec![0.0; resource_count],
             pending_redevelopment: row.get::<_, i64>(18)? != 0,
             rezone_grace_days_remaining: i64_to_u8(row.get(19)?)?,
+            startup_reset_used: row.get::<_, i64>(20)? != 0,
         });
     }
     let mut stmt = conn.prepare(

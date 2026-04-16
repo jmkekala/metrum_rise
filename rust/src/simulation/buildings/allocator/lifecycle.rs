@@ -225,6 +225,9 @@ impl BuildingAllocator {
             "demand-owned household admission planning: households_to_spawn={}",
             households_to_spawn,
         );
+        let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
+            panic!("could not load built-in economy catalog during admission: {err}")
+        });
         for _ in 0..households_to_spawn {
             let Some((home_idx, household_size)) = self.claim_home_for_household()
             else {
@@ -235,7 +238,7 @@ impl BuildingAllocator {
                 break;
             };
             let home_door = self.entrances[home_idx].door_pos;
-            let household_id = households.admit_immigrant_household(home_idx, household_size);
+            let household_id = households.admit_immigrant_household(&catalog, home_idx, household_size);
             // One household consumes 1 slot of household_capacity regardless of size.
             self.claim_vacancy(home_idx);
             debug_log!(

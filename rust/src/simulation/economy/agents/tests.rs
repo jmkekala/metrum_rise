@@ -105,7 +105,8 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         facing_dir: Vector2::new(1.0, 0.0),
         frontage_t: 0.5, // t=0.5 → depart node = end_node of the edge
         side_offset: 5.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0,
+        is_deserted: false,
         edge_idx,
         side,
         cell_x: 0,
@@ -124,6 +125,7 @@ fn create_test_building(edge_idx: usize, side: i8) -> Building {
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
+        startup_reset_used: false,
     }
 }
 

@@ -321,6 +321,7 @@ Buildings own the money used for production and operations.
 
 - sellers receive revenue when households or other buildings buy goods
 - workplaces pay wages and operating costs
+- **Solvency-Based Hiring**: Buildings may only offer open recruitment slots if their current `operating_budget` can sustain the daily wages of all existing employees plus the new hire. This prevents bankrupt businesses from functioning as "zombie employers."
 - non-residential utility consumption and sewage-management charges should count as building operating cost in `v0.1`
 - utility-producing or utility-processing buildings are normal economic operators that earn service revenue from those utility charges
 - producers buy or reserve required inputs through the building-level economy
@@ -339,6 +340,16 @@ Rules:
 - ordinary utility service payments do not deposit into the city treasury by default; only any tax portion or future city-owned utility revenue would do so
 - subsidies and other city-funded support measures withdraw from the city treasury
 - road building, infrastructure placement, and city-owned facility construction withdraw from the city treasury
+
+### Logistics and Shipments
+
+The movement of goods and money is represented through explicit shipments:
+
+- **Shipments**: Discrete logistics jobs that carry a specific quantity of resource between a source and destination.
+- **Cooldowns**: Buildings enter a mandatory settlement period after starting a shipment to prevent overwhelming the road network with micro-deliveries.
+- **Batching**: Both local trades and OWA exports prioritize efficient loads by waiting for a `min_shipment_units` volume before dispatching a vehicle.
+- **Capital Lockdown**: While a shipment is in transit, the associated budget or inventory is locked and cannot be double-spent.
+- **Fulfilment**: The transaction is credited only when the physical vehicle reaches its destination. Failures (e.g. building removal) return the locked capital but may penalize the reputation or cooldown of the building.
 - roads and city-owned facilities also create recurring maintenance or operating costs that withdraw from the city treasury
 - `v0.1` should treat these as simple treasury costs rather than as a full construction-material or contractor simulation
 - future city systems such as deeper services simulation, public works, debt, or borrowing may also use this ledger, but those richer layers are outside the first economy pass
@@ -468,7 +479,7 @@ Rules:
 - the `OWA` owns per-resource `import_ask` prices and `export_bid` prices rather than reusing local building prices directly
 - `import_ask` must always remain above `export_bid` for the same resource so trivial buy-and-sell arbitrage cannot exist
 - `OWA` price updates happen once per operational day with smoothing and bounded daily movement rather than instant per-order jumps
-- in `v0.1`, essential household goods are not exportable to the `OWA`
+- in `v0.1`, only industrial zone buildings with surplus output may export to the `OWA`; commercial zone buildings do not export their outputs
 - utility fallback through the `OWA` is an external service purchase, not a trucked-goods delivery
 - payments for `OWA` utility fallback leave the local economy as external service spend rather than becoming city treasury revenue
 - player tariffs may later modify effective trade cost, but tariffs do not replace the base `OWA` rules
@@ -510,12 +521,19 @@ The outside world should keep the city alive, but it should not be the best long
 
 Local supply chains should usually beat permanent `OWA` dependence through:
 
-- lower effective unit cost once production and labor are stable
+- lower effective unit cost once production and labor are stable — enforced by `owa_import_price_multiplier`
 - less exposure to border congestion and border-terminal queueing
 - less exposure to player tariffs and other trade penalties later
 - stronger local employment and tax base
 
-Exports should work as a safety valve for surplus, not as the default engine of city growth.
+The logistics system tries local suppliers first and falls back to the `OWA` only when no valid local source is available. The `OWA` import price is derived as `local_unit_price × owa_import_price_multiplier` (configured in `[runtime_tuning]` in `economy/profiles.toml`), ensuring that a healthy local producer is always cheaper than the `OWA` alternative.
+
+Exports work as a safety valve for surplus, not as the default engine of city growth. When an industrial building's unreserved output inventory exceeds a **one-day production buffer** and no local buyer is available, the logistics system creates an outbound export shipment to the nearest valid `OWA` border terminal. 
+
+**Export Constraints**:
+- **Pricing**: The `OWA` pays `local_unit_price × owa_export_price_multiplier` (default 0.6x), ensuring that local sales are always more profitable than "dumping" surplus on the external market.
+- **Efficiency**: Exports must meet the building's `min_shipment_units` threshold and respect the building's global shipment cooldown. This forces industrial sites to batch their overproduction into meaningful truckloads rather than spamming tiny hourly export shipments.
+- **Zoning**: In `v0.1`, only Industrial buildings may export; Commercial buildings do not export their inventories.
 
 ### Household admission and removal handoff
 
@@ -656,12 +674,19 @@ Important scope note:
 The decisions system should resolve choices made by agents, households, and buildings, such as:
 
 - whether an agent goes to work
+- **Insolvency Exit**: If a building is insolvent and fails to pay wages, employees will "fire themselves" after a threshold period (default: 2 consecutive unpaid days). This frees them to seek solvent employment elsewhere.
 - when a household replenishes stock
 - whether replenishment uses shop pickup in `v0.1`, with future delivery modes added later if the design expands
 - which supplier or route is selected
 - which schedule window a workplace is currently filling
 
 In `v0.1`, household replenishment should be represented as a household-side economy/request state flow rather than as a new `TRANSIT_*` state in the agent FSM.
+
+The **Household Economic Model** is data-driven via the `basic_household_demand` profile:
+- `consumption_rate_per_resident`: base units consumed per agent per day.
+- `stock_target_days`: the ideal pantry size (default: 5.0 days).
+- `reorder_threshold_days`: the trigger point for a standard restock (default: 2.5 days).
+- `critical_threshold_days`: the "starvation" trigger for emergency restock (default: 1.0 day).
 
 This layer operates on the operational clock and consumes the pressures produced by the demand system.
 
@@ -1820,9 +1845,13 @@ These are implementation defaults, not final balance targets:
 - grocery minimum shipment size: `40 household_supplies`
 - local base price for `staple_food`: `4 currency / unit`
 - local base price for `household_supplies`: `6 currency / unit`
-- initial `OWA import_ask` for `staple_food`: `7 currency / unit`
-- initial `OWA import_ask` for `household_supplies`: `8 currency / unit`
-- initial `OWA export_bid` for `staple_food`: `3 currency / unit`
+- `OWA import_ask` for `staple_food`: `7 currency / unit` (local × `owa_import_price_multiplier = 1.75`)
+- `OWA import_ask` for `household_supplies`: `10.5 currency / unit` (local × 1.75)
+- initial `OWA export_bid` for `staple_food`: `2.4 currency / unit` (local × `owa_export_price_multiplier = 0.6`)
+
+**`OWA` import price implementation:** the runtime derives the effective OWA import price as `local_unit_price × owa_import_price_multiplier`. A value of `1.75` means the OWA charges 75% more than the local producer, making local supply chains economically preferred once they are operational. Values below `1.0` are rejected at runtime. The multiplier also applies to the `adjusted_unit_price` freight-timing modifier on top.
+
+**`OWA` export price implementation:** when an industrial building has unreserved output inventory exceeding one day's production buffer and no local buyer is available, the logistics system creates an outbound export shipment. The OWA pays `local_unit_price × owa_export_price_multiplier`. A value of `0.6` means the OWA pays 60% of the local price, keeping exports a loss-reducing safety valve rather than a preferred revenue source. Values outside `[0.0, 1.0]` are rejected at validation time.
 
 These numbers are only a bootstrap reference pack. They should ship in the first editable economy data so all implementations and test scenarios start from the same baseline before the editor-driven balancing pass diverges.
 
@@ -2028,6 +2057,295 @@ Current status:
 
 Goal: finish with one coherent economy model instead of a mix of prototype and authored code paths.
 
+---
+
+## Unemployment Benefit
+
+The unemployment benefit is a **household-level cash disbursement** paid to every unemployed member of an eligible household each operational day. It replaces the `pioneer_demand` floor (see [Pioneer Phase → Issue 5](#5-the-starving-pioneer-glue-low-emigration)) as the mechanism that keeps households solvent during the early city bootstrap phase. Unlike the Pioneer floor, the benefit is a real simulation mechanism: money flows through the economy, stimulates real consumption demand, and generates real spawn pressure on commercial and industrial buildings.
+
+### Ownership
+
+This section owns the unemployment benefit spec. `demand.md` owns the Pioneer floor and the conditions under which it can be retired. `households.rs` owns the runtime disbursement implementation. `nodes/sim/core.rs` owns the `CityTreasury` struct and its starting balance constant.
+
+### Design Invariants
+
+- The benefit is a household-level daily transfer, not a per-agent micro-payment.
+- Money is drawn from the **existing `CityTreasury`** (`SimCore::treasury`). It is not printed from nothing.
+- The benefit is self-terminating: once an agent is employed, disbursement stops for that household member. Once all household members are employed, the household exits the benefit entirely.
+- The benefit must generate real purchasing activity. A household that receives the benefit must actually attempt replenishment at a grocery store if its stock is below the trigger threshold. The benefit amount must be large enough that this attempt succeeds at prevailing prices.
+- The benefit must not create infinite runway. A household that cannot find work within the configured `unemployment_max_days` should emigrate rather than subsisting on benefit payments indefinitely.
+
+### Money Source
+
+`CityTreasury` already exists in `nodes/sim/core.rs` and is fully implemented:
+
+- **Starting balance**: `STARTUP_TREASURY_BALANCE = 100_000` currency units at map start.
+- **Current deductions**: road build cost ($100/meter) and daily road upkeep ($0.1/meter/day).
+- **Persisted**: saved and loaded via the `city_treasury` SQLite table.
+- **Exposed**: `get_treasury_balance()` GDScript bridge already exists.
+
+Unemployment benefit disbursements draw from the same `treasury.balance`. No new treasury infrastructure is required — only the disbursement connection from `HouseholdSystem` to `CityTreasury` is missing.
+
+The treasury balance may go negative (existing behavior). Disbursement should be skipped once the balance reaches zero to avoid deepening deficit spending for welfare.
+
+### Eligibility Rule
+
+A household is eligible for unemployment benefit on a given day if **all** of the following hold:
+- `household.member_count > 0`
+- `household.home_building_id` is a valid, non-broken residential building
+- At least one member of the household has `work_building == usize::MAX` (is unemployed)
+- `household.unemployment_days_elapsed < unemployment_max_days`
+
+`unemployment_days_elapsed` increments each day any household member remains unemployed, and resets to zero once all members are employed.
+
+### Disbursement Rule
+
+Once per operational day, after `pay_daily_wages` and before `resolve_household_housing`, iterated across all households:
+
+```
+unemployed_members = count of agents in household where work_building == usize::MAX
+benefit_today = unemployed_members × unemployment_daily_benefit_per_member
+
+if treasury.balance >= benefit_today:
+    household.budget += benefit_today
+    treasury.balance -= benefit_today
+else if treasury.balance > 0.0:
+    household.budget += treasury.balance   // pay what remains
+    treasury.balance  = 0.0
+// if treasury.balance == 0.0: skip silently
+```
+
+`treasury` here is `SimCore::treasury`, passed into `daily_settlement_tick` by the caller.
+
+### Termination Conditions
+
+| Condition | Outcome |
+|---|---|
+| All household members find employment | Disbursement stops; `unemployment_days_elapsed` resets to 0 |
+| `unemployment_days_elapsed >= unemployment_max_days` | Household becomes emigration-eligible at normal removal priority; benefit stops |
+| `treasury.balance <= 0.0` | Disbursement stops for all households; pioneer phase ends organically |
+
+### Authored Tuning Parameters
+
+`unemployment_daily_benefit_per_member`, `unemployment_max_days`, and `startup_treasury_balance` all live in the `runtime_tuning` block of `economy/profiles.toml`. `STARTUP_TREASURY_BALANCE` is currently a hardcoded Rust constant in `nodes/sim/core.rs` and must be migrated to the TOML tuning block as part of this implementation.
+
+| Parameter | Location | Role |
+|---|---|---|
+| `startup_treasury_balance` | `economy/profiles.toml` runtime_tuning (migrate from Rust constant) | Total treasury at map start — currently hardcoded at $100,000 |
+| `unemployment_daily_benefit_per_member` | `economy/profiles.toml` runtime_tuning (new) | Currency paid per unemployed household member per day |
+| `unemployment_max_days` | `economy/profiles.toml` runtime_tuning (new) | Days before an unemployed household becomes emigration-eligible |
+
+### Spawn Signal: Replacing the Pioneer Floor
+
+The Pioneer demand floor (`pioneer_demand = 0.70`) currently exists because `stock_stab` and `afford` metrics collapse to near-zero on a fresh map, starving the spawn system of signal. The unemployment benefit restores these signals through real economic activity:
+
+1. Disbursement gives households money → `afford` rises.
+2. Households with money attempt grocery replenishment → `stock_stab` rises.
+3. The grocery earns real revenue → absorption gate threshold is met sooner → second grocery spawns.
+4. More groceries need supply → industrial spawn pressure rises.
+5. Industrial buildings hire workers → households exit unemployment → benefit drain slows.
+
+Once the unemployment benefit is implemented and tuned so that `stock_stab` and `afford` reach values comparable to what the Pioneer floor was artificially holding them at, the `pioneer_demand` non-residential floor **must** be set to `0.0` and the bootstrap boost logic removed from `demand.rs`. The benefit is the replacement, not a supplement.
+
+### Migration Path
+
+The `CityTreasury` infrastructure is already complete. Remaining implementation steps:
+
+1. Add `startup_treasury_balance: f64`, `unemployment_daily_benefit_per_member: f32`, and `unemployment_max_days: u32` to `RuntimeEconomyTuning` in `definitions.rs`. Remove the `STARTUP_TREASURY_BALANCE` constant from `nodes/sim/core.rs` and read the value from the loaded tuning instead.
+2. Add `unemployment_days_elapsed: u32` to `Household` struct in `households.rs` (and save/load schema).
+3. Add a `pay_unemployment_benefits` method to `HouseholdSystem`. It takes a `&mut CityTreasury` and iterates all eligible households per the Disbursement Rule above.
+4. Call `pay_unemployment_benefits` from `daily_settlement_tick` in `SimCore`, after `pay_daily_wages`. Pass `&mut self.treasury`.
+5. Observe `stock_stab` and `afford` in the daily snapshot log over a 30-day fresh-map run. Tune `unemployment_daily_benefit_per_member` until those metrics reach 0.50–0.70 organically.
+6. Set `pioneer_demand` non-residential to `0.0` and remove the bootstrap boost from `demand.rs`.
+7. Verify that commercial/industrial buildings still spawn at a reasonable rate on an empty map without the floor.
+8. Remove the 'pioneer_demand' system entirely. It is now considered as legacy system.
+
+## Building Bankruptcy
+
+This section is the authoritative spec for how commercial, industrial, and utility buildings manage
+their operating budget, pay obligations, and enter bankruptcy. The previous system used an hourly
+utility gate (`utility_service_available`) that permanently froze any building whose budget dipped
+below a single hourly charge — see ECON-01 in the Current Simulation Status section for the
+incident record. This spec replaces that system entirely.
+
+### Operating Budget
+
+Each commercial, industrial, and utility building holds an `operating_budget: f32` cash balance.
+It is separate from household budgets and the city treasury.
+
+Money enters the budget from:
+
+- sales revenue when households or other buildings purchase the building's output
+- utility service revenue distributed to local provider buildings when consumers pay charges
+
+Money leaves the budget from:
+
+- daily wage payments to workers
+- daily utility cost charged once per day on the same cadence as wages
+
+The budget is allowed to go negative. A negative budget is not immediately fatal — it triggers a
+distress window with a forced liquidation attempt before bankruptcy is declared.
+
+### Startup Float
+
+When a commercial or industrial building first spawns it receives a one-time startup float set at
+construction time in the spawn path:
+
+```
+startup_budget = max(worker_capacity × average_daily_wage × STARTUP_RUNWAY_DAYS, STARTUP_OPERATING_FLOAT)
+```
+
+Constants: `STARTUP_RUNWAY_DAYS = 7`, `STARTUP_OPERATING_FLOAT = 500.0`.
+
+No daily refill mechanism. The float is given once at spawn. If the building spends it without
+becoming viable, the daily settlement sequence handles the outcome.
+
+### Daily Settlement Sequence
+
+The following steps execute once per day for every commercial, industrial, and utility building
+that is not already `is_deserted` or `broken`. Order is fixed and deterministic.
+
+**Step 1 — Bankruptcy check.**
+
+```
+if building.budget_distress AND operating_budget < 0:
+    mark is_deserted = true
+    exit sequence for this building
+```
+
+`budget_distress` is set at the end of the **previous** day's Step 4. Step 1 therefore asks: "did
+yesterday end in distress, and is the budget still negative right now (before today's wages and
+utility)?" If the forced liquidation on the previous day recovered the budget to ≥ 0, then
+`operating_budget ≥ 0` here and the building is not bankrupt. `is_deserted` is never set on the
+same day as the first negative budget — the building always gets one full distress day (including
+the OWA sale attempt) before bankruptcy is declared.
+
+**Step 2 — Pay wages.**
+
+For each employed worker, deduct `daily_wage` from `operating_budget` and credit the worker's
+household. If `operating_budget < daily_wage` for a given worker, that worker goes unpaid for the
+day (`consecutive_unpaid_days` increments). Workers self-terminate after `JOB_UNPAID_ABANDON_DAYS`
+(currently 2) consecutive unpaid days. Budget does not go negative from wage payments — a building
+that cannot pay a worker simply fails to pay, not force-debits.
+
+**Step 3 — Pay utility cost.**
+
+Deduct the full daily utility cost unconditionally. Budget may go negative from this step.
+
+| Zone type   | OWA rate (no local utility buildings) | Local rate (all three present) |
+|-------------|---------------------------------------|--------------------------------|
+| Commercial  | 8.0 / day                             | ~8.0 / day (local split)       |
+| Industrial  | 12.0 / day                            | ~8.0 / day (local split)       |
+
+When local utility providers exist, the collected cost is distributed to those provider buildings
+as revenue. When no local providers exist, the cost leaves the simulation (OWA rate).
+
+Residential buildings pay household utility costs from the household budget on the existing hourly
+cadence and are not part of this sequence.
+
+**Step 4 — Distress resolution.**
+
+```
+if operating_budget < 0:
+    forced_owa_liquidation()   // sell all unreserved inventory at OWA prices
+    budget_distress = true     // flag checked tomorrow in Step 1
+else:
+    budget_distress = false    // recovered: clear the flag
+```
+
+`budget_distress` is set to `true` whenever the budget ends the day negative, regardless of
+whether the forced sale partially recovered it. The sale happens first; if it brought the budget
+back to ≥ 0, Step 1 tomorrow will see `budget_distress = true` but `operating_budget ≥ 0` and
+will not declare bankruptcy. If the sale could not recover the budget (empty inventory, or sale
+revenue insufficient), Step 1 tomorrow sees both `budget_distress = true` and
+`operating_budget < 0` — bankruptcy is declared.
+
+`forced_owa_liquidation` iterates every output resource slot and sells the full unreserved
+inventory at the standard OWA export price, crediting `operating_budget` immediately. It bypasses
+the normal `min_shipment_units` buffer check — the sale is a distress action, not a scheduled
+shipment. If inventory is empty (e.g. a ghost farm with no workers and no production), the
+liquidation yields nothing and `budget_distress` is still set to `true`.
+
+### Throughput Factor
+
+`run_building_economy` fires each hourly tick and computes:
+
+```
+throughput_factor = staffing_factor × input_factor × output_headroom_factor
+```
+
+There is no `utility_factor` term. A building that is in budget distress continues operating
+normally during the distress day — it still produces, sells, and receives wages. Only `is_deserted`
+removes a building from all flows.
+
+### Bankruptcy and Desertion
+
+A building is permanently bankrupt when `is_deserted = true`. This is set by Step 1 of the daily
+settlement sequence. Once set it is never cleared — there is no recovery from bankruptcy.
+
+Deserted buildings are excluded from:
+
+- all logistics supplier searches and shipment acceptance
+- all hiring and worker assignment
+- throughput computation (`run_building_economy` skips them)
+- demand system capacity accounting (fixes ECON-02: frozen buildings no longer block new spawns)
+
+The demand system is responsible for physically removing or redeveloping deserted buildings.
+
+#### Worker ejection on bankruptcy
+
+When `is_deserted` is set, `assign_agent_workplaces` must immediately eject all agents whose
+`work_building[i]` points at the newly deserted building: set `work_building[i] = usize::MAX` and
+clear `job_lock_days[i]` and `consecutive_unpaid_days[i]` so they enter the open job market on
+the same day. Do not rely on the unpaid-wage path to clear these workers — that path takes two
+additional days and leaves workers attached to a building that no longer runs throughput, which
+produces a misleading `worker_count` reading on the dead building.
+
+`assign_agent_workplaces` currently does not filter on `is_deserted` in its candidate loop. This
+must be added: skip any candidate building where `is_deserted == true`, regardless of whether the
+agent is already assigned there.
+
+### Replacement Targets
+
+The following code, fields, and constants are made redundant by this spec and must be removed
+during implementation:
+
+**`Building` struct fields to remove:**
+
+- `utility_service_available: bool` — replaced by `is_deserted` for logistics gating; no longer
+  used as a throughput multiplier
+- `economy_dead_days: u32` — replaced by `budget_distress: bool` (simpler two-day rule)
+- `startup_reset_used: bool` — the refill mechanism it guards is removed; startup float is set
+  once at spawn
+
+**New `Building` field to add:**
+
+- `budget_distress: bool` — true if budget was negative at end of previous daily settlement
+
+**Functions to remove or replace:**
+
+- `resolve_building_utilities` Phase 2 (the per-building hourly deduction and gate-set loop) —
+  replaced by Step 3 of the daily settlement sequence; Phase 1 (find utility providers) and
+  Phase 3 (distribute local revenue) are retained and called from the daily path
+- `run_desertion_check` — replaced by Step 1 of the daily settlement sequence
+- `ensure_building_startup_float` — the daily refill scan is removed; float is set at construction
+
+**Constants to remove:**
+
+- `STARTUP_FLOAT_REFILL_THRESHOLD` — only used by the refill mechanism
+- `DESERTED_THRESHOLD_DAYS` — replaced by the two-day consecutive rule
+- `OPERATIONAL_HOURS_PER_DAY` divisor on utility costs — utility is now a flat daily charge
+
+**Throughput formula change:**
+
+- Remove `utility_factor` from `run_building_economy`; the term and the `if utility_service_available` branch that sets it are deleted
+
+**Save/load schema:**
+
+- Remove `utility_service_available`, `economy_dead_days`, and `startup_reset_used` from
+  `BuildingSchema` in `save/schema.rs` and the corresponding `world.rs` serialisation and
+  deserialisation paths. Add `budget_distress`.
+
 ## Legacy Cleanup Targets
 
 As implementation starts, remove or refactor any code, tests, editor UX, or helper structures that still assume the older economy model rather than this spec.
@@ -2071,10 +2389,13 @@ With the salary bomb resolved, business wages reach workers by day 7. The 2–3 
 With businesses now seeded with a full 7-day wage runway, this chain no longer jams on first boot.
 
 ### 4. The "Ghost Business" (The Bankruptcy Gap)
+
 Currently, a business can reach a $0.0 budget and 100% unemployment but remain on the map indefinitely.
 - **Logic Gap**: The `DemandSystem` only considers a building for removal (despawn) if **Demand Pressure** for that zone falls below the `despawn_threshold` (e.g., < 0.15).
 - **Missing Trigger**: There is no "Liquidation" or "Bankruptcy" event triggered by the building's internal economy. Even if a business is economically dead, it is kept "on life support" by the city's overall scarcity signals.
 - **Result**: The city results in a collection of non-functional shell buildings that take up valuable land but cannot produce goods or pay workers.
+
+The authoritative spec for the **Deserted Building** lifecycle state — which resolves this gap — is in [`demand.md § Building Desertion`](demand.md#building-desertion). That section owns the trigger rule, all system effects, rendering contract, and data-model changes.
 
 ### 5. The "Starving Pioneer" Glue (Low Emigration)
 Households that find themselves broke and starving are currently "trapped" in the city rather than emigrating.
@@ -2082,13 +2403,83 @@ Households that find themselves broke and starving are currently "trapped" in th
 - **Result**: Because stability never falls below 0.70, the calculated **removal pressure** remains artificially low. The simulation "protects" the pioneer wave so hard that they are unable to leave even when their economic situation is hopeless.
 - **Calibration Target**: De-couple the bootstrap floor from removal calculations so that "despair-driven emigration" can function independently of "attraction-driven immigration."
 
+### 6. ECON-01: Commercial/Industrial Budget Deadlock — No Recovery Path
+
+**Observed**: In a 594-day run, the grocery (idx=22) entered a permanent freeze on Day 64 at `budget=-2.0`, `utility_service_available=false`. Eight farms entered the same state with `budget=0.0`. All remained frozen for 530+ days with inventory sitting unused.
+
+**Mechanism**:
+1. Hourly utility charge (`UTILITY_COST_COMMERCIAL / OPERATIONAL_HOURS_PER_DAY`) fires in `resolve_building_utilities`.
+2. If `operating_budget < hourly_cost` → `utility_service_available = false`.
+3. `utility_service_available = false` sets `utility_factor = 0.0` in `run_building_economy`, making `throughput_factor = 0.0` — no production, no sales, no revenue.
+4. No revenue → budget never recovers → permanent freeze with no exit.
+
+**Result**: A single budget dip below the utility threshold permanently locks the building out of the economy. 12 buildings deadlocked in the 594-day run. The grocery had 108 units of staple_food stuck in inventory the entire time.
+
+**Fix direction**: Add a recovery path. Options: (a) allow operating debt up to a configurable threshold before cutting utility, (b) treat a `budget < 0` building as "utility suspended" but still allow it to earn revenue from stock it already holds, (c) make the utility cut gradual (reduce throughput proportionally rather than zeroing it). The right fix preserves pressure for well-capitalized buildings without creating an inescapable trap.
+
+### 7. ECON-02: Absorption Gate Uses Nominal Capacity, Ignores Operational State
+
+**Observed**: Only 1 commercial building (the initial grocery) was ever spawned across 594 days, despite 31 commercial candidates remaining available throughout. `spawns_today=1` was calculated for 402 of those days but no placement occurred.
+
+**Mechanism**: `nonresidential_passes_absorption_gate` in `demand.rs` computes:
+```
+placed_capacity = sum of nominal output (units/day) for all non-broken, non-economy_broken buildings
+consumer_demand = consumption_rate_per_resident × housed_resident_count
+```
+The grocery profile outputs 200 `household_supplies`/day. The `household_demand_sink` profile has `consumption_rate_per_resident = 1.0`. At 131 residents: `consumer_demand = 131`. Gate condition `placed_capacity < consumer_demand` → `200 < 131` → **false** → second grocery permanently blocked.
+
+The gate does not check `utility_service_available`. A frozen, non-functional grocery still counts at full 200/day nominal capacity. The self-correction mechanism the economy needs (spawn a second grocery when the first fails) is blocked by the very building that failed.
+
+**Fix direction**: Exclude buildings where `!utility_service_available` from `placed_capacity` in the absorption gate, or compare against actual effective throughput (`nominal × staffing_factor × utility_factor`) rather than nominal output.
+
+### 8. ECON-03: One-Time Bankruptcy Reset Fires Repeatedly
+
+**Observed**: Idle farms (workers=0, revenue=0) cycle through budget 3150→0→3150 on ~250-day cycles indefinitely. The startup float refill is intended as a bootstrap rescue but becomes a permanent subsidy for buildings that are locationally unviable (too far from residential for agents to commute).
+
+**Mechanism**: `ensure_building_startup_float` fires every daily tick for any Commercial/Industrial building where `operating_budget < STARTUP_FLOAT_REFILL_THRESHOLD && revenue == 0.0 && worker_count == 0`. There was no guard preventing repeat fires.
+
+**Fix**: Added `startup_reset_used: bool` field to `Building`. The reset now fires at most once per building lifetime (`FIXED` — `households.rs`, `allocator/mod.rs`, all construction sites, and the save/load schema). After the one-time rescue, a building that still cannot attract workers or earn revenue stays bankrupt permanently, which is the correct signal for the demand system to consider removal.
+
+### 9. ECON-04: Commercial/Industrial Spawn Volume Scales with Road/Zone Area
+
+**Observed**: Adding roads between two daily ticks caused commercial candidates to jump from 13 → 79 and industrial from 34 → 90, spawning 4 grocery stores and 5 farms in a single day — far exceeding the 0–1 that is normal when the road network is stable.
+
+**Mechanism**: `normalized_spawn_pressure` in `demand.rs` is computed as a **sum** over all spawn candidates:
+
+```rust
+let normalized_spawn_pressure = spawn_candidates.iter()
+    .filter_map(|c| profile.map(|p| normalized_positive_pressure(pressure, p.spawn_threshold)))
+    .sum::<f32>();
+```
+
+Since all candidates of the same zone/density share the same profile and the same growth_pressure, each candidate contributes an equal fixed value. The total is therefore:
+
+```
+spawn_budget_units ≈ candidate_count × per_candidate_value × batch_fraction × spawn_limit
+```
+
+More roads → more zoned cells → more candidates → proportionally larger spawn budget. This is the wrong signal for commercial and industrial: the spawn rate should reflect economic demand (purchasing power, labour supply, output absorption) — not how much land was zoned this tick.
+
+Residential is less sensitive because its `spawn_limit` is bounded by `housing_shortage²`, which is a real demand signal. Non-residential `spawn_limit` uses `resident_presence.max(pioneer_demand * 0.5)` and provides no candidate-count damping.
+
+**Fix direction**: For commercial and industrial, replace the candidate-sum with either a single representative pressure value (max, or one sample) or a mean. The candidate list should gate *which* slots are eligible, not *how many* buildings spawn.
+
+### 10. ECON-05: Pioneer Demand Floor Leaks into Non-Residential Spawn Rate
+
+**Observed**: `spawn_limit` for commercial and industrial is `resident_presence.max(pioneer_demand * 0.5)`. At the pioneer baseline of `pioneer_demand = 0.700`, this floor is 0.35 — meaning even with zero residents the system keeps non-residential spawn pressure non-zero.
+
+**Intended role**: Allows the first commercial and industrial buildings to appear before the population fully materialises, bootstrapping the supply chain. Once ECON-04 is fixed (spawn volume no longer scales with candidate count), this floor directly controls the pioneer-era spawn rate.
+
+**Planned replacement**: The pioneer demand system (flat income floor, pioneer_demand coefficient) is scheduled to be replaced by an explicit unemployment-benefits mechanism. When that change lands, the `pioneer_demand * 0.5` spawn floor should be removed or replaced by a signal derived from the new system, since the concept of a "pioneer pressure" constant will no longer exist.
+
 ## Future Calibration Targets
 
 Remaining open items for the pioneer phase:
 - **Dynamic Wage Scaling**: Allow buildings to pay partial wages from available budget instead of stopping at the first worker the budget cannot cover.
 - **Liquidation Logic**: Implement an "Economic Death" trigger — despawn a business that stays at $0 budget for a sustained period even when demand pressure is high (Ghost Business problem, issue #4 above).
 - **Selective Emigration Pressure**: De-couple `pioneer_demand` floor from the removal/instability signal so starving households can emigrate (issue #5 above).
-- **Household bootstrap gap**: The 2–3 day starvation window (days 4–7, between starting-stock depletion and first wages) is the remaining residual from issue #2. If it causes visible problems, increase `IMMIGRANT_STARTING_BUDGET_PER_MEMBER` further, but stay below the work-incentive floor: starting budget must satisfy `budget/reserve_target < 0.70` or `income_pressure < 0.30` will not reliably push agents into the job market.
+- **Household bootstrap gap**: The 2–3 day starvation window (days 4–7, between starting-stock depletion and first wages) is the remaining residual from issue #2. Resolved by the unemployment benefit once implemented — see [Unemployment Benefit](#unemployment-benefit).
+- **Pioneer Floor Retirement**: Once the unemployment benefit is implemented and tuned, set `pioneer_demand` non-residential to `0.0` and remove the bootstrap boost. See the migration path in [Unemployment Benefit § Migration Path](#migration-path).
 
 
 

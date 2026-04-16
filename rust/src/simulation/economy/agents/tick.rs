@@ -2331,14 +2331,16 @@ impl AgentSystem {
                         && requires_exact_access_plan
                     {
                         let current_lane_id = *s_lane_id.get(i);
-                        let replan_start_node = if current_lane_id != usize::MAX {
+                        let lane_valid = current_lane_id != usize::MAX
+                            && current_lane_id < transit_network.lane_system.lanes.len();
+                        let replan_start_node = if lane_valid {
                             lane_terminal_node(current_lane_id, transit_network, graph)
                         } else if *s_cur_n.get(i) != u32::MAX {
                             Some(*s_cur_n.get(i))
                         } else {
                             None
                         };
-                        let incoming_edge = if current_lane_id != usize::MAX {
+                        let incoming_edge = if lane_valid {
                             transit_network.lane_system.lanes[current_lane_id].edge_id
                         } else {
                             *s_cur_e.get(i)
@@ -2397,14 +2399,16 @@ impl AgentSystem {
                             );
                         if !detach_still_legal {
                             let current_lane_id = *s_lane_id.get(i);
-                            let replan_start_node = if current_lane_id != usize::MAX {
+                            let lane_valid = current_lane_id != usize::MAX
+                                && current_lane_id < transit_network.lane_system.lanes.len();
+                            let replan_start_node = if lane_valid {
                                 lane_terminal_node(current_lane_id, transit_network, graph)
                             } else if *s_cur_n.get(i) != u32::MAX {
                                 Some(*s_cur_n.get(i))
                             } else {
                                 None
                             };
-                            let incoming_edge = if current_lane_id != usize::MAX {
+                            let incoming_edge = if lane_valid {
                                 transit_network.lane_system.lanes[current_lane_id].edge_id
                             } else {
                                 *s_cur_e.get(i)

@@ -134,6 +134,16 @@ pub(crate) struct RuntimeEconomyTuning {
     pub households: HouseholdRuntimeTuning,
     /// Building viability thresholds used by demand-owned level changes.
     pub viability: BuildingViabilityRuntimeTuning,
+    /// Multiplier applied to the local resource price when the OWA supplies an import.
+    /// Values above 1.0 make OWA imports more expensive than local sourcing, giving local
+    /// producers a cost advantage once they are operational. Must be >= 1.0; values below
+    /// 1.0 are clamped to 1.0 at load time.
+    pub owa_import_price_multiplier: f32,
+    /// Multiplier applied to the local resource price when an industrial building exports surplus
+    /// output to the OWA. Values below 1.0 make OWA exports less profitable than local sales,
+    /// keeping the OWA as a safety-valve rather than a primary revenue source. Must be in
+    /// `[0.0, 1.0]`; values outside this range are rejected at validation time.
+    pub owa_export_price_multiplier: f32,
 }
 
 /// Shared operational-clock tuning used by labor, replenishment, and freight.
@@ -312,7 +322,6 @@ pub(crate) struct EconomyProfileRuntime {
     /// Authored lower shipment bound for ordinary freight requests.
     pub min_shipment_units: f32,
     /// Household-demand consumption rate used by abstract sink profiles.
-    #[allow(dead_code)]
     pub consumption_rate_per_resident: f32,
     /// Which utility service this building provides ("power", "water", or "sewage").
     /// `None` for non-utility profiles.
@@ -436,6 +445,8 @@ impl Default for RuntimeEconomyTuning {
             operational_clock: OperationalClockRuntimeTuning::default(),
             households: HouseholdRuntimeTuning::default(),
             viability: BuildingViabilityRuntimeTuning::default(),
+            owa_import_price_multiplier: 1.5,
+            owa_export_price_multiplier: 0.6,
         }
     }
 }
@@ -1336,6 +1347,12 @@ fn validate_runtime_tuning(tuning: &RuntimeEconomyTuning) -> Result<(), String> 
         0.0,
         1.0,
         "runtime_tuning.viability.industrial_max_output_headroom_for_downgrade",
+    )?;
+    validate_range(
+        tuning.owa_export_price_multiplier,
+        0.0,
+        1.0,
+        "runtime_tuning.owa_export_price_multiplier",
     )?;
     Ok(())
 }

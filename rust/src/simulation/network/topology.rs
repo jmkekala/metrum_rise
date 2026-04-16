@@ -442,11 +442,9 @@ fn collect_crossing_splits(
 
         for i in 0..edge1_geo_ds.len() - 1 {
             let d1 = edge1_geo_ds[i + 1] - edge1_geo_ds[i];
-            let l1 = d1.length();
-            if l1 < 0.001 {
+            if d1.length() < 0.001 {
                 continue;
             }
-            let v1 = d1 / l1;
 
             for j in 0..edge2_geo_ds.len() - 1 {
                 if edge_id == other_id && (i as i32 - j as i32).abs() < 5 {
@@ -454,15 +452,14 @@ fn collect_crossing_splits(
                 }
 
                 let d2 = edge2_geo_ds[j + 1] - edge2_geo_ds[j];
-                let l2 = d2.length();
-                if l2 < 0.001 {
+                if d2.length() < 0.001 {
                     continue;
                 }
-                let v2 = d2 / l2;
 
-                if v1.dot(v2).abs() > 0.98 {
-                    continue;
-                }
+                // The old `v1.dot(v2).abs() > 0.98` guard is intentionally removed.
+                // Truly parallel roads return None from find_intersection_2d anyway
+                // (denom ≈ 0). Keeping the guard caused shallow-angle intersections
+                // (< ~11.5°) between *distinct* edges to be silently skipped.
 
                 if let Some((t, u)) = interaction::find_intersection_2d(
                     edge1_geo_ds[i],
@@ -667,6 +664,96 @@ fn migrate_split_dependents(
     }
 }
 
+/// Checks every junction node reachable from candidate edges against the interior of
+/// `edge_id`'s geometry and records a split wherever one lies within
+/// [`config::INTERSECTION_TOLERANCE`] of the road centreline.
+///
+/// This catches the case where the new road passes exactly through an existing junction
+/// that belongs only to parallel roads: `collect_crossing_splits` skips parallel pairs
+/// (and `find_intersection_2d` returns `None` for them regardless), while
+/// `collect_endpoint_snap_splits` only tests the *new* edge's own endpoints.
+fn collect_interior_node_splits(
+    graph: &mut RegionGraph,
+    edge_id: usize,
+    candidates: &[usize],
+    all_splits: &mut HashMap<usize, Vec<(f32, u32)>>,
+) {
+    let edge_geo = graph.edge(edge_id).geometry.clone();
+    let geo_len = edge_geo.len();
+    if geo_len < 2 {
+        return;
+    }
+    let new_start = graph.get_valid_node(graph.edge(edge_id).start_node);
+    let new_end = graph.get_valid_node(graph.edge(edge_id).end_node);
+
+    // Collect unique canonical junction nodes from all candidate edges.
+    let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    for &other_id in candidates {
+        if other_id == edge_id || graph.edge(other_id).deleted {
+            continue;
+        }
+        let e = graph.edge(other_id);
+        for &raw in &[e.start_node, e.end_node] {
+            seen.insert(graph.get_valid_node(raw));
+        }
+    }
+
+    for node_id in seen {
+        // Skip the new edge's own terminal nodes (handled by endpoint snap).
+        if node_id == new_start || node_id == new_end {
+            continue;
+        }
+        // Skip if this node is already scheduled for a split on this edge.
+        if all_splits
+            .get(&edge_id)
+            .map_or(false, |v| v.iter().any(|&(_, jid)| jid == node_id))
+        {
+            continue;
+        }
+        let node_pos = graph.node(node_id).pos;
+
+        // Find the closest point on the new edge's centreline to this node (XZ plane).
+        let mut best_dist_xz = f32::MAX;
+        let mut best_factor = 0.0_f32;
+        let mut best_y = 0.0_f32;
+        for (seg_idx, w) in edge_geo.windows(2).enumerate() {
+            let closest = interaction::get_closest_point_on_segment(node_pos, w[0], w[1]);
+            let dist_xz =
+                godot::prelude::Vector2::new(node_pos.x - closest.x, node_pos.z - closest.z)
+                    .length();
+            if dist_xz < best_dist_xz {
+                best_dist_xz = dist_xz;
+                best_y = closest.y;
+                let ab = w[1] - w[0];
+                let t = if ab.length_squared() > 1e-10 {
+                    ((node_pos - w[0]).dot(ab) / ab.length_squared()).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                best_factor = seg_idx as f32 + t;
+            }
+        }
+
+        if best_dist_xz >= config::INTERSECTION_TOLERANCE {
+            continue;
+        }
+        if (node_pos.y - best_y).abs() > 4.5 {
+            continue; // different elevation (bridge / tunnel)
+        }
+        // Endpoint cases are handled by collect_endpoint_snap_splits.
+        let at_start = best_factor < 0.1;
+        let at_end = best_factor > (geo_len - 1) as f32 - 0.1;
+        if at_start || at_end {
+            continue;
+        }
+
+        all_splits
+            .entry(edge_id)
+            .or_default()
+            .push((best_factor, node_id));
+    }
+}
+
 /// Scans for and processes all intersections for a given edge.
 pub fn process_intersections(
     network: &mut TransitNetwork,
@@ -681,11 +768,39 @@ pub fn process_intersections(
     let candidates = scan_intersection_candidates(graph, edge_id);
     let mut all_splits: HashMap<usize, Vec<(f32, u32)>> = HashMap::new();
 
-    // 2. Collect all splits from crossings and endpoint snaps
+    // 2. Collect all splits: geometric crossings, endpoint snaps, interior-node snaps.
     collect_crossing_splits(graph, edge_id, &candidates, &mut all_splits);
     collect_endpoint_snap_splits(graph, edge_id, &candidates, &mut all_splits);
+    collect_interior_node_splits(graph, edge_id, &candidates, &mut all_splits);
 
-    // 3. Apply splits to the graph and dependent systems
+    // 3. Emit per-split details before apply_splits consumes the map.
+    if crate::debug::is_traffic_enabled() {
+        let total_splits: usize = all_splits.values().map(|v| v.len()).sum();
+        crate::traffic_log!(
+            "[ROAD] place e{}: candidates={} splits={} elapsed={}µs",
+            edge_id,
+            candidates.len(),
+            total_splits,
+            t0.elapsed().as_micros()
+        );
+        for (&eid, splits) in &all_splits {
+            for &(factor, jid) in splits {
+                if jid < graph.node_count() as u32 {
+                    let p = graph.node(jid).pos;
+                    crate::traffic_log!(
+                        "[ROAD]   split e{} factor={:.3} junction=N{} ({:.1},{:.1})",
+                        eid,
+                        factor,
+                        jid,
+                        p.x,
+                        p.z
+                    );
+                }
+            }
+        }
+    }
+
+    // 4. Apply splits to the graph and dependent systems
     apply_splits(all_splits, network, graph, zoning, allocator);
 
     let dt_total_us = t0.elapsed().as_micros();
@@ -945,7 +1060,8 @@ mod tests {
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.85, // Pre-split frontage_t
                 side_offset: 1.0,
-                abandoned_timer: 0,
+                economy_dead_days: 0,
+                is_deserted: false,
                 edge_idx: edge_id,
                 side: 1,
                 cell_x: 8,
@@ -964,6 +1080,7 @@ mod tests {
                 shipment_cooldown_hours: 0,
                 pending_redevelopment: false,
                 rezone_grace_days_remaining: 0,
+                startup_reset_used: false,
             });
 
         // Split the road exactly at 50m (cell 5).

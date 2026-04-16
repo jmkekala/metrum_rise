@@ -366,6 +366,7 @@ impl TransitNetwork {
             self.cch_dirty_chunks.clear();
             self.metric_dirty = false; // Phase 1 includes customize
             self.flow_fields.mark_all_dirty();
+            log_road_connectivity(graph);
         } else if self.metric_dirty {
             // Metric-only change (Phase 2)
             self.cch_graph.customize(graph);
@@ -378,6 +379,16 @@ impl TransitNetwork {
         if !self.cch_dirty_chunks.is_empty() || self.metric_dirty {
             self.rebuild_pathing(graph);
         }
+    }
+
+    /// Builds the CCH from scratch and immediately runs the connectivity check.
+    ///
+    /// Use this in editor paths that call `CchGraph::build` directly rather than going
+    /// through `rebuild_pathing`. This ensures the `[ROAD_NET]` disconnection warning
+    /// fires on every structural road edit, not only during simulation ticks.
+    pub fn rebuild_cch_and_check(&mut self, graph: &RegionGraph) {
+        self.cch_graph = CchGraph::build(graph);
+        log_road_connectivity(graph);
     }
 
     /// Marks the chunk containing this world-space point as requiring CCH rebuild.
@@ -406,6 +417,101 @@ impl TransitNetwork {
 
         for &index in &to_remove {
             graph.edges[index].deleted = true;
+        }
+    }
+}
+
+/// Performs a BFS over car-accessible nodes and logs connected-component stats.
+///
+/// BFS connectivity check run after every CCH topology rebuild.
+///
+/// Disconnected components are always reported to stdout so they appear in any log
+/// regardless of which debug flags are active — a disconnected CCH is a P0 routing
+/// failure and must never be silently swallowed. The "fully connected" confirmation
+/// is kept behind `--debug traffic` (stderr) to avoid log noise in normal runs.
+fn log_road_connectivity(graph: &RegionGraph) {
+    use std::collections::{HashSet, VecDeque};
+
+    // Collect all canonical nodes that have at least one active car edge.
+    let mut car_nodes: HashSet<u32> = HashSet::new();
+    let mut total_car_edges = 0usize;
+    for edge in graph.edges() {
+        if edge.deleted || (edge.allowed_types & TransitFlags::CAR) == 0 {
+            continue;
+        }
+        total_car_edges += 1;
+        car_nodes.insert(graph.get_valid_node(edge.start_node));
+        car_nodes.insert(graph.get_valid_node(edge.end_node));
+    }
+
+    if car_nodes.is_empty() {
+        println!("[ROAD_NET] CCH rebuilt: no car-accessible edges");
+        return;
+    }
+
+    // BFS to identify connected components (treating each edge as undirected).
+    let mut visited: HashSet<u32> = HashSet::new();
+    let mut components: Vec<(usize, u32)> = Vec::new(); // (size, anchor_node)
+
+    for &start in &car_nodes {
+        if visited.contains(&start) {
+            continue;
+        }
+        let mut queue = VecDeque::new();
+        let mut size = 0usize;
+        queue.push_back(start);
+        visited.insert(start);
+        while let Some(node) = queue.pop_front() {
+            size += 1;
+            if (node as usize) < graph.node_adjacency_count() {
+                for &edge_idx in graph.node_adjacency(node) {
+                    let e = graph.edge(edge_idx);
+                    if e.deleted || (e.allowed_types & TransitFlags::CAR) == 0 {
+                        continue;
+                    }
+                    for &nb_raw in &[e.start_node, e.end_node] {
+                        let nb = graph.get_valid_node(nb_raw);
+                        if car_nodes.contains(&nb) && !visited.contains(&nb) {
+                            visited.insert(nb);
+                            queue.push_back(nb);
+                        }
+                    }
+                }
+            }
+        }
+        components.push((size, start));
+    }
+
+    let total_nodes = car_nodes.len();
+    let n_components = components.len();
+    // Sort largest component first.
+    components.sort_by(|a, b| b.0.cmp(&a.0));
+
+    if n_components == 1 {
+        println!(
+            "[ROAD_NET] CCH rebuilt: edges={} car_nodes={} → 1 component, fully connected ✓",
+            total_car_edges,
+            total_nodes
+        );
+    } else {
+        println!(
+            "[ROAD_NET] CCH rebuilt: edges={} car_nodes={} → {} DISCONNECTED components ← NET-01",
+            total_car_edges,
+            total_nodes,
+            n_components
+        );
+        for (idx, (size, anchor)) in components.iter().enumerate() {
+            let pos = graph.node(*anchor).pos;
+            let tag = if idx == 0 { "largest" } else { "ISOLATED" };
+            println!(
+                "[ROAD_NET]   component {}: {} nodes, anchor=N{} ({:.1},{:.1}) [{}]",
+                idx,
+                size,
+                anchor,
+                pos.x,
+                pos.z,
+                tag
+            );
         }
     }
 }

@@ -14,6 +14,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`demand.md`](demand.md) | Demand, growth pressure, and household admission/removal ownership. |
 | [`zoning.md`](zoning.md) | Zoning system spec. |
 | [`building_allocator.md`](building_allocator.md) | Building placement, removal, frontage attachment, and allocator ownership boundaries. |
+| [`buildings.md`](buildings.md) | Reserved for a future building type catalog. See `economy.md` and `demand.md` for current building specs. |
 | [`asset_editor.md`](asset_editor.md) | Asset-editor workflow and content contract. |
 | [`improved_roads.md`](improved_roads.md) | Road-renderer architecture notes. |
 

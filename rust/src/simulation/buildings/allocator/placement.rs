@@ -562,7 +562,9 @@ impl BuildingAllocator {
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
-            abandoned_timer: 0,
+            economy_dead_days: 0,
+            is_deserted: false,
+            startup_reset_used: false,
         });
         self.buildings.len() - 1
     }

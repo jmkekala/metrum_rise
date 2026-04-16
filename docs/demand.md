@@ -1300,6 +1300,29 @@ Interpretation:
   consumer demand, so a single large building covering 80% of demand still allows a second smaller
   one once demand grows enough
 
+#### Partial-Substitute Resource Extension
+
+When a candidate building produces a **partial-substitute resource** (e.g. `convenience_goods`
+produced by a Grocery Kiosk), the gate uses an adjusted consumer demand rather than the raw
+resident count. This prevents kiosk capacity from blocking grocery spawning while still
+limiting kiosk over-supply:
+
+```text
+effective_consumer_demand =
+    housed_resident_count
+    * consumption_rate_per_resident
+    * satisfaction_ratio   // 1.0 for primary resources, < 1.0 for partial substitutes
+
+output_absorption_gate_passes =
+    output_capacity_already_placed < effective_consumer_demand
+    OR effective_consumer_demand == 0
+```
+
+The `satisfaction_ratio` for each resource is authored in `RuntimeEconomyTuning` (see
+[`economy.md § Commercial Tiers`](economy.md#commercial-tiers-and-multi-resource-household-consumption)).
+For all current primary resources (`household_supplies`, `staple_food`, etc.) the ratio is
+implicitly `1.0` and no change in gate behavior occurs.
+
 #### Gate Interaction
 
 Both gates are evaluated independently for each candidate. A candidate that fails **either** gate
@@ -1313,6 +1336,263 @@ Residential note:
 - household admission decides whether new households enter the city
 - residential building spawn decides whether new housing capacity appears on the map
 - both should respond to residential demand, but each still uses its own owning-layer contract
+
+## Building Desertion
+
+A Commercial or Industrial building enters the **deserted** state when it has been
+economically dead for long enough that no self-rescue is possible. Deserted buildings are
+inert in all simulation systems, visually distinct, and remain on the map occupying their
+land until the player demolishes them or demand-system despawn pressure removes them.
+
+Residential buildings are excluded. Household emigration handles the equivalent residential
+lifecycle event.
+
+### Desertion Trigger
+
+Desertion is evaluated once per daily tick for every non-broken, non-economy-broken
+Commercial or Industrial building.
+
+Deterministic rule:
+
+```text
+insolvent =
+    operating_budget < profile.average_daily_wage()   // cannot pay even one worker for one day
+    OR (worker_count == 0 AND operating_budget < 13.0)
+    // "OR" covers the no-worker case where average_daily_wage may be 0
+
+deserted_conditions_hold =
+    startup_reset_used == true          // one-time bootstrap rescue already consumed
+    AND revenue == 0.0                  // no income this period
+    AND insolvent                       // cannot sustain any workers at current budget
+
+economy_dead_days update (daily, before is_deserted check):
+    if is_deserted:
+        no change                       // already terminal; counter frozen
+    else if deserted_conditions_hold:
+        economy_dead_days += 1
+    else:
+        economy_dead_days = 0           // any condition failing resets the streak
+
+is_deserted becomes true when:
+    economy_dead_days >= DESERTED_THRESHOLD_DAYS   // constant: 14
+```
+
+Where:
+
+- `startup_reset_used` is set by `ensure_building_startup_float` in `economy/households.rs` after
+  the one-time budget rescue fires; it is never reset
+- `profile.average_daily_wage()` is the wage declared in the bound economy profile; buildings
+  with no workers (utility nodes, warehouses) return 0.0 from this call, which is why the
+  fallback `worker_count == 0 AND operating_budget < 13.0` branch covers those cases
+- `revenue` is the building's lifetime gross-revenue field; it stays at `0.0` only for
+  buildings that have never completed a transaction since spawn or last restart
+- `DESERTED_THRESHOLD_DAYS = 14` — two weeks of unbroken economic death required before the
+  state transitions; any revenue receipt resets the streak to zero
+- `economy_dead_days` reuses the existing dead-code field `abandoned_timer: u32`, renamed;
+  it is persisted in the save schema so the streak survives reloads
+
+Interpretation:
+
+- a building with 5/5 workers and `operating_budget = 0.0` satisfies `insolvent` even though
+  `worker_count != 0`; workers present at a building that cannot pay them do not rescue it
+  from the desertion streak
+- a newly placed building that cannot attract workers exhausts its startup float, gets one
+  rescue from `ensure_building_startup_float`, exhausts it again, and then accumulates the
+  14-day streak before becoming deserted — total time from spawn to deserted is roughly
+  `2 × startup_runway_days + 14` (≈ 28 days at default tuning)
+- any revenue receipt (even a single unit sold) resets `economy_dead_days` to zero; the
+  building must be continuously insolvent and earningless for the full threshold period
+- `is_deserted` is a one-way latch; no in-simulation recovery path exists once set
+
+### Insolvent Employer Filter (Job Search)
+
+Workers must not seek employment at a building that demonstrably cannot pay wages. The
+current job-candidate evaluation scores on commute, income pressure, and stock pressure but
+has no solvency check — agents target zero-budget employers the same as healthy ones.
+
+Deterministic rule applied inside `assign_jobs` for each non-residential building candidate:
+
+```text
+insolvent_employer(building) =
+    revenue == 0.0
+    AND operating_budget < profile.average_daily_wage()
+
+job_candidate_eligible(building) =
+    NOT insolvent_employer(building)   // added gate
+    AND worker_capacity > 0
+    AND open_slots > 0
+    AND zone_type IN {Industrial, Commercial}
+```
+
+Where:
+
+- the same `profile.average_daily_wage()` value used in the desertion trigger is used here;
+  zero-wage buildings (utility nodes) are not filtered out by this check
+- `revenue == 0.0` is required alongside the budget check so that a newly funded building
+  with no revenue yet (days 1–7 of startup) is not incorrectly excluded during its wage
+  runway — a building burning its startup float legitimately has `revenue == 0` but a
+  positive `operating_budget`; the combined check allows new buildings through while
+  excluding buildings that have exhausted all capital
+
+Interaction with `JOB_UNPAID_ABANDON_DAYS`:
+
+The existing per-agent `consecutive_unpaid_days` escape hatch (after 3 unpaid days an agent
+may override their job lock) remains unchanged. The insolvent employer filter acts earlier —
+at the point where an agent without a current job searches for one — so agents never take an
+insolvent job in the first place. An agent already locked into an insolvent job still uses
+the existing 3-day escape.
+
+### Effects When Deserted
+
+All effects below apply only when `is_deserted == true`. The `broken` and `economy_broken`
+flags remain unmodified; desertion is a third orthogonal terminal state.
+
+**Worker capacity:**
+
+```text
+worker_capacity(building) =
+    0               if is_deserted
+    registry value  otherwise
+```
+
+A deserted building reports zero capacity to every caller. Agents evaluating job candidates
+see it as fully staffed and never target it for employment.
+
+**Economy IO (production and consumption):**
+
+```text
+run_building_economy skips building if:
+    broken OR economy_broken OR is_deserted
+```
+
+No inputs are consumed from inventory. No outputs are produced into inventory. The building's
+inventory contents are frozen at whatever level they held when desertion was reached.
+
+**Utility billing:**
+
+```text
+resolve_building_utilities skips building if:
+    broken OR economy_broken OR is_deserted
+```
+
+No utility charge is applied. `utility_service_available` is set to `false` for deserted
+buildings and is never flipped back.
+
+**Freight and OWA export:**
+
+```text
+freight_supplier_eligible(building) =
+    false   if broken OR economy_broken OR is_deserted
+    ...     otherwise (existing checks)
+
+owa_export_eligible(building) =
+    false   if is_deserted (in addition to existing broken / zone / utility checks)
+```
+
+A deserted building does not appear in supplier searches and is not offered to OWA freight
+runs. Inventory it holds is permanently stranded.
+
+**Output-Absorption Gate (`nonresidential_passes_absorption_gate`):**
+
+```text
+output_capacity_already_placed =
+    sum of base_rate_units_per_day for all existing buildings where:
+        NOT broken
+        AND NOT economy_broken
+        AND NOT is_deserted                 // ← added exclusion
+        AND outputs overlap candidate outputs
+```
+
+A deserted building is removed from `placed_capacity`. This directly unblocks the spawn of a
+replacement building when the only existing producer for a given resource has become deserted.
+
+**Despawn candidate priority:**
+
+```text
+despawn_candidate_eligible(building) =
+    true    if is_deserted AND worker_count == 0 AND occupancy == 0
+    ...     existing conditions otherwise
+
+despawn_candidate_order:
+    deserted buildings sorted before non-deserted buildings within each zone family
+```
+
+Deserted buildings are always first in line for demand-driven removal. When despawn pressure
+is positive they clear before healthy buildings downgrade.
+
+### Visual Representation
+
+The render pipeline uses `MultiMesh.TRANSFORM_3D` (12-float per-instance transform). This
+format carries no per-instance color channel, so deserted tinting requires a parallel
+MultiMesh with a material override rather than a buffer-format change.
+
+**Render group assignment (Rust, `nodes/sim/render/buildings.rs`):**
+
+```text
+render_group(building) =
+    "broken:error"      if broken
+    "deserted"          if is_deserted AND NOT broken
+    asset_id            otherwise
+```
+
+Add `get_deserted_building_transforms_for_asset_internal(asset_id: &str)` to `SimCore`:
+
+- iterates `allocator.buildings`
+- includes building if `is_deserted && !broken && asset_id == b.asset_id`
+- packs the same 12-float transform layout as the existing function
+
+Modify `get_building_transforms_for_asset_internal` to additionally skip buildings where
+`is_deserted == true` (deserted buildings must not appear in the live multimesh).
+
+**Godot side (`buildings.gd`):**
+
+```text
+deserted_multimeshes: Dictionary   // asset_id → MultiMeshInstance3D
+```
+
+`_setup_multimesh_for_asset(asset_id)` also calls `_setup_deserted_multimesh_for_asset(asset_id)`:
+
+- loads the same mesh as the live multimesh for this asset
+- applies a `StandardMaterial3D` override:
+    - `albedo_color = Color(0.45, 0.42, 0.38, 1.0)` — warm gray, slightly desaturated
+    - `shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL`
+    - no emission, no metallic boost
+- stores in `deserted_multimeshes[asset_id]`
+
+On each dirty frame, for every registered `asset_id`, also call
+`_update_deserted_multimesh(asset_id)` which queries
+`get_deserted_building_transforms_for_asset(asset_id)` and updates the deserted multimesh
+instance count and buffer.
+
+No new mesh assets are required. The same geometry renders with a gray material.
+
+### Recovery
+
+There is no in-simulation recovery path. `is_deserted` is a one-way latch.
+
+A deserted building:
+
+- occupies its land cells in the zoning grid, blocking new spawns at that location
+- is ineligible for upgrade or downgrade consideration
+- is not counted in `job_availability`, `utility_stab`, or `stock_stab` snapshots
+- is removed when the player demolishes it, or when the demand system's despawn pressure
+  selects it (deserted buildings are always first in the despawn queue)
+
+### Data Model
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `economy_dead_days: u32` | u32 | 0 | Renamed from dead-code `abandoned_timer`. Consecutive-day streak counter. Frozen once `is_deserted`. |
+| `is_deserted: bool` | bool | false | One-way latch. Set when `economy_dead_days >= DESERTED_THRESHOLD_DAYS`. |
+
+Both fields are persisted. Add to `save/world.rs` INSERT and SELECT with forward-compatible
+`ALTER TABLE buildings ADD COLUMN ... DEFAULT 0` migrations so older saves load cleanly.
+
+All construction sites that build a `Building` literal must initialise both fields:
+`economy_dead_days: 0, is_deserted: false`.
+
+Affected sites: `allocator/placement.rs`, `economy/demand.rs`, `economy/households.rs`,
+`economy/logistics.rs`, `network/topology.rs`, `grid/pollution.rs`, `save/world.rs`.
 
 ## Code Removal And Replacement Targets
 
@@ -1350,9 +1630,7 @@ The target end state is:
 
 ### Open Spec Gaps
 
-- none currently tracked inside `demand.md`; the baseline `v0.1` demand ownership, formulas,
-  household-action thresholds, budgets, startup support, and economy handoff are now specified closely enough for
-  implementation work to begin
+- **Building Desertion** — spec complete and implemented; see `§ Building Desertion` above
 
 ### Intentional `v0.1` Deferrals
 

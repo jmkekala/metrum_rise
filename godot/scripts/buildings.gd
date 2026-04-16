@@ -4,6 +4,7 @@
 ##   load_asset_packs(dir_path: String) -> String
 ##   get_registered_asset_ids() -> PackedStringArray
 ##   get_building_transforms_for_asset(asset_id: String) -> PackedFloat32Array
+##   get_deserted_building_transforms_for_asset(asset_id: String) -> PackedFloat32Array
 ##   get_building_plot_transforms(zone_id: int) -> PackedFloat32Array
 ##
 ## At startup, reads user://active_packs.cfg for the list of enabled pack IDs, then
@@ -11,6 +12,7 @@
 ## listed in the config are ignored. Rust parses the manifests; GDScript loads the
 ## corresponding mesh files and maintains one MultiMeshInstance3D per asset_id.
 ## Building transforms are polled every 30 frames.
+## A parallel deserted_multimeshes dict renders economically dead buildings in gray.
 extends Node3D
 
 const CFG_PATH := "user://active_packs.cfg"
@@ -20,6 +22,8 @@ const CFG_PATH := "user://active_packs.cfg"
 
 ## multimeshes[asset_id] = MultiMeshInstance3D
 var multimeshes: Dictionary = {}
+## deserted_multimeshes[asset_id] = MultiMeshInstance3D — gray material override for deserted state
+var deserted_multimeshes: Dictionary = {}
 ## foundation_multimeshes[zone_id] = MultiMeshInstance3D
 var foundation_multimeshes: Dictionary = {}
 
@@ -62,6 +66,8 @@ func update_all_buildings() -> void:
 	_rebuild_multimeshes()
 	for aid in multimeshes.keys():
 		_update_buildings_for_asset(aid)
+	for aid in deserted_multimeshes.keys():
+		_update_deserted_multimesh(aid)
 	for zone_id in ZONE_IDS:
 		_update_foundation(zone_id)
 
@@ -87,11 +93,33 @@ func _setup_multimesh_for_asset(asset_id: String) -> void:
 			mat.albedo_color = Color.MAGENTA
 			mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED # Glow!
 			mm.mesh.surface_set_material(0, mat)
-	
+
 	mmi.multimesh = mm
 	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
 	add_child(mmi)
 	multimeshes[asset_id] = mmi
+	# Deserted variant: same mesh geometry, warm gray material override.
+	if not is_broken:
+		_setup_deserted_multimesh_for_asset(asset_id, mesh)
+
+func _setup_deserted_multimesh_for_asset(asset_id: String, mesh: Mesh) -> void:
+	var mmi := MultiMeshInstance3D.new()
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.instance_count = 0
+	# Use the same mesh; if none loaded yet use the fallback (no special broken tint for deserted).
+	mm.mesh = mesh if mesh else _create_fallback_mesh()
+	var mat := StandardMaterial3D.new()
+	# Warm gray, slightly desaturated — visually distinct from the live color palette.
+	mat.albedo_color = Color(0.45, 0.42, 0.38, 1.0)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_PER_PIXEL
+	# material_override on the node, not surface_set_material on the mesh — avoids mutating
+	# the shared Mesh resource that the normal multimesh also references.
+	mmi.material_override = mat
+	mmi.multimesh = mm
+	mmi.gi_mode = GeometryInstance3D.GI_MODE_DYNAMIC
+	add_child(mmi)
+	deserted_multimeshes[asset_id] = mmi
 
 func _load_mesh_for_asset(asset_id: String) -> Mesh:
 	# Ask Rust for the native path to the LOD0 file for this asset.
@@ -219,6 +247,8 @@ func _process(_delta: float) -> void:
 		if zoning_overlay: zoning_overlay.mark_occupied_dirty()
 		for aid in multimeshes.keys():
 			_update_buildings_for_asset(aid)
+		for aid in deserted_multimeshes.keys():
+			_update_deserted_multimesh(aid)
 		for zone_id in ZONE_IDS:
 			_update_foundation(zone_id)
 
@@ -234,6 +264,16 @@ func _update_buildings_for_asset(asset_id: String) -> void:
 		return
 	var buffer: PackedFloat32Array = simulation_node.get_building_transforms_for_asset(asset_id)
 	var mmi: MultiMeshInstance3D = multimeshes[asset_id]
+	var count := buffer.size() / 12
+	mmi.multimesh.instance_count = count
+	if count > 0:
+		mmi.multimesh.buffer = buffer
+
+func _update_deserted_multimesh(asset_id: String) -> void:
+	if not deserted_multimeshes.has(asset_id):
+		return
+	var buffer: PackedFloat32Array = simulation_node.get_deserted_building_transforms_for_asset(asset_id)
+	var mmi: MultiMeshInstance3D = deserted_multimeshes[asset_id]
 	var count := buffer.size() / 12
 	mmi.multimesh.instance_count = count
 	if count > 0:

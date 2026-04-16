@@ -144,7 +144,10 @@ CREATE TABLE buildings(
     level INTEGER NOT NULL,
     broken INTEGER NOT NULL DEFAULT 0,
     pending_redevelopment INTEGER NOT NULL DEFAULT 0,
-    rezone_grace_days_remaining INTEGER NOT NULL DEFAULT 0
+    rezone_grace_days_remaining INTEGER NOT NULL DEFAULT 0,
+    startup_reset_used INTEGER NOT NULL DEFAULT 0,
+    economy_dead_days INTEGER NOT NULL DEFAULT 0,
+    is_deserted INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE building_inventories(
     building_id INTEGER NOT NULL,

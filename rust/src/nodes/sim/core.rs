@@ -883,6 +883,12 @@ pub fn run_sim_thread(
                             &c.transit_network.lane_system,
                         );
 
+                        // Rebuild CCH and run the connectivity check. This is the only
+                        // place the CCH is actually rebuilt for road placements — the
+                        // sim-tick path is gated on speed > 0.0 and would miss paused edits.
+                        c.transit_network.rebuild_cch_and_check(&c.region_graph);
+                        c.transit_network.cch_dirty_chunks.clear();
+
                         // Zone flush is deferred to the next simulate_tick_internal call
                         // so it does not block road placement. zoning_dirty_edges accumulates.
 

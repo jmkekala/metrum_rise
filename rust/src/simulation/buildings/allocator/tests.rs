@@ -223,7 +223,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
-    let households = HouseholdSystem::new();
+    let mut households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -264,6 +264,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         &graph,
         &network.lane_system,
     );
+    allocator.execute_demand_household_admission(2, &mut agents, &mut households); // Occupy buildings to protect from instant removal
 
     let residential_idx = allocator
         .buildings
@@ -315,7 +316,7 @@ fn test_zone_index_consistency() {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 0.0,
-            abandoned_timer: 0,
+            economy_dead_days: 0, is_deserted: false,
             edge_idx: 0,
             side: 1,
             cell_x: i,
@@ -337,7 +338,7 @@ fn test_zone_index_consistency() {
             utility_service_available: false,
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
-            rezone_grace_days_remaining: 0,
+            rezone_grace_days_remaining: 0, startup_reset_used: false,
         });
     }
     allocator.dirty_index = true;
@@ -396,7 +397,7 @@ fn test_vacancy_index_consistency() {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 0.0,
-            abandoned_timer: 0,
+            economy_dead_days: 0, is_deserted: false,
             edge_idx: 0,
             side: 1,
             cell_x: i,
@@ -414,7 +415,7 @@ fn test_vacancy_index_consistency() {
             utility_service_available: false,
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
-            rezone_grace_days_remaining: 0,
+            rezone_grace_days_remaining: 0, startup_reset_used: false,
         });
     }
     allocator.rebuild_zone_index();
@@ -900,7 +901,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
         side_offset: 1.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0, is_deserted: false,
         edge_idx: 0,
         side: 1,
         cell_x: 1,
@@ -918,7 +919,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         utility_service_available: false,
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
+        rezone_grace_days_remaining: 0, startup_reset_used: false,
     });
 
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -1013,7 +1014,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
         side_offset: 1.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0, is_deserted: false,
         edge_idx: 0,
         side: 1,
         cell_x: 1,
@@ -1031,7 +1032,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         utility_service_available: false,
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
+        rezone_grace_days_remaining: 0, startup_reset_used: false,
     });
 
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -1086,7 +1087,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.05,
         side_offset: 1.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0, is_deserted: false,
         edge_idx: 0,
         side: 1,
         cell_x: 0,
@@ -1104,7 +1105,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         utility_service_available: false,
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
+        rezone_grace_days_remaining: 0, startup_reset_used: false,
     });
     zoning.mark_occupied_rect(
         5.0,
@@ -1203,7 +1204,7 @@ fn test_immigration_claims_vacant_home() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.1,
         side_offset: 1.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0, is_deserted: false,
         edge_idx: edge_id,
         side: 1,
         cell_x: 0,
@@ -1221,7 +1222,7 @@ fn test_immigration_claims_vacant_home() {
         utility_service_available: false,
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
+        rezone_grace_days_remaining: 0, startup_reset_used: false,
     });
     allocator.rebuild_zone_index();
 
@@ -1265,8 +1266,8 @@ fn test_immigration_claims_vacant_home() {
     assert_eq!(households.households.len(), 1);
     assert_eq!(households.households[0].member_count, 2);
     assert_eq!(
-        allocator.buildings[0].occupancy, 2,
-        "Building occupancy should match the admitted household size"
+        allocator.buildings[0].occupancy, 1,
+        "Building occupancy should match the admitted household count (1)"
     );
 }
 
@@ -1312,14 +1313,15 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.1,
         side_offset: 1.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0,
+        is_deserted: false,
         edge_idx: edge_id,
         side: 1,
         cell_x: 0,
         cell_y: 0,
         occupancy: 2,
         worker_count: 0,
-        asset_id: residential_asset,
+        asset_id: residential_asset.clone(),
         level: 1,
         broken: false,
         economy_profile_runtime_id: 0,
@@ -1331,6 +1333,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
+        startup_reset_used: false,
     });
     allocator.buildings.push(Building {
         center_x: 40.0,
@@ -1342,7 +1345,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.4,
         side_offset: 1.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0, is_deserted: false,
         edge_idx: edge_id,
         side: 1,
         cell_x: 4,
@@ -1360,12 +1363,13 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         utility_service_available: true,
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
+        rezone_grace_days_remaining: 0, startup_reset_used: false,
     });
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();
 
-    let household_id = households.admit_immigrant_household(0, 2);
+    let catalog = load_runtime_economy_catalog().expect("catalog");
+    let household_id = households.admit_immigrant_household(&catalog, 0, 2);
     for _ in 0..2 {
         let idx = agents.spawn_housed_agent(0, 0.0, 0.0);
         agents.household_id[idx] = household_id;
@@ -1506,7 +1510,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
         side_offset: 1.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0, is_deserted: false,
         edge_idx: 0,
         side: 1,
         cell_x: 0,
@@ -1524,7 +1528,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         utility_service_available: true,
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
+        rezone_grace_days_remaining: 0, startup_reset_used: false,
     });
     allocator.buildings.push(Building {
         center_x: 0.0,
@@ -1536,7 +1540,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
         side_offset: 1.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0, is_deserted: false,
         edge_idx: 0,
         side: 1,
         cell_x: 2,
@@ -1554,7 +1558,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         utility_service_available: true,
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
+        rezone_grace_days_remaining: 0, startup_reset_used: false,
     });
     allocator.buildings.push(Building {
         center_x: 0.0,
@@ -1566,7 +1570,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
         side_offset: 1.0,
-        abandoned_timer: 0,
+        economy_dead_days: 0, is_deserted: false,
         edge_idx: 0,
         side: 1,
         cell_x: 4,
@@ -1584,7 +1588,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         utility_service_available: true,
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0,
+        rezone_grace_days_remaining: 0, startup_reset_used: false,
     });
     allocator
         .recompute_derived_transforms(&graph, &zoning)

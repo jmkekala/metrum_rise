@@ -7,6 +7,8 @@
 
 use std::collections::HashMap;
 
+use crate::debug_log;
+
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
 use crate::simulation::economy::definitions::{
     FreightTimingProfile, ResourceRuntimeId, RuntimeEconomyCatalog, RuntimeEconomyTuning,
@@ -21,6 +23,12 @@ use crate::simulation::network::types::NodeType;
 pub const SHIPMENT_SOURCE_LOCAL: u8 = 0;
 /// The shipment originates from an `OWA` border terminal.
 pub const SHIPMENT_SOURCE_OWA: u8 = 1;
+/// Sentinel value for `destination_building_id` on `OWA` export shipments.
+///
+/// When a shipment carries this as its destination, the goods are travelling from a local
+/// building to the `OWA` border terminal identified by `source_border_node`. On arrival the
+/// source building receives `total_cost` as revenue; no local building receives goods.
+pub const SHIPMENT_DEST_OWA: usize = usize::MAX;
 /// The assigned carrier is a local or border truck.
 pub const CARRIER_TRUCK: u8 = 0;
 /// Shipment is active and still travelling.
@@ -46,7 +54,8 @@ pub struct Shipment {
     pub source_kind: u8,
     /// Source building index for local shipments; `usize::MAX` for `OWA`.
     pub source_building_id: usize,
-    /// Border node used by `OWA` shipments; `u32::MAX` for local freight.
+    /// Border node used by `OWA` import shipments (source) and `OWA` export shipments
+    /// (destination); `u32::MAX` for purely local freight.
     pub source_border_node: u32,
     /// Destination building receiving the shipment.
     pub destination_building_id: usize,
@@ -133,6 +142,7 @@ impl ShipmentSystem {
         self.progress_shipments(allocator);
         self.decrement_building_cooldowns(allocator);
         self.create_profile_input_shipments(allocator, transit_network, graph, minute_of_day);
+        self.create_profile_output_exports(allocator, transit_network, graph);
         self.shipments
             .retain(|shipment| shipment.status == SHIPMENT_IN_TRANSIT);
     }
@@ -153,6 +163,36 @@ impl ShipmentSystem {
                 shipment.eta_hours -= 1;
             }
             if shipment.eta_hours > 0 {
+                continue;
+            }
+
+            // OWA export: goods travel from source building to border terminal; no local
+            // destination building receives them. Credit revenue to the source on arrival.
+            if shipment.destination_building_id == SHIPMENT_DEST_OWA {
+                let src_idx = shipment.source_building_id;
+                if src_idx < allocator.buildings.len()
+                    && allocator.buildings[src_idx].inventory_units(shipment.resource_runtime_id)
+                        >= shipment.amount
+                {
+                    allocator.buildings[src_idx]
+                        .remove_inventory_units(shipment.resource_runtime_id, shipment.amount);
+                    allocator.buildings[src_idx].revenue += shipment.total_cost;
+                    allocator.buildings[src_idx].operating_budget += shipment.total_cost;
+                    shipment.status = SHIPMENT_FULFILLED;
+
+                    debug_log!(
+                        "economy",
+                        "OWA export fulfilled index={} resource={} amount={:.1} revenue={:.1}",
+                        src_idx,
+                        catalog
+                            .resource_id_for_runtime_id(shipment.resource_runtime_id)
+                            .unwrap_or("unknown"),
+                        shipment.amount,
+                        shipment.total_cost
+                    );
+                } else {
+                    shipment.status = SHIPMENT_FAILED;
+                }
                 continue;
             }
 
@@ -325,7 +365,8 @@ impl ShipmentSystem {
 
                 let import_unit_price = catalog
                     .unit_price_for_resource(input_port.resource_runtime_id)
-                    .unwrap_or(profile.unit_price_currency);
+                    .unwrap_or(profile.unit_price_currency)
+                    * tuning.owa_import_price_multiplier.max(1.0);
                 if self.try_owa_fallback_for_resource(
                     dest_idx,
                     desired_amount,
@@ -388,7 +429,11 @@ impl ShipmentSystem {
                 continue;
             }
             let supplier = &allocator.buildings[candidate_idx];
-            if supplier.broken || supplier.economy_broken || !supplier.utility_service_available {
+            if supplier.broken
+                || supplier.economy_broken
+                || supplier.is_deserted
+                || !supplier.utility_service_available
+            {
                 continue;
             }
             let Some(supplier_profile) =
@@ -537,13 +582,149 @@ impl ShipmentSystem {
         true
     }
 
+    /// Creates outbound `OWA` export shipments for industrial buildings with surplus output.
+    ///
+    /// Triggered when a building's unreserved output inventory exceeds one day's production worth
+    /// of buffer. The export is priced at `local_unit_price × owa_export_price_multiplier`, which
+    /// is always below the local sale price, keeping the `OWA` a safety valve rather than the
+    /// primary revenue engine. Only industrial zone buildings may export; commercial buildings do
+    /// not export their outputs.
+    fn create_profile_output_exports(
+        &mut self,
+        allocator: &mut BuildingAllocator,
+        transit_network: &TransitNetwork,
+        graph: &RegionGraph,
+    ) {
+        let tuning = load_runtime_economy_tuning()
+            .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+        let resource_count = catalog.resource_count();
+        let border_nodes = connected_border_nodes(graph);
+        if border_nodes.is_empty() {
+            return;
+        }
+        let export_multiplier = tuning.owa_export_price_multiplier.clamp(0.0, 1.0);
+        let (reserved_outbound, .., border_job_counts) =
+            self.build_reservation_views(resource_count);
+
+        for src_idx in 0..allocator.buildings.len() {
+            let building = &allocator.buildings[src_idx];
+            if building.broken
+                || building.economy_broken
+                || building.edge_idx == usize::MAX
+                || building.shipment_cooldown_hours > 0
+                || !building.utility_service_available
+                || !matches!(building.zone_type, ZoneType::Industrial)
+            {
+                continue;
+            }
+            let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+            else {
+                continue;
+            };
+            if profile.outputs.is_empty() {
+                continue;
+            }
+
+            for output_port in &profile.outputs {
+                let Some(resource_slot) =
+                    reservation_slot(src_idx, output_port.resource_runtime_id, resource_count)
+                else {
+                    continue;
+                };
+                let reserved = reserved_outbound.get(resource_slot).copied().unwrap_or(0.0);
+                let current_inventory =
+                    allocator.buildings[src_idx].inventory_units(output_port.resource_runtime_id);
+                let unreserved = (current_inventory - reserved).max(0.0);
+
+                // Keep one day of production as a local buffer; export the rest.
+                let buffer = output_port.units_per_day;
+                if unreserved <= buffer {
+                    continue;
+                }
+                let export_amount = unreserved - buffer;
+
+                // Only export in meaningful batches.
+                if export_amount < profile.min_shipment_units {
+                    continue;
+                }
+
+                let local_price = catalog
+                    .unit_price_for_resource(output_port.resource_runtime_id)
+                    .unwrap_or(profile.unit_price_currency);
+                let export_unit_price = local_price * export_multiplier;
+                let total_revenue = export_amount * export_unit_price;
+
+                // Find the nearest border node with capacity.
+                let mut best_border = u32::MAX;
+                let mut best_eta = f32::MAX;
+                for &border_node in &border_nodes {
+                    if border_job_counts.get(&border_node).copied().unwrap_or(0)
+                        >= BORDER_ACTIVE_JOBS_PER_NODE
+                    {
+                        continue;
+                    }
+                    // Reuse the import ETA helper: travel time border↔building is symmetric.
+                    let Some(travel_seconds) = allocator.freight_car_eta_from_border_node(
+                        border_node,
+                        src_idx,
+                        transit_network,
+                        graph,
+                    ) else {
+                        continue;
+                    };
+                    if travel_seconds < best_eta {
+                        best_eta = travel_seconds;
+                        best_border = border_node;
+                    }
+                }
+                if best_border == u32::MAX {
+                    continue;
+                }
+
+                self.shipments.push(Shipment {
+                    resource_runtime_id: output_port.resource_runtime_id,
+                    amount: export_amount,
+                    source_kind: SHIPMENT_SOURCE_LOCAL,
+                    source_building_id: src_idx,
+                    // Repurposed as destination border node for OWA exports.
+                    source_border_node: best_border,
+                    destination_building_id: SHIPMENT_DEST_OWA,
+                    carrier_class: CARRIER_TRUCK,
+                    status: SHIPMENT_IN_TRANSIT,
+                    total_cost: total_revenue,
+                    eta_hours: eta_hours_from_travel_seconds(best_eta),
+                });
+
+                allocator.buildings[src_idx].shipment_cooldown_hours =
+                    tuning.operational_clock.shipment_retry_cooldown_hours;
+
+                debug_log!(
+                    "economy",
+                    "OWA export initiated index={} resource={} amount={:.1} revenue={:.1} eta={}h",
+                    src_idx,
+                    catalog
+                        .resource_id_for_runtime_id(output_port.resource_runtime_id)
+                        .unwrap_or("unknown"),
+                    export_amount,
+                    total_revenue,
+                    eta_hours_from_travel_seconds(best_eta)
+                );
+            }
+        }
+    }
+
     fn build_reservation_views(
         &self,
         resource_count: usize,
     ) -> (Vec<f32>, Vec<f32>, Vec<bool>, HashMap<u32, usize>) {
         let mut max_building = 0usize;
         for shipment in &self.shipments {
-            max_building = max_building.max(shipment.destination_building_id);
+            // Skip the OWA export sentinel; it is not a real building index.
+            if shipment.destination_building_id != SHIPMENT_DEST_OWA {
+                max_building = max_building.max(shipment.destination_building_id);
+            }
             if shipment.source_kind == SHIPMENT_SOURCE_LOCAL {
                 max_building = max_building.max(shipment.source_building_id);
             }
@@ -796,7 +977,8 @@ mod tests {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 1.0,
-            abandoned_timer: 0,
+            economy_dead_days: 0,
+            is_deserted: false,
             edge_idx,
             side: 1,
             cell_x: 0,
@@ -815,6 +997,7 @@ mod tests {
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
+            startup_reset_used: false,
         }
     }
 

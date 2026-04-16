@@ -23,7 +23,9 @@ impl SimCore {
                     continue;
                 }
             } else {
-                if b.broken || b.asset_id != asset_id {
+                // Skip broken buildings (handled by broken:error group) and deserted buildings
+                // (handled by the parallel deserted multimesh via get_deserted_building_transforms_for_asset_internal).
+                if b.broken || b.is_deserted || b.asset_id != asset_id {
                     continue;
                 }
             }
@@ -54,6 +56,74 @@ impl SimCore {
 
             // Pivot offset: centres the mesh over the lot cell and grounds it at Y=0.
             // Stored in model units; applied here in world space after scale+rotation.
+            let (po_x, po_y, po_z) = entry
+                .and_then(|e| e.manifest.pivot_offset)
+                .map(|[x, y, z]| (x, y, z))
+                .unwrap_or((0.0, 0.0, 0.0));
+            let tx = world_x + (b_xx * po_x + b_zx * po_z) * sx;
+            let ty = world_y + po_y * sy;
+            let tz = world_z + (b_xz * po_x + b_zz * po_z) * sz;
+
+            buffer.push(b_xx * sx);
+            buffer.push(0.0);
+            buffer.push(b_zx * sz);
+            buffer.push(tx);
+
+            buffer.push(0.0);
+            buffer.push(sy);
+            buffer.push(0.0);
+            buffer.push(ty);
+
+            buffer.push(b_xz * sx);
+            buffer.push(0.0);
+            buffer.push(b_zz * sz);
+            buffer.push(tz);
+        }
+
+        PackedFloat32Array::from_iter(buffer)
+    }
+
+    /// Returns the 12-float transforms for all deserted buildings with the given asset ID.
+    ///
+    /// Deserted buildings render in a parallel multimesh with a gray material override.
+    pub fn get_deserted_building_transforms_for_asset_internal(
+        &self,
+        asset_id: &str,
+    ) -> PackedFloat32Array {
+        let mut buffer = Vec::new();
+        let w = self.heightmap.width as f32;
+        let h = self.heightmap.height as f32;
+        let hw = (w - 1.0) * 0.5;
+        let hh = (h - 1.0) * 0.5;
+
+        for b in &self.allocator.buildings {
+            if b.broken || !b.is_deserted || b.asset_id != asset_id {
+                continue;
+            }
+
+            let world_x = b.center_x;
+            let world_z = b.center_y;
+
+            let grid_x = b.center_x + hw;
+            let grid_y = b.center_y + hh;
+            let safe_gx = grid_x.round().clamp(0.0, w - 1.0) as usize;
+            let safe_gy = grid_y.round().clamp(0.0, h - 1.0) as usize;
+
+            let world_y = self.heightmap.get_height(safe_gx, safe_gy) * 20.0;
+
+            let fd = b.facing_dir.normalized();
+            let b_zx = fd.x;
+            let b_zz = fd.y;
+            let b_xx = fd.y;
+            let b_xz = -fd.x;
+
+            let entry = self.allocator.registry.get(asset_id);
+            let s = entry
+                .and_then(|e| e.manifest.building.as_ref())
+                .and_then(|b| b.preview_scale)
+                .unwrap_or(crate::config::BUILDING_VISUAL_SCALE);
+            let (sx, sy, sz) = (s, s, s);
+
             let (po_x, po_y, po_z) = entry
                 .and_then(|e| e.manifest.pivot_offset)
                 .map(|[x, y, z]| (x, y, z))

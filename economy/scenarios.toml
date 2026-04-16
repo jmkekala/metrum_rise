@@ -25,16 +25,16 @@ ref_kind = "profile"
 ref_id = "grocery_basic"
 position = [
     484.0,
-    185.0,
+    184.0,
 ]
 
 [[scenarios.nodes]]
 id = "households"
 ref_kind = "profile"
-ref_id = "household_demand_sink"
+ref_id = "basic_household_demand"
 position = [
     820.0,
-    180.0,
+    179.0,
 ]
 
 [[scenarios.nodes]]
