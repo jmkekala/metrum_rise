@@ -386,11 +386,11 @@ impl DemandSystem {
         let service_gate =
             snapshot.utility_service_stability * snapshot.external_connection_available;
 
+        // Residential demand: people move to a city that has housing need, is affordable,
+        // and is connected to the outside world. Job availability drives upgrade pressure
+        // once the city is established, but is not required for initial settlement.
         let base_residential = clamp01(
-            housing_shortage
-                * snapshot.job_availability
-                * snapshot.household_affordability
-                * service_gate,
+            housing_shortage * snapshot.household_affordability * service_gate,
         );
         let base_commercial = clamp01(
             snapshot.resident_presence
@@ -398,27 +398,25 @@ impl DemandSystem {
                 * snapshot.household_affordability
                 * service_gate,
         );
-        let base_industrial = clamp01(snapshot.resident_presence * goods_shortage * service_gate);
+        // Industrial demand: driven by how much of the commercial supply chain is
+        // uncovered by local industrial production. Decoupled from goods_shortage so
+        // OWA fallback for commercial inputs does not suppress farm spawning.
+        let base_industrial = clamp01(
+            snapshot.resident_presence * snapshot.commercial_input_deficit * service_gate,
+        );
 
-        let pioneer_demand = 0.70 * snapshot.external_connection_available;
-
-        self.residential = base_residential.max(pioneer_demand);
+        self.residential = base_residential;
         self.commercial = base_commercial;
         self.industrial = base_industrial;
 
-        let city_stability_factor = snapshot
-            .household_stock_stability
-            .min(snapshot.utility_service_stability)
-            // During startup the supply chain may not be running yet, so stock
-            // stability can collapse to zero and freeze admission entirely.
-            // Floor at startup_support_factor so the bootstrap phase can still
-            // admit households before the first production chain is operational.
-            .max(pioneer_demand);
+        // Admission stability is gated on utility health only. Stock stability collapsing
+        // at startup (before the first supply chain is operational) should not prevent
+        // households from moving in — it should create removal pressure instead.
+        let city_stability_factor = snapshot.utility_service_stability;
         let admission_pressure = clamp01(
             self.config.household_action.base_inflow
                 * snapshot.external_connection_available
                 * snapshot.housing_availability
-                * snapshot.job_availability.max(pioneer_demand)
                 * city_stability_factor,
         );
         self.households_to_admit_today = advance_household_action_credit(
@@ -430,9 +428,11 @@ impl DemandSystem {
         );
 
         let job_failure = 1.0 - snapshot.job_availability;
-        let city_instability = 1.0 - city_stability_factor;
+        let stock_shortage = 1.0 - snapshot.household_stock_stability;
         let removal_pressure = clamp01(
-            snapshot.unhoused_household_ratio * 0.50 + job_failure * 0.25 + city_instability * 0.25,
+            snapshot.unhoused_household_ratio * 0.50
+                + job_failure * 0.25
+                + stock_shortage * 0.25,
         );
         self.households_to_remove_today = advance_household_action_credit(
             &mut self.removal_action_credit,
@@ -472,7 +472,11 @@ impl DemandSystem {
                 .sum::<f32>();
             let spawn_limit = match zone_type {
                 ZoneType::Residential => housing_shortage.powi(2),
-                _ => snapshot.resident_presence,
+                // Commercial and industrial are not gated by current population so
+                // they can bootstrap before the city is large. Without this, the
+                // first grocery store takes 20+ days to accumulate a single credit
+                // because resident_presence ≈ 0.05 at early game.
+                _ => 1.0,
             };
 
             let spawn_budget_units = normalized_spawn_pressure
@@ -489,12 +493,11 @@ impl DemandSystem {
             );
             debug_log!(
                 "spawn",
-                "daily_pass zone={:?}: pressure={:.3} pioneer={:.3} \
+                "daily_pass zone={:?}: pressure={:.3} \
                  candidates={} norm_pressure={:.3} spawn_limit={:.3} \
                  budget_units={:.3} spawns_today={}",
                 zone_type,
                 growth_pressure,
-                pioneer_demand, // kept for residential; 0.0 for commercial/industrial
                 spawn_candidates.len(),
                 normalized_spawn_pressure,
                 spawn_limit,
@@ -1491,6 +1494,11 @@ struct DailyDemandSnapshot {
     household_stock_stability: f32,
     utility_service_stability: f32,
     external_connection_available: f32,
+    /// Fraction of commercial buildings that lack a corresponding local industrial
+    /// (input) supplier. 1.0 = no farms at all; 0.0 = full local coverage.
+    /// Drives industrial spawning independently of household goods_shortage so
+    /// OWA fallback for commercial inputs does not suppress the signal.
+    commercial_input_deficit: f32,
     // Raw counts needed for non-residential spawn gates.
     housed_resident_count: u32,
 }
@@ -1510,6 +1518,8 @@ impl DailyDemandSnapshot {
         let mut existing_private_building_count = 0_u32;
         let mut utility_service_consumer_count = 0_u32;
         let mut utility_service_satisfied_count = 0_u32;
+        let mut active_commercial_count = 0_u32;
+        let mut active_industrial_count = 0_u32;
 
         for (idx, building) in allocator.buildings.iter().enumerate() {
             if building.broken || building.economy_broken {
@@ -1548,6 +1558,13 @@ impl DailyDemandSnapshot {
                 if !building.is_deserted {
                     utility_service_satisfied_count =
                         utility_service_satisfied_count.saturating_add(1);
+                    // Count active (non-deserted) commercial and industrial buildings
+                    // separately for the industrial supply-chain deficit signal.
+                    if matches!(building.zone_type, ZoneType::Commercial) {
+                        active_commercial_count = active_commercial_count.saturating_add(1);
+                    } else {
+                        active_industrial_count = active_industrial_count.saturating_add(1);
+                    }
                 }
             }
         }
@@ -1645,11 +1662,23 @@ impl DailyDemandSnapshot {
             clamp01(unhoused_household_count as f32 / total_household_count as f32)
         };
 
+        // Fraction of commercial buildings that are not matched by a local industrial
+        // supplier. Used to drive industrial spawning independently of household
+        // goods_shortage (which OWA fallback suppresses after initial settlement).
+        let commercial_input_deficit = if active_commercial_count == 0 {
+            0.0
+        } else {
+            clamp01(
+                1.0 - active_industrial_count as f32 / active_commercial_count as f32,
+            )
+        };
+
         debug_log!(
             "spawn",
             "daily_snapshot: border_nodes={} ext_conn={:.0} housing_avail={:.2} \
              resident_presence={:.2} job_avail={:.2} utility_stab={:.2} \
-             stock_stab={:.2} afford={:.2} private_buildings={} filled_jobs={}",
+             stock_stab={:.2} afford={:.2} ind_deficit={:.2} \
+             private_buildings={} filled_jobs={}",
             connected_border_count,
             external_connection_available,
             housing_availability,
@@ -1658,6 +1687,7 @@ impl DailyDemandSnapshot {
             utility_service_stability,
             household_stock_stability,
             household_affordability,
+            commercial_input_deficit,
             existing_private_building_count,
             filled_job_slots,
         );
@@ -1673,6 +1703,7 @@ impl DailyDemandSnapshot {
             household_stock_stability,
             utility_service_stability,
             external_connection_available,
+            commercial_input_deficit,
             housed_resident_count,
         }
     }
@@ -1972,15 +2003,12 @@ mod tests {
     #[test]
     fn daily_pass_raises_commercial_and_industrial_pressure_on_shortages() {
         let mut allocator = BuildingAllocator::new();
-        let industrial_asset =
-            register_test_asset(&mut allocator, "industrial", ZoneType::Industrial);
         let commercial_asset =
             register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
         let residential_asset =
             register_test_asset(&mut allocator, "residential", ZoneType::Residential);
-        allocator
-            .buildings
-            .push(building(ZoneType::Industrial, 20.0, 0, 1, industrial_asset));
+        // No industrial building: commercial_input_deficit = 1.0, so industrial
+        // pressure is raised by the supply-chain gap signal.
         allocator
             .buildings
             .push(building(ZoneType::Commercial, 80.0, 0, 1, commercial_asset));
@@ -1994,9 +2022,10 @@ mod tests {
         ));
 
         let mut households = HouseholdSystem::new();
+        // home_building_id=1 (residential is now at index 1 after commercial at 0)
         households
             .households
-            .push(housed_household(2, 2, 120.0, 0.25));
+            .push(housed_household(1, 2, 120.0, 0.25));
 
         let graph = graph_with_connected_border();
         let zoning = empty_zoning();

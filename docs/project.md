@@ -16,8 +16,8 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 - **Zoning and building allocation**: world-space zoning grid, occupancy tracking, roadside building placement, vacancy indexing, and no-build edge flags are live. See [`zoning.md`](zoning.md) and [`building_allocator.md`](building_allocator.md).
 - **Entrance-aware movement**: the building entrance/exit rewrite is implemented through the exact-plan system described in [`entrance_and_exit.md`](entrance_and_exit.md), including the Phase 1–6 and Phase 8 slices already verified against the live code.
 - **Benchmark coverage**: the Criterion suite now measures the live access phases through `ACCESS_EGRESS` and `ACCESS_INGRESS` in addition to pure `NETWORK` and idle scaling. Treat comparisons against older benchmark runs as a fresh baseline unless the benchmark shape is identical.
-- **Economy foundation**: household records, building-centric daily economy, freight jobs, `OWA` fallback, and exact entrance-side freight ETA are live. See [`economy.md`](economy.md).
-- **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure through a strictly agent-driven model. The legacy startup system has been replaced with organic pioneer growth floors. See [`demand.md`](demand.md).
+- **Economy foundation**: household records, building-centric daily economy, freight jobs, `OWA` fallback, exact entrance-side freight ETA, unemployment benefit disbursement, and two-day building bankruptcy are all live. See [`economy.md`](economy.md).
+- **Demand foundation**: the live `DemandSystem` now fully owns immigration and building growth pressure through a strictly organic model. The pioneer demand floor has been removed entirely — unemployment benefit provides early-city solvency instead. Industrial demand is now driven by `commercial_input_deficit` rather than `goods_shortage`. See [`demand.md`](demand.md).
 - **Persistence and runtime**: SQLite save/load, background simulation thread, render snapshots, debug flags, asset editor, and economy editor are live.
 
 ## Current Priorities
@@ -58,6 +58,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `README.md` now serves as the docs index and ownership map.
 - The legacy numbered backlog and bug table were preserved in the archive rather than kept half-live in the dashboard.
 - `rust/benches/agent_benchmark.rs` now includes access-phase microbenchmarks for `ACCESS_EGRESS` and `ACCESS_INGRESS`, so old Criterion result history is no longer strictly apples-to-apples with the updated suite.
+- **Pioneer demand floor removed**: the static 0.70 floor on `ResidentialGrowth`, `CommercialGrowth`, and admission pressure has been removed from `demand.rs`. Unemployment benefit now provides early-city bootstrap solvency through real economic activity.
+- **Demand formula changes**: `ResidentialGrowth` no longer gates on `job_availability` (people can settle before jobs exist). `IndustrialGrowth` now uses `commercial_input_deficit` instead of `goods_shortage` to avoid OWA-suppression of farm spawning. `NonResidentialSpawnLimit` changed from `resident_presence` to `1.0` to break the commercial/industrial bootstrap deadlock.
+- **Unemployment benefit live**: `pay_unemployment_benefits` implemented in `households.rs`, tuning in `economy/profiles.toml` (`15.0/member/day`, 30-day max).
+- **Building bankruptcy live**: two-day `budget_distress` check implemented in `households.rs`, `budget_distress: bool` persisted in SQLite schema.
 
 ## Reference
 

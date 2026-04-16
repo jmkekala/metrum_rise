@@ -2061,11 +2061,15 @@ Goal: finish with one coherent economy model instead of a mix of prototype and a
 
 ## Unemployment Benefit
 
-The unemployment benefit is a **household-level cash disbursement** paid to every unemployed member of an eligible household each operational day. It replaces the `pioneer_demand` floor (see [Pioneer Phase → Issue 5](#5-the-starving-pioneer-glue-low-emigration)) as the mechanism that keeps households solvent during the early city bootstrap phase. Unlike the Pioneer floor, the benefit is a real simulation mechanism: money flows through the economy, stimulates real consumption demand, and generates real spawn pressure on commercial and industrial buildings.
+**Status: implemented.** The unemployment benefit is live in `households.rs`. All tuning parameters
+are in `economy/profiles.toml` under `runtime_tuning`. The pioneer demand floor has been fully
+removed from `demand.rs` — the benefit is the replacement and is active.
+
+The unemployment benefit is a **household-level cash disbursement** paid to every unemployed member of an eligible household each operational day. It replaced the `pioneer_demand` floor as the mechanism that keeps households solvent during the early city bootstrap phase. Unlike the Pioneer floor, the benefit is a real simulation mechanism: money flows through the economy, stimulates real consumption demand, and generates real spawn pressure on commercial and industrial buildings.
 
 ### Ownership
 
-This section owns the unemployment benefit spec. `demand.md` owns the Pioneer floor and the conditions under which it can be retired. `households.rs` owns the runtime disbursement implementation. `nodes/sim/core.rs` owns the `CityTreasury` struct and its starting balance constant.
+This section owns the unemployment benefit spec. `demand.md` documents the (now removed) Pioneer floor. `households.rs` owns the runtime disbursement implementation. `nodes/sim/core.rs` owns the `CityTreasury` struct; starting balance is authored in `economy/profiles.toml`.
 
 ### Design Invariants
 
@@ -2079,12 +2083,14 @@ This section owns the unemployment benefit spec. `demand.md` owns the Pioneer fl
 
 `CityTreasury` already exists in `nodes/sim/core.rs` and is fully implemented:
 
-- **Starting balance**: `STARTUP_TREASURY_BALANCE = 100_000` currency units at map start.
-- **Current deductions**: road build cost ($100/meter) and daily road upkeep ($0.1/meter/day).
+- **Starting balance**: `startup_treasury_balance = 100_000` authored in `economy/profiles.toml` `[runtime_tuning]`.
+- **Current deductions**: road build cost ($100/meter) and daily road upkeep ($0.1/meter/day); unemployment benefit disbursements.
 - **Persisted**: saved and loaded via the `city_treasury` SQLite table.
 - **Exposed**: `get_treasury_balance()` GDScript bridge already exists.
 
-Unemployment benefit disbursements draw from the same `treasury.balance`. No new treasury infrastructure is required — only the disbursement connection from `HouseholdSystem` to `CityTreasury` is missing.
+Unemployment benefit disbursements draw from the same `treasury.balance`. The disbursement
+connection from `HouseholdSystem` to `CityTreasury` is live (`pay_unemployment_benefits` called
+from `daily_settlement_tick`).
 
 The treasury balance may go negative (existing behavior). Disbursement should be skipped once the balance reaches zero to avoid deepening deficit spending for welfare.
 
@@ -2145,28 +2151,30 @@ The Pioneer demand floor (`pioneer_demand = 0.70`) currently exists because `sto
 4. More groceries need supply → industrial spawn pressure rises.
 5. Industrial buildings hire workers → households exit unemployment → benefit drain slows.
 
-Once the unemployment benefit is implemented and tuned so that `stock_stab` and `afford` reach values comparable to what the Pioneer floor was artificially holding them at, the `pioneer_demand` non-residential floor **must** be set to `0.0` and the bootstrap boost logic removed from `demand.rs`. The benefit is the replacement, not a supplement.
+The pioneer demand floor has been removed from `demand.rs`. The unemployment benefit is the
+replacement and is now the sole bootstrap mechanism.
 
-### Migration Path
+### Shipped Tuning
 
-The `CityTreasury` infrastructure is already complete. Remaining implementation steps:
+Live values in `economy/profiles.toml` `[runtime_tuning]`:
 
-1. Add `startup_treasury_balance: f64`, `unemployment_daily_benefit_per_member: f32`, and `unemployment_max_days: u32` to `RuntimeEconomyTuning` in `definitions.rs`. Remove the `STARTUP_TREASURY_BALANCE` constant from `nodes/sim/core.rs` and read the value from the loaded tuning instead.
-2. Add `unemployment_days_elapsed: u32` to `Household` struct in `households.rs` (and save/load schema).
-3. Add a `pay_unemployment_benefits` method to `HouseholdSystem`. It takes a `&mut CityTreasury` and iterates all eligible households per the Disbursement Rule above.
-4. Call `pay_unemployment_benefits` from `daily_settlement_tick` in `SimCore`, after `pay_daily_wages`. Pass `&mut self.treasury`.
-5. Observe `stock_stab` and `afford` in the daily snapshot log over a 30-day fresh-map run. Tune `unemployment_daily_benefit_per_member` until those metrics reach 0.50–0.70 organically.
-6. Set `pioneer_demand` non-residential to `0.0` and remove the bootstrap boost from `demand.rs`.
-7. Verify that commercial/industrial buildings still spawn at a reasonable rate on an empty map without the floor.
-8. Remove the 'pioneer_demand' system entirely. It is now considered as legacy system.
+| Parameter | Value | Role |
+|---|---|---|
+| `startup_treasury_balance` | 100,000 | Total treasury at map start |
+| `unemployment_daily_benefit_per_member` | 15.0 | Currency paid per unemployed member per day |
+| `unemployment_max_days` | 30 | Days before unemployed household becomes emigration-eligible |
 
 ## Building Bankruptcy
+
+**Status: implemented.** The two-day `budget_distress` bankruptcy check is live in `households.rs`
+(`run_bankruptcy_check`, `daily_settlement` four-step sequence). `budget_distress: bool` is
+persisted in the SQLite schema and loaded by `world.rs`.
 
 This section is the authoritative spec for how commercial, industrial, and utility buildings manage
 their operating budget, pay obligations, and enter bankruptcy. The previous system used an hourly
 utility gate (`utility_service_available`) that permanently froze any building whose budget dipped
 below a single hourly charge — see ECON-01 in the Current Simulation Status section for the
-incident record. This spec replaces that system entirely.
+incident record. This spec replaced that system entirely.
 
 ### Operating Budget
 
@@ -2496,9 +2504,8 @@ Residential is less sensitive because its `spawn_limit` is bounded by `housing_s
 Remaining open items for the pioneer phase:
 - **Dynamic Wage Scaling**: Allow buildings to pay partial wages from available budget instead of stopping at the first worker the budget cannot cover.
 - **Liquidation Logic**: Implement an "Economic Death" trigger — despawn a business that stays at $0 budget for a sustained period even when demand pressure is high (Ghost Business problem, issue #4 above).
-- **Selective Emigration Pressure**: De-couple `pioneer_demand` floor from the removal/instability signal so starving households can emigrate (issue #5 above).
-- **Household bootstrap gap**: The 2–3 day starvation window (days 4–7, between starting-stock depletion and first wages) is the remaining residual from issue #2. Resolved by the unemployment benefit once implemented — see [Unemployment Benefit](#unemployment-benefit).
-- **Pioneer Floor Retirement**: Once the unemployment benefit is implemented and tuned, set `pioneer_demand` non-residential to `0.0` and remove the bootstrap boost. See the migration path in [Unemployment Benefit § Migration Path](#migration-path).
+- **Household bootstrap gap**: The 2–3 day starvation window (days 4–7, between starting-stock depletion and first wages) is the remaining residual from issue #2. Resolved by the unemployment benefit — see [Unemployment Benefit](#unemployment-benefit).
+- **Pioneer Floor Retirement**: ~~Done.~~ Pioneer demand floor removed from `demand.rs`; unemployment benefit is the replacement and is live.
 
 
 
