@@ -48,9 +48,8 @@ use godot::classes::{INode3D, Node3D};
 use godot::prelude::*;
 
 use crate::config;
-use crate::nodes::sim::core::{
-    CityTreasury, RenderSnapshot, SimCommand, SimCore, STARTUP_TREASURY_BALANCE, run_sim_thread,
-};
+use crate::nodes::sim::core::{CityTreasury, RenderSnapshot, SimCommand, SimCore, run_sim_thread};
+use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -1270,7 +1269,11 @@ impl INode3D for SimulationNode {
             households: HouseholdSystem::new(),
             logistics: ShipmentSystem::new(),
             config,
-            treasury: CityTreasury::new(STARTUP_TREASURY_BALANCE),
+            treasury: CityTreasury::new(
+                load_runtime_economy_tuning()
+                    .map(|t| t.startup_treasury_balance)
+                    .unwrap_or(100_000.0),
+            ),
             undo_stack: VecDeque::new(),
             terrain_dirty: true,
             water_dirty: true,

@@ -144,6 +144,15 @@ pub(crate) struct RuntimeEconomyTuning {
     /// keeping the OWA as a safety-valve rather than a primary revenue source. Must be in
     /// `[0.0, 1.0]`; values outside this range are rejected at validation time.
     pub owa_export_price_multiplier: f32,
+    /// Starting city treasury balance at new-game creation.
+    /// Migrated from the `STARTUP_TREASURY_BALANCE` Rust constant to make it tunable per-profile.
+    pub startup_treasury_balance: f64,
+    /// Currency paid per unemployed household member per day from the city treasury.
+    /// Must cover at least one day's household supply cost to generate real purchase activity.
+    pub unemployment_daily_benefit_per_member: f32,
+    /// Days a household may receive unemployment benefit before becoming emigration-eligible.
+    /// Prevents infinite treasury drain when no jobs exist in the city.
+    pub unemployment_max_days: u32,
 }
 
 /// Shared operational-clock tuning used by labor, replenishment, and freight.
@@ -447,6 +456,9 @@ impl Default for RuntimeEconomyTuning {
             viability: BuildingViabilityRuntimeTuning::default(),
             owa_import_price_multiplier: 1.5,
             owa_export_price_multiplier: 0.6,
+            startup_treasury_balance: 100_000.0,
+            unemployment_daily_benefit_per_member: 15.0,
+            unemployment_max_days: 30,
         }
     }
 }

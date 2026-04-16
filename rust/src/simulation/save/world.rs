@@ -167,7 +167,7 @@ pub(super) fn save_world(
             inventory_stmt.execute(params![saved_bid_db, i64::from(slot as u16 + 1), *amount])?;
         }
     }
-    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_hours, stay_failure_days, replenishment_offset_hours) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)")?;
+    let mut household_stmt = tx.prepare("INSERT INTO households(household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_hours, stay_failure_days, replenishment_offset_hours, unemployment_days_elapsed) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)")?;
     for (hid, household) in households.households.iter().enumerate() {
         household_stmt.execute(params![
             usize_to_i64(hid)?,
@@ -185,6 +185,7 @@ pub(super) fn save_world(
             i64::from(household.pickup_eta_hours),
             i64::from(household.stay_failure_days),
             i64::from(household.replenishment_offset_hours),
+            i64::from(household.unemployment_days_elapsed),
         ])?;
     }
 
@@ -362,7 +363,7 @@ pub(super) fn load_buildings(
 
 pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSystem> {
     let mut households = HouseholdSystem::new();
-    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_hours, stay_failure_days, replenishment_offset_hours FROM households ORDER BY household_id")?;
+    let mut stmt = conn.prepare("SELECT household_id, home_building, budget, stock, member_count, consumption_rate, stock_days, replenishment_state, cooldown_hours, reserved_store_building_id, reserved_amount, reserved_total_cost, pickup_eta_hours, stay_failure_days, replenishment_offset_hours, unemployment_days_elapsed FROM households ORDER BY household_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let hid = i64_to_usize(row.get(0)?)?;
@@ -384,6 +385,7 @@ pub(super) fn load_households(conn: &Connection) -> SaveLoadResult<HouseholdSyst
             pickup_eta_hours: i64_to_u16(row.get(12)?)?,
             stay_failure_days: i64_to_u32(row.get(13)?)?,
             replenishment_offset_hours: i64_to_u16(row.get(14)?)?,
+            unemployment_days_elapsed: i64_to_u32(row.get(15)?)?,
         });
     }
     Ok(households)

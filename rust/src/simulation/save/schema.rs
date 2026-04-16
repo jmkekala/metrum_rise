@@ -168,7 +168,8 @@ CREATE TABLE households(
     reserved_total_cost REAL NOT NULL,
     pickup_eta_hours INTEGER NOT NULL,
     stay_failure_days INTEGER NOT NULL,
-    replenishment_offset_hours INTEGER NOT NULL
+    replenishment_offset_hours INTEGER NOT NULL,
+    unemployment_days_elapsed INTEGER NOT NULL
 );
 CREATE TABLE city_treasury(
     balance REAL NOT NULL,

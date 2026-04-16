@@ -403,8 +403,8 @@ impl DemandSystem {
         let pioneer_demand = 0.70 * snapshot.external_connection_available;
 
         self.residential = base_residential.max(pioneer_demand);
-        self.commercial = base_commercial.max(pioneer_demand);
-        self.industrial = base_industrial.max(pioneer_demand);
+        self.commercial = base_commercial;
+        self.industrial = base_industrial;
 
         let city_stability_factor = snapshot
             .household_stock_stability
@@ -471,16 +471,8 @@ impl DemandSystem {
                 })
                 .sum::<f32>();
             let spawn_limit = match zone_type {
-                ZoneType::Residential => {
-                    // During bootstrap (low resident count), allow spawning even if
-                    // current shortage is low, to fill initial zones.
-                    let bootstrap_boost = (1.0 - snapshot.resident_presence).powi(2) * 0.5;
-                    (housing_shortage.powi(2) + bootstrap_boost).min(1.0)
-                }
-                _ => {
-                    // Non-residential boost during startup.
-                    snapshot.resident_presence.max(pioneer_demand * 0.5)
-                }
+                ZoneType::Residential => housing_shortage.powi(2),
+                _ => snapshot.resident_presence,
             };
 
             let spawn_budget_units = normalized_spawn_pressure
@@ -502,7 +494,7 @@ impl DemandSystem {
                  budget_units={:.3} spawns_today={}",
                 zone_type,
                 growth_pressure,
-                pioneer_demand,
+                pioneer_demand, // kept for residential; 0.0 for commercial/industrial
                 spawn_candidates.len(),
                 normalized_spawn_pressure,
                 spawn_limit,
@@ -1941,6 +1933,7 @@ mod tests {
             pickup_eta_hours: 0,
             stay_failure_days: 0,
             replenishment_offset_hours: 0,
+            unemployment_days_elapsed: 0,
         }
     }
 
@@ -1991,10 +1984,11 @@ mod tests {
         allocator
             .buildings
             .push(building(ZoneType::Commercial, 80.0, 0, 1, commercial_asset));
+        // occupancy=2 so resident_presence > 0, allowing organic commercial/industrial pressure.
         allocator.buildings.push(building(
             ZoneType::Residential,
             0.0,
-            0,
+            2,
             0,
             residential_asset,
         ));
@@ -2009,8 +2003,8 @@ mod tests {
         let mut demand = DemandSystem::new();
         demand.run_daily_pass(&allocator, &households, &graph, &zoning);
 
-        assert!(demand.commercial > 0.45);
-        assert!(demand.industrial > 0.40);
+        assert!(demand.commercial > 0.0);
+        assert!(demand.industrial > 0.0);
     }
 
     #[test]

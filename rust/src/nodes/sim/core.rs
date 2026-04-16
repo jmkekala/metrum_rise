@@ -55,8 +55,6 @@ fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option
 pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 100.0;
 /// Currency upkeep per meter of road per day, settled from the city treasury each day.
 pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
-/// Starting city treasury balance at game start.
-pub(crate) const STARTUP_TREASURY_BALANCE: f64 = 100_000.0;
 
 /// City-level fiscal ledger, separate from household budgets and building budgets.
 ///
@@ -420,8 +418,13 @@ impl SimCore {
                 _ => "UNKNOWN",
             };
 
+            let ub_str = if h.unemployment_days_elapsed > 0 {
+                format!(" ub={}d", h.unemployment_days_elapsed)
+            } else {
+                String::new()
+            };
             println!(
-                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} agents={} budget={:<5.1} stock={:<4.2}days state={}",
+                "[ECON] Day {:>4} HH:{:<2} home_idx={:<2} asset={} agents={} budget={:<5.1} stock={:<4.2}days state={}{}",
                 day_index,
                 idx,
                 h.home_building_id,
@@ -430,6 +433,7 @@ impl SimCore {
                 h.budget,
                 h.stock_days,
                 state_str,
+                ub_str,
             );
         }
     }
@@ -491,7 +495,7 @@ impl SimCore {
         self.desirability
             .tick(&self.zoning, &self.pollution, &self.noise);
         self.households
-            .daily_settlement_tick(&mut self.agents, &mut self.allocator);
+            .daily_settlement_tick(&mut self.agents, &mut self.allocator, &mut self.treasury.balance);
         // City treasury: settle daily road upkeep on the fiscal cadence.
         let road_length_m: f64 = self
             .region_graph
@@ -528,7 +532,7 @@ impl SimCore {
         );
         debug_log!(
             "economy",
-            "daily tick end: buildings={} households={} agents={} demand=(R {:.0}%, C {:.0}%, I {:.0}%) admit={} remove={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{})",
+            "daily tick end: buildings={} households={} agents={} demand=(R {:.0}%, C {:.0}%, I {:.0}%) admit={} remove={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{}) treasury={:.0}",
             self.allocator.buildings.len(),
             self.households
                 .households
@@ -552,7 +556,8 @@ impl SimCore {
             self.demand.building_actions.industrial.downgrades.len(),
             self.demand.building_actions.residential.despawns.len(),
             self.demand.building_actions.commercial.despawns.len(),
-            self.demand.building_actions.industrial.despawns.len()
+            self.demand.building_actions.industrial.despawns.len(),
+            self.treasury.balance,
         );
         self.agents.daily_update(&self.pollution, &self.config);
         self.agents

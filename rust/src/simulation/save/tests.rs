@@ -227,6 +227,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         pickup_eta_hours: 1,
         stay_failure_days: 1,
         replenishment_offset_hours: 0,
+        unemployment_days_elapsed: 0,
     });
     let mut logistics = ShipmentSystem::new();
     let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");

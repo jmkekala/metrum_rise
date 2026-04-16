@@ -135,6 +135,9 @@ outputs = []
 [runtime_tuning]
 owa_import_price_multiplier = 1.75
 owa_export_price_multiplier = 0.6000000238418579
+startup_treasury_balance = 100000.0
+unemployment_daily_benefit_per_member = 15.0
+unemployment_max_days = 30
 
 [runtime_tuning.operational_clock]
 seconds_per_day = 1440.0
