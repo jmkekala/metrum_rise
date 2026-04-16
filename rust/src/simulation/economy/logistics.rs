@@ -432,7 +432,6 @@ impl ShipmentSystem {
             if supplier.broken
                 || supplier.economy_broken
                 || supplier.is_deserted
-                || !supplier.utility_service_available
             {
                 continue;
             }
@@ -529,12 +528,16 @@ impl ShipmentSystem {
         } else {
             min_shipment_units
         };
-        let max_affordable_amount = allocator.buildings[dest_idx].operating_budget / unit_price;
+        // Use the actual charge price (including any outside-window premium) for the
+        // affordability check so the building cannot be charged more than it can afford.
+        let effective_unit_price = adjusted_unit_price(unit_price, freight_profile, minute_of_day);
+        let max_affordable_amount =
+            allocator.buildings[dest_idx].operating_budget / effective_unit_price;
         if max_affordable_amount < min_amount {
             return false;
         }
         let amount = desired_amount.max(min_amount).min(max_affordable_amount);
-        let total_cost = amount * adjusted_unit_price(unit_price, freight_profile, minute_of_day);
+        let total_cost = amount * effective_unit_price;
 
         let mut best_border = u32::MAX;
         let mut best_cost = f32::MAX;
@@ -614,7 +617,7 @@ impl ShipmentSystem {
                 || building.economy_broken
                 || building.edge_idx == usize::MAX
                 || building.shipment_cooldown_hours > 0
-                || !building.utility_service_available
+                || building.is_deserted
                 || !matches!(building.zone_type, ZoneType::Industrial)
             {
                 continue;
@@ -955,7 +958,6 @@ mod tests {
         asset_id: &str,
         stock: f32,
         budget: f32,
-        utility: bool,
     ) -> Building {
         let economy_binding =
             resolve_building_economy_profile_binding(&allocator.registry, asset_id);
@@ -977,8 +979,8 @@ mod tests {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 1.0,
-            economy_dead_days: 0,
             is_deserted: false,
+            budget_distress: false,
             edge_idx,
             side: 1,
             cell_x: 0,
@@ -993,11 +995,9 @@ mod tests {
             resource_inventory,
             revenue: 0.0,
             operating_budget: budget,
-            utility_service_available: utility,
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
-            startup_reset_used: false,
         }
     }
 
@@ -1082,7 +1082,6 @@ mod tests {
             &industrial_asset,
             300.0,
             0.0,
-            true,
         );
         let destination = make_building(
             &allocator,
@@ -1092,7 +1091,6 @@ mod tests {
             &commercial_asset,
             100.0,
             2_000.0,
-            true,
         );
         allocator.buildings.push(supplier);
         allocator.buildings.push(destination);
@@ -1148,7 +1146,6 @@ mod tests {
             &commercial_asset,
             50.0,
             5_000.0,
-            true,
         );
         allocator.buildings.push(destination);
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -1189,7 +1186,6 @@ mod tests {
             &commercial_asset,
             50.0,
             500.0,
-            true,
         );
         allocator.buildings.push(destination);
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -1229,7 +1225,6 @@ mod tests {
             &industrial_asset,
             0.0,
             5_000.0,
-            true,
         );
         allocator.buildings.push(destination);
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);

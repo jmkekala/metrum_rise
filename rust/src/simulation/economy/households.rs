@@ -48,17 +48,6 @@ const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 3.0;
 const HOUSEHOLD_STARTING_BUDGET: f32 = 10.0;
 
 
-// Minimum startup capital regardless of worker count or wages.
-const STARTUP_OPERATING_FLOAT: f32 = 500.0;
-// Days of full-capacity wage coverage seeded into a new commercial/industrial building.
-// Must match the constant in placement.rs so spawn and refill are consistent.
-const STARTUP_RUNWAY_DAYS: f32 = 7.0;
-// Refill the startup float whenever budget falls below this level and the
-// building has never earned revenue. Set to a full day's worth of the
-// higher industrial OWA utility cost so the condition fires before utility
-// service lapses on a building with a tiny floating-point residual budget.
-const STARTUP_FLOAT_REFILL_THRESHOLD: f32 = 13.0;
-
 const UTILITY_COST_COMMERCIAL: f32 = 8.0;
 const UTILITY_COST_INDUSTRIAL: f32 = 12.0;
 
@@ -84,8 +73,6 @@ const JOB_SEARCH_CANDIDATES: usize = 8;
 const GROCERY_SEARCH_MAX_RING: i32 = 6;
 const GROCERY_SEARCH_CANDIDATES: usize = 8;
 const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
-// Consecutive days of unbroken economic death before a building enters the deserted state.
-const DESERTED_THRESHOLD_DAYS: u32 = 14;
 
 /// Explicit household runtime record anchored to a residential building.
 #[derive(Clone, Debug)]
@@ -195,8 +182,6 @@ impl HouseholdSystem {
         self.ensure_agent_households(agents);
         self.rebuild_household_membership(agents);
         self.recount_worker_assignments(agents, allocator);
-        self.ensure_building_startup_float(allocator);
-        self.resolve_building_utilities(allocator);
         self.run_building_economy(allocator);
         logistics.hourly_tick(allocator, transit_network, graph, minute_of_day);
         self.consume_household_stock(agents);
@@ -206,6 +191,9 @@ impl HouseholdSystem {
     }
 
     /// Runs one daily settlement pass after the final operational-hour step of the day.
+    ///
+    /// Implements the four-step bankruptcy spec from `economy.md § Building Bankruptcy`:
+    /// Step 1 — bankruptcy check, Step 2 — wages, Step 3 — utility cost, Step 4 — distress.
     pub fn daily_settlement_tick(
         &mut self,
         agents: &mut AgentSystem,
@@ -220,8 +208,13 @@ impl HouseholdSystem {
                 agents.job_lock_days[i] -= 1;
             }
         }
+        // Step 1: bankruptcy check — mark buildings that were in distress yesterday and are
+        // still negative. Must run before wages so workers are ejected on the same day.
+        self.run_bankruptcy_check(allocator);
+        // Step 2: pay wages (budget does not go negative from this step).
         self.pay_daily_wages(agents, allocator);
-        self.run_desertion_check(allocator);
+        // Steps 3 + 4: charge utility, then liquidate if still negative.
+        self.settle_daily_utilities(allocator);
         self.resolve_household_housing(agents, allocator);
         self.assign_agent_workplaces(agents, allocator);
         self.sync_agent_money_from_households(agents);
@@ -384,99 +377,35 @@ impl HouseholdSystem {
         }
     }
 
-    fn ensure_building_startup_float(&mut self, allocator: &mut BuildingAllocator) {
-        let catalog = load_runtime_economy_catalog().ok();
-        // Split borrow: registry is read-only, buildings is mutated.
-        let registry = &allocator.registry;
-        for building in &mut allocator.buildings {
-            if building.broken || building.economy_broken {
-                continue;
-            }
-            let eligible = match building.zone_type {
-                ZoneType::Commercial | ZoneType::Industrial => true,
-                ZoneType::None => catalog
-                    .as_ref()
-                    .and_then(|c| c.profile_by_runtime_id(building.economy_profile_runtime_id))
-                    .map(|p| {
-                        matches!(
-                            p.kind,
-                            EconomyProfileRuntimeKind::UtilityProducer
-                                | EconomyProfileRuntimeKind::UtilityProcessor
-                        )
-                    })
-                    .unwrap_or(false),
-                _ => false,
-            };
-            if !eligible {
-                continue;
-            }
-            if !building.startup_reset_used
-                && building.operating_budget < STARTUP_FLOAT_REFILL_THRESHOLD
-                && building.revenue == 0.0
-                && building.worker_count == 0
-            {
-                let worker_cap = registry.worker_capacity(&building.asset_id);
-                let daily_wage = catalog
-                    .as_ref()
-                    .and_then(|c| c.profile_by_runtime_id(building.economy_profile_runtime_id))
-                    .map(|p| p.average_daily_wage())
-                    .unwrap_or(0.0);
-                let runway = worker_cap as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
-                building.operating_budget = runway.max(STARTUP_OPERATING_FLOAT);
-                building.startup_reset_used = true;
-            }
-        }
-    }
-
-    fn run_desertion_check(&mut self, allocator: &mut BuildingAllocator) {
-        let catalog = load_runtime_economy_catalog().ok();
-        let registry = &allocator.registry;
+    /// Step 1 of the daily settlement sequence: mark bankrupt any building that ended yesterday
+    /// in distress (budget negative after forced liquidation) and is still negative today.
+    fn run_bankruptcy_check(&mut self, allocator: &mut BuildingAllocator) {
         for building in &mut allocator.buildings {
             if building.broken || building.economy_broken || building.is_deserted {
                 continue;
             }
-            let eligible = matches!(
-                building.zone_type,
-                ZoneType::Commercial | ZoneType::Industrial
-            );
-            if !eligible {
-                continue;
-            }
-
-            let average_daily_wage = catalog
-                .as_ref()
-                .and_then(|c| c.profile_by_runtime_id(building.economy_profile_runtime_id))
-                .map(|p| p.average_daily_wage())
-                .unwrap_or(0.0);
-            let worker_cap = registry.worker_capacity(&building.asset_id);
-
-            // insolvent: cannot pay even one worker, or zero-worker building with near-empty budget
-            let insolvent = building.operating_budget < average_daily_wage
-                || (worker_cap == 0 && building.operating_budget < STARTUP_FLOAT_REFILL_THRESHOLD);
-
-            let deserted_conditions_hold = building.startup_reset_used
-                && building.revenue == 0.0
-                && insolvent;
-
-            if deserted_conditions_hold {
-                building.economy_dead_days += 1;
-            } else {
-                building.economy_dead_days = 0;
-            }
-
-            if building.economy_dead_days >= DESERTED_THRESHOLD_DAYS {
+            if building.budget_distress && building.operating_budget < 0.0 {
                 building.is_deserted = true;
-                building.utility_service_available = false;
+                debug_log!(
+                    "economy",
+                    "building asset={} bankrupt: budget_distress=true budget={:.2}",
+                    building.asset_id,
+                    building.operating_budget
+                );
             }
         }
     }
 
-    fn resolve_building_utilities(&mut self, allocator: &mut BuildingAllocator) {
+    /// Steps 3 + 4: deduct daily utility costs then perform forced OWA liquidation for any
+    /// building whose budget went negative.
+    ///
+    /// Phase 1 (find utility providers) and Phase 3 (distribute local revenue to providers)
+    /// are retained from the old hourly system. Phase 2 is now a flat daily deduction.
+    fn settle_daily_utilities(&mut self, allocator: &mut BuildingAllocator) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
 
-        // Phase 1: find operational utility provider buildings and determine which services
-        // are locally available.
+        // Phase 1: find operational utility provider buildings.
         let mut utility_provider_indices: Vec<usize> = Vec::new();
         let mut power_available = false;
         let mut water_available = false;
@@ -512,65 +441,72 @@ impl HouseholdSystem {
 
         let all_local = power_available && water_available && sewage_available;
 
-        // Phase 2: charge consumer buildings (commercial/industrial). Residential and utility
-        // buildings are marked available without charge. When all three local services are
-        // present, local rates apply and the paid amount flows to providers; otherwise OWA
-        // rates apply (money leaves the system as before).
+        // Phase 2 (daily): charge each commercial/industrial building the full daily utility
+        // cost unconditionally. Budget may go negative.
         let mut local_utility_revenue = 0.0f32;
 
         for building in &mut allocator.buildings {
-            match building.zone_type {
-                ZoneType::Residential | ZoneType::None => {
-                    building.utility_service_available = true;
-                    continue;
-                }
-                _ => {}
-            }
-            if building.edge_idx == usize::MAX
+            if building.is_deserted
                 || building.broken
                 || building.economy_broken
-                || building.is_deserted
+                || building.edge_idx == usize::MAX
             {
-                building.utility_service_available = false;
                 continue;
             }
-            let (hourly_cost, is_local) = match building.zone_type {
+            let (daily_cost, is_local) = match building.zone_type {
                 ZoneType::Commercial => {
                     if all_local {
-                        (UTILITY_LOCAL_TOTAL / OPERATIONAL_HOURS_PER_DAY, true)
+                        (UTILITY_LOCAL_TOTAL, true)
                     } else {
-                        (UTILITY_COST_COMMERCIAL / OPERATIONAL_HOURS_PER_DAY, false)
+                        (UTILITY_COST_COMMERCIAL, false)
                     }
                 }
                 ZoneType::Industrial => {
                     if all_local {
-                        (UTILITY_LOCAL_TOTAL / OPERATIONAL_HOURS_PER_DAY, true)
+                        (UTILITY_LOCAL_TOTAL, true)
                     } else {
-                        (UTILITY_COST_INDUSTRIAL / OPERATIONAL_HOURS_PER_DAY, false)
+                        (UTILITY_COST_INDUSTRIAL, false)
                     }
                 }
-                _ => {
-                    building.utility_service_available = true;
-                    continue;
-                }
+                _ => continue,
             };
-            if building.operating_budget + f32::EPSILON >= hourly_cost {
-                building.operating_budget = (building.operating_budget - hourly_cost).max(0.0);
-                building.utility_service_available = true;
-                if is_local {
-                    local_utility_revenue += hourly_cost;
-                }
-            } else {
-                building.utility_service_available = false;
+            building.operating_budget -= daily_cost;
+            if is_local {
+                local_utility_revenue += daily_cost;
             }
         }
 
-        // Phase 3: distribute local revenue evenly across active utility providers.
+        // Phase 3: distribute local revenue to utility provider buildings.
         if local_utility_revenue > 0.0 && !utility_provider_indices.is_empty() {
             let share = local_utility_revenue / utility_provider_indices.len() as f32;
             for &idx in &utility_provider_indices {
                 allocator.buildings[idx].revenue += share;
                 allocator.buildings[idx].operating_budget += share;
+            }
+        }
+
+        // Step 4: distress resolution — forced OWA liquidation for buildings that went negative.
+        for building in &mut allocator.buildings {
+            if building.is_deserted || building.broken || building.economy_broken {
+                continue;
+            }
+            if !matches!(
+                building.zone_type,
+                ZoneType::Commercial | ZoneType::Industrial
+            ) {
+                continue;
+            }
+            if building.operating_budget < 0.0 {
+                forced_owa_liquidation(building, &catalog);
+                building.budget_distress = true;
+                debug_log!(
+                    "economy",
+                    "building asset={} in distress: budget={:.2} after liquidation",
+                    building.asset_id,
+                    building.operating_budget
+                );
+            } else {
+                building.budget_distress = false;
             }
         }
     }
@@ -594,17 +530,11 @@ impl HouseholdSystem {
             let staffing_factor = (allocator.buildings[idx].worker_count as f32
                 / worker_capacity as f32)
                 .clamp(0.0, 1.0);
-            let utility_factor = if allocator.buildings[idx].utility_service_available {
-                1.0
-            } else {
-                0.0
-            };
             let input_factor =
                 industrial_input_coverage_factor(&catalog, &allocator.buildings[idx]);
             let output_headroom_factor =
                 industrial_output_headroom_factor(&catalog, &allocator.buildings[idx]);
-            let throughput_factor =
-                staffing_factor * input_factor * output_headroom_factor * utility_factor;
+            let throughput_factor = staffing_factor * input_factor * output_headroom_factor;
 
             let building = &mut allocator.buildings[idx];
             for input_port in &profile.inputs {
@@ -1087,6 +1017,23 @@ impl HouseholdSystem {
         let mut reserved_workers: Vec<u32> =
             allocator.buildings.iter().map(|b| b.worker_count).collect();
 
+        // Ejection pre-pass: immediately detach workers from newly-bankrupt buildings so they
+        // enter the open job market this same day rather than waiting for unpaid-wage accumulation.
+        for i in 0..agents.len() {
+            let work = agents.work_building[i];
+            if work == usize::MAX || work >= allocator.buildings.len() {
+                continue;
+            }
+            if allocator.buildings[work].is_deserted {
+                if work < reserved_workers.len() {
+                    reserved_workers[work] = reserved_workers[work].saturating_sub(1);
+                }
+                agents.work_building[i] = usize::MAX;
+                agents.job_lock_days[i] = 0;
+                agents.consecutive_unpaid_days[i] = 0;
+            }
+        }
+
         for i in 0..agents.len() {
             if agents.transit[i] != TRANSIT_IN_BUILDING {
                 continue;
@@ -1129,6 +1076,9 @@ impl HouseholdSystem {
                     continue;
                 }
                 let building = &allocator.buildings[candidate];
+                if building.is_deserted || building.broken || building.economy_broken {
+                    continue;
+                }
                 if !matches!(
                     building.zone_type,
                     ZoneType::Industrial | ZoneType::Commercial
@@ -1339,6 +1289,39 @@ fn stock_days(stock: f32, member_count: u16, consumption_rate: f32) -> f32 {
         0.0
     } else {
         stock / daily_consumption
+    }
+}
+
+/// Sells all unreserved output inventory at OWA export prices, crediting `operating_budget`
+/// immediately.
+///
+/// Called during Step 4 of the daily settlement when a building's budget goes negative after
+/// utility payment. Bypasses the normal `min_shipment_units` buffer check. If inventory is
+/// empty the function is a no-op and `budget_distress` will still be set by the caller.
+///
+/// Price = `catalog.unit_price_for_resource × owa_export_price_multiplier` (default 0.6×),
+/// matching the normal OWA export path. Falls back to `profile.unit_price_currency` when no
+/// catalog price is registered.
+fn forced_owa_liquidation(building: &mut Building, catalog: &RuntimeEconomyCatalog) {
+    let tuning = load_runtime_economy_tuning()
+        .unwrap_or_else(|err| panic!("could not load built-in economy runtime tuning: {err}"));
+    let export_multiplier = tuning.owa_export_price_multiplier.clamp(0.0, 1.0);
+    let Some(profile) = catalog.profile_by_runtime_id(building.economy_profile_runtime_id) else {
+        return;
+    };
+    for output_port in &profile.outputs {
+        let available = building.inventory_units(output_port.resource_runtime_id);
+        if available <= 0.0 {
+            continue;
+        }
+        let unit_price = catalog
+            .unit_price_for_resource(output_port.resource_runtime_id)
+            .unwrap_or(profile.unit_price_currency)
+            * export_multiplier;
+        let revenue = available * unit_price;
+        building.operating_budget += revenue;
+        building.revenue += revenue;
+        building.set_inventory_units(output_port.resource_runtime_id, 0.0);
     }
 }
 
@@ -1570,7 +1553,6 @@ mod tests {
         zone_type: ZoneType,
         asset_id: &str,
         stock: f32,
-        utility: bool,
     ) -> Building {
         let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
         let runtime_id = test_economy_runtime_id(zone_type);
@@ -1591,8 +1573,8 @@ mod tests {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 1.0,
-            economy_dead_days: 0,
             is_deserted: false,
+            budget_distress: false,
             edge_idx: 0,
             side: 1,
             cell_x: 0,
@@ -1607,11 +1589,9 @@ mod tests {
             resource_inventory,
             revenue: 0.0,
             operating_budget: 500.0,
-            utility_service_available: utility,
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
-            startup_reset_used: false,
         }
     }
 
@@ -1711,15 +1691,13 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0,
-            true,
+            0.0
         ));
         allocator.buildings.push(make_building(
             20.0,
             ZoneType::Commercial,
             &commercial_asset,
-            50.0,
-            true,
+            50.0
         ));
         allocator.rebuild_zone_index();
 
@@ -1771,15 +1749,13 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0,
-            true,
+            0.0
         ));
         allocator.buildings.push(make_building(
             20.0,
             ZoneType::Industrial,
             &industrial_asset,
-            0.0,
-            true,
+            0.0
         ));
         allocator.rebuild_zone_index();
 
@@ -1854,15 +1830,13 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0,
-            true,
+            0.0
         ));
         allocator.buildings.push(make_building(
             20.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0,
-            true,
+            0.0
         ));
         allocator.rebuild_zone_index();
 
@@ -1910,15 +1884,13 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0,
-            true,
+            0.0
         ));
         allocator.buildings.push(make_building(
             20.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0,
-            true,
+            0.0
         ));
         allocator.rebuild_zone_index();
 
@@ -1962,8 +1934,7 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0,
-            true,
+            0.0
         ));
         allocator.rebuild_zone_index();
 
@@ -1999,7 +1970,7 @@ mod tests {
         let mut allocator = BuildingAllocator::new();
         let residential_asset =
             register_test_asset(&mut allocator, "test", "evict_res", ZoneClass::Residential);
-        let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0, true);
+        let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
         home.level = 2;
         home.occupancy = 2;
         allocator.buildings.push(home);

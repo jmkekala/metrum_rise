@@ -68,14 +68,15 @@ pub struct Building {
     pub frontage_t: f32,
     /// Signed side of the road: `+1.0` = left, `-1.0` = right.
     pub side_offset: f32,
-    /// Consecutive daily ticks during which desertion conditions have held.
-    ///
-    /// Frozen once `is_deserted` is set. Reused from dead-code `abandoned_timer`.
-    pub economy_dead_days: u32,
     /// True once this building has entered the permanent deserted state.
     ///
-    /// A one-way latch: set when `economy_dead_days >= DESERTED_THRESHOLD_DAYS`. Never cleared.
+    /// A one-way latch: set by the daily bankruptcy check when budget was negative at end of the
+    /// previous day and is still negative at the start of the current day. Never cleared.
     pub is_deserted: bool,
+    /// True when this building's budget ended the previous daily settlement below zero.
+    ///
+    /// Checked at the start of the next daily settlement to declare bankruptcy if still negative.
+    pub budget_distress: bool,
     /// Index into [`RegionGraph::edges`] for the road segment this building fronts.
     pub edge_idx: usize,
     /// Road side: `1` = left, `-1` = right.
@@ -108,10 +109,10 @@ pub struct Building {
     pub resource_inventory: Vec<f32>,
     /// Lifetime gross revenue collected by this building.
     pub revenue: f32,
-    /// Current operating budget available for wages, utility fallback, and imports.
+    /// Current operating budget available for wages and utility costs.
+    ///
+    /// May go negative after utility payment; see `budget_distress` and the bankruptcy spec.
     pub operating_budget: f32,
-    /// Whether the building has resolved utility availability for the current daily pass.
-    pub utility_service_available: bool,
     /// Remaining hourly cooldown steps before this building may open another freight request.
     pub shipment_cooldown_hours: u16,
     /// True when the current painted zoning profile is incompatible and the building is waiting
@@ -119,11 +120,6 @@ pub struct Building {
     pub pending_redevelopment: bool,
     /// Remaining deterministic daily grace before incompatible rezoning forces removal.
     pub rezone_grace_days_remaining: u8,
-    /// True once the one-time startup-float bankruptcy reset has been consumed for this building.
-    ///
-    /// `ensure_building_startup_float` fires at most once per building lifetime. After the reset
-    /// fires this flag is set and subsequent budget crashes are permanent (no further rescue).
-    pub startup_reset_used: bool,
 }
 
 #[derive(Clone)]

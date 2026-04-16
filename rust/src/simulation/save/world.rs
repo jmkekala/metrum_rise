@@ -121,7 +121,7 @@ pub(super) fn save_world(
     }
 
     // Buildings
-    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, startup_reset_used, economy_dead_days, is_deserted) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)")?;
+    let mut bld_stmt = tx.prepare("INSERT INTO buildings(building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)")?;
     let mut inventory_stmt = tx.prepare(
         "INSERT INTO building_inventories(building_id, resource_runtime_id, amount) VALUES (?1, ?2, ?3)",
     )?;
@@ -149,7 +149,6 @@ pub(super) fn save_world(
             u32_to_i64(b.worker_count)?,
             b.revenue,
             b.operating_budget,
-            i64::from(if b.utility_service_available { 1 } else { 0 }),
             i64::from(b.shipment_cooldown_hours),
             usize_to_i64(b.width_cells as usize)?,
             usize_to_i64(b.depth_cells as usize)?,
@@ -158,9 +157,8 @@ pub(super) fn save_world(
             i64::from(if b.broken { 1 } else { 0 }),
             i64::from(if b.pending_redevelopment { 1 } else { 0 }),
             i64::from(b.rezone_grace_days_remaining),
-            i64::from(if b.startup_reset_used { 1 } else { 0 }),
-            u32_to_i64(b.economy_dead_days)?,
-            i64::from(if b.is_deserted { 1 } else { 0 })
+            i64::from(if b.is_deserted { 1 } else { 0 }),
+            i64::from(if b.budget_distress { 1 } else { 0 })
         ])?;
         for (slot, amount) in b.resource_inventory.iter().enumerate() {
             if *amount <= 0.0 {
@@ -291,40 +289,40 @@ pub(super) fn load_buildings(
         .resource_count();
     // Forward-compatible migrations: add columns absent in older saves.
     let _ = conn.execute(
-        "ALTER TABLE buildings ADD COLUMN startup_reset_used INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
-        "ALTER TABLE buildings ADD COLUMN economy_dead_days INTEGER NOT NULL DEFAULT 0",
-        [],
-    );
-    let _ = conn.execute(
         "ALTER TABLE buildings ADD COLUMN is_deserted INTEGER NOT NULL DEFAULT 0",
         [],
     );
-    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, utility_service_available, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, startup_reset_used, economy_dead_days, is_deserted FROM buildings ORDER BY building_id")?;
+    let _ = conn.execute(
+        "ALTER TABLE buildings ADD COLUMN budget_distress INTEGER NOT NULL DEFAULT 0",
+        [],
+    );
+    // col: 0=building_id 1=edge_id 2=frontage_t 3=side 4=cell_x 5=cell_y 6=profile_runtime_id
+    //      7=occupancy 8=worker_count 9=revenue 10=operating_budget 11=shipment_cooldown_hours
+    //      12=width 13=depth 14=asset_id 15=level 16=broken 17=pending_redevelopment
+    //      18=rezone_grace_days_remaining 19=is_deserted 20=budget_distress
+    let mut stmt = conn.prepare("SELECT building_id, edge_id, frontage_t, side, cell_x, cell_y, profile_runtime_id, occupancy, worker_count, revenue, operating_budget, shipment_cooldown_hours, width, depth, asset_id, level, broken, pending_redevelopment, rezone_grace_days_remaining, is_deserted, budget_distress FROM buildings ORDER BY building_id")?;
     let mut rows = stmt.query([])?;
     while let Some(row) = rows.next()? {
         let bid = i64_to_usize(row.get(0)?)?;
         if bid != allocator.buildings.len() {
             return Err(SaveLoadError::custom("non-contiguous building ids"));
         }
-        let asset_id: String = row.get(15)?;
-        let broken = (row.get::<_, i64>(17)? != 0) || registry.get(&asset_id).is_none();
+        let asset_id: String = row.get(14)?;
+        let broken = (row.get::<_, i64>(16)? != 0) || registry.get(&asset_id).is_none();
         let economy_binding = resolve_building_economy_profile_binding(registry, &asset_id);
         let profile_runtime_id = i64_to_u16(row.get(6)?)?;
         allocator.buildings.push(Building {
             center_x: 0.0,
             center_y: 0.0,
-            width_cells: i64_to_usize(row.get(13)?)? as u16,
-            depth_cells: i64_to_usize(row.get(14)?)? as u16,
+            width_cells: i64_to_usize(row.get(12)?)? as u16,
+            depth_cells: i64_to_usize(row.get(13)?)? as u16,
             zone_profile_runtime_id: profile_runtime_id,
             zone_type: profiles.zone_type_for_runtime_id(profile_runtime_id),
             facing_dir: Vector2::ZERO,
             frontage_t: row.get(2)?,
             side_offset: 0.0,
-            economy_dead_days: i64_to_u32(row.get(21)?)?,
-            is_deserted: row.get::<_, i64>(22)? != 0,
+            is_deserted: row.get::<_, i64>(19)? != 0,
+            budget_distress: row.get::<_, i64>(20)? != 0,
             edge_idx: i64_to_usize(row.get(1)?)?,
             side: (row.get::<_, i64>(3)?) as i8,
             cell_x: i64_to_usize(row.get(4)?)?,
@@ -334,16 +332,14 @@ pub(super) fn load_buildings(
             asset_id,
             revenue: row.get(9)?,
             operating_budget: row.get(10)?,
-            utility_service_available: row.get::<_, i64>(11)? != 0,
-            shipment_cooldown_hours: i64_to_u16(row.get(12)?)?,
-            level: row.get::<_, i64>(16)?.clamp(1, 255) as u8,
+            shipment_cooldown_hours: i64_to_u16(row.get(11)?)?,
+            level: row.get::<_, i64>(15)?.clamp(1, 255) as u8,
             broken,
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
             resource_inventory: vec![0.0; resource_count],
-            pending_redevelopment: row.get::<_, i64>(18)? != 0,
-            rezone_grace_days_remaining: i64_to_u8(row.get(19)?)?,
-            startup_reset_used: row.get::<_, i64>(20)? != 0,
+            pending_redevelopment: row.get::<_, i64>(17)? != 0,
+            rezone_grace_days_remaining: i64_to_u8(row.get(18)?)?,
         });
     }
     let mut stmt = conn.prepare(

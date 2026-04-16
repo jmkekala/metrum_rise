@@ -632,7 +632,7 @@ impl SimulationNode {
     ///
     /// Returns an empty Dictionary when no building is within range.
     /// Keys: `asset_id`, `zone_type`, `level`, `occupancy`, `worker_count`,
-    /// `worker_capacity`, `operating_budget`, `revenue`, `utility_service_available`,
+    /// `worker_capacity`, `operating_budget`, `revenue`, `budget_distress`,
     /// `economy_broken`, `broken`, `pending_redevelopment`, `rezone_grace_days`,
     /// `economy_profile`, `inventory` (Array of `{name, amount}` Dictionaries).
     #[func]
@@ -715,7 +715,7 @@ impl SimulationNode {
         dict.set("worker_capacity", worker_capacity as i32);
         dict.set("operating_budget", b.operating_budget as f64);
         dict.set("revenue", b.revenue as f64);
-        dict.set("utility_service_available", b.utility_service_available);
+        dict.set("budget_distress", b.budget_distress);
         dict.set("economy_broken", b.economy_broken);
         dict.set("broken", b.broken);
         dict.set("pending_redevelopment", b.pending_redevelopment);

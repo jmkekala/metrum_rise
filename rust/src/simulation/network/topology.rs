@@ -1060,8 +1060,8 @@ mod tests {
                 facing_dir: godot::prelude::Vector2::new(0.0, 1.0),
                 frontage_t: 0.85, // Pre-split frontage_t
                 side_offset: 1.0,
-                economy_dead_days: 0,
                 is_deserted: false,
+                budget_distress: false,
                 edge_idx: edge_id,
                 side: 1,
                 cell_x: 8,
@@ -1076,11 +1076,9 @@ mod tests {
                 resource_inventory: Vec::new(),
                 revenue: 0.0,
                 operating_budget: 500.0,
-                utility_service_available: false,
                 shipment_cooldown_hours: 0,
                 pending_redevelopment: false,
                 rezone_grace_days_remaining: 0,
-                startup_reset_used: false,
             });
 
         // Split the road exactly at 50m (cell 5).

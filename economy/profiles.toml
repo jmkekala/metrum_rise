@@ -37,7 +37,7 @@ reorder_threshold_days = 2.0
 critical_threshold_days = 0.5
 min_shipment_units = 40.0
 consumption_rate_per_resident = 0.0
-starting_inventory_days = 3.0
+starting_inventory_days = 0.0
 work_schedule_profile = "daytime_work"
 freight_timing_profile = "daytime_receive"
 

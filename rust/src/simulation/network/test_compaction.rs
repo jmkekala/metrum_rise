@@ -118,8 +118,8 @@ mod tests {
                 facing_dir: Vector2::new(0.0, 1.0),
                 frontage_t: 0.5,
                 side_offset: 5.0,
-                economy_dead_days: 0,
                 is_deserted: false,
+                budget_distress: false,
                 edge_idx: 1, // Points to Road B
                 side: 1,
                 cell_x: 5,
@@ -134,11 +134,9 @@ mod tests {
                 resource_inventory: Vec::new(),
                 revenue: 0.0,
                 operating_budget: 500.0,
-                utility_service_available: false,
                 shipment_cooldown_hours: 0,
                 pending_redevelopment: false,
                 rezone_grace_days_remaining: 0,
-                startup_reset_used: false,
             });
 
         // 5. Spawn an agent on Road B (Index 1)

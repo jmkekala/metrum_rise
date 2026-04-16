@@ -2294,16 +2294,35 @@ The demand system is responsible for physically removing or redeveloping deserte
 
 #### Worker ejection on bankruptcy
 
-When `is_deserted` is set, `assign_agent_workplaces` must immediately eject all agents whose
-`work_building[i]` points at the newly deserted building: set `work_building[i] = usize::MAX` and
-clear `job_lock_days[i]` and `consecutive_unpaid_days[i]` so they enter the open job market on
-the same day. Do not rely on the unpaid-wage path to clear these workers — that path takes two
-additional days and leaves workers attached to a building that no longer runs throughput, which
-produces a misleading `worker_count` reading on the dead building.
+The daily call order must be:
 
-`assign_agent_workplaces` currently does not filter on `is_deserted` in its candidate loop. This
-must be added: skip any candidate building where `is_deserted == true`, regardless of whether the
-agent is already assigned there.
+```
+daily_settlement_sequence (Steps 1–4, all buildings)
+    → assign_agent_workplaces
+```
+
+`assign_agent_workplaces` runs after the full settlement pass so that all `is_deserted` flags set
+during Step 1 are visible before job assignment begins.
+
+At the start of `assign_agent_workplaces`, before the job-scoring loop, do a single ejection pass:
+
+```
+for each agent i:
+    if work_building[i] != MAX and allocator.buildings[work_building[i]].is_deserted:
+        reserved_workers[work_building[i]] -= 1
+        work_building[i] = MAX
+        job_lock_days[i] = 0
+        consecutive_unpaid_days[i] = 0
+```
+
+Ejected workers then enter the normal job-scoring loop on the same day and can be assigned
+immediately. Do not rely on the unpaid-wage path to clear these workers — that path takes two
+additional days and leaves workers attached to a building that no longer runs throughput, producing
+a misleading `worker_count` reading on the dead building.
+
+`assign_agent_workplaces` currently does not filter on `is_deserted` in its candidate scoring
+loop. This must be added: skip any candidate building where `is_deserted == true`, regardless of
+whether the agent is already assigned there.
 
 ### Replacement Targets
 

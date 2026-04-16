@@ -176,7 +176,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.5,
         side_offset: 1.0,
-        economy_dead_days: 0,
+        budget_distress: false,
         is_deserted: false,
         edge_idx: edge_id,
         side: 1,
@@ -200,11 +200,11 @@ fn sqlite_round_trip_preserves_authoritative_state() {
         },
         revenue: 0.0,
         operating_budget: 500.0,
-        utility_service_available: false,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
-        startup_reset_used: false,
+        
     });
     allocator
         .recompute_derived_transforms(&graph, &zoning)

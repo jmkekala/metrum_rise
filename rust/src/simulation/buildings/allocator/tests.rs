@@ -316,7 +316,7 @@ fn test_zone_index_consistency() {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 0.0,
-            economy_dead_days: 0, is_deserted: false,
+            is_deserted: false, budget_distress: false,
             edge_idx: 0,
             side: 1,
             cell_x: i,
@@ -335,10 +335,9 @@ fn test_zone_index_consistency() {
             resource_inventory: Vec::new(),
             revenue: 0.0,
             operating_budget: 500.0,
-            utility_service_available: false,
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
-            rezone_grace_days_remaining: 0, startup_reset_used: false,
+            rezone_grace_days_remaining: 0,
         });
     }
     allocator.dirty_index = true;
@@ -397,7 +396,7 @@ fn test_vacancy_index_consistency() {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 0.0,
-            economy_dead_days: 0, is_deserted: false,
+            is_deserted: false, budget_distress: false,
             edge_idx: 0,
             side: 1,
             cell_x: i,
@@ -412,10 +411,9 @@ fn test_vacancy_index_consistency() {
             resource_inventory: Vec::new(),
             revenue: 0.0,
             operating_budget: 500.0,
-            utility_service_available: false,
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
-            rezone_grace_days_remaining: 0, startup_reset_used: false,
+            rezone_grace_days_remaining: 0,
         });
     }
     allocator.rebuild_zone_index();
@@ -901,7 +899,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
         side_offset: 1.0,
-        economy_dead_days: 0, is_deserted: false,
+        is_deserted: false, budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 1,
@@ -916,10 +914,10 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        utility_service_available: false,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0, startup_reset_used: false,
+        rezone_grace_days_remaining: 0,
     });
 
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -1014,7 +1012,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
         side_offset: 1.0,
-        economy_dead_days: 0, is_deserted: false,
+        is_deserted: false, budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 1,
@@ -1029,10 +1027,10 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        utility_service_available: false,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0, startup_reset_used: false,
+        rezone_grace_days_remaining: 0,
     });
 
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
@@ -1087,7 +1085,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.05,
         side_offset: 1.0,
-        economy_dead_days: 0, is_deserted: false,
+        is_deserted: false, budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 0,
@@ -1102,10 +1100,10 @@ fn test_building_removal_clears_zoning_occupancy() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
-        utility_service_available: false,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0, startup_reset_used: false,
+        rezone_grace_days_remaining: 0,
     });
     zoning.mark_occupied_rect(
         5.0,
@@ -1204,7 +1202,7 @@ fn test_immigration_claims_vacant_home() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.1,
         side_offset: 1.0,
-        economy_dead_days: 0, is_deserted: false,
+        is_deserted: false, budget_distress: false,
         edge_idx: edge_id,
         side: 1,
         cell_x: 0,
@@ -1219,10 +1217,10 @@ fn test_immigration_claims_vacant_home() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
-        utility_service_available: false,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0, startup_reset_used: false,
+        rezone_grace_days_remaining: 0,
     });
     allocator.rebuild_zone_index();
 
@@ -1313,7 +1311,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.1,
         side_offset: 1.0,
-        economy_dead_days: 0,
+        budget_distress: false,
         is_deserted: false,
         edge_idx: edge_id,
         side: 1,
@@ -1329,11 +1327,11 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
-        utility_service_available: true,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
-        startup_reset_used: false,
+        
     });
     allocator.buildings.push(Building {
         center_x: 40.0,
@@ -1345,7 +1343,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.4,
         side_offset: 1.0,
-        economy_dead_days: 0, is_deserted: false,
+        is_deserted: false, budget_distress: false,
         edge_idx: edge_id,
         side: 1,
         cell_x: 4,
@@ -1360,10 +1358,10 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
-        utility_service_available: true,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0, startup_reset_used: false,
+        rezone_grace_days_remaining: 0,
     });
     allocator.rebuild_entrance_cache(&graph, &network.lane_system);
     allocator.rebuild_zone_index();
@@ -1510,7 +1508,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
         side_offset: 1.0,
-        economy_dead_days: 0, is_deserted: false,
+        is_deserted: false, budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 0,
@@ -1525,10 +1523,10 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        utility_service_available: true,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0, startup_reset_used: false,
+        rezone_grace_days_remaining: 0,
     });
     allocator.buildings.push(Building {
         center_x: 0.0,
@@ -1540,7 +1538,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
         side_offset: 1.0,
-        economy_dead_days: 0, is_deserted: false,
+        is_deserted: false, budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 2,
@@ -1555,10 +1553,10 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        utility_service_available: true,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0, startup_reset_used: false,
+        rezone_grace_days_remaining: 0,
     });
     allocator.buildings.push(Building {
         center_x: 0.0,
@@ -1570,7 +1568,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
         side_offset: 1.0,
-        economy_dead_days: 0, is_deserted: false,
+        is_deserted: false, budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 4,
@@ -1585,10 +1583,10 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        utility_service_available: true,
+        
         shipment_cooldown_hours: 0,
         pending_redevelopment: false,
-        rezone_grace_days_remaining: 0, startup_reset_used: false,
+        rezone_grace_days_remaining: 0,
     });
     allocator
         .recompute_derived_transforms(&graph, &zoning)

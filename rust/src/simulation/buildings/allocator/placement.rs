@@ -6,7 +6,9 @@ use crate::simulation::buildings::allocator::{
     Building, BuildingAllocator, EdgeOccupancy, baseline_private_zone_slot,
     resolve_building_economy_profile_binding, zone_class_to_zone_type, zone_type_to_zone_class,
 };
-use crate::simulation::economy::definitions::load_runtime_economy_catalog;
+use crate::simulation::economy::definitions::{
+    load_runtime_economy_catalog, load_runtime_economy_tuning,
+};
 use crate::simulation::economy::demand::{DemandSpawnAction, DemandSpawnCandidate};
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::graph::RegionGraph;
@@ -515,21 +517,41 @@ impl BuildingAllocator {
         }
 
         // Seed startup operating capital so commercial and industrial buildings can pay
-        // workers for STARTUP_RUNWAY_DAYS before first revenue arrives. Computed from
-        // profile worker capacity × avg wage so it scales with the building, not a flat
-        // constant that breaks for large-capacity buildings.
+        // workers for STARTUP_RUNWAY_DAYS before first revenue arrives, AND cover the cost
+        // of the first OWA input import (which fires immediately when local supply is absent).
+        // Computed from profile data so it scales with the building.
         const STARTUP_RUNWAY_DAYS: f32 = 7.0;
         const STARTUP_MIN_BUDGET: f32 = 500.0;
         let startup_budget = match placement.zone_type {
             ZoneType::Commercial | ZoneType::Industrial => {
                 let worker_cap = self.registry.worker_capacity(&placement.asset_id);
-                let daily_wage = catalog
-                    .as_ref()
-                    .ok()
-                    .and_then(|c| c.profile_by_runtime_id(economy_binding.runtime_id))
-                    .map(|p| p.average_daily_wage())
+                let catalog_ref = catalog.as_ref().ok();
+                let profile = catalog_ref
+                    .and_then(|c| c.profile_by_runtime_id(economy_binding.runtime_id));
+                let daily_wage = profile.map(|p| p.average_daily_wage()).unwrap_or(0.0);
+                let wage_runway = worker_cap as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
+
+                // Add expected cost of the first full OWA input import so the building can
+                // absorb it without going into distress on its opening day.
+                let owa_import_multiplier = load_runtime_economy_tuning()
+                    .map(|t| t.owa_import_price_multiplier.max(1.0))
+                    .unwrap_or(1.5);
+                let first_import_cost = profile
+                    .map(|p| {
+                        p.inputs.iter().map(|port| {
+                            let unit_price = catalog_ref
+                                .and_then(|c| {
+                                    c.unit_price_for_resource(port.resource_runtime_id)
+                                })
+                                .unwrap_or(p.unit_price_currency);
+                            p.inventory_target_units_for(port)
+                                * unit_price
+                                * owa_import_multiplier
+                        }).sum::<f32>()
+                    })
                     .unwrap_or(0.0);
-                (worker_cap as f32 * daily_wage * STARTUP_RUNWAY_DAYS).max(STARTUP_MIN_BUDGET)
+
+                (wage_runway + first_import_cost).max(STARTUP_MIN_BUDGET)
             }
             _ => 0.0,
         };
@@ -558,13 +580,11 @@ impl BuildingAllocator {
             resource_inventory,
             revenue: 0.0,
             operating_budget: startup_budget,
-            utility_service_available: false,
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
-            economy_dead_days: 0,
             is_deserted: false,
-            startup_reset_used: false,
+            budget_distress: false,
         });
         self.buildings.len() - 1
     }

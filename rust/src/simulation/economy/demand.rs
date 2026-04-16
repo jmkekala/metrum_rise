@@ -969,7 +969,7 @@ fn nonresidential_upgrade_viable(
     let Some(building) = allocator.buildings.get(building_idx) else {
         return false;
     };
-    if !building.utility_service_available {
+    if building.is_deserted {
         return false;
     }
     let Some(target_level) = allocator
@@ -1023,7 +1023,7 @@ fn nonresidential_downgrade_viable(
             .nonresidential_max_buffer_days_for_downgrade,
         building.level,
     );
-    !building.utility_service_available
+    building.is_deserted
         || staffing_ratio
             <= economy_tuning
                 .viability
@@ -1553,7 +1553,7 @@ impl DailyDemandSnapshot {
                     .saturating_add(worker_capacity.saturating_sub(occupied));
                 filled_job_slots = filled_job_slots.saturating_add(occupied);
                 utility_service_consumer_count = utility_service_consumer_count.saturating_add(1);
-                if building.utility_service_available {
+                if !building.is_deserted {
                     utility_service_satisfied_count =
                         utility_service_satisfied_count.saturating_add(1);
                 }
@@ -1898,8 +1898,8 @@ mod tests {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 1.0,
-            economy_dead_days: 0,
             is_deserted: false,
+            budget_distress: false,
             edge_idx: 0,
             side: 1,
             cell_x: 0,
@@ -1914,11 +1914,9 @@ mod tests {
             resource_inventory,
             revenue: 0.0,
             operating_budget: 500.0,
-            utility_service_available: true,
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
-            startup_reset_used: false,
         }
     }
 
@@ -2122,7 +2120,7 @@ mod tests {
         allocator
             .buildings
             .push(building(ZoneType::Industrial, 40.0, 0, 1, industrial_asset));
-        allocator.buildings[1].utility_service_available = false;
+        allocator.buildings[1].is_deserted = true;
 
         let households = HouseholdSystem::new();
         let graph = graph_with_connected_border();

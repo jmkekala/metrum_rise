@@ -386,13 +386,13 @@ impl SimCore {
             let io_str = if io_parts.is_empty() { "none".to_owned() } else { io_parts.join(" ") };
 
             println!(
-                "[ECON] Day {:>4} idx={} {} asset={} profile={} workers={}/{} budget={:.1} revenue={:.1} utility={} broken={} io=[{}] inventory=[{}]",
+                "[ECON] Day {:>4} idx={} {} asset={} profile={} workers={}/{} budget={:.1} revenue={:.1} distress={} broken={} io=[{}] inventory=[{}]",
                 day_index, idx, zone_tag,
                 b.asset_id, profile_id,
                 b.worker_count, worker_cap,
                 b.operating_budget,
                 b.revenue,
-                if b.utility_service_available { "Y" } else { "N" },
+                if b.budget_distress { "Y" } else { "N" },
                 if b.broken || b.economy_broken { "Y" } else { "N" },
                 io_str,
                 inv_str,

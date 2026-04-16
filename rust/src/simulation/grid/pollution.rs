@@ -187,7 +187,7 @@ mod tests {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 0.0,
-            economy_dead_days: 0,
+            budget_distress: false,
             is_deserted: false,
             edge_idx: 0,
             side: 1,
@@ -203,11 +203,11 @@ mod tests {
             resource_inventory: Vec::new(),
             revenue: 0.0,
             operating_budget: 500.0,
-            utility_service_available: false,
+            
             shipment_cooldown_hours: 0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
-            startup_reset_used: false,
+            
         };
         allocator.buildings.push(source_building);
 
