@@ -71,14 +71,10 @@ impl DemandChannel {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 struct GrowthProfileRuntime {
     id: String,
     demand_channel: DemandChannel,
-    cadence_days: u32,
-    base_pressure_weight: f32,
-    local_modifier_scale: f32,
     spawn_threshold: f32,
     despawn_threshold: f32,
     upgrade_threshold: f32,
@@ -167,7 +163,6 @@ impl DemandBuildingActionPlan {
 
 #[derive(Clone, Debug)]
 struct SignalNormalizationConfig {
-    resident_presence_saturation_residents: u32,
     household_affordability_target_reserve_days: f32,
     household_stock_stability_target_days: f32,
 }
@@ -175,7 +170,6 @@ struct SignalNormalizationConfig {
 
 #[derive(Clone, Debug)]
 struct HouseholdActionConfig {
-    base_inflow: f32,
     admission_threshold: f32,
     removal_threshold: f32,
 }
@@ -233,16 +227,13 @@ struct AuthoredGrowthProfilesFile {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthoredSignalNormalization {
-    resident_presence_saturation_residents: u32,
     household_affordability_target_reserve_days: f32,
     household_stock_stability_target_days: f32,
 }
 
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthoredHouseholdAction {
-    base_inflow: f32,
     admission_threshold: f32,
     removal_threshold: f32,
 }
@@ -270,9 +261,6 @@ struct AuthoredUseTuningF32 {
 struct AuthoredGrowthProfile {
     id: String,
     demand_channel: String,
-    cadence_days: u32,
-    base_pressure_weight: f32,
-    local_modifier_scale: f32,
     spawn_threshold: f32,
     despawn_threshold: f32,
     upgrade_threshold: f32,
@@ -383,18 +371,11 @@ impl DemandSystem {
 
         let housing_shortage = 1.0 - snapshot.housing_availability;
         let goods_shortage = 1.0 - snapshot.household_stock_stability;
-        let service_gate =
-            snapshot.utility_service_stability * snapshot.external_connection_available;
+        let ext_conn = snapshot.external_connection_available;
 
-        // Admission pressure: fills existing vacancies. Uses housing_availability so it is
-        // high when there are vacant slots to fill and tapers as the city approaches full
-        // occupancy. Gated on utility stability only — no job requirement for settlement.
-        let admission_pressure = clamp01(
-            self.config.household_action.base_inflow
-                * snapshot.external_connection_available
-                * snapshot.housing_availability
-                * snapshot.utility_service_stability,
-        );
+        // Admission pressure: fills existing vacancies. High when there are vacant slots to
+        // fill and tapers as the city approaches full occupancy.
+        let admission_pressure = clamp01(ext_conn * snapshot.housing_availability);
         self.households_to_admit_today = advance_household_action_credit(
             &mut self.admission_action_credit,
             admission_pressure,
@@ -403,13 +384,10 @@ impl DemandSystem {
             snapshot.vacant_household_slots,
         );
 
-        // Removal pressure: shared between household emigration and the residential demand
-        // channel. Computed before residential demand so both consumers read the same value.
-        let removal_pressure = clamp01(
-            snapshot.unhoused_household_ratio * 0.50
-                + (1.0 - snapshot.job_availability) * 0.25
-                + (1.0 - snapshot.household_stock_stability) * 0.25,
-        );
+        // Removal pressure: households emigrate when they have no home. Shared between
+        // the household-action removal output and the residential demand channel.
+        // Future: will be extended with an evacuation system when implemented.
+        let removal_pressure = snapshot.unhoused_household_ratio;
         self.households_to_remove_today = advance_household_action_credit(
             &mut self.removal_action_credit,
             removal_pressure,
@@ -425,27 +403,16 @@ impl DemandSystem {
         // falls → ResidentialGrowth approaches 0.5 (equilibrium) → no more spawning.
         // The channel is rescaled to 0.0..1.0 with 0.5 as equilibrium so the existing
         // GrowthProfile threshold infrastructure applies without modification.
-        let inflow_desire = clamp01(
-            self.config.household_action.base_inflow
-                * snapshot.external_connection_available
-                * housing_shortage
-                * snapshot.utility_service_stability,
-        );
+        let inflow_desire = clamp01(ext_conn * housing_shortage);
         let net_residential = (inflow_desire - removal_pressure).clamp(-1.0, 1.0);
         let base_residential = net_residential * 0.5 + 0.5;
 
-        let base_commercial = clamp01(
-            snapshot.resident_presence
-                * goods_shortage
-                * snapshot.household_affordability
-                * service_gate,
-        );
-        // Industrial demand: driven by how much of the commercial supply chain is
-        // uncovered by local industrial production. Decoupled from goods_shortage so
-        // OWA fallback for commercial inputs does not suppress farm spawning.
-        let base_industrial = clamp01(
-            snapshot.resident_presence * snapshot.commercial_input_deficit * service_gate,
-        );
+        // Commercial: residents need goods and can afford them. Gated on road connection.
+        let base_commercial =
+            clamp01(goods_shortage * snapshot.household_affordability * ext_conn);
+        // Industrial: fraction of commercial input value sourced from OWA rather than local supply.
+        // Smooth 0..1 — one farm partially covering multiple shops yields a proportional value.
+        let base_industrial = clamp01(snapshot.commercial_owa_dependency * ext_conn);
 
         self.residential = base_residential;
         self.commercial = base_commercial;
@@ -1215,12 +1182,6 @@ fn repo_relative_path(relative: &str) -> PathBuf {
 }
 
 fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, String> {
-    validate_positive_u32(
-        authored
-            .signal_normalization
-            .resident_presence_saturation_residents,
-        "signal_normalization.resident_presence_saturation_residents",
-    )?;
     validate_positive_f32(
         authored
             .signal_normalization
@@ -1236,12 +1197,6 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
 
 
 
-    validate_range_f32(
-        authored.household_action.base_inflow,
-        0.0,
-        1.0,
-        "household_action.base_inflow",
-    )?;
     validate_range_f32(
         authored.household_action.admission_threshold,
         0.0,
@@ -1291,22 +1246,6 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
                 profile.demand_channel, profile.id
             ));
         };
-        validate_positive_u32(
-            profile.cadence_days,
-            &format!("profiles.{}.cadence_days", profile.id),
-        )?;
-        validate_range_f32(
-            profile.base_pressure_weight,
-            0.0,
-            1.0,
-            &format!("profiles.{}.base_pressure_weight", profile.id),
-        )?;
-        validate_range_f32(
-            profile.local_modifier_scale,
-            0.0,
-            1.0,
-            &format!("profiles.{}.local_modifier_scale", profile.id),
-        )?;
         validate_range_f32(
             profile.spawn_threshold,
             0.0,
@@ -1343,20 +1282,11 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
                 profile.id
             ));
         }
-        if profile.local_modifier_scale != 0.0 {
-            return Err(format!(
-                "shipped base-game profile '{}' must set local_modifier_scale = 0.0",
-                profile.id
-            ));
-        }
         by_id.insert(
             profile.id.clone(),
             GrowthProfileRuntime {
                 id: profile.id,
                 demand_channel,
-                cadence_days: profile.cadence_days,
-                base_pressure_weight: profile.base_pressure_weight,
-                local_modifier_scale: profile.local_modifier_scale,
                 spawn_threshold: profile.spawn_threshold,
                 despawn_threshold: profile.despawn_threshold,
                 upgrade_threshold: profile.upgrade_threshold,
@@ -1396,9 +1326,6 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
 
     Ok(DemandConfig {
         signal_normalization: SignalNormalizationConfig {
-            resident_presence_saturation_residents: authored
-                .signal_normalization
-                .resident_presence_saturation_residents,
             household_affordability_target_reserve_days: authored
                 .signal_normalization
                 .household_affordability_target_reserve_days,
@@ -1408,7 +1335,6 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
         },
 
         household_action: HouseholdActionConfig {
-            base_inflow: authored.household_action.base_inflow,
             admission_threshold: authored.household_action.admission_threshold,
             removal_threshold: authored.household_action.removal_threshold,
         },
@@ -1539,17 +1465,16 @@ struct DailyDemandSnapshot {
     total_household_count: u32,
     unhoused_household_ratio: f32,
     housing_availability: f32,
-    resident_presence: f32,
-    job_availability: f32,
     household_affordability: f32,
     household_stock_stability: f32,
-    utility_service_stability: f32,
     external_connection_available: f32,
-    /// Fraction of commercial buildings that lack a corresponding local industrial
-    /// (input) supplier. 1.0 = no farms at all; 0.0 = full local coverage.
-    /// Drives industrial spawning independently of household goods_shortage so
-    /// OWA fallback for commercial inputs does not suppress the signal.
-    commercial_input_deficit: f32,
+    /// Fraction of commercial input value sourced from OWA rather than local industrial.
+    ///
+    /// Computed from the daily `daily_owa_input_value` / `daily_local_input_value` accumulators
+    /// on each active commercial building. 1.0 = all inputs imported from OWA; 0.0 = fully
+    /// supplied by local industrial. Drives industrial spawning based on actual throughput
+    /// rather than a headcount ratio, so one farm can partially satisfy multiple shops.
+    commercial_owa_dependency: f32,
     // Raw counts needed for non-residential spawn gates.
     housed_resident_count: u32,
 }
@@ -1563,14 +1488,9 @@ impl DailyDemandSnapshot {
     ) -> Self {
         let mut total_household_slots = 0_u32;
         let mut occupied_household_slots = 0_u32;
-        let mut occupied_reachable_job_slots = 0_u32;
-        let mut open_reachable_job_slots = 0_u32;
-        let mut filled_job_slots = 0_u32;
         let mut existing_private_building_count = 0_u32;
-        let mut utility_service_consumer_count = 0_u32;
-        let mut utility_service_satisfied_count = 0_u32;
-        let mut active_commercial_count = 0_u32;
-        let mut active_industrial_count = 0_u32;
+        let mut total_commercial_owa_input = 0.0_f32;
+        let mut total_commercial_local_input = 0.0_f32;
 
         for (idx, building) in allocator.buildings.iter().enumerate() {
             if building.broken || building.economy_broken {
@@ -1594,35 +1514,15 @@ impl DailyDemandSnapshot {
                     .saturating_add(building.occupancy.min(household_capacity));
             }
 
-            if matches!(
-                building.zone_type,
-                ZoneType::Commercial | ZoneType::Industrial
-            ) {
-                let worker_capacity = allocator.worker_capacity(idx);
-                let occupied = building.worker_count.min(worker_capacity);
-                occupied_reachable_job_slots =
-                    occupied_reachable_job_slots.saturating_add(occupied);
-                open_reachable_job_slots = open_reachable_job_slots
-                    .saturating_add(worker_capacity.saturating_sub(occupied));
-                filled_job_slots = filled_job_slots.saturating_add(occupied);
-                utility_service_consumer_count = utility_service_consumer_count.saturating_add(1);
-                if !building.is_deserted {
-                    utility_service_satisfied_count =
-                        utility_service_satisfied_count.saturating_add(1);
-                    // Count active (non-deserted) commercial and industrial buildings
-                    // separately for the industrial supply-chain deficit signal.
-                    if matches!(building.zone_type, ZoneType::Commercial) {
-                        active_commercial_count = active_commercial_count.saturating_add(1);
-                    } else {
-                        active_industrial_count = active_industrial_count.saturating_add(1);
-                    }
-                }
+            // Sum OWA vs local input spend across active commercial buildings.
+            // Deserted buildings transact nothing; their accumulators stay at zero.
+            if !building.is_deserted && matches!(building.zone_type, ZoneType::Commercial) {
+                total_commercial_owa_input += building.daily_owa_input_value;
+                total_commercial_local_input += building.daily_local_input_value;
             }
         }
 
         let vacant_household_slots = total_household_slots.saturating_sub(occupied_household_slots);
-        let total_reachable_job_slots =
-            occupied_reachable_job_slots.saturating_add(open_reachable_job_slots);
 
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
@@ -1666,17 +1566,6 @@ impl DailyDemandSnapshot {
         } else {
             clamp01(vacant_household_slots as f32 / total_household_slots as f32)
         };
-        let resident_presence = clamp01(
-            housed_resident_count as f32
-                / config
-                    .signal_normalization
-                    .resident_presence_saturation_residents as f32,
-        );
-        let job_availability = if total_reachable_job_slots == 0 {
-            0.0
-        } else {
-            clamp01(open_reachable_job_slots as f32 / total_reachable_job_slots as f32)
-        };
         let household_affordability = if housed_household_count == 0 {
             1.0
         } else {
@@ -1686,11 +1575,6 @@ impl DailyDemandSnapshot {
             1.0
         } else {
             clamp01(household_stock_stability_sum / housed_household_count as f32)
-        };
-        let utility_service_stability = if utility_service_consumer_count == 0 {
-            1.0
-        } else {
-            clamp01(utility_service_satisfied_count as f32 / utility_service_consumer_count as f32)
         };
         let connected_border_count = graph
             .nodes()
@@ -1713,34 +1597,31 @@ impl DailyDemandSnapshot {
             clamp01(unhoused_household_count as f32 / total_household_count as f32)
         };
 
-        // Fraction of commercial buildings that are not matched by a local industrial
-        // supplier. Used to drive industrial spawning independently of household
-        // goods_shortage (which OWA fallback suppresses after initial settlement).
-        let commercial_input_deficit = if active_commercial_count == 0 {
-            0.0
-        } else {
-            clamp01(
-                1.0 - active_industrial_count as f32 / active_commercial_count as f32,
-            )
+        // Fraction of commercial input value sourced from OWA vs local industrial.
+        // Based on actual daily transaction costs accumulated by logistics, so one farm
+        // that partially supplies multiple shops yields a smooth intermediate signal.
+        let commercial_owa_dependency = {
+            let total = total_commercial_owa_input + total_commercial_local_input;
+            if total <= 0.0 {
+                0.0
+            } else {
+                clamp01(total_commercial_owa_input / total)
+            }
         };
 
         debug_log!(
             "spawn",
             "daily_snapshot: border_nodes={} ext_conn={:.0} housing_avail={:.2} \
-             resident_presence={:.2} job_avail={:.2} utility_stab={:.2} \
-             stock_stab={:.2} afford={:.2} ind_deficit={:.2} \
-             private_buildings={} filled_jobs={}",
+             unhoused_ratio={:.2} stock_stab={:.2} afford={:.2} owa_dep={:.2} \
+             private_buildings={}",
             connected_border_count,
             external_connection_available,
             housing_availability,
-            resident_presence,
-            job_availability,
-            utility_service_stability,
+            unhoused_household_ratio,
             household_stock_stability,
             household_affordability,
-            commercial_input_deficit,
+            commercial_owa_dependency,
             existing_private_building_count,
-            filled_job_slots,
         );
 
         Self {
@@ -1748,13 +1629,10 @@ impl DailyDemandSnapshot {
             total_household_count,
             unhoused_household_ratio,
             housing_availability,
-            resident_presence,
-            job_availability,
             household_affordability,
             household_stock_stability,
-            utility_service_stability,
             external_connection_available,
-            commercial_input_deficit,
+            commercial_owa_dependency,
             housed_resident_count,
         }
     }
@@ -1989,6 +1867,8 @@ mod tests {
             revenue: 0.0,
             operating_budget: 500.0,
             shipment_cooldown_hours: 0,
+            daily_owa_input_value: 0.0,
+            daily_local_input_value: 0.0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         }
@@ -2058,11 +1938,11 @@ mod tests {
             register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
         let residential_asset =
             register_test_asset(&mut allocator, "residential", ZoneType::Residential);
-        // No industrial building: commercial_input_deficit = 1.0, so industrial
-        // pressure is raised by the supply-chain gap signal.
-        allocator
-            .buildings
-            .push(building(ZoneType::Commercial, 80.0, 0, 1, commercial_asset));
+        // Simulate commercial building that has been buying inputs from OWA:
+        // daily_owa_input_value > 0 drives industrial demand.
+        let mut com = building(ZoneType::Commercial, 80.0, 0, 1, commercial_asset);
+        com.daily_owa_input_value = 100.0;
+        allocator.buildings.push(com);
         // occupancy=2 so resident_presence > 0, allowing organic commercial/industrial pressure.
         allocator.buildings.push(building(
             ZoneType::Residential,
@@ -2143,9 +2023,11 @@ mod tests {
 
         demand.run_daily_pass(&allocator, &households, &graph, &zoning);
 
-        // No external connection means inflow_desire = 0.0, so ResidentialGrowth falls
-        // below equilibrium (< 0.5) and below the spawn threshold. Growth is blocked.
-        assert!(demand.residential < 0.50, "residential={}", demand.residential);
+        // No external connection means inflow_desire = 0.0 and removal_pressure = 0.0
+        // (no households → unhoused_ratio = 0), so ResidentialGrowth is at equilibrium
+        // (= 0.5) — no spawn pressure, no despawn pressure. Growth is blocked because
+        // 0.5 is below the spawn threshold.
+        assert!(demand.residential <= 0.50, "residential={}", demand.residential);
         assert_eq!(demand.commercial, 0.0);
         assert_eq!(demand.industrial, 0.0);
         assert_eq!(demand.households_to_admit_today, 0);
@@ -2184,19 +2066,16 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_uses_settled_building_utility_availability() {
+    fn snapshot_computes_owa_dependency_from_input_accumulators() {
+        // Commercial building with 75 currency from OWA and 25 from local industrial:
+        // owa_dependency = 75 / (75 + 25) = 0.75.
         let mut allocator = BuildingAllocator::new();
         let commercial_asset =
             register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
-        let industrial_asset =
-            register_test_asset(&mut allocator, "industrial", ZoneType::Industrial);
-        allocator
-            .buildings
-            .push(building(ZoneType::Commercial, 40.0, 0, 1, commercial_asset));
-        allocator
-            .buildings
-            .push(building(ZoneType::Industrial, 40.0, 0, 1, industrial_asset));
-        allocator.buildings[1].is_deserted = true;
+        let mut com = building(ZoneType::Commercial, 40.0, 0, 1, commercial_asset);
+        com.daily_owa_input_value = 75.0;
+        com.daily_local_input_value = 25.0;
+        allocator.buildings.push(com);
 
         let households = HouseholdSystem::new();
         let graph = graph_with_connected_border();
@@ -2204,7 +2083,11 @@ mod tests {
 
         let snapshot = DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config);
 
-        assert!((snapshot.utility_service_stability - 0.5).abs() < f32::EPSILON);
+        assert!(
+            (snapshot.commercial_owa_dependency - 0.75).abs() < 1e-5,
+            "owa_dependency must equal owa/(owa+local): got={:.4}",
+            snapshot.commercial_owa_dependency
+        );
     }
 
     #[test]

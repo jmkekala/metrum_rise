@@ -115,6 +115,15 @@ pub struct Building {
     pub operating_budget: f32,
     /// Remaining hourly cooldown steps before this building may open another freight request.
     pub shipment_cooldown_hours: u16,
+    /// Currency value of input shipments received from OWA during the current day.
+    ///
+    /// Reset once per day after the demand snapshot is taken. Read by the demand system to
+    /// compute the fraction of commercial input value sourced from OWA vs local industrial.
+    pub daily_owa_input_value: f32,
+    /// Currency value of input shipments received from local industrial during the current day.
+    ///
+    /// Reset once per day after the demand snapshot is taken.
+    pub daily_local_input_value: f32,
     /// True when the current painted zoning profile is incompatible and the building is waiting
     /// for the rezoning grace timer to expire.
     pub pending_redevelopment: bool,
@@ -469,6 +478,17 @@ impl BuildingAllocator {
             return 0;
         }
         self.registry.household_capacity(&b.asset_id)
+    }
+
+    /// Resets the daily OWA and local input value accumulators on every building.
+    ///
+    /// Called once per day after the demand snapshot has been taken, so the next day's
+    /// logistics ticks accumulate against a clean baseline.
+    pub(crate) fn reset_daily_input_accumulators(&mut self) {
+        for building in &mut self.buildings {
+            building.daily_owa_input_value = 0.0;
+            building.daily_local_input_value = 0.0;
+        }
     }
 
     /// Returns the target floor area per household for a building.

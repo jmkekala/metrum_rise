@@ -230,6 +230,7 @@ impl ShipmentSystem {
                     allocator.buildings[src_idx].operating_budget += shipment.total_cost;
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
+                    allocator.buildings[dest_idx].daily_local_input_value += shipment.total_cost;
                     shipment.status = SHIPMENT_FULFILLED;
                 }
                 SHIPMENT_SOURCE_OWA => {
@@ -246,6 +247,7 @@ impl ShipmentSystem {
                     }
                     allocator.buildings[dest_idx]
                         .add_inventory_units(shipment.resource_runtime_id, shipment.amount);
+                    allocator.buildings[dest_idx].daily_owa_input_value += shipment.total_cost;
                     shipment.status = SHIPMENT_FULFILLED;
                 }
                 _ => {
@@ -996,6 +998,8 @@ mod tests {
             revenue: 0.0,
             operating_budget: budget,
             shipment_cooldown_hours: 0,
+            daily_owa_input_value: 0.0,
+            daily_local_input_value: 0.0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         }

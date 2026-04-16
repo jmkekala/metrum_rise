@@ -15,12 +15,9 @@ reflected here too.
 """
 
 import argparse
-import math
 
 
 # ── Parameters (mirror demand/growth_profiles.toml + economy/profiles.toml) ──
-
-SATURATION = 500          # signal_normalization.resident_presence_saturation_residents
 
 # Spawn / despawn thresholds (growth_profiles.toml)
 # Residential thresholds are on the net-migration scale (0.5 = equilibrium).
@@ -33,14 +30,13 @@ R_BATCH = 0.50;  C_BATCH = 0.40;  I_BATCH = 0.40
 
 # Admission / removal
 MAX_HH_PER_DAY      = 48    # action_budget.max_households_per_day
-ADMISSION_THRESHOLD = 0.10  # household_action.admission_threshold (lowered 2026-04)
-REMOVAL_THRESHOLD   = 0.55  # household_action.removal_threshold (raised 2026-04 to stop pre-supply-chain churn)
+ADMISSION_THRESHOLD = 0.10  # household_action.admission_threshold
+REMOVAL_THRESHOLD   = 0.55  # household_action.removal_threshold
 
 # Building economics (economy/profiles.toml)
-HH_SIZE_AVG  = 3.5    # average household member count (mix of 2 and 5 seen in logs)
+HH_SIZE_AVG  = 3.5    # average household member count
 COM_COVERAGE = 40.0   # residents covered per commercial building (units/day capacity)
 COM_WORKERS  = 5      # workers per commercial building
-IND_WORKERS  = 5      # workers per industrial building
 
 # OWA fallback: commercial can import inputs from OWA, providing this fraction
 # of stock stability even without local industrial supply.
@@ -83,7 +79,7 @@ def run(target_residents: int = 100_000, max_days: int = 100_000) -> None:
 
     header = (
         f"{'Day':>6} {'Residents':>10} {'Rbld':>7} {'Cbld':>6} {'Ibld':>5} "
-        f"{'Pres':>5} {'GShrt':>6} {'Afrd':>5} "
+        f"{'GShrt':>6} {'Afrd':>5} "
         f"{'R_dem':>6} {'C_dem':>6} {'I_dem':>6}  Note"
     )
     print(header)
@@ -97,13 +93,12 @@ def run(target_residents: int = 100_000, max_days: int = 100_000) -> None:
     def row(day: int, note: str = "") -> None:
         print(
             f"{day:>6} {int(residents):>10,} {res_bld:>7,} {com_bld:>6,} {ind_bld:>5,} "
-            f"{pres:>5.2f} {goods_short:>6.2f} {afford:>5.2f} "
+            f"{goods_short:>6.2f} {afford:>5.2f} "
             f"{r_dem:>6.3f} {c_dem:>6.3f} {i_dem:>6.3f}  {note}"
         )
 
     for day in range(1, max_days + 1):
         # ── Signals ──────────────────────────────────────────────────────
-        pres    = clamp01(residents / SATURATION)
         slots   = res_bld
         h_avail = clamp01((slots - households) / max(1, slots))
         h_short = 1.0 - h_avail
@@ -111,20 +106,26 @@ def run(target_residents: int = 100_000, max_days: int = 100_000) -> None:
         # Stock stability: local commercial covers demand; industrial improves
         # quality; OWA provides a floor so commercial can operate without farms.
         if residents > 0 and com_bld > 0:
-            raw_cov   = com_bld * COM_COVERAGE / residents
-            ind_qual  = clamp01(ind_bld / max(1, com_bld) * 2.0)
+            raw_cov    = com_bld * COM_COVERAGE / residents
+            ind_qual   = clamp01(ind_bld / max(1, com_bld) * 2.0)
             stock_stab = clamp01(raw_cov * (OWA_STOCK_FLOOR + (1.0 - OWA_STOCK_FLOOR) * ind_qual))
         else:
-            stock_stab = 0.0
+            stock_stab = 1.0 if residents == 0 else 0.0
         goods_short = 1.0 - stock_stab
 
-        # Commercial input deficit: fraction of commercial buildings without a
-        # local industrial (farm) supplier. Drives industrial demand independently
-        # of household goods_shortage (which OWA suppresses). Mirrors demand.rs.
+        # OWA dependency: approximates the fraction of commercial input value
+        # sourced from OWA rather than local industrial. In the real simulation
+        # this is computed from actual daily shipment costs. Here we approximate
+        # it using a throughput ratio: each industrial building covers
+        # IND_THROUGHPUT_PER_COM commercial buildings of input demand.
+        # When ind_bld * IND_THROUGHPUT_PER_COM >= com_bld, local coverage is
+        # full and owa_dep = 0; otherwise owa_dep rises proportionally.
+        IND_THROUGHPUT_PER_COM = 1.5  # one farm supplies ~1.5 grocery stores
         if com_bld == 0:
-            com_input_deficit = 0.0
+            owa_dep = 0.0
         else:
-            com_input_deficit = clamp01(1.0 - ind_bld / com_bld)
+            local_coverage = clamp01(ind_bld * IND_THROUGHPUT_PER_COM / com_bld)
+            owa_dep = 1.0 - local_coverage
 
         jobs      = (com_bld + ind_bld) * COM_WORKERS
         job_avail = clamp01(jobs / max(1, residents))
@@ -132,21 +133,17 @@ def run(target_residents: int = 100_000, max_days: int = 100_000) -> None:
         afford    = clamp01(ub_ramp * 0.8 + job_avail * 0.2)
 
         # ── Admission pressure (fills existing vacancies) ─────────────────
-        # Uses h_avail so it is high when slots exist to fill.
-        adm_cr += norm_pos(clamp01(h_avail), ADMISSION_THRESHOLD) * MAX_HH_PER_DAY
+        adm_cr += norm_pos(h_avail, ADMISSION_THRESHOLD) * MAX_HH_PER_DAY
         new_hh  = max(0, min(int(adm_cr), int(slots - households)))
         adm_cr -= new_hh
         households += new_hh
         residents  += new_hh * HH_SIZE_AVG
 
         # ── Removal / residential demand ──────────────────────────────────
-        # removal_pressure is shared between household emigration and ResidentialGrowth.
+        # removal_pressure: households leave when they have no home.
+        # Future: evacuation system will extend this signal.
         unhoused_ratio   = 0.0  # simplified: all housed in this model
-        removal_pressure = clamp01(
-            unhoused_ratio * 0.50
-            + (1.0 - job_avail) * 0.25
-            + goods_short * 0.25
-        )
+        removal_pressure = unhoused_ratio
         if removal_pressure > REMOVAL_THRESHOLD and households > 0:
             remove_frac = norm_pos(removal_pressure, REMOVAL_THRESHOLD)
             rem_hh = max(0, min(int(remove_frac * MAX_HH_PER_DAY), int(households)))
@@ -155,16 +152,15 @@ def run(target_residents: int = 100_000, max_days: int = 100_000) -> None:
             residents   = max(0.0, residents)
 
         # Residential demand: net migration balance rescaled to 0..1 (0.5 = equilibrium).
-        # inflow_desire uses h_short (not h_avail) to measure unmet demand for new slots.
-        # ext_conn and utility_stab both assumed 1.0 in this model.
-        inflow_desire = clamp01(h_short)          # base_inflow=1, ext_conn=1, utility=1
+        # inflow_desire uses h_short to measure unmet demand for new slots (ext_conn=1 here).
+        inflow_desire = clamp01(h_short)
         net_res       = max(-1.0, min(1.0, inflow_desire - removal_pressure))
-        r_dem         = net_res * 0.5 + 0.5      # 0.5 = equilibrium
+        r_dem         = net_res * 0.5 + 0.5  # 0.5 = equilibrium
 
-        # Commercial: residents with money need goods.
-        c_dem = clamp01(pres * goods_short * afford)
-        # Industrial: driven by commercial supply-chain gap, not goods_shortage.
-        i_dem = clamp01(pres * com_input_deficit)
+        # Commercial: residents need goods (naturally 0 when no residents: goods_short=0).
+        c_dem = clamp01(goods_short * afford)
+        # Industrial: driven by OWA dependency of commercial (naturally 0 with no commercial).
+        i_dem = clamp01(owa_dep)
 
         # ── Spawn: Residential ────────────────────────────────────────────
         rc      = r_candidates(res_bld)
@@ -173,12 +169,12 @@ def run(target_residents: int = 100_000, max_days: int = 100_000) -> None:
 
         # ── Spawn: Commercial ─────────────────────────────────────────────
         cc      = c_candidates(com_bld)
-        com_cr += norm_pos(c_dem, C_SPAWN) * cc * C_BATCH * pres
+        com_cr += norm_pos(c_dem, C_SPAWN) * cc * C_BATCH
         new_c   = min(int(com_cr), cc);  com_cr -= new_c;  com_bld += new_c
 
         # ── Spawn: Industrial ─────────────────────────────────────────────
         ic      = i_candidates(ind_bld)
-        ind_cr += norm_pos(i_dem, I_SPAWN) * ic * I_BATCH * pres
+        ind_cr += norm_pos(i_dem, I_SPAWN) * ic * I_BATCH
         new_i   = min(int(ind_cr), ic);  ind_cr -= new_i;  ind_bld += new_i
 
         # ── Output ────────────────────────────────────────────────────────
@@ -201,8 +197,6 @@ def run(target_residents: int = 100_000, max_days: int = 100_000) -> None:
               f"| 1 ind per {com_bld // max(1, ind_bld)} com-bldg")
     print(f"  Jobs:      {total_jobs:,} for {int(residents):,} residents "
           f"→ job_avail={clamp01(total_jobs / max(1, residents)):.2f}")
-    print(f"  Presence:  {clamp01(residents / SATURATION):.2f} "
-          f"(saturates at {SATURATION} residents)")
 
 
 if __name__ == "__main__":

@@ -512,6 +512,8 @@ impl SimCore {
             &self.region_graph,
             &self.zoning,
         );
+        // Reset OWA/local input accumulators after the snapshot has been taken.
+        self.allocator.reset_daily_input_accumulators();
         self.allocator.execute_demand_household_admission(
             self.demand.households_to_admit_today,
             &mut self.agents,

@@ -336,6 +336,8 @@ fn test_zone_index_consistency() {
             revenue: 0.0,
             operating_budget: 500.0,
             shipment_cooldown_hours: 0,
+            daily_owa_input_value: 0.0,
+            daily_local_input_value: 0.0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         });
@@ -412,6 +414,8 @@ fn test_vacancy_index_consistency() {
             revenue: 0.0,
             operating_budget: 500.0,
             shipment_cooldown_hours: 0,
+            daily_owa_input_value: 0.0,
+            daily_local_input_value: 0.0,
             pending_redevelopment: false,
             rezone_grace_days_remaining: 0,
         });
@@ -916,6 +920,8 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         operating_budget: 0.0,
         
         shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -1029,6 +1035,8 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         operating_budget: 0.0,
         
         shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -1102,6 +1110,8 @@ fn test_building_removal_clears_zoning_occupancy() {
         operating_budget: 500.0,
         
         shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -1219,6 +1229,8 @@ fn test_immigration_claims_vacant_home() {
         operating_budget: 500.0,
         
         shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -1329,9 +1341,10 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         operating_budget: 500.0,
         
         shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
-        
     });
     allocator.buildings.push(Building {
         center_x: 40.0,
@@ -1360,6 +1373,8 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         operating_budget: 500.0,
         
         shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -1525,6 +1540,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         operating_budget: 0.0,
         
         shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -1555,6 +1572,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         operating_budget: 0.0,
         
         shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });
@@ -1585,6 +1604,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         operating_budget: 0.0,
         
         shipment_cooldown_hours: 0,
+        daily_owa_input_value: 0.0,
+        daily_local_input_value: 0.0,
         pending_redevelopment: false,
         rezone_grace_days_remaining: 0,
     });

@@ -339,6 +339,9 @@ pub(super) fn load_buildings(
             economy_profile_runtime_id: economy_binding.runtime_id,
             economy_broken: economy_binding.economy_broken,
             resource_inventory: vec![0.0; resource_count],
+            // Transient daily accumulators — not persisted; start fresh each session.
+            daily_owa_input_value: 0.0,
+            daily_local_input_value: 0.0,
             pending_redevelopment: row.get::<_, i64>(17)? != 0,
             rezone_grace_days_remaining: i64_to_u8(row.get(18)?)?,
         });

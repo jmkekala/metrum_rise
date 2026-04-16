@@ -180,10 +180,6 @@ DemandChannel
 GrowthProfile
   - id
   - demand_channel
-  - cadence_days
-  - base_pressure_weight
-  - local_modifier_scale
-  - local_modifier_weights   # optional in v0.1
   - spawn_threshold
   - despawn_threshold
   - upgrade_threshold
@@ -194,23 +190,8 @@ GrowthProfile
 Interpretation:
 
 - `demand_channel` selects exactly one city-level growth-pressure input for the profile
-- `cadence_days` controls how often this profile is re-evaluated
-- `base_pressure_weight` controls how strongly the chosen city-level demand channel contributes to
-  the final growth score
-- `local_modifier_scale` controls how strongly local desirability changes the final growth score
-- `local_modifier_weights` optionally tells the demand system how strongly each local condition
-  contributes to local desirability
-- thresholds convert the final normalized score into spawn, despawn, upgrade, or downgrade
-  eligibility
+- thresholds convert the channel value into spawn, despawn, upgrade, or downgrade eligibility
 - `hysteresis_margin` keeps state changes stable and stops one-frame spikes from causing churn
-
-Implemented `v0.1` local-modifier rule:
-
-- shipped `v0.1` `GrowthProfile`s are allowed to omit `local_modifier_weights` entirely
-- if a shipped `GrowthProfile` omits `local_modifier_weights`, then `local_desirability = 0.5`
-  neutral and `local_modifier_scale` must be `0.0`
-- this keeps baseline demand implementable without requiring local-modifier systems that are not yet
-  trustworthy or complete
 
 Local-modifier input rule:
 
@@ -235,24 +216,8 @@ Future local-modifier families may include:
 
 Deterministic fixed evaluator:
 
-1. Read the city-level `demand_channel` pressure as `city_pressure` in `0.0..1.0`.
-2. If `local_modifier_weights` is present and non-empty, read each referenced local modifier in
-   `0.0..1.0` and compute `local_desirability` as the weighted average of those referenced
-   modifiers.
-3. Otherwise set `local_desirability = 0.5`.
-4. Compute the final normalized score:
-
-```text
-final_growth_score =
-    clamp(
-        city_pressure * base_pressure_weight
-      + (local_desirability - 0.5) * local_modifier_scale,
-        0.0,
-        1.0
-    )
-```
-
-5. Compare `final_growth_score` against the profile thresholds:
+1. Read the city-level `demand_channel` pressure in `0.0..1.0` as the growth score.
+2. Compare the score against the profile thresholds:
    - empty legal site: `spawn_threshold`
    - existing building: `upgrade_threshold`, `downgrade_threshold`, `despawn_threshold`
 6. Apply one fixed hysteresis rule:
@@ -329,7 +294,6 @@ Canonical `growth_profiles.toml` shape:
 
 ```toml
 [signal_normalization]
-resident_presence_saturation_residents = 500
 household_affordability_target_reserve_days = 7.0
 household_stock_stability_target_days = 3.0
 
@@ -337,7 +301,6 @@ household_stock_stability_target_days = 3.0
 max_households_per_day = 48
 
 [household_action]
-base_inflow = 1.0
 admission_threshold = 0.10
 removal_threshold = 0.55
 
@@ -364,9 +327,6 @@ industrial = 0.50
 [[profiles]]
 id = "residential_low_default"
 demand_channel = "ResidentialGrowth"
-cadence_days = 1
-base_pressure_weight = 1.0
-local_modifier_scale = 0.0
 spawn_threshold = 0.55     # fires when net inflow desire > 10%  (net_residential_demand > +0.10)
 despawn_threshold = 0.45   # fires when net outflow desire > 10% (net_residential_demand < −0.10)
 upgrade_threshold = 0.80
@@ -376,11 +336,9 @@ hysteresis_margin = 0.05
 
 Deterministic validation rules:
 
-- `signal_normalization.resident_presence_saturation_residents` must be finite and `> 0`
 - `signal_normalization.household_affordability_target_reserve_days` must be finite and `> 0.0`
 - `signal_normalization.household_stock_stability_target_days` must be finite and `> 0.0`
 - `action_budget.max_households_per_day` must be a finite integer `>= 0`
-- `household_action.base_inflow` must be finite and in `0.0..1.0`
 - `household_action.admission_threshold` must be finite and in `0.0..1.0`
 - `household_action.removal_threshold` must be finite and in `0.0..1.0`
 - `action_budget.spawn_batch_fraction_by_use` must contain exactly `residential`, `commercial`,
@@ -398,13 +356,7 @@ Deterministic validation rules:
 - every `id` must be globally unique
 - every shipped base-game `id` must belong to the closed 9-id `v0.1` set listed above
 - every `demand_channel` must decode to a known `DemandChannel`
-- every `cadence_days` must be an integer `>= 1`
-- `base_pressure_weight`, `local_modifier_scale`, every threshold, and `hysteresis_margin` must be
-  finite values in `0.0..1.0`
-- shipped base-game `v0.1` profiles must set `local_modifier_scale = 0.0`
-- shipped base-game `v0.1` profiles must omit `profiles.local_modifier_weights`
-- if a future extension re-enables `profiles.local_modifier_weights`, the explicit supported key set
-  must be documented here at the same time
+- every threshold and `hysteresis_margin` must be finite values in `0.0..1.0`
 - `upgrade_threshold` must be `>= downgrade_threshold`
 - invalid shipped base-game growth profiles must fail validation explicitly rather than being
   silently dropped or rewritten
@@ -448,31 +400,25 @@ Deterministic `v0.1` rule:
 Baseline `v0.1` city-level signal families:
 
 - `housing_availability`
-- `resident_presence`
-- `job_availability`
 - `household_affordability`
 - `household_stock_stability`
-- `utility_service_stability`
 - `external_connection_available`
-- `commercial_input_deficit` — fraction of active commercial buildings without a corresponding
-  local industrial (farm/input) supplier; drives industrial spawn pressure independently of
-  household `goods_shortage` (which OWA fallback suppresses)
+- `commercial_owa_dependency` — fraction of commercial input value sourced from OWA imports rather
+  than local industrial; computed from daily shipment costs accumulated per building, giving a
+  smooth 0..1 signal that reflects actual throughput coverage
 
 Baseline ownership rule:
 
 - `housing_availability` comes from housing capacity and vacancy state owned by economy/building
   systems
-- `resident_presence` comes from occupied housing or admitted-household presence state owned by
-  economy/building systems
-- `job_availability` comes from labor demand and open-job state owned by economy/building systems
 - `household_affordability` comes from household budgets and essential-cost state owned by economy
 - `household_stock_stability` comes from household stock buffers owned by economy
-- `utility_service_stability` comes from utility-service resolution owned by economy/utility systems
 - `external_connection_available` comes from network-border connectivity owned by the road/network
   layer
-- `commercial_input_deficit` is derived by the demand snapshot from the live building inventory:
-  `clamp(1.0 - active_industrial_count / active_commercial_count, 0.0, 1.0)` when
-  `active_commercial_count > 0`, otherwise `0.0`
+- `commercial_owa_dependency` is derived by the demand snapshot from daily per-building
+  `daily_owa_input_value` and `daily_local_input_value` accumulators, reset after each snapshot:
+  `total_owa / (total_owa + total_local)` across active commercial buildings, `0.0` when no
+  commercial buildings exist or none have transacted yet
 
 Normalization rule:
 
@@ -492,9 +438,6 @@ Baseline derived economy values:
 ```text
 vacant_household_slots =
     max(total_household_slots - occupied_household_slots, 0)
-
-total_reachable_job_slots =
-    occupied_reachable_job_slots + open_reachable_job_slots
 ```
 
 Signal formulas:
@@ -503,17 +446,6 @@ Signal formulas:
 housing_availability =
     if total_household_slots == 0 then 0.0
     else clamp(vacant_household_slots / total_household_slots, 0.0, 1.0)
-
-resident_presence =
-    clamp(
-        housed_resident_count / resident_presence_saturation_residents,
-        0.0,
-        1.0
-    )
-
-job_availability =
-    if total_reachable_job_slots == 0 then 0.0
-    else clamp(open_reachable_job_slots / total_reachable_job_slots, 0.0, 1.0)
 
 household_affordability =
     if housed_household_count == 0 then 1.0
@@ -537,9 +469,6 @@ household_stock_stability =
         )
     )
 
-utility_service_stability =
-    min(power_service_ratio, water_service_ratio, sewage_service_ratio)
-
 external_connection_available =
     if connected_border_count > 0 then 1.0 else 0.0
 ```
@@ -547,22 +476,13 @@ external_connection_available =
 Interpretation and source rule:
 
 - `housing_availability` uses settled household-slot capacity after the daily economy pass
-- `resident_presence` uses housed residents, not raw map population targets
-- `job_availability` uses open reachable jobs after the settled daily viability and staffing state
 - `household_affordability` uses settled economy-owned `household_reserve_days` values from
   [`economy.md`](economy.md)
 - `household_stock_stability` uses settled economy-owned `household_stock_days` values
-- `utility_service_stability` uses settled service-satisfaction ratios in `0.0..1.0`; if a
-  specific utility dimension is not implemented yet in baseline `v0.1`, that dimension contributes
-  a neutral `1.0`
-- the current live runtime uses the settled building-level `utility_service_available` outcomes as
-  its baseline approximation for those service-satisfaction ratios; finer per-utility breakdown can
-  replace that approximation later without changing the surrounding demand formulas
 - `external_connection_available` is a hard gate derived from settled network-border connectivity
-- `resident_presence_saturation_residents`,
-  `household_affordability_target_reserve_days`, and
-  `household_stock_stability_target_days` are authored in the top-level
-  `signal_normalization` table in [`demand/growth_profiles.toml`](../demand/growth_profiles.toml)
+- `household_affordability_target_reserve_days` and `household_stock_stability_target_days` are
+  authored in the `signal_normalization` table in
+  [`demand/growth_profiles.toml`](../demand/growth_profiles.toml)
 
 Future local-modifier families may include:
 
@@ -589,7 +509,6 @@ Baseline helper terms:
 ```text
 housing_shortage = 1.0 - housing_availability
 goods_shortage   = 1.0 - household_stock_stability
-service_gate     = utility_service_stability * external_connection_available
 ```
 
 Evaluation order:
@@ -604,25 +523,11 @@ Evaluation order:
 // Uses housing_shortage (not housing_availability) to measure unmet demand for new slots,
 // not just ease of filling vacancies that already exist.
 inflow_desire =
-    clamp(
-        household_action.base_inflow
-      * external_connection_available
-      * housing_shortage
-      * utility_service_stability,
-        0.0,
-        1.0
-    )
+    clamp(external_connection_available * housing_shortage, 0.0, 1.0)
 
-// Removal pressure is computed identically to the household-action removal formula.
-// See Startup Household Growth for the full derivation.
-removal_pressure =
-    clamp(
-        unhoused_household_ratio * 0.50
-      + (1.0 - job_availability) * 0.25
-      + (1.0 - household_stock_stability) * 0.25,
-        0.0,
-        1.0
-    )
+// Removal pressure: households leave when they have no home.
+// Future: an evacuation system will extend this signal.
+removal_pressure = unhoused_household_ratio
 
 // Net migration balance: positive when the city wants to grow, negative when it wants
 // to shrink. Rescaled to 0.0..1.0 with 0.5 as exact equilibrium so that the existing
@@ -638,23 +543,10 @@ ResidentialGrowth =
     clamp(net_residential_demand * 0.5 + 0.5, 0.0, 1.0)
 
 CommercialGrowth =
-    clamp(
-        resident_presence
-      * goods_shortage
-      * household_affordability
-      * service_gate,
-        0.0,
-        1.0
-    )
+    clamp(goods_shortage * household_affordability * external_connection_available, 0.0, 1.0)
 
 IndustrialGrowth =
-    clamp(
-        resident_presence
-      * commercial_input_deficit
-      * service_gate,
-        0.0,
-        1.0
-    )
+    clamp(commercial_owa_dependency * external_connection_available, 0.0, 1.0)
 ```
 
 5. Compute the action-limit gate for building spawns. All use families are uncapped so they can
@@ -682,9 +574,10 @@ Interpretation:
   toward 0.5 or below, which stops spawning without a separate quadratic throttle
 - `CommercialGrowth` rises when a real resident/customer base exists, household stock is
   unstable, households can still spend, and the city is healthy enough to support more commerce
-- `IndustrialGrowth` is driven by `commercial_input_deficit` — the fraction of commercial
-  buildings that lack a local industrial supplier — rather than `goods_shortage`; this decouples
-  farm spawning from the OWA fallback that suppresses `goods_shortage` when imports are available
+- `IndustrialGrowth` is driven by `commercial_owa_dependency` — the fraction of commercial
+  input value sourced from OWA imports rather than local industrial — computed from daily shipment
+  costs accumulated per building; one farm that partially covers multiple shops produces a smooth
+  intermediate signal rather than the binary 0/1 of a headcount ratio
 - `NonResidentialSpawnLimit = 1.0` so commercial and industrial buildings can bootstrap without
   waiting for a large population
 - baseline `v0.1` intentionally does not define `OfficeGrowth` or `MixedGrowth`; office and mixed
@@ -749,12 +642,10 @@ as:
 - housing capacity and vacancy (`housing_availability` for household admission; `housing_shortage`
   for residential building spawn)
 - resident presence (commercial/industrial demand gating)
-- job availability (emigration pressure only; not an admission or spawn gate)
 - household affordability (commercial demand; not a residential gate)
 - household stock stability (emigration pressure; commercial demand)
-- utility or service stability (admission gate; residential/commercial/industrial demand)
+- commercial OWA dependency (industrial spawn pressure)
 - existence of at least one external connection (hard gate for admission and residential spawn)
-- commercial input deficit (industrial spawn pressure)
 
 These are city-level signals, not per-agent trip decisions.
 
@@ -1019,12 +910,10 @@ Deterministic `v0.1` day-boundary rule:
 3. Freeze the post-settlement city snapshot produced by that pass.
 4. Derive every baseline demand input from that frozen snapshot:
    - `housing_availability`
-   - `resident_presence`
-   - `job_availability`
    - `household_affordability`
    - `household_stock_stability`
-   - `utility_service_stability`
    - `external_connection_available`
+   - `commercial_owa_dependency`
 5. Compute the city-level `DemandChannel` values from that same frozen snapshot.
 6. Evaluate every active `GrowthProfile` whose cadence matches that day boundary.
 7. Compute `households_to_admit_today`, `households_to_remove_today`, and all building-action
@@ -1035,8 +924,6 @@ Deterministic `v0.1` day-boundary rule:
 Deterministic cadence rule:
 
 - the demand layer runs exactly once per operational day boundary
-- a `GrowthProfile` with `cadence_days = N` is evaluated only on day boundaries where
-  the current operational `day_index % N == 0`
 - household-action outputs and building-action budgets are rebuilt on every daily demand pass from
   the current frozen post-settlement snapshot
 
@@ -1075,14 +962,7 @@ signals but serve different purposes.
 
 ```text
 admission_pressure =
-    clamp(
-        household_action.base_inflow
-      * external_connection_available
-      * housing_availability
-      * utility_service_stability,
-        0.0,
-        1.0
-    )
+    clamp(external_connection_available * housing_availability, 0.0, 1.0)
 ```
 
 **`inflow_desire`** — drives new residential building capacity. Used only in `ResidentialGrowth`.
@@ -1090,14 +970,7 @@ High when buildings are nearly full and the city is welcoming (unmet demand for 
 
 ```text
 inflow_desire =
-    clamp(
-        household_action.base_inflow
-      * external_connection_available
-      * housing_shortage
-      * utility_service_stability,
-        0.0,
-        1.0
-    )
+    clamp(external_connection_available * housing_shortage, 0.0, 1.0)
 ```
 
 Relationship: `admission_pressure` and `inflow_desire` are complementary by design.
@@ -1107,21 +980,14 @@ This ensures the system fills existing buildings before spawning new ones.
 
 **`removal_pressure`** — drives household emigration and residential despawn. Shared between
 the household-action `households_to_remove_today` output and the `net_residential_demand` term
-inside `ResidentialGrowth`:
+inside `ResidentialGrowth`. Households leave when they have no home:
 
 ```text
 unhoused_household_ratio =
     if total_household_count == 0 then 0.0
     else clamp(unhoused_household_count / total_household_count, 0.0, 1.0)
 
-removal_pressure =
-    clamp(
-        unhoused_household_ratio * 0.50
-      + (1.0 - job_availability) * 0.25
-      + (1.0 - household_stock_stability) * 0.25,
-        0.0,
-        1.0
-    )
+removal_pressure = unhoused_household_ratio
 ```
 
 Where:
@@ -1129,12 +995,10 @@ Where:
 - `total_household_count = housed_household_count + unhoused_household_count`
 - `unhoused_household_count` is read from the settled economy snapshot after relocation and
   eviction have already run for that operational day
-- `job_availability` and `household_stock_stability` come from the same frozen post-settlement
-  snapshot used by the rest of the daily demand pass
-- `removal_threshold = 0.55` is intentionally above the bare-startup value of
-  `(1−job_avail)×0.25 + (1−stock_stab)×0.25 = 0.50` so that a city without any supply chain yet
-  does not immediately expel its first households; removal fires only once the economy is
-  genuinely failing (unhoused households push the total above 0.55)
+- `removal_threshold = 0.55` means removal fires when more than 55% of households are unhoused
+
+Future: a dedicated evacuation system will extend `removal_pressure` with additional signals
+(e.g. sustained unaffordability, lack of services) when that system is implemented.
 
 Interpretation:
 
@@ -1281,7 +1145,7 @@ labour_gate_passes =
 
 Where:
 
-- `open_reachable_job_slots` is the same settled snapshot value used in `job_availability`
+- `open_reachable_job_slots` is taken from the frozen daily economy snapshot
 - `required_workers` is read from the compiled economy catalog for the candidate's bound profile
 - a candidate with `required_workers == 0` always passes (utility buildings, warehouses)
 - if the economy profile binding is missing or the catalog cannot be read, the gate fails safe
@@ -1612,7 +1476,7 @@ A deserted building:
 
 - occupies its land cells in the zoning grid, blocking new spawns at that location
 - is ineligible for upgrade or downgrade consideration
-- is not counted in `job_availability`, `utility_stab`, or `stock_stab` snapshots
+- is not counted in building-level demand snapshot signals (e.g. `commercial_owa_dependency`)
 - is removed when the player demolishes it, or when the demand system's despawn pressure
   selects it (deserted buildings are always first in the despawn queue)
 
