@@ -277,13 +277,13 @@ impl SimCore {
         let minutes = minute_of_day % 60;
 
         println!(
-            "[SIM_DEBUG] Day {} {:02}:{:02} demand=(R {:.0}%, C {:.0}%, I {:.0}%) admit={} remove={} buildings={} households={} agents={} states=(home={}, work={}, shopping={}, travelling={}, other={}) actions=spawn({}/{}/{}) upgrade({}/{}/{}) downgrade({}/{}/{}) despawn({}/{}/{})",
+            "[SIM_DEBUG] Day {} {:02}:{:02} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} remove={} buildings={} households={} agents={} states=(home={}, work={}, shopping={}, travelling={}, other={}) actions=spawn({}/{}/{}) upgrade({}/{}/{}) downgrade({}/{}/{}) despawn({}/{}/{})",
             day_index,
             hours,
             minutes,
-            self.demand.residential * 100.0,
-            self.demand.commercial * 100.0,
-            self.demand.industrial * 100.0,
+            self.demand.net_residential_pressure() * 100.0,
+            self.demand.net_commercial_pressure() * 100.0,
+            self.demand.net_industrial_pressure() * 100.0,
             self.demand.households_to_admit_today,
             self.demand.households_to_remove_today,
             self.allocator.buildings.len(),
@@ -532,7 +532,7 @@ impl SimCore {
         );
         debug_log!(
             "economy",
-            "daily tick end: buildings={} households={} agents={} demand=(R {:.0}%, C {:.0}%, I {:.0}%) admit={} remove={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{}) treasury={:.0}",
+            "daily tick end: buildings={} households={} agents={} demand=(R {:+.0}%, C {:+.0}%, I {:+.0}%) admit={} remove={} spawns=({}/{}/{}) upgrades=({}/{}/{}) downgrades=({}/{}/{}) despawns=({}/{}/{}) treasury={:.0}",
             self.allocator.buildings.len(),
             self.households
                 .households
@@ -540,9 +540,9 @@ impl SimCore {
                 .filter(|h| h.member_count > 0)
                 .count(),
             self.agents.len(),
-            self.demand.residential * 100.0,
-            self.demand.commercial * 100.0,
-            self.demand.industrial * 100.0,
+            self.demand.net_residential_pressure() * 100.0,
+            self.demand.net_commercial_pressure() * 100.0,
+            self.demand.net_industrial_pressure() * 100.0,
             self.demand.households_to_admit_today,
             self.demand.households_to_remove_today,
             self.demand.building_actions.residential.spawns.len(),

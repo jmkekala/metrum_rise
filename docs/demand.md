@@ -367,8 +367,8 @@ demand_channel = "ResidentialGrowth"
 cadence_days = 1
 base_pressure_weight = 1.0
 local_modifier_scale = 0.0
-spawn_threshold = 0.55
-despawn_threshold = 0.20
+spawn_threshold = 0.55     # fires when net inflow desire > 10%  (net_residential_demand > +0.10)
+despawn_threshold = 0.45   # fires when net outflow desire > 10% (net_residential_demand < −0.10)
 upgrade_threshold = 0.80
 downgrade_threshold = 0.30
 hysteresis_margin = 0.05
@@ -596,17 +596,46 @@ Evaluation order:
 
 1. Read every baseline city-level signal and clamp it to `0.0..1.0`.
 2. Compute the helper terms above.
-3. Compute the city-level `DemandChannel` values consumed by `GrowthProfile`s in this exact order:
+3. Compute the residential intermediate terms:
 
 ```text
-ResidentialGrowth =
+// Desire for new residential capacity: high when the city attracts settlers and buildings
+// are nearly full; low when buildings are mostly empty or the city is unwelcoming.
+// Uses housing_shortage (not housing_availability) to measure unmet demand for new slots,
+// not just ease of filling vacancies that already exist.
+inflow_desire =
     clamp(
-        housing_shortage
-      * household_affordability
-      * service_gate,
+        household_action.base_inflow
+      * external_connection_available
+      * housing_shortage
+      * utility_service_stability,
         0.0,
         1.0
     )
+
+// Removal pressure is computed identically to the household-action removal formula.
+// See Startup Household Growth for the full derivation.
+removal_pressure =
+    clamp(
+        unhoused_household_ratio * 0.50
+      + (1.0 - job_availability) * 0.25
+      + (1.0 - household_stock_stability) * 0.25,
+        0.0,
+        1.0
+    )
+
+// Net migration balance: positive when the city wants to grow, negative when it wants
+// to shrink. Rescaled to 0.0..1.0 with 0.5 as exact equilibrium so that the existing
+// GrowthProfile threshold infrastructure applies without modification.
+net_residential_demand =
+    clamp(inflow_desire - removal_pressure, -1.0, 1.0)
+```
+
+4. Compute the city-level `DemandChannel` values consumed by `GrowthProfile`s in this exact order:
+
+```text
+ResidentialGrowth =
+    clamp(net_residential_demand * 0.5 + 0.5, 0.0, 1.0)
 
 CommercialGrowth =
     clamp(
@@ -628,29 +657,36 @@ IndustrialGrowth =
     )
 ```
 
-4. Compute the action-limit gates for building spawns. Residential spawns use a quadratic
-   shortage curve to prevent runaway while vacant houses exist. Non-residential spawns are
-   uncapped so commercial and industrial can bootstrap before the city is large:
+5. Compute the action-limit gate for building spawns. All use families are uncapped so they can
+   bootstrap before the city is large:
 
 ```text
-ResidentialSpawnLimit = housing_shortage ^ 2
+ResidentialSpawnLimit    = 1.0
 NonResidentialSpawnLimit = 1.0
 ```
 
 Interpretation:
 
-- `ResidentialGrowth` rises when the city has a housing shortage, households can still afford
-  to settle, and utility or border-service support is healthy
-- `job_availability` is intentionally excluded from `ResidentialGrowth`: people can move to a
-  new city before jobs exist; the unemployment benefit keeps them solvent during that window
+- `ResidentialGrowth = 0.5` is the equilibrium: the city is neither growing nor shrinking
+- `ResidentialGrowth > 0.5` means net inflow desire — more people want in than out, and
+  buildings are filling up; spawn threshold fires somewhere above 0.5
+- `ResidentialGrowth < 0.5` means net outflow desire — more people are leaving than arriving,
+  or existing buildings are mostly vacant; despawn threshold fires somewhere below 0.5
+- `inflow_desire` and `admission_pressure` (the household-action signal) are deliberately
+  different formulas: `admission_pressure` uses `housing_availability` to fill existing
+  vacancies fast; `inflow_desire` uses `housing_shortage` to measure unmet demand for new
+  capacity — the two naturally complement each other: high vacancy raises admission pressure
+  while lowering inflow_desire, so the system fills existing buildings before building new ones
+- `ResidentialSpawnLimit = 1.0` is safe because `housing_shortage` is already embedded in
+  `inflow_desire`; when vacancy is high, `inflow_desire` falls and `ResidentialGrowth` drops
+  toward 0.5 or below, which stops spawning without a separate quadratic throttle
 - `CommercialGrowth` rises when a real resident/customer base exists, household stock is
   unstable, households can still spend, and the city is healthy enough to support more commerce
 - `IndustrialGrowth` is driven by `commercial_input_deficit` — the fraction of commercial
   buildings that lack a local industrial supplier — rather than `goods_shortage`; this decouples
   farm spawning from the OWA fallback that suppresses `goods_shortage` when imports are available
 - `NonResidentialSpawnLimit = 1.0` so commercial and industrial buildings can bootstrap without
-  waiting for a large population; gating them on `resident_presence` created a circular deadlock
-  where the first grocery store took 20+ days to accumulate a single spawn credit
+  waiting for a large population
 - baseline `v0.1` intentionally does not define `OfficeGrowth` or `MixedGrowth`; office and mixed
   private growth remain later explicit extensions if they are reintroduced with fully specified
   formulas and matching shipped profile data
@@ -710,13 +746,14 @@ The same ownership pattern should later apply to private buildings:
 Baseline `v0.1` immigration and emigration pressure is derived from coarse city signals such
 as:
 
-- vacant resident capacity
-- resident presence
-- job availability (emigration pressure only)
-- household affordability (commercial/industrial demand; not an admission gate)
-- household stock stability
-- utility or service stability
-- existence of at least one external connection when external immigration is required
+- housing capacity and vacancy (`housing_availability` for household admission; `housing_shortage`
+  for residential building spawn)
+- resident presence (commercial/industrial demand gating)
+- job availability (emigration pressure only; not an admission or spawn gate)
+- household affordability (commercial demand; not a residential gate)
+- household stock stability (emigration pressure; commercial demand)
+- utility or service stability (admission gate; residential/commercial/industrial demand)
+- existence of at least one external connection (hard gate for admission and residential spawn)
 - commercial input deficit (industrial spawn pressure)
 
 These are city-level signals, not per-agent trip decisions.
@@ -1030,42 +1067,58 @@ Rules:
 - no job requirement for initial settlement: people move to a new city before jobs exist; the
   unemployment benefit sustains them during the bootstrap window
 
-Deterministic `v0.1` admission-pressure rule:
+Two distinct pressure formulas drive the residential system. They share the same economic
+signals but serve different purposes.
+
+**`admission_pressure`** — fills existing vacancies. Used only for the household-action
+`households_to_admit_today` output. High when housing is available (easy to move in today):
 
 ```text
-base_inflow = household_action.base_inflow * external_connection_available
-
 admission_pressure =
-    base_inflow
-  * housing_availability
-  * utility_service_stability
+    clamp(
+        household_action.base_inflow
+      * external_connection_available
+      * housing_availability
+      * utility_service_stability,
+        0.0,
+        1.0
+    )
 ```
 
-Where:
+**`inflow_desire`** — drives new residential building capacity. Used only in `ResidentialGrowth`.
+High when buildings are nearly full and the city is welcoming (unmet demand for new slots):
 
-- all factors are clamped to `0.0..1.0`
-- `utility_service_stability` acts as a city-health gate: a city with no services cannot admit more
-- this keeps early growth positive while letting immigration slow automatically as housing fills or
-  city stability deteriorates
+```text
+inflow_desire =
+    clamp(
+        household_action.base_inflow
+      * external_connection_available
+      * housing_shortage
+      * utility_service_stability,
+        0.0,
+        1.0
+    )
+```
 
-Deterministic `v0.1` removal-pressure rule:
+Relationship: `admission_pressure` and `inflow_desire` are complementary by design.
+High vacancy → `housing_availability` is high → `admission_pressure` is high (admit people
+fast) and `housing_shortage` is low → `inflow_desire` is low (no need for new buildings).
+This ensures the system fills existing buildings before spawning new ones.
+
+**`removal_pressure`** — drives household emigration and residential despawn. Shared between
+the household-action `households_to_remove_today` output and the `net_residential_demand` term
+inside `ResidentialGrowth`:
 
 ```text
 unhoused_household_ratio =
     if total_household_count == 0 then 0.0
     else clamp(unhoused_household_count / total_household_count, 0.0, 1.0)
 
-job_failure =
-    1.0 - job_availability
-
-stock_shortage =
-    1.0 - household_stock_stability
-
 removal_pressure =
     clamp(
         unhoused_household_ratio * 0.50
-      + job_failure * 0.25
-      + stock_shortage * 0.25,
+      + (1.0 - job_availability) * 0.25
+      + (1.0 - household_stock_stability) * 0.25,
         0.0,
         1.0
     )
@@ -1073,18 +1126,15 @@ removal_pressure =
 
 Where:
 
-- all derived terms are clamped to `0.0..1.0`
 - `total_household_count = housed_household_count + unhoused_household_count`
 - `unhoused_household_count` is read from the settled economy snapshot after relocation and
   eviction have already run for that operational day
 - `job_availability` and `household_stock_stability` come from the same frozen post-settlement
   snapshot used by the rest of the daily demand pass
 - `removal_threshold = 0.55` is intentionally above the bare-startup value of
-  `job_failure×0.25 + stock_shortage×0.25 = 0.50` so that a city without any supply chain yet
-  does not immediately expel its first households; removal only fires once the economy is
+  `(1−job_avail)×0.25 + (1−stock_stab)×0.25 = 0.50` so that a city without any supply chain yet
+  does not immediately expel its first households; removal fires only once the economy is
   genuinely failing (unhoused households push the total above 0.55)
-- the final `households_to_remove_today` output is derived deterministically from this pressure
-  through the generic household pressure-to-action conversion rule documented earlier in this file
 
 Interpretation:
 

@@ -386,12 +386,54 @@ impl DemandSystem {
         let service_gate =
             snapshot.utility_service_stability * snapshot.external_connection_available;
 
-        // Residential demand: people move to a city that has housing need, is affordable,
-        // and is connected to the outside world. Job availability drives upgrade pressure
-        // once the city is established, but is not required for initial settlement.
-        let base_residential = clamp01(
-            housing_shortage * snapshot.household_affordability * service_gate,
+        // Admission pressure: fills existing vacancies. Uses housing_availability so it is
+        // high when there are vacant slots to fill and tapers as the city approaches full
+        // occupancy. Gated on utility stability only — no job requirement for settlement.
+        let admission_pressure = clamp01(
+            self.config.household_action.base_inflow
+                * snapshot.external_connection_available
+                * snapshot.housing_availability
+                * snapshot.utility_service_stability,
         );
+        self.households_to_admit_today = advance_household_action_credit(
+            &mut self.admission_action_credit,
+            admission_pressure,
+            self.config.household_action.admission_threshold,
+            self.config.action_budget.max_households_per_day,
+            snapshot.vacant_household_slots,
+        );
+
+        // Removal pressure: shared between household emigration and the residential demand
+        // channel. Computed before residential demand so both consumers read the same value.
+        let removal_pressure = clamp01(
+            snapshot.unhoused_household_ratio * 0.50
+                + (1.0 - snapshot.job_availability) * 0.25
+                + (1.0 - snapshot.household_stock_stability) * 0.25,
+        );
+        self.households_to_remove_today = advance_household_action_credit(
+            &mut self.removal_action_credit,
+            removal_pressure,
+            self.config.household_action.removal_threshold,
+            self.config.action_budget.max_households_per_day,
+            snapshot.total_household_count,
+        );
+
+        // Residential demand: follows net migration balance rather than raw vacancy.
+        // inflow_desire uses housing_shortage (not housing_availability) to measure unmet
+        // demand for *new* capacity — complementary to admission_pressure which fills
+        // existing slots. When vacancy is high, housing_shortage is low → inflow_desire
+        // falls → ResidentialGrowth approaches 0.5 (equilibrium) → no more spawning.
+        // The channel is rescaled to 0.0..1.0 with 0.5 as equilibrium so the existing
+        // GrowthProfile threshold infrastructure applies without modification.
+        let inflow_desire = clamp01(
+            self.config.household_action.base_inflow
+                * snapshot.external_connection_available
+                * housing_shortage
+                * snapshot.utility_service_stability,
+        );
+        let net_residential = (inflow_desire - removal_pressure).clamp(-1.0, 1.0);
+        let base_residential = net_residential * 0.5 + 0.5;
+
         let base_commercial = clamp01(
             snapshot.resident_presence
                 * goods_shortage
@@ -408,39 +450,6 @@ impl DemandSystem {
         self.residential = base_residential;
         self.commercial = base_commercial;
         self.industrial = base_industrial;
-
-        // Admission stability is gated on utility health only. Stock stability collapsing
-        // at startup (before the first supply chain is operational) should not prevent
-        // households from moving in — it should create removal pressure instead.
-        let city_stability_factor = snapshot.utility_service_stability;
-        let admission_pressure = clamp01(
-            self.config.household_action.base_inflow
-                * snapshot.external_connection_available
-                * snapshot.housing_availability
-                * city_stability_factor,
-        );
-        self.households_to_admit_today = advance_household_action_credit(
-            &mut self.admission_action_credit,
-            admission_pressure,
-            self.config.household_action.admission_threshold,
-            self.config.action_budget.max_households_per_day,
-            snapshot.vacant_household_slots,
-        );
-
-        let job_failure = 1.0 - snapshot.job_availability;
-        let stock_shortage = 1.0 - snapshot.household_stock_stability;
-        let removal_pressure = clamp01(
-            snapshot.unhoused_household_ratio * 0.50
-                + job_failure * 0.25
-                + stock_shortage * 0.25,
-        );
-        self.households_to_remove_today = advance_household_action_credit(
-            &mut self.removal_action_credit,
-            removal_pressure,
-            self.config.household_action.removal_threshold,
-            self.config.action_budget.max_households_per_day,
-            snapshot.total_household_count,
-        );
 
         for use_kind in [
             DemandUse::Residential,
@@ -470,14 +479,11 @@ impl DemandSystem {
                         })
                 })
                 .sum::<f32>();
-            let spawn_limit = match zone_type {
-                ZoneType::Residential => housing_shortage.powi(2),
-                // Commercial and industrial are not gated by current population so
-                // they can bootstrap before the city is large. Without this, the
-                // first grocery store takes 20+ days to accumulate a single credit
-                // because resident_presence ≈ 0.05 at early game.
-                _ => 1.0,
-            };
+            // All use families use spawn_limit = 1.0. Residential no longer needs the
+            // quadratic housing_shortage throttle because housing_shortage is already
+            // embedded in inflow_desire inside ResidentialGrowth: when vacancy is high,
+            // the channel falls toward 0.5 and spawn pressure drops naturally.
+            let spawn_limit = 1.0_f32;
 
             let spawn_budget_units = normalized_spawn_pressure
                 * self
@@ -700,6 +706,51 @@ impl DemandSystem {
             DemandUse::Commercial => self.commercial,
             DemandUse::Industrial => self.industrial,
         }
+    }
+
+    // Net growth/decline pressure for display, in −1.0..+1.0.
+    //
+    // Uses the low-density profile thresholds as reference:
+    // - Positive: raw channel is above the spawn threshold (city wants to grow this use)
+    // - Negative: raw channel is below the despawn threshold (city wants to shrink this use)
+    // - Zero: channel is in the dead zone between thresholds (no pressure either way)
+    fn net_pressure_for(&self, use_kind: DemandUse) -> f32 {
+        let channel = self.pressure_for_use(use_kind);
+        let zone_type = match use_kind {
+            DemandUse::Residential => ZoneType::Residential,
+            DemandUse::Commercial => ZoneType::Commercial,
+            DemandUse::Industrial => ZoneType::Industrial,
+        };
+        let Some(profile) = self.config.profile_for_zone_density(zone_type, "low") else {
+            return 0.0;
+        };
+        let spawn_t = profile.spawn_threshold;
+        let despawn_t = profile.despawn_threshold;
+        if channel > spawn_t {
+            (channel - spawn_t) / (1.0 - spawn_t).max(EPSILON)
+        } else if channel < despawn_t {
+            -(despawn_t - channel) / despawn_t.max(EPSILON)
+        } else {
+            0.0
+        }
+    }
+
+    /// Net residential growth pressure for display. Positive = spawn pressure,
+    /// negative = despawn pressure, zero = equilibrium dead zone.
+    pub(crate) fn net_residential_pressure(&self) -> f32 {
+        self.net_pressure_for(DemandUse::Residential)
+    }
+
+    /// Net commercial growth pressure for display. Positive = spawn pressure,
+    /// negative = despawn pressure, zero = equilibrium dead zone.
+    pub(crate) fn net_commercial_pressure(&self) -> f32 {
+        self.net_pressure_for(DemandUse::Commercial)
+    }
+
+    /// Net industrial growth pressure for display. Positive = spawn pressure,
+    /// negative = despawn pressure, zero = equilibrium dead zone.
+    pub(crate) fn net_industrial_pressure(&self) -> f32 {
+        self.net_pressure_for(DemandUse::Industrial)
     }
 
     fn collect_existing_building_candidates(
@@ -2092,7 +2143,9 @@ mod tests {
 
         demand.run_daily_pass(&allocator, &households, &graph, &zoning);
 
-        assert_eq!(demand.residential, 0.0);
+        // No external connection means inflow_desire = 0.0, so ResidentialGrowth falls
+        // below equilibrium (< 0.5) and below the spawn threshold. Growth is blocked.
+        assert!(demand.residential < 0.50, "residential={}", demand.residential);
         assert_eq!(demand.commercial, 0.0);
         assert_eq!(demand.industrial, 0.0);
         assert_eq!(demand.households_to_admit_today, 0);

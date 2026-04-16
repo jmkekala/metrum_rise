@@ -22,8 +22,9 @@ import math
 
 SATURATION = 500          # signal_normalization.resident_presence_saturation_residents
 
-# Spawn / despawn thresholds (growth_profiles.toml, after 2026-04 recalibration)
-R_SPAWN   = 0.55;  R_DESPAWN = 0.20
+# Spawn / despawn thresholds (growth_profiles.toml)
+# Residential thresholds are on the net-migration scale (0.5 = equilibrium).
+R_SPAWN   = 0.55;  R_DESPAWN = 0.45  # symmetric: ±10% net migration imbalance
 C_SPAWN   = 0.07;  C_DESPAWN = 0.01
 I_SPAWN   = 0.15;  I_DESPAWN = 0.03
 
@@ -130,30 +131,22 @@ def run(target_residents: int = 100_000, max_days: int = 100_000) -> None:
         ub_ramp   = clamp01(day / 10.0)
         afford    = clamp01(ub_ramp * 0.8 + job_avail * 0.2)
 
-        # ── Demand (pioneer removed 2026-04) ─────────────────────────────
-        # Residential: people settle where housing is needed and affordable.
-        r_dem = clamp01(h_short * afford)
-        # Commercial: residents with money need goods.
-        c_dem = clamp01(pres * goods_short * afford)
-        # Industrial: driven by commercial supply-chain gap, not goods_shortage.
-        # Decoupled from OWA fallback so farms spawn to match grocery count.
-        i_dem = clamp01(pres * com_input_deficit)
-
-        # ── Admission ─────────────────────────────────────────────────────
+        # ── Admission pressure (fills existing vacancies) ─────────────────
+        # Uses h_avail so it is high when slots exist to fill.
         adm_cr += norm_pos(clamp01(h_avail), ADMISSION_THRESHOLD) * MAX_HH_PER_DAY
         new_hh  = max(0, min(int(adm_cr), int(slots - households)))
         adm_cr -= new_hh
         households += new_hh
         residents  += new_hh * HH_SIZE_AVG
 
-        # ── Removal ───────────────────────────────────────────────────────
-        # Mirrors demand.rs removal_pressure formula.
-        unhoused_ratio = 0.0  # simplified: all housed in this model
-        job_failure    = 1.0 - job_avail
-        stock_short    = goods_short
-        removal_pressure = min(1.0, max(0.0,
-            unhoused_ratio * 0.50 + job_failure * 0.25 + stock_short * 0.25
-        ))
+        # ── Removal / residential demand ──────────────────────────────────
+        # removal_pressure is shared between household emigration and ResidentialGrowth.
+        unhoused_ratio   = 0.0  # simplified: all housed in this model
+        removal_pressure = clamp01(
+            unhoused_ratio * 0.50
+            + (1.0 - job_avail) * 0.25
+            + goods_short * 0.25
+        )
         if removal_pressure > REMOVAL_THRESHOLD and households > 0:
             remove_frac = norm_pos(removal_pressure, REMOVAL_THRESHOLD)
             rem_hh = max(0, min(int(remove_frac * MAX_HH_PER_DAY), int(households)))
@@ -161,9 +154,21 @@ def run(target_residents: int = 100_000, max_days: int = 100_000) -> None:
             residents  -= rem_hh * HH_SIZE_AVG
             residents   = max(0.0, residents)
 
+        # Residential demand: net migration balance rescaled to 0..1 (0.5 = equilibrium).
+        # inflow_desire uses h_short (not h_avail) to measure unmet demand for new slots.
+        # ext_conn and utility_stab both assumed 1.0 in this model.
+        inflow_desire = clamp01(h_short)          # base_inflow=1, ext_conn=1, utility=1
+        net_res       = max(-1.0, min(1.0, inflow_desire - removal_pressure))
+        r_dem         = net_res * 0.5 + 0.5      # 0.5 = equilibrium
+
+        # Commercial: residents with money need goods.
+        c_dem = clamp01(pres * goods_short * afford)
+        # Industrial: driven by commercial supply-chain gap, not goods_shortage.
+        i_dem = clamp01(pres * com_input_deficit)
+
         # ── Spawn: Residential ────────────────────────────────────────────
         rc      = r_candidates(res_bld)
-        res_cr += norm_pos(r_dem, R_SPAWN) * rc * R_BATCH * (h_short ** 2)
+        res_cr += norm_pos(r_dem, R_SPAWN) * rc * R_BATCH
         new_r   = min(int(res_cr), rc);  res_cr -= new_r;  res_bld += new_r
 
         # ── Spawn: Commercial ─────────────────────────────────────────────
