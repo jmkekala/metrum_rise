@@ -3,7 +3,7 @@
 ## Extends NetworkTool.
 ## Rust methods called: get_closest_node(), has_cul_de_sac(), set_node_cul_de_sac()
 ## Displays a cylinder preview mesh at the hovered node; click to commit or remove the cap.
-extends "res://scripts/network_tool.gd"
+extends "res://scripts/tools/network_tool.gd"
 
 var preview_mesh: MeshInstance3D
 

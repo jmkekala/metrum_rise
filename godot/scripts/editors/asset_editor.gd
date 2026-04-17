@@ -7,6 +7,8 @@
 ##        sim.load_economy_project()
 extends Node3D
 
+const TopMenu = preload("res://scripts/ui/top_menu.gd")
+
 const PANEL_LEFT_W  := 270
 const PANEL_RIGHT_W := 300
 const PANEL_BOT_H   := 140
@@ -131,6 +133,7 @@ func _ready() -> void:
 	if not sim.is_asset_editor_mode():
 		push_error("AssetEditor scene loaded without --asset-editor flag")
 
+	_attach_top_menu()
 	_config = ConfigFile.new()
 	_config.load(CONFIG_PATH)  # silently no-ops if file doesn't exist yet
 	_last_glb_dir = _config.get_value("import", "last_glb_dir", "")
@@ -188,13 +191,13 @@ func _load_zone_profiles() -> void:
 # ──────────────────────────────────────────────────────────────────────────────
 
 func _build_preview_node() -> void:
-	var script := load("res://scripts/building_preview.gd")
+	var script := load("res://scripts/renderers/building_preview.gd")
 	_preview = Node3D.new()
 	_preview.set_script(script)
 	add_child(_preview)
 	_preview.mesh_loaded.connect(_on_mesh_loaded)
 
-	var cam_script := load("res://scripts/editor_camera_input.gd")
+	var cam_script := load("res://scripts/core/editor_camera_input.gd")
 	_cam_input = Node.new()
 	_cam_input.set_script(cam_script)
 	add_child(_cam_input)
@@ -211,6 +214,7 @@ func _build_ui() -> void:
 	# gets a concrete rect to size against.
 	var anchor := Control.new()
 	anchor.set_anchors_preset(Control.PRESET_FULL_RECT)
+	anchor.offset_top = TopMenu.BAR_HEIGHT
 	canvas.add_child(anchor)
 
 	# Root VBox fills the anchor.
@@ -237,6 +241,32 @@ func _build_ui() -> void:
 
 	_build_right_panel(h_row)
 	_build_bottom_panel(root)
+
+func _attach_top_menu() -> void:
+	if has_node("TopMenu"):
+		return
+	var top_menu := TopMenu.new()
+	top_menu.name = "TopMenu"
+	top_menu.scene_kind = TopMenu.SCENE_ASSET_EDITOR
+	add_child(top_menu)
+
+func menu_save() -> void:
+	_on_export_pressed()
+
+func menu_return_to_game() -> void:
+	_spawn_project_instance([])
+	get_tree().quit()
+
+func menu_reload_packs() -> void:
+	_load_packs()
+
+func menu_import_mesh() -> void:
+	_on_import_glb_pressed()
+
+func _spawn_project_instance(arguments: PackedStringArray) -> void:
+	var err := OS.create_instance(arguments)
+	if err != OK:
+		push_error("Failed to launch a new project instance: %s" % err)
 
 func _build_left_panel(parent: Control) -> void:
 	var panel := PanelContainer.new()

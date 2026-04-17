@@ -58,6 +58,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `README.md` now serves as the docs index and ownership map.
 - The legacy numbered backlog and bug table were preserved in the archive rather than kept half-live in the dashboard.
 - `rust/benches/agent_benchmark.rs` now includes access-phase microbenchmarks for `ACCESS_EGRESS` and `ACCESS_INGRESS`, so old Criterion result history is no longer strictly apples-to-apples with the updated suite.
+- Added a shared top menu scaffold across gameplay and editor scenes, with gameplay File/View/City/Tools/Help menus and reduced editor File/editor-action menus. See [`ui.md`](ui.md).
+- Migrated the Building Inspector and SelectTool road-properties UI onto draggable Godot `Window` surfaces instead of custom anchored panels. See [`ui.md`](ui.md).
+- Building Inspector now supports multiple simultaneous per-building windows and refreshes open inspectors on each in-game hour boundary. See [`ui.md`](ui.md).
+- Reworked the zoning toolbar from one flat profile row into Residential / Commercial / Industrial family buttons with a second profile row above for the selected family. See [`ui.md`](ui.md).
+- Added a compact bottom-left R/C/I demand meter beside the clock, driven by live normalized demand pressures from `SimulationNode`. See [`ui.md`](ui.md).
+- Added a compact city-status HUD panel between the clock and R/C/I meter for treasury balance and live agent count, backed by continuously refreshed snapshot values. See [`ui.md`](ui.md).
 - **Pioneer demand floor removed**: the static 0.70 floor on `ResidentialGrowth`, `CommercialGrowth`, and admission pressure has been removed from `demand.rs`. Unemployment benefit now provides early-city bootstrap solvency through real economic activity.
 - **Demand formula changes**: `ResidentialGrowth` no longer gates on `job_availability` (people can settle before jobs exist). `IndustrialGrowth` now uses `commercial_input_deficit` instead of `goods_shortage` to avoid OWA-suppression of farm spawning. `NonResidentialSpawnLimit` changed from `resident_presence` to `1.0` to break the commercial/industrial bootstrap deadlock.
 - **Unemployment benefit live**: `pay_unemployment_benefits` implemented in `households.rs`, tuning in `economy/profiles.toml` (`15.0/member/day`, 30-day max).

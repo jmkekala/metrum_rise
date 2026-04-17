@@ -4,8 +4,8 @@
 ## MoveTool, LaneTool, CulDeSacTool), calls SimulationNode directly for global undo/save/load/sim-speed actions,
 ## and refreshes the thin Godot render nodes after world mutations.
 ##
-## When no tool is active (Tool.NONE) left-clicking any building opens the
-## building stats panel via InspectTool, which is always present in the scene.
+## The Building Inspector helper is always present in the scene and can be
+## opened by the active selection workflow.
 extends Node
 
 @onready var simulation_node = $"../SimulationNode"
@@ -30,21 +30,21 @@ func _ready():
 	if not has_node("../CulDeSacTool"):
 		var rt = Node3D.new()
 		rt.name = "CulDeSacTool"
-		rt.set_script(load("res://scripts/cul_de_sac_tool.gd"))
+		rt.set_script(load("res://scripts/tools/cul_de_sac_tool.gd"))
 		get_parent().call_deferred("add_child", rt)
 		cul_de_sac_tool = rt
 	
 	if not has_node("../SelectTool"):
 		var st = Node3D.new()
 		st.name = "SelectTool"
-		st.set_script(load("res://scripts/select_tool.gd"))
+		st.set_script(load("res://scripts/tools/select_tool.gd"))
 		get_parent().call_deferred("add_child", st)
 		select_tool = st
 
 	if not has_node("../InspectTool"):
 		var it := Node.new()
 		it.name = "InspectTool"
-		it.set_script(load("res://scripts/inspect_tool.gd"))
+		it.set_script(load("res://scripts/ui/building_inspector.gd"))
 		get_parent().call_deferred("add_child", it)
 		inspect_tool = it
 
@@ -56,6 +56,10 @@ func _ready():
 
 func _process(delta):
 	_handle_camera_controls(delta)
+
+func _input(event):
+	if event is InputEventMouseButton:
+		_handle_zoom_wheel(event)
 
 func _handle_camera_controls(delta):
 	var camera = get_viewport().get_camera_3d()
@@ -78,14 +82,6 @@ func _handle_camera_controls(delta):
 			camera.orbit(mouse_vel, delta)
 
 func _unhandled_input(event):
-	if event is InputEventMouseButton and event.pressed:
-		var camera = get_viewport().get_camera_3d()
-		if camera and camera.has_method("zoom"):
-			if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-				camera.zoom(1.0)
-			elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-				camera.zoom(-1.0)
-
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_M: _toggle_tool(Tool.MOVE)
@@ -136,6 +132,22 @@ func _unhandled_input(event):
 
 	if event is InputEventMouseButton:
 		_handle_mouse(event)
+
+func _handle_zoom_wheel(event: InputEventMouseButton) -> void:
+	if not event.pressed:
+		return
+
+	var zoom_delta := 0.0
+	if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+		zoom_delta = 1.0
+	elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+		zoom_delta = -1.0
+	else:
+		return
+
+	var camera = get_viewport().get_camera_3d()
+	if camera and camera.has_method("zoom"):
+		camera.zoom(zoom_delta)
 
 func _handle_escape():
 	if current_tool != Tool.NONE:
@@ -321,7 +333,6 @@ func set_zoning_paint_mode(mode: String) -> void:
 
 func _handle_mouse(event):
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		# In default (no-tool) mode a left-click tries to inspect a building.
 		if current_tool == Tool.NONE and inspect_tool:
 			_handle_inspect_click(event.position)
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
@@ -337,7 +348,7 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 	)
 	if pos == null:
 		return
-	inspect_tool.try_inspect(pos)
+	inspect_tool.try_inspect(pos, mouse_pos)
 
 func _handle_right_click():
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:
@@ -353,3 +364,16 @@ func _handle_right_click():
 func _handle_altitude_adjust(delta):
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool:
 		road_tool.adjust_altitude(delta)
+
+func menu_save_game() -> void:
+	_handle_save_game()
+
+func menu_load_game() -> void:
+	_handle_load_game()
+
+func menu_set_overlay_mode(mode: int) -> void:
+	if terrain_node:
+		terrain_node.overlay_mode = clampi(mode, 0, 3)
+
+func menu_toggle_zoning_overlay() -> void:
+	_toggle_zoning_overlay()

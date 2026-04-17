@@ -9,6 +9,9 @@
 //! | | `save_game` | `input_manager.gd`, `main.gd` |
 //! | | `load_game` | `input_manager.gd`, `main.gd` |
 //! | | `get_perf_stats` | `debug_panel.gd` |
+//! | | `get_demand_pressures` | `main_ui.gd` |
+//! | | `get_treasury_balance` | `main_ui.gd` |
+//! | | `get_agent_count` | `main_ui.gd` |
 //! | **Economy Editor** | `is_economy_editor_mode` | `economy_editor.gd` |
 //! | | `load_economy_project` | `economy_editor.gd` |
 //! | | `export_economy_project` | `economy_editor.gd` |
@@ -471,6 +474,22 @@ impl SimulationNode {
         self.snapshot.read().unwrap().current_minute_of_day
     }
 
+    /// Returns normalized residential, commercial, and industrial growth
+    /// pressures for the gameplay HUD as `Vector3(x=residential, y=commercial, z=industrial)`.
+    ///
+    /// Each component is clamped to `-1.0..1.0`, corresponding to `-100%..100%`
+    /// on the UI meter. This is a UI-facing read path only and is not used in
+    /// the simulation tick.
+    #[func]
+    pub fn get_demand_pressures(&self) -> Vector3 {
+        let core = self.lock_core();
+        Vector3::new(
+            core.demand.net_residential_pressure().clamp(-1.0, 1.0),
+            core.demand.net_commercial_pressure().clamp(-1.0, 1.0),
+            core.demand.net_industrial_pressure().clamp(-1.0, 1.0),
+        )
+    }
+
     // ── Agents ──
 
     /// Returns a Dictionary of packed transforms for visible non-car agents, keyed by pedestrian_type.
@@ -633,7 +652,8 @@ impl SimulationNode {
     /// Keys: `asset_id`, `zone_type`, `level`, `occupancy`, `worker_count`,
     /// `worker_capacity`, `operating_budget`, `revenue`, `budget_distress`,
     /// `economy_broken`, `broken`, `pending_redevelopment`, `rezone_grace_days`,
-    /// `economy_profile`, `inventory` (Array of `{name, amount}` Dictionaries).
+    /// `economy_profile`, `center_x`, `center_z`, and `inventory`
+    /// (Array of `{name, amount}` Dictionaries).
     #[func]
     pub fn get_building_info_at(&self, world_x: f32, world_z: f32) -> VarDictionary {
         use crate::simulation::economy::definitions::load_runtime_economy_catalog;
@@ -700,6 +720,8 @@ impl SimulationNode {
         dict.set("zone_type", GString::from(zone_type_str));
         dict.set("level", b.level as i32);
         dict.set("occupancy", b.occupancy as i32);
+        dict.set("center_x", b.center_x as f64);
+        dict.set("center_z", b.center_y as f64);
         
         let mut total_agents = 0i32;
         if b.zone_type == ZoneType::Residential {
@@ -1168,7 +1190,13 @@ impl SimulationNode {
     /// Returns the current city treasury balance in currency units. May be negative.
     #[func]
     pub fn get_treasury_balance(&self) -> f64 {
-        self.lock_core().treasury.balance
+        self.snapshot.read().unwrap().treasury_balance
+    }
+
+    /// Returns the total number of live agents from the latest render snapshot.
+    #[func]
+    pub fn get_agent_count(&self) -> i32 {
+        self.snapshot.read().unwrap().agent_count
     }
 
     /// Returns global lane width.

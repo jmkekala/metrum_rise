@@ -5,7 +5,7 @@
 ## ghost guide lines projected from existing road endpoints (toggle with G key).
 ## Commits via NetworkTool.add_road() with the smoothed polyline on left-click.
 ## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → commit → IDLE.
-extends "res://scripts/network_tool.gd"
+extends "res://scripts/tools/network_tool.gd"
 
 enum State { IDLE, SETTING_CONTROL, SETTING_END }
 var current_state = State.IDLE

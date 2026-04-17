@@ -3,7 +3,7 @@
 ## Extends NetworkTool.
 ## Rust methods called: get_closest_node(), get_node_pos(), move_network_node()
 ## PgUp/PgDown adjusts height; Esc or right-click cancels and reverts to last committed position.
-extends "res://scripts/network_tool.gd"
+extends "res://scripts/tools/network_tool.gd"
 
 enum State { IDLE, SELECTED, DRAGGING }
 var current_state = State.IDLE

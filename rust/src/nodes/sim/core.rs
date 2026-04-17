@@ -193,6 +193,8 @@ pub struct RenderSnapshot {
     pub pathfind_count: u32,
     /// Total number of live agents.
     pub agent_count: i32,
+    /// Current city treasury balance in currency units.
+    pub treasury_balance: f64,
     /// Heightmap width in cells (for CSV logging on the main thread).
     pub heightmap_width: usize,
     /// Heightmap height in cells (for CSV logging on the main thread).
@@ -217,6 +219,7 @@ impl Default for RenderSnapshot {
             last_agent_tick_us: 0,
             pathfind_count: 0,
             agent_count: 0,
+            treasury_balance: 0.0,
             heightmap_width: 0,
             node_positions: Vec::new(),
             heightmap_height: 0,
@@ -801,6 +804,7 @@ impl SimCore {
                 .pathfind_count
                 .load(std::sync::atomic::Ordering::Relaxed),
             agent_count: self.agents.len() as i32,
+            treasury_balance: self.treasury.balance,
             heightmap_width: self.heightmap.width,
             heightmap_height: self.heightmap.height,
         }

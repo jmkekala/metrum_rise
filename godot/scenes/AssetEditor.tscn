@@ -1,6 +1,6 @@
 [gd_scene load_steps=2 format=3]
 
-[ext_resource type="Script" path="res://scripts/asset_editor.gd" id="1_editor"]
+[ext_resource type="Script" path="res://scripts/editors/asset_editor.gd" id="1_editor"]
 
 [node name="AssetEditor" type="Node3D"]
 script = ExtResource("1_editor")

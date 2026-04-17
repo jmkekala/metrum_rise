@@ -7,6 +7,8 @@
 ##        sim.run_economy_sandbox(project_json, scenario_id)
 extends Node
 
+const TopMenu = preload("res://scripts/ui/top_menu.gd")
+
 const PANEL_LEFT_W := 300
 const PANEL_RIGHT_W := 330
 const PANEL_BOTTOM_H := 220
@@ -35,6 +37,7 @@ func _ready() -> void:
 	if not sim.is_economy_editor_mode():
 		push_error("EconomyEditor scene loaded without --economy-editor flag")
 
+	_attach_top_menu()
 	_economy_dir = ProjectSettings.globalize_path("res://../economy")
 	_build_ui()
 	_load_project()
@@ -45,6 +48,7 @@ func _build_ui() -> void:
 
 	var root := VBoxContainer.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.offset_top = TopMenu.BAR_HEIGHT
 	root.add_theme_constant_override("separation", 0)
 	canvas.add_child(root)
 
@@ -59,6 +63,32 @@ func _build_ui() -> void:
 	_build_center_panel(row)
 	_build_right_panel(row)
 	_build_bottom_panel(root)
+
+func _attach_top_menu() -> void:
+	if has_node("TopMenu"):
+		return
+	var top_menu := TopMenu.new()
+	top_menu.name = "TopMenu"
+	top_menu.scene_kind = TopMenu.SCENE_ECONOMY_EDITOR
+	add_child(top_menu)
+
+func menu_save() -> void:
+	_export_project()
+
+func menu_return_to_game() -> void:
+	_spawn_project_instance([])
+	get_tree().quit()
+
+func menu_reload_project() -> void:
+	_load_project()
+
+func menu_run_sandbox() -> void:
+	_run_sandbox()
+
+func _spawn_project_instance(arguments: PackedStringArray) -> void:
+	var err := OS.create_instance(arguments)
+	if err != OK:
+		push_error("Failed to launch a new project instance: %s" % err)
 
 func _build_toolbar(parent: Control) -> void:
 	var panel := PanelContainer.new()
@@ -139,7 +169,7 @@ func _build_center_panel(parent: Control) -> void:
 	title.text = "Scenario Graph"
 	vbox.add_child(title)
 
-	var graph_script := load("res://scripts/economy_graph_canvas.gd")
+	var graph_script := load("res://scripts/editors/economy_graph_canvas.gd")
 	_graph_canvas = Control.new()
 	_graph_canvas.set_script(graph_script)
 	_graph_canvas.size_flags_horizontal = Control.SIZE_EXPAND_FILL

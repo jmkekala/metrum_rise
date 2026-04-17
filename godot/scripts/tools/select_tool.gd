@@ -7,11 +7,16 @@ extends Node3D
 @onready var main_ui = $"../MainUI"
 @onready var zoning_overlay = $"../ZoningOverlay"
 
+var _last_click_screen_pos := Vector2.ZERO
+
 var active: bool = false:
 	set(value):
 		active = value
 		if not active:
 			_hide_properties_panel()
+			var inspect_tool = _get_inspect_tool()
+			if inspect_tool:
+				inspect_tool.close_window()
 			_clear_highlight()
 			selected_edges.clear()
 			_connected_nodes.clear()
@@ -69,6 +74,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
 			_mouse_pressed = true
+			_last_click_screen_pos = event.position
 			
 			# If we have a node selected, check if we clicked a UI control (lane sphere or crosswalk)
 			if selected_node != -1:
@@ -92,11 +98,22 @@ func _unhandled_input(event: InputEvent) -> void:
 			# Check if we clicked near a node to select it
 			var mouse_pos = get_viewport().get_mouse_position()
 			var camera = get_viewport().get_camera_3d()
+			var pos = null
+			var edge_idx := -1
 			if camera:
-				var pos = simulation_node.intersect_terrain(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
+				pos = simulation_node.intersect_terrain(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
 				if pos != null:
+					edge_idx = simulation_node.get_hovered_edge(pos.x, pos.z)
+					var inspect_tool = _get_inspect_tool()
+					if edge_idx == -1 and inspect_tool and inspect_tool.try_inspect(pos, _last_click_screen_pos):
+						selected_node = -1
+						_set_selection([])
+						_clear_node_visuals()
+						return
 					var nearest_node = simulation_node.get_closest_node(pos, 8.0)
 					if nearest_node != -1:
+						if inspect_tool:
+							inspect_tool.close_window()
 						selected_node = nearest_node
 						_set_selection([]) # Clear edge selection
 						_build_node_visuals(selected_node)
@@ -107,8 +124,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			selected_node = -1
 			_dragging_edges = false
 			_last_hovered = -1
-			var edge_idx := _hovered_edge()
 			if edge_idx != -1:
+				var inspect_tool = _get_inspect_tool()
+				if inspect_tool:
+					inspect_tool.close_window()
 				_set_selection([edge_idx])
 			else:
 				_set_selection([])
@@ -362,13 +381,19 @@ func _set_selection(indices: Array[int]) -> void:
 	if selected_edges.is_empty():
 		if main_ui: main_ui.hide_road_properties()
 	else:
-		if main_ui: main_ui.show_road_properties_multi(selected_edges)
+		var inspect_tool = _get_inspect_tool()
+		if inspect_tool:
+			inspect_tool.close_window()
+		if main_ui: main_ui.show_road_properties_multi(selected_edges, _last_click_screen_pos)
 
 func _add_to_selection(edge_idx: int) -> void:
 	selected_edges.append(edge_idx)
 	_register_nodes(edge_idx)
 	_rebuild_highlight()
-	if main_ui: main_ui.show_road_properties_multi(selected_edges)
+	var inspect_tool = _get_inspect_tool()
+	if inspect_tool:
+		inspect_tool.close_window()
+	if main_ui: main_ui.show_road_properties_multi(selected_edges, _last_click_screen_pos)
 
 func _register_nodes(edge_idx: int) -> void:
 	var nodes: Vector2i = simulation_node.get_edge_nodes(edge_idx)
@@ -390,6 +415,9 @@ func _hovered_edge() -> int:
 
 func _hide_properties_panel() -> void:
 	if main_ui: main_ui.hide_road_properties()
+
+func _get_inspect_tool():
+	return get_node_or_null("../InspectTool")
 
 func set_selected_edge_class(class_int: int) -> void:
 	for idx in selected_edges:
