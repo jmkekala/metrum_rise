@@ -68,10 +68,10 @@ const JOB_LOCK_DAYS: u8 = 7;
 // Consecutive unpaid days that override the lock — lets agents escape a failing employer
 // before the full lock expires.
 const JOB_UNPAID_ABANDON_DAYS: u8 = 2;
-const JOB_SEARCH_MAX_RING: i32 = 6;
-const JOB_SEARCH_CANDIDATES: usize = 8;
+const JOB_SEARCH_MAX_RING: i32 = 8;
+const JOB_SEARCH_CANDIDATES: usize = 24;
 const GROCERY_SEARCH_MAX_RING: i32 = 6;
-const GROCERY_SEARCH_CANDIDATES: usize = 8;
+const GROCERY_SEARCH_CANDIDATES: usize = 24;
 const OPERATIONAL_HOURS_PER_DAY: f32 = 24.0;
 
 /// Explicit household runtime record anchored to a residential building.
@@ -130,6 +130,35 @@ impl HouseholdSystem {
     /// Clears all households.
     pub fn clear(&mut self) {
         self.households.clear();
+    }
+
+    /// Remaps building references after a building swap-remove.
+    pub fn remap_building_indices(&mut self, mapping: &std::collections::HashMap<usize, usize>) {
+        for household in &mut self.households {
+            if let Some(&new_id) = mapping.get(&household.home_building_id) {
+                household.home_building_id = new_id;
+            }
+            if let Some(&new_id) = mapping.get(&household.reserved_store_building_id) {
+                household.reserved_store_building_id = new_id;
+            }
+        }
+    }
+
+    /// Invalidates references to a building that is being removed.
+    pub fn invalidate_building(&mut self, removed_building: usize) {
+        for household in &mut self.households {
+            if household.home_building_id == removed_building {
+                household.home_building_id = usize::MAX;
+            }
+            if household.reserved_store_building_id == removed_building {
+                // Return reserved budget to the household.
+                household.budget += household.reserved_total_cost;
+                household.reserved_store_building_id = usize::MAX;
+                household.reserved_amount = 0.0;
+                household.reserved_total_cost = 0.0;
+                household.replenishment_state = 0; // REPLENISHMENT_STABLE
+            }
+        }
     }
 
     /// Creates one immigrant household with shared starter savings and stock.
@@ -1098,7 +1127,7 @@ impl HouseholdSystem {
         }
     }
 
-    fn assign_agent_workplaces(&mut self, agents: &mut AgentSystem, allocator: &BuildingAllocator) {
+    fn assign_agent_workplaces(&mut self, agents: &mut AgentSystem, allocator: &mut BuildingAllocator) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let profile = get_household_demand_profile(&catalog);
@@ -1248,6 +1277,11 @@ impl HouseholdSystem {
                     );
                 }
             }
+        }
+
+        // Commit reserved counts back to buildings so production and demand metrics are accurate.
+        for (idx, count) in reserved_workers.into_iter().enumerate() {
+            allocator.buildings[idx].worker_count = count;
         }
     }
 
@@ -1753,7 +1787,7 @@ mod tests {
         let mut households = HouseholdSystem::new();
         households.households.push(Household {
             home_building_id: 0,
-            budget: 200.0,
+            budget: 300.0,
             stock: 0.0,
             member_count: 2,
             consumption_rate: 1.0,
@@ -1809,7 +1843,7 @@ mod tests {
             allocator.buildings[1].inventory_units(household_supplies),
             40.0
         );
-        assert_eq!(households.households[0].budget, 100.0);
+        assert_eq!(households.households[0].budget, 50.0);
 
         households.run_household_replenishment(&mut allocator, 0);
         assert_eq!(
@@ -1823,7 +1857,7 @@ mod tests {
             REPLENISHMENT_FULFILLED
         );
         assert_eq!(households.households[0].stock, 10.0);
-        assert_eq!(allocator.buildings[1].revenue, 100.0);
+        assert_eq!(allocator.buildings[1].revenue, 250.0);
     }
 
     #[test]
@@ -1867,7 +1901,7 @@ mod tests {
         }
 
         households.consume_household_stock(&mut agents);
-        households.assign_agent_workplaces(&mut agents, &allocator);
+        households.assign_agent_workplaces(&mut agents, &mut allocator);
 
         assert_eq!(agents.work_building[a0], 1);
         assert_eq!(agents.planned_activity[a0], 0);

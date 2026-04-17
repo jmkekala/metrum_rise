@@ -39,7 +39,7 @@ pub const SHIPMENT_FULFILLED: u8 = 1;
 pub const SHIPMENT_FAILED: u8 = 2;
 
 const SUPPLIER_SEARCH_MAX_RING: i32 = 3;
-const SUPPLIER_SEARCH_CANDIDATES: usize = 8;
+const SUPPLIER_SEARCH_CANDIDATES: usize = 24;
 const BORDER_ACTIVE_JOBS_PER_NODE: usize = 4;
 const OPERATIONAL_HOUR_SECONDS: f32 = 60.0 * 60.0;
 
@@ -457,20 +457,21 @@ impl ShipmentSystem {
                 continue;
             }
 
-            let amount = available.min(desired_amount);
+            let effective_unit_price = adjusted_unit_price(
+                supplier_profile.unit_price_currency,
+                freight_profile,
+                minute_of_day,
+            );
+            let max_affordable =
+                allocator.buildings[dest_idx].operating_budget / effective_unit_price;
+            let amount = available.min(desired_amount).min(max_affordable);
             if amount < min_shipment_units && !allow_emergency {
                 continue;
             }
-
-            let total_cost = amount
-                * adjusted_unit_price(
-                    supplier_profile.unit_price_currency,
-                    freight_profile,
-                    minute_of_day,
-                );
-            if allocator.buildings[dest_idx].operating_budget < total_cost {
+            if amount <= 0.0 {
                 continue;
             }
+            let total_cost = amount * effective_unit_price;
 
             let Some(travel_seconds) = allocator.freight_car_eta_between_buildings(
                 candidate_idx,
@@ -1189,7 +1190,7 @@ mod tests {
             commercial_edge,
             &commercial_asset,
             50.0,
-            500.0,
+            1_500.0,
         );
         allocator.buildings.push(destination);
         allocator.rebuild_entrance_cache(&graph, &network.lane_system);

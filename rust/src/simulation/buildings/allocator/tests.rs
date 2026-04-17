@@ -176,7 +176,7 @@ fn execute_startup_demand_building_pass(
     allocator: &mut BuildingAllocator,
     zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
     agents: &mut AgentSystem,
-    households: &HouseholdSystem,
+    households: &mut HouseholdSystem,
     logistics: &mut ShipmentSystem,
     network: &crate::simulation::network::TransitNetwork,
     graph: &RegionGraph,
@@ -189,6 +189,7 @@ fn execute_startup_demand_building_pass(
         &demand.building_actions,
         zoning,
         agents,
+        households,
         logistics,
         graph,
         &network.lane_system,
@@ -260,10 +261,12 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         &startup_plan,
         &mut zoning,
         &mut agents,
+        &mut households,
         &mut logistics,
         &graph,
         &network.lane_system,
     );
+    
     allocator.execute_demand_household_admission(2, &mut agents, &mut households); // Occupy buildings to protect from instant removal
 
     // Commercial demand cannot fire before households exist (goods_shortage=0 → base_commercial=0),
@@ -656,7 +659,7 @@ fn test_startup_demand_residential_family_selection_uses_strip_hash_order() {
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
-    let households = HouseholdSystem::new();
+    let mut households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -678,7 +681,7 @@ fn test_startup_demand_residential_family_selection_uses_strip_hash_order() {
         &mut allocator,
         &mut zoning,
         &mut agents,
-        &households,
+        &mut households,
         &mut logistics,
         &network,
         &graph,
@@ -736,7 +739,7 @@ fn test_startup_demand_residential_variant_selection_uses_site_hash() {
     let map_cfg = MapConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
-    let households = HouseholdSystem::new();
+    let mut households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -758,7 +761,7 @@ fn test_startup_demand_residential_variant_selection_uses_site_hash() {
         &mut allocator,
         &mut zoning,
         &mut agents,
-        &households,
+        &mut households,
         &mut logistics,
         &network,
         &graph,
@@ -1473,7 +1476,7 @@ fn test_demand_building_spawn_plan_executes_from_daily_budget() {
     let mut network = crate::simulation::network::TransitNetwork::new();
     let mut agents = AgentSystem::new();
     let mut logistics = ShipmentSystem::new();
-    let households = HouseholdSystem::new();
+    let mut households = HouseholdSystem::new();
 
     network.add_road(
         &mut graph,
@@ -1498,10 +1501,12 @@ fn test_demand_building_spawn_plan_executes_from_daily_budget() {
         &demand.building_actions,
         &mut zoning,
         &mut agents,
+        &mut households,
         &mut logistics,
         &graph,
         &network.lane_system,
     );
+    
 
     assert!(
         allocator
@@ -1540,6 +1545,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
     let mut graph = RegionGraph::new();
     let mut network = crate::simulation::network::TransitNetwork::new();
     let mut agents = AgentSystem::new();
+    let mut households = HouseholdSystem::new();
     let mut logistics = ShipmentSystem::new();
 
     network.add_road(
@@ -1701,10 +1707,12 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &plan,
         &mut zoning,
         &mut agents,
+        &mut households,
         &mut logistics,
         &graph,
         &network.lane_system,
     );
+    
 
     assert_eq!(allocator.buildings.len(), 2);
     assert!(

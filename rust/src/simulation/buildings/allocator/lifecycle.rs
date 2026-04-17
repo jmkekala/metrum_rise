@@ -26,6 +26,7 @@ impl BuildingAllocator {
         &mut self,
         zoning: &mut ZoningSystem,
         agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
         graph: &RegionGraph,
         lanes: &LaneSystem,
@@ -193,8 +194,11 @@ impl BuildingAllocator {
                     let mut mapping = std::collections::HashMap::new();
                     mapping.insert(last_idx, i);
                     agents.remap_building_indices(&mapping);
+                    households.remap_building_indices(&mapping);
                     logistics.remap_building_indices(&mapping);
                 }
+
+                households.invalidate_building(i);
 
                 self.buildings.swap_remove(i);
                 self.dirty_index = true;
@@ -289,6 +293,7 @@ impl BuildingAllocator {
         plan: &DemandBuildingActionPlan,
         zoning: &mut ZoningSystem,
         agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
         graph: &RegionGraph,
         lanes: &LaneSystem,
@@ -310,7 +315,7 @@ impl BuildingAllocator {
                     continue;
                 }
                 if let Some((moved_key, moved_idx)) =
-                    self.remove_building_at_index(building_idx, zoning, agents, logistics)
+                    self.remove_building_at_index(building_idx, zoning, agents, households, logistics)
                 {
                     action_lookup.insert(moved_key, moved_idx);
                 }
@@ -542,6 +547,7 @@ impl BuildingAllocator {
         building_idx: usize,
         zoning: &mut ZoningSystem,
         agents: &mut AgentSystem,
+        households: &mut HouseholdSystem,
         logistics: &mut ShipmentSystem,
     ) -> Option<(DemandBuildingActionKey, usize)> {
         let zone_cell_m = zoning.config.zone_cell_m;
@@ -570,6 +576,7 @@ impl BuildingAllocator {
         }
 
         agents.evict_building(building_idx);
+        households.invalidate_building(building_idx);
         logistics.invalidate_building(building_idx, self);
         if let Some(zone_idx) = baseline_private_zone_slot(building.zone_type) {
             self.dirty_zones[zone_idx] = true;
@@ -585,6 +592,7 @@ impl BuildingAllocator {
             let mut mapping = std::collections::HashMap::new();
             mapping.insert(last_idx, building_idx);
             agents.remap_building_indices(&mapping);
+            households.remap_building_indices(&mapping);
             logistics.remap_building_indices(&mapping);
             Some((moved_key, building_idx))
         } else {

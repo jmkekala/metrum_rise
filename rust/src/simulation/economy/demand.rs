@@ -1479,6 +1479,10 @@ impl DailyDemandSnapshot {
         let mut existing_private_building_count = 0_u32;
         let mut total_commercial_owa_input = 0.0_f32;
         let mut total_commercial_local_input = 0.0_f32;
+        let mut total_commercial_expected_input = 0.0_f32;
+
+        let catalog = load_runtime_economy_catalog()
+            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
 
         for (idx, building) in allocator.buildings.iter().enumerate() {
             if building.broken || building.economy_broken {
@@ -1507,13 +1511,22 @@ impl DailyDemandSnapshot {
             if !building.is_deserted && matches!(building.zone_type, ZoneType::Commercial) {
                 total_commercial_owa_input += building.daily_owa_input_value;
                 total_commercial_local_input += building.daily_local_input_value;
+                if let Some(profile) =
+                    catalog.profile_by_runtime_id(building.economy_profile_runtime_id)
+                {
+                    for input_port in &profile.inputs {
+                        let resource_price = catalog
+                            .unit_price_for_resource(input_port.resource_runtime_id)
+                            .unwrap_or(0.0);
+                        total_commercial_expected_input +=
+                            input_port.units_per_day * resource_price;
+                    }
+                }
             }
         }
 
         let vacant_household_slots = total_household_slots.saturating_sub(occupied_household_slots);
 
-        let catalog = load_runtime_economy_catalog()
-            .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let mut housed_resident_count = 0_u32;
         let mut housed_household_count = 0_u32;
         let mut unhoused_household_count = 0_u32;
@@ -1586,14 +1599,17 @@ impl DailyDemandSnapshot {
         };
 
         // Fraction of commercial input value sourced from OWA vs local industrial.
-        // Based on actual daily transaction costs accumulated by logistics, so one farm
-        // that partially supplies multiple shops yields a smooth intermediate signal.
+        // Uses expected daily input cost as a minimum denominator so a tiny OWA
+        // emergency import (e.g. one unit when the building budget is briefly
+        // exhausted) does not register as full OWA dependency when local supply
+        // exists and normal throughput resumes the next hour.
         let commercial_owa_dependency = {
-            let total = total_commercial_owa_input + total_commercial_local_input;
-            if total <= 0.0 {
+            let actual_total = total_commercial_owa_input + total_commercial_local_input;
+            let denom = actual_total.max(total_commercial_expected_input);
+            if denom <= 0.0 {
                 0.0
             } else {
-                clamp01(total_commercial_owa_input / total)
+                clamp01(total_commercial_owa_input / denom)
             }
         };
 
@@ -2055,8 +2071,10 @@ mod tests {
 
     #[test]
     fn snapshot_computes_owa_dependency_from_input_accumulators() {
-        // Commercial building with 75 currency from OWA and 25 from local industrial:
-        // owa_dependency = 75 / (75 + 25) = 0.75.
+        // Commercial building (grocery_basic profile) with 75 currency from OWA and 25 from local.
+        // Expected daily input = 160 staple_food * 15.0/unit = 2400.
+        // denom = max(actual=100, expected=2400) = 2400.
+        // owa_dependency = 75 / 2400 = 0.03125.
         let mut allocator = BuildingAllocator::new();
         let commercial_asset =
             register_test_asset(&mut allocator, "commercial", ZoneType::Commercial);
@@ -2072,8 +2090,8 @@ mod tests {
         let snapshot = DailyDemandSnapshot::from_runtime(&allocator, &households, &graph, &config);
 
         assert!(
-            (snapshot.commercial_owa_dependency - 0.75).abs() < 1e-5,
-            "owa_dependency must equal owa/(owa+local): got={:.4}",
+            (snapshot.commercial_owa_dependency - 0.03125).abs() < 1e-4,
+            "owa_dependency must equal owa/max(actual,expected): got={:.6}",
             snapshot.commercial_owa_dependency
         );
     }
@@ -2123,7 +2141,7 @@ mod tests {
         );
         assert!(low_affordability.upgrades.is_empty());
 
-        households.households[0].budget = 500.0;
+        households.households[0].budget = 1_200.0;
         let residential_occupants =
             ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
         let high_affordability = demand.collect_existing_building_candidates(
@@ -2175,8 +2193,8 @@ mod tests {
         );
         assert!(weak_viability.upgrades.is_empty());
 
-        allocator.buildings[0].worker_count = 4;
-        allocator.buildings[0].operating_budget = 2_000.0;
+        allocator.buildings[0].worker_count = 15;
+        allocator.buildings[0].operating_budget = 6_000.0;
         let strong_viability = demand.collect_existing_building_candidates(
             &allocator,
             &households,
@@ -2205,8 +2223,8 @@ mod tests {
             Some("ind_family"),
             2,
         );
-        let mut factory = building(ZoneType::Industrial, 50.0, 0, 4, level_one);
-        factory.operating_budget = 2_000.0;
+        let mut factory = building(ZoneType::Industrial, 50.0, 0, 10, level_one);
+        factory.operating_budget = 4_000.0;
         allocator.buildings.push(factory);
 
         let households = HouseholdSystem::new();

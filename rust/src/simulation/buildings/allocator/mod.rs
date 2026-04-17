@@ -382,13 +382,13 @@ impl BuildingAllocator {
         &mut self,
         zoning: &mut ZoningSystem,
         agents: &mut crate::simulation::economy::agents::AgentSystem,
-        _households: &mut crate::simulation::economy::households::HouseholdSystem,
+        households: &mut crate::simulation::economy::households::HouseholdSystem,
         logistics: &mut crate::simulation::economy::logistics::ShipmentSystem,
         network: &mut crate::simulation::network::TransitNetwork,
         graph: &mut RegionGraph,
     ) {
         // 1. Stale building cleanup.
-        self.cleanup_stale_buildings(zoning, agents, logistics, graph, &network.lane_system);
+        self.cleanup_stale_buildings(zoning, agents, households, logistics, graph, &network.lane_system);
 
         network.rebuild_pathing_if_dirty(graph);
 

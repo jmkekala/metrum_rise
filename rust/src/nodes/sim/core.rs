@@ -523,6 +523,7 @@ impl SimCore {
             &self.demand.building_actions,
             &mut self.zoning,
             &mut self.agents,
+            &mut self.households,
             &mut self.logistics,
             &self.region_graph,
             &self.transit_network.lane_system,
