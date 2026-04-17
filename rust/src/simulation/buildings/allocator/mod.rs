@@ -499,9 +499,25 @@ impl BuildingAllocator {
         self.registry.flat_size_m2(&b.asset_id)
     }
 
-    /// Returns the worker capacity declared by a building asset.
+    /// Returns the worker capacity for a given asset, preferring the economy profile over the
+    /// asset manifest. Falls back to the manifest value if no profile is linked or the profile
+    /// has no capacity set.
+    pub fn worker_capacity_for_asset(&self, asset_id: &str) -> u32 {
+        if let Some(profile_id) = self.registry.economy_profile(asset_id) {
+            if let Ok(catalog) = load_runtime_economy_catalog() {
+                if let Some(p) = catalog.profile_for_id(profile_id) {
+                    if p.worker_capacity > 0 {
+                        return p.worker_capacity;
+                    }
+                }
+            }
+        }
+        self.registry.worker_capacity(asset_id)
+    }
+
+    /// Returns the worker capacity declared for a placed building.
     ///
-    /// Unresolved assets or undeclared capacities count as zero.
+    /// Unresolved assets, broken buildings, and deserted buildings count as zero.
     pub fn worker_capacity(&self, building_idx: usize) -> u32 {
         let Some(b) = self.buildings.get(building_idx) else {
             return 0;
@@ -509,7 +525,7 @@ impl BuildingAllocator {
         if b.broken || b.economy_broken || b.is_deserted {
             return 0;
         }
-        self.registry.worker_capacity(&b.asset_id)
+        self.worker_capacity_for_asset(&b.asset_id)
     }
 
     /// Returns a bounded nearby candidate list for the requested zones, sorted by distance.

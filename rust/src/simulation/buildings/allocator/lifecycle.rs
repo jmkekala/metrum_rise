@@ -491,7 +491,7 @@ impl BuildingAllocator {
         if target_building.lot_width_cells != building.width_cells
             || target_building.lot_depth_cells != building.depth_cells
             || self.registry.household_capacity(&action.target_asset_id) < building.occupancy
-            || self.registry.worker_capacity(&action.target_asset_id) < building.worker_count
+            || self.worker_capacity_for_asset(&action.target_asset_id) < building.worker_count
         {
             return None;
         }

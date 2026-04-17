@@ -320,6 +320,8 @@ pub(crate) struct EconomyProfileRuntime {
     pub wage_min_currency_per_day: f32,
     /// Fixed maximum daily wage offered by this profile.
     pub wage_max_currency_per_day: f32,
+    /// Maximum number of workers this building can employ, as authored in the economy profile.
+    pub worker_capacity: u32,
     /// Authored target stock horizon in days for the starter live runtime.
     pub stock_target_days: f32,
     /// Output units pre-seeded into inventory when the building is first placed.
@@ -1096,6 +1098,7 @@ fn compile_runtime_profile(
         unit_price_currency: profile.unit_price_currency.max(0.0),
         wage_min_currency_per_day: profile.wage_min_currency_per_day.max(0.0),
         wage_max_currency_per_day: profile.wage_max_currency_per_day.max(0.0),
+        worker_capacity: profile.worker_capacity,
         stock_target_days: profile.stock_target_days.max(0.0),
         starting_inventory_days: profile.starting_inventory_days.max(0.0),
         reorder_threshold_days: profile.reorder_threshold_days.max(0.0),

@@ -473,9 +473,9 @@ impl AssetManifest {
                             }
                         }
                         ZoneClass::Commercial | ZoneClass::Industrial => {
-                            if b.worker_capacity.is_none() {
+                            if b.worker_capacity.is_none() && b.economy_profile.is_none() {
                                 return Err(ManifestError::Validation(format!(
-                                    "asset_id '{}': commercial and industrial zoned_private buildings require worker_capacity",
+                                    "asset_id '{}': commercial and industrial zoned_private buildings require worker_capacity or economy_profile",
                                     self.asset_id
                                 )));
                             }

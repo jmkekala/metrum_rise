@@ -515,7 +515,7 @@ impl DemandSystem {
                             return false;
                         }
                         // Consume workers from the running pool.
-                        let req = allocator.registry.worker_capacity(&candidate.action.asset_id);
+                        let req = allocator.worker_capacity_for_asset(&candidate.action.asset_id);
                         available_unemployed = available_unemployed.saturating_sub(req);
                         passed += 1;
                         true
@@ -1154,7 +1154,7 @@ fn level_change_is_compatible(
         }
     }
     allocator.registry.household_capacity(target_asset_id) >= building.occupancy
-        && allocator.registry.worker_capacity(target_asset_id) >= building.worker_count
+        && allocator.worker_capacity_for_asset(target_asset_id) >= building.worker_count
 }
 
 fn load_builtin_demand_config() -> Result<Arc<DemandConfig>, String> {
@@ -1634,7 +1634,7 @@ fn nonresidential_passes_labour_gate(
     asset_id: &str,
     available_unemployed: u32,
 ) -> bool {
-    let required = allocator.registry.worker_capacity(asset_id);
+    let required = allocator.worker_capacity_for_asset(asset_id);
     // Buildings with no workers (e.g. utility nodes) always pass.
     required == 0 || available_unemployed >= required
 }

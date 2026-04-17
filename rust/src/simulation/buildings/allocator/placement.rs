@@ -524,7 +524,7 @@ impl BuildingAllocator {
         const STARTUP_MIN_BUDGET: f32 = 500.0;
         let startup_budget = match placement.zone_type {
             ZoneType::Commercial | ZoneType::Industrial => {
-                let worker_cap = self.registry.worker_capacity(&placement.asset_id);
+                let worker_cap = self.worker_capacity_for_asset(&placement.asset_id);
                 let catalog_ref = catalog.as_ref().ok();
                 let profile = catalog_ref
                     .and_then(|c| c.profile_by_runtime_id(economy_binding.runtime_id));
