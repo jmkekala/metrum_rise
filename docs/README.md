@@ -17,6 +17,7 @@ This directory stays intentionally flat for now. Each file should have one clear
 | [`buildings.md`](buildings.md) | Reserved for a future building type catalog. See `economy.md` and `demand.md` for current building specs. |
 | [`asset_editor.md`](asset_editor.md) | Asset-editor workflow and content contract. |
 | [`improved_roads.md`](improved_roads.md) | Road-renderer architecture notes. |
+| [`ui.md`](ui.md) | UI paradigm, surface ownership, style conventions, and migration plan. |
 
 ## Working Rules
 

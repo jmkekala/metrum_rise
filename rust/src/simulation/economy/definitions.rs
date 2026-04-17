@@ -152,6 +152,7 @@ pub(crate) struct RuntimeEconomyTuning {
     pub unemployment_daily_benefit_per_member: f32,
     /// Days a household may receive unemployment benefit before becoming emigration-eligible.
     /// Prevents infinite treasury drain when no jobs exist in the city.
+    #[serde(default, deserialize_with = "deserialize_u32_from_number")]
     pub unemployment_max_days: u32,
 }
 
@@ -2659,6 +2660,7 @@ target_node_id = "households"
         project["profiles"][1]["worker_capacity"] = serde_json::json!(3.0);
         project["scenarios"][0]["duration_days"] = serde_json::json!(30.0);
         project["scenarios"][0]["household_count"] = serde_json::json!(60.0);
+        project["runtime_tuning"]["unemployment_max_days"] = serde_json::json!(30.0);
 
         let project_json = serde_json::to_string(project).unwrap();
         let result = run_sandbox_json(&project_json, "grocery_bottleneck").unwrap();
