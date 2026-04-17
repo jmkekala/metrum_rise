@@ -72,6 +72,9 @@ const CLOCK_PANEL_WIDTH := 220.0
 const CITY_STATUS_PANEL_WIDTH := 170.0
 const DEMAND_METER_WIDTH := 92.0
 
+func _toolbar_button_height() -> float:
+	return maxf(1.0, minf(UIStyle.HUD_BUTTON_HEIGHT, UIStyle.HUD_STRIP_HEIGHT - float(UIStyle.HUD_SHELL_PAD_Y * 2)))
+
 func _ready():
 	_build_ui()
 	_build_auxiliary_windows()
@@ -355,11 +358,13 @@ func _build_ui():
 	main_toolbar = HBoxContainer.new()
 	main_toolbar.add_theme_constant_override("separation", 15)
 	main_toolbar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	var toolbar_button_height := _toolbar_button_height()
 	
 	road_main_btn = Button.new()
 	road_main_btn.text = "Roads"
-	road_main_btn.custom_minimum_size = Vector2(100, UIStyle.HUD_BUTTON_HEIGHT)
+	road_main_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
 	road_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_hud_toolbar_text_style(road_main_btn)
 	var style = StyleBoxFlat.new()
 	style.bg_color = Color(0.2, 0.2, 0.2, 0.8)
 	style.corner_radius_top_left = 25
@@ -371,29 +376,33 @@ func _build_ui():
 
 	zoning_main_btn = Button.new()
 	zoning_main_btn.text = "Zoning"
-	zoning_main_btn.custom_minimum_size = Vector2(100, UIStyle.HUD_BUTTON_HEIGHT)
+	zoning_main_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
 	zoning_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_hud_toolbar_text_style(zoning_main_btn)
 	zoning_main_btn.add_theme_stylebox_override("normal", style.duplicate())
 	main_toolbar.add_child(zoning_main_btn)
 
 	terrain_main_btn = Button.new()
 	terrain_main_btn.text = "Terrain"
-	terrain_main_btn.custom_minimum_size = Vector2(100, UIStyle.HUD_BUTTON_HEIGHT)
+	terrain_main_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
 	terrain_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_hud_toolbar_text_style(terrain_main_btn)
 	terrain_main_btn.add_theme_stylebox_override("normal", style.duplicate())
 	main_toolbar.add_child(terrain_main_btn)
 	
 	select_main_btn = Button.new()
 	select_main_btn.text = "Inspect"
-	select_main_btn.custom_minimum_size = Vector2(100, UIStyle.HUD_BUTTON_HEIGHT)
+	select_main_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
 	select_main_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_hud_toolbar_text_style(select_main_btn)
 	select_main_btn.add_theme_stylebox_override("normal", style.duplicate())
 	main_toolbar.add_child(select_main_btn)
 
 	var mods_btn := Button.new()
 	mods_btn.text = "Mods"
-	mods_btn.custom_minimum_size = Vector2(100, UIStyle.HUD_BUTTON_HEIGHT)
+	mods_btn.custom_minimum_size = Vector2(100, toolbar_button_height)
 	mods_btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	_apply_hud_toolbar_text_style(mods_btn)
 	mods_btn.add_theme_stylebox_override("normal", style.duplicate())
 	mods_btn.pressed.connect(_on_mods_btn_pressed)
 	main_toolbar.add_child(mods_btn)
@@ -404,8 +413,8 @@ func _build_ui():
 	hbox_main_center.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hbox_main_center.add_child(main_toolbar)
 
-	vbox.add_child(_create_bottom_strip_shell(hbox_main_center))
-	toolbar_center.add_child(main_vbox)
+	vbox.add_child(_create_bottom_strip_shell(hbox_main_center, 0.0, UIStyle.hud_clear_style()))
+	toolbar_center.add_child(_create_bottom_group_shell(main_vbox))
 
 	# --- Bottom-left Strip ---
 	clock_panel = _create_bottom_strip_shell(_build_clock_content(), CLOCK_PANEL_WIDTH)
@@ -430,7 +439,8 @@ func _build_clock_content() -> VBoxContainer:
 	clock_label = Label.new()
 	clock_label.text = "Day 1 00:00"
 	clock_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	clock_label.add_theme_font_size_override("font_size", 20)
+	clock_label.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
+	clock_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	clock_vbox.add_child(clock_label)
 
 	var speed_hbox := HBoxContainer.new()
@@ -446,6 +456,8 @@ func _build_clock_content() -> VBoxContainer:
 	speed_label.text = "Paused"
 	speed_label.custom_minimum_size = Vector2(90, 0)
 	speed_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	speed_label.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
+	speed_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	speed_hbox.add_child(speed_label)
 
 	speed_up_btn = Button.new()
@@ -455,10 +467,17 @@ func _build_clock_content() -> VBoxContainer:
 
 	return clock_vbox
 
-func _create_bottom_strip_shell(content: Control, width: float = 0.0) -> PanelContainer:
+func _create_bottom_strip_shell(
+	content: Control,
+	width: float = 0.0,
+	shell_style: StyleBox = null
+) -> PanelContainer:
 	var shell := PanelContainer.new()
 	shell.mouse_filter = Control.MOUSE_FILTER_STOP
-	shell.add_theme_stylebox_override("panel", UIStyle.hud_shell_style())
+	shell.add_theme_stylebox_override(
+		"panel",
+		shell_style if shell_style != null else UIStyle.hud_shell_style()
+	)
 	shell.custom_minimum_size = Vector2(width, UIStyle.HUD_STRIP_HEIGHT)
 
 	var padding := MarginContainer.new()
@@ -479,6 +498,30 @@ func _create_bottom_strip_shell(content: Control, width: float = 0.0) -> PanelCo
 	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	content_wrapper.add_child(content)
 	return shell
+
+func _create_bottom_group_shell(content: Control) -> PanelContainer:
+	var shell := PanelContainer.new()
+	shell.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shell.add_theme_stylebox_override("panel", UIStyle.hud_group_style())
+
+	var padding := MarginContainer.new()
+	padding.add_theme_constant_override("margin_left", UIStyle.HUD_SHELL_PAD_X)
+	padding.add_theme_constant_override("margin_right", UIStyle.HUD_SHELL_PAD_X)
+	padding.add_theme_constant_override("margin_top", UIStyle.HUD_SHELL_PAD_Y)
+	padding.add_theme_constant_override("margin_bottom", UIStyle.HUD_SHELL_PAD_Y)
+	shell.add_child(padding)
+
+	content.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	padding.add_child(content)
+	return shell
+
+func _apply_hud_toolbar_text_style(button: Button) -> void:
+	button.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
+	button.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	button.add_theme_color_override("font_hover_color", UIStyle.TEXT_PRIMARY)
+	button.add_theme_color_override("font_pressed_color", UIStyle.TEXT_PRIMARY)
+	button.add_theme_color_override("font_focus_color", UIStyle.TEXT_PRIMARY)
+	button.add_theme_color_override("font_disabled_color", UIStyle.TEXT_DIM)
 
 func _connect_signals():
 	road_main_btn.pressed.connect(_on_road_main_pressed)

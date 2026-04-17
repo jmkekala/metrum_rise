@@ -31,7 +31,7 @@ func _ready() -> void:
 	_title_label = Label.new()
 	_title_label.text = "RCI"
 	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_title_label.add_theme_font_size_override("font_size", 16)
+	_title_label.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
 	_title_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	add_child(_title_label)
 

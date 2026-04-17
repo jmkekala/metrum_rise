@@ -8,11 +8,13 @@ const BG_DARK := Color(0.08, 0.08, 0.12, 0.93)
 const BG_PANEL := Color(0.10, 0.10, 0.10, 0.80)
 const BG_SUBMENU := Color(0.15, 0.15, 0.15, 0.70)
 const BG_HUD_SHELL := Color(0.07, 0.07, 0.07, 0.72)
+const BG_HUD_GROUP := Color(0.07, 0.07, 0.07, 0.56)
 const BORDER_ACCENT := Color(0.30, 0.30, 0.45, 0.60)
 const TEXT_PRIMARY := Color.WHITE
 const TEXT_DIM := Color(0.72, 0.72, 0.72)
 const TEXT_SECTION := Color(0.65, 0.65, 0.90)
 const TEXT_ALERT := Color(1.00, 0.40, 0.30)
+const HUD_TEXT_SIZE := 16
 const ZONE_RESIDENTIAL := Color(0.20, 0.45, 0.25, 0.75)
 const ZONE_COMMERCIAL := Color(0.20, 0.34, 0.62, 0.75)
 const ZONE_INDUSTRIAL := Color(0.55, 0.47, 0.14, 0.75)
@@ -58,3 +60,9 @@ static func submenu_style() -> StyleBoxFlat:
 
 static func hud_shell_style() -> StyleBoxFlat:
 	return panel_style(BG_HUD_SHELL, HUD_SHELL_CORNER, BORDER_ACCENT, 0)
+
+static func hud_group_style() -> StyleBoxFlat:
+	return panel_style(BG_HUD_GROUP, HUD_SHELL_CORNER, BORDER_ACCENT, 0)
+
+static func hud_clear_style() -> StyleBoxFlat:
+	return panel_style(Color(0.0, 0.0, 0.0, 0.0), HUD_SHELL_CORNER, BORDER_ACCENT, 0)

@@ -24,7 +24,6 @@ The old monolithic ledger and numbered backlog are archived in [`archive/project
 
 For active tracked work, use [`roadmap.md`](roadmap.md).
 
-- `NET-01` **(P0 blocker)**: parallel/overlapping road placement creates topologically disconnected edge segments; CCH cannot route across them; all freight falls back to OWA permanently. Fix `collect_crossing_splits` in `topology.rs`.
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: add service-building coverage so city stability is not only conceptual.
 - `MOB-01`: ship bicycle support as the next transport mode.
@@ -44,6 +43,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 | Demand / city-growth pressure / admission-removal ownership | [`demand.md`](demand.md)                               |
 | Zoning                                                      | [`zoning.md`](zoning.md)                               |
 | Building placement / removal / frontage attachment          | [`building_allocator.md`](building_allocator.md)       |
+| Gameplay HUD / menus / floating windows                     | [`ui.md`](ui.md)                                       |
 | Asset-editor workflow and pack contract                     | [`asset_editor.md`](asset_editor.md)                   |
 | Road-renderer notes                                         | [`improved_roads.md`](improved_roads.md)               |
 
@@ -61,6 +61,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Added a shared top menu scaffold across gameplay and editor scenes, with gameplay File/View/City/Tools/Help menus and reduced editor File/editor-action menus. See [`ui.md`](ui.md).
 - Migrated the Building Inspector and SelectTool road-properties UI onto draggable Godot `Window` surfaces instead of custom anchored panels. See [`ui.md`](ui.md).
 - Building Inspector now supports multiple simultaneous per-building windows and refreshes open inspectors on each in-game hour boundary. See [`ui.md`](ui.md).
+- Added an in-game Pack Manager window through the gameplay `Mods` toolbar action. See [`ui.md`](ui.md).
 - Reworked the zoning toolbar from one flat profile row into Residential / Commercial / Industrial family buttons with a second profile row above for the selected family. See [`ui.md`](ui.md).
 - Added a compact bottom-left R/C/I demand meter beside the clock, driven by live normalized demand pressures from `SimulationNode`. See [`ui.md`](ui.md).
 - Added a compact city-status HUD panel between the clock and R/C/I meter for treasury balance and live agent count, backed by continuously refreshed snapshot values. See [`ui.md`](ui.md).

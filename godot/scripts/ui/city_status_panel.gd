@@ -32,12 +32,12 @@ func set_stats(treasury_balance: float, agent_count: int) -> void:
 	_displayed_treasury = rounded_treasury
 	_displayed_agents = agent_count
 
-	_treasury_label.text = "Treasury  %s" % _format_currency(rounded_treasury)
+	_treasury_label.text = _format_currency(rounded_treasury)
 	_agents_label.text = "Agents  %s" % _format_int_with_commas(agent_count)
 
 func _make_value_label() -> Label:
 	var label := Label.new()
-	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_font_size_override("font_size", UIStyle.HUD_TEXT_SIZE)
 	label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	label.clip_text = true

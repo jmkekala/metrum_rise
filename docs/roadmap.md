@@ -83,7 +83,7 @@ Kind values:
 
 | ID | Kind | Status | Priority | Owner doc | Problem | Exit criteria |
 |----|------|--------|----------|-----------|---------|---------------|
-| `TOOLS-01` | `feature` | `open` | `P2` | [`asset_editor.md`](asset_editor.md) | Installed content packs still lack an in-game pack-manager UI. | Players can view and manage installed content packs through an in-game pack-manager UI. |
+| `TOOLS-01` | `feature` | `done` | `P2` | [`asset_editor.md`](asset_editor.md) | Installed content packs can now be viewed and enabled through the in-game Pack Manager window launched from the gameplay `Mods` action. | Players can view and manage installed content packs through an in-game pack-manager UI. |
 
 ## Notes
 

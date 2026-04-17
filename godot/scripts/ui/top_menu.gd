@@ -82,8 +82,8 @@ func _build_menu_bar() -> void:
 func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
 	file_popup.add_item("New Game", ActionId.FILE_NEW_GAME)
-	file_popup.add_item("Save\tCtrl+S", ActionId.FILE_SAVE)
-	file_popup.add_item("Load\tCtrl+L", ActionId.FILE_LOAD)
+	file_popup.add_item("Load [Ctrl+L]", ActionId.FILE_LOAD)
+	file_popup.add_item("Save [Ctrl+S]", ActionId.FILE_SAVE)
 	file_popup.add_separator()
 	file_popup.add_item("Quit", ActionId.FILE_QUIT)
 	file_popup.id_pressed.connect(_on_file_menu_pressed)
@@ -94,10 +94,10 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	view_popup.add_separator()
 	view_popup.add_item("Toggle Zoning Overlay", ActionId.VIEW_TOGGLE_ZONING)
 	view_popup.id_pressed.connect(_on_view_menu_pressed)
-	overlays_popup.add_item("None\t7", ActionId.VIEW_OVERLAY_NONE)
-	overlays_popup.add_item("Pollution\t8", ActionId.VIEW_OVERLAY_POLLUTION)
-	overlays_popup.add_item("Noise\t9", ActionId.VIEW_OVERLAY_NOISE)
-	overlays_popup.add_item("Desirability\t0", ActionId.VIEW_OVERLAY_DESIRABILITY)
+	overlays_popup.add_item("None [7]", ActionId.VIEW_OVERLAY_NONE)
+	overlays_popup.add_item("Pollution [8]", ActionId.VIEW_OVERLAY_POLLUTION)
+	overlays_popup.add_item("Noise [9]", ActionId.VIEW_OVERLAY_NOISE)
+	overlays_popup.add_item("Desirability [0]", ActionId.VIEW_OVERLAY_DESIRABILITY)
 	overlays_popup.id_pressed.connect(_on_view_menu_pressed)
 
 	var city_popup := _add_menu_popup(menu_bar, "City")
@@ -118,7 +118,7 @@ func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 
 func _build_asset_editor_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
-	file_popup.add_item("Save", ActionId.FILE_SAVE)
+	file_popup.add_item("Save [Ctrl+S]", ActionId.FILE_SAVE)
 	file_popup.add_separator()
 	file_popup.add_item("Return To Game", ActionId.FILE_RETURN_TO_GAME)
 	file_popup.add_item("Quit", ActionId.FILE_QUIT)
@@ -131,7 +131,7 @@ func _build_asset_editor_menus(menu_bar: MenuBar) -> void:
 
 func _build_economy_editor_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
-	file_popup.add_item("Save", ActionId.FILE_SAVE)
+	file_popup.add_item("Save [Ctrl+S]", ActionId.FILE_SAVE)
 	file_popup.add_separator()
 	file_popup.add_item("Return To Game", ActionId.FILE_RETURN_TO_GAME)
 	file_popup.add_item("Quit", ActionId.FILE_QUIT)

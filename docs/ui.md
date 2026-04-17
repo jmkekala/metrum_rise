@@ -1,0 +1,411 @@
+# Metrum Rise — UI Architecture
+
+## Paradigm
+
+Hybrid: **top menu bar** for global actions and window launchers + **floating windows** for
+information panels and selection-driven properties + **bottom toolbar** for placement tools.
+
+All UI is built procedurally in GDScript. The four `.tscn` files (`Main.tscn`,
+`AssetEditor.tscn`, `EconomyEditor.tscn`, `Router.tscn`) describe the scene node tree but
+contain no UI component definitions — all panels, buttons, and windows are constructed at
+runtime in `_ready()`. There are no `.tres` theme resource files; style constants are
+centralised in `UIStyle` (see below) instead.
+
+GDScript is a thin rendering and input bridge only. No simulation logic or game decisions
+belong here. Rust methods are called through `SimulationNode`.
+
+### Surface presence per scene
+
+| Surface | Main (gameplay) | AssetEditor | EconomyEditor |
+|---------|:-:|:-:|:-:|
+| Top menu bar | ✓ | ✓ | ✓ |
+| Bottom toolbar | ✓ | — | — |
+| Context panel | — | — | — |
+| Floating windows | ✓ | — | — |
+
+The top menu bar is shared across all three scenes. The bottom toolbar and floating windows
+are gameplay-only — the editor screens are self-contained applications with their own layout
+and do not use those surfaces.
+
+The top menu in the editor scenes carries a reduced item set: File (Save, return to game),
+and any editor-specific actions. It does not show City / Demand / Economy window launchers,
+which are gameplay concepts.
+
+---
+
+## Surfaces
+
+### 1. Top Menu Bar
+
+**Node:** `MenuBar` anchored `PRESET_TOP_WIDE`, height ~28 px.
+**Script:** `scripts/ui/top_menu.gd` *(implemented)*.
+
+| Menu   | Items |
+|--------|-------|
+| File   | New Game, Save `[Ctrl+S]`, Load `[Ctrl+L]`, —, Quit |
+| View   | Overlays submenu (None `[7]`, Pollution `[8]`, Noise `[9]`, Desirability `[0]`), — , Toggle Zoning Overlay |
+| City   | City Statistics *(window)*, Economy Overview *(window)*, Demand Overview *(window)* |
+| Tools  | Open Asset Editor, Open Economy Editor |
+| Help   | Keyboard Shortcuts *(window)*, About |
+
+The menu bar owns global save/load/quit actions. These are currently handled as keyboard
+shortcuts in `input_manager.gd`; the keyboard shortcuts remain but the menu provides the
+discoverable entry point. Shortcut-bearing items are currently rendered as plain bracketed
+text in the label itself (for example `Save [Ctrl+S]`) rather than using a separate
+accelerator column.
+
+`top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `EconomyEditor`).
+It is not owned by `main_ui.gd`, because the editor scenes do not use the gameplay HUD.
+
+---
+
+### 2. Bottom Toolbar
+
+**Nodes:** Procedural bottom-strip layout rooted under a full-screen `Control`. The left
+gameplay HUD is an `HBoxContainer` of fixed-height `PanelContainer` shells. The right-side
+tool menu uses a unified outer group `PanelContainer` plus an inner fixed-height toolbar-row
+shell so the submenu stack can read as one cluster while the actual toolbar row still matches
+the clock / city-status / RCI strip height.
+**Script:** `scripts/ui/main_ui.gd` (current — stays here).
+
+The toolbar is the primary tool-selection surface. It is always visible during gameplay.
+
+| Button  | Activates |
+|---------|-----------|
+| Roads   | Road sub-menu (Walkway, 2-Lane, 4-Lane, One-Way, Cul-De-Sac) + draw-mode options (Straight / Spline) |
+| Zoning  | Zoning sub-menu with one always-visible lower row for Rect / Brush plus Residential / Commercial / Industrial family buttons; the profile row above is collapsed by default and opens only after clicking a family button, which also selects that family's first profile |
+| Terrain | Terrain sub-menu (Raise/Lower, Add Water Source) |
+| Inspect | Activates `SelectTool`; clicking a building while `SelectTool` is active opens the Building Inspector window |
+| Mods    | Opens the Pack Manager window |
+
+Sub-menus expand upward above the toolbar row, the same as today. In the current
+implementation the right-side menu cluster has:
+- one outer translucent group wrapper around the whole menu stack
+- one transparent inner layout shell for the actual toolbar row
+- fixed-height bottom HUD shells for the clock, city-status panel, and R/C/I meter
+
+Gameplay HUD status widgets: the clock / simulation-speed panel remains anchored at bottom-left,
+a compact city-status panel sits immediately to its right, and the R/C/I demand meter sits to
+the right of that. The city-status panel shows current treasury value plus live agent count,
+and refreshes continuously so paused-state edits such as road building still update the value
+immediately. The demand meter shows Residential / Commercial / Industrial net growth pressure
+as three vertical bars using the same green / blue / yellow palette as the zoning families.
+Each bar is centered on a zero baseline and spans `-100%..100%`. All four bottom-strip surfaces
+currently use the same white `HUD_TEXT_SIZE` typography for their primary labels.
+
+Zoning interaction rule: `Rect` and `Brush` are shared paint-mode controls, not their own
+submenu. Opening the Zoning tool shows only the lower row. Clicking `Residential`,
+`Commercial`, or `Industrial` toggles the profile row for that family above it and
+automatically selects the first profile in that family. Clicking the same family again
+collapses that profile row.
+
+**Keyboard shortcuts** (owned by `input_manager.gd`, toolbar reflects active tool visually):
+
+| Key        | Action |
+|------------|--------|
+| R          | Toggle Road tool |
+| X          | Toggle Walkway tool |
+| Z          | Toggle Zoning tool |
+| M          | Toggle Move tool |
+| V          | Toggle Select tool |
+| C          | Toggle Cul-De-Sac tool |
+| Y          | Toggle Terrain Sculpt |
+| Space      | Pause / unpause |
+| Escape     | Cancel active tool |
+| Ctrl+Z     | Undo |
+| 7 / 8 / 9 / 0 | Overlay modes |
+
+---
+
+### 3. Selection Windows
+
+Selection-driven gameplay properties now use floating `Window` surfaces instead of a docked
+context panel.
+
+Placement rule: selection windows open near the cursor location that triggered them. They
+prefer the right side of the cursor with a small padding so the clicked world-space target
+remains visible; if that placement would run off the gameplay viewport, they open on the left
+side instead.
+
+| Trigger | Window |
+|---------|--------|
+| Road edge selected (`SelectTool`) | Road Properties window |
+| Building clicked with no active tool | Building Inspector window |
+| Building clicked while `SelectTool` is active | Building Inspector window |
+
+---
+
+### 4. Floating Windows
+
+Floating windows are Godot `Window` nodes. They use the engine-provided title bar, drag
+behavior, and close button, can be open simultaneously, and are dismissed via that close
+button or programmatically.
+
+Most windows are instantiated on first open and hidden (not freed) on close so state is
+preserved within a session. The Building Inspector is the exception: it creates one window
+per inspected building so multiple inspectors can stay open at once, and each is freed when
+its close button is used.
+
+| Window | Launcher | Script / status | Content |
+|--------|----------|-----------------|---------|
+| Building Inspector | Click building with no active tool or while `SelectTool` is active | `scripts/ui/building_inspector.gd` *(implemented)* | Per-building stats: type, level, occupancy, budget, revenue, inventory, alerts. Multiple building windows may be open simultaneously; clicking the same building again closes that building's inspector, and visible inspector windows refresh on each in-game hour boundary. Uses Godot's built-in draggable `Window` chrome. |
+| Road Properties | Select one or more road edges with `SelectTool` | `scripts/ui/road_properties_window.gd` *(implemented)* | Edge class (Standard / Bridge / Tunnel), No Buildings flag, and slope warnings for the current selection. Uses Godot's built-in draggable `Window` chrome. |
+| Pack Manager | Toolbar → Mods | `scripts/ui/pack_manager.gd` *(implemented)* | Mod pack browser / manager window. |
+| City Statistics | City → City Statistics | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future population, housed/unhoused counts, budget summary, and utility status. |
+| Economy Overview | City → Economy Overview | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future commercial/industrial budgets, OWA ratio, and freight-facing signals. |
+| Demand Overview | City → Demand Overview | inline placeholder in `scripts/ui/top_menu.gd` | Placeholder window for future residential/commercial/industrial demand pressure, spawn credit, and growth candidates. |
+| Keyboard Shortcuts | Help → Keyboard Shortcuts | inline in `scripts/ui/top_menu.gd` *(implemented)* | Read-only shortcut reference. |
+
+Windows that display live simulation data call `SimulationNode` methods each time they are
+opened. They do not hold Rust-side state. The Building Inspector additionally refreshes any
+visible inspector windows on each in-game hour boundary; other live windows should stay
+snapshot-on-open unless there is a clear need for an explicit low-frequency refresh path.
+
+---
+
+### 5. Overlays
+
+Overlays are rendered as shader-driven mesh layers on the terrain. They are toggled via the
+View menu or keyboard shortcuts 7–0.
+
+Current implementation detail: `terrain.gd` exposes four overlay modes through
+`overlay_mode` — `0=None`, `1=Pollution`, `2=Noise`, `3=Desirability`. The keyboard
+shortcuts below map directly to those values through `input_manager.gd`.
+
+| Key | Overlay |
+|-----|---------|
+| 7   | None (default) |
+| 8   | Pollution |
+| 9   | Noise |
+| 0   | Desirability |
+
+Zoning overlay is a separate mesh toggled with the Zoning tool or `View → Toggle Zoning Overlay`.
+Traffic overlay is not currently implemented in the terrain renderer; do not expose it in the
+menu until a real renderer path exists.
+
+---
+
+## Style Conventions (`UIStyle`)
+
+**Script:** `scripts/ui/ui_style.gd` *(implemented)*.
+
+`UIStyle` owns the shared color, sizing, and shell helpers used by the current HUD/menu
+implementation. Most new UI code calls `UIStyle` factory methods instead of constructing
+`StyleBoxFlat` inline. `scripts/ui/main_ui.gd` still contains one local toolbar button-capsule
+style and should be migrated when that visual treatment is revisited.
+
+```
+Color constants
+  BG_DARK      = Color(0.08, 0.08, 0.12, 0.93)   # windows, inspector
+  BG_PANEL     = Color(0.10, 0.10, 0.10, 0.80)   # generic panel background
+  BG_SUBMENU   = Color(0.15, 0.15, 0.15, 0.70)   # sub-menus
+  BG_HUD_SHELL = Color(0.07, 0.07, 0.07, 0.72)   # fixed-height bottom-strip shells
+  BG_HUD_GROUP = Color(0.07, 0.07, 0.07, 0.56)   # outer menu-group wrapper
+  BORDER_ACCENT = Color(0.30, 0.30, 0.45, 0.60)  # window borders
+  TEXT_PRIMARY  = Color.WHITE
+  TEXT_DIM      = Color(0.72, 0.72, 0.72)
+  TEXT_SECTION  = Color(0.65, 0.65, 0.90)        # section headers
+  TEXT_ALERT    = Color(1.00, 0.40, 0.30)
+  HUD_TEXT_SIZE = 16
+  ZONE_RESIDENTIAL = Color(0.20, 0.45, 0.25, 0.75)
+  ZONE_COMMERCIAL  = Color(0.20, 0.34, 0.62, 0.75)
+  ZONE_INDUSTRIAL  = Color(0.55, 0.47, 0.14, 0.75)
+
+Corner radii
+  CORNER_WINDOW = 8     # floating windows
+  CORNER_PANEL  = 12    # generic panels
+  CORNER_SUB    = 10    # sub-menu panels, zone buttons
+  HUD_SHELL_CORNER = 15 # bottom HUD/menu shells
+
+Padding (MarginContainer constants)
+  PAD_WINDOW  = 12      # inside floating windows
+  PAD_PANEL   = 15      # generic panel padding
+  PAD_INNER   = 8       # inside sub-menu panels
+  CURSOR_WINDOW_GAP = 40.0  # horizontal gap from cursor to selection windows
+  HUD_SHELL_PAD_X = 15      # inside bottom-strip shells
+  HUD_SHELL_PAD_Y = 10
+
+Bottom HUD sizing
+  HUD_STRIP_HEIGHT = 60.0   # fixed shell height for clock / city-status / RCI / toolbar row
+  HUD_BUTTON_HEIGHT = 60.0  # toolbar button target height before inner-shell clamping
+  HUD_BOTTOM_MARGIN = 20.0  # bottom-screen gap
+  HUD_PANEL_GAP = 12.0      # gap between bottom-strip shells
+  HUD_LEFT_MARGIN = 20.0    # left inset for the gameplay HUD strip
+
+Helper factories
+  hud_shell_style()         fixed-height gameplay HUD shell
+  hud_group_style()         outer unified menu-group wrapper
+  hud_clear_style()         transparent inner toolbar-row layout shell
+```
+
+---
+
+## Godot Folder Structure
+
+### Pre-Reorganisation Snapshot
+
+Historical reference only. The flat `scripts/` layout below is the pre-`CODE-02`
+organization and should not be used for new work.
+
+```
+godot/
+  assets/
+    materials/                    Shaders (.gdshader)
+    models/
+      buildings/
+        commercial/               Commercial building GLBs + textures
+      characters/
+        civilians/                VAT meshes, blend source files
+    textures/
+      general/concrete_layers/
+      road/clean_asphalt/
+  bin/                            Compiled Rust library (libmetrum_rise.so, .gdextension)
+  scenes/                         Four flat .tscn files
+    AssetEditor.tscn
+    EconomyEditor.tscn
+    Main.tscn
+    Router.tscn
+  scripts/                        23 .gd files, entirely flat
+    agents.gd
+    analyze_assets.gd
+    asset_editor.gd
+    building_preview.gd
+    buildings.gd
+    cul_de_sac_tool.gd
+    economy_editor.gd
+    economy_graph_canvas.gd
+    editor_camera_input.gd
+    input_manager.gd
+    inspect_tool.gd
+    lane_tool.gd
+    launch_router.gd
+    main_ui.gd
+    move_tool.gd
+    network_renderer.gd
+    network_tool.gd
+    pack_manager.gd
+    road_tool.gd
+    select_tool.gd
+    terrain.gd
+    water.gd
+    zoning_overlay.gd
+    zoning_tool.gd
+  project.godot
+```
+
+### Current Layout
+
+This is the active layout after the `CODE-02` script reorganisation pass.
+
+```
+godot/
+  assets/
+    materials/                    Shaders (unchanged)
+    models/
+      buildings/
+        commercial/               (unchanged)
+      characters/
+        civilians/                (unchanged)
+    textures/                     (unchanged)
+  bin/                            (unchanged)
+  scenes/                         (unchanged — .tscn files stay flat)
+    AssetEditor.tscn
+    EconomyEditor.tscn
+    Main.tscn
+    Router.tscn
+  scripts/
+    core/                         Scene-attached nodes, global orchestration
+      input_manager.gd            Tool state machine, keyboard routing, camera controls
+      launch_router.gd            Scene routing / startup
+      editor_camera_input.gd      Camera pan / orbit / zoom
+    tools/                        Player-facing placement and editing tools
+      road_tool.gd
+      move_tool.gd
+      select_tool.gd
+      cul_de_sac_tool.gd
+      lane_tool.gd
+      network_tool.gd
+      zoning_tool.gd
+    renderers/                    Thin render bridges — read Rust state, update meshes
+      network_renderer.gd
+      buildings.gd
+      agents.gd
+      zoning_overlay.gd
+      building_preview.gd
+      terrain.gd
+      water.gd
+    editors/                      Asset and economy editor screens
+      asset_editor.gd
+      economy_editor.gd
+      economy_graph_canvas.gd
+      analyze_assets.gd
+    ui/                           HUD, menus, floating windows, style
+      ui_style.gd                 Style constants and StyleBoxFlat factory methods
+      main_ui.gd                  Bottom toolbar, sub-menus, clock/speed panel
+      city_status_panel.gd        Compact treasury + agent-count HUD panel
+      demand_meter.gd             Compact R/C/I HUD demand meter
+      top_menu.gd                 MenuBar + PopupMenu tree, menu action dispatch
+      pack_manager.gd             Mods / pack manager window
+      road_properties_window.gd   Floating road-properties editor window
+      building_inspector.gd       Floating building stats window manager
+  project.godot
+```
+
+**Layout maintenance rules:**
+- Moving a script requires updating its `res://` path in every `.tscn` that references it
+  and in every `preload(...)` call in other scripts. Do this in one dedicated pass per
+  subdirectory, not incrementally across unrelated sessions.
+- New scripts go into their target subdirectory immediately. Do not add new scripts back to
+  the flat `scripts/` root.
+- `scenes/` stays flat. Scene files are few enough that a subdirectory adds no value.
+
+---
+
+## Script Ownership Map
+
+```
+ui/ui_style.gd          Style constants, StyleBoxFlat factory methods — no simulation calls
+ui/main_ui.gd           Bottom HUD/menu strip, submenu stack, unified menu-group wrapper, clock/speed panel, city status panel, HUD demand meter, road properties panel
+ui/city_status_panel.gd  Compact treasury-value + agent-count panel — reads snapshot-backed SimulationNode values
+ui/demand_meter.gd      Compact R/C/I demand meter — reads SimulationNode demand display values
+ui/top_menu.gd          MenuBar, dispatches to InputManager or opens windows; shortcut-bearing entries render bracketed inline labels such as `Save [Ctrl+S]`
+ui/building_inspector.gd  Window — building stats, calls SimulationNode.get_building_info_at()
+ui/road_properties_window.gd  Window — edge class / no-build editing for SelectTool
+ui/pack_manager.gd      Window — mod pack browser
+core/input_manager.gd   Tool state, keyboard shortcuts, camera, Ctrl+S/L save/load
+SimulationNode.get_demand_pressures  HUD-only R/C/I meter source, returns normalized -1.0..1.0 display pressures
+SimulationNode.get_treasury_balance  HUD treasury source, snapshot-backed for paused-state edits
+SimulationNode.get_agent_count       HUD live-agent source, snapshot-backed
+```
+
+`top_menu.gd` dispatches File/City/View/Help actions by calling `InputManager` methods or
+opening windows directly. It does not own simulation state. Each scene root attaches its own
+instance; `main_ui.gd` remains gameplay-only.
+
+---
+
+## Migration Notes
+
+These are the concrete changes needed to move from current state to the target paradigm.
+They are tracked in the roadmap under `CODE-02` scope.
+
+1. **Add `UIStyle`** — completed. `scripts/ui/ui_style.gd` now owns the shared color,
+   radius, padding constants and common `StyleBoxFlat` factory helpers.
+
+2. **Add top menu** — completed. `scripts/ui/top_menu.gd` is instantiated from each scene
+   root (`Main`, `AssetEditor`, `EconomyEditor`) and remains separate from `main_ui.gd`.
+   Gameplay File/View/City/Tools/Help actions are wired, editor scenes expose reduced
+   File/editor-action menus, and the City/Help windows currently use placeholder content
+   where full data windows are not yet implemented.
+
+3. **Migrate selection-driven properties to `Window`s** — completed for the Building
+   Inspector (`scripts/ui/building_inspector.gd`) and Road Properties
+   (`scripts/ui/road_properties_window.gd`). Both now use Godot's built-in title bar, drag
+   behavior, and close button while preserving the existing selection/edit APIs underneath.
+
+4. **Add City / Economy / Demand windows** — still pending. The top menu currently opens
+   inline placeholder windows from `scripts/ui/top_menu.gd`; replace those one at a time
+   with dedicated `Window`-based scripts when the live data views are implemented.
+
+5. **Reorganise `scripts/` into subdirectories** — completed. New UI work starts from the
+   `scripts/ui/` subtree and follows the current layout documented above.

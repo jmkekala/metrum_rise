@@ -20,7 +20,7 @@ var cul_de_sac_tool: Node3D
 @onready var agents_node = $"../Agents"
 @onready var buildings_node = $"../Buildings"
 var select_tool: Node3D
-var inspect_tool: Node
+var building_inspector: Node
 
 enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
 var current_tool: Tool = Tool.NONE
@@ -41,12 +41,14 @@ func _ready():
 		get_parent().call_deferred("add_child", st)
 		select_tool = st
 
-	if not has_node("../InspectTool"):
-		var it := Node.new()
-		it.name = "InspectTool"
-		it.set_script(load("res://scripts/ui/building_inspector.gd"))
-		get_parent().call_deferred("add_child", it)
-		inspect_tool = it
+	if has_node("../BuildingInspector"):
+		building_inspector = get_node("../BuildingInspector")
+	else:
+		var inspector := Node.new()
+		inspector.name = "BuildingInspector"
+		inspector.set_script(load("res://scripts/ui/building_inspector.gd"))
+		get_parent().call_deferred("add_child", inspector)
+		building_inspector = inspector
 
 	# Hide overlay mesh if exists in cul-de-sac tool
 	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
@@ -182,8 +184,8 @@ func _cancel_active_tool():
 
 func _activate_tool_logic(tool_type: Tool, enabled: bool):
 	# Close the building inspector whenever any dedicated tool activates.
-	if enabled and inspect_tool:
-		inspect_tool.close_window()
+	if enabled and building_inspector:
+		building_inspector.close_window()
 	match tool_type:
 		Tool.MOVE: if move_tool: move_tool.active = enabled
 		Tool.ROAD:
@@ -333,7 +335,7 @@ func set_zoning_paint_mode(mode: String) -> void:
 
 func _handle_mouse(event):
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		if current_tool == Tool.NONE and inspect_tool:
+		if current_tool == Tool.NONE and building_inspector:
 			_handle_inspect_click(event.position)
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
 		_handle_right_click()
@@ -348,7 +350,7 @@ func _handle_inspect_click(mouse_pos: Vector2) -> void:
 	)
 	if pos == null:
 		return
-	inspect_tool.try_inspect(pos, mouse_pos)
+	building_inspector.try_inspect(pos, mouse_pos)
 
 func _handle_right_click():
 	if (current_tool == Tool.ROAD or current_tool == Tool.WALKWAY) and road_tool.current_state != 0:
