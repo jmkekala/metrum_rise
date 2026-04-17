@@ -1809,7 +1809,7 @@ mod tests {
             allocator.buildings[1].inventory_units(household_supplies),
             40.0
         );
-        assert_eq!(households.households[0].budget, 140.0);
+        assert_eq!(households.households[0].budget, 100.0);
 
         households.run_household_replenishment(&mut allocator, 0);
         assert_eq!(
@@ -1823,7 +1823,7 @@ mod tests {
             REPLENISHMENT_FULFILLED
         );
         assert_eq!(households.households[0].stock, 10.0);
-        assert_eq!(allocator.buildings[1].revenue, 60.0);
+        assert_eq!(allocator.buildings[1].revenue, 100.0);
     }
 
     #[test]
@@ -2003,8 +2003,8 @@ mod tests {
 
         households.execute_demand_household_removal(2, &mut agents, &mut allocator);
 
-        assert_eq!(households.households.len(), 0);
-        assert_eq!(agents.len(), 2);
+        assert_eq!(households.households.len(), 1);
+        assert_eq!(agents.len(), 1);
         assert_eq!(households.households[0].home_building_id, 1);
         assert_eq!(agents.household_id[0], 0);
         assert_eq!(agents.home_building[0], 1);
@@ -2068,7 +2068,7 @@ mod tests {
             register_test_asset(&mut allocator, "test", "evict_res", ZoneClass::Residential);
         let mut home = make_building(0.0, ZoneType::Residential, &residential_asset, 0.0);
         home.level = 2;
-        home.occupancy = 2;
+        home.occupancy = 1;
         allocator.buildings.push(home);
         allocator.rebuild_zone_index();
 

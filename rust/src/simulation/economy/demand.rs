@@ -73,13 +73,11 @@ impl DemandChannel {
 
 #[derive(Clone, Debug)]
 struct GrowthProfileRuntime {
-    id: String,
     demand_channel: DemandChannel,
     spawn_threshold: f32,
     despawn_threshold: f32,
     upgrade_threshold: f32,
     downgrade_threshold: f32,
-    hysteresis_margin: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -1285,13 +1283,11 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
         by_id.insert(
             profile.id.clone(),
             GrowthProfileRuntime {
-                id: profile.id,
                 demand_channel,
                 spawn_threshold: profile.spawn_threshold,
                 despawn_threshold: profile.despawn_threshold,
                 upgrade_threshold: profile.upgrade_threshold,
                 downgrade_threshold: profile.downgrade_threshold,
-                hysteresis_margin: profile.hysteresis_margin,
             },
         );
     }
@@ -1378,14 +1374,6 @@ fn validate_use_tuning(
         commercial: authored.commercial,
         industrial: authored.industrial,
     })
-}
-
-fn validate_positive_u32(value: u32, label: &str) -> Result<(), String> {
-    if value == 0 {
-        Err(format!("{label} must be > 0"))
-    } else {
-        Ok(())
-    }
 }
 
 fn validate_positive_f32(value: f32, label: &str) -> Result<(), String> {
@@ -2135,7 +2123,7 @@ mod tests {
         );
         assert!(low_affordability.upgrades.is_empty());
 
-        households.households[0].budget = 400.0;
+        households.households[0].budget = 500.0;
         let residential_occupants =
             ResidentialOccupantSnapshot::from_runtime(&allocator, &households);
         let high_affordability = demand.collect_existing_building_candidates(

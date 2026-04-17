@@ -266,6 +266,53 @@ fn setup_startup_spawn_city_for_rezoning() -> (
     );
     allocator.execute_demand_household_admission(2, &mut agents, &mut households); // Occupy buildings to protect from instant removal
 
+    // Commercial demand cannot fire before households exist (goods_shortage=0 → base_commercial=0),
+    // so push one commercial building directly to give rezoning tests a 2-building city.
+    {
+        let edge = graph.edge(0);
+        let curb_dist = edge.width * 0.5 + crate::config::SIDEWALK_WIDTH;
+        let zone_cell_m = map_cfg.zone_cell_m;
+        let cell_x = 7_usize;
+        let side = 1_i8;
+        let center_x = (cell_x as f32 + 0.5) * zone_cell_m;
+        let center_y = -(curb_dist + 0.5 * zone_cell_m);
+        let zone_profile_runtime_id =
+            zoning.get_zone_profile_runtime_id_world(center_x, center_y);
+        allocator.buildings.push(Building {
+            center_x,
+            center_y,
+            width_cells: 1,
+            depth_cells: 1,
+            zone_profile_runtime_id,
+            zone_type: ZoneType::Commercial,
+            facing_dir: Vector2::new(0.0, -1.0),
+            frontage_t: (cell_x as f32 + 0.5) * zone_cell_m / edge.physical_length,
+            side_offset: curb_dist,
+            is_deserted: false,
+            budget_distress: false,
+            edge_idx: 0,
+            side,
+            cell_x,
+            cell_y: 0,
+            occupancy: 0,
+            worker_count: 0,
+            asset_id: "base:b.com.shop".to_owned(),
+            level: 1,
+            broken: false,
+            economy_profile_runtime_id: 0,
+            economy_broken: false,
+            resource_inventory: Vec::new(),
+            revenue: 0.0,
+            operating_budget: 500.0,
+            shipment_cooldown_hours: 0,
+            daily_owa_input_value: 0.0,
+            daily_local_input_value: 0.0,
+            pending_redevelopment: false,
+            rezone_grace_days_remaining: 0,
+        });
+        allocator.rebuild_zone_index();
+    }
+
     let residential_idx = allocator
         .buildings
         .iter()
