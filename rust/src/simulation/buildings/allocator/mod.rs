@@ -388,7 +388,14 @@ impl BuildingAllocator {
         graph: &mut RegionGraph,
     ) {
         // 1. Stale building cleanup.
-        self.cleanup_stale_buildings(zoning, agents, households, logistics, graph, &network.lane_system);
+        self.cleanup_stale_buildings(
+            zoning,
+            agents,
+            households,
+            logistics,
+            graph,
+            &network.lane_system,
+        );
 
         network.rebuild_pathing_if_dirty(graph);
 

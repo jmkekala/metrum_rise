@@ -490,27 +490,19 @@ fn log_road_connectivity(graph: &RegionGraph) {
     if n_components == 1 {
         println!(
             "[ROAD_NET] CCH rebuilt: edges={} car_nodes={} → 1 component, fully connected ✓",
-            total_car_edges,
-            total_nodes
+            total_car_edges, total_nodes
         );
     } else {
         println!(
             "[ROAD_NET] CCH rebuilt: edges={} car_nodes={} → {} DISCONNECTED components ← NET-01",
-            total_car_edges,
-            total_nodes,
-            n_components
+            total_car_edges, total_nodes, n_components
         );
         for (idx, (size, anchor)) in components.iter().enumerate() {
             let pos = graph.node(*anchor).pos;
             let tag = if idx == 0 { "largest" } else { "ISOLATED" };
             println!(
                 "[ROAD_NET]   component {}: {} nodes, anchor=N{} ({:.1},{:.1}) [{}]",
-                idx,
-                size,
-                anchor,
-                pos.x,
-                pos.z,
-                tag
+                idx, size, anchor, pos.x, pos.z, tag
             );
         }
     }

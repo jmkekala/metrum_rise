@@ -347,19 +347,18 @@ impl SimCore {
                     continue;
                 }
                 let rid = (slot + 1) as u16;
-                let name = catalog
-                    .resource_id_for_runtime_id(rid)
-                    .unwrap_or("?");
+                let name = catalog.resource_id_for_runtime_id(rid).unwrap_or("?");
                 // capacity from output port if available
-                let cap = if let Some(p) = catalog.profile_by_runtime_id(b.economy_profile_runtime_id) {
-                    p.outputs
-                        .iter()
-                        .find(|o| o.resource_runtime_id == rid)
-                        .map(|o| p.output_buffer_capacity_units_for(o))
-                        .unwrap_or(0.0)
-                } else {
-                    0.0
-                };
+                let cap =
+                    if let Some(p) = catalog.profile_by_runtime_id(b.economy_profile_runtime_id) {
+                        p.outputs
+                            .iter()
+                            .find(|o| o.resource_runtime_id == rid)
+                            .map(|o| p.output_buffer_capacity_units_for(o))
+                            .unwrap_or(0.0)
+                    } else {
+                        0.0
+                    };
                 if cap > 0.0 {
                     inv_parts.push(format!("{}={:.1}/{:.1}", name, amount, cap));
                 } else {
@@ -376,25 +375,41 @@ impl SimCore {
             let mut io_parts = Vec::new();
             if let Some(p) = catalog.profile_by_runtime_id(b.economy_profile_runtime_id) {
                 for port in &p.inputs {
-                    let name = catalog.resource_id_for_runtime_id(port.resource_runtime_id).unwrap_or("?");
+                    let name = catalog
+                        .resource_id_for_runtime_id(port.resource_runtime_id)
+                        .unwrap_or("?");
                     io_parts.push(format!("-{:.1}{}/day", port.units_per_day, name));
                 }
                 for port in &p.outputs {
-                    let name = catalog.resource_id_for_runtime_id(port.resource_runtime_id).unwrap_or("?");
+                    let name = catalog
+                        .resource_id_for_runtime_id(port.resource_runtime_id)
+                        .unwrap_or("?");
                     io_parts.push(format!("+{:.1}{}/day", port.units_per_day, name));
                 }
             }
-            let io_str = if io_parts.is_empty() { "none".to_owned() } else { io_parts.join(" ") };
+            let io_str = if io_parts.is_empty() {
+                "none".to_owned()
+            } else {
+                io_parts.join(" ")
+            };
 
             println!(
                 "[ECON] Day {:>4} idx={} {} asset={} profile={} workers={}/{} budget={:.1} revenue={:.1} distress={} broken={} io=[{}] inventory=[{}]",
-                day_index, idx, zone_tag,
-                b.asset_id, profile_id,
-                b.worker_count, worker_cap,
+                day_index,
+                idx,
+                zone_tag,
+                b.asset_id,
+                profile_id,
+                b.worker_count,
+                worker_cap,
                 b.operating_budget,
                 b.revenue,
                 if b.budget_distress { "Y" } else { "N" },
-                if b.broken || b.economy_broken { "Y" } else { "N" },
+                if b.broken || b.economy_broken {
+                    "Y"
+                } else {
+                    "N"
+                },
                 io_str,
                 inv_str,
             );
@@ -497,8 +512,11 @@ impl SimCore {
             .tick(&self.allocator, &self.region_graph, &self.config);
         self.desirability
             .tick(&self.zoning, &self.pollution, &self.noise);
-        self.households
-            .daily_settlement_tick(&mut self.agents, &mut self.allocator, &mut self.treasury.balance);
+        self.households.daily_settlement_tick(
+            &mut self.agents,
+            &mut self.allocator,
+            &mut self.treasury.balance,
+        );
         // City treasury: settle daily road upkeep on the fiscal cadence.
         let road_length_m: f64 = self
             .region_graph

@@ -237,7 +237,10 @@ pub(crate) struct HouseholdRuntimeTuning {
     /// Minimum reserve-days required to remain in each residential level.
     pub residential_stay_min_reserve_days_by_level: Vec<f32>,
     /// Number of consecutive failed stay checks before eviction is allowed.
-    #[serde(default = "default_stay_failure_days", deserialize_with = "deserialize_u32_from_number")]
+    #[serde(
+        default = "default_stay_failure_days",
+        deserialize_with = "deserialize_u32_from_number"
+    )]
     pub stay_failure_days_before_eviction: u32,
 }
 
@@ -1083,9 +1086,8 @@ fn compile_runtime_profile(
         EconomyProfileRuntimeKind::Store => {
             !compiled_inputs.is_empty() && !compiled_outputs.is_empty()
         }
-        EconomyProfileRuntimeKind::UtilityProducer | EconomyProfileRuntimeKind::UtilityProcessor => {
-            true
-        }
+        EconomyProfileRuntimeKind::UtilityProducer
+        | EconomyProfileRuntimeKind::UtilityProcessor => true,
         EconomyProfileRuntimeKind::DemandSink | EconomyProfileRuntimeKind::Unsupported => false,
     };
 
@@ -1941,11 +1943,18 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
                 );
             }
 
-            let daily_labor_cost = profile.worker_capacity as f32 * profile.wage_max_currency_per_day;
-            
+            let daily_labor_cost =
+                profile.worker_capacity as f32 * profile.wage_max_currency_per_day;
+
             let mut daily_input_cost = 0.0;
             for input in &profile.inputs {
-                let unit_price = input_unit_price(node.id.as_str(), input.resource.as_str(), scenario, &node_map, &profile_map);
+                let unit_price = input_unit_price(
+                    node.id.as_str(),
+                    input.resource.as_str(),
+                    scenario,
+                    &node_map,
+                    &profile_map,
+                );
                 daily_input_cost += input.units_per_day * scale * unit_price;
             }
 
@@ -1953,9 +1962,11 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
             for output in &profile.outputs {
                 daily_revenue += output.units_per_day * scale * profile.unit_price_currency;
             }
-            
+
             let daily_profit = daily_revenue - (daily_labor_cost + daily_input_cost);
-            *node_cumulative_profits.entry(node.id.clone()).or_insert(0.0) += daily_profit;
+            *node_cumulative_profits
+                .entry(node.id.clone())
+                .or_insert(0.0) += daily_profit;
 
             transfer_outgoing_stock(
                 &mut inventories,
@@ -2015,7 +2026,11 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
                  To keep up, increase the final node's output by at least {:.1} units/day.",
                 scenario.duration_days,
                 avg_daily_supply,
-                if household_demand_per_day > 0.0 { avg_daily_supply / household_demand_per_day * 100.0 } else { 0.0 },
+                if household_demand_per_day > 0.0 {
+                    avg_daily_supply / household_demand_per_day * 100.0
+                } else {
+                    0.0
+                },
                 household_demand_per_day,
                 daily_deficit.max(0.0),
             ));
@@ -2023,13 +2038,15 @@ fn run_sandbox(project: &EconomyProject, scenario_id: &str) -> Result<SandboxRes
             bottlenecks.push(format!(
                 "Household stock fell below 1 day's worth of supplies (lowest: {:.2} days). \
                  The chain is under-supplied by {:.1} units/day on average.",
-                lowest_stock_days, daily_deficit.max(0.0)
+                lowest_stock_days,
+                daily_deficit.max(0.0)
             ));
         }
     }
     if total_unmet_units > 0.0 {
         let days_covered_by_buffer = if daily_deficit > 0.0 {
-            let starting_buffer = household_demand_per_day * scenario.starting_household_stock_days as f32;
+            let starting_buffer =
+                household_demand_per_day * scenario.starting_household_stock_days as f32;
             starting_buffer / daily_deficit
         } else {
             scenario.duration_days as f32

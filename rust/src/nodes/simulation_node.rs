@@ -52,11 +52,11 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{CityTreasury, RenderSnapshot, SimCommand, SimCore, run_sim_thread};
-use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::MapConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
+use crate::simulation::economy::definitions::load_runtime_economy_tuning;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -722,7 +722,7 @@ impl SimulationNode {
         dict.set("occupancy", b.occupancy as i32);
         dict.set("center_x", b.center_x as f64);
         dict.set("center_z", b.center_y as f64);
-        
+
         let mut total_agents = 0i32;
         if b.zone_type == ZoneType::Residential {
             for h in &core.households.households {

@@ -164,7 +164,8 @@ impl SimCore {
         }
 
         self.rebuild_building_entrances_internal();
-        self.transit_network.rebuild_cch_and_check(&self.region_graph);
+        self.transit_network
+            .rebuild_cch_and_check(&self.region_graph);
     }
 
     /// Adds a new road segment to the transit network.
@@ -274,7 +275,8 @@ impl SimCore {
                 .lane_system
                 .rebuild_edges_incremental(&mut self.region_graph, &affected_edges);
             self.rebuild_building_entrances_internal();
-            self.transit_network.rebuild_cch_and_check(&self.region_graph);
+            self.transit_network
+                .rebuild_cch_and_check(&self.region_graph);
             self.transit_network.flow_fields.mark_all_dirty();
             self.network_dirty = true;
         }
@@ -333,7 +335,8 @@ impl SimCore {
                 }
             }
         }
-        self.transit_network.rebuild_cch_and_check(&self.region_graph);
+        self.transit_network
+            .rebuild_cch_and_check(&self.region_graph);
         self.transit_network.flow_fields.mark_all_dirty();
         if (node_id as usize) < self.region_graph.node_count() {
             let pos = self.region_graph.node(node_id).pos;
@@ -368,7 +371,8 @@ impl SimCore {
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
         self.rebuild_building_entrances_internal();
-        self.transit_network.rebuild_cch_and_check(&self.region_graph);
+        self.transit_network
+            .rebuild_cch_and_check(&self.region_graph);
         self.transit_network.flow_fields.mark_all_dirty();
         if (node_id as usize) < self.region_graph.node_count() {
             let pos = self.region_graph.node(node_id).pos;
@@ -398,7 +402,8 @@ impl SimCore {
             .lane_system
             .rebuild_edges_incremental(&mut self.region_graph, &affected);
         self.rebuild_building_entrances_internal();
-        self.transit_network.rebuild_cch_and_check(&self.region_graph);
+        self.transit_network
+            .rebuild_cch_and_check(&self.region_graph);
         self.transit_network.flow_fields.mark_all_dirty();
         if (node_id as usize) < self.region_graph.node_count() {
             let pos = self.region_graph.node(node_id).pos;
@@ -608,7 +613,8 @@ impl SimCore {
             self.transit_network
                 .lane_system
                 .rebuild(&mut self.region_graph);
-            self.transit_network.rebuild_cch_and_check(&self.region_graph);
+            self.transit_network
+                .rebuild_cch_and_check(&self.region_graph);
             let new_pos = self.region_graph.node(node_id as u32).pos;
             debug_log!(
                 "economy",

@@ -81,7 +81,8 @@ fn register_test_asset_with_family_level(
             position: [0.0, 0.0, 0.5],
             forward: [0.0, 0.0, 1.0],
         }],
-        building: Some(BuildingData { flat_size_m2: None,
+        building: Some(BuildingData {
+            flat_size_m2: None,
             placement_mode: PlacementMode::ZonedPrivate,
             zone_type: Some(zone),
             density: Some("low".to_owned()),
@@ -266,7 +267,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         &graph,
         &network.lane_system,
     );
-    
+
     allocator.execute_demand_household_admission(2, &mut agents, &mut households); // Occupy buildings to protect from instant removal
 
     // Commercial demand cannot fire before households exist (goods_shortage=0 → base_commercial=0),
@@ -279,8 +280,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
         let side = 1_i8;
         let center_x = (cell_x as f32 + 0.5) * zone_cell_m;
         let center_y = -(curb_dist + 0.5 * zone_cell_m);
-        let zone_profile_runtime_id =
-            zoning.get_zone_profile_runtime_id_world(center_x, center_y);
+        let zone_profile_runtime_id = zoning.get_zone_profile_runtime_id_world(center_x, center_y);
         allocator.buildings.push(Building {
             center_x,
             center_y,
@@ -366,7 +366,8 @@ fn test_zone_index_consistency() {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 0.0,
-            is_deserted: false, budget_distress: false,
+            is_deserted: false,
+            budget_distress: false,
             edge_idx: 0,
             side: 1,
             cell_x: i,
@@ -448,7 +449,8 @@ fn test_vacancy_index_consistency() {
             facing_dir: Vector2::new(0.0, 1.0),
             frontage_t: 0.5,
             side_offset: 0.0,
-            is_deserted: false, budget_distress: false,
+            is_deserted: false,
+            budget_distress: false,
             edge_idx: 0,
             side: 1,
             cell_x: i,
@@ -953,7 +955,8 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
         side_offset: 1.0,
-        is_deserted: false, budget_distress: false,
+        is_deserted: false,
+        budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 1,
@@ -968,7 +971,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        
+
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1020,7 +1023,8 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
             position: [1.0, 0.0, 0.5],
             forward: [0.0, 0.0, 1.0],
         }],
-        building: Some(BuildingData { flat_size_m2: None,
+        building: Some(BuildingData {
+            flat_size_m2: None,
             placement_mode: PlacementMode::ZonedPrivate,
             zone_type: Some(ZoneClass::Residential),
             density: Some("low".to_owned()),
@@ -1068,7 +1072,8 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.5,
         side_offset: 1.0,
-        is_deserted: false, budget_distress: false,
+        is_deserted: false,
+        budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 1,
@@ -1083,7 +1088,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        
+
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1143,7 +1148,8 @@ fn test_building_removal_clears_zoning_occupancy() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.05,
         side_offset: 1.0,
-        is_deserted: false, budget_distress: false,
+        is_deserted: false,
+        budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 0,
@@ -1158,7 +1164,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
-        
+
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1262,7 +1268,8 @@ fn test_immigration_claims_vacant_home() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.1,
         side_offset: 1.0,
-        is_deserted: false, budget_distress: false,
+        is_deserted: false,
+        budget_distress: false,
         edge_idx: edge_id,
         side: 1,
         cell_x: 0,
@@ -1277,7 +1284,7 @@ fn test_immigration_claims_vacant_home() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
-        
+
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1389,7 +1396,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
-        
+
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1406,7 +1413,8 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         facing_dir: Vector2::new(0.0, 1.0),
         frontage_t: 0.4,
         side_offset: 1.0,
-        is_deserted: false, budget_distress: false,
+        is_deserted: false,
+        budget_distress: false,
         edge_idx: edge_id,
         side: 1,
         cell_x: 4,
@@ -1421,7 +1429,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 500.0,
-        
+
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1506,7 +1514,6 @@ fn test_demand_building_spawn_plan_executes_from_daily_budget() {
         &graph,
         &network.lane_system,
     );
-    
 
     assert!(
         allocator
@@ -1576,7 +1583,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
         side_offset: 1.0,
-        is_deserted: false, budget_distress: false,
+        is_deserted: false,
+        budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 0,
@@ -1591,7 +1599,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        
+
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1608,7 +1616,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
         side_offset: 1.0,
-        is_deserted: false, budget_distress: false,
+        is_deserted: false,
+        budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 2,
@@ -1623,7 +1632,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        
+
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1640,7 +1649,8 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         facing_dir: Vector2::new(0.0, -1.0),
         frontage_t: 0.0,
         side_offset: 1.0,
-        is_deserted: false, budget_distress: false,
+        is_deserted: false,
+        budget_distress: false,
         edge_idx: 0,
         side: 1,
         cell_x: 4,
@@ -1655,7 +1665,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         resource_inventory: Vec::new(),
         revenue: 0.0,
         operating_budget: 0.0,
-        
+
         shipment_cooldown_hours: 0,
         daily_owa_input_value: 0.0,
         daily_local_input_value: 0.0,
@@ -1712,7 +1722,6 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         &graph,
         &network.lane_system,
     );
-    
 
     assert_eq!(allocator.buildings.len(), 2);
     assert!(

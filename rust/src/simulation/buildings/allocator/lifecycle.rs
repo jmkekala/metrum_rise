@@ -233,8 +233,7 @@ impl BuildingAllocator {
             panic!("could not load built-in economy catalog during admission: {err}")
         });
         for _ in 0..households_to_spawn {
-            let Some((home_idx, household_size)) = self.claim_home_for_household()
-            else {
+            let Some((home_idx, household_size)) = self.claim_home_for_household() else {
                 debug_log!(
                     "economy",
                     "demand-owned household admission stopped early: could not claim a home from vacancy index"
@@ -242,7 +241,8 @@ impl BuildingAllocator {
                 break;
             };
             let home_door = self.entrances[home_idx].door_pos;
-            let household_id = households.admit_immigrant_household(&catalog, home_idx, household_size);
+            let household_id =
+                households.admit_immigrant_household(&catalog, home_idx, household_size);
             // One household consumes 1 slot of household_capacity regardless of size.
             self.claim_vacancy(home_idx);
             debug_log!(
@@ -314,9 +314,13 @@ impl BuildingAllocator {
                 if !self.can_demand_despawn(building_idx) {
                     continue;
                 }
-                if let Some((moved_key, moved_idx)) =
-                    self.remove_building_at_index(building_idx, zoning, agents, households, logistics)
-                {
+                if let Some((moved_key, moved_idx)) = self.remove_building_at_index(
+                    building_idx,
+                    zoning,
+                    agents,
+                    households,
+                    logistics,
+                ) {
                     action_lookup.insert(moved_key, moved_idx);
                 }
                 mutated_any = true;
@@ -419,35 +423,35 @@ impl BuildingAllocator {
             let Some(zone_idx) = baseline_private_zone_slot(zone) else {
                 continue;
             };
-        for &building_idx in &self.vacancy_index[zone_idx] {
-            let free_slots = self
-                .household_capacity(building_idx)
-                .saturating_sub(self.buildings[building_idx].occupancy);
-            if free_slots == 0 {
-                continue;
+            for &building_idx in &self.vacancy_index[zone_idx] {
+                let free_slots = self
+                    .household_capacity(building_idx)
+                    .saturating_sub(self.buildings[building_idx].occupancy);
+                if free_slots == 0 {
+                    continue;
+                }
+                fallback_idx = building_idx;
+
+                // Derive household size from the building's authored flat size.
+                // Baseline: 40m2 per person, minimum 1, maximum 5.
+                let flat_size = self.flat_size_m2(building_idx);
+                let derived_size = if flat_size > 1.0 {
+                    ((flat_size / 40.0).ceil() as u16).clamp(1, 5)
+                } else {
+                    2 // Legacy absolute fallback
+                };
+
+                fallback_size = derived_size;
+                break 'fallback;
             }
-            fallback_idx = building_idx;
-            
-            // Derive household size from the building's authored flat size.
-            // Baseline: 40m2 per person, minimum 1, maximum 5.
-            let flat_size = self.flat_size_m2(building_idx);
-            let derived_size = if flat_size > 1.0 {
-                ((flat_size / 40.0).ceil() as u16).clamp(1, 5)
-            } else {
-                2 // Legacy absolute fallback
-            };
-            
-            fallback_size = derived_size; 
-            break 'fallback;
         }
+        if fallback_idx == usize::MAX {
+            return None;
+        }
+        // Note: vacancy count for residential is now household-based.
+        // The vacancy is claimed by the caller in admit_households_from_demand or relocation.
+        Some((fallback_idx, fallback_size))
     }
-    if fallback_idx == usize::MAX {
-        return None;
-    }
-    // Note: vacancy count for residential is now household-based.
-    // The vacancy is claimed by the caller in admit_households_from_demand or relocation.
-    Some((fallback_idx, fallback_size))
-}
 }
 
 fn demand_building_action_key(

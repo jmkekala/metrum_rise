@@ -4,6 +4,13 @@
 //! and `data` (final map with road beds stamped in). Road snapping and cost calculations
 //! always read from `source_data` to avoid feedback loops.
 
+pub mod chunks;
+
+pub use chunks::{
+    TerrainChunkAsset, TerrainChunkLoadError, TerrainChunkLodAsset, TerrainChunkLodManifest,
+    TerrainChunkManifest, TerrainChunkManifestError,
+};
+
 use godot::prelude::Vector3;
 
 /// Dual-buffer heightmap for the terrain surface.

@@ -165,7 +165,6 @@ struct SignalNormalizationConfig {
     household_stock_stability_target_days: f32,
 }
 
-
 #[derive(Clone, Debug)]
 struct HouseholdActionConfig {
     admission_threshold: f32,
@@ -406,8 +405,7 @@ impl DemandSystem {
         let base_residential = net_residential * 0.5 + 0.5;
 
         // Commercial: residents need goods and can afford them. Gated on road connection.
-        let base_commercial =
-            clamp01(goods_shortage * snapshot.household_affordability * ext_conn);
+        let base_commercial = clamp01(goods_shortage * snapshot.household_affordability * ext_conn);
         // Industrial: fraction of commercial input value sourced from OWA rather than local supply.
         // Smooth 0..1 — one farm partially covering multiple shops yields a proportional value.
         let base_industrial = clamp01(snapshot.commercial_owa_dependency * ext_conn);
@@ -489,8 +487,9 @@ impl DemandSystem {
                 // to fill it.  Using open_reachable_job_slots here was wrong: that value
                 // counts unfilled slots in already-existing buildings (demand for workers),
                 // not the supply of workers, and is 0 at bootstrap causing a permanent deadlock.
-                let catalog = load_runtime_economy_catalog()
-                    .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
+                let catalog = load_runtime_economy_catalog().unwrap_or_else(|err| {
+                    panic!("could not load built-in runtime economy catalog: {err}")
+                });
                 let mut available_unemployed = snapshot.housed_resident_count;
                 let mut passed = 0;
                 spawn_candidates
@@ -1193,8 +1192,6 @@ fn compile_config(authored: AuthoredGrowthProfilesFile) -> Result<DemandConfig, 
         "signal_normalization.household_stock_stability_target_days",
     )?;
 
-
-
     validate_range_f32(
         authored.household_action.admission_threshold,
         0.0,
@@ -1399,7 +1396,6 @@ fn validate_range_f32(
 fn clamp01(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }
-
 
 fn advance_household_action_credit(
     credit: &mut f32,
@@ -1800,7 +1796,8 @@ mod tests {
                 position: [0.0, 0.0, 0.5],
                 forward: [0.0, 0.0, 1.0],
             }],
-            building: Some(BuildingData { flat_size_m2: None,
+            building: Some(BuildingData {
+                flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,
                 zone_type: Some(zone_class),
                 density: Some("low".to_owned()),
@@ -2031,7 +2028,11 @@ mod tests {
         // (no households → unhoused_ratio = 0), so ResidentialGrowth is at equilibrium
         // (= 0.5) — no spawn pressure, no despawn pressure. Growth is blocked because
         // 0.5 is below the spawn threshold.
-        assert!(demand.residential <= 0.50, "residential={}", demand.residential);
+        assert!(
+            demand.residential <= 0.50,
+            "residential={}",
+            demand.residential
+        );
         assert_eq!(demand.commercial, 0.0);
         assert_eq!(demand.industrial, 0.0);
         assert_eq!(demand.households_to_admit_today, 0);

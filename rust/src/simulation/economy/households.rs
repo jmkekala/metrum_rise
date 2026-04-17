@@ -47,7 +47,6 @@ const IMMIGRANT_STARTING_BUDGET_PER_MEMBER: f32 = 15.0;
 const HOUSEHOLD_UTILITY_COST_PER_MEMBER: f32 = 3.0;
 const HOUSEHOLD_STARTING_BUDGET: f32 = 10.0;
 
-
 const UTILITY_COST_COMMERCIAL: f32 = 8.0;
 const UTILITY_COST_INDUSTRIAL: f32 = 12.0;
 
@@ -183,7 +182,9 @@ impl HouseholdSystem {
             // has a real incentive to take available jobs instead of idling on
             // a large abstract cash cushion.
             budget: IMMIGRANT_STARTING_BUDGET_PER_MEMBER * member_count as f32,
-            stock: member_count as f32 * consumption_rate * target_days.min(IMMIGRANT_STARTING_STOCK_DAYS),
+            stock: member_count as f32
+                * consumption_rate
+                * target_days.min(IMMIGRANT_STARTING_STOCK_DAYS),
             member_count,
             consumption_rate,
             stock_days: target_days.min(IMMIGRANT_STARTING_STOCK_DAYS),
@@ -271,7 +272,10 @@ impl HouseholdSystem {
         treasury_balance: &mut f64,
     ) {
         if *treasury_balance <= 0.0 {
-            debug_log!("economy", "unemployment_benefits: treasury_empty — disbursement skipped");
+            debug_log!(
+                "economy",
+                "unemployment_benefits: treasury_empty — disbursement skipped"
+            );
             return;
         }
         let tuning = load_runtime_economy_tuning()
@@ -287,8 +291,7 @@ impl HouseholdSystem {
                 continue;
             }
             if agents.work_building[i] == usize::MAX {
-                unemployed_per_household[hid] =
-                    unemployed_per_household[hid].saturating_add(1);
+                unemployed_per_household[hid] = unemployed_per_household[hid].saturating_add(1);
             }
         }
 
@@ -1127,7 +1130,11 @@ impl HouseholdSystem {
         }
     }
 
-    fn assign_agent_workplaces(&mut self, agents: &mut AgentSystem, allocator: &mut BuildingAllocator) {
+    fn assign_agent_workplaces(
+        &mut self,
+        agents: &mut AgentSystem,
+        allocator: &mut BuildingAllocator,
+    ) {
         let catalog = load_runtime_economy_catalog()
             .unwrap_or_else(|err| panic!("could not load built-in runtime economy catalog: {err}"));
         let profile = get_household_demand_profile(&catalog);
@@ -1207,15 +1214,15 @@ impl HouseholdSystem {
                     continue;
                 }
 
-                // Budget-based hiring constraint: Only allow hiring if the building can afford 
+                // Budget-based hiring constraint: Only allow hiring if the building can afford
                 // to pay at least the current staff plus this potential new worker for one day.
                 let average_daily_wage = catalog
                     .profile_by_runtime_id(building.economy_profile_runtime_id)
                     .map(|p| p.average_daily_wage())
                     .unwrap_or(0.0);
-                
+
                 let worker_capacity = allocator.worker_capacity(candidate);
-                
+
                 // Effective capacity is the floor of what the building can afford to pay right now,
                 // clamped by its physical worker limits.
                 let budget_capacity = if average_daily_wage > 0.1 {
@@ -1228,11 +1235,11 @@ impl HouseholdSystem {
                 if effective_capacity == 0 && agents.work_building[i] != candidate {
                     continue;
                 }
-                
+
                 let already_assigned = agents.work_building[i] == candidate;
                 let reserved = reserved_workers[candidate];
                 let open_slots = if already_assigned {
-                    // If already working here, we don't need a "new" budget slot, 
+                    // If already working here, we don't need a "new" budget slot,
                     // but we still respect the physical capacity.
                     worker_capacity.saturating_sub(reserved.saturating_sub(1))
                 } else {
@@ -1674,12 +1681,7 @@ mod tests {
         }
     }
 
-    fn make_building(
-        center_x: f32,
-        zone_type: ZoneType,
-        asset_id: &str,
-        stock: f32,
-    ) -> Building {
+    fn make_building(center_x: f32, zone_type: ZoneType, asset_id: &str, stock: f32) -> Building {
         let catalog = load_runtime_economy_catalog().expect("runtime economy catalog");
         let runtime_id = test_economy_runtime_id(zone_type);
         let mut resource_inventory = vec![0.0; catalog.resource_count()];
@@ -1753,7 +1755,8 @@ mod tests {
                     position: [0.0, 0.0, 0.5],
                     forward: [0.0, 0.0, 1.0],
                 }],
-                building: Some(BuildingData { flat_size_m2: None,
+                building: Some(BuildingData {
+                    flat_size_m2: None,
                     placement_mode: PlacementMode::ZonedPrivate,
                     zone_type: Some(zone),
                     density: Some("low".to_owned()),
@@ -1820,13 +1823,13 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0
+            0.0,
         ));
         allocator.buildings.push(make_building(
             20.0,
             ZoneType::Commercial,
             &commercial_asset,
-            50.0
+            50.0,
         ));
         allocator.rebuild_zone_index();
 
@@ -1878,13 +1881,13 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0
+            0.0,
         ));
         allocator.buildings.push(make_building(
             20.0,
             ZoneType::Industrial,
             &industrial_asset,
-            0.0
+            0.0,
         ));
         allocator.rebuild_zone_index();
 
@@ -1960,13 +1963,13 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0
+            0.0,
         ));
         allocator.buildings.push(make_building(
             20.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0
+            0.0,
         ));
         allocator.rebuild_zone_index();
 
@@ -2014,13 +2017,13 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0
+            0.0,
         ));
         allocator.buildings.push(make_building(
             20.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0
+            0.0,
         ));
         allocator.rebuild_zone_index();
 
@@ -2064,7 +2067,7 @@ mod tests {
             0.0,
             ZoneType::Residential,
             &residential_asset,
-            0.0
+            0.0,
         ));
         allocator.rebuild_zone_index();
 

@@ -62,7 +62,8 @@ fn register_test_asset(
                 distance_max_m: None,
             }],
             anchors: vec![],
-            building: Some(BuildingData { flat_size_m2: None,
+            building: Some(BuildingData {
+                flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,
                 zone_type: Some(zone),
                 density: Some("low".to_owned()),

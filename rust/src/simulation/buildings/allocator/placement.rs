@@ -176,7 +176,9 @@ impl BuildingAllocator {
         zoning: &ZoningSystem,
         graph: &RegionGraph,
     ) -> Option<ResolvedPlacement> {
-        let zone_density_assets = self.registry.buildings_for_zone_density(zone_class, density);
+        let zone_density_assets = self
+            .registry
+            .buildings_for_zone_density(zone_class, density);
         if zone_density_assets.is_empty() {
             debug_log!(
                 "spawn",
@@ -187,8 +189,7 @@ impl BuildingAllocator {
             return None;
         }
         let mut families: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for qualified_id in zone_density_assets
-        {
+        for qualified_id in zone_density_assets {
             let Some(entry) = self.registry.get(qualified_id) else {
                 continue;
             };
@@ -526,8 +527,8 @@ impl BuildingAllocator {
             ZoneType::Commercial | ZoneType::Industrial => {
                 let worker_cap = self.worker_capacity_for_asset(&placement.asset_id);
                 let catalog_ref = catalog.as_ref().ok();
-                let profile = catalog_ref
-                    .and_then(|c| c.profile_by_runtime_id(economy_binding.runtime_id));
+                let profile =
+                    catalog_ref.and_then(|c| c.profile_by_runtime_id(economy_binding.runtime_id));
                 let daily_wage = profile.map(|p| p.average_daily_wage()).unwrap_or(0.0);
                 let wage_runway = worker_cap as f32 * daily_wage * STARTUP_RUNWAY_DAYS;
 
@@ -538,16 +539,19 @@ impl BuildingAllocator {
                     .unwrap_or(1.5);
                 let first_import_cost = profile
                     .map(|p| {
-                        p.inputs.iter().map(|port| {
-                            let unit_price = catalog_ref
-                                .and_then(|c| {
-                                    c.unit_price_for_resource(port.resource_runtime_id)
-                                })
-                                .unwrap_or(p.unit_price_currency);
-                            p.inventory_target_units_for(port)
-                                * unit_price
-                                * owa_import_multiplier
-                        }).sum::<f32>()
+                        p.inputs
+                            .iter()
+                            .map(|port| {
+                                let unit_price = catalog_ref
+                                    .and_then(|c| {
+                                        c.unit_price_for_resource(port.resource_runtime_id)
+                                    })
+                                    .unwrap_or(p.unit_price_currency);
+                                p.inventory_target_units_for(port)
+                                    * unit_price
+                                    * owa_import_multiplier
+                            })
+                            .sum::<f32>()
                     })
                     .unwrap_or(0.0);
 

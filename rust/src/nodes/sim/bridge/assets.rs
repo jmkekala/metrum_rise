@@ -37,12 +37,18 @@ pub fn load_asset_packs(
          res_low={} com_low={} ind_low={} \
          res_med={} com_med={} ind_med={}",
         reg.len(),
-        reg.buildings_for_zone_density(ZoneClass::Residential, "low").len(),
-        reg.buildings_for_zone_density(ZoneClass::Commercial, "low").len(),
-        reg.buildings_for_zone_density(ZoneClass::Industrial, "low").len(),
-        reg.buildings_for_zone_density(ZoneClass::Residential, "medium").len(),
-        reg.buildings_for_zone_density(ZoneClass::Commercial, "medium").len(),
-        reg.buildings_for_zone_density(ZoneClass::Industrial, "medium").len(),
+        reg.buildings_for_zone_density(ZoneClass::Residential, "low")
+            .len(),
+        reg.buildings_for_zone_density(ZoneClass::Commercial, "low")
+            .len(),
+        reg.buildings_for_zone_density(ZoneClass::Industrial, "low")
+            .len(),
+        reg.buildings_for_zone_density(ZoneClass::Residential, "medium")
+            .len(),
+        reg.buildings_for_zone_density(ZoneClass::Commercial, "medium")
+            .len(),
+        reg.buildings_for_zone_density(ZoneClass::Industrial, "medium")
+            .len(),
     );
     GString::from(result.warnings.join("\n").as_str())
 }

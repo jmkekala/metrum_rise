@@ -431,10 +431,7 @@ impl ShipmentSystem {
                 continue;
             }
             let supplier = &allocator.buildings[candidate_idx];
-            if supplier.broken
-                || supplier.economy_broken
-                || supplier.is_deserted
-            {
+            if supplier.broken || supplier.economy_broken || supplier.is_deserted {
                 continue;
             }
             let Some(supplier_profile) =
@@ -927,7 +924,8 @@ mod tests {
                 position: [0.0, 0.0, 0.5],
                 forward: [0.0, 0.0, 1.0],
             }],
-            building: Some(BuildingData { flat_size_m2: None,
+            building: Some(BuildingData {
+                flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,
                 zone_type: Some(zone),
                 density: Some("low".to_owned()),

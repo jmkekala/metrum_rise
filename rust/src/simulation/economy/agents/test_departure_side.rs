@@ -46,7 +46,8 @@ mod tests {
                 position: [0.0, 0.0, 0.5],
                 forward: [0.0, 0.0, 1.0],
             }],
-            building: Some(BuildingData { flat_size_m2: None,
+            building: Some(BuildingData {
+                flat_size_m2: None,
                 placement_mode: PlacementMode::ZonedPrivate,
                 zone_type: Some(zone),
                 density: Some("low".to_owned()),

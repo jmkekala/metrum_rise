@@ -42,6 +42,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 | Economy / freight / household runtime                       | [`economy.md`](economy.md)                             |
 | Demand / city-growth pressure / admission-removal ownership | [`demand.md`](demand.md)                               |
 | Zoning                                                      | [`zoning.md`](zoning.md)                               |
+| Terrain ingest / chunked terrain runtime / world terrain    | [`terrain.md`](terrain.md)                             |
 | Building placement / removal / frontage attachment          | [`building_allocator.md`](building_allocator.md)       |
 | Gameplay HUD / menus / floating windows                     | [`ui.md`](ui.md)                                       |
 | Asset-editor workflow and pack contract                     | [`asset_editor.md`](asset_editor.md)                   |
@@ -56,6 +57,14 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `project.md` was reduced from a monolithic implementation ledger into this dashboard.
 - `roadmap.md` now owns active tracked work through stable IDs instead of positional numbering.
 - `README.md` now serves as the docs index and ownership map.
+- Added [`terrain.md`](terrain.md) as the owning spec for GeoTIFF terrain ingest, chunked terrain
+  runtime, and large-world terrain rules.
+- Added the first terrain chunk importer slice: `tools/build_terrain_chunks.py` now reads the
+  Kuopio world manifest and exports internal `512 m` chunk assets with raw `f32` height payloads
+  plus `2 m / 4 m / 8 m / 32 m` LOD files. See [`terrain.md`](terrain.md).
+- Added the first Rust-side terrain chunk loader in `rust/src/simulation/terrain/chunks.rs`,
+  including strict `chunk.toml` validation and `.f32` payload loading for partial border chunks as
+  well as full-size interior chunks. See [`terrain.md`](terrain.md).
 - The legacy numbered backlog and bug table were preserved in the archive rather than kept half-live in the dashboard.
 - `rust/benches/agent_benchmark.rs` now includes access-phase microbenchmarks for `ACCESS_EGRESS` and `ACCESS_INGRESS`, so old Criterion result history is no longer strictly apples-to-apples with the updated suite.
 - Added a shared top menu scaffold across gameplay and editor scenes, with gameplay File/View/City/Tools/Help menus and reduced editor File/editor-action menus. See [`ui.md`](ui.md).
