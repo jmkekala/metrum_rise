@@ -13,8 +13,10 @@ Terminology note: this file mirrors current code and API names on purpose. When 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | World extent | Player-configurable | Fallback gameplay world is `20 km × 20 km`; authored blank worlds can be larger. |
+| Terrain sample cell | `10 m` (`terrain_cell_m`) | Configurable independently from `zone_cell_m` in `WorldConfig`. |
 | Terrain chunk | `512 m` (`terrain_chunk_m`) | Canonical authored terrain chunk size in `WorldConfig`. |
 | Zoning cell | `10 m × 10 m` (`zone_cell_m`) | Configurable via `WorldConfig`. |
+| Runtime terrain grid (default map) | `2000 × 2000` | Derived from `terrain_cell_m` and the current zoning-derived runtime world units. |
 | World-space zoning grid (default map) | `2000 × 2000` | Derived from `width_m / zone_cell_m` and `height_m / zone_cell_m`. |
 | Building footprint in zoning cells | Asset-authored | `lot_width_cells × lot_depth_cells`; authored building footprint, not a cadastral parcel model. |
 | Reference zoning depth | `12` cells | `DEFAULT_ZONING_DEPTH`; tooling / fade heuristic only, not a hard cap. |
@@ -41,7 +43,8 @@ Terminology note: this file mirrors current code and API names on purpose. When 
 
 ### Key Design Patterns
 
-- **`DataGrid<T>`**: flat row-major `Vec<T>` with width stride. Used for terrain, pollution, noise, desirability, and the world-space zoning textures / masks.
+- **Sparse chunk-backed terrain/water storage**: runtime terrain and water keep only touched chunks resident, with dense row-major buffers materialized only for save/load and renderer upload boundaries.
+- **`DataGrid<T>`**: flat row-major `Vec<T>` with width stride. Used for pollution, noise, desirability, and the world-space zoning textures / masks.
 - **Environmental diffusion with swap buffers**: `PollutionSystem` and `NoiseSystem` use pre-allocated swap grids and `std::mem::swap()`; no per-tick `grid.clone()` in the hot path.
 - **SoA via `soa_derive`**: `AgentSystem` is generated from `#[derive(StructOfArray)]` on `Agent`, producing `AgentVec` plus explicit scratch buffers around it.
 - **Lane buckets for IDM**: per-lane occupancy / scratch lists are built and cleared incrementally each tick for car-following and overlap correction.
@@ -78,8 +81,8 @@ Benchmark-history rule:
 
 | Resource | Size | Notes |
 |----------|------|-------|
-| Terrain heightmap (`2000²`) | `16 MB` | One `f32` per height cell. |
-| Terrain source copy | `16 MB` | Raw imported / editable source data. |
+| Terrain visual sparse chunks (`2000²` worst case) | `up to 16 MB` | Full-cost only when the entire runtime terrain is materialized away from the base elevation. |
+| Terrain source sparse chunks (`2000²` worst case) | `up to 16 MB` | Same upper bound as visual terrain; untouched chunks stay implicit. |
 | 3 environmental grids at `500²` | `~3 MB` | Pollution, noise, desirability. |
 | World-space zoning grids at `2000²` | `~12 MB` | Zone, occupied, and distance-to-road layers. |
 | Road edges (`50k × ~512 B`) | `~25 MB` | Order-of-magnitude planning estimate. |
@@ -132,8 +135,8 @@ Runtime-spawned tools:
 |--------|---------------------------------|
 | `input_manager.gd` | `undo_action()`, `save_game()`, `load_game()`, `set_simulation_speed()` |
 | `main_ui.gd` | `get_no_building_spawn()`, `get_edge_class()`, `get_edge_geometry_3d()`, `get_height_at()` |
-| `terrain.gd` | `get_heightmap_size()`, `get_heightmap_data()`, `intersect_terrain()`, `sculpt_terrain()`, `flatten_terrain_for_roads()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
-| `water.gd` | `get_heightmap_size()`, `get_water_data()`, `get_water_velocity_data()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
+| `terrain.gd` | `get_heightmap_size()`, `get_terrain_world_size()`, `get_heightmap_data()`, `intersect_terrain()`, `sculpt_terrain()`, `flatten_terrain_for_roads()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
+| `water.gd` | `get_heightmap_size()`, `get_terrain_world_size()`, `get_water_data()`, `get_water_velocity_data()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
 | `agents.gd` | `get_agent_cull_far_m()`, `get_agent_cull_padding_m()`, `set_camera_aabb()`, `get_agent_transforms()`, `get_car_transforms()`, `get_agent_paths_debug()` |
 | `asset_editor.gd` | `is_asset_editor_mode()`, `load_asset_packs()`, `get_registered_asset_ids()`, `get_pack_manifest_json()`, `get_asset_manifest_json()`, `load_economy_project()`, `validate_and_export_asset()` |
 | `buildings.gd` | `load_asset_packs()`, `get_registered_asset_ids()`, `get_lod0_native_path()`, `get_building_transforms_for_asset()`, `get_building_plot_transforms()` |
@@ -144,7 +147,7 @@ Runtime-spawned tools:
 | `move_tool.gd` | `get_closest_network_point()`, `get_closest_node()`, `get_height_at()`, `move_network_node()` |
 | `lane_tool.gd` | `intersect_terrain()`, `get_closest_node()`, `get_node_lanes()`, `get_lane_connections_array()`, `set_lane_connection()`, `clear_lane_source()`, `clear_lane_connections()`, `get_node_pos()` |
 | `zoning_tool.gd` | `intersect_terrain()`, `capture_zoning_patch()`, `apply_zoning_patch()`, `restore_zoning_patch()`, `get_zone_profiles()`, `get_zone_grid_size()` |
-| `zoning_overlay.gd` | `get_zone_grid_size()`, `get_heightmap_size()`, `get_zone_profile_texture_data_rg8()`, `get_zone_profile_style_lut_rgba8()`, `get_distance_texture_data()`, `get_occupied_texture_data()`, `get_no_build_mask_texture_data()`, `get_no_building_spawn_edge_indices()`, `get_edge_geometry_3d()` |
+| `zoning_overlay.gd` | `get_zone_grid_size()`, `get_heightmap_size()`, `get_terrain_world_size()`, `get_zone_profile_texture_data_rg8()`, `get_zone_profile_style_lut_rgba8()`, `get_distance_texture_data()`, `get_occupied_texture_data()`, `get_no_build_mask_texture_data()`, `get_no_building_spawn_edge_indices()`, `get_edge_geometry_3d()` |
 | `select_tool.gd` | `intersect_terrain()`, `get_closest_node()`, `get_node_lanes()`, `get_lane_connections_array()`, `get_node_pos()`, `has_crosswalk()`, `set_crosswalk_override()`, `set_lane_connection()`, `clear_lane_source()`, `clear_lane_connections()`, `get_edge_nodes()`, `get_hovered_edge()`, `set_edge_class()`, `set_no_building_spawn()`, `get_edge_geometry_3d()`, `get_edge_width()` |
 | `cul_de_sac_tool.gd` | `get_closest_node()`, `get_node_connection_count()`, `has_cul_de_sac()`, `set_node_cul_de_sac()` |
 

@@ -39,8 +39,8 @@ impl SimCore {
 
         self.transit_network.bulk_load = true;
 
-        let w_units = self.config.zone_grid_width() as f32;
-        let h_units = self.config.zone_grid_height() as f32;
+        let w_units = self.config.world_width_units();
+        let h_units = self.config.world_height_units();
         let step = (w_units - 40.0) / grid_size as f32;
         let start_x = -w_units * 0.5 + 20.0;
         let start_z = -h_units * 0.5 + 20.0;

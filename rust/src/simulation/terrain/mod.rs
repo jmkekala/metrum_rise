@@ -13,28 +13,58 @@ pub use chunks::{
 
 use godot::prelude::Vector3;
 
+use crate::simulation::core::config::WorldConfig;
+use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
+
+const DEFAULT_TERRAIN_CHUNK_CELLS: usize = 64;
+
 /// Dual-buffer heightmap for the terrain surface.
 pub struct TerrainSystem {
     /// Map width in height samples. One sample per metre at standard resolution.
     pub width: usize,
     /// Map height (depth) in height samples.
     pub height: usize,
+    /// Terrain sample spacing in current gameplay world units.
+    cell_size: f32,
     /// Final/visual heightmap (metres). Road-bed depressions are baked into this buffer.
-    pub data: Vec<f32>,
+    data: SparseChunkGrid<f32>,
     /// Source heightmap as sculpted by the player, without road modifications.
     /// Used for road grade calculation and slope cost — never written by road placement.
-    pub source_data: Vec<f32>,
+    source_data: SparseChunkGrid<f32>,
 }
 
 impl TerrainSystem {
     /// Creates a new, flat terrain system of the given dimensions.
     pub fn new(width: usize, height: usize) -> Self {
+        Self::with_chunking(width, height, 1.0, DEFAULT_TERRAIN_CHUNK_CELLS, 0.0)
+    }
+
+    /// Creates a new terrain system with explicit sparse chunk size and base elevation.
+    pub fn with_chunking(
+        width: usize,
+        height: usize,
+        cell_size: f32,
+        chunk_size: usize,
+        base_elevation: f32,
+    ) -> Self {
         Self {
             width,
             height,
-            data: vec![0.0; width * height],
-            source_data: vec![0.0; width * height],
+            cell_size: cell_size.max(f32::EPSILON),
+            data: SparseChunkGrid::new(width, height, chunk_size.max(1), base_elevation),
+            source_data: SparseChunkGrid::new(width, height, chunk_size.max(1), base_elevation),
         }
+    }
+
+    /// Creates a terrain system from the current world configuration.
+    pub fn from_world_config(config: &WorldConfig) -> Self {
+        Self::with_chunking(
+            config.terrain_grid_width(),
+            config.terrain_grid_height(),
+            config.terrain_cell_world_units(),
+            terrain_chunk_cells_for_config(config),
+            config.terrain_base_elevation_m,
+        )
     }
 
     /// Sets the height at a specific grid coordinate.
@@ -42,18 +72,14 @@ impl TerrainSystem {
     /// Updates both source and visual buffers.
     pub fn set_height(&mut self, x: usize, y: usize, value: f32) {
         if x < self.width && y < self.height {
-            self.source_data[y * self.width + x] = value;
-            self.data[y * self.width + x] = value;
+            self.source_data.set(x, y, value);
+            self.data.set(x, y, value);
         }
     }
 
     /// Gets the raw source height at a grid coordinate.
     pub fn get_height(&self, x: usize, y: usize) -> f32 {
-        if x < self.width && y < self.height {
-            self.source_data[y * self.width + x]
-        } else {
-            0.0
-        }
+        self.source_data.get(x, y)
     }
 
     /// Bilinearly interpolates the source height at any fractional world coordinate.
@@ -70,15 +96,21 @@ impl TerrainSystem {
         let fz = z_clamped.fract();
 
         // Sample from SOURCE data for all interpolation
-        let h00 = self.source_data[z0 * self.width + x0];
-        let h10 = self.source_data[z0 * self.width + x1];
-        let h01 = self.source_data[z1 * self.width + x0];
-        let h11 = self.source_data[z1 * self.width + x1];
+        let h00 = self.source_data.get(x0, z0);
+        let h10 = self.source_data.get(x1, z0);
+        let h01 = self.source_data.get(x0, z1);
+        let h11 = self.source_data.get(x1, z1);
 
         let h0 = h00 * (1.0 - fx) + h10 * fx;
         let h1 = h01 * (1.0 - fx) + h11 * fx;
 
         h0 * (1.0 - fz) + h1 * fz
+    }
+
+    /// Samples the authoritative source terrain at one world-space position.
+    pub fn sample_height_world(&self, world_x: f32, world_z: f32) -> f32 {
+        let (grid_x, grid_z) = self.world_to_grid_coords(world_x, world_z);
+        self.get_height_interpolated(grid_x, grid_z)
     }
 
     /// Calculates the surface normal at a fractional coordinate using gradient sampling.
@@ -99,35 +131,28 @@ impl TerrainSystem {
 
     /// Casts a ray against the terrain surface and returns the intersection point.
     pub fn raycast_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Option<Vector3> {
-        // Transform ray to local heightmap coordinates (0 to width/height)
-        // Symmetric Centering: (W-1)*0.5 maps world 0 to grid center (127.5 for 256)
-        let hw = (self.width as f32 - 1.0) * 0.5;
-        let hh = (self.height as f32 - 1.0) * 0.5;
-
-        let local_origin = Vector3::new(ray_origin.x + hw, ray_origin.y, ray_origin.z + hh);
-        let local_dir = ray_dir; // Direction stays the same
+        let (half_w, half_h) = self.half_world_extents();
 
         // Linear search for entry/exit or surface intersection
         let mut t = 0.0;
         let max_dist = 10000.0; // Increased from 500 to support high-altitude camera
         let step = 0.5; // Half-meter steps for safety
 
-        let mut prev_diff =
-            local_origin.y - self.get_height_interpolated(local_origin.x, local_origin.z) * 20.0;
+        let mut prev_diff = ray_origin.y - self.sample_height_world(ray_origin.x, ray_origin.z) * 20.0;
 
         while t < max_dist {
             t += step;
-            let p = local_origin + local_dir * t;
+            let p = ray_origin + ray_dir * t;
 
             // Bounds check
-            if p.x < 0.0 || p.x >= self.width as f32 || p.z < 0.0 || p.z >= self.height as f32 {
+            if p.x < -half_w || p.x > half_w || p.z < -half_h || p.z > half_h {
                 if t > 0.0 && p.y < -10.0 {
                     break;
                 } // Went under map
                 continue;
             }
 
-            let h = self.get_height_interpolated(p.x, p.z) * 20.0;
+            let h = self.sample_height_world(p.x, p.z) * 20.0;
             let diff = p.y - h;
 
             // Intersection detected (crossed the surface)
@@ -137,8 +162,8 @@ impl TerrainSystem {
                 let mut t_high = t;
                 for _ in 0..8 {
                     let t_mid = (t_low + t_high) * 0.5;
-                    let pm = local_origin + local_dir * t_mid;
-                    let hm = self.get_height_interpolated(pm.x, pm.z) * 20.0;
+                    let pm = ray_origin + ray_dir * t_mid;
+                    let hm = self.sample_height_world(pm.x, pm.z) * 20.0;
                     if (pm.y - hm).signum() == prev_diff.signum() {
                         t_low = t_mid;
                     } else {
@@ -146,8 +171,8 @@ impl TerrainSystem {
                     }
                 }
 
-                let final_p = local_origin + local_dir * ((t_low + t_high) * 0.5);
-                return Some(Vector3::new(final_p.x - hw, final_p.y, final_p.z - hh));
+                let final_p = ray_origin + ray_dir * ((t_low + t_high) * 0.5);
+                return Some(final_p);
             }
 
             prev_diff = diff;
@@ -177,12 +202,13 @@ impl TerrainSystem {
                     let normalized_dist = dist / radius;
                     let falloff = (1.0 + (normalized_dist * std::f32::consts::PI).cos()) * 0.5;
 
-                    let idx = (y as usize) * self.width + (x as usize);
-                    let current_h = self.source_data[idx];
+                    let ux = x as usize;
+                    let uy = y as usize;
+                    let current_h = self.source_data.get(ux, uy);
                     let next_h = current_h + strength * falloff;
 
-                    self.source_data[idx] = next_h;
-                    self.data[idx] = next_h;
+                    self.source_data.set(ux, uy, next_h);
+                    self.data.set(ux, uy, next_h);
                 }
             }
         }
@@ -190,6 +216,68 @@ impl TerrainSystem {
 
     /// Synchronizes the visual data buffer with the source data.
     pub fn reset_visuals_from_source(&mut self) {
-        self.data.copy_from_slice(&self.source_data);
+        self.data = self.source_data.clone();
     }
+
+    /// Returns a dense row-major snapshot of the visual terrain buffer.
+    pub(crate) fn clone_visual_dense(&self) -> Vec<f32> {
+        self.data.clone_dense()
+    }
+
+    /// Returns a dense row-major snapshot of the authoritative source terrain buffer.
+    pub(crate) fn clone_source_dense(&self) -> Vec<f32> {
+        self.source_data.clone_dense()
+    }
+
+    /// Replaces the visual terrain buffer from a dense row-major snapshot.
+    pub(crate) fn replace_visual_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
+        self.data.replace_from_dense(dense)
+    }
+
+    /// Replaces the authoritative source terrain buffer from a dense row-major snapshot.
+    pub(crate) fn replace_source_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
+        self.source_data.replace_from_dense(dense)
+    }
+
+    /// Returns the full terrain extent in current gameplay world units.
+    pub(crate) fn world_size(&self) -> (f32, f32) {
+        (
+            (self.width.saturating_sub(1)) as f32 * self.cell_size,
+            (self.height.saturating_sub(1)) as f32 * self.cell_size,
+        )
+    }
+
+    /// Returns half-width and half-height in current gameplay world units.
+    pub(crate) fn half_world_extents(&self) -> (f32, f32) {
+        let (world_w, world_h) = self.world_size();
+        (world_w * 0.5, world_h * 0.5)
+    }
+
+    /// Converts one world-space position to fractional terrain-grid coordinates.
+    pub(crate) fn world_to_grid_coords(&self, world_x: f32, world_z: f32) -> (f32, f32) {
+        let (half_w, half_h) = self.half_world_extents();
+        (
+            (world_x + half_w) / self.cell_size,
+            (world_z + half_h) / self.cell_size,
+        )
+    }
+
+    /// Converts one terrain sample index back to world-space coordinates.
+    pub(crate) fn grid_to_world_coords(&self, grid_x: usize, grid_z: usize) -> (f32, f32) {
+        let (half_w, half_h) = self.half_world_extents();
+        (
+            grid_x as f32 * self.cell_size - half_w,
+            grid_z as f32 * self.cell_size - half_h,
+        )
+    }
+
+    /// Returns the terrain sample spacing in current gameplay world units.
+    pub(crate) fn cell_size_world_units(&self) -> f32 {
+        self.cell_size
+    }
+
+}
+
+fn terrain_chunk_cells_for_config(config: &WorldConfig) -> usize {
+    ((config.terrain_chunk_m / config.terrain_cell_m).ceil() as usize).max(1)
 }

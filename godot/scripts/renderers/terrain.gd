@@ -1,7 +1,7 @@
 ## Terrain mesh renderer and editor — displays the heightmap and handles sculpting input.
 ##
-## Rust methods called: get_heightmap_size(), get_heightmap_data(), sculpt_terrain(),
-##   flatten_terrain_for_roads(), is_terrain_dirty(), clear_terrain_dirty(),
+## Rust methods called: get_heightmap_size(), get_terrain_world_size(), get_heightmap_data(),
+##   sculpt_terrain(), flatten_terrain_for_roads(), is_terrain_dirty(), clear_terrain_dirty(),
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data()
 ## The heightmap arrives as a flat PackedFloat32Array in row-major order (width × height f32 values).
 ## Overlay textures (pollution/noise/desirability) arrive as RGBA8 PackedByteArray and are
@@ -28,15 +28,16 @@ func _ready():
 	rebuild_from_simulation_state()
 
 func rebuild_from_simulation_state():
-	var size = simulation_node.get_heightmap_size()
-	var w = int(size.x)
-	var h = int(size.y)
+	var dims = simulation_node.get_heightmap_size()
+	var world_size = simulation_node.get_terrain_world_size()
+	var w = int(dims.x)
+	var h = int(dims.y)
 	
-	# Setup mesh (Perfect 1.0m spacing)
+	# Setup mesh from world extent while keeping one vertex per terrain sample.
 	var plane_mesh = PlaneMesh.new()
-	plane_mesh.size = size - Vector2(1,1) # 255x255m for 256 vertices
-	plane_mesh.subdivide_depth = w - 2 # 254 divisions = 255 segments
-	plane_mesh.subdivide_width = h - 2
+	plane_mesh.size = world_size
+	plane_mesh.subdivide_width = max(0, w - 2)
+	plane_mesh.subdivide_depth = max(0, h - 2)
 	self.mesh = plane_mesh
 	
 	# Setup texture
@@ -56,7 +57,7 @@ func rebuild_from_simulation_state():
 	material.set_shader_parameter("overlay_texture", overlay_texture)
 	material.set_shader_parameter("parcel_texture", parcel_texture)
 	material.set_shader_parameter("height_scale", 20.0)
-	material.set_shader_parameter("mesh_size", size)
+	material.set_shader_parameter("mesh_size", world_size)
 	self.material_override = material
 	update_terrain_visuals()
 
@@ -80,12 +81,12 @@ func _process(delta):
 
 func update_terrain_visuals():
 	var data = simulation_node.get_heightmap_data()
-	var size = simulation_node.get_heightmap_size()
+	var dims = simulation_node.get_heightmap_size()
 	
 	# Convert PackedFloat32Array to byte array for Image
 	# RF format is 4 bytes per pixel (float32)
 	var byte_data = data.to_byte_array()
-	height_image.set_data(int(size.x), int(size.y), false, Image.FORMAT_RF, byte_data)
+	height_image.set_data(int(dims.x), int(dims.y), false, Image.FORMAT_RF, byte_data)
 	texture.update(height_image)
 	
 	# Update Zoning / Overlay Mode
@@ -104,7 +105,7 @@ func update_terrain_visuals():
 		zone_bytes = simulation_node.get_desirability_image_data()
 		
 	if zone_bytes.size() > 0:
-		overlay_image.set_data(int(size.x), int(size.y), false, Image.FORMAT_RGBA8, zone_bytes)
+		overlay_image.set_data(int(dims.x), int(dims.y), false, Image.FORMAT_RGBA8, zone_bytes)
 		overlay_texture.update(overlay_image)
 	else:
 		# Clear overlay if mode is 0 or no data
@@ -122,17 +123,11 @@ func sculpt_at_mouse(delta):
 	
 	var intersection = simulation_node.intersect_terrain(ray_origin, ray_dir)
 	if intersection != null:
-		var size = simulation_node.get_heightmap_size()
-		var local_pos = Vector2(
-			intersection.x + (size.x - 1.0) * 0.5,
-			intersection.z + (size.y - 1.0) * 0.5
-		)
-		
 		var strength = 2.0 * delta
 		if Input.is_key_pressed(KEY_CTRL) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 			strength = -2.0 * delta
 			
-		simulation_node.sculpt_terrain(local_pos, 15.0, strength)
+		simulation_node.sculpt_terrain(Vector2(intersection.x, intersection.z), 15.0, strength)
 		
 		var road_tool = get_node("../RoadTool")
 		if road_tool:

@@ -606,11 +606,6 @@ impl SimCore {
         let mut pedestrian_transforms: HashMap<u8, Vec<f32>> = HashMap::new();
         let mut car_transforms: HashMap<u8, Vec<f32>> = HashMap::new();
 
-        let w = self.heightmap.width as f32;
-        let h = self.heightmap.height as f32;
-        let hw = (w - 1.0) * 0.5;
-        let hh = (h - 1.0) * 0.5;
-
         let (aabb_x_min, aabb_x_max, aabb_z_min, aabb_z_max) = self.camera_aabb;
         let cull = aabb_x_min < aabb_x_max; // false when default "show all"
 
@@ -630,9 +625,7 @@ impl SimCore {
             {
                 continue;
             }
-            let map_x = (world_x + hw).clamp(0.0, w - 1.0) as usize;
-            let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
-            let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0;
+            let terrain_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0;
 
             if self.agents.transit_mode[i] != MODE_CAR {
                 // Pedestrian / walker — use variant MMI and oriented basis.

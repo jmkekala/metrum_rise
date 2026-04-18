@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 27;
+pub const SAVE_VERSION: i64 = 28;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -18,6 +18,7 @@ CREATE TABLE save_meta(
 CREATE TABLE world_config(
     width_m REAL NOT NULL,
     height_m REAL NOT NULL,
+    terrain_cell_m REAL NOT NULL,
     terrain_chunk_m REAL NOT NULL,
     terrain_base_elevation_m REAL NOT NULL,
     env_cell_m REAL NOT NULL,

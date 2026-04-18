@@ -334,9 +334,9 @@ func _prompt_border_connection(node_id: int) -> void:
 # In that case we project the camera ray onto a flat plane and clamp to the map boundary
 # so the endpoint snaps cleanly to the border instead of showing an invalid (red) preview.
 func get_world_mouse_pos() -> Vector3:
-	var hmap_size: Vector2 = simulation_node.get_heightmap_size()
-	var half_w: float = (hmap_size.x - 1.0) * 0.5
-	var half_h: float = (hmap_size.y - 1.0) * 0.5
+	var terrain_world_size: Vector2 = simulation_node.get_terrain_world_size()
+	var half_w: float = terrain_world_size.x * 0.5
+	var half_h: float = terrain_world_size.y * 0.5
 	# How close to the edge (in metres) before snapping to it.
 	var border_snap_dist: float = minf(half_w, half_h) * 0.08  # ~8% of half-extent
 

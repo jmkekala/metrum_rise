@@ -12,10 +12,6 @@ impl SimCore {
     /// Returns the 12-float transforms for all placed buildings with the given asset ID.
     pub fn get_building_transforms_for_asset_internal(&self, asset_id: &str) -> PackedFloat32Array {
         let mut buffer = Vec::new();
-        let w = self.heightmap.width as f32;
-        let h = self.heightmap.height as f32;
-        let hw = (w - 1.0) * 0.5;
-        let hh = (h - 1.0) * 0.5;
 
         for b in &self.allocator.buildings {
             if asset_id == "broken:error" {
@@ -32,13 +28,7 @@ impl SimCore {
 
             let world_x = b.center_x;
             let world_z = b.center_y;
-
-            let grid_x = b.center_x + hw;
-            let grid_y = b.center_y + hh;
-            let safe_gx = grid_x.round().clamp(0.0, w - 1.0) as usize;
-            let safe_gy = grid_y.round().clamp(0.0, h - 1.0) as usize;
-
-            let world_y = self.heightmap.get_height(safe_gx, safe_gy) * 20.0;
+            let world_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0;
 
             let fd = b.facing_dir.normalized();
             let b_zx = fd.x;
@@ -91,10 +81,6 @@ impl SimCore {
         asset_id: &str,
     ) -> PackedFloat32Array {
         let mut buffer = Vec::new();
-        let w = self.heightmap.width as f32;
-        let h = self.heightmap.height as f32;
-        let hw = (w - 1.0) * 0.5;
-        let hh = (h - 1.0) * 0.5;
 
         for b in &self.allocator.buildings {
             if b.broken || !b.is_deserted || b.asset_id != asset_id {
@@ -103,13 +89,7 @@ impl SimCore {
 
             let world_x = b.center_x;
             let world_z = b.center_y;
-
-            let grid_x = b.center_x + hw;
-            let grid_y = b.center_y + hh;
-            let safe_gx = grid_x.round().clamp(0.0, w - 1.0) as usize;
-            let safe_gy = grid_y.round().clamp(0.0, h - 1.0) as usize;
-
-            let world_y = self.heightmap.get_height(safe_gx, safe_gy) * 20.0;
+            let world_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0;
 
             let fd = b.facing_dir.normalized();
             let b_zx = fd.x;
@@ -165,22 +145,12 @@ impl SimCore {
         }
 
         let mut buffer = Vec::new();
-        let w = self.heightmap.width as f32;
-        let h = self.heightmap.height as f32;
-        let hw = (w - 1.0) * 0.5;
-        let hh = (h - 1.0) * 0.5;
 
         for b in &self.allocator.buildings {
             if b.zone_type == target_zone {
                 let world_x = b.center_x;
                 let world_z = b.center_y;
-
-                let grid_x = b.center_x + hw;
-                let grid_y = b.center_y + hh;
-                let safe_gx = grid_x.round().clamp(0.0, w - 1.0) as usize;
-                let safe_gy = grid_y.round().clamp(0.0, h - 1.0) as usize;
-
-                let world_y = self.heightmap.get_height(safe_gx, safe_gy) * 20.0 + 0.02; // Slightly above terrain
+                let world_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0 + 0.02; // Slightly above terrain
 
                 let fd = b.facing_dir.normalized();
                 let b_zx = fd.x;

@@ -3,7 +3,6 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{ROAD_BUILD_COST_PER_METER, SimCore};
-use crate::simulation::terrain::TerrainSystem;
 use crate::traffic_log;
 use godot::prelude::*;
 use std::collections::HashSet;
@@ -18,7 +17,10 @@ impl SimCore {
     /// Sculpts the terrain with a given radius and strength.
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.push_undo_state(true, false, true, false);
-        self.heightmap.sculpt(pos.x, pos.y, radius, strength);
+        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
+        let radius_cells = radius / self.config.terrain_cell_world_units();
+        self.heightmap
+            .sculpt(center_x, center_y, radius_cells, strength);
         self.terrain_dirty = true;
 
         self.transit_network
@@ -29,14 +31,16 @@ impl SimCore {
     /// Adds water to the simulation at a given grid position.
     pub fn add_water_internal(&mut self, pos: Vector2, amount: f32) {
         self.push_undo_state(false, true, false, false);
+        let (grid_x, grid_y) = self.watermap.world_to_grid_cell_clamped(pos.x, pos.y);
         self.watermap
-            .add_water(pos.x as usize, pos.y as usize, amount);
+            .add_water(grid_x, grid_y, amount);
     }
 
     /// Adds a water source to the simulation.
     pub fn add_water_source_internal(&mut self, pos: Vector2, rate_add: f32) {
+        let (grid_x, grid_y) = self.watermap.world_to_grid_cell_clamped(pos.x, pos.y);
         self.watermap
-            .update_source(pos.x as usize, pos.y as usize, rate_add);
+            .update_source(grid_x, grid_y, rate_add);
         self.water_dirty = true;
     }
 
@@ -183,17 +187,10 @@ impl SimCore {
 
         let mut fixed_points = points;
 
-        let w = self.heightmap.width;
-        let h = self.heightmap.height;
-        let hw = (w - 1) as f32 * 0.5;
-        let hh = (h - 1) as f32 * 0.5;
-
         let mut class = crate::simulation::network::types::EdgeClass::Standard;
 
         for p in &mut fixed_points {
-            let gx = p.x + hw;
-            let gz = p.z + hh;
-            let terrain_h = self.heightmap.get_height_interpolated(gx, gz) * config::HEIGHT_SCALE;
+            let terrain_h = self.heightmap.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE;
 
             if p.y - terrain_h > 1.0 {
                 class = crate::simulation::network::types::EdgeClass::Bridge;
@@ -205,9 +202,7 @@ impl SimCore {
         // Only force grounded roads to terrain
         if class == crate::simulation::network::types::EdgeClass::Standard {
             for p in &mut fixed_points {
-                let gx = p.x + hw;
-                let gz = p.z + hh;
-                p.y = self.heightmap.get_height_interpolated(gx, gz) * config::HEIGHT_SCALE;
+                p.y = self.heightmap.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE;
             }
         }
 
@@ -440,21 +435,18 @@ impl SimCore {
 
     /// Flattens the terrain to match the grade of the road network.
     pub fn flatten_terrain_for_roads_internal(&mut self) {
-        let size = self.get_heightmap_size_internal();
+        let size = self.get_terrain_world_size_internal();
         self.heightmap.reset_visuals_from_source();
-
-        let ref_terrain = TerrainSystem {
-            width: self.heightmap.width,
-            height: self.heightmap.height,
-            data: self.heightmap.data.clone(),
-            source_data: self.heightmap.source_data.clone(),
-        };
+        let mut flattened = self.heightmap.clone_visual_dense();
         self.transit_network.flatten_terrain(
             &self.region_graph,
-            &ref_terrain,
-            &mut self.heightmap.data,
+            &self.heightmap,
+            &mut flattened,
             size,
         );
+        self.heightmap
+            .replace_visual_from_dense(&flattened)
+            .expect("road flatten output must match the live terrain dimensions");
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
         self.rebuild_building_entrances_internal();
@@ -469,8 +461,7 @@ impl SimCore {
     pub fn check_border_candidate_internal(&self, pos: Vector3) -> i64 {
         // The actual world-space boundary is derived from the heightmap dimensions, not
         // config.width_m (which is a logical grid size, not the terrain world extent).
-        let half_w = (self.heightmap.width as f32 - 1.0) * 0.5;
-        let half_h = (self.heightmap.height as f32 - 1.0) * 0.5;
+        let (half_w, half_h) = self.heightmap.half_world_extents();
         let t = config::BORDER_DETECTION_THRESHOLD;
 
         let near_border =
@@ -644,12 +635,10 @@ mod tests {
     fn test_core() -> SimCore {
         use crate::nodes::sim::core::CityTreasury;
         let config = WorldConfig::default();
-        let w = config.zone_grid_width();
-        let h = config.zone_grid_height();
         SimCore {
             time: TimeSystem::new(),
-            heightmap: TerrainSystem::new(w, h),
-            watermap: WaterSystem::new(w, h),
+            heightmap: TerrainSystem::from_world_config(&config),
+            watermap: WaterSystem::from_world_config(&config),
             region_graph: RegionGraph::new(),
             transit_network: TransitNetwork::new(),
             zoning: ZoningSystem::new(&config),

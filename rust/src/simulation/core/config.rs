@@ -15,6 +15,8 @@ pub struct WorldConfig {
     pub width_m: f32,
     /// Total physical height of the authored world in metres.
     pub height_m: f32,
+    /// Physical size of one terrain and water sample cell in metres.
+    pub terrain_cell_m: f32,
     /// Canonical authored terrain chunk span in metres.
     pub terrain_chunk_m: f32,
     /// Default base terrain elevation for untouched blank-world chunks.
@@ -26,6 +28,8 @@ pub struct WorldConfig {
 }
 
 impl WorldConfig {
+    /// Default terrain sample spacing used by the current gameplay fallback world.
+    pub const DEFAULT_TERRAIN_CELL_M: f32 = 10.0;
     /// Default canonical terrain chunk size for blank authored worlds.
     pub const DEFAULT_TERRAIN_CHUNK_M: f32 = 512.0;
     /// Default base elevation for untouched blank authored worlds.
@@ -44,6 +48,7 @@ impl WorldConfig {
         Self {
             width_m,
             height_m,
+            terrain_cell_m: Self::DEFAULT_TERRAIN_CELL_M,
             terrain_chunk_m: Self::DEFAULT_TERRAIN_CHUNK_M,
             terrain_base_elevation_m: Self::DEFAULT_TERRAIN_BASE_ELEVATION_M,
             env_cell_m,
@@ -59,6 +64,12 @@ impl WorldConfig {
     ) -> Self {
         self.terrain_chunk_m = terrain_chunk_m;
         self.terrain_base_elevation_m = terrain_base_elevation_m;
+        self
+    }
+
+    /// Overrides the terrain sample spacing while preserving the current world extent metadata.
+    pub fn with_terrain_resolution(mut self, terrain_cell_m: f32) -> Self {
+        self.terrain_cell_m = terrain_cell_m.max(f32::EPSILON);
         self
     }
 
@@ -82,6 +93,24 @@ impl WorldConfig {
         )
     }
 
+    /// Returns the runtime world width in the current gameplay coordinate units.
+    ///
+    /// The live runtime still uses one world-space unit per zoning cell width rather than one
+    /// world-space unit per physical metre. This helper makes that compatibility layer explicit.
+    pub fn world_width_units(&self) -> f32 {
+        (self.zone_grid_width().saturating_sub(1)) as f32
+    }
+
+    /// Returns the runtime world height in the current gameplay coordinate units.
+    pub fn world_height_units(&self) -> f32 {
+        (self.zone_grid_height().saturating_sub(1)) as f32
+    }
+
+    /// Returns the terrain sample spacing in current gameplay coordinate units.
+    pub fn terrain_cell_world_units(&self) -> f32 {
+        (self.terrain_cell_m / self.zone_cell_m).max(f32::EPSILON)
+    }
+
     /// Returns the number of authored terrain chunks along the X axis.
     pub fn terrain_chunk_columns(&self) -> usize {
         (self.width_m / self.terrain_chunk_m).ceil() as usize
@@ -90,6 +119,16 @@ impl WorldConfig {
     /// Returns the number of authored terrain chunks along the Y axis.
     pub fn terrain_chunk_rows(&self) -> usize {
         (self.height_m / self.terrain_chunk_m).ceil() as usize
+    }
+
+    /// Returns the number of runtime terrain samples along the X axis.
+    pub fn terrain_grid_width(&self) -> usize {
+        ((self.world_width_units() / self.terrain_cell_world_units()).round() as usize) + 1
+    }
+
+    /// Returns the number of runtime terrain samples along the Y axis.
+    pub fn terrain_grid_height(&self) -> usize {
+        ((self.world_height_units() / self.terrain_cell_world_units()).round() as usize) + 1
     }
 
     /// Returns the number of cells in the zoning grid along the X axis.
@@ -115,6 +154,11 @@ impl WorldConfig {
     /// Helper to get (width, height) for environmental grid.
     pub fn get_env_grid_size(&self) -> (usize, usize) {
         (self.env_grid_width(), self.env_grid_height())
+    }
+
+    /// Helper to get (width, height) for the runtime terrain grid.
+    pub fn get_terrain_grid_size(&self) -> (usize, usize) {
+        (self.terrain_grid_width(), self.terrain_grid_height())
     }
 
     /// Helper to get (width, height) for zoning grid.

@@ -37,11 +37,6 @@ impl SimCore {
     pub fn get_agent_transforms_internal(&self) -> PackedFloat32Array {
         let mut buffer = Vec::with_capacity(self.agents.len() * 12);
 
-        let w = self.heightmap.width as f32;
-        let h = self.heightmap.height as f32;
-        let hw = (w - 1.0) * 0.5;
-        let hh = (h - 1.0) * 0.5;
-
         for i in 0..self.agents.len() {
             if !transit_is_visible(self.agents.transit[i]) {
                 continue;
@@ -52,10 +47,7 @@ impl SimCore {
 
             let world_x = self.agents.pos_x[i];
             let world_z = self.agents.pos_y[i];
-
-            let map_x = (world_x + hw).clamp(0.0, w - 1.0) as usize;
-            let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
-            let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 1.0;
+            let terrain_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0 + 1.0;
             let world_y = terrain_y;
 
             buffer.push(1.0_f32);
@@ -81,11 +73,6 @@ impl SimCore {
         let mut type_buffers: std::collections::HashMap<u8, Vec<f32>> =
             std::collections::HashMap::new();
 
-        let w = self.heightmap.width as f32;
-        let h = self.heightmap.height as f32;
-        let hw = (w - 1.0) * 0.5;
-        let hh = (h - 1.0) * 0.5;
-
         for i in 0..self.agents.len() {
             if !transit_is_visible(self.agents.transit[i]) {
                 continue;
@@ -106,10 +93,7 @@ impl SimCore {
             let mut basis_x = Vector3::RIGHT;
             let mut basis_y = Vector3::UP;
             let mut basis_z = Vector3::BACK;
-
-            let map_x = (world_x + hw).clamp(0.0, w - 1.0) as usize;
-            let map_z = (world_z + hh).clamp(0.0, h - 1.0) as usize;
-            let terrain_y = self.heightmap.get_height(map_x, map_z) * 20.0 + 0.02;
+            let terrain_y = self.heightmap.sample_height_world(world_x, world_z) * 20.0 + 0.02;
             let mut world_y = terrain_y;
 
             let current_lane = self.agents.current_lane_id[i];
@@ -196,13 +180,7 @@ impl SimCore {
         let max_display = 2500; // Limit to avoid 1M-agent frame drop
 
         let get_h = |pos: Vector3| -> Vector3 {
-            let w = self.heightmap.width as f32;
-            let h = self.heightmap.height as f32;
-            let hw = (w - 1.0) * 0.5;
-            let hh = (h - 1.0) * 0.5;
-            let map_x = (pos.x + hw).clamp(0.0, w - 1.0) as usize;
-            let map_z = (pos.z + hh).clamp(0.0, h - 1.0) as usize;
-            let y = self.heightmap.get_height(map_x, map_z) * 20.0 + 1.2;
+            let y = self.heightmap.sample_height_world(pos.x, pos.z) * 20.0 + 1.2;
             Vector3::new(pos.x, y, pos.z)
         };
 

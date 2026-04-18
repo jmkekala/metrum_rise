@@ -133,10 +133,11 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
         ],
     )?;
     tx.execute(
-        "INSERT INTO world_config(width_m, height_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO world_config(width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         params![
             view.config.width_m,
             view.config.height_m,
+            view.config.terrain_cell_m,
             view.config.terrain_chunk_m,
             view.config.terrain_base_elevation_m,
             view.config.env_cell_m,
@@ -186,12 +187,13 @@ pub(crate) fn load_from_sqlite(
         return Err(SaveLoadError::custom("version mismatch"));
     }
     let config = conn.query_row(
-        "SELECT width_m, height_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
+        "SELECT width_m, height_m, terrain_cell_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
         [],
         |r| {
             Ok(
-                WorldConfig::new(r.get(0)?, r.get(1)?, r.get(4)?, r.get(5)?)
-                    .with_chunking(r.get(2)?, r.get(3)?),
+                WorldConfig::new(r.get(0)?, r.get(1)?, r.get(5)?, r.get(6)?)
+                    .with_terrain_resolution(r.get(2)?)
+                    .with_chunking(r.get(3)?, r.get(4)?),
             )
         },
     )?;
@@ -205,7 +207,7 @@ pub(crate) fn load_from_sqlite(
     };
 
     let mut terrain = world::load_terrain(&conn, &config)?;
-    let water = world::load_water(&conn, terrain.width, terrain.height)?;
+    let water = world::load_water(&conn, &config, terrain.width, terrain.height)?;
     let demand_row: (
         f32,
         f32,

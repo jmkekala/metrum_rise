@@ -2,8 +2,8 @@
 ##
 ## Rust methods called: get_zone_profile_texture_data_rg8(), get_zone_profile_style_lut_rgba8(),
 ##   get_distance_texture_data(), get_occupied_texture_data(), get_no_build_mask_texture_data(),
-##   get_zone_grid_size(), get_heightmap_size(), get_no_building_spawn_edge_indices(),
-##   get_edge_geometry_3d()
+##   get_zone_grid_size(), get_heightmap_size(), get_terrain_world_size(),
+##   get_no_building_spawn_edge_indices(), get_edge_geometry_3d()
 ##
 ## Attach to a MeshInstance3D node named ZoningOverlay positioned at (0, 0.005, 0).
 ## The mesh is a PlaneMesh sized to the full terrain extent. The shader reads three
@@ -61,10 +61,10 @@ func _ready():
 	occupied_tex = ImageTexture.create_from_image(occupied_image)
 	no_build_tex = ImageTexture.create_from_image(no_build_image)
 
-	# Build a flat quad covering the full terrain
-	var terrain_size = simulation_node.get_heightmap_size()
-	var world_w = terrain_size.x - 1.0
-	var world_h = terrain_size.y - 1.0
+	# Build a flat quad covering the full terrain extent
+	var terrain_world_size = simulation_node.get_terrain_world_size()
+	var world_w = terrain_world_size.x
+	var world_h = terrain_world_size.y
 	var quad = PlaneMesh.new()
 	quad.size = Vector2(world_w, world_h)
 	self.mesh = quad

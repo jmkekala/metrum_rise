@@ -135,9 +135,6 @@ impl RegionGraph {
     ///
     /// Applies Laplacian smoothing to road grades to ensure smooth vertical transitions.
     pub fn sync_to_terrain(&mut self, terrain: &crate::simulation::terrain::TerrainSystem) {
-        let hw = (terrain.width as f32 - 1.0) * 0.5;
-        let hh = (terrain.height as f32 - 1.0) * 0.5;
-
         // 0. Pre-calculate which nodes are snappable (Standard only)
         let mut node_snappable = vec![true; self.nodes.len()];
         for edge in &self.edges {
@@ -155,9 +152,8 @@ impl RegionGraph {
             if !node_snappable[i] {
                 continue;
             }
-            let gx = node.pos.x + hw;
-            let gz = node.pos.z + hh;
-            node.pos.y = terrain.get_height_interpolated(gx, gz) * crate::config::HEIGHT_SCALE;
+            node.pos.y =
+                terrain.sample_height_world(node.pos.x, node.pos.z) * crate::config::HEIGHT_SCALE;
         }
 
         // 2. Re-interpolate Edge Geometry (Smooth Grades)
@@ -181,10 +177,9 @@ impl RegionGraph {
             // HARMONIC CONFORMANCE (Laplacian Smoothing)
             // 1. Re-sample raw terrain for all intermediate points so road follows new hills
             for j in 1..count - 1 {
-                let gx = edge.geometry[j].x + hw;
-                let gz = edge.geometry[j].z + hh;
-                edge.geometry[j].y =
-                    terrain.get_height_interpolated(gx, gz) * crate::config::HEIGHT_SCALE;
+                edge.geometry[j].y = terrain
+                    .sample_height_world(edge.geometry[j].x, edge.geometry[j].z)
+                    * crate::config::HEIGHT_SCALE;
             }
 
             // 2. Taubin Smoothing to iron out bumps without volume shrinkage

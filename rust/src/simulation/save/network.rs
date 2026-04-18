@@ -252,18 +252,19 @@ pub(super) fn rebuild_loaded_graph_runtime(
 ) {
     graph.rebuild_all_indices();
     terrain.reset_visuals_from_source();
-    let source_terrain = TerrainSystem {
-        width: terrain.width,
-        height: terrain.height,
-        data: terrain.data.clone(),
-        source_data: terrain.source_data.clone(),
-    };
+    let mut flattened = terrain.clone_visual_dense();
     transit_network.flatten_terrain(
         graph,
-        &source_terrain,
-        &mut terrain.data,
-        Vector2::new(terrain.width as f32, terrain.height as f32),
+        terrain,
+        &mut flattened,
+        {
+            let (world_w, world_h) = terrain.world_size();
+            Vector2::new(world_w, world_h)
+        },
     );
+    terrain
+        .replace_visual_from_dense(&flattened)
+        .expect("loaded road flatten output must match the terrain dimensions");
     transit_network.sync_to_terrain(graph, terrain);
     for edge in graph.edges_iter_mut() {
         if edge.deleted {

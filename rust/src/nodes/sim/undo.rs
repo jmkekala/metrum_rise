@@ -19,12 +19,12 @@ impl SimCore {
         }
         self.undo_stack.push_back(SimulationSnapshot {
             terrain: if inc_terrain {
-                Some(self.heightmap.data.clone())
+                Some(self.heightmap.clone_visual_dense())
             } else {
                 None
             },
             water: if inc_water {
-                Some(self.watermap.depth.clone())
+                Some(self.watermap.clone_depth_dense())
             } else {
                 None
             },
@@ -48,11 +48,15 @@ impl SimCore {
             let mut sync_trans_graph = false;
 
             if let Some(t_data) = state.terrain {
-                self.heightmap.data = t_data;
+                self.heightmap
+                    .replace_visual_from_dense(&t_data)
+                    .expect("undo terrain snapshot must match the live terrain dimensions");
                 sync_trans_graph = true;
             }
             if let Some(w_data) = state.water {
-                self.watermap.depth = w_data;
+                self.watermap
+                    .replace_depth_from_dense(&w_data)
+                    .expect("undo water snapshot must match the live water dimensions");
             }
             if let Some(tr_graph) = state.trans_graph {
                 self.region_graph = tr_graph;

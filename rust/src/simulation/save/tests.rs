@@ -111,13 +111,27 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     time.day_index = 3;
     time.minute_of_day = 480;
     time.seconds_per_day = 4.0;
-    let mut terrain = TerrainSystem::new(config.zone_grid_width(), config.zone_grid_height());
-    terrain.source_data.fill(1.0);
-    terrain.reset_visuals_from_source();
-    let mut water = WaterSystem::new(terrain.width, terrain.height);
-    water.depth[0] = 2.5;
-    water.velocity[0] = 0.75;
-    water.flux[0] = [1.0, 2.0, 3.0, 4.0];
+    let mut terrain = TerrainSystem::from_world_config(&config);
+    terrain.set_height(0, 0, 1.0);
+    terrain.set_height(1, 0, 1.0);
+    terrain.set_height(0, 1, 1.0);
+    terrain.set_height(1, 1, 1.0);
+    let mut water = WaterSystem::from_world_config(&config);
+    let mut depth = water.clone_depth_dense();
+    depth[0] = 2.5;
+    water
+        .replace_depth_from_dense(&depth)
+        .expect("water depth dimensions should match");
+    let mut velocity = water.clone_velocity_dense();
+    velocity[0] = 0.75;
+    water
+        .replace_velocity_from_dense(&velocity)
+        .expect("water velocity dimensions should match");
+    let mut flux = water.clone_flux_dense();
+    flux[0] = [1.0, 2.0, 3.0, 4.0];
+    water
+        .replace_flux_from_dense(&flux)
+        .expect("water flux dimensions should match");
     water.sources.push((1, 2, 0.5));
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
@@ -357,6 +371,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
 
     assert_eq!(loaded.config.width_m, config.width_m);
     assert_eq!(loaded.config.height_m, config.height_m);
+    assert_eq!(loaded.config.terrain_cell_m, config.terrain_cell_m);
     assert_eq!(loaded.config.terrain_chunk_m, config.terrain_chunk_m);
     assert_eq!(
         loaded.config.terrain_base_elevation_m,
@@ -364,8 +379,8 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     );
     assert_eq!(loaded.time.day_index, time.day_index);
     assert_eq!(loaded.time.minute_of_day, time.minute_of_day);
-    assert_eq!(loaded.terrain.source_data, terrain.source_data);
-    assert_eq!(loaded.water.depth, water.depth);
+    assert_eq!(loaded.terrain.clone_source_dense(), terrain.clone_source_dense());
+    assert_eq!(loaded.water.clone_depth_dense(), water.clone_depth_dense());
     assert_eq!(loaded.demand.residential, demand.residential);
     assert_eq!(loaded.demand.commercial, demand.commercial);
     assert_eq!(loaded.demand.industrial, demand.industrial);

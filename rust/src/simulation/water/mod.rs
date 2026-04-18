@@ -4,35 +4,57 @@
 //! The tick is parallelised with `rayon` over grid rows.
 //! Water sources (player-placed) inject depth at a fixed rate per tick.
 
+use crate::simulation::core::config::WorldConfig;
+use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
+use rayon::prelude::*;
+
+const DEFAULT_WATER_CHUNK_CELLS: usize = 64;
+
 /// Shallow-water state for the entire map.
 pub struct WaterSystem {
     /// Grid width in cells (matches terrain width).
     pub width: usize,
     /// Grid height in cells (matches terrain height).
     pub height: usize,
+    /// Water sample spacing in current gameplay world units.
+    cell_size: f32,
     /// Water depth (metres) per cell.
-    pub depth: Vec<f32>,
+    depth: SparseChunkGrid<f32>,
     /// Flow velocity magnitude per cell, used for rendering foam/current effects.
-    pub velocity: Vec<f32>,
+    velocity: SparseChunkGrid<f32>,
     /// Directional flux per cell: `[Left, Right, Top, Bottom]` (m³/s).
-    pub flux: Vec<[f32; 4]>,
+    flux: SparseChunkGrid<[f32; 4]>,
     /// Player-placed water sources: `(grid_x, grid_y, rate_m_per_tick)`.
     pub sources: Vec<(usize, usize, f32)>,
 }
 
-use rayon::prelude::*;
-
 impl WaterSystem {
     /// Creates a new, dry water system of the given dimensions.
     pub fn new(width: usize, height: usize) -> Self {
+        Self::with_chunking(width, height, 1.0, DEFAULT_WATER_CHUNK_CELLS)
+    }
+
+    /// Creates a new water system with an explicit sparse chunk size.
+    pub fn with_chunking(width: usize, height: usize, cell_size: f32, chunk_size: usize) -> Self {
         Self {
             width,
             height,
-            depth: vec![0.0; width * height],
-            velocity: vec![0.0; width * height],
-            flux: vec![[0.0; 4]; width * height],
+            cell_size: cell_size.max(f32::EPSILON),
+            depth: SparseChunkGrid::new(width, height, chunk_size.max(1), 0.0),
+            velocity: SparseChunkGrid::new(width, height, chunk_size.max(1), 0.0),
+            flux: SparseChunkGrid::new(width, height, chunk_size.max(1), [0.0; 4]),
             sources: Vec::new(),
         }
+    }
+
+    /// Creates a water system from the current world configuration.
+    pub fn from_world_config(config: &WorldConfig) -> Self {
+        Self::with_chunking(
+            config.terrain_grid_width(),
+            config.terrain_grid_height(),
+            config.terrain_cell_world_units(),
+            water_chunk_cells_for_config(config),
+        )
     }
 
     /// Advances the water simulation by `dt` seconds.
@@ -42,10 +64,18 @@ impl WaterSystem {
     /// 2. Depth update (Saint-Venant mass conservation)
     /// 3. Velocity magnitude calculation for rendering
     pub fn tick(&mut self, terrain: &[f32], dt: f32) {
+        if terrain.len() != self.width * self.height {
+            return;
+        }
+
+        let mut depth = self.depth.clone_dense();
+        let mut velocity = self.velocity.clone_dense();
+        let mut flux = self.flux.clone_dense();
+
         // 0. Inject water from sources (Sequential but small count)
         for &(x, y, rate) in &self.sources {
             let idx = y * self.width + x;
-            self.depth[idx] += rate * dt;
+            depth[idx] += rate * dt;
         }
 
         let l = 1.0; // Pipe length
@@ -56,10 +86,10 @@ impl WaterSystem {
 
         // --- 1. Calculate flux (Parallelized rows) ---
         // Pre-cloning or sharing depth/terrain for immutable read
-        let depth_ref = &self.depth;
+        let depth_ref = &depth;
         let terrain_ref = terrain;
 
-        self.flux
+        flux
             .par_chunks_mut(w)
             .enumerate()
             .for_each(|(y, row_flux)| {
@@ -115,9 +145,9 @@ impl WaterSystem {
 
         // --- 2. Update depth (Parallelized rows) ---
         // Capture a read-only view of flux
-        let flux_ref = &self.flux;
+        let flux_ref = &flux;
 
-        self.depth
+        depth
             .par_chunks_mut(w)
             .enumerate()
             .enumerate()
@@ -165,8 +195,8 @@ impl WaterSystem {
             });
 
         // Pass 3: Velocity (only for active cells)
-        let depth_ref_2 = &self.depth;
-        self.velocity
+        let depth_ref_2 = &depth;
+        velocity
             .par_chunks_mut(w)
             .enumerate()
             .for_each(|(y, row_vel)| {
@@ -187,12 +217,23 @@ impl WaterSystem {
                     }
                 }
             });
+
+        self.depth
+            .replace_from_dense(&depth)
+            .expect("dense water depth snapshot must match water grid dimensions");
+        self.velocity
+            .replace_from_dense(&velocity)
+            .expect("dense water velocity snapshot must match water grid dimensions");
+        self.flux
+            .replace_from_dense(&flux)
+            .expect("dense water flux snapshot must match water grid dimensions");
     }
 
     /// Adds a discrete amount of water depth to a specific grid cell.
     pub fn add_water(&mut self, x: usize, y: usize, amount: f32) {
         if x < self.width && y < self.height {
-            self.depth[y * self.width + x] += amount;
+            let next_depth = self.depth.get(x, y) + amount;
+            self.depth.set(x, y, next_depth);
         }
     }
 
@@ -208,4 +249,64 @@ impl WaterSystem {
             self.sources.push((x, y, rate_add));
         }
     }
+
+    /// Returns a dense row-major snapshot of water depth.
+    pub(crate) fn clone_depth_dense(&self) -> Vec<f32> {
+        self.depth.clone_dense()
+    }
+
+    /// Returns a dense row-major snapshot of water velocity magnitude.
+    pub(crate) fn clone_velocity_dense(&self) -> Vec<f32> {
+        self.velocity.clone_dense()
+    }
+
+    /// Returns a dense row-major snapshot of directional flux values.
+    pub(crate) fn clone_flux_dense(&self) -> Vec<[f32; 4]> {
+        self.flux.clone_dense()
+    }
+
+    /// Replaces the water depth buffer from a dense row-major snapshot.
+    pub(crate) fn replace_depth_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
+        self.depth.replace_from_dense(dense)
+    }
+
+    /// Replaces the water velocity buffer from a dense row-major snapshot.
+    pub(crate) fn replace_velocity_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
+        self.velocity.replace_from_dense(dense)
+    }
+
+    /// Replaces the water flux buffer from a dense row-major snapshot.
+    pub(crate) fn replace_flux_from_dense(
+        &mut self,
+        dense: &[[f32; 4]],
+    ) -> Result<(), String> {
+        self.flux.replace_from_dense(dense)
+    }
+
+    /// Returns the full water-map extent in current gameplay world units.
+    pub(crate) fn world_size(&self) -> (f32, f32) {
+        (
+            (self.width.saturating_sub(1)) as f32 * self.cell_size,
+            (self.height.saturating_sub(1)) as f32 * self.cell_size,
+        )
+    }
+
+    /// Converts one world-space position to the nearest in-bounds water cell.
+    pub(crate) fn world_to_grid_cell_clamped(&self, world_x: f32, world_z: f32) -> (usize, usize) {
+        let (world_w, world_h) = self.world_size();
+        let half_w = world_w * 0.5;
+        let half_h = world_h * 0.5;
+        let grid_x = ((world_x + half_w) / self.cell_size)
+            .round()
+            .clamp(0.0, (self.width.saturating_sub(1)) as f32) as usize;
+        let grid_z = ((world_z + half_h) / self.cell_size)
+            .round()
+            .clamp(0.0, (self.height.saturating_sub(1)) as f32) as usize;
+        (grid_x, grid_z)
+    }
+
+}
+
+fn water_chunk_cells_for_config(config: &WorldConfig) -> usize {
+    ((config.terrain_chunk_m / config.terrain_cell_m).ceil() as usize).max(1)
 }

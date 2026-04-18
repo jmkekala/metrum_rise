@@ -43,12 +43,12 @@ pub(super) fn save_world(
         params![
             usize_to_i64(terrain.width)?,
             usize_to_i64(terrain.height)?,
-            pack_f32_slice(&terrain.source_data)
+            pack_f32_slice(&terrain.clone_source_dense())
         ],
     )?;
 
     // Water
-    tx.execute("INSERT INTO water_state(width, height, depth_blob_f32_le, velocity_blob_f32_le, flux_blob_f32x4_le) VALUES (?1, ?2, ?3, ?4, ?5)", params![usize_to_i64(water.width)?, usize_to_i64(water.height)?, pack_f32_slice(&water.depth), pack_f32_slice(&water.velocity), pack_flux_slice(&water.flux)])?;
+    tx.execute("INSERT INTO water_state(width, height, depth_blob_f32_le, velocity_blob_f32_le, flux_blob_f32x4_le) VALUES (?1, ?2, ?3, ?4, ?5)", params![usize_to_i64(water.width)?, usize_to_i64(water.height)?, pack_f32_slice(&water.clone_depth_dense()), pack_f32_slice(&water.clone_velocity_dense()), pack_flux_slice(&water.clone_flux_dense())])?;
     let mut ws_stmt = tx.prepare(
         "INSERT INTO water_sources(grid_x, grid_y, rate_m_per_tick) VALUES (?1, ?2, ?3)",
     )?;
@@ -225,25 +225,38 @@ pub(super) fn load_terrain(conn: &Connection, config: &WorldConfig) -> SaveLoadR
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
     let (w, h) = (i64_to_usize(w_raw)?, i64_to_usize(h_raw)?);
-    if w != config.zone_grid_width() || h != config.zone_grid_height() {
+    if w != config.terrain_grid_width() || h != config.terrain_grid_height() {
         return Err(SaveLoadError::custom("terrain size mismatch"));
     }
-    let mut t = TerrainSystem::new(w, h);
-    t.source_data = unpack_f32_blob(&blob, w * h)?;
+    let mut t = TerrainSystem::from_world_config(config);
+    let source_dense = unpack_f32_blob(&blob, w * h)?;
+    t.replace_source_from_dense(&source_dense)
+        .map_err(SaveLoadError::custom)?;
     t.reset_visuals_from_source();
     Ok(t)
 }
 
-pub(super) fn load_water(conn: &Connection, ew: usize, eh: usize) -> SaveLoadResult<WaterSystem> {
+pub(super) fn load_water(
+    conn: &Connection,
+    config: &WorldConfig,
+    ew: usize,
+    eh: usize,
+) -> SaveLoadResult<WaterSystem> {
     let (w_raw, h_raw, db, vb, fb): (i64, i64, Vec<u8>, Vec<u8>, Vec<u8>) = conn.query_row("SELECT width, height, depth_blob_f32_le, velocity_blob_f32_le, flux_blob_f32x4_le FROM water_state LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?;
     let (w, h) = (i64_to_usize(w_raw)?, i64_to_usize(h_raw)?);
     if w != ew || h != eh {
         return Err(SaveLoadError::custom("water size mismatch"));
     }
-    let mut water = WaterSystem::new(w, h);
-    water.depth = unpack_f32_blob(&db, w * h)?;
-    water.velocity = unpack_f32_blob(&vb, w * h)?;
-    water.flux = unpack_flux_blob(&fb, w * h)?;
+    let mut water = WaterSystem::from_world_config(config);
+    water
+        .replace_depth_from_dense(&unpack_f32_blob(&db, w * h)?)
+        .map_err(SaveLoadError::custom)?;
+    water
+        .replace_velocity_from_dense(&unpack_f32_blob(&vb, w * h)?)
+        .map_err(SaveLoadError::custom)?;
+    water
+        .replace_flux_from_dense(&unpack_flux_blob(&fb, w * h)?)
+        .map_err(SaveLoadError::custom)?;
     let mut stmt =
         conn.prepare("SELECT grid_x, grid_y, rate_m_per_tick FROM water_sources ORDER BY rowid")?;
     let mut rows = stmt.query([])?;

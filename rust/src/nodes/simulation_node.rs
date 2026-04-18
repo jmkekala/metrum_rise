@@ -256,25 +256,31 @@ impl SimulationNode {
     /// Returns the raw heightmap data.
     #[func]
     pub fn get_heightmap_data(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(self.lock_core().heightmap.data.iter().cloned())
+        PackedFloat32Array::from_iter(self.lock_core().heightmap.clone_visual_dense())
     }
 
     /// Returns the raw water depth data.
     #[func]
     pub fn get_water_data(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(self.lock_core().watermap.depth.iter().cloned())
+        PackedFloat32Array::from_iter(self.lock_core().watermap.clone_depth_dense())
     }
 
     /// Returns the raw water velocity data.
     #[func]
     pub fn get_water_velocity_data(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(self.lock_core().watermap.velocity.iter().cloned())
+        PackedFloat32Array::from_iter(self.lock_core().watermap.clone_velocity_dense())
     }
 
     /// Returns the dimensions of the heightmap.
     #[func]
     pub fn get_heightmap_size(&self) -> Vector2 {
         self.get_heightmap_size_internal()
+    }
+
+    /// Returns the terrain world extent in current gameplay world units.
+    #[func]
+    pub fn get_terrain_world_size(&self) -> Vector2 {
+        self.lock_core().get_terrain_world_size_internal()
     }
 
     // ── Zoning ──
@@ -1261,15 +1267,12 @@ impl INode3D for SimulationNode {
             WorldConfig::gameplay_default()
         };
 
-        let w = config.zone_grid_width();
-        let h = config.zone_grid_height();
-
         let benchmark_mode = run_benchmark || generate_benchmark;
 
         let core = SimCore {
             time: TimeSystem::new(),
-            heightmap: TerrainSystem::new(w, h),
-            watermap: WaterSystem::new(w, h),
+            heightmap: TerrainSystem::from_world_config(&config),
+            watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
             transit_network: TransitNetwork::new(),
             zoning: ZoningSystem::new(&config),

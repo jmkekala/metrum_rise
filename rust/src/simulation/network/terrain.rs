@@ -17,12 +17,13 @@ pub fn flatten_terrain_for_network(
     output_heightmap: &mut [f32],
     map_size: Vector2,
 ) {
-    let half_size = (map_size - Vector2::new(1.0, 1.0)) * 0.5;
+    let half_size = map_size * 0.5;
     let width = terrain.width;
     let height = terrain.height;
+    let cell_size = terrain.cell_size_world_units();
 
     // ATOMIC BLENDING: Use the provided terrain as a stable reference.
-    let reference_heightmap = &terrain.data;
+    let reference_heightmap = terrain.clone_visual_dense();
     let mut min_dist_map = vec![f32::MAX; width * height];
 
     for edge in &graph.edges {
@@ -54,10 +55,14 @@ pub fn flatten_terrain_for_network(
             let outer_radius = road_half_width * 4.0;
 
             // BOUNDING BOX for this segment
-            let min_x = (p_start.x.min(p_end.x) + half_size.x - outer_radius).floor() as i32;
-            let max_x = (p_start.x.max(p_end.x) + half_size.x + outer_radius).ceil() as i32;
-            let min_z = (p_start.z.min(p_end.z) + half_size.y - outer_radius).floor() as i32;
-            let max_z = (p_start.z.max(p_end.z) + half_size.y + outer_radius).ceil() as i32;
+            let min_x = ((p_start.x.min(p_end.x) + half_size.x - outer_radius) / cell_size).floor()
+                as i32;
+            let max_x = ((p_start.x.max(p_end.x) + half_size.x + outer_radius) / cell_size).ceil()
+                as i32;
+            let min_z = ((p_start.z.min(p_end.z) + half_size.y - outer_radius) / cell_size).floor()
+                as i32;
+            let max_z = ((p_start.z.max(p_end.z) + half_size.y + outer_radius) / cell_size).ceil()
+                as i32;
 
             for nz in min_z..=max_z {
                 for nx in min_x..=max_x {
@@ -66,8 +71,8 @@ pub fn flatten_terrain_for_network(
                     }
                     let idx = nz as usize * width + nx as usize;
 
-                    let p_world =
-                        Vector3::new(nx as f32 - half_size.x, 0.0, nz as f32 - half_size.y);
+                    let (world_x, world_z) = terrain.grid_to_world_coords(nx as usize, nz as usize);
+                    let p_world = Vector3::new(world_x, 0.0, world_z);
                     let p0_flat = Vector3::new(p_start.x, 0.0, p_start.z);
                     let p1_flat = Vector3::new(p_end.x, 0.0, p_end.z);
                     let segment_flat_vec = p1_flat - p0_flat;

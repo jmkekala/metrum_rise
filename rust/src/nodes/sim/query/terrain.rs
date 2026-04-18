@@ -5,19 +5,20 @@ use crate::nodes::sim::core::SimCore;
 use godot::prelude::*;
 
 impl SimCore {
-    /// Returns the heightmap dimensions as a Godot Vector2.
+    /// Returns the heightmap dimensions in terrain samples as a Godot Vector2.
     pub fn get_heightmap_size_internal(&self) -> Vector2 {
         Vector2::new(self.heightmap.width as f32, self.heightmap.height as f32)
     }
 
+    /// Returns the terrain world extent in current gameplay world units.
+    pub fn get_terrain_world_size_internal(&self) -> Vector2 {
+        let (world_w, world_h) = self.heightmap.world_size();
+        Vector2::new(world_w, world_h)
+    }
+
     /// Returns the terrain height at the given world position.
     pub fn get_height_at_internal(&self, pos: Vector2) -> f32 {
-        let size = self.get_heightmap_size_internal();
-        let hw = (size.x - 1.0) * 0.5;
-        let hh = (size.y - 1.0) * 0.5;
-        let gx = pos.x + hw;
-        let gz = pos.y + hh;
-        self.heightmap.get_height_interpolated(gx, gz) * HEIGHT_SCALE
+        self.heightmap.sample_height_world(pos.x, pos.y) * HEIGHT_SCALE
     }
 
     /// Raycasts against the terrain heightmap.
