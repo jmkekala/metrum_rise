@@ -14,7 +14,7 @@ pub struct DesirabilitySystem {
 
 impl DesirabilitySystem {
     /// Creates a new desirability system derived from the world map configuration.
-    pub fn new(config: &crate::simulation::core::config::MapConfig) -> Self {
+    pub fn new(config: &crate::simulation::core::config::WorldConfig) -> Self {
         let (w, h) = config.get_env_grid_size();
         Self {
             grid: DataGrid::new(w, h, 0.0),

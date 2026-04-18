@@ -3,7 +3,7 @@ mod tests {
     use crate::assets::AssetManifest;
     use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::BuildingAllocator;
-    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -69,7 +69,7 @@ mod tests {
         let mut graph = RegionGraph::new();
         // long road with many segments (250m)
         let pts = vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(250.0, 0.0, 0.0)];
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
         net.add_road(
@@ -100,7 +100,7 @@ mod tests {
     fn test_shallow_angle_intersection() {
         let mut net = TransitNetwork::new();
         let mut graph = RegionGraph::new();
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
         // straight road
@@ -145,7 +145,7 @@ mod tests {
             Vector3::new(-100.0, 0.0, 0.0),
         ];
 
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
 
@@ -178,7 +178,7 @@ mod tests {
                 let _center =
                     graph.find_or_add_node(Vector3::new(0.0, 0.0, 0.0), 0.1, NodeType::Junction);
 
-                let config = MapConfig::default();
+                let config = WorldConfig::default();
                 let mut zoning = ZoningSystem::new(&config);
                 let mut allocator = BuildingAllocator::new();
 
@@ -226,7 +226,7 @@ mod tests {
     fn test_transit_graph_add_road() {
         let mut net = TransitNetwork::new();
         let mut graph = RegionGraph::new();
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
 
@@ -255,7 +255,7 @@ mod tests {
         use crate::simulation::network::topology::split_edge;
         let mut net = TransitNetwork::new();
         let mut graph = RegionGraph::new();
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
 

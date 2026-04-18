@@ -53,7 +53,7 @@ use godot::prelude::*;
 use crate::config;
 use crate::nodes::sim::core::{CityTreasury, RenderSnapshot, SimCommand, SimCore, run_sim_thread};
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::core::config::MapConfig;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::definitions::load_runtime_economy_tuning;
@@ -1229,7 +1229,6 @@ impl INode3D for SimulationNode {
         debug_log!("init", "Simulation Engine Initialized");
 
         let args = godot::classes::Os::singleton().get_cmdline_user_args();
-        let mut is_huge = false;
         let mut generate_benchmark = false;
         let mut run_benchmark = false;
         let mut asset_editor_mode = false;
@@ -1237,11 +1236,9 @@ impl INode3D for SimulationNode {
         for arg in args.as_slice() {
             match arg.to_string().as_str() {
                 "--huge-map" | "--benchmark" => {
-                    is_huge = true;
                     run_benchmark = true;
                 }
                 "--generate-benchmark" => {
-                    is_huge = true;
                     generate_benchmark = true;
                 }
                 "--asset-editor" => {
@@ -1258,17 +1255,11 @@ impl INode3D for SimulationNode {
             }
         }
 
-        let mut config = MapConfig::default();
-        if asset_editor_mode || economy_editor_mode {
-            config.width_m = 500.0;
-            config.height_m = 500.0;
-        } else if is_huge {
-            config.width_m = 20000.0;
-            config.height_m = 20000.0;
+        let config = if asset_editor_mode || economy_editor_mode {
+            WorldConfig::editor_sandbox()
         } else {
-            config.width_m = 10000.0;
-            config.height_m = 10000.0;
-        }
+            WorldConfig::gameplay_default()
+        };
 
         let w = config.zone_grid_width();
         let h = config.zone_grid_height();
@@ -1355,7 +1346,10 @@ impl INode3D for SimulationNode {
 
         // Asset editor mode: sandbox only — no simulation thread.
         if self.asset_editor_mode {
-            godot_print!("[asset-editor] sandbox ready — 500 m map, no simulation thread");
+            godot_print!(
+                "[asset-editor] sandbox ready — {:.0} m world, no simulation thread",
+                WorldConfig::EDITOR_SANDBOX_WIDTH_M
+            );
             debug_log!("asset-editor", "sandbox ready");
             return;
         }

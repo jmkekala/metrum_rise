@@ -8,7 +8,7 @@ extends Node3D
 ## `aabb` is the model-space AABB of the imported scene root.
 signal mesh_loaded(aabb: AABB)
 
-# Zone cell size in metres — must match the sandbox MapConfig (zone_cell_m = 10.0).
+# Zone cell size in metres — must match `WorldConfig::editor_sandbox()` (zone_cell_m = 10.0).
 const CELL_M := 10.0
 const ENTRANCE_SPHERE_RADIUS_M := 0.35
 

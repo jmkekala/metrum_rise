@@ -7,7 +7,7 @@
 mod tests {
     use crate::config;
     use crate::simulation::buildings::allocator::BuildingAllocator;
-    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::RegionGraph;
@@ -182,7 +182,7 @@ mod tests {
     ) -> (RegionGraph, NetworkMeshData, TerrainSystem) {
         let mut network = TransitNetwork::new();
         let mut graph = RegionGraph::new();
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
 

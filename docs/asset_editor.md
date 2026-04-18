@@ -57,7 +57,7 @@ Runtime shape:
 
 - Launch into a stripped-down sandbox scene.
 - No demographics, no active `AgentSystem`, no demand simulation, no immigration.
-- Small map config, for example `MapConfig::new(500.0, 500.0, 1.0, 10.0)`.
+- Small world sandbox, for example `WorldConfig::editor_sandbox()`.
 - A few preview templates:
   - Flat studio scene
   - Zoned roadside scene

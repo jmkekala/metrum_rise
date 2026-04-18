@@ -2,7 +2,7 @@
 
 use crate::nodes::sim::core::CityTreasury;
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::core::config::MapConfig;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::demand::DemandSystem;
@@ -35,7 +35,7 @@ use schema::*;
 
 /// View of the live simulation state for serialization.
 pub(crate) struct SaveGameView<'a> {
-    pub config: &'a MapConfig,
+    pub config: &'a WorldConfig,
     pub time: &'a TimeSystem,
     pub terrain: &'a TerrainSystem,
     pub water: &'a WaterSystem,
@@ -54,7 +54,7 @@ pub(crate) struct SaveGameView<'a> {
 
 /// Fully hydrated simulation state after loading from disk.
 pub(crate) struct LoadedSimulation {
-    pub config: MapConfig,
+    pub config: WorldConfig,
     pub time: TimeSystem,
     pub terrain: TerrainSystem,
     pub water: WaterSystem,
@@ -132,7 +132,17 @@ pub(crate) fn save_to_sqlite(path: &Path, view: SaveGameView<'_>) -> SaveLoadRes
             env!("CARGO_PKG_VERSION")
         ],
     )?;
-    tx.execute("INSERT INTO map_config(width_m, height_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4)", params![view.config.width_m, view.config.height_m, view.config.env_cell_m, view.config.zone_cell_m])?;
+    tx.execute(
+        "INSERT INTO world_config(width_m, height_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            view.config.width_m,
+            view.config.height_m,
+            view.config.terrain_chunk_m,
+            view.config.terrain_base_elevation_m,
+            view.config.env_cell_m,
+            view.config.zone_cell_m
+        ],
+    )?;
     tx.execute("INSERT INTO time_state(time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![view.time.time_elapsed, view.time.speed_multiplier, i64::from(view.time.day_index), i64::from(view.time.minute_of_day), view.time.seconds_per_day, view.agents.sim_time])?;
     tx.execute(
         "INSERT INTO city_treasury(balance, lifetime_build_cost, last_daily_upkeep) VALUES (?1, ?2, ?3)",
@@ -176,9 +186,14 @@ pub(crate) fn load_from_sqlite(
         return Err(SaveLoadError::custom("version mismatch"));
     }
     let config = conn.query_row(
-        "SELECT width_m, height_m, env_cell_m, zone_cell_m FROM map_config LIMIT 1",
+        "SELECT width_m, height_m, terrain_chunk_m, terrain_base_elevation_m, env_cell_m, zone_cell_m FROM world_config LIMIT 1",
         [],
-        |r| Ok(MapConfig::new(r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r| {
+            Ok(
+                WorldConfig::new(r.get(0)?, r.get(1)?, r.get(4)?, r.get(5)?)
+                    .with_chunking(r.get(2)?, r.get(3)?),
+            )
+        },
     )?;
     let time_r: (f64, f32, i64, i64, f64, f32) = conn.query_row("SELECT time_elapsed, speed_multiplier, day_index, minute_of_day, seconds_per_day, agent_sim_time FROM time_state LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))?;
     let time = TimeSystem {

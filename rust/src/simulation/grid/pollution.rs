@@ -18,7 +18,7 @@ pub struct PollutionSystem {
 
 impl PollutionSystem {
     /// Creates a new pollution system derived from the world map configuration.
-    pub fn new(config: &crate::simulation::core::config::MapConfig) -> Self {
+    pub fn new(config: &crate::simulation::core::config::WorldConfig) -> Self {
         let (w, h) = config.get_env_grid_size();
         Self {
             grid: DataGrid::new(w, h, 0.0),
@@ -30,7 +30,7 @@ impl PollutionSystem {
     pub fn tick(
         &mut self,
         allocator: &BuildingAllocator,
-        config: &crate::simulation::core::config::MapConfig,
+        config: &crate::simulation::core::config::WorldConfig,
     ) {
         // Swap buffers: current grid moves to swap (source),
         // swap (old data) moves to grid (target for this tick)
@@ -109,7 +109,7 @@ mod tests {
     use crate::assets::AssetManifest;
     use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::grid::zoning::ZoneType;
     use godot::prelude::Vector2;
 
@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn test_pollution_diffusion_and_decay() {
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut system = PollutionSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
         let industrial_asset = register_test_asset(
@@ -177,7 +177,7 @@ mod tests {
         );
 
         // 1. Add one industrial source at world (0,0)
-        // Default MapConfig is 20km x 20km, so (0,0) is at the center of the grid.
+        // Default gameplay WorldConfig is 20km x 20km, so (0,0) is at the center of the grid.
         let source_building = Building {
             center_x: 0.0,
             center_y: 0.0,

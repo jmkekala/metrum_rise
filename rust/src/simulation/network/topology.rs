@@ -938,7 +938,7 @@ mod tests {
     use crate::assets::AssetManifest;
     use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::BuildingAllocator;
-    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::grid::zoning::ZoningSystem;
     use crate::simulation::network::TransitNetwork;
     use godot::prelude::Vector3;
@@ -998,7 +998,7 @@ mod tests {
     fn test_topology_t_junction() {
         let mut net = TransitNetwork::new();
         let mut graph = RegionGraph::new();
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
         // straight road
@@ -1027,7 +1027,7 @@ mod tests {
     fn test_split_edge_recalculates_building_frontage() {
         let mut net = TransitNetwork::new();
         let mut graph = RegionGraph::new();
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut zoning = ZoningSystem::new(&config);
         let mut allocator = BuildingAllocator::new();
 

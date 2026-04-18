@@ -462,7 +462,7 @@ impl AgentSystem {
     pub fn daily_update(
         &mut self,
         pollution: &PollutionSystem,
-        config: &crate::simulation::core::config::MapConfig,
+        config: &crate::simulation::core::config::WorldConfig,
     ) {
         let w = pollution.grid.width as f32;
         let h = pollution.grid.height as f32;

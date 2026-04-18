@@ -621,7 +621,7 @@ impl SimCore {
 mod tests {
     use super::SimCore;
     use crate::simulation::buildings::allocator::BuildingAllocator;
-    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::core::time::TimeSystem;
     use crate::simulation::economy::agents::AgentSystem;
     use crate::simulation::economy::demand::DemandSystem;
@@ -643,7 +643,7 @@ mod tests {
 
     fn test_core() -> SimCore {
         use crate::nodes::sim::core::CityTreasury;
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let w = config.zone_grid_width();
         let h = config.zone_grid_height();
         SimCore {

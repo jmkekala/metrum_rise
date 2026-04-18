@@ -1,30 +1,95 @@
-//! Global map configuration and grid dimension calculations.
+//! World configuration and dense-grid sizing helpers.
+//!
+//! `WorldConfig` is the chunk-aware replacement for the legacy map-size config.
+//! It owns authoritative world extents plus terrain chunk metadata even though
+//! some current runtime systems still derive dense helper grids from it.
 
-/// Configuration for the simulation's spatial dimensions and grid resolutions.
+/// Chunk-aware world configuration shared by gameplay, saves, and editor sandboxes.
 ///
-/// This struct replaces hardcoded constants from `config.rs` with runtime values,
-/// allowing for different map sizes (e.g. standard 10km vs huge 20km).
-#[derive(Clone, Copy, Debug)]
-pub struct MapConfig {
-    /// Total physical width of the map in metres.
+/// The world extent is defined by physical dimensions plus terrain chunk metadata.
+/// Some current systems still consume dense whole-world helper grids; those
+/// compatibility helpers remain here until terrain and water storage become sparse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldConfig {
+    /// Total physical width of the authored world in metres.
     pub width_m: f32,
-    /// Total physical height of the map in metres.
+    /// Total physical height of the authored world in metres.
     pub height_m: f32,
+    /// Canonical authored terrain chunk span in metres.
+    pub terrain_chunk_m: f32,
+    /// Default base terrain elevation for untouched blank-world chunks.
+    pub terrain_base_elevation_m: f32,
     /// Physical size of one environmental grid cell (pollution, noise, desirability) in metres.
     pub env_cell_m: f32,
     /// Physical size of one zoning grid cell in metres.
     pub zone_cell_m: f32,
 }
 
-impl MapConfig {
-    /// Creates a new configuration with the specified dimensions.
+impl WorldConfig {
+    /// Default canonical terrain chunk size for blank authored worlds.
+    pub const DEFAULT_TERRAIN_CHUNK_M: f32 = 512.0;
+    /// Default base elevation for untouched blank authored worlds.
+    pub const DEFAULT_TERRAIN_BASE_ELEVATION_M: f32 = 0.0;
+    /// Default gameplay fallback world width when no authored world is loaded.
+    pub const DEFAULT_GAMEPLAY_WORLD_WIDTH_M: f32 = 20_000.0;
+    /// Default gameplay fallback world height when no authored world is loaded.
+    pub const DEFAULT_GAMEPLAY_WORLD_HEIGHT_M: f32 = 20_000.0;
+    /// Small editor sandbox width used by non-gameplay tool scenes.
+    pub const EDITOR_SANDBOX_WIDTH_M: f32 = 500.0;
+    /// Small editor sandbox height used by non-gameplay tool scenes.
+    pub const EDITOR_SANDBOX_HEIGHT_M: f32 = 500.0;
+
+    /// Creates a new world configuration with default chunk metadata.
     pub fn new(width_m: f32, height_m: f32, env_cell_m: f32, zone_cell_m: f32) -> Self {
         Self {
             width_m,
             height_m,
+            terrain_chunk_m: Self::DEFAULT_TERRAIN_CHUNK_M,
+            terrain_base_elevation_m: Self::DEFAULT_TERRAIN_BASE_ELEVATION_M,
             env_cell_m,
             zone_cell_m,
         }
+    }
+
+    /// Overrides the terrain chunk metadata while keeping the current dense-grid sizing.
+    pub fn with_chunking(
+        mut self,
+        terrain_chunk_m: f32,
+        terrain_base_elevation_m: f32,
+    ) -> Self {
+        self.terrain_chunk_m = terrain_chunk_m;
+        self.terrain_base_elevation_m = terrain_base_elevation_m;
+        self
+    }
+
+    /// Returns the fallback gameplay world used before authored-world selection exists.
+    pub fn gameplay_default() -> Self {
+        Self::new(
+            Self::DEFAULT_GAMEPLAY_WORLD_WIDTH_M,
+            Self::DEFAULT_GAMEPLAY_WORLD_HEIGHT_M,
+            40.0,
+            10.0,
+        )
+    }
+
+    /// Returns the stripped-down editor sandbox world used by tool-only scenes.
+    pub fn editor_sandbox() -> Self {
+        Self::new(
+            Self::EDITOR_SANDBOX_WIDTH_M,
+            Self::EDITOR_SANDBOX_HEIGHT_M,
+            40.0,
+            10.0,
+        )
+    }
+
+    /// Returns the number of authored terrain chunks along the X axis.
+    pub fn terrain_chunk_columns(&self) -> usize {
+        (self.width_m / self.terrain_chunk_m).ceil() as usize
+    }
+
+    /// Returns the number of authored terrain chunks along the Y axis.
+    pub fn terrain_chunk_rows(&self) -> usize {
+        (self.height_m / self.terrain_chunk_m).ceil() as usize
     }
 
     /// Returns the number of cells in the zoning grid along the X axis.
@@ -71,14 +136,9 @@ impl MapConfig {
     }
 }
 
-impl Default for MapConfig {
-    /// Default 20km x 20km configuration with 40m env cells and 10m zoning cells.
+impl Default for WorldConfig {
+    /// Returns the default chunk-aware gameplay fallback world.
     fn default() -> Self {
-        Self {
-            width_m: 20000.0,
-            height_m: 20000.0,
-            env_cell_m: 40.0,
-            zone_cell_m: 10.0,
-        }
+        Self::gameplay_default()
     }
 }

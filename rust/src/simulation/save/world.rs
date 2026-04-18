@@ -2,7 +2,7 @@
 
 use crate::simulation::buildings::allocator::resolve_building_economy_profile_binding;
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-use crate::simulation::core::config::MapConfig;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::definitions::load_runtime_economy_catalog;
 use crate::simulation::economy::demand::DemandSystem;
 use crate::simulation::economy::households::{Household, HouseholdSystem};
@@ -218,7 +218,7 @@ pub(super) fn save_world(
     Ok(())
 }
 
-pub(super) fn load_terrain(conn: &Connection, config: &MapConfig) -> SaveLoadResult<TerrainSystem> {
+pub(super) fn load_terrain(conn: &Connection, config: &WorldConfig) -> SaveLoadResult<TerrainSystem> {
     let (w_raw, h_raw, blob): (i64, i64, Vec<u8>) = conn.query_row(
         "SELECT width, height, height_blob_f32_le FROM terrain_state LIMIT 1",
         [],
@@ -257,7 +257,7 @@ pub(super) fn load_water(conn: &Connection, ew: usize, eh: usize) -> SaveLoadRes
     Ok(water)
 }
 
-pub(super) fn load_zoning(conn: &Connection, config: &MapConfig) -> SaveLoadResult<ZoningSystem> {
+pub(super) fn load_zoning(conn: &Connection, config: &WorldConfig) -> SaveLoadResult<ZoningSystem> {
     let mut zoning = ZoningSystem::new(config);
     // Try the current world-grid format first; fall back to empty grid if the table is absent.
     let result: rusqlite::Result<(i64, i64, Vec<u8>)> = conn.query_row(
@@ -448,11 +448,11 @@ pub(super) fn rebuild_distance_to_road(zoning: &mut ZoningSystem, graph: &Region
 }
 
 pub(super) trait GridSystemLoader: Sized {
-    fn new_with_config(config: &MapConfig) -> Self;
+    fn new_with_config(config: &WorldConfig) -> Self;
     fn grid_mut(&mut self) -> &mut DataGrid<f32>;
 }
 impl GridSystemLoader for PollutionSystem {
-    fn new_with_config(config: &MapConfig) -> Self {
+    fn new_with_config(config: &WorldConfig) -> Self {
         Self::new(config)
     }
     fn grid_mut(&mut self) -> &mut DataGrid<f32> {
@@ -460,7 +460,7 @@ impl GridSystemLoader for PollutionSystem {
     }
 }
 impl GridSystemLoader for NoiseSystem {
-    fn new_with_config(config: &MapConfig) -> Self {
+    fn new_with_config(config: &WorldConfig) -> Self {
         Self::new(config)
     }
     fn grid_mut(&mut self) -> &mut DataGrid<f32> {
@@ -470,7 +470,7 @@ impl GridSystemLoader for NoiseSystem {
 
 pub(super) fn load_grid_system<T: GridSystemLoader>(
     conn: &Connection,
-    config: &MapConfig,
+    config: &WorldConfig,
     table: &str,
 ) -> SaveLoadResult<T> {
     let raw: (i64, i64, Vec<u8>) = conn.query_row(

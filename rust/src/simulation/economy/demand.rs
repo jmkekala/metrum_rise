@@ -1726,7 +1726,7 @@ mod tests {
         Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass,
     };
     use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::economy::households::{
         Household, HouseholdSystem, REPLENISHMENT_STABLE,
     };
@@ -1929,7 +1929,7 @@ mod tests {
     }
 
     fn empty_zoning() -> ZoningSystem {
-        ZoningSystem::new(&MapConfig::default())
+        ZoningSystem::new(&WorldConfig::default())
     }
 
     #[test]

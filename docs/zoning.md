@@ -31,7 +31,7 @@ pub struct ZoningSystem {
     pub occupied:         DataGrid<bool>,       // 2000×2000, building footprints
     pub distance_to_road: DataGrid<u8>,         // 2000×2000, metres to nearest road (clamped 255)
     pub no_build_mask:    DataGrid<bool>,       // 2000×2000, no-build frontage suppression
-    pub config:           MapConfig,
+    pub config:           WorldConfig,
 }
 ```
 

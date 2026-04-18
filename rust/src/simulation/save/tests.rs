@@ -2,7 +2,7 @@ use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-use crate::simulation::core::config::MapConfig;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::agents::{ACCESS_PLAN_VALID, MODE_CAR, MODE_WALK, TRANSIT_NETWORK};
@@ -104,7 +104,7 @@ fn zone_at_world(zoning: &ZoningSystem, x: f32, z: f32) -> ZoneType {
 
 #[test]
 fn sqlite_round_trip_preserves_authoritative_state() {
-    let config = MapConfig::new(100.0, 100.0, 10.0, 10.0);
+    let config = WorldConfig::new(100.0, 100.0, 10.0, 10.0);
     let mut time = TimeSystem::new();
     time.speed_multiplier = 2.0;
     time.time_elapsed = 1.25;
@@ -356,6 +356,12 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     fs::remove_file(&path).ok();
 
     assert_eq!(loaded.config.width_m, config.width_m);
+    assert_eq!(loaded.config.height_m, config.height_m);
+    assert_eq!(loaded.config.terrain_chunk_m, config.terrain_chunk_m);
+    assert_eq!(
+        loaded.config.terrain_base_elevation_m,
+        config.terrain_base_elevation_m
+    );
     assert_eq!(loaded.time.day_index, time.day_index);
     assert_eq!(loaded.time.minute_of_day, time.minute_of_day);
     assert_eq!(loaded.terrain.source_data, terrain.source_data);

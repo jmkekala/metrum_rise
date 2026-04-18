@@ -1,8 +1,8 @@
 use super::*;
-use crate::simulation::core::config::MapConfig;
+use crate::simulation::core::config::WorldConfig;
 
 fn make_zoning() -> ZoningSystem {
-    ZoningSystem::new(&MapConfig::default())
+    ZoningSystem::new(&WorldConfig::default())
 }
 
 fn paint_zone_rect(zoning: &mut ZoningSystem, zone: ZoneType, x0: f32, z0: f32, x1: f32, z1: f32) {
@@ -87,8 +87,8 @@ fn test_occupied_rect_mark_and_check() {
 #[test]
 fn test_texture_data_length() {
     let z = make_zoning();
-    let w = MapConfig::default().zone_grid_width();
-    let h = MapConfig::default().zone_grid_height();
+    let w = WorldConfig::default().zone_grid_width();
+    let h = WorldConfig::default().zone_grid_height();
     assert_eq!(z.get_zone_profile_texture_data_rg8().len(), w * h * 2);
     assert_eq!(z.get_occupied_texture_data().len(), w * h);
     assert_eq!(z.get_distance_texture_data().len(), w * h);

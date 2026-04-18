@@ -3,7 +3,7 @@ use godot::prelude::*;
 use metrum_rise::assets::AssetManifest;
 use metrum_rise::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, ZoneClass};
 use metrum_rise::simulation::buildings::allocator::BuildingAllocator;
-use metrum_rise::simulation::core::config::MapConfig;
+use metrum_rise::simulation::core::config::WorldConfig;
 use metrum_rise::simulation::economy::agents::data::Agent;
 use metrum_rise::simulation::economy::agents::{
     ACCESS_PLAN_VALID, AgentSystem, MODE_CAR, TRANSIT_ACCESS_EGRESS, TRANSIT_ACCESS_INGRESS,
@@ -281,7 +281,7 @@ fn build_access_shared() -> AccessSharedSetup {
     let edge_idx = graph.add_edge(create_access_edge(node_a, node_b));
     graph.rebuild_adjacency_list();
 
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     zoning.set_zone_rect(-50.0, -50.0, 550.0, 50.0, ZoneType::Commercial);
     zoning.update_distance_to_road(&graph);

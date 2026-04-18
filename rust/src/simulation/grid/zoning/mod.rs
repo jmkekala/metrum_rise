@@ -6,7 +6,7 @@
 //! but legality now reads the profile-derived zone family and density from the global painted grid
 //! rather than from edge-local cells.
 
-use crate::simulation::core::config::MapConfig;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::grid::data_grid::DataGrid;
 use godot::prelude::Vector2;
 use rayon::prelude::*;
@@ -83,13 +83,13 @@ pub struct ZoningSystem {
     /// True for cells within building-spawn depth of a `no_building_spawn` edge.
     /// The shader suppresses zone tint here so the player reads no-build flanks as unbuildable.
     pub no_build_mask: DataGrid<bool>,
-    /// Map configuration (dimensions, cell sizes).
-    pub config: MapConfig,
+    /// World configuration (extent, chunk metadata, cell sizes).
+    pub config: WorldConfig,
 }
 
 impl ZoningSystem {
     /// Creates a new, empty zoning system sized to the map in `config`.
-    pub fn new(config: &MapConfig) -> Self {
+    pub fn new(config: &WorldConfig) -> Self {
         let w = config.zone_grid_width();
         let h = config.zone_grid_height();
         let profiles = load_builtin_profile_registry()

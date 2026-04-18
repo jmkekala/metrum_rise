@@ -19,7 +19,7 @@ pub struct NoiseSystem {
 
 impl NoiseSystem {
     /// Creates a new noise system for the given map dimensions.
-    pub fn new(config: &crate::simulation::core::config::MapConfig) -> Self {
+    pub fn new(config: &crate::simulation::core::config::WorldConfig) -> Self {
         let (w, h) = config.get_env_grid_size();
         Self {
             grid: DataGrid::new(w, h, 0.0),
@@ -32,7 +32,7 @@ impl NoiseSystem {
         &mut self,
         allocator: &BuildingAllocator,
         graph: &RegionGraph,
-        config: &crate::simulation::core::config::MapConfig,
+        config: &crate::simulation::core::config::WorldConfig,
     ) {
         std::mem::swap(&mut self.grid, &mut self.swap);
         self.grid.data.fill(0.0);
@@ -131,14 +131,14 @@ impl NoiseSystem {
 mod tests {
     use super::*;
     use crate::simulation::buildings::allocator::BuildingAllocator;
-    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::network::graph::RegionGraph;
     use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
     use godot::prelude::Vector3;
 
     #[test]
     fn test_noise_emission_and_diffusion() {
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut noise = NoiseSystem::new(&config);
         let allocator = BuildingAllocator::new();
         let mut graph = RegionGraph::new();
@@ -223,7 +223,7 @@ mod tests {
 
     #[test]
     fn test_noise_speed_sensitivity() {
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut noise_low = NoiseSystem::new(&config);
         let mut noise_high = NoiseSystem::new(&config);
         let allocator = BuildingAllocator::new();

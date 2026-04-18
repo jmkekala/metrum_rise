@@ -2,7 +2,7 @@ use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
 use crate::simulation::buildings::allocator::{Building, BuildingAllocator};
-use crate::simulation::core::config::MapConfig;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -888,7 +888,7 @@ fn test_border_spawn_movement() {
     let mut graph = RegionGraph::new();
     let n1 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Border);
     let n0 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-    let mut zoning = ZoningSystem::new(&MapConfig::default());
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
     let mut allocator = BuildingAllocator::new();
     let asset_id = register_test_asset(
         &mut allocator,
@@ -937,7 +937,7 @@ fn test_pedestrian_crosses_junction() {
     let n0 = graph.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
     let _n1 = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
     let n2 = graph.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
-    let mut zoning = ZoningSystem::new(&MapConfig::default());
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
     let mut allocator = BuildingAllocator::new();
     network.add_road(
         &mut graph,
@@ -1006,7 +1006,7 @@ fn test_pedestrian_crosses_junction() {
 fn setup_straight_road() -> (TransitNetwork, RegionGraph, usize, usize) {
     let mut network = TransitNetwork::new();
     let mut graph = RegionGraph::new();
-    let mut zoning = ZoningSystem::new(&MapConfig::default());
+    let mut zoning = ZoningSystem::new(&WorldConfig::default());
     let mut allocator = BuildingAllocator::new();
     network.add_road(
         &mut graph,

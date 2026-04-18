@@ -3,7 +3,7 @@ mod tests {
     use crate::assets::AssetManifest;
     use crate::assets::asset::{BuildingData, LodEntry, PlacementMode, ZoneClass};
     use crate::simulation::buildings::allocator::BuildingAllocator;
-    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::economy::agents::AgentSystem;
     use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
     use crate::simulation::network::TransitNetwork;
@@ -69,7 +69,7 @@ mod tests {
         let mut network = TransitNetwork::new();
         let mut graph = RegionGraph::new();
         let mut agents = AgentSystem::new();
-        let config = MapConfig::default();
+        let config = WorldConfig::default();
         let mut allocator = BuildingAllocator::new();
         let mut zoning = ZoningSystem::new(&config);
 

@@ -13,7 +13,7 @@ use crate::debug_log;
 use godot::prelude::{Vector3, godot_error};
 
 use crate::simulation::buildings::allocator::BuildingAllocator;
-use crate::simulation::core::config::MapConfig;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
 use crate::simulation::economy::agents::{
     AgentSystem, MODE_CAR, TRANSIT_IN_BUILDING, transit_is_visible,
@@ -137,8 +137,8 @@ pub struct SimCore {
     pub households: HouseholdSystem,
     /// Active building-level freight reservations and delayed deliveries.
     pub logistics: ShipmentSystem,
-    /// Map configuration (dimensions, cell sizes).
-    pub config: MapConfig,
+    /// World configuration (extent, chunk metadata, cell sizes).
+    pub config: WorldConfig,
     /// City-level fiscal ledger tracking infrastructure build cost and daily upkeep.
     pub treasury: CityTreasury,
     /// Undo history stack — kept in SimCore so all mutations are co-located.

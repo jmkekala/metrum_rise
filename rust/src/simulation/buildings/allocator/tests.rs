@@ -3,7 +3,7 @@
 use super::*;
 use crate::assets::AssetManifest;
 use crate::assets::asset::{Anchor, AnchorType, BuildingData, LodEntry, PlacementMode, ZoneClass};
-use crate::simulation::core::config::MapConfig;
+use crate::simulation::core::config::WorldConfig;
 use crate::simulation::economy::agents::AgentSystem;
 use crate::simulation::economy::households::HouseholdSystem;
 use crate::simulation::economy::logistics::ShipmentSystem;
@@ -222,7 +222,7 @@ fn setup_startup_spawn_city_for_rezoning() -> (
     );
     register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
 
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
@@ -542,7 +542,7 @@ fn test_tick_does_not_auto_spawn_private_buildings_from_zones() {
         ZoneClass::Residential,
     );
 
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
@@ -598,7 +598,7 @@ fn test_allocator_tick_does_not_place_founding_buildings() {
         ZoneClass::Residential,
     );
     register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
@@ -658,7 +658,7 @@ fn test_startup_demand_residential_family_selection_uses_strip_hash_order() {
     );
     register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
 
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
@@ -738,7 +738,7 @@ fn test_startup_demand_residential_variant_selection_uses_site_hash() {
     );
     register_test_asset(&mut allocator, "base", "b.com.shop", ZoneClass::Commercial);
 
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
@@ -928,7 +928,7 @@ fn test_rebuild_entrance_cache_derives_anchor_and_lane_access() {
         ZoneClass::Residential,
     );
 
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -1046,7 +1046,7 @@ fn test_rebuild_entrance_cache_uses_authored_anchor_meters_without_preview_scale
     };
     allocator.registry.register("base", manifest, String::new());
 
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -1120,7 +1120,7 @@ fn test_building_removal_clears_zoning_occupancy() {
         "b.res.house",
         ZoneClass::Residential,
     );
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
@@ -1216,7 +1216,7 @@ fn test_building_removal_clears_zoning_occupancy() {
 
 #[test]
 fn test_immigration_claims_vacant_home() {
-    use crate::simulation::core::config::MapConfig;
+    use crate::simulation::core::config::WorldConfig;
     use crate::simulation::economy::agents::AgentSystem;
     use crate::simulation::grid::zoning::{ZoneType, ZoningSystem};
     use crate::simulation::network::TransitNetwork;
@@ -1230,7 +1230,7 @@ fn test_immigration_claims_vacant_home() {
         "b.res.house",
         ZoneClass::Residential,
     );
-    let map_cfg = MapConfig::default();
+    let map_cfg = WorldConfig::default();
     let mut zoning = ZoningSystem::new(&map_cfg);
     let mut agents = AgentSystem::new();
     let mut households = HouseholdSystem::new();
@@ -1356,7 +1356,7 @@ fn test_startup_immigration_floor_avoids_zero_rounding() {
     let mut households = HouseholdSystem::new();
     let mut graph = RegionGraph::new();
 
-    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&MapConfig::default());
+    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&WorldConfig::default());
     let mut network = crate::simulation::network::TransitNetwork::new();
     network.add_road(
         &mut graph,
@@ -1479,7 +1479,7 @@ fn test_demand_building_spawn_plan_executes_from_daily_budget() {
         "b.res.house",
         ZoneClass::Residential,
     );
-    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&MapConfig::default());
+    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&WorldConfig::default());
     let mut graph = RegionGraph::new();
     let mut network = crate::simulation::network::TransitNetwork::new();
     let mut agents = AgentSystem::new();
@@ -1548,7 +1548,7 @@ fn test_execute_demand_building_actions_applies_despawn_downgrade_and_upgrade() 
         Some("res_family"),
         2,
     );
-    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&MapConfig::default());
+    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&WorldConfig::default());
     let mut graph = RegionGraph::new();
     let mut network = crate::simulation::network::TransitNetwork::new();
     let mut agents = AgentSystem::new();

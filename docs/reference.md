@@ -12,8 +12,9 @@ Terminology note: this file mirrors current code and API names on purpose. When 
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| City tile size | Player-configurable | Default `20 km × 20 km`, defined by `MapConfig`. |
-| Zoning cell | `10 m × 10 m` (`zone_cell_m`) | Configurable via `MapConfig`. |
+| World extent | Player-configurable | Fallback gameplay world is `20 km × 20 km`; authored blank worlds can be larger. |
+| Terrain chunk | `512 m` (`terrain_chunk_m`) | Canonical authored terrain chunk size in `WorldConfig`. |
+| Zoning cell | `10 m × 10 m` (`zone_cell_m`) | Configurable via `WorldConfig`. |
 | World-space zoning grid (default map) | `2000 × 2000` | Derived from `width_m / zone_cell_m` and `height_m / zone_cell_m`. |
 | Building footprint in zoning cells | Asset-authored | `lot_width_cells × lot_depth_cells`; authored building footprint, not a cadastral parcel model. |
 | Reference zoning depth | `12` cells | `DEFAULT_ZONING_DEPTH`; tooling / fade heuristic only, not a hard cap. |
@@ -23,7 +24,7 @@ Terminology note: this file mirrors current code and API names on purpose. When 
 | Edge spatial query index | `RTree` | `spatial_edge_rt` handles edge AABB lookup. |
 | Node lookup grid | `16 m` chunks | `spatial_node_grid` for nearest-node queries. |
 | Routing / CCH dirty chunk | `512 m` | `RegionGraph::CHUNK_SIZE`; used for chunk tagging and edge-to-chunk overlap. |
-| Environmental grid cell | `40 m` (`env_cell_m`) | Configurable via `MapConfig`. |
+| Environmental grid cell | `40 m` (`env_cell_m`) | Configurable via `WorldConfig`. |
 | Environmental grid (default map) | `500 × 500` | Derived from map size and `env_cell_m`. |
 
 ### Movement Speeds
