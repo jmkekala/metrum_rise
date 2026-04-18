@@ -1157,12 +1157,6 @@ impl SimulationNode {
         }
     }
 
-    /// Loads heightmap from a PackedFloat32Array.
-    #[func]
-    pub fn load_heightmap_data(&mut self, data: PackedFloat32Array) {
-        self.lock_core().load_heightmap_data_internal(data);
-    }
-
     /// Saves the current simulation into a single SQLite snapshot file.
     #[func]
     pub fn save_game(&self, path: GString) -> bool {

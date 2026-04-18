@@ -131,7 +131,7 @@ Runtime-spawned tools:
 |--------|---------------------------------|
 | `input_manager.gd` | `undo_action()`, `save_game()`, `load_game()`, `set_simulation_speed()` |
 | `main_ui.gd` | `get_no_building_spawn()`, `get_edge_class()`, `get_edge_geometry_3d()`, `get_height_at()` |
-| `terrain.gd` | `get_heightmap_size()`, `get_heightmap_data()`, `intersect_terrain()`, `sculpt_terrain()`, `flatten_terrain_for_roads()`, `load_heightmap_data()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
+| `terrain.gd` | `get_heightmap_size()`, `get_heightmap_data()`, `intersect_terrain()`, `sculpt_terrain()`, `flatten_terrain_for_roads()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
 | `water.gd` | `get_heightmap_size()`, `get_water_data()`, `get_water_velocity_data()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
 | `agents.gd` | `get_agent_cull_far_m()`, `get_agent_cull_padding_m()`, `set_camera_aabb()`, `get_agent_transforms()`, `get_car_transforms()`, `get_agent_paths_debug()` |
 | `asset_editor.gd` | `is_asset_editor_mode()`, `load_asset_packs()`, `get_registered_asset_ids()`, `get_pack_manifest_json()`, `get_asset_manifest_json()`, `load_economy_project()`, `validate_and_export_asset()` |

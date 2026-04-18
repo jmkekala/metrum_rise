@@ -1,7 +1,7 @@
 ## Terrain mesh renderer and editor — displays the heightmap and handles sculpting input.
 ##
 ## Rust methods called: get_heightmap_size(), get_heightmap_data(), sculpt_terrain(),
-##   flatten_terrain_for_roads(), load_heightmap_data(), is_terrain_dirty(), clear_terrain_dirty(),
+##   flatten_terrain_for_roads(), is_terrain_dirty(), clear_terrain_dirty(),
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data()
 ## The heightmap arrives as a flat PackedFloat32Array in row-major order (width × height f32 values).
 ## Overlay textures (pollution/noise/desirability) arrive as RGBA8 PackedByteArray and are
@@ -137,48 +137,3 @@ func sculpt_at_mouse(delta):
 		var road_tool = get_node("../RoadTool")
 		if road_tool:
 			road_tool.update_main_mesh()
-
-func export_heightmap(path: String):
-	print("Exporting heightmap to: ", ProjectSettings.globalize_path(path))
-	# height_image is FORMAT_RF (float32). We need normalized 8-bit or 16-bit for PNG.
-	var export_img = Image.create(height_image.get_width(), height_image.get_height(), false, Image.FORMAT_L8)
-	
-	var data = simulation_node.get_heightmap_data()
-	for i in range(data.size()):
-		var val = clamp(data[i] / 5.0, 0.0, 1.0) # Normalize 0-5m to 0-1
-		var y = i / height_image.get_width()
-		var x = i % height_image.get_width()
-		export_img.set_pixel(x, y, Color(val, val, val, 1.0))
-	
-	export_img.save_png(path)
-
-func import_heightmap(path: String):
-	if not FileAccess.file_exists(path):
-		print("Export file not found!")
-		return
-		
-	print("Importing heightmap from: ", ProjectSettings.globalize_path(path))
-	var img = Image.load_from_file(path)
-	img.convert(Image.FORMAT_L8)
-	
-	var w = img.get_width()
-	var h = img.get_height()
-	var size = simulation_node.get_heightmap_size()
-	
-	if w != int(size.x) or h != int(size.y):
-		print("Import size mismatch!")
-		return
-		
-	var data = PackedFloat32Array()
-	data.resize(w * h)
-	
-	for y in range(h):
-		for x in range(w):
-			var pixel = img.get_pixel(x, y)
-			data[y * w + x] = pixel.r * 5.0 # Denormalize
-			
-	simulation_node.load_heightmap_data(data)
-	
-	var road_tool = get_node("../RoadTool")
-	if road_tool:
-		road_tool.update_main_mesh()

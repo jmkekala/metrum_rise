@@ -461,17 +461,6 @@ impl SimCore {
         self.terrain_dirty = true;
     }
 
-    /// Loads raw heightmap data into the simulation.
-    pub fn load_heightmap_data_internal(&mut self, data: PackedFloat32Array) {
-        if (data.len() as usize) == self.heightmap.width * self.heightmap.height {
-            self.heightmap.data = data.to_vec();
-            self.transit_network
-                .sync_to_terrain(&mut self.region_graph, &self.heightmap);
-            self.flatten_terrain_for_roads_internal();
-            self.terrain_dirty = true;
-        }
-    }
-
     /// Returns the ID of the nearest node to `pos` if `pos` is within
     /// [`config::BORDER_DETECTION_THRESHOLD`] metres of any map edge, or `-1` if not.
     ///

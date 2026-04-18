@@ -103,12 +103,9 @@ func _unhandled_input(event):
 					_handle_save_game()
 			KEY_P: _toggle_agent_paths()
 			KEY_SPACE: _toggle_pause()
-			KEY_ENTER: _handle_export()
 			KEY_L:
 				if event.ctrl_pressed:
 					_handle_load_game()
-				else:
-					_handle_import()
 			
 			# Lane Adjustments (Forward)
 			KEY_BRACKETRIGHT, KEY_UP: _handle_lane_adjust(1, 0)
@@ -295,12 +292,6 @@ func step_simulation_speed(direction: int):
 				target_index = i
 				break
 	set_simulation_speed(SIM_SPEED_STEPS[target_index])
-
-func _handle_export():
-	if terrain_node: terrain_node.export_heightmap("user://map_export.png")
-
-func _handle_import():
-	if terrain_node: terrain_node.import_heightmap("user://map_export.png")
 
 func _handle_overlay_mode(keycode):
 	var mode = 0
