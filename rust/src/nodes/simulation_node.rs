@@ -6,8 +6,11 @@
 //! | Category | Method | Godot Caller |
 //! |----------|--------|--------------|
 //! | **System** | `undo_action` | `input_manager.gd` |
+//! | | `create_blank_world` | future world-editor UI |
 //! | | `save_game` | `input_manager.gd`, `main.gd` |
 //! | | `load_game` | `input_manager.gd`, `main.gd` |
+//! | | `save_world_definition` | future world-editor UI |
+//! | | `load_world_definition` | future world-editor UI |
 //! | | `get_perf_stats` | `debug_panel.gd` |
 //! | | `get_demand_pressures` | `main_ui.gd` |
 //! | | `get_treasury_balance` | `main_ui.gd` |
@@ -156,6 +159,15 @@ impl SimulationNode {
                 run_sim_thread(core, snap, rx);
             }));
         }
+    }
+
+    /// Rebuilds the render snapshot immediately from the current core state.
+    fn refresh_snapshot_from_core(&self) {
+        let snapshot = {
+            let core = self.lock_core();
+            core.build_snapshot()
+        };
+        *self.snapshot.write().unwrap() = snapshot;
     }
 }
 
@@ -1163,6 +1175,34 @@ impl SimulationNode {
         }
     }
 
+    /// Resets the runtime to a new blank authored world with the given terrain settings.
+    #[func]
+    pub fn create_blank_world(
+        &mut self,
+        width_m: f32,
+        height_m: f32,
+        terrain_cell_m: f32,
+        terrain_chunk_m: f32,
+        base_elevation_m: f32,
+    ) -> bool {
+        match self.lock_core().create_blank_world_internal(
+            width_m,
+            height_m,
+            terrain_cell_m,
+            terrain_chunk_m,
+            base_elevation_m,
+        ) {
+            Ok(()) => {
+                self.refresh_snapshot_from_core();
+                true
+            }
+            Err(err) => {
+                godot_error!("Create blank world failed: {}", err);
+                false
+            }
+        }
+    }
+
     /// Saves the current simulation into a single SQLite snapshot file.
     #[func]
     pub fn save_game(&self, path: GString) -> bool {
@@ -1175,13 +1215,49 @@ impl SimulationNode {
         }
     }
 
+    /// Saves the current blank-world authoring state as a reusable world-definition asset.
+    #[func]
+    pub fn save_world_definition(&self, path: GString, name: GString) -> bool {
+        match self
+            .lock_core()
+            .save_world_definition_internal(&path.to_string(), &name.to_string())
+        {
+            Ok(()) => true,
+            Err(err) => {
+                godot_error!("Save world definition failed: {}", err);
+                false
+            }
+        }
+    }
+
     /// Loads a SQLite save snapshot and replaces the live simulation state.
     #[func]
     pub fn load_game(&mut self, path: GString) -> bool {
         match self.lock_core().load_game_internal(&path.to_string()) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.refresh_snapshot_from_core();
+                true
+            }
             Err(err) => {
                 godot_error!("Load failed: {}", err);
+                false
+            }
+        }
+    }
+
+    /// Loads a reusable world-definition asset and replaces the live runtime with a blank city.
+    #[func]
+    pub fn load_world_definition(&mut self, path: GString) -> bool {
+        match self
+            .lock_core()
+            .load_world_definition_internal(&path.to_string())
+        {
+            Ok(()) => {
+                self.refresh_snapshot_from_core();
+                true
+            }
+            Err(err) => {
+                godot_error!("Load world definition failed: {}", err);
                 false
             }
         }

@@ -35,7 +35,7 @@ Terminology:
 - `authored terrain chunk`: the canonical chunk span described by `WorldConfig`
 - `source terrain`: the authoritative player- or importer-authored terrain surface
 - `visual terrain`: the derived terrain surface after road-bed carving
-- `WorldDefinition`: the future reusable authored-world asset; not yet implemented
+- `WorldDefinition`: the reusable authored-world asset for blank-world v1
 
 ## Implemented Runtime Contract
 
@@ -242,7 +242,39 @@ Current deterministic rules:
 This is acceptable while city saves remain runtime snapshots rather than reusable authored world
 assets.
 
-### 12. Godot Bridge Uploads Dense Snapshots On Demand
+### 12. Blank-World `WorldDefinition` Exists As A Separate Asset
+
+The live runtime now has a separate authored-world asset path for blank worlds.
+
+Current deterministic rules:
+
+- `WorldDefinition` is stored as a single-file SQLite asset with its own schema version
+- one `world_definition_meta` row stores:
+  - world name
+  - `WorldConfig` values needed to instantiate the world
+- authored terrain is stored as zero or more `world_terrain_chunks` rows
+- terrain chunk rows are keyed by zero-based `(chunk_x, chunk_z)` from the world minimum corner
+- each chunk payload is one dense row-major `f32` source-terrain block
+- only chunks containing at least one non-base terrain sample are persisted
+- loading a `WorldDefinition` resets runtime state to a fresh blank city on that world
+- `WorldDefinition` v1 stores:
+  - world metadata
+  - terrain config
+  - source terrain chunks
+- `WorldDefinition` v1 does not store:
+  - roads
+  - zoning paint
+  - water runtime state
+  - agents
+  - households
+  - treasury history
+  - derived visual terrain
+
+Authoritative rule:
+
+- city saves and `WorldDefinition` are separate persistence products with different ownership
+
+### 13. Godot Bridge Uploads Dense Snapshots On Demand
 
 The Godot render bridge still consumes full dense buffers.
 
@@ -297,63 +329,47 @@ Required direction:
 - terrain base elevation and sample values should eventually become direct world-space metres
 - no future authored-world format should assume the current scaled-height compatibility contract
 
-### 4. Reusable Authored Worlds Do Not Exist Yet
+### 4. `WorldDefinition` V1 Is Terrain-Only And Not Yet Wired To A Dedicated UI Flow
 
 Current gap:
 
-- city saves are the only persisted world-state mechanism
-- there is no separate reusable `WorldDefinition`
+- there is no dedicated world-editor launch mode or scene yet
+- no gameplay or editor UI currently calls the `SimulationNode` world-definition methods
+- `WorldDefinition` v1 stores terrain only; it has no hydrology, preview image, or richer metadata
 
 Required direction:
 
-- authored blank worlds must become a separate asset type from city runtime saves
+- authored-world editing must move onto a dedicated world-editor shell
+- `New Game` must instantiate from a selected `WorldDefinition` rather than from ad hoc runtime state
 
 ## Planned Deterministic Implementation
 
 The next slices should be implemented in this order.
 
-### 1. Add `WorldDefinition` As A Reusable Authored-World Asset
+### 1. Ship A Dedicated Blank-World Editor Flow Around `WorldDefinition`
 
-`WorldDefinition` is the next missing ownership boundary.
+The persistence and runtime reset path now exist. The next required slice is the actual authoring
+shell around them.
 
-It must be separate from city saves and must eventually contain:
+Required direction:
 
-- world dimensions
-- terrain chunk span
-- terrain sample spacing
-- base terrain elevation
-- authored terrain chunk payloads
-- later hydrology data
-- later metadata such as display name, seed, preview image, and source provenance
-
-Deterministic rule:
-
-- city saves persist runtime state
-- `WorldDefinition` persists reusable authored world state
-- `New Game` will instantiate a city from a selected `WorldDefinition`
-
-### 2. Ship Blank-World Authoring First
-
-The first world-authoring slice should support blank worlds only.
-
-Blank-world v1 must support:
-
-- create blank world with chosen extent
-- choose base elevation
-- sculpt source terrain
-- save and load authored blank worlds
-- start a city from that authored world
-
-Blank-world v1 must not depend on:
-
-- DEM import
-- GeoTIFF import
-- hydrology authoring
-- full large-world regional simulation
+- add a dedicated world-editor launch mode or scene
+- wire editor UI to:
+  - `create_blank_world`
+  - `save_world_definition`
+  - `load_world_definition`
+- keep blank-world authoring separate from city runtime save/load UI
 
 Deterministic rule:
 
 - a newly created blank world is dry and flat except for the authored base elevation
+
+### 2. Instantiate `New Game` From A Selected `WorldDefinition`
+
+Required direction:
+
+- `New Game` must clone or instantiate from one authored `WorldDefinition`
+- city saves must remain runtime snapshots layered on top of that authored world baseline
 
 ### 3. Move From Whole-Map Dense Compatibility Buffers To Chunk Windows
 
@@ -408,22 +424,12 @@ Deterministic rules:
 - local active areas may run dynamic water simulation
 - the engine must not require a full-world dense shallow-water solve for every map size
 
-### 7. World Authoring Mode Must Become Separate From Live City Runtime
-
-World editing is not just another gameplay tool.
-
-Required direction:
-
-- add a dedicated world-editor launch mode or scene
-- world editing mutates `WorldDefinition`
-- city runtime loads from authored world data rather than directly serving as the authoring store
-
 ## Current Deterministic Non-Goals
 
 The following are explicitly not implemented yet and should not be assumed by other systems:
 
-- reusable `WorldDefinition`
 - blank-world editor UI
+- `New Game` selection flow for `WorldDefinition`
 - DEM / GeoTIFF import into authored worlds
 - authored hydrology layer
 - chunk-streamed terrain renderer
@@ -452,12 +458,14 @@ What is implemented now:
 - terrain and water are sparse chunk-backed at rest
 - terrain keeps authoritative source plus derived visual buffers
 - water keeps sparse depth, velocity, and flux at rest
+- blank-world `WorldDefinition` exists as a separate authored-world asset
+- authored world load resets runtime state to a fresh blank city baseline
 - save/load and renderer boundaries still use dense materialization
 
 What is next:
 
-1. `WorldDefinition`
-2. blank-world authoring
+1. blank-world editor UI
+2. `New Game` from `WorldDefinition`
 3. chunk-window runtime processing
 4. later DEM import
 5. later authored hydrology

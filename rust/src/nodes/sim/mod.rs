@@ -11,3 +11,4 @@ pub mod query;
 pub mod render;
 pub mod save_load;
 pub mod undo;
+pub mod world_definition;

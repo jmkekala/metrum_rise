@@ -168,3 +168,5 @@ Runtime-spawned tools:
 | Occupied texture | `PackedByteArray` | R8, one byte per world-space zone cell. |
 | Distance-to-road texture | `PackedByteArray` | R8, one byte per world-space zone cell. |
 | No-build mask texture | `PackedByteArray` | R8, one byte per world-space zone cell. |
+| `WorldDefinition` meta | SQLite row | One row storing world name plus `WorldConfig` values for a reusable blank-world asset. |
+| `WorldDefinition` terrain chunk payload | SQLite BLOB | Dense row-major `f32` source-terrain samples for one persisted authored chunk. |
