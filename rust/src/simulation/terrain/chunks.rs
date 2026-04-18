@@ -649,15 +649,108 @@ fn approx_eq(a: f32, b: f32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("metrum_terrain_chunk_{prefix}_{suffix}"))
+    }
+
+    fn write_lod_payload(path: &Path, heights_m: &[f32]) {
+        let mut bytes = Vec::with_capacity(heights_m.len() * FLOAT32_BYTES);
+        for value in heights_m {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        fs::write(path, bytes).expect("test payload should write");
+    }
+
+    fn write_test_chunk(
+        dir: &Path,
+        chunk_x: i32,
+        chunk_z: i32,
+        width_m: f32,
+        height_m: f32,
+        base_sample_m: f32,
+        lod_samples_m: &[f32],
+        min_height_m: f32,
+        max_height_m: f32,
+    ) {
+        fs::create_dir_all(dir).expect("test chunk dir should create");
+
+        let base_width_px = (width_m / base_sample_m) as usize;
+        let base_height_px = (height_m / base_sample_m) as usize;
+        let min_e_m = chunk_x as f32 * 512.0;
+        let min_n_m = chunk_z as f32 * 512.0;
+        let max_e_m = min_e_m + width_m;
+        let max_n_m = min_n_m + height_m;
+
+        let mut lod_manifest = String::new();
+        for (index, sample_m) in lod_samples_m.iter().enumerate() {
+            let width_px = (width_m / sample_m) as usize;
+            let height_px = (height_m / sample_m) as usize;
+            let relative_path = format!("height_lod{index}_{sample_m:.0}m.f32");
+            let heights_m = vec![min_height_m; width_px * height_px];
+            write_lod_payload(&dir.join(&relative_path), &heights_m);
+            lod_manifest.push_str(&format!(
+                r#"
+
+[[lods]]
+lod_name = "lod{index}"
+sample_m = {sample_m}
+width_px = {width_px}
+height_px = {height_px}
+relative_path = "{relative_path}"
+min_height_m = {min_height_m}
+max_height_m = {max_height_m}
+"#
+            ));
+        }
+
+        let manifest = format!(
+            r#"chunk_asset_version = 1
+world_id = "test_world"
+chunk_x = {chunk_x}
+chunk_z = {chunk_z}
+terrain_chunk_m = 512.0
+source_sample_m = {base_sample_m}
+epsg = 3067
+crs_name = "ETRS89 / TM35FIN(E,N)"
+raster_semantics = "pixel_is_area"
+sample_format = "float32_le"
+min_e_m = {min_e_m}
+min_n_m = {min_n_m}
+max_e_m = {max_e_m}
+max_n_m = {max_n_m}
+width_m = {width_m}
+height_m = {height_m}
+base_width_px = {base_width_px}
+base_height_px = {base_height_px}
+nodata_value = -9999.0
+nodata_pixel_count = 0
+min_height_m = {min_height_m}
+max_height_m = {max_height_m}
+overlap_tile_count = 1
+source_tiles = ["fixture_tile.tif"]
+{lod_manifest}
+"#
+        );
+
+        fs::write(dir.join("chunk.toml"), manifest).expect("test manifest should write");
+    }
 
     fn sample_chunk_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../terrain/kuopio/import/chunks_512m/cx_0011_cz_0070")
+        let dir = unique_test_dir("sample");
+        write_test_chunk(&dir, 11, 70, 512.0, 512.0, 2.0, &[2.0, 4.0, 8.0, 32.0], 123.5, 123.5);
+        dir
     }
 
     fn border_chunk_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../terrain/kuopio/import/chunks_512m/cx_0117_cz_0117")
+        let dir = unique_test_dir("border");
+        write_test_chunk(&dir, 117, 117, 96.0, 96.0, 2.0, &[2.0, 4.0, 8.0, 32.0], 77.0, 77.0);
+        dir
     }
 
     #[test]
@@ -717,7 +810,7 @@ max_height_m = 9.0
         let chunk =
             TerrainChunkAsset::load_from_dir(sample_chunk_dir()).expect("sample chunk should load");
 
-        assert_eq!(chunk.manifest.world_id, "kuopio");
+        assert_eq!(chunk.manifest.world_id, "test_world");
         assert_eq!(chunk.manifest.chunk_x, 11);
         assert_eq!(chunk.manifest.chunk_z, 70);
         assert_eq!(chunk.lods.len(), 4);

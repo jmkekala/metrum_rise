@@ -27,6 +27,3 @@ debug = 1
 [[bench]]
 name = "agent_benchmark"
 harness = false
-
-[[example]]
-name = "profile_agent_tick"

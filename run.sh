@@ -74,15 +74,17 @@ fi
 echo "Building Rust library..."
 cd rust
 if [ $RELEASE -eq 1 ]; then
-    cargo build --release
+    if ! cargo build --release; then
+        echo "Rust build failed!"
+        exit 1
+    fi
     LIB=target/release/libmetrum_rise.so
 else
-    cargo build
+    if ! cargo build; then
+        echo "Rust build failed!"
+        exit 1
+    fi
     LIB=target/debug/libmetrum_rise.so
-fi
-if [ $? -ne 0 ]; then
-    echo "Rust build failed!"
-    exit 1
 fi
 
 echo "Deploying library..."
