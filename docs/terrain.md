@@ -353,25 +353,75 @@ shell around them.
 
 Required direction:
 
-- add a dedicated world-editor launch mode or scene
+- add a dedicated `--world-editor` launch mode and `WorldEditor` scene
 - wire editor UI to:
   - `create_blank_world`
   - `save_world_definition`
   - `load_world_definition`
 - keep blank-world authoring separate from city runtime save/load UI
+- follow the UI ownership in `ui.md`:
+  - reduced top menu
+  - bottom toolbar at the bottom of the screen
+  - terrain and later water tools on that toolbar, not in the top menu
+- `WorldEditor` must not expose `Return To Game`
 
 Deterministic rule:
 
 - a newly created blank world is dry and flat except for the authored base elevation
 
-### 2. Instantiate `New Game` From A Selected `WorldDefinition`
+### 2. WorldEditor Runtime Uses A Restricted Simulation Loop
+
+World editing still needs a live runtime, but not a gameplay city simulation.
+
+Required direction:
+
+- `WorldEditor` keeps a simulation thread available because water preview and authoring will need
+  it
+- `WorldEditor` must not run gameplay simulation systems such as:
+  - agents
+  - traffic
+  - households
+  - demand
+  - freight
+  - city treasury progression
+- until water authoring is added, `WorldEditor` may remain terrain-only while still using the
+  same `SimulationNode` bridge and runtime state bundle
+
+Deterministic rule:
+
+- `WorldEditor` runtime is a terrain / water authoring runtime, not a playable city runtime
+
+### 3. Terrain-Only WorldEditor V1 Comes Before Water Authoring
+
+The first user-facing world-editor slice is terrain-only.
+
+WorldEditor v1 must support:
+
+- create blank world
+- open existing `WorldDefinition`
+- save `WorldDefinition`
+- sculpt source terrain with `Raise` and `Lower`
+
+WorldEditor v1 must not depend on:
+
+- water tools
+- DEM import
+- GeoTIFF import
+- hydrology authoring
+- `New Game` handoff
+
+Deterministic rule:
+
+- water is the first follow-up authoring feature after terrain-only world editing is stable
+
+### 4. Instantiate `New Game` From A Selected `WorldDefinition`
 
 Required direction:
 
 - `New Game` must clone or instantiate from one authored `WorldDefinition`
 - city saves must remain runtime snapshots layered on top of that authored world baseline
 
-### 3. Move From Whole-Map Dense Compatibility Buffers To Chunk Windows
+### 5. Move From Whole-Map Dense Compatibility Buffers To Chunk Windows
 
 Now that `terrain_cell_m` exists, dense scratch buffers must be localized.
 
@@ -387,7 +437,7 @@ Deterministic rule:
 - whole-map dense materialization is a temporary compatibility path, not the target large-world
   runtime
 
-### 4. Heightmap / DEM Import Comes After Blank Worlds
+### 6. Heightmap / DEM Import Comes After Blank Worlds
 
 Imported terrain must write authoritative source terrain only.
 
@@ -397,7 +447,7 @@ Deterministic rules:
 - visual terrain is always derived from source terrain plus road or water derivations
 - import validation must reject malformed or dimension-mismatched source rasters
 
-### 5. Add Authored Hydrology As A Separate Layer
+### 7. Add Authored Hydrology As A Separate Layer
 
 Hydrology must be authored separately from raw terrain elevation.
 
@@ -414,7 +464,7 @@ Deterministic rules:
 - authored hydrology defines where water belongs before runtime simulation modifies local details
 - hydrology must not be stored as "just paint some water depth into the live runtime buffer"
 
-### 6. Use A Hybrid Water Model For Very Large Worlds
+### 8. Use A Hybrid Water Model For Very Large Worlds
 
 The intended large-world water model is hybrid.
 
@@ -430,6 +480,7 @@ The following are explicitly not implemented yet and should not be assumed by ot
 
 - blank-world editor UI
 - `New Game` selection flow for `WorldDefinition`
+- world-editor water tools
 - DEM / GeoTIFF import into authored worlds
 - authored hydrology layer
 - chunk-streamed terrain renderer
@@ -465,7 +516,9 @@ What is implemented now:
 What is next:
 
 1. blank-world editor UI
-2. `New Game` from `WorldDefinition`
-3. chunk-window runtime processing
-4. later DEM import
-5. later authored hydrology
+2. terrain-only world-editor tools
+3. world-editor water tools
+4. `New Game` from `WorldDefinition`
+5. chunk-window runtime processing
+6. later DEM import
+7. later authored hydrology

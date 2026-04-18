@@ -9,27 +9,29 @@ All UI is built procedurally in GDScript. The four `.tscn` files (`Main.tscn`,
 `AssetEditor.tscn`, `EconomyEditor.tscn`, `Router.tscn`) describe the scene node tree but
 contain no UI component definitions — all panels, buttons, and windows are constructed at
 runtime in `_ready()`. There are no `.tres` theme resource files; style constants are
-centralised in `UIStyle` (see below) instead.
+centralised in `UIStyle` (see below) instead. A `WorldEditor.tscn` scene is planned as the next
+editor shell and follows the same procedural-UI rule.
 
 GDScript is a thin rendering and input bridge only. No simulation logic or game decisions
 belong here. Rust methods are called through `SimulationNode`.
 
 ### Surface presence per scene
 
-| Surface | Main (gameplay) | AssetEditor | EconomyEditor |
-|---------|:-:|:-:|:-:|
-| Top menu bar | ✓ | ✓ | ✓ |
-| Bottom toolbar | ✓ | — | — |
-| Context panel | — | — | — |
-| Floating windows | ✓ | — | — |
+| Surface | Main (gameplay) | AssetEditor | EconomyEditor | WorldEditor (planned) |
+|---------|:-:|:-:|:-:|:-:|
+| Top menu bar | ✓ | ✓ | ✓ | ✓ |
+| Bottom toolbar | ✓ | — | — | ✓ |
+| Context panel | — | — | — | — |
+| Floating windows | ✓ | — | — | — |
 
-The top menu bar is shared across all three scenes. The bottom toolbar and floating windows
-are gameplay-only — the editor screens are self-contained applications with their own layout
-and do not use those surfaces.
+The top menu bar is shared across all scenes. AssetEditor and EconomyEditor remain
+self-contained editor applications with no bottom toolbar. The planned WorldEditor is the
+exception: it uses a bottom toolbar because terrain and later water authoring tools belong on
+that surface rather than in the top menu.
 
-The top menu in the editor scenes carries a reduced item set: File (Save, return to game),
-and any editor-specific actions. It does not show City / Demand / Economy window launchers,
-which are gameplay concepts.
+The top menu in editor scenes carries a reduced item set. AssetEditor and EconomyEditor use
+File plus editor-specific menus. The planned WorldEditor uses File plus Help, with no
+`Return To Game` action and no City / Demand / Economy launchers, which are gameplay concepts.
 
 ---
 
@@ -56,6 +58,18 @@ accelerator column.
 
 `top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `EconomyEditor`).
 It is not owned by `main_ui.gd`, because the editor scenes do not use the gameplay HUD.
+
+Planned WorldEditor menu:
+
+| Menu | Items |
+|------|-------|
+| File | New World, Open World, Save, Save As, Quit |
+| Help | Keyboard Shortcuts, About |
+
+Deterministic rule:
+
+- terrain and water authoring tools do not live in the WorldEditor top menu
+- WorldEditor does not expose `Return To Game`
 
 ---
 
@@ -98,6 +112,19 @@ submenu. Opening the Zoning tool shows only the lower row. Clicking `Residential
 `Commercial`, or `Industrial` toggles the profile row for that family above it and
 automatically selects the first profile in that family. Clicking the same family again
 collapses that profile row.
+
+Planned WorldEditor toolbar rules:
+
+- WorldEditor uses a bottom toolbar with the same bottom-of-screen placement and the same
+  `UIStyle` shell language as the gameplay toolbar
+- this toolbar is the primary tool-selection surface for world authoring
+- terrain tools live here, not in the top menu
+- WorldEditor v1 active tools are `Raise` and `Lower`
+- `Water` is the first planned follow-up tool group and will live on the same toolbar surface
+- WorldEditor does not include gameplay-only toolbar actions such as Roads, Zoning, Inspect,
+  or Mods
+- WorldEditor does not include gameplay HUD widgets such as the clock, city-status panel, or
+  R/C/I meter
 
 **Keyboard shortcuts** (owned by `input_manager.gd`, toolbar reflects active tool visually):
 
