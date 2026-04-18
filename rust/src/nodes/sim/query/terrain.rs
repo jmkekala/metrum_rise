@@ -10,7 +10,7 @@ impl SimCore {
         Vector2::new(self.heightmap.width as f32, self.heightmap.height as f32)
     }
 
-    /// Returns the terrain world extent in current gameplay world units.
+    /// Returns the terrain world extent in metres.
     pub fn get_terrain_world_size_internal(&self) -> Vector2 {
         let (world_w, world_h) = self.heightmap.world_size();
         Vector2::new(world_w, world_h)

@@ -16,7 +16,7 @@ Terminology note: this file mirrors current code and API names on purpose. When 
 | Terrain sample cell | `10 m` (`terrain_cell_m`) | Configurable independently from `zone_cell_m` in `WorldConfig`. |
 | Terrain chunk | `512 m` (`terrain_chunk_m`) | Canonical authored terrain chunk size in `WorldConfig`. |
 | Zoning cell | `10 m × 10 m` (`zone_cell_m`) | Configurable via `WorldConfig`. |
-| Runtime terrain grid (default map) | `2000 × 2000` | Derived from `terrain_cell_m` and the current zoning-derived runtime world units. |
+| Runtime terrain grid (default map) | `2001 × 2001` | Derived from `round(width_m / terrain_cell_m) + 1`; terrain samples include both world edges. |
 | World-space zoning grid (default map) | `2000 × 2000` | Derived from `width_m / zone_cell_m` and `height_m / zone_cell_m`. |
 | Building footprint in zoning cells | Asset-authored | `lot_width_cells × lot_depth_cells`; authored building footprint, not a cadastral parcel model. |
 | Reference zoning depth | `12` cells | `DEFAULT_ZONING_DEPTH`; tooling / fade heuristic only, not a hard cap. |
@@ -81,8 +81,8 @@ Benchmark-history rule:
 
 | Resource | Size | Notes |
 |----------|------|-------|
-| Terrain visual sparse chunks (`2000²` worst case) | `up to 16 MB` | Full-cost only when the entire runtime terrain is materialized away from the base elevation. |
-| Terrain source sparse chunks (`2000²` worst case) | `up to 16 MB` | Same upper bound as visual terrain; untouched chunks stay implicit. |
+| Terrain visual sparse chunks (`2001²` worst case) | `up to 16 MB` | Full-cost only when the entire runtime terrain is materialized away from the base elevation. |
+| Terrain source sparse chunks (`2001²` worst case) | `up to 16 MB` | Same upper bound as visual terrain; untouched chunks stay implicit. |
 | 3 environmental grids at `500²` | `~3 MB` | Pollution, noise, desirability. |
 | World-space zoning grids at `2000²` | `~12 MB` | Zone, occupied, and distance-to-road layers. |
 | Road edges (`50k × ~512 B`) | `~25 MB` | Order-of-magnitude planning estimate. |

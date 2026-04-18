@@ -20,7 +20,7 @@ pub fn flatten_terrain_for_network(
     let half_size = map_size * 0.5;
     let width = terrain.width;
     let height = terrain.height;
-    let cell_size = terrain.cell_size_world_units();
+    let cell_size = terrain.cell_size_m();
 
     // ATOMIC BLENDING: Use the provided terrain as a stable reference.
     let reference_heightmap = terrain.clone_visual_dense();

@@ -5,6 +5,12 @@ fn make_zoning() -> ZoningSystem {
     ZoningSystem::new(&WorldConfig::default())
 }
 
+fn world_to_zone_cell(config: &WorldConfig, x: f32, z: f32) -> (i32, i32) {
+    let cx = ((x + config.width_m * 0.5) / config.zone_cell_m - 0.5).round() as i32;
+    let cy = ((z + config.height_m * 0.5) / config.zone_cell_m - 0.5).round() as i32;
+    (cx, cy)
+}
+
 fn paint_zone_rect(zoning: &mut ZoningSystem, zone: ZoneType, x0: f32, z0: f32, x1: f32, z1: f32) {
     let runtime_id = zoning
         .profiles
@@ -52,18 +58,24 @@ fn test_clear_resets_everything() {
 #[test]
 fn test_zone_subrect_roundtrip() {
     let mut z = make_zoning();
+    let config = WorldConfig::default();
     let runtime_id = z
         .profiles
         .default_runtime_id_for_zone_type(ZoneType::Commercial)
         .unwrap();
     z.set_zone_profile_rect(-50.0, -50.0, 50.0, 50.0, runtime_id);
 
+    let (grid_x, grid_y) = world_to_zone_cell(&config, -50.0, -50.0);
+    let (grid_x_max, grid_y_max) = world_to_zone_cell(&config, 50.0, 50.0);
+    let width_cells = (grid_x_max - grid_x + 1) as usize;
+    let height_cells = (grid_y_max - grid_y + 1) as usize;
+
     // Capture, then clear, then restore.
-    let saved = z.capture_patch(950, 950, 101, 101);
+    let saved = z.capture_patch(grid_x, grid_y, width_cells, height_cells);
     paint_zone_rect(&mut z, ZoneType::None, -50.0, -50.0, 50.0, 50.0);
     assert_eq!(zone_at_world(&z, 0.0, 0.0), ZoneType::None);
 
-    z.restore_patch(950, 950, 101, 101, &saved);
+    z.restore_patch(grid_x, grid_y, width_cells, height_cells, &saved);
     assert_eq!(zone_at_world(&z, 0.0, 0.0), ZoneType::Commercial);
 }
 

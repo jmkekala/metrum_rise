@@ -1,14 +1,14 @@
 //! World configuration and dense-grid sizing helpers.
 //!
 //! `WorldConfig` is the chunk-aware replacement for the legacy map-size config.
-//! It owns authoritative world extents plus terrain chunk metadata even though
-//! some current runtime systems still derive dense helper grids from it.
+//! It owns authoritative world extents in metres plus the cell sizes used by
+//! terrain, zoning, and environmental grids.
 
 /// Chunk-aware world configuration shared by gameplay, saves, and editor sandboxes.
 ///
 /// The world extent is defined by physical dimensions plus terrain chunk metadata.
-/// Some current systems still consume dense whole-world helper grids; those
-/// compatibility helpers remain here until terrain and water storage become sparse.
+/// Dense helper grids still derive their dimensions from this config, but their
+/// world-space coordinates are canonical metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WorldConfig {
     /// Total physical width of the authored world in metres.
@@ -93,24 +93,6 @@ impl WorldConfig {
         )
     }
 
-    /// Returns the runtime world width in the current gameplay coordinate units.
-    ///
-    /// The live runtime still uses one world-space unit per zoning cell width rather than one
-    /// world-space unit per physical metre. This helper makes that compatibility layer explicit.
-    pub fn world_width_units(&self) -> f32 {
-        (self.zone_grid_width().saturating_sub(1)) as f32
-    }
-
-    /// Returns the runtime world height in the current gameplay coordinate units.
-    pub fn world_height_units(&self) -> f32 {
-        (self.zone_grid_height().saturating_sub(1)) as f32
-    }
-
-    /// Returns the terrain sample spacing in current gameplay coordinate units.
-    pub fn terrain_cell_world_units(&self) -> f32 {
-        (self.terrain_cell_m / self.zone_cell_m).max(f32::EPSILON)
-    }
-
     /// Returns the number of authored terrain chunks along the X axis.
     pub fn terrain_chunk_columns(&self) -> usize {
         (self.width_m / self.terrain_chunk_m).ceil() as usize
@@ -123,12 +105,12 @@ impl WorldConfig {
 
     /// Returns the number of runtime terrain samples along the X axis.
     pub fn terrain_grid_width(&self) -> usize {
-        ((self.world_width_units() / self.terrain_cell_world_units()).round() as usize) + 1
+        ((self.width_m / self.terrain_cell_m).round() as usize) + 1
     }
 
     /// Returns the number of runtime terrain samples along the Y axis.
     pub fn terrain_grid_height(&self) -> usize {
-        ((self.world_height_units() / self.terrain_cell_world_units()).round() as usize) + 1
+        ((self.height_m / self.terrain_cell_m).round() as usize) + 1
     }
 
     /// Returns the number of cells in the zoning grid along the X axis.
@@ -166,16 +148,11 @@ impl WorldConfig {
         (self.zone_grid_width(), self.zone_grid_height())
     }
 
-    /// Maps world-space coordinates (units) to environmental grid coordinates.
+    /// Maps world-space coordinates in metres to environmental-grid coordinates.
     pub fn world_to_env_grid(&self, x: f32, z: f32, env_w: usize, env_h: usize) -> (f32, f32) {
-        let zw = self.zone_grid_width() as f32;
-        let zh = self.zone_grid_height() as f32;
-        let hw = (zw - 1.0) * 0.5;
-        let hh = (zh - 1.0) * 0.5;
-
-        // Map [-HW, HW] to [0, ZW] then scale to [0, ENV_W]
-        let gx = (x + hw) * (env_w as f32 / zw);
-        let gz = (z + hh) * (env_h as f32 / zh);
+        let _ = (env_w, env_h);
+        let gx = ((x + self.width_m * 0.5) / self.env_cell_m) - 0.5;
+        let gz = ((z + self.height_m * 0.5) / self.env_cell_m) - 0.5;
         (gx, gz)
     }
 }

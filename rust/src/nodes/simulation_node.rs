@@ -277,7 +277,7 @@ impl SimulationNode {
         self.get_heightmap_size_internal()
     }
 
-    /// Returns the terrain world extent in current gameplay world units.
+    /// Returns the terrain world extent in metres.
     #[func]
     pub fn get_terrain_world_size(&self) -> Vector2 {
         self.lock_core().get_terrain_world_size_internal()

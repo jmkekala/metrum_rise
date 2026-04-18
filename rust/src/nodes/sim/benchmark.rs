@@ -39,18 +39,18 @@ impl SimCore {
 
         self.transit_network.bulk_load = true;
 
-        let w_units = self.config.world_width_units();
-        let h_units = self.config.world_height_units();
-        let step = (w_units - 40.0) / grid_size as f32;
-        let start_x = -w_units * 0.5 + 20.0;
-        let start_z = -h_units * 0.5 + 20.0;
+        let world_w = self.config.width_m;
+        let world_h = self.config.height_m;
+        let step = (world_w - 40.0) / grid_size as f32;
+        let start_x = -world_w * 0.5 + 20.0;
+        let start_z = -world_h * 0.5 + 20.0;
 
         // Horizontal roads
         for i in 0..=grid_size {
             pts.clear();
             pts.push(Vector3::new(start_x, 0.0, start_z + i as f32 * step));
             pts.push(Vector3::new(
-                start_x + w_units - 40.0,
+                start_x + world_w - 40.0,
                 0.0,
                 start_z + i as f32 * step,
             ));
@@ -64,7 +64,7 @@ impl SimCore {
             pts.push(Vector3::new(
                 start_x + i as f32 * step,
                 0.0,
-                start_z + h_units - 40.0,
+                start_z + world_h - 40.0,
             ));
             self.add_road_internal(pts.to_vec(), 2, 2);
         }

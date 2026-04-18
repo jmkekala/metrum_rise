@@ -67,8 +67,7 @@ impl ZoneType {
 ///
 /// Replaces the legacy per-edge `EdgeZoning` / `flush_zoning_updates` pipeline.
 /// All grid coordinates use the map-centred origin: cell (cx, cy) sits at world
-/// position `((cx - hw) * zone_cell_m, (cy - hh) * zone_cell_m)` where
-/// `hw = (width - 1) / 2`.
+/// position `(-width_m / 2 + (cx + 0.5) * zone_cell_m, -height_m / 2 + (cy + 0.5) * zone_cell_m)`.
 #[derive(Clone)]
 pub struct ZoningSystem {
     /// Validated built-in zoning-profile registry shared by the zoning grid, UI bridge, and saves.
@@ -124,12 +123,11 @@ impl ZoningSystem {
     fn world_to_cell(&self, x: f32, z: f32) -> Option<(usize, usize)> {
         let w = self.grid.width;
         let h = self.grid.height;
-        let hw = (w as f32 - 1.0) * 0.5;
-        let hh = (h as f32 - 1.0) * 0.5;
-        // World coords are in heightmap pixels (1 m per pixel). Zone grid has one
-        // cell per heightmap pixel, so scale is 1:1.
-        let cx = (x + hw).round();
-        let cy = (z + hh).round();
+        let half_w = self.config.width_m * 0.5;
+        let half_h = self.config.height_m * 0.5;
+        let cell = self.config.zone_cell_m;
+        let cx = ((x + half_w) / cell - 0.5).round();
+        let cy = ((z + half_h) / cell - 0.5).round();
         if cx < 0.0 || cy < 0.0 || cx >= w as f32 || cy >= h as f32 {
             return None;
         }
@@ -140,18 +138,20 @@ impl ZoningSystem {
     fn world_to_cell_clamped(&self, x: f32, z: f32) -> (usize, usize) {
         let w = self.grid.width as i64;
         let h = self.grid.height as i64;
-        let hw = (self.grid.width as f32 - 1.0) * 0.5;
-        let hh = (self.grid.height as f32 - 1.0) * 0.5;
-        let cx = (x + hw).round() as i64;
-        let cy = (z + hh).round() as i64;
+        let half_w = self.config.width_m * 0.5;
+        let half_h = self.config.height_m * 0.5;
+        let cell = self.config.zone_cell_m;
+        let cx = ((x + half_w) / cell - 0.5).round() as i64;
+        let cy = ((z + half_h) / cell - 0.5).round() as i64;
         (cx.clamp(0, w - 1) as usize, cy.clamp(0, h - 1) as usize)
     }
 
     /// Returns the world-space centre of grid cell `(cx, cy)`.
     fn cell_to_world(&self, cx: usize, cy: usize) -> (f32, f32) {
-        let hw = (self.grid.width as f32 - 1.0) * 0.5;
-        let hh = (self.grid.height as f32 - 1.0) * 0.5;
-        (cx as f32 - hw, cy as f32 - hh)
+        (
+            -self.config.width_m * 0.5 + (cx as f32 + 0.5) * self.config.zone_cell_m,
+            -self.config.height_m * 0.5 + (cy as f32 + 0.5) * self.config.zone_cell_m,
+        )
     }
 
     // ── Zone read / write ───────────────────────────────────────────────────
@@ -435,16 +435,16 @@ impl ZoningSystem {
         let w = self.grid.width;
         let h = self.grid.height;
         let cell = self.config.zone_cell_m;
-        let hw_grid = (w as f32 - 1.0) * 0.5;
-        let hh_grid = (h as f32 - 1.0) * 0.5;
+        let half_w = self.config.width_m * 0.5;
+        let half_h = self.config.height_m * 0.5;
 
         let distances: Vec<u8> = (0..w * h)
             .into_par_iter()
             .map(|i| {
                 let cx = i % w;
                 let cy = i / w;
-                let px = (cx as f32 - hw_grid) * cell;
-                let pz = (cy as f32 - hh_grid) * cell;
+                let px = -half_w + (cx as f32 + 0.5) * cell;
+                let pz = -half_h + (cy as f32 + 0.5) * cell;
 
                 if segments.is_empty() {
                     return 255u8;
@@ -504,8 +504,8 @@ impl ZoningSystem {
         let w = self.grid.width;
         let h = self.grid.height;
         let cell = self.config.zone_cell_m;
-        let hw_grid = (w as f32 - 1.0) * 0.5;
-        let hh_grid = (h as f32 - 1.0) * 0.5;
+        let half_w = self.config.width_m * 0.5;
+        let half_h = self.config.height_m * 0.5;
 
         let mask: Vec<bool> = (0..w * h)
             .into_par_iter()
@@ -515,8 +515,8 @@ impl ZoningSystem {
                 }
                 let cx = i % w;
                 let cy = i / w;
-                let px = (cx as f32 - hw_grid) * cell;
-                let pz = (cy as f32 - hh_grid) * cell;
+                let px = -half_w + (cx as f32 + 0.5) * cell;
+                let pz = -half_h + (cy as f32 + 0.5) * cell;
                 segments.iter().any(|&(ax, az, bx, bz, half_w)| {
                     let abx = bx - ax;
                     let abz = bz - az;

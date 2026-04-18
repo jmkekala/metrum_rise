@@ -18,7 +18,7 @@ impl SimCore {
     pub fn sculpt_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.push_undo_state(true, false, true, false);
         let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
-        let radius_cells = radius / self.config.terrain_cell_world_units();
+        let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .sculpt(center_x, center_y, radius_cells, strength);
         self.terrain_dirty = true;

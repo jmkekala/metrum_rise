@@ -14,6 +14,9 @@ var brush_radius_cells: int = 1
 
 var zone_grid_w: int = 0
 var zone_grid_h: int = 0
+var terrain_world_size: Vector2 = Vector2.ZERO
+var zone_cell_w_m: float = 1.0
+var zone_cell_h_m: float = 1.0
 var profiles: Array[Dictionary] = []
 var profiles_by_runtime_id: Dictionary = {}
 
@@ -32,6 +35,9 @@ func _ready():
 	var size: Vector2i = simulation_node.get_zone_grid_size()
 	zone_grid_w = size.x
 	zone_grid_h = size.y
+	terrain_world_size = simulation_node.get_terrain_world_size()
+	zone_cell_w_m = terrain_world_size.x / maxf(float(zone_grid_w), 1.0)
+	zone_cell_h_m = terrain_world_size.y / maxf(float(zone_grid_h), 1.0)
 	_reload_profiles()
 
 	preview_mesh = MeshInstance3D.new()
@@ -302,12 +308,12 @@ func _update_preview() -> void:
 		return
 
 	var quad := QuadMesh.new()
-	quad.size = Vector2(float(width_cells), float(height_cells))
+	quad.size = Vector2(float(width_cells) * zone_cell_w_m, float(height_cells) * zone_cell_h_m)
 	preview_mesh.mesh = quad
 	preview_mesh.position = Vector3(
-		float(min_x) + float(width_cells) * 0.5 - float(zone_grid_w - 1) * 0.5 - 0.5,
+		-terrain_world_size.x * 0.5 + (float(min_x) + float(width_cells) * 0.5) * zone_cell_w_m,
 		0.3,
-		float(min_y) + float(height_cells) * 0.5 - float(zone_grid_h - 1) * 0.5 - 0.5
+		-terrain_world_size.y * 0.5 + (float(min_y) + float(height_cells) * 0.5) * zone_cell_h_m
 	)
 	preview_mesh.rotation_degrees = Vector3(-90.0, 0.0, 0.0)
 	preview_mesh.visible = true
@@ -368,11 +374,11 @@ func _mouse_grid_cell() -> Variant:
 	var wp = _mouse_world_pos()
 	if wp == null:
 		return null
-	var hw := float(zone_grid_w - 1) * 0.5
-	var hh := float(zone_grid_h - 1) * 0.5
+	var gx := int(round(((wp.x + terrain_world_size.x * 0.5) / zone_cell_w_m) - 0.5))
+	var gy := int(round(((wp.y + terrain_world_size.y * 0.5) / zone_cell_h_m) - 0.5))
 	return Vector2i(
-		clampi(int(round(wp.x + hw)), 0, zone_grid_w - 1),
-		clampi(int(round(wp.y + hh)), 0, zone_grid_h - 1)
+		clampi(gx, 0, zone_grid_w - 1),
+		clampi(gy, 0, zone_grid_h - 1)
 	)
 
 func _mouse_world_pos() -> Variant:

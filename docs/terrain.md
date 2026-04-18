@@ -12,7 +12,6 @@ It answers questions like:
 - what terrain and water state is authoritative
 - when dense buffers are still allowed
 - what is already implemented
-- what is intentionally still compatibility-only
 - what the next deterministic implementation slices must do
 
 It does not own zoning legality, building placement rules, or multi-tier inactive-region
@@ -48,6 +47,7 @@ The live runtime now uses `WorldConfig` instead of the old `MapConfig`.
 pub struct WorldConfig {
     pub width_m: f32,
     pub height_m: f32,
+    pub terrain_cell_m: f32,
     pub terrain_chunk_m: f32,
     pub terrain_base_elevation_m: f32,
     pub env_cell_m: f32,
@@ -82,18 +82,16 @@ Current deterministic rule:
 - `terrain.height = terrain_grid_height()`
 - `water.width = terrain_grid_width()`
 - `water.height = terrain_grid_height()`
+- `terrain_grid_width = round(width_m / terrain_cell_m) + 1`
+- `terrain_grid_height = round(height_m / terrain_cell_m) + 1`
 - runtime sparse chunk span in cells is:
   - `ceil(terrain_chunk_m / terrain_cell_m)`
-
-Current compatibility rule:
-
-- the live runtime still measures world-space positions in zoning-derived world units
-- `terrain_cell_m` is converted into those runtime units through `terrain_cell_m / zone_cell_m`
 
 Implication:
 
 - terrain sample density is now configurable independently from zoning density
-- the coordinate-system compatibility layer still exists and should be removed later
+- runtime world-space XZ is now canonical metres
+- terrain, zoning, and environment each use their own cell spacing explicitly
 
 ### 3. Terrain Uses Dual Sparse Buffers
 
@@ -154,9 +152,11 @@ Current deterministic rules:
 
 - terrain local grid coordinates span `0..width-1` and `0..height-1`
 - world-space XZ is centered by:
-  - `half_w = ((width - 1) * terrain_cell_world_units) * 0.5`
-  - `half_h = ((height - 1) * terrain_cell_world_units) * 0.5`
+  - `half_w = ((width - 1) * terrain_cell_m) * 0.5`
+  - `half_h = ((height - 1) * terrain_cell_m) * 0.5`
 - world-to-grid conversion for terrain queries uses that centered origin convention
+- terrain samples sit on world-edge coordinates
+- zoning and environmental cells remain centre-aligned metre cells
 
 ### 7. Sparse Chunk Storage Is Authoritative At Rest
 
@@ -258,22 +258,7 @@ This is a rendering boundary, not an excuse for simulation systems to depend on 
 
 The following are live behaviors, but they are not the intended long-term ownership model.
 
-### 1. Terrain Resolution Is Still Tied To Zoning Resolution
-
-This ownership problem is resolved at the storage layer but not yet at the coordinate-system layer.
-
-Current gap:
-
-- terrain and water dimensions no longer derive directly from `zone_cell_m`
-- runtime world-space still uses zoning-derived world units and converts terrain through
-  `terrain_cell_m / zone_cell_m`
-
-Required direction:
-
-- terrain resolution must stay independent from zoning and environment resolution
-- the runtime coordinate system should later stop depending on zoning-derived world units entirely
-
-### 2. Dense Scratch Buffers Still Exist In Hot Adjacent Systems
+### 1. Dense Scratch Buffers Still Exist In Hot Adjacent Systems
 
 These are compatibility-only.
 
@@ -287,7 +272,7 @@ Required direction:
 
 - these paths should later localize to chunk windows or active areas instead of whole-map buffers
 
-### 3. Undo Is Not Yet Fully Authoritative For Terrain Ownership
+### 2. Undo Is Not Yet Fully Authoritative For Terrain Ownership
 
 Current repository state:
 
@@ -299,6 +284,18 @@ Required direction:
 - terrain undo must become authoritative over source terrain and any derived visual state it
   invalidates
 - world-authoring workflows must not depend on visual-only terrain snapshots
+
+### 3. Terrain Height Storage Is Still Scaled At Query / Render Boundaries
+
+Current gap:
+
+- terrain samples are still multiplied by `HEIGHT_SCALE` when converted to world-space `y`
+- `terrain_base_elevation_m` still enters raw sample storage before that scale is applied
+
+Required direction:
+
+- terrain base elevation and sample values should eventually become direct world-space metres
+- no future authored-world format should assume the current scaled-height compatibility contract
 
 ### 4. Reusable Authored Worlds Do Not Exist Yet
 
@@ -358,24 +355,7 @@ Deterministic rule:
 
 - a newly created blank world is dry and flat except for the authored base elevation
 
-### 3. Complete The Terrain / Zoning Resolution Split
-
-The storage-level split now exists. The next required work is finishing the coordinate and tooling
-side of that split.
-
-Required direction:
-
-- keep `terrain_cell_m` authoritative for terrain and water sample density
-- keep zoning dimensions derived from `zone_cell_m`
-- keep environmental dimensions derived from `env_cell_m`
-- progressively remove remaining zoning-derived world-unit assumptions from runtime helpers and UI
-
-Deterministic rule:
-
-- terrain, zoning, and environment grids remain independently sized from their own cell spacing
-- no new runtime system may assume terrain cell count equals zoning cell count
-
-### 4. Move From Whole-Map Dense Compatibility Buffers To Chunk Windows
+### 3. Move From Whole-Map Dense Compatibility Buffers To Chunk Windows
 
 Now that `terrain_cell_m` exists, dense scratch buffers must be localized.
 
@@ -391,7 +371,7 @@ Deterministic rule:
 - whole-map dense materialization is a temporary compatibility path, not the target large-world
   runtime
 
-### 5. Heightmap / DEM Import Comes After Blank Worlds
+### 4. Heightmap / DEM Import Comes After Blank Worlds
 
 Imported terrain must write authoritative source terrain only.
 
@@ -401,7 +381,7 @@ Deterministic rules:
 - visual terrain is always derived from source terrain plus road or water derivations
 - import validation must reject malformed or dimension-mismatched source rasters
 
-### 6. Add Authored Hydrology As A Separate Layer
+### 5. Add Authored Hydrology As A Separate Layer
 
 Hydrology must be authored separately from raw terrain elevation.
 
@@ -418,7 +398,7 @@ Deterministic rules:
 - authored hydrology defines where water belongs before runtime simulation modifies local details
 - hydrology must not be stored as "just paint some water depth into the live runtime buffer"
 
-### 7. Use A Hybrid Water Model For Very Large Worlds
+### 6. Use A Hybrid Water Model For Very Large Worlds
 
 The intended large-world water model is hybrid.
 
@@ -428,7 +408,7 @@ Deterministic rules:
 - local active areas may run dynamic water simulation
 - the engine must not require a full-world dense shallow-water solve for every map size
 
-### 8. World Authoring Mode Must Become Separate From Live City Runtime
+### 7. World Authoring Mode Must Become Separate From Live City Runtime
 
 World editing is not just another gameplay tool.
 
@@ -449,7 +429,7 @@ The following are explicitly not implemented yet and should not be assumed by ot
 - chunk-streamed terrain renderer
 - chunk-window water simulation
 - authoritative terrain undo across source plus derived state
-- fully zoning-free runtime world coordinates
+- direct-metre terrain height storage without `HEIGHT_SCALE`
 
 ## Implementation Guardrails
 
@@ -468,6 +448,7 @@ What is implemented now:
 
 - `WorldConfig` replaced the legacy map config
 - `terrain_cell_m` exists and terrain/water sample density is independently configurable
+- runtime world-space XZ is canonical metres again
 - terrain and water are sparse chunk-backed at rest
 - terrain keeps authoritative source plus derived visual buffers
 - water keeps sparse depth, velocity, and flux at rest
@@ -477,7 +458,6 @@ What is next:
 
 1. `WorldDefinition`
 2. blank-world authoring
-3. decoupled terrain resolution
-4. chunk-window runtime processing
-5. later DEM import
-6. later authored hydrology
+3. chunk-window runtime processing
+4. later DEM import
+5. later authored hydrology

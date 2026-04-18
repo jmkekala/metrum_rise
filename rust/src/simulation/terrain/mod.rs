@@ -20,11 +20,11 @@ const DEFAULT_TERRAIN_CHUNK_CELLS: usize = 64;
 
 /// Dual-buffer heightmap for the terrain surface.
 pub struct TerrainSystem {
-    /// Map width in height samples. One sample per metre at standard resolution.
+    /// Map width in height samples.
     pub width: usize,
     /// Map height (depth) in height samples.
     pub height: usize,
-    /// Terrain sample spacing in current gameplay world units.
+    /// Terrain sample spacing in metres.
     cell_size: f32,
     /// Final/visual heightmap (metres). Road-bed depressions are baked into this buffer.
     data: SparseChunkGrid<f32>,
@@ -61,7 +61,7 @@ impl TerrainSystem {
         Self::with_chunking(
             config.terrain_grid_width(),
             config.terrain_grid_height(),
-            config.terrain_cell_world_units(),
+            config.terrain_cell_m,
             terrain_chunk_cells_for_config(config),
             config.terrain_base_elevation_m,
         )
@@ -239,7 +239,7 @@ impl TerrainSystem {
         self.source_data.replace_from_dense(dense)
     }
 
-    /// Returns the full terrain extent in current gameplay world units.
+    /// Returns the full terrain extent in metres.
     pub(crate) fn world_size(&self) -> (f32, f32) {
         (
             (self.width.saturating_sub(1)) as f32 * self.cell_size,
@@ -247,7 +247,7 @@ impl TerrainSystem {
         )
     }
 
-    /// Returns half-width and half-height in current gameplay world units.
+    /// Returns half-width and half-height in metres.
     pub(crate) fn half_world_extents(&self) -> (f32, f32) {
         let (world_w, world_h) = self.world_size();
         (world_w * 0.5, world_h * 0.5)
@@ -271,11 +271,10 @@ impl TerrainSystem {
         )
     }
 
-    /// Returns the terrain sample spacing in current gameplay world units.
-    pub(crate) fn cell_size_world_units(&self) -> f32 {
+    /// Returns the terrain sample spacing in metres.
+    pub(crate) fn cell_size_m(&self) -> f32 {
         self.cell_size
     }
-
 }
 
 fn terrain_chunk_cells_for_config(config: &WorldConfig) -> usize {

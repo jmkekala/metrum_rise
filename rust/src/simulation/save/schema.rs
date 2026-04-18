@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 28;
+pub const SAVE_VERSION: i64 = 29;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 

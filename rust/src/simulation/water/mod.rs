@@ -16,7 +16,7 @@ pub struct WaterSystem {
     pub width: usize,
     /// Grid height in cells (matches terrain height).
     pub height: usize,
-    /// Water sample spacing in current gameplay world units.
+    /// Water sample spacing in metres.
     cell_size: f32,
     /// Water depth (metres) per cell.
     depth: SparseChunkGrid<f32>,
@@ -52,7 +52,7 @@ impl WaterSystem {
         Self::with_chunking(
             config.terrain_grid_width(),
             config.terrain_grid_height(),
-            config.terrain_cell_world_units(),
+            config.terrain_cell_m,
             water_chunk_cells_for_config(config),
         )
     }
@@ -283,7 +283,7 @@ impl WaterSystem {
         self.flux.replace_from_dense(dense)
     }
 
-    /// Returns the full water-map extent in current gameplay world units.
+    /// Returns the full water-map extent in metres.
     pub(crate) fn world_size(&self) -> (f32, f32) {
         (
             (self.width.saturating_sub(1)) as f32 * self.cell_size,
