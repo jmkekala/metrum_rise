@@ -1130,3 +1130,160 @@ Exit condition:
   under-specified asset capacities as the authored asset contract becomes stricter.
 
 This phase is intentionally non-blocking for the first playable profile-based zoning replacement.
+
+---
+
+## 13. Road Ownership Gap and Nearest-Road Grid
+
+### Problem
+
+The allocator uses `distance_to_road` — distance to the **nearest road of any kind** — as an
+implicit ownership proxy when deciding whether a building slot is valid. `resolve_slot` rejects
+any slot whose building-centre distance to the nearest road is less than `half_depth`:
+
+```rust
+let road_dist = zoning.distance_to_road_world(center_2d.x, center_2d.y) as f32;
+if road_dist < half_depth {
+    return None;
+}
+```
+
+This is incorrect because `distance_to_road` measures the globally nearest road, not the road
+the slot belongs to. A slot may validly sit `half_depth` from its own road but be closer to a
+neighbouring road, and the check rejects it anyway.
+
+There is no `nearest_road_id` grid — no precomputed O(1) answer to "which road owns this cell?"
+Any per-slot ownership resolution that reconstructs that answer is expensive and fragile.
+
+Two cases where this breaks down for free-form road networks:
+
+- **Parallel roads with a narrow gap (≤ 2 × building depth):** Both roads try to place buildings
+  at `half_depth` offset from their own centrelines. Near the midpoint the building centre is
+  within `half_depth` of the opposite road, so all deep slots are rejected by both sides. The gap
+  stays empty even though one road should own those cells.
+- **Angled junction (e.g. 110°):** The rectangular frontage strips from two roads overlap at the
+  corner. Both roads scan the same world-space cells. The distance check is not directional and
+  cannot determine which road owns a given cell.
+
+### Design Invariant
+
+For free-form roads (any angle, curves) **every zone cell must belong to exactly one road edge.**
+Overlapping ownership claims are not acceptable.
+
+### Fix: Multi-Source BFS Nearest-Road Grid
+
+Add a new grid to `ZoningSystem`:
+
+```rust
+/// Edge index of the road whose surface is closest to each cell.
+/// `u32::MAX` means no road within the configured ownership radius.
+/// Derived runtime cache — not saved; recomputed from the road graph
+/// alongside `distance_to_road` after every road edit.
+pub nearest_road_id: DataGrid<u32>,
+```
+
+**Algorithm — localized BFS over the dirty region around the changed edge:**
+
+On every road add, remove, or geometry change:
+
+1. Compute the axis-aligned bounding box of the changed edge(s) and expand it by
+   `max_zone_depth` on all sides. Clamp to grid bounds. This is the **dirty region**.
+2. Clear `nearest_road_id` and `distance_to_road` to their default values inside the dirty
+   region only.
+3. Collect every road edge whose AABB intersects the dirty region. These are the **local seeds**.
+4. Rasterize each local seed edge: mark every dirty-region cell whose centre falls within
+   `edge_half_width` of that edge as a distance-zero seed, tagged with `edge_idx`.
+5. Push all seeds into a bucket queue keyed by integer metre distance.
+6. BFS outward from all seeds simultaneously, constrained to the dirty region, up to
+   `max_zone_depth`.
+7. Each cell receives the `(edge_idx, distance)` of the first wave that reaches it.
+8. Tie-break: when two seeds reach a cell with equal distance, the lower `edge_idx` wins
+   (deterministic).
+9. Write results into both `nearest_road_id` and `distance_to_road`.
+
+**Complexity:**
+
+- O(dirty\_cells) per road edit, where `dirty_cells` is the area of the expanded edge AABB.
+- For a typical 200 m road segment with 40 m max zone depth the dirty region is roughly
+  280 × 85 ≈ 24 000 cells — orders of magnitude less than the full grid.
+- Multiple simultaneous edits merge their dirty AABBs before the BFS runs.
+- Replaces the current O(N\_edges × W × H) per-cell segment scan.
+- On initial load, run once over the full grid (all edges are new). That single startup pass is
+  O(W × H) and does not recur during normal play.
+
+**Ownership check in `resolve_slot`:**
+
+Replace the `distance_to_road < half_depth` rejection with an explicit ownership check over every
+road-relative cell in the candidate footprint:
+
+```rust
+if zoning.nearest_road_id_world(cell_center.x, cell_center.y) != edge_idx as u32 {
+    return None; // cell belongs to a different road
+}
+```
+
+This is O(1) per cell. No Voronoi calculation at placement time.
+
+**Effect on the two problem cases:**
+
+| Case | Before | After |
+|---|---|---|
+| Parallel roads, 30 m gap | Deep slots rejected on both sides; gap stays empty | BFS assigns each road exactly 15 m; both sides fill their half cleanly |
+| 110° junction | Both roads scan overlapping cells; ownership is undefined | Voronoi bisector partitions the junction; each cell belongs to exactly one road |
+
+### What Does Not Change
+
+- The world-space `DataGrid<u16>` zone painting grid is unchanged. Players still paint zones on
+  the axis-aligned canvas.
+- `distance_to_road` is still populated and still drives the shader road-proximity dimming.
+- `EdgeOccupancy` per-edge frontage tracking is unchanged.
+- Save / load format is unchanged — `nearest_road_id` is a derived runtime cache. It is
+  recomputed on load from the road graph, exactly as `distance_to_road` is today.
+
+### Visual Grid Note
+
+The player-facing zone overlay renders an axis-aligned 10 m cell grid. Buildings are placed
+road-relative and do not align to that grid. This is an intentional decoupling — the grid is a
+zone-painting canvas, not a building-placement constraint. Whether to replace the overlay with a
+road-relative visual is a separate UX decision outside the scope of this fix.
+
+### Update Trigger
+
+The existing `update_distance_to_road(graph)` call must be replaced by a combined
+`update_road_ownership(graph)` that populates both `distance_to_road` and `nearest_road_id` in
+one BFS pass. The call site and trigger (every road add, remove, or geometry change) are
+unchanged.
+
+### Disjoint Road Networks
+
+The BFS is purely spatial and does not require topological connectivity. Two entirely separate
+road networks on the same map are handled identically to two connected ones — each edge seeds
+from its own surface and cells go to the nearest edge regardless of which network it belongs to.
+
+- **Networks farther apart than `max_zone_depth`:** a dirty region from one network never
+  reaches the other. Each network's `nearest_road_id` cells are updated independently and
+  neither disturbs the other.
+- **Networks within `max_zone_depth` of each other:** edges from both networks appear as local
+  seeds inside the merged dirty region. The BFS assigns boundary cells to whichever edge is
+  physically closer — correct Voronoi behavior, regardless of connectivity.
+
+### `edge_idx` Stability On Road Removal
+
+`nearest_road_id` stores raw `edge_idx` values. The road graph uses swap-remove semantics on
+deletion: the removed edge's slot is filled by the last edge in the array, giving that edge a
+new index. This invalidates any `nearest_road_id` cells that stored either the removed index or
+the swapped-in index.
+
+Required invariant: when a road removal triggers `compact_edges` or any index remap, the
+ownership update must treat **both** the removed edge and the swapped-in edge as dirty. In
+practice this means:
+
+1. Before removal, record the AABB of the edge being removed.
+2. After removal and remap, record the AABB of the edge that received the remapped index
+   (the former last edge).
+3. Union both AABBs, expand by `max_zone_depth`, and run one combined localized BFS over
+   that merged dirty region.
+
+This guarantees that cells previously owned by the removed edge get reassigned to their new
+nearest road, and cells previously owned by the remapped edge have their stored index
+corrected — without touching the rest of the grid.
