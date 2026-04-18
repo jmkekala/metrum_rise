@@ -3,10 +3,10 @@
 ## when the mouse is inside the 3D viewport area (between the side panels).
 extends Node
 
-# Must match the constants in asset_editor.gd.
-const PANEL_LEFT_W  := 270
-const PANEL_RIGHT_W := 300
-const PANEL_BOT_H   := 140
+var panel_left_w := 270.0
+var panel_right_w := 300.0
+var panel_top_h := 28.0
+var panel_bot_h := 140.0
 
 var _cam: Camera3D
 
@@ -39,7 +39,7 @@ func _input(event: InputEvent) -> void:
 	if not _cam:
 		return
 
-	var over_ui: bool = not _is_mouse_in_3d_area()
+	var over_ui: bool = get_viewport().gui_get_hovered_control() != null or not _is_mouse_in_3d_area()
 
 	if event is InputEventMouseButton:
 		match event.button_index:
@@ -82,9 +82,10 @@ func _input(event: InputEvent) -> void:
 func _is_mouse_in_3d_area() -> bool:
 	var mouse_pos := get_viewport().get_mouse_position()
 	var vp_size   := get_viewport().get_visible_rect().size
-	return (mouse_pos.x > PANEL_LEFT_W and
-			mouse_pos.x < vp_size.x - PANEL_RIGHT_W and
-			mouse_pos.y < vp_size.y - PANEL_BOT_H)
+	return (mouse_pos.x > panel_left_w and
+			mouse_pos.x < vp_size.x - panel_right_w and
+			mouse_pos.y > panel_top_h and
+			mouse_pos.y < vp_size.y - panel_bot_h)
 
 func _update_transform() -> void:
 	if not _cam:

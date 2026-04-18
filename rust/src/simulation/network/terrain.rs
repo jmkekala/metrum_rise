@@ -55,14 +55,14 @@ pub fn flatten_terrain_for_network(
             let outer_radius = road_half_width * 4.0;
 
             // BOUNDING BOX for this segment
-            let min_x = ((p_start.x.min(p_end.x) + half_size.x - outer_radius) / cell_size).floor()
-                as i32;
-            let max_x = ((p_start.x.max(p_end.x) + half_size.x + outer_radius) / cell_size).ceil()
-                as i32;
-            let min_z = ((p_start.z.min(p_end.z) + half_size.y - outer_radius) / cell_size).floor()
-                as i32;
-            let max_z = ((p_start.z.max(p_end.z) + half_size.y + outer_radius) / cell_size).ceil()
-                as i32;
+            let min_x =
+                ((p_start.x.min(p_end.x) + half_size.x - outer_radius) / cell_size).floor() as i32;
+            let max_x =
+                ((p_start.x.max(p_end.x) + half_size.x + outer_radius) / cell_size).ceil() as i32;
+            let min_z =
+                ((p_start.z.min(p_end.z) + half_size.y - outer_radius) / cell_size).floor() as i32;
+            let max_z =
+                ((p_start.z.max(p_end.z) + half_size.y + outer_radius) / cell_size).ceil() as i32;
 
             for nz in min_z..=max_z {
                 for nx in min_x..=max_x {

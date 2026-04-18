@@ -1,5 +1,6 @@
 //! Blank-world creation and reusable world-definition bridge methods.
 
+use crate::debug_log;
 use crate::nodes::sim::core::{CityTreasury, SimCore};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
@@ -40,16 +41,44 @@ impl SimCore {
             return Err("base_elevation_m must be finite".to_owned());
         }
 
-        let config = WorldConfig::new(width_m, height_m, self.config.env_cell_m, self.config.zone_cell_m)
-            .with_terrain_resolution(terrain_cell_m)
-            .with_chunking(terrain_chunk_m, base_elevation_m);
+        let config = WorldConfig::new(
+            width_m,
+            height_m,
+            self.config.env_cell_m,
+            self.config.zone_cell_m,
+        )
+        .with_terrain_resolution(terrain_cell_m)
+        .with_chunking(terrain_chunk_m, base_elevation_m);
+        debug_log!(
+            "world-editor",
+            "create_blank_world width_m={:.1} height_m={:.1} terrain_cell_m={:.1} terrain_chunk_m={:.1} base_elevation_m={:.1}",
+            width_m,
+            height_m,
+            terrain_cell_m,
+            terrain_chunk_m,
+            base_elevation_m
+        );
         let terrain = TerrainSystem::from_world_config(&config);
         self.reset_to_blank_world_runtime(config, terrain);
         Ok(())
     }
 
     /// Saves the current authored world state as a reusable world-definition asset.
-    pub(crate) fn save_world_definition_internal(&self, path: &str, name: &str) -> Result<(), String> {
+    pub(crate) fn save_world_definition_internal(
+        &self,
+        path: &str,
+        name: &str,
+    ) -> Result<(), String> {
+        debug_log!(
+            "world-editor",
+            "save_world_definition path={} name={} world=({:.1}m x {:.1}m) terrain_cell_m={:.1} terrain_chunk_m={:.1}",
+            path,
+            name,
+            self.config.width_m,
+            self.config.height_m,
+            self.config.terrain_cell_m,
+            self.config.terrain_chunk_m
+        );
         save_world_definition_to_sqlite(
             &PathBuf::from(path),
             WorldDefinitionView {
@@ -63,8 +92,9 @@ impl SimCore {
 
     /// Loads one reusable world-definition asset and resets runtime state to a fresh blank city.
     pub(crate) fn load_world_definition_internal(&mut self, path: &str) -> Result<(), String> {
-        let loaded =
-            load_world_definition_from_sqlite(&PathBuf::from(path)).map_err(|err| err.to_string())?;
+        debug_log!("world-editor", "load_world_definition path={}", path);
+        let loaded = load_world_definition_from_sqlite(&PathBuf::from(path))
+            .map_err(|err| err.to_string())?;
         self.apply_loaded_world_definition(loaded);
         Ok(())
     }
@@ -80,6 +110,15 @@ impl SimCore {
 
     fn reset_to_blank_world_runtime(&mut self, config: WorldConfig, terrain: TerrainSystem) {
         let registry = self.allocator.registry.clone();
+        debug_log!(
+            "world-editor",
+            "reset_blank_world_runtime width_m={:.1} height_m={:.1} terrain_cell_m={:.1} terrain_chunk_m={:.1} base_elevation_m={:.1}",
+            config.width_m,
+            config.height_m,
+            config.terrain_cell_m,
+            config.terrain_chunk_m,
+            config.terrain_base_elevation_m
+        );
 
         self.time = TimeSystem::new();
         self.config = config;

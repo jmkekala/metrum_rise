@@ -205,7 +205,9 @@ pub(crate) fn load_world_definition_from_sqlite(
         },
     )?;
     if format_version != WORLD_DEFINITION_FORMAT_VERSION {
-        return Err(WorldDefinitionError::custom("world definition version mismatch"));
+        return Err(WorldDefinitionError::custom(
+            "world definition version mismatch",
+        ));
     }
     validate_world_name(&name)?;
     let config = WorldConfig::new(width_m, height_m, env_cell_m, zone_cell_m)
@@ -352,9 +354,7 @@ fn unpack_f32_blob(blob: &[u8], expected_len: usize) -> WorldDefinitionResult<Ve
 
 fn i64_to_usize(value: i64) -> WorldDefinitionResult<usize> {
     usize::try_from(value).map_err(|_| {
-        WorldDefinitionError::custom(format!(
-            "could not convert SQLite integer {value} to usize"
-        ))
+        WorldDefinitionError::custom(format!("could not convert SQLite integer {value} to usize"))
     })
 }
 
@@ -400,7 +400,10 @@ mod tests {
 
         assert_eq!(loaded.name, "Blank Test World");
         assert_eq!(loaded.config, config);
-        assert_eq!(loaded.terrain.clone_source_dense(), terrain.clone_source_dense());
+        assert_eq!(
+            loaded.terrain.clone_source_dense(),
+            terrain.clone_source_dense()
+        );
         std::fs::remove_file(path).ok();
     }
 
@@ -426,7 +429,9 @@ mod tests {
 
         let conn = Connection::open(&path).expect("saved world definition should exist");
         let chunk_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM world_terrain_chunks", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM world_terrain_chunks", [], |row| {
+                row.get(0)
+            })
             .expect("chunk count query should succeed");
         assert_eq!(chunk_count, 2);
         std::fs::remove_file(path).ok();

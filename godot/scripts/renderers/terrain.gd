@@ -1,4 +1,4 @@
-## Terrain mesh renderer and editor — displays the heightmap and handles sculpting input.
+## Terrain mesh renderer — displays the heightmap and optionally handles gameplay sculpt input.
 ##
 ## Rust methods called: get_heightmap_size(), get_terrain_world_size(), get_heightmap_data(),
 ##   sculpt_terrain(), flatten_terrain_for_roads(), is_terrain_dirty(), clear_terrain_dirty(),
@@ -71,7 +71,7 @@ func _process(delta):
 		update_terrain_visuals()
 		cached_overlay_mode = overlay_mode
 	
-	var input_manager = get_node("../InputManager")
+	var input_manager = get_node_or_null("../InputManager")
 	if input_manager and input_manager.current_tool == input_manager.Tool.SCULPT:
 		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
 			sculpt_at_mouse(delta)
@@ -129,6 +129,6 @@ func sculpt_at_mouse(delta):
 			
 		simulation_node.sculpt_terrain(Vector2(intersection.x, intersection.z), 15.0, strength)
 		
-		var road_tool = get_node("../RoadTool")
+		var road_tool = get_node_or_null("../RoadTool")
 		if road_tool:
 			road_tool.update_main_mesh()

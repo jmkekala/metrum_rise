@@ -9,6 +9,8 @@
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
 #                        reports, and agent routing decisions.
+#   --debug-world-editor Alias for --debug world-editor
+#                        Shows world-editor create/open/save/tool activity (stdout)
 #   --debug-sim          Hourly simulation summaries (stdout)
 
 RELEASE=0
@@ -27,6 +29,9 @@ while [ $i -le $# ]; do
         DEBUG_SIM=1
     elif [ "$arg" = "--debug-traffic" ]; then
         DEBUG_TRAFFIC=1
+    elif [ "$arg" = "--debug-world-editor" ]; then
+        DEBUG=1
+        DEBUG_CATEGORY="world-editor"
     elif [ "$arg" = "--debug" ]; then
         next_index=$((i + 1))
         if [ $next_index -le $# ]; then

@@ -138,7 +138,8 @@ impl TerrainSystem {
         let max_dist = 10000.0; // Increased from 500 to support high-altitude camera
         let step = 0.5; // Half-meter steps for safety
 
-        let mut prev_diff = ray_origin.y - self.sample_height_world(ray_origin.x, ray_origin.z) * 20.0;
+        let mut prev_diff =
+            ray_origin.y - self.sample_height_world(ray_origin.x, ray_origin.z) * 20.0;
 
         while t < max_dist {
             t += step;

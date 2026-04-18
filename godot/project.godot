@@ -6,6 +6,10 @@ config/name="Metrum Rise"
 config/features=PackedStringArray("4.x", "Forward Plus")
 run/main_scene="res://scenes/Router.tscn"
 
+[autoload]
+
+LaunchState="*res://scripts/core/launch_state.gd"
+
 [display]
 
 window/size/viewport_width=1920

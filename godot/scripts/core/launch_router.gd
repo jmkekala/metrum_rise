@@ -1,7 +1,7 @@
 ## Checks command-line arguments and loads the appropriate scene.
 ## This is the project's main scene entry point.
-## Normal launch → Main.tscn. --asset-editor → AssetEditor.tscn.
-## --economy-editor → EconomyEditor.tscn.
+## Normal launch → MainMenu.tscn. --asset-editor → AssetEditor.tscn.
+## --economy-editor → EconomyEditor.tscn. --world-editor → WorldEditor.tscn.
 extends Node
 
 func _ready() -> void:
@@ -10,5 +10,9 @@ func _ready() -> void:
 		get_tree().change_scene_to_file.call_deferred("res://scenes/AssetEditor.tscn")
 	elif "--economy-editor" in args:
 		get_tree().change_scene_to_file.call_deferred("res://scenes/EconomyEditor.tscn")
-	else:
+	elif "--world-editor" in args:
+		get_tree().change_scene_to_file.call_deferred("res://scenes/WorldEditor.tscn")
+	elif "--benchmark" in args or "--generate-benchmark" in args or "--huge-map" in args:
 		get_tree().change_scene_to_file.call_deferred("res://scenes/Main.tscn")
+	else:
+		get_tree().change_scene_to_file.call_deferred("res://scenes/MainMenu.tscn")

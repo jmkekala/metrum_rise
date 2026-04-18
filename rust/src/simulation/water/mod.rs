@@ -89,8 +89,7 @@ impl WaterSystem {
         let depth_ref = &depth;
         let terrain_ref = terrain;
 
-        flux
-            .par_chunks_mut(w)
+        flux.par_chunks_mut(w)
             .enumerate()
             .for_each(|(y, row_flux)| {
                 if y == 0 || y >= h - 1 {
@@ -276,10 +275,7 @@ impl WaterSystem {
     }
 
     /// Replaces the water flux buffer from a dense row-major snapshot.
-    pub(crate) fn replace_flux_from_dense(
-        &mut self,
-        dense: &[[f32; 4]],
-    ) -> Result<(), String> {
+    pub(crate) fn replace_flux_from_dense(&mut self, dense: &[[f32; 4]]) -> Result<(), String> {
         self.flux.replace_from_dense(dense)
     }
 
@@ -304,7 +300,6 @@ impl WaterSystem {
             .clamp(0.0, (self.height.saturating_sub(1)) as f32) as usize;
         (grid_x, grid_z)
     }
-
 }
 
 fn water_chunk_cells_for_config(config: &WorldConfig) -> usize {

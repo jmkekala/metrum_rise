@@ -11,6 +11,7 @@ const BAR_HEIGHT := 28
 const SCENE_GAMEPLAY := "gameplay"
 const SCENE_ASSET_EDITOR := "asset_editor"
 const SCENE_ECONOMY_EDITOR := "economy_editor"
+const SCENE_WORLD_EDITOR := "world_editor"
 
 enum ActionId {
 	FILE_NEW_GAME = 1,
@@ -18,6 +19,9 @@ enum ActionId {
 	FILE_LOAD = 3,
 	FILE_RETURN_TO_GAME = 4,
 	FILE_QUIT = 5,
+	FILE_NEW_WORLD = 6,
+	FILE_OPEN_WORLD = 7,
+	FILE_SAVE_AS = 8,
 	VIEW_TOGGLE_ZONING = 10,
 	VIEW_OVERLAY_NONE = 11,
 	VIEW_OVERLAY_POLLUTION = 12,
@@ -78,6 +82,8 @@ func _build_menu_bar() -> void:
 			_build_asset_editor_menus(menu_bar)
 		SCENE_ECONOMY_EDITOR:
 			_build_economy_editor_menus(menu_bar)
+		SCENE_WORLD_EDITOR:
+			_build_world_editor_menus(menu_bar)
 
 func _build_gameplay_menus(menu_bar: MenuBar) -> void:
 	var file_popup := _add_menu_popup(menu_bar, "File")
@@ -142,6 +148,21 @@ func _build_economy_editor_menus(menu_bar: MenuBar) -> void:
 	economy_popup.add_item("Run Sandbox", ActionId.ECONOMY_RUN_SANDBOX)
 	economy_popup.id_pressed.connect(_on_economy_menu_pressed)
 
+func _build_world_editor_menus(menu_bar: MenuBar) -> void:
+	var file_popup := _add_menu_popup(menu_bar, "File")
+	file_popup.add_item("New World [Ctrl+N]", ActionId.FILE_NEW_WORLD)
+	file_popup.add_item("Open World [Ctrl+O]", ActionId.FILE_OPEN_WORLD)
+	file_popup.add_item("Save [Ctrl+S]", ActionId.FILE_SAVE)
+	file_popup.add_item("Save As...", ActionId.FILE_SAVE_AS)
+	file_popup.add_separator()
+	file_popup.add_item("Quit", ActionId.FILE_QUIT)
+	file_popup.id_pressed.connect(_on_file_menu_pressed)
+
+	var help_popup := _add_menu_popup(menu_bar, "Help")
+	help_popup.add_item("Keyboard Shortcuts", ActionId.HELP_SHORTCUTS)
+	help_popup.add_item("About", ActionId.HELP_ABOUT)
+	help_popup.id_pressed.connect(_on_help_menu_pressed)
+
 func _add_menu_popup(menu_bar: MenuBar, label: String) -> PopupMenu:
 	var popup := _create_popup_menu(label)
 	menu_bar.add_child(popup)
@@ -162,9 +183,18 @@ func _on_file_menu_pressed(id: int) -> void:
 		ActionId.FILE_NEW_GAME:
 			if _scene_root and _scene_root.has_method("menu_new_game"):
 				_scene_root.menu_new_game()
+		ActionId.FILE_NEW_WORLD:
+			if _scene_root and _scene_root.has_method("menu_new_world"):
+				_scene_root.menu_new_world()
+		ActionId.FILE_OPEN_WORLD:
+			if _scene_root and _scene_root.has_method("menu_open_world"):
+				_scene_root.menu_open_world()
 		ActionId.FILE_SAVE:
 			if _scene_root and _scene_root.has_method("menu_save"):
 				_scene_root.menu_save()
+		ActionId.FILE_SAVE_AS:
+			if _scene_root and _scene_root.has_method("menu_save_as"):
+				_scene_root.menu_save_as()
 		ActionId.FILE_LOAD:
 			if _scene_root and _scene_root.has_method("menu_load"):
 				_scene_root.menu_load()
@@ -239,6 +269,26 @@ func _on_tools_menu_pressed(id: int) -> void:
 func _on_help_menu_pressed(id: int) -> void:
 	match id:
 		ActionId.HELP_SHORTCUTS:
+			if scene_kind == SCENE_WORLD_EDITOR:
+				_open_window(_ensure_text_window(
+					"keyboard_shortcuts",
+					"Keyboard Shortcuts",
+					[
+						"1  Raise terrain tool",
+						"2  Lower terrain tool",
+						"Left Mouse  Sculpt terrain",
+						"Middle Mouse  Orbit camera",
+						"Right Mouse  Pan camera",
+						"W / A / S / D  Pan camera",
+						"Mouse Wheel  Zoom camera",
+						"Ctrl+N  New world",
+						"Ctrl+O  Open world",
+						"Ctrl+S  Save world",
+						"Escape  Clear active tool"
+					],
+					Vector2i(380, 300)
+				))
+				return
 			_open_window(_ensure_text_window(
 				"keyboard_shortcuts",
 				"Keyboard Shortcuts",
@@ -264,14 +314,7 @@ func _on_help_menu_pressed(id: int) -> void:
 			_open_window(_ensure_text_window(
 				"about",
 				"About Metrum Rise",
-				[
-					"Metrum Rise",
-					"",
-					"Large-scale city simulation with a Rust simulation backend",
-					"loaded into a Godot 4 frontend through GDExtension.",
-					"",
-					"This top menu is shared across gameplay and editor shells."
-				],
+				_about_lines(),
 				Vector2i(420, 220)
 			))
 
@@ -352,4 +395,25 @@ func _detect_scene_kind() -> String:
 			return SCENE_ASSET_EDITOR
 		if simulation_node.has_method("is_economy_editor_mode") and simulation_node.is_economy_editor_mode():
 			return SCENE_ECONOMY_EDITOR
+		if simulation_node.has_method("is_world_editor_mode") and simulation_node.is_world_editor_mode():
+			return SCENE_WORLD_EDITOR
 	return SCENE_GAMEPLAY
+
+func _about_lines() -> Array[String]:
+	if scene_kind == SCENE_WORLD_EDITOR:
+		return [
+			"Metrum Rise World Editor",
+			"",
+			"Terrain-first blank-world authoring shell backed by the",
+			"shared Rust SimulationNode runtime and WorldDefinition assets.",
+			"",
+			"This top menu is shared across gameplay and editor shells."
+		]
+	return [
+		"Metrum Rise",
+		"",
+		"Large-scale city simulation with a Rust simulation backend",
+		"loaded into a Godot 4 frontend through GDExtension.",
+		"",
+		"This top menu is shared across gameplay and editor shells."
+	]

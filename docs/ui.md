@@ -5,37 +5,71 @@
 Hybrid: **top menu bar** for global actions and window launchers + **floating windows** for
 information panels and selection-driven properties + **bottom toolbar** for placement tools.
 
-All UI is built procedurally in GDScript. The four `.tscn` files (`Main.tscn`,
-`AssetEditor.tscn`, `EconomyEditor.tscn`, `Router.tscn`) describe the scene node tree but
+All UI is built procedurally in GDScript. The six `.tscn` files (`MainMenu.tscn`, `Main.tscn`,
+`AssetEditor.tscn`, `EconomyEditor.tscn`, `WorldEditor.tscn`, `Router.tscn`) describe the scene node tree but
 contain no UI component definitions — all panels, buttons, and windows are constructed at
 runtime in `_ready()`. There are no `.tres` theme resource files; style constants are
-centralised in `UIStyle` (see below) instead. A `WorldEditor.tscn` scene is planned as the next
-editor shell and follows the same procedural-UI rule.
+centralised in `UIStyle` (see below) instead. `WorldEditor.tscn` follows the same procedural-UI
+rule as the gameplay and other editor shells.
 
 GDScript is a thin rendering and input bridge only. No simulation logic or game decisions
 belong here. Rust methods are called through `SimulationNode`.
 
 ### Surface presence per scene
 
-| Surface | Main (gameplay) | AssetEditor | EconomyEditor | WorldEditor (planned) |
-|---------|:-:|:-:|:-:|:-:|
-| Top menu bar | ✓ | ✓ | ✓ | ✓ |
-| Bottom toolbar | ✓ | — | — | ✓ |
-| Context panel | — | — | — | — |
-| Floating windows | ✓ | — | — | — |
+| Surface | MainMenu | Main (gameplay) | AssetEditor | EconomyEditor | WorldEditor |
+|---------|:-:|:-:|:-:|:-:|:-:|
+| Top menu bar | — | ✓ | ✓ | ✓ | ✓ |
+| Bottom toolbar | — | ✓ | — | — | ✓ |
+| Context panel | — | — | — | — | — |
+| Floating windows | — | ✓ | — | — | — |
 
-The top menu bar is shared across all scenes. AssetEditor and EconomyEditor remain
-self-contained editor applications with no bottom toolbar. The planned WorldEditor is the
+The top menu bar is shared across gameplay and editor scenes. AssetEditor and EconomyEditor remain
+self-contained editor applications with no bottom toolbar. WorldEditor is the editor-shell
 exception: it uses a bottom toolbar because terrain and later water authoring tools belong on
 that surface rather than in the top menu.
 
+MainMenu is the startup exception: it is a dedicated front-door surface and does not instantiate
+gameplay UI or a gameplay world.
+
 The top menu in editor scenes carries a reduced item set. AssetEditor and EconomyEditor use
-File plus editor-specific menus. The planned WorldEditor uses File plus Help, with no
+File plus editor-specific menus. WorldEditor uses File plus Help, with no
 `Return To Game` action and no City / Demand / Economy launchers, which are gameplay concepts.
 
 ---
 
 ## Surfaces
+
+### 0. Main Menu
+
+**Node:** full-screen `Control`.
+**Script:** `scripts/core/main_menu.gd` *(implemented)*.
+
+MainMenu is now the default normal-launch surface. Normal startup must not instantiate a gameplay
+map before the player chooses content.
+
+Current deterministic rules:
+
+- normal launch routes to `MainMenu.tscn`
+- `MainMenu` contains no `SimulationNode`
+- `MainMenu` contains no terrain, water, road, or gameplay HUD surfaces
+- `New Game` opens a file picker rooted at `user://worlds/`
+- `Load Game` opens a file picker rooted at `user://saves/`
+- selecting a world or save stores the request in the `LaunchState` autoload and then enters
+  `Main.tscn`
+- `Main.tscn` must consume that pending request on startup and load the selected world/save before
+  gameplay continues
+- if gameplay is opened without a pending request and without benchmark-style command-line flags,
+  it returns to `MainMenu.tscn`
+
+MainMenu v1 actions:
+
+| Action | Result |
+|--------|--------|
+| New Game | Pick a `WorldDefinition` from `user://worlds/` and enter gameplay |
+| Load Game | Pick a city save from `user://saves/` and enter gameplay |
+| World Editor | Spawn a `--world-editor` instance |
+| Quit | Exit the application |
 
 ### 1. Top Menu Bar
 
@@ -56,10 +90,15 @@ discoverable entry point. Shortcut-bearing items are currently rendered as plain
 text in the label itself (for example `Save [Ctrl+S]`) rather than using a separate
 accelerator column.
 
-`top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `EconomyEditor`).
+Gameplay `New Game` still opens a file picker rooted at `user://worlds/` and loads the selected
+`WorldDefinition` into the live scene.
+Gameplay `Save` and `Load` open file pickers rooted at `user://saves/`.
+
+`top_menu.gd` is attached by each scene root (`Main`, `AssetEditor`, `EconomyEditor`,
+`WorldEditor`).
 It is not owned by `main_ui.gd`, because the editor scenes do not use the gameplay HUD.
 
-Planned WorldEditor menu:
+WorldEditor menu:
 
 | Menu | Items |
 |------|-------|
@@ -113,18 +152,35 @@ submenu. Opening the Zoning tool shows only the lower row. Clicking `Residential
 automatically selects the first profile in that family. Clicking the same family again
 collapses that profile row.
 
-Planned WorldEditor toolbar rules:
+WorldEditor toolbar rules:
 
 - WorldEditor uses a bottom toolbar with the same bottom-of-screen placement and the same
   `UIStyle` shell language as the gameplay toolbar
 - this toolbar is the primary tool-selection surface for world authoring
 - terrain tools live here, not in the top menu
 - WorldEditor v1 active tools are `Raise` and `Lower`
-- `Water` is the first planned follow-up tool group and will live on the same toolbar surface
+- `Water` is the first follow-up tool group and will live on the same toolbar surface
 - WorldEditor does not include gameplay-only toolbar actions such as Roads, Zoning, Inspect,
   or Mods
 - WorldEditor does not include gameplay HUD widgets such as the clock, city-status panel, or
   R/C/I meter
+
+Current WorldEditor shortcuts:
+
+| Key | Action |
+|-----|--------|
+| 1 | Select `Raise` |
+| 2 | Select `Lower` |
+| Left Mouse | Sculpt terrain with the active tool |
+| Middle Mouse | Orbit camera |
+| Right Mouse | Pan camera |
+| W / A / S / D | Pan camera |
+| Mouse Wheel | Zoom camera |
+| Ctrl+N | New world |
+| Ctrl+O | Open world |
+| Ctrl+S | Save world |
+| Ctrl+Shift+S | Save world as |
+| Escape | Clear active tool |
 
 **Keyboard shortcuts** (owned by `input_manager.gd`, toolbar reflects active tool visually):
 

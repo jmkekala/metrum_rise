@@ -86,9 +86,13 @@ func menu_run_sandbox() -> void:
 	_run_sandbox()
 
 func _spawn_project_instance(arguments: PackedStringArray) -> void:
-	var err := OS.create_instance(arguments)
-	if err != OK:
-		push_error("Failed to launch a new project instance: %s" % err)
+	var launch_args := PackedStringArray()
+	if not arguments.is_empty():
+		launch_args.append("--")
+		launch_args.append_array(arguments)
+	var pid := OS.create_instance(launch_args)
+	if pid == -1:
+		push_error("Failed to launch a new project instance.")
 
 func _build_toolbar(parent: Control) -> void:
 	var panel := PanelContainer.new()

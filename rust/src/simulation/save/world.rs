@@ -218,7 +218,10 @@ pub(super) fn save_world(
     Ok(())
 }
 
-pub(super) fn load_terrain(conn: &Connection, config: &WorldConfig) -> SaveLoadResult<TerrainSystem> {
+pub(super) fn load_terrain(
+    conn: &Connection,
+    config: &WorldConfig,
+) -> SaveLoadResult<TerrainSystem> {
     let (w_raw, h_raw, blob): (i64, i64, Vec<u8>) = conn.query_row(
         "SELECT width, height, height_blob_f32_le FROM terrain_state LIMIT 1",
         [],

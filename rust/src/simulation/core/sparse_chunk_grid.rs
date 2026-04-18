@@ -131,8 +131,7 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
                 }
 
                 if touched {
-                    self.chunks
-                        .insert(Self::chunk_key(chunk_x, chunk_y), chunk);
+                    self.chunks.insert(Self::chunk_key(chunk_x, chunk_y), chunk);
                 }
             }
         }
@@ -155,11 +154,7 @@ impl<T: Copy + PartialEq> SparseChunkGrid<T> {
         let chunk_y = y / self.chunk_size;
         let local_x = x % self.chunk_size;
         let local_y = y % self.chunk_size;
-        (
-            chunk_x,
-            chunk_y,
-            local_y * self.chunk_size + local_x,
-        )
+        (chunk_x, chunk_y, local_y * self.chunk_size + local_x)
     }
 
     fn chunk_key(chunk_x: usize, chunk_y: usize) -> u64 {

@@ -19,6 +19,10 @@
 //! | | `load_economy_project` | `economy_editor.gd` |
 //! | | `export_economy_project` | `economy_editor.gd` |
 //! | | `run_economy_sandbox` | `economy_editor.gd` |
+//! | **World Editor** | `is_world_editor_mode` | `world_editor.gd` |
+//! | | `create_blank_world` | `world_editor.gd` |
+//! | | `save_world_definition` | `world_editor.gd` |
+//! | | `load_world_definition` | `world_editor.gd` |
 //! | **Environment** | `get_pollution_image_data` | `overlay_manager.gd` |
 //! | | `get_noise_image_data` | `overlay_manager.gd` |
 //! | | `get_desirability_image_data` | `overlay_manager.gd` |
@@ -101,6 +105,10 @@ pub struct SimulationNode {
     /// True when launched with `--economy-editor`. Sim thread is not started;
     /// the node only serves the authored-economy editor shell.
     pub(crate) economy_editor_mode: bool,
+    /// True when launched with `--world-editor`. The node boots the blank-world
+    /// authoring shell and keeps the simulation thread available for terrain /
+    /// future water authoring workflows.
+    pub(crate) world_editor_mode: bool,
     /// Incremented every Godot frame in benchmark mode.
     pub(crate) benchmark_tick_count: u32,
     /// Last day for which benchmark CSV has been written.
@@ -545,6 +553,12 @@ impl SimulationNode {
     #[func]
     pub fn is_economy_editor_mode(&self) -> bool {
         self.economy_editor_mode
+    }
+
+    /// Returns `true` when the node was launched with `--world-editor`.
+    #[func]
+    pub fn is_world_editor_mode(&self) -> bool {
+        self.world_editor_mode
     }
 
     /// Loads the canonical authored economy folder and returns a JSON envelope
@@ -1185,13 +1199,17 @@ impl SimulationNode {
         terrain_chunk_m: f32,
         base_elevation_m: f32,
     ) -> bool {
-        match self.lock_core().create_blank_world_internal(
-            width_m,
-            height_m,
-            terrain_cell_m,
-            terrain_chunk_m,
-            base_elevation_m,
-        ) {
+        let result = {
+            let mut core = self.lock_core();
+            core.create_blank_world_internal(
+                width_m,
+                height_m,
+                terrain_cell_m,
+                terrain_chunk_m,
+                base_elevation_m,
+            )
+        };
+        match result {
             Ok(()) => {
                 self.refresh_snapshot_from_core();
                 true
@@ -1233,7 +1251,11 @@ impl SimulationNode {
     /// Loads a SQLite save snapshot and replaces the live simulation state.
     #[func]
     pub fn load_game(&mut self, path: GString) -> bool {
-        match self.lock_core().load_game_internal(&path.to_string()) {
+        let result = {
+            let mut core = self.lock_core();
+            core.load_game_internal(&path.to_string())
+        };
+        match result {
             Ok(()) => {
                 self.refresh_snapshot_from_core();
                 true
@@ -1248,10 +1270,11 @@ impl SimulationNode {
     /// Loads a reusable world-definition asset and replaces the live runtime with a blank city.
     #[func]
     pub fn load_world_definition(&mut self, path: GString) -> bool {
-        match self
-            .lock_core()
-            .load_world_definition_internal(&path.to_string())
-        {
+        let result = {
+            let mut core = self.lock_core();
+            core.load_world_definition_internal(&path.to_string())
+        };
+        match result {
             Ok(()) => {
                 self.refresh_snapshot_from_core();
                 true
@@ -1315,6 +1338,7 @@ impl INode3D for SimulationNode {
         let mut run_benchmark = false;
         let mut asset_editor_mode = false;
         let mut economy_editor_mode = false;
+        let mut world_editor_mode = false;
         for arg in args.as_slice() {
             match arg.to_string().as_str() {
                 "--huge-map" | "--benchmark" => {
@@ -1333,11 +1357,14 @@ impl INode3D for SimulationNode {
                     economy_editor_mode = true;
                     crate::debug::ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+                "--world-editor" => {
+                    world_editor_mode = true;
+                }
                 _ => {}
             }
         }
 
-        let config = if asset_editor_mode || economy_editor_mode {
+        let config = if asset_editor_mode || economy_editor_mode || world_editor_mode {
             WorldConfig::editor_sandbox()
         } else {
             WorldConfig::gameplay_default()
@@ -1396,6 +1423,7 @@ impl INode3D for SimulationNode {
             benchmark_mode,
             asset_editor_mode,
             economy_editor_mode,
+            world_editor_mode,
             benchmark_tick_count: 0,
             last_logged_day: 0,
             time_passed: 0.0,
@@ -1438,6 +1466,12 @@ impl INode3D for SimulationNode {
             );
             debug_log!("economy-editor", "shell ready");
             return;
+        }
+        if self.world_editor_mode {
+            godot_print!(
+                "[world-editor] shell ready — blank-world authoring runtime, simulation thread available"
+            );
+            debug_log!("world-editor", "shell ready");
         }
 
         // Start the background simulation thread.

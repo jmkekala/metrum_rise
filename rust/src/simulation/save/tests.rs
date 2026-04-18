@@ -379,7 +379,10 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     );
     assert_eq!(loaded.time.day_index, time.day_index);
     assert_eq!(loaded.time.minute_of_day, time.minute_of_day);
-    assert_eq!(loaded.terrain.clone_source_dense(), terrain.clone_source_dense());
+    assert_eq!(
+        loaded.terrain.clone_source_dense(),
+        terrain.clone_source_dense()
+    );
     assert_eq!(loaded.water.clone_depth_dense(), water.clone_depth_dense());
     assert_eq!(loaded.demand.residential, demand.residential);
     assert_eq!(loaded.demand.commercial, demand.commercial);

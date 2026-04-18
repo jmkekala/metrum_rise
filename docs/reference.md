@@ -100,13 +100,28 @@ Benchmark-history rule:
 
 The Godot side is a thin bridge: no authoritative simulation logic lives here. GDScript handles rendering, input routing, and editor UX while `SimulationNode` owns the simulation state in Rust.
 
-The asset editor and economy editor are separate launch modes inside the same Godot project. See [`asset_editor.md`](asset_editor.md) for the asset-tool contract and [`economy.md`](economy.md) for the economy-tool contract.
+Normal startup now routes through `Router.tscn` into `MainMenu.tscn`. Gameplay `Main.tscn`
+is only entered after the player selects a world/save through the `LaunchState` handoff, or
+when benchmark-style command-line flags explicitly request direct gameplay boot.
+
+The asset editor, economy editor, and world editor are separate launch modes inside the same
+Godot project. See [`asset_editor.md`](asset_editor.md) for the asset-tool contract,
+[`economy.md`](economy.md) for the economy-tool contract, and [`terrain.md`](terrain.md) for the
+world-editor terrain ownership contract.
+
+### Startup Shells
+
+| Scene / singleton | Type | Script | Role |
+|-------------------|------|--------|------|
+| Router | `Node` | `launch_router.gd` | Project entry point. Routes normal launch to `MainMenu.tscn` and editor / benchmark flags to their dedicated scenes. |
+| MainMenu | `Control` | `main_menu.gd` | Front-door menu with `New Game`, `Load Game`, `World Editor`, and `Quit`. No simulation scene graph is present here. |
+| LaunchState | Autoload singleton | `launch_state.gd` | Holds the pending selected world/save path between the main menu and gameplay scene startup. |
 
 ### Main Gameplay Scene (`godot/scenes/Main.tscn`)
 
 | Node | Type | Script | Role |
 |------|------|--------|------|
-| Main | `Node3D` | — | Root gameplay scene. |
+| Main | `Node3D` | `main_scene.gd` | Root gameplay scene. Consumes pending `LaunchState` request on startup or returns to `MainMenu.tscn` when launched without content. |
 | WorldEnvironment | `WorldEnvironment` | — | Global environment settings. |
 | DirectionalLight3D | `DirectionalLight3D` | — | Primary scene light and shadow source. |
 | SimulationNode | Rust native | — | Owns simulation state and exposes `#[func]` methods. |
@@ -129,11 +144,24 @@ Runtime-spawned tools:
 - `SelectTool` is instantiated by `InputManager` at runtime for road-edge selection, crosswalk toggles, and edge-class editing.
 - `CulDeSacTool` is instantiated by `InputManager` at runtime for dead-end cap toggles.
 
+### World Editor Scene (`godot/scenes/WorldEditor.tscn`)
+
+| Node | Type | Script | Role |
+|------|------|--------|------|
+| WorldEditor | `Node3D` | `world_editor.gd` | Root blank-world authoring scene. |
+| WorldEnvironment | `WorldEnvironment` | — | Global environment settings. |
+| DirectionalLight3D | `DirectionalLight3D` | — | Primary scene light and shadow source. |
+| SimulationNode | Rust native | — | Owns the paused shared runtime and `WorldDefinition` bridge methods. |
+| Terrain | `MeshInstance3D` | `terrain.gd` | Terrain mesh renderer and dirty-flag refresh owner. |
+| Water | `MeshInstance3D` | `water.gd` | Water renderer; currently passive in terrain-only v1. |
+| CameraNode | `CameraNode` | — | World-editor camera. |
+| EditorCameraInput | `Node` | `world_editor_camera_input.gd` | World-editor orbit/pan/zoom controller with terrain-plane mouse pan plus keyboard pan. |
+
 ### Script → Rust Method Inventory
 
 | Script | `SimulationNode` methods called |
 |--------|---------------------------------|
-| `input_manager.gd` | `undo_action()`, `save_game()`, `load_game()`, `set_simulation_speed()` |
+| `input_manager.gd` | `undo_action()`, `save_game()`, `load_game()`, `load_world_definition()`, `set_simulation_speed()` |
 | `main_ui.gd` | `get_no_building_spawn()`, `get_edge_class()`, `get_edge_geometry_3d()`, `get_height_at()` |
 | `terrain.gd` | `get_heightmap_size()`, `get_terrain_world_size()`, `get_heightmap_data()`, `intersect_terrain()`, `sculpt_terrain()`, `flatten_terrain_for_roads()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
 | `water.gd` | `get_heightmap_size()`, `get_terrain_world_size()`, `get_water_data()`, `get_water_velocity_data()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
@@ -141,6 +169,7 @@ Runtime-spawned tools:
 | `asset_editor.gd` | `is_asset_editor_mode()`, `load_asset_packs()`, `get_registered_asset_ids()`, `get_pack_manifest_json()`, `get_asset_manifest_json()`, `load_economy_project()`, `validate_and_export_asset()` |
 | `buildings.gd` | `load_asset_packs()`, `get_registered_asset_ids()`, `get_lod0_native_path()`, `get_building_transforms_for_asset()`, `get_building_plot_transforms()` |
 | `economy_editor.gd` | `is_economy_editor_mode()`, `load_economy_project()`, `export_economy_project()`, `run_economy_sandbox()` |
+| `world_editor.gd` | `is_world_editor_mode()`, `create_blank_world()`, `save_world_definition()`, `load_world_definition()`, `get_heightmap_size()`, `get_terrain_world_size()`, `intersect_terrain()`, `sculpt_terrain()` |
 | `network_tool.gd` | `intersect_terrain()`, `add_road()`, `get_closest_network_point()`, `get_closest_node()`, `get_road_mesh_data()`, `get_network_nodes()`, `get_node_pos()`, `get_height_at()`, `get_road_ghost_guides()` |
 | `road_tool.gd` | inherited `NetworkTool` methods, plus `check_border_candidate()` and `set_border_connection()` through deferred border checks |
 | `network_renderer.gd` | `is_network_dirty()`, `flatten_terrain_for_roads()`, `clear_terrain_dirty()`, `clear_network_dirty()` |

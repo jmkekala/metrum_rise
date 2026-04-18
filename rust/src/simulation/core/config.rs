@@ -57,11 +57,7 @@ impl WorldConfig {
     }
 
     /// Overrides the terrain chunk metadata while keeping the current dense-grid sizing.
-    pub fn with_chunking(
-        mut self,
-        terrain_chunk_m: f32,
-        terrain_base_elevation_m: f32,
-    ) -> Self {
+    pub fn with_chunking(mut self, terrain_chunk_m: f32, terrain_base_elevation_m: f32) -> Self {
         self.terrain_chunk_m = terrain_chunk_m;
         self.terrain_base_elevation_m = terrain_base_elevation_m;
         self

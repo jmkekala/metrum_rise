@@ -253,15 +253,10 @@ pub(super) fn rebuild_loaded_graph_runtime(
     graph.rebuild_all_indices();
     terrain.reset_visuals_from_source();
     let mut flattened = terrain.clone_visual_dense();
-    transit_network.flatten_terrain(
-        graph,
-        terrain,
-        &mut flattened,
-        {
-            let (world_w, world_h) = terrain.world_size();
-            Vector2::new(world_w, world_h)
-        },
-    );
+    transit_network.flatten_terrain(graph, terrain, &mut flattened, {
+        let (world_w, world_h) = terrain.world_size();
+        Vector2::new(world_w, world_h)
+    });
     terrain
         .replace_visual_from_dense(&flattened)
         .expect("loaded road flatten output must match the terrain dimensions");

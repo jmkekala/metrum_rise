@@ -743,13 +743,33 @@ source_tiles = ["fixture_tile.tif"]
 
     fn sample_chunk_dir() -> PathBuf {
         let dir = unique_test_dir("sample");
-        write_test_chunk(&dir, 11, 70, 512.0, 512.0, 2.0, &[2.0, 4.0, 8.0, 32.0], 123.5, 123.5);
+        write_test_chunk(
+            &dir,
+            11,
+            70,
+            512.0,
+            512.0,
+            2.0,
+            &[2.0, 4.0, 8.0, 32.0],
+            123.5,
+            123.5,
+        );
         dir
     }
 
     fn border_chunk_dir() -> PathBuf {
         let dir = unique_test_dir("border");
-        write_test_chunk(&dir, 117, 117, 96.0, 96.0, 2.0, &[2.0, 4.0, 8.0, 32.0], 77.0, 77.0);
+        write_test_chunk(
+            &dir,
+            117,
+            117,
+            96.0,
+            96.0,
+            2.0,
+            &[2.0, 4.0, 8.0, 32.0],
+            77.0,
+            77.0,
+        );
         dir
     }
 

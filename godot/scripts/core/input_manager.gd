@@ -25,6 +25,9 @@ var building_inspector: Node
 enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, AGENT, SCULPT, WATER, CUL_DE_SAC, SELECT }
 var current_tool: Tool = Tool.NONE
 const SIM_SPEED_STEPS := [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32]
+const SAVES_DIR := "user://saves"
+
+var _current_save_path := ""
 
 func _ready():
 	if not has_node("../CulDeSacTool"):
@@ -227,8 +230,13 @@ func _handle_undo():
 			road_tool._ghost_guides_dirty = true
 			road_tool._rebuild_ghost_lines()
 
-func _savegame_path() -> String:
-	return ProjectSettings.globalize_path("user://savegame.sqlite")
+func _default_save_name() -> String:
+	if not _current_save_path.is_empty():
+		return _current_save_path.get_file()
+	return "savegame.sqlite"
+
+func _ensure_saves_dir() -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SAVES_DIR))
 
 func _refresh_after_world_load():
 	if road_tool and road_tool.current_state != 0:
@@ -250,19 +258,49 @@ func _refresh_after_world_load():
 		agents_node.update_swarm()
 
 func _handle_save_game():
-	var path = _savegame_path()
+	_ensure_saves_dir()
+	var dialog := FileDialog.new()
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
+	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
+	dialog.current_file = _default_save_name()
+	dialog.file_selected.connect(func(path: String): _on_save_game_selected(path, dialog))
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered(Vector2i(880, 620))
+
+func _handle_load_game():
+	_ensure_saves_dir()
+	var dialog := FileDialog.new()
+	dialog.access = FileDialog.ACCESS_FILESYSTEM
+	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.filters = PackedStringArray(["*.sqlite ; Save Files"])
+	dialog.current_dir = ProjectSettings.globalize_path(SAVES_DIR)
+	dialog.file_selected.connect(func(path: String): _on_load_game_selected(path, dialog))
+	dialog.canceled.connect(dialog.queue_free)
+	add_child(dialog)
+	dialog.popup_centered(Vector2i(880, 620))
+
+func _on_save_game_selected(path: String, dialog: FileDialog) -> void:
+	dialog.hide()
+	dialog.call_deferred("queue_free")
+	call_deferred("_finish_save_game_selection", path)
+
+func _on_load_game_selected(path: String, dialog: FileDialog) -> void:
+	dialog.hide()
+	dialog.call_deferred("queue_free")
+	call_deferred("_finish_load_game_selection", path)
+
+func _finish_save_game_selection(path: String) -> void:
 	if simulation_node.save_game(path):
+		_current_save_path = path
 		print("Saved game to: ", path)
 	else:
 		push_error("Save failed: " + path)
 
-func _handle_load_game():
-	var path = _savegame_path()
-	if simulation_node.load_game(path):
-		_refresh_after_world_load()
-		print("Loaded game from: ", path)
-	else:
-		push_error("Load failed: " + path)
+func _finish_load_game_selection(path: String) -> void:
+	menu_load_game_from_path(path)
 
 func _toggle_pause():
 	var speed: float = 0.0 if terrain_node.sim_speed > 0.0 else 1.0
@@ -363,6 +401,28 @@ func menu_save_game() -> void:
 
 func menu_load_game() -> void:
 	_handle_load_game()
+
+func menu_load_game_from_path(path: String) -> bool:
+	if path.is_empty():
+		return false
+	if simulation_node.load_game(path):
+		_current_save_path = path
+		_refresh_after_world_load()
+		print("Loaded game from: ", path)
+		return true
+	push_error("Load failed: " + path)
+	return false
+
+func menu_load_world_definition(path: String) -> bool:
+	if path.is_empty():
+		return false
+	if simulation_node.load_world_definition(path):
+		_refresh_after_world_load()
+		set_simulation_speed(0.0)
+		print("Loaded world definition: ", path)
+		return true
+	push_error("Load world definition failed: " + path)
+	return false
 
 func menu_set_overlay_mode(mode: int) -> void:
 	if terrain_node:

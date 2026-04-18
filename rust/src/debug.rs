@@ -2,6 +2,8 @@
 //!
 //! Controlled at runtime via environment variables:
 //! - `METRUM_DEBUG=1` — general debug logging (`./run.sh --debug`)
+//! - `METRUM_DEBUG_FILTER=world-editor` — world-editor scoped logging
+//!   (`./run.sh --debug world-editor` or `./run.sh --debug-world-editor`)
 //! - `METRUM_DEBUG_TRAFFIC=1` — traffic/routing debug (`./run.sh --debug traffic`)
 //! - `METRUM_DEBUG_SIM=1` — hourly simulation summaries (`./run.sh --debug-sim`)
 //! - `METRUM_DEBUG_FILTER=economy,border,...` — optional category filter for general debug logs

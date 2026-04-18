@@ -32,15 +32,13 @@ impl SimCore {
     pub fn add_water_internal(&mut self, pos: Vector2, amount: f32) {
         self.push_undo_state(false, true, false, false);
         let (grid_x, grid_y) = self.watermap.world_to_grid_cell_clamped(pos.x, pos.y);
-        self.watermap
-            .add_water(grid_x, grid_y, amount);
+        self.watermap.add_water(grid_x, grid_y, amount);
     }
 
     /// Adds a water source to the simulation.
     pub fn add_water_source_internal(&mut self, pos: Vector2, rate_add: f32) {
         let (grid_x, grid_y) = self.watermap.world_to_grid_cell_clamped(pos.x, pos.y);
-        self.watermap
-            .update_source(grid_x, grid_y, rate_add);
+        self.watermap.update_source(grid_x, grid_y, rate_add);
         self.water_dirty = true;
     }
 

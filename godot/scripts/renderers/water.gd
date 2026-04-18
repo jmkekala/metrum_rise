@@ -70,7 +70,7 @@ func update_water_visuals():
 	velocity_texture.update(velocity_image)
 
 func handle_water_input(delta):
-	var input_manager = get_node("../InputManager")
+	var input_manager = get_node_or_null("../InputManager")
 	if input_manager and input_manager.current_tool == input_manager.Tool.WATER:
 		if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 			var mouse_pos = get_viewport().get_mouse_position()

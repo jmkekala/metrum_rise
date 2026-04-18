@@ -329,96 +329,97 @@ Required direction:
 - terrain base elevation and sample values should eventually become direct world-space metres
 - no future authored-world format should assume the current scaled-height compatibility contract
 
-### 4. `WorldDefinition` V1 Is Terrain-Only And Not Yet Wired To A Dedicated UI Flow
+### 4. `WorldDefinition` V1 Is Terrain-Only And WorldEditor V1 Is Still Incomplete
 
-Current gap:
+Current state:
 
-- there is no dedicated world-editor launch mode or scene yet
-- no gameplay or editor UI currently calls the `SimulationNode` world-definition methods
-- `WorldDefinition` v1 stores terrain only; it has no hydrology, preview image, or richer metadata
+- a dedicated `--world-editor` launch mode and `WorldEditor` scene now exist
+- world-editor UI now calls:
+  - `create_blank_world`
+  - `save_world_definition`
+  - `load_world_definition`
+- `WorldDefinition` v1 still stores terrain only; it has no hydrology, preview image, or richer
+  metadata
 
-Required direction:
+Remaining direction:
 
-- authored-world editing must move onto a dedicated world-editor shell
-- `New Game` must instantiate from a selected `WorldDefinition` rather than from ad hoc runtime state
+- authored-world assets still need richer metadata and later hydrology ownership
 
 ## Planned Deterministic Implementation
 
 The next slices should be implemented in this order.
 
-### 1. Ship A Dedicated Blank-World Editor Flow Around `WorldDefinition`
+### 1. Blank-World WorldEditor V1 Is Live
 
-The persistence and runtime reset path now exist. The next required slice is the actual authoring
-shell around them.
+The first dedicated authored-world shell now exists around `WorldDefinition`.
 
-Required direction:
+Current deterministic rules:
 
-- add a dedicated `--world-editor` launch mode and `WorldEditor` scene
-- wire editor UI to:
-  - `create_blank_world`
-  - `save_world_definition`
-  - `load_world_definition`
-- keep blank-world authoring separate from city runtime save/load UI
-- follow the UI ownership in `ui.md`:
-  - reduced top menu
-  - bottom toolbar at the bottom of the screen
-  - terrain and later water tools on that toolbar, not in the top menu
-- `WorldEditor` must not expose `Return To Game`
-
-Deterministic rule:
-
+- `--world-editor` routes to a dedicated `WorldEditor` scene
+- world-editor UI is separate from gameplay save/load UI
+- the world-editor top menu exposes:
+  - `New World`
+  - `Open World`
+  - `Save`
+  - `Save As`
+  - `Quit`
+- the world-editor bottom toolbar is the primary authoring surface
 - a newly created blank world is dry and flat except for the authored base elevation
 
-### 2. WorldEditor Runtime Uses A Restricted Simulation Loop
+### 2. WorldEditor V1 Is Terrain-Only And Launches Paused
 
-World editing still needs a live runtime, but not a gameplay city simulation.
+The current world editor uses the shared `SimulationNode` runtime but does not expose gameplay
+simulation controls.
+
+Current deterministic rules:
+
+- world editor starts with the simulation thread available
+- world editor does not expose pause / speed controls or gameplay HUD widgets
+- world editor terrain authoring is live through:
+  - `Raise`
+  - `Lower`
+- world editor save/load is `WorldDefinition` only, not city-save persistence
+
+Current compatibility gap:
+
+- this is not yet the final terrain / water-only runtime boundary
+- the shared runtime bundle still contains gameplay systems; world editor simply leaves the
+  simulation paused for terrain-only v1
+
+### 3. Water Is The First Follow-Up Authoring Slice
+
+WorldEditor v1 intentionally stops at terrain authoring.
 
 Required direction:
 
-- `WorldEditor` keeps a simulation thread available because water preview and authoring will need
-  it
-- `WorldEditor` must not run gameplay simulation systems such as:
-  - agents
-  - traffic
-  - households
-  - demand
-  - freight
-  - city treasury progression
-- until water authoring is added, `WorldEditor` may remain terrain-only while still using the
-  same `SimulationNode` bridge and runtime state bundle
-
-Deterministic rule:
-
-- `WorldEditor` runtime is a terrain / water authoring runtime, not a playable city runtime
-
-### 3. Terrain-Only WorldEditor V1 Comes Before Water Authoring
-
-The first user-facing world-editor slice is terrain-only.
-
-WorldEditor v1 must support:
-
-- create blank world
-- open existing `WorldDefinition`
-- save `WorldDefinition`
-- sculpt source terrain with `Raise` and `Lower`
-
-WorldEditor v1 must not depend on:
-
-- water tools
-- DEM import
-- GeoTIFF import
-- hydrology authoring
-- `New Game` handoff
+- add water authoring to the existing bottom toolbar surface
+- keep water ownership authored and deterministic
+- do not mix hydrology authoring into gameplay save/load UI
 
 Deterministic rule:
 
 - water is the first follow-up authoring feature after terrain-only world editing is stable
 
-### 4. Instantiate `New Game` From A Selected `WorldDefinition`
+### 4. Gameplay `New Game` Now Loads A Selected `WorldDefinition`
 
-Required direction:
+Gameplay now has a first-pass authored-world handoff.
 
-- `New Game` must clone or instantiate from one authored `WorldDefinition`
+Current deterministic rules:
+
+- gameplay `File -> New Game` opens a world picker rooted at `user://worlds/`
+- selecting one `WorldDefinition` loads it into the live gameplay scene
+- gameplay world load reuses the same scene refresh path as save-load:
+  - terrain rebuild
+  - water rebuild
+  - network mesh refresh
+  - building renderer refresh
+  - zoning overlay refresh
+  - agent renderer refresh
+- gameplay pauses immediately after loading the selected world
+
+Remaining direction:
+
+- `New Game` still loads directly into gameplay rather than through a richer front-end menu flow
 - city saves must remain runtime snapshots layered on top of that authored world baseline
 
 ### 5. Move From Whole-Map Dense Compatibility Buffers To Chunk Windows
