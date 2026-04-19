@@ -26,6 +26,8 @@ enum Tool { NONE, ROAD, WALKWAY, ZONING, MOVE, AGENT, SCULPT, WATER, CUL_DE_SAC,
 var current_tool: Tool = Tool.NONE
 const SIM_SPEED_STEPS := [0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32]
 const SAVES_DIR := "user://saves"
+const WORLD_CAMERA_PIVOT_CLEARANCE_M := 0.25
+const WORLD_CAMERA_CLEARANCE_M := 1.5
 
 var _current_save_path := ""
 
@@ -57,7 +59,16 @@ func _ready():
 	if cul_de_sac_tool and cul_de_sac_tool.has_node("PreviewMesh"):
 		cul_de_sac_tool.get_node("PreviewMesh").visible = false
 	# Removed old continuous sculpting polling
-	pass
+	call_deferred("_configure_world_camera_policy")
+
+func _configure_world_camera_policy() -> void:
+	var camera = get_parent().find_child("CameraNode", true, false)
+	if camera and camera.has_method("set_terrain_clearance_policy"):
+		camera.set_terrain_clearance_policy(
+			true,
+			WORLD_CAMERA_PIVOT_CLEARANCE_M,
+			WORLD_CAMERA_CLEARANCE_M
+		)
 
 func _process(delta):
 	_handle_camera_controls(delta)
@@ -84,7 +95,7 @@ func _handle_camera_controls(delta):
 	if Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE) and camera.has_method("orbit"):
 		var mouse_vel = Input.get_last_mouse_velocity()
 		if mouse_vel.length() > 0.1:
-			camera.orbit(mouse_vel, delta)
+			camera.orbit(mouse_vel * delta)
 
 func _unhandled_input(event):
 	if event is InputEventKey and event.pressed and not event.echo:

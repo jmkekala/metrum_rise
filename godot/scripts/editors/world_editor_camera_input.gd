@@ -1,6 +1,6 @@
 ## Orbit/pan/zoom camera controller for the world editor.
-## Keeps panning on the terrain XZ plane and adds keyboard pan so the editor
-## is usable even on a blank, featureless map.
+## Routes editor input into the shared CameraNode world-camera core while
+## keeping WorldEditor-specific UI capture and zoom/far policy local here.
 extends Node
 
 var panel_left_w := 0.0
@@ -14,11 +14,9 @@ const MIN_DISTANCE := 0.5
 const MAX_DISTANCE := 200000.0
 const MIN_FAR_M := 20000.0
 const FAR_MARGIN_M := 5000.0
-
-var pivot := Vector3.ZERO
-var yaw := -0.785
-var pitch := -0.785
-var distance := 20.0
+const FOCUS_PADDING_MULT := 3.25
+const TERRAIN_PIVOT_CLEARANCE_M := 0.25
+const TERRAIN_CAMERA_CLEARANCE_M := 1.5
 
 var _orbit_active := false
 var _pan_active := false
@@ -28,7 +26,18 @@ func _ready() -> void:
 	if not _cam:
 		push_error("WorldEditorCameraInput: no CameraNode found in parent scene")
 		return
-	_update_transform()
+	if _cam.has_method("set_distance_bounds"):
+		_cam.set_distance_bounds(MIN_DISTANCE, MAX_DISTANCE)
+	if _cam.has_method("set_clip_policy"):
+		_cam.set_clip_policy(MIN_DISTANCE, MIN_FAR_M, FAR_MARGIN_M)
+	if _cam.has_method("set_focus_padding"):
+		_cam.set_focus_padding(FOCUS_PADDING_MULT)
+	if _cam.has_method("set_terrain_clearance_policy"):
+		_cam.set_terrain_clearance_policy(
+			true,
+			TERRAIN_PIVOT_CLEARANCE_M,
+			TERRAIN_CAMERA_CLEARANCE_M
+		)
 
 func _process(delta: float) -> void:
 	if not _cam:
@@ -51,17 +60,16 @@ func _process(delta: float) -> void:
 	if pan_axis.length_squared() == 0.0:
 		return
 
-	pan_axis = pan_axis.normalized()
-	var pan_scale := maxf(distance * 0.8, 10.0) * delta
-	pivot += _horizontal_right() * pan_axis.x * pan_scale
-	pivot += _horizontal_forward() * pan_axis.y * pan_scale
-	_update_transform()
+	if _cam.has_method("pan"):
+		pan_axis = pan_axis.normalized()
+		_cam.pan(Vector3(pan_axis.x, 0.0, -pan_axis.y), 1.0, delta)
 
 ## Point the camera at `center` with enough distance to see a sphere of `radius`.
 func focus_on(center: Vector3, radius: float) -> void:
-	pivot = center
-	distance = clampf(max(radius * 3.25, 3.0), MIN_DISTANCE, MAX_DISTANCE)
-	_update_transform()
+	if not _cam:
+		return
+	if _cam.has_method("focus_on"):
+		_cam.focus_on(center, radius)
 
 func _input(event: InputEvent) -> void:
 	if not _cam:
@@ -81,41 +89,24 @@ func _input(event: InputEvent) -> void:
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_UP:
 				if not over_ui:
-					distance = maxf(MIN_DISTANCE, distance / 1.2)
-					_update_transform()
+					if _cam.has_method("zoom"):
+						_cam.zoom(1.0)
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_DOWN:
 				if not over_ui:
-					distance = minf(MAX_DISTANCE, distance * 1.2)
-					_update_transform()
+					if _cam.has_method("zoom"):
+						_cam.zoom(-1.0)
 					get_viewport().set_input_as_handled()
 
 	elif event is InputEventMouseMotion:
 		if _orbit_active:
-			yaw -= event.relative.x * 0.005
-			pitch = clampf(pitch - event.relative.y * 0.005, -1.5, -0.05)
-			_update_transform()
+			if _cam.has_method("orbit"):
+				_cam.orbit(event.relative)
 			get_viewport().set_input_as_handled()
 		elif _pan_active:
-			var pan_scale := maxf(distance * 0.0025, 0.5)
-			pivot -= _horizontal_right() * event.relative.x * pan_scale
-			pivot -= _horizontal_forward() * event.relative.y * pan_scale
-			_update_transform()
+			if _cam.has_method("pan_screen"):
+				_cam.pan_screen(event.relative)
 			get_viewport().set_input_as_handled()
-
-func _horizontal_right() -> Vector3:
-	var right := _cam.global_transform.basis.x
-	right.y = 0.0
-	if right.length_squared() < 0.0001:
-		return Vector3.RIGHT
-	return right.normalized()
-
-func _horizontal_forward() -> Vector3:
-	var forward := -_cam.global_transform.basis.z
-	forward.y = 0.0
-	if forward.length_squared() < 0.0001:
-		return Vector3.FORWARD
-	return forward.normalized()
 
 func _is_mouse_in_3d_area() -> bool:
 	var mouse_pos := get_viewport().get_mouse_position()
@@ -151,12 +142,3 @@ func _ui_captures_world_keyboard_input() -> bool:
 		or focus_owner is CodeEdit
 	)
 	return _ui_has_modal_popup() or editing_focus
-
-func _update_transform() -> void:
-	if not _cam:
-		return
-	_cam.near = MIN_DISTANCE
-	_cam.far = maxf(distance * 4.0 + FAR_MARGIN_M, MIN_FAR_M)
-	var rotation := Basis(Vector3.UP, yaw) * Basis(Vector3.RIGHT, pitch)
-	_cam.global_position = pivot + rotation * Vector3(0.0, 0.0, distance)
-	_cam.look_at(pivot)

@@ -449,9 +449,9 @@ godot/
     Router.tscn
   scripts/
     core/                         Scene-attached nodes, global orchestration
-      input_manager.gd            Tool state machine, keyboard routing, camera controls
+      input_manager.gd            Gameplay tool state machine, keyboard routing, gameplay camera input routing
       launch_router.gd            Scene routing / startup
-      editor_camera_input.gd      Camera pan / orbit / zoom
+      editor_camera_input.gd      AssetEditor sandbox camera pan / orbit / zoom
     tools/                        Player-facing placement and editing tools
       road_tool.gd
       move_tool.gd
@@ -473,6 +473,8 @@ godot/
       economy_editor.gd
       economy_graph_canvas.gd
       analyze_assets.gd
+      world_editor.gd
+      world_editor_camera_input.gd
     ui/                           HUD, menus, floating windows, style
       ui_style.gd                 Style constants and StyleBoxFlat factory methods
       main_ui.gd                  Bottom toolbar, sub-menus, clock/speed panel
@@ -507,6 +509,8 @@ ui/building_inspector.gd  Window — building stats, calls SimulationNode.get_bu
 ui/road_properties_window.gd  Window — edge class / no-build editing for SelectTool
 ui/pack_manager.gd      Window — mod pack browser
 core/input_manager.gd   Tool state, keyboard shortcuts, camera, Ctrl+S/L save/load
+editors/world_editor.gd WorldEditor shell, tool UI, world load/save flow, camera policy owner
+editors/world_editor_camera_input.gd  WorldEditor camera input wrapper and UI-capture gating
 SimulationNode.get_demand_pressures  HUD-only R/C/I meter source, returns normalized -1.0..1.0 display pressures
 SimulationNode.get_treasury_balance  HUD treasury source, snapshot-backed for paused-state edits
 SimulationNode.get_agent_count       HUD live-agent source, snapshot-backed
@@ -515,6 +519,23 @@ SimulationNode.get_agent_count       HUD live-agent source, snapshot-backed
 `top_menu.gd` dispatches File/City/View/Help actions by calling `InputManager` methods or
 opening windows directly. It does not own simulation state. Each scene root attaches its own
 instance; `main_ui.gd` remains gameplay-only.
+
+Camera ownership rules:
+
+- gameplay and WorldEditor share one world-camera core in the `CameraNode` native node
+- shared world-camera behavior includes:
+  - orbit math
+  - pan math
+  - zoom semantics
+  - focus-on framing
+  - terrain-clearance clamping so gameplay and WorldEditor cameras never go under terrain or
+    inside hills
+- gameplay `input_manager.gd` and `editors/world_editor_camera_input.gd` are input-routing
+  wrappers only; they decide when UI owns input and which scene-local camera policy applies
+- zoom bounds, far clip policy, and focus padding may differ between gameplay and WorldEditor as
+  explicit scene policy
+- AssetEditor keeps its own separate sandbox camera controller because it is not terrain/world
+  constrained and uses a different viewport layout
 
 ---
 
