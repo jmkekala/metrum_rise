@@ -4,7 +4,7 @@ use super::SaveLoadError;
 use crate::simulation::network::types::{EdgeClass, NodeType, TransitType, VehicleFrontageAccess};
 
 /// Current save format version.
-pub const SAVE_VERSION: i64 = 29;
+pub const SAVE_VERSION: i64 = 30;
 /// Sentinel for missing integer references in SQLite.
 pub const NONE_REF: i64 = -1;
 
@@ -40,7 +40,8 @@ CREATE TABLE terrain_state(
 CREATE TABLE water_state(
     width INTEGER NOT NULL,
     height INTEGER NOT NULL,
-    depth_blob_f32_le BLOB NOT NULL,
+    baseline_depth_blob_f32_le BLOB NOT NULL,
+    dynamic_depth_blob_f32_le BLOB NOT NULL,
     velocity_blob_f32_le BLOB NOT NULL,
     flux_blob_f32x4_le BLOB NOT NULL
 );

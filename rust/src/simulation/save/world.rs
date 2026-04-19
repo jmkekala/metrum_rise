@@ -48,11 +48,21 @@ pub(super) fn save_world(
     )?;
 
     // Water
-    tx.execute("INSERT INTO water_state(width, height, depth_blob_f32_le, velocity_blob_f32_le, flux_blob_f32x4_le) VALUES (?1, ?2, ?3, ?4, ?5)", params![usize_to_i64(water.width)?, usize_to_i64(water.height)?, pack_f32_slice(&water.clone_depth_dense()), pack_f32_slice(&water.clone_velocity_dense()), pack_flux_slice(&water.clone_flux_dense())])?;
+    tx.execute(
+        "INSERT INTO water_state(width, height, baseline_depth_blob_f32_le, dynamic_depth_blob_f32_le, velocity_blob_f32_le, flux_blob_f32x4_le) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            usize_to_i64(water.width)?,
+            usize_to_i64(water.height)?,
+            pack_f32_slice(&water.clone_baseline_depth_dense()),
+            pack_f32_slice(&water.clone_dynamic_depth_dense()),
+            pack_f32_slice(&water.clone_velocity_dense()),
+            pack_flux_slice(&water.clone_flux_dense())
+        ],
+    )?;
     let mut ws_stmt = tx.prepare(
         "INSERT INTO water_sources(grid_x, grid_y, rate_m_per_tick) VALUES (?1, ?2, ?3)",
     )?;
-    for &(gx, gy, r) in &water.sources {
+    for (gx, gy, r) in water.clone_sources() {
         ws_stmt.execute(params![usize_to_i64(gx)?, usize_to_i64(gy)?, r])?;
     }
 
@@ -245,14 +255,30 @@ pub(super) fn load_water(
     ew: usize,
     eh: usize,
 ) -> SaveLoadResult<WaterSystem> {
-    let (w_raw, h_raw, db, vb, fb): (i64, i64, Vec<u8>, Vec<u8>, Vec<u8>) = conn.query_row("SELECT width, height, depth_blob_f32_le, velocity_blob_f32_le, flux_blob_f32x4_le FROM water_state LIMIT 1", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?;
+    let (w_raw, h_raw, baseline_db, dynamic_db, vb, fb): (i64, i64, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) = conn.query_row(
+        "SELECT width, height, baseline_depth_blob_f32_le, dynamic_depth_blob_f32_le, velocity_blob_f32_le, flux_blob_f32x4_le FROM water_state LIMIT 1",
+        [],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        },
+    )?;
     let (w, h) = (i64_to_usize(w_raw)?, i64_to_usize(h_raw)?);
     if w != ew || h != eh {
         return Err(SaveLoadError::custom("water size mismatch"));
     }
     let mut water = WaterSystem::from_world_config(config);
     water
-        .replace_depth_from_dense(&unpack_f32_blob(&db, w * h)?)
+        .replace_baseline_depth_from_dense(&unpack_f32_blob(&baseline_db, w * h)?)
+        .map_err(SaveLoadError::custom)?;
+    water
+        .replace_dynamic_depth_from_dense(&unpack_f32_blob(&dynamic_db, w * h)?)
         .map_err(SaveLoadError::custom)?;
     water
         .replace_velocity_from_dense(&unpack_f32_blob(&vb, w * h)?)
@@ -263,13 +289,15 @@ pub(super) fn load_water(
     let mut stmt =
         conn.prepare("SELECT grid_x, grid_y, rate_m_per_tick FROM water_sources ORDER BY rowid")?;
     let mut rows = stmt.query([])?;
+    let mut sources = Vec::new();
     while let Some(row) = rows.next()? {
-        water.sources.push((
+        sources.push((
             i64_to_usize(row.get(0)?)?,
             i64_to_usize(row.get(1)?)?,
             row.get(2)?,
         ));
     }
+    water.replace_sources(sources);
     Ok(water)
 }
 

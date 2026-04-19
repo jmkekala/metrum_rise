@@ -425,13 +425,13 @@ impl SimulationNode {
         PackedFloat32Array::from_iter(self.lock_core().heightmap.clone_visual_dense())
     }
 
-    /// Returns the raw water depth data.
+    /// Returns the visible total water depth above terrain.
     #[func]
     pub fn get_water_data(&self) -> PackedFloat32Array {
         PackedFloat32Array::from_iter(self.lock_core().watermap.clone_depth_dense())
     }
 
-    /// Returns the raw water velocity data.
+    /// Returns the dynamic water velocity magnitude data.
     #[func]
     pub fn get_water_velocity_data(&self) -> PackedFloat32Array {
         PackedFloat32Array::from_iter(self.lock_core().watermap.clone_velocity_dense())

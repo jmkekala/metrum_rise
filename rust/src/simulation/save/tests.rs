@@ -117,11 +117,16 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     terrain.set_height(0, 1, 1.0);
     terrain.set_height(1, 1, 1.0);
     let mut water = WaterSystem::from_world_config(&config);
-    let mut depth = water.clone_depth_dense();
-    depth[0] = 2.5;
+    let mut baseline_depth = water.clone_baseline_depth_dense();
+    baseline_depth[0] = 2.0;
     water
-        .replace_depth_from_dense(&depth)
-        .expect("water depth dimensions should match");
+        .replace_baseline_depth_from_dense(&baseline_depth)
+        .expect("baseline water depth dimensions should match");
+    let mut dynamic_depth = water.clone_dynamic_depth_dense();
+    dynamic_depth[0] = 0.5;
+    water
+        .replace_dynamic_depth_from_dense(&dynamic_depth)
+        .expect("dynamic water depth dimensions should match");
     let mut velocity = water.clone_velocity_dense();
     velocity[0] = 0.75;
     water
@@ -132,7 +137,7 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     water
         .replace_flux_from_dense(&flux)
         .expect("water flux dimensions should match");
-    water.sources.push((1, 2, 0.5));
+    water.replace_sources(vec![(1, 2, 0.5)]);
     let mut graph = RegionGraph::new();
     let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
     let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
@@ -382,6 +387,14 @@ fn sqlite_round_trip_preserves_authoritative_state() {
     assert_eq!(
         loaded.terrain.clone_source_dense(),
         terrain.clone_source_dense()
+    );
+    assert_eq!(
+        loaded.water.clone_baseline_depth_dense(),
+        water.clone_baseline_depth_dense()
+    );
+    assert_eq!(
+        loaded.water.clone_dynamic_depth_dense(),
+        water.clone_dynamic_depth_dense()
     );
     assert_eq!(loaded.water.clone_depth_dense(), water.clone_depth_dense());
     assert_eq!(loaded.demand.residential, demand.residential);

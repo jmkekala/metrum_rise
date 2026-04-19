@@ -29,9 +29,6 @@ use godot::prelude::Vector2;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-const AUTHORING_WATER_PREVIEW_DT: f32 = 0.25;
-const AUTHORING_WATER_PREVIEW_STEPS: usize = 48;
-
 #[derive(Clone, Copy, Debug, Default)]
 struct LakeFillApplication {
     touches_world_edge: bool,
@@ -411,12 +408,12 @@ impl SimCore {
         }
 
         let terrain_world = authored_water_terrain_world_heights(&self.heightmap);
-        let mut depth = vec![0.0; terrain_world.len()];
+        let mut baseline_depth = vec![0.0; terrain_world.len()];
         for lake in &self.world_lake_fills {
             merge_surface_fill_depth(
                 &terrain_world,
                 &water,
-                &mut depth,
+                &mut baseline_depth,
                 WorldWaterFillKind::Lake,
                 lake.world_x,
                 lake.world_z,
@@ -428,7 +425,7 @@ impl SimCore {
             merge_surface_fill_depth(
                 &terrain_world,
                 &water,
-                &mut depth,
+                &mut baseline_depth,
                 WorldWaterFillKind::OpenWater,
                 open_water.world_x,
                 open_water.world_z,
@@ -441,7 +438,7 @@ impl SimCore {
                 merge_surface_fill_depth(
                     &terrain_world,
                     &water,
-                    &mut depth,
+                    &mut baseline_depth,
                     preview.kind,
                     preview.seed_world_x,
                     preview.seed_world_z,
@@ -454,23 +451,20 @@ impl SimCore {
             }
         }
         water
-            .replace_depth_from_dense(&depth)
-            .map_err(|err| format!("failed to apply authored lake fills: {err}"))?;
+            .replace_baseline_depth_from_dense(&baseline_depth)
+            .map_err(|err| format!("failed to apply authored baseline water: {err}"))?;
+        water.clear_dynamic_state();
 
+        let mut runtime_sources = Vec::with_capacity(self.world_water_boundary_points.len());
         for point in &self.world_water_boundary_points {
             let (grid_x, grid_z) = water.world_to_grid_cell_clamped(point.world_x, point.world_z);
             let signed_rate = match point.kind {
                 AuthoredWaterBoundaryKind::Source => point.rate_m_per_tick,
                 AuthoredWaterBoundaryKind::Sink => -point.rate_m_per_tick,
             };
-            water.update_source(grid_x, grid_z, signed_rate);
+            runtime_sources.push((grid_x, grid_z, signed_rate));
         }
-
-        if !self.world_water_boundary_points.is_empty() {
-            for _ in 0..AUTHORING_WATER_PREVIEW_STEPS {
-                water.tick(&terrain_world, AUTHORING_WATER_PREVIEW_DT);
-            }
-        }
+        water.replace_sources(runtime_sources);
 
         self.watermap = water;
         self.water_dirty = true;

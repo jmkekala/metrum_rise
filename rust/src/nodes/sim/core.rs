@@ -151,16 +151,30 @@ impl WorldLakeFillPreview {
     }
 }
 
+/// Full water runtime snapshot for undo history.
+pub(crate) struct WaterRuntimeSnapshot {
+    /// Flat authored or loaded baseline water depth above terrain.
+    pub baseline_depth: Vec<f32>,
+    /// Transient dynamic water depth above the support surface.
+    pub dynamic_depth: Vec<f32>,
+    /// Dynamic water velocity magnitude.
+    pub velocity: Vec<f32>,
+    /// Dynamic directional flux values.
+    pub flux: Vec<[f32; 4]>,
+    /// Dynamic water boundary points.
+    pub sources: Vec<(usize, usize, f32)>,
+}
+
 /// A snapshot of simulation state for undo history.
-pub struct SimulationSnapshot {
+pub(crate) struct SimulationSnapshot {
     /// Terrain heightmap data.
-    pub terrain: Option<Vec<f32>>,
-    /// Water depth data.
-    pub water: Option<Vec<f32>>,
+    pub(crate) terrain: Option<Vec<f32>>,
+    /// Water runtime state.
+    pub(crate) water: Option<WaterRuntimeSnapshot>,
     /// Road network graph state.
-    pub trans_graph: Option<crate::simulation::network::graph::RegionGraph>,
+    pub(crate) trans_graph: Option<crate::simulation::network::graph::RegionGraph>,
     /// Zoning system state.
-    pub zoning: Option<ZoningSystem>,
+    pub(crate) zoning: Option<ZoningSystem>,
 }
 
 /// All simulation state — owned exclusively by the background sim thread when running.
@@ -201,7 +215,7 @@ pub struct SimCore {
     /// City-level fiscal ledger tracking infrastructure build cost and daily upkeep.
     pub treasury: CityTreasury,
     /// Undo history stack — kept in SimCore so all mutations are co-located.
-    pub undo_stack: VecDeque<SimulationSnapshot>,
+    pub(crate) undo_stack: VecDeque<SimulationSnapshot>,
     /// Authored-world inflow / outflow points when editing or playing from a `WorldDefinition`.
     pub(crate) world_water_boundary_points: Vec<AuthoredWaterBoundaryPoint>,
     /// Authored-world lake fill records when editing or playing from a `WorldDefinition`.
@@ -323,7 +337,7 @@ pub enum SimCommand {
 
 impl SimCore {
     fn tick_continuous_water_runtime_internal(&mut self, dt: f32) {
-        if self.watermap.sources.is_empty() {
+        if !self.watermap.has_sources() {
             return;
         }
         let terrain_world = self.heightmap.clone_source_dense_world_heights();
