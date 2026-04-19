@@ -908,6 +908,35 @@ Deterministic cliff breakline / cliff band rendering slice:
 - cliff rendering improves visible cliff readability only; it does not create sub-cell terrain
   geometry and must not pretend to solve coarse side silhouettes by itself
 
+Deterministic terrain-border skirt rendering slice:
+
+- the preferred map-edge treatment is a render-only terrain-border skirt derived from the live
+  terrain edge, not authored border geometry and not simulation-owned world walls
+- terrain-border skirt rendering must remain render-only and must never become authored world
+  state
+- the skirt input must be the same live visible terrain field used by terrain rendering after
+  terrain refresh
+- the skirt must be built from the outer terrain edge of the current world and extruded downward
+  to one fixed render-only depth
+- the terrain-border skirt output contract is:
+  - the map edge reads as a visible cut through the terrain instead of a paper-thin plane
+  - contour lines or equivalent elevation bands visibly continue down the side surface
+  - the skirt stays aligned to the live terrain edge and updates whenever terrain visuals refresh
+  - the top terrain surface remains the authoritative playable surface; the skirt is presentation
+    only
+- the renderer may realize that skirt result as either:
+  - one dedicated side-wall mesh plus one bottom cap
+  - one equivalent render-only border representation
+- whichever render representation is chosen, it must update whenever visible terrain is refreshed
+  in gameplay or WorldEditor
+- the terrain-border skirt slice must not require any save-schema change, `WorldDefinition` schema
+  change, or additional authored border records
+- the skirt material may use contour lines, sediment-style depth banding, or other earth-layer
+  cues, but those cues must remain render-only and derived from the live terrain field
+- the terrain-border skirt may improve the perceived thickness and readability of the map edge
+  only; it must not introduce playable vertical terrain, collision ownership, or simulation-owned
+  edge walls
+
 Deterministic asset policy:
 
 - external terrain/water material textures are optional later enhancements, not a prerequisite for
@@ -927,6 +956,7 @@ Explicit non-goals of the first realism pass:
   rendering has been attempted
 - increasing `terrain_cell_m` density solely to get smoother visible cliff edges before
   breakline/band rendering has been attempted
+- adding authored border-wall geometry or persistence merely to make the map edge look thicker
 - using one absolute-height ramp as the long-term primary terrain material classifier
 
 ## Current Deterministic Non-Goals
@@ -980,6 +1010,12 @@ What is implemented now:
 - terrain coloring now uses surface classification first and absolute height second, so flat blank
   worlds and imported DEM worlds share the same inland-first palette model instead of depending
   mainly on one absolute-height ramp
+- terrain-border skirt rendering now adds a render-only side wall plus bottom cap derived from the
+  live terrain edge, with contour continuation down the side surface so maps read as a visible cut
+  through terrain instead of a paper-thin top plane
+- water rendering now also adds a render-only edge curtain where visible water reaches the map
+  boundary, so outside-of-map views do not expose the submerged terrain plane through the
+  transparent water surface
 
 What is next:
 

@@ -215,8 +215,8 @@ void vertex() {
 // ...
 
 	// TEXEL-CENTERED SAMPLING: Sample from the center of each float32 pixel
-	// UV 0.0 should map to the center of the first pixel (0.5/256)
-	vec2 centered_uv = (UV * (mesh_size - 1.0) + 0.5) / mesh_size;
+	// UV 0.0 should map to the center of the first stored height sample.
+	vec2 centered_uv = (UV * (heightmap_texture_size - 1.0) + 0.5) / max(heightmap_texture_size, vec2(1.0));
 	var_centered_uv = centered_uv;
 	h = texture(heightmap, centered_uv).r;
 	VERTEX.y += h * height_scale;

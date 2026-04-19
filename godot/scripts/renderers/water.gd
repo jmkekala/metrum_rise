@@ -8,6 +8,7 @@
 ## shader effects.
 extends MeshInstance3D
 
+const HEIGHT_SCALE := 20.0
 const SHORE_SOFTNESS_M := 0.5
 const SHORE_FOAM_BAND_M := 0.5
 const SHALLOW_WATER_COLOR := Color(0.20, 0.37, 0.40, 0.58)
@@ -18,13 +19,17 @@ const WATER_WAVE_COLOR_STRENGTH := 0.025
 const WATER_WAVE_ROUGHNESS_STRENGTH := 0.010
 const WATER_DISPLAY_SURFACE_SMOOTHING := 0.94
 const WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS := 1.0
+const WATER_BORDER_MIN_DEPTH_M := 0.02
 
 @onready var simulation_node = $"../SimulationNode"
+@onready var terrain_node = $"../Terrain"
 var texture: ImageTexture
 var water_image: Image
 var velocity_texture: ImageTexture
 var velocity_image: Image
 var height_texture: ImageTexture
+var water_border_instance: MeshInstance3D
+var water_border_material: ShaderMaterial
 
 func _ready():
 	rebuild_from_simulation_state()
@@ -51,15 +56,15 @@ func rebuild_from_simulation_state():
 	velocity_texture = ImageTexture.create_from_image(velocity_image)
 	
 	# We also need the heightmap texture for alignment
-	var terrain_node = $"../Terrain"
 	height_texture = terrain_node.texture
+	_ensure_water_border_visual()
 	
 	var material = ShaderMaterial.new()
 	material.shader = load("res://assets/materials/water.gdshader")
 	material.set_shader_parameter("heightmap", height_texture)
 	material.set_shader_parameter("watermap", texture)
 	material.set_shader_parameter("velocity_map", velocity_texture)
-	material.set_shader_parameter("height_scale", 20.0)
+	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("shore_softness_m", SHORE_SOFTNESS_M)
 	material.set_shader_parameter("shore_foam_band_m", SHORE_FOAM_BAND_M)
 	material.set_shader_parameter("shallow_water_color", SHALLOW_WATER_COLOR)
@@ -87,6 +92,7 @@ func update_water_visuals():
 	var depth_data = simulation_node.get_water_data()
 	water_image.set_data(int(dims.x), int(dims.y), false, Image.FORMAT_RF, depth_data.to_byte_array())
 	texture.update(water_image)
+	_rebuild_water_border(depth_data, int(dims.x), int(dims.y))
 	
 	# Update Velocity
 	var velocity_data = simulation_node.get_water_velocity_data()
@@ -109,3 +115,120 @@ func handle_water_input(delta):
 			if intersection != null:
 				# Add a source with increasing strength
 				simulation_node.add_water_source(Vector2(intersection.x, intersection.z), 0.5 * delta)
+
+func _ensure_water_border_visual() -> void:
+	if water_border_instance == null:
+		water_border_instance = MeshInstance3D.new()
+		water_border_instance.name = "WaterBorderCurtain"
+		water_border_instance.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(water_border_instance)
+	if water_border_material == null:
+		water_border_material = ShaderMaterial.new()
+		water_border_material.shader = load("res://scripts/renderers/water_border.gdshader")
+		water_border_material.set_shader_parameter("shallow_water_color", SHALLOW_WATER_COLOR)
+		water_border_material.set_shader_parameter("deep_water_color", DEEP_WATER_COLOR)
+	water_border_instance.material_override = water_border_material
+
+func _rebuild_water_border(depth_data: PackedFloat32Array, w: int, h: int) -> void:
+	_ensure_water_border_visual()
+	if terrain_node == null or terrain_node.height_image == null or depth_data.size() < w * h:
+		water_border_instance.mesh = null
+		return
+
+	var world_size: Vector2 = simulation_node.get_terrain_world_size()
+	if world_size == Vector2.ZERO or w < 2 or h < 2:
+		water_border_instance.mesh = null
+		return
+
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var segment_count := 0
+	for x in range(w - 1):
+		segment_count += _add_water_border_segment(st, x, 0, x + 1, 0, w, h, world_size, depth_data)
+	for z in range(h - 1):
+		segment_count += _add_water_border_segment(st, w - 1, z, w - 1, z + 1, w, h, world_size, depth_data)
+	for x in range(w - 1, 0, -1):
+		segment_count += _add_water_border_segment(st, x, h - 1, x - 1, h - 1, w, h, world_size, depth_data)
+	for z in range(h - 1, 0, -1):
+		segment_count += _add_water_border_segment(st, 0, z, 0, z - 1, w, h, world_size, depth_data)
+
+	if segment_count == 0:
+		water_border_instance.mesh = null
+		return
+
+	water_border_instance.mesh = st.commit()
+	water_border_instance.material_override = water_border_material
+
+func _add_water_border_segment(
+	st: SurfaceTool,
+	x0: int,
+	z0: int,
+	x1: int,
+	z1: int,
+	w: int,
+	h: int,
+	world_size: Vector2,
+	depth_data: PackedFloat32Array
+) -> int:
+	var depth0: float = depth_data[z0 * w + x0]
+	var depth1: float = depth_data[z1 * w + x1]
+	if depth0 <= WATER_BORDER_MIN_DEPTH_M and depth1 <= WATER_BORDER_MIN_DEPTH_M:
+		return 0
+
+	var terrain0: float = terrain_node.height_image.get_pixel(x0, z0).r * HEIGHT_SCALE
+	var terrain1: float = terrain_node.height_image.get_pixel(x1, z1).r * HEIGHT_SCALE
+	var top0 := _water_border_position(x0, z0, world_size, w, h, terrain0 + depth0 + 0.02)
+	var top1 := _water_border_position(x1, z1, world_size, w, h, terrain1 + depth1 + 0.02)
+	var bottom0 := _water_border_position(x0, z0, world_size, w, h, terrain0)
+	var bottom1 := _water_border_position(x1, z1, world_size, w, h, terrain1)
+	var max_depth: float = max(depth0, depth1)
+	_add_water_border_quad(st, top0, top1, bottom1, bottom0, depth0, depth1, max_depth)
+	return 1
+
+func _water_border_position(
+	x_idx: int,
+	z_idx: int,
+	world_size: Vector2,
+	w: int,
+	h: int,
+	y: float
+) -> Vector3:
+	var x_t := float(x_idx) / float(max(1, w - 1))
+	var z_t := float(z_idx) / float(max(1, h - 1))
+	var x: float = lerp(-world_size.x * 0.5, world_size.x * 0.5, x_t)
+	var z: float = lerp(-world_size.y * 0.5, world_size.y * 0.5, z_t)
+	return Vector3(x, y, z)
+
+func _add_water_border_quad(
+	st: SurfaceTool,
+	top0: Vector3,
+	top1: Vector3,
+	bottom1: Vector3,
+	bottom0: Vector3,
+	depth0: float,
+	depth1: float,
+	max_depth: float
+) -> void:
+	var normal := (top1 - top0).cross(bottom0 - top0).normalized()
+	_add_water_border_vertex(st, top0, normal, Vector2(0.0, 0.0), depth0, max_depth)
+	_add_water_border_vertex(st, top1, normal, Vector2(1.0, 0.0), depth1, max_depth)
+	_add_water_border_vertex(st, bottom1, normal, Vector2(1.0, 1.0), depth1, max_depth)
+	_add_water_border_vertex(st, top0, normal, Vector2(0.0, 0.0), depth0, max_depth)
+	_add_water_border_vertex(st, bottom1, normal, Vector2(1.0, 1.0), depth1, max_depth)
+	_add_water_border_vertex(st, bottom0, normal, Vector2(0.0, 1.0), depth0, max_depth)
+
+func _add_water_border_vertex(
+	st: SurfaceTool,
+	position: Vector3,
+	normal: Vector3,
+	uv: Vector2,
+	local_depth_m: float,
+	max_depth_m: float
+) -> void:
+	var encoded_depth := 0.0
+	if max_depth_m > 0.001:
+		encoded_depth = clamp(local_depth_m / max_depth_m, 0.0, 1.0)
+	st.set_normal(normal)
+	st.set_uv(uv)
+	st.set_color(Color(encoded_depth, 0.0, 0.0, clamp(local_depth_m / 10.0, 0.0, 1.0)))
+	st.add_vertex(position)
