@@ -162,8 +162,8 @@ WorldEditor toolbar rules:
 - selecting `Raise`, `Lower`, or `Level` opens an upward-expanding terrain brush row above the bottom toolbar shell
 - that terrain brush row owns the shared `Diameter m` and `Strength` controls for all terrain brushes
 - active terrain brushes must show their diameter directly on the map with a visible brush preview
-- `Water` is the first follow-up tool group and will live on the same toolbar surface
-- when the water group ships, its first tool set must be:
+- `Water` lives on the same toolbar surface as terrain sculpting
+- the current water tool set is:
   - `Source`
   - `Sink`
   - `Lake Fill`
@@ -180,10 +180,11 @@ WorldEditor water toolbar behavior:
 
 - selecting `Water` opens an upward-expanding tool row above the bottom toolbar shell, the same
   visual language used by gameplay submenus
-- `Source` places authored inflow points
-- `Sink` places authored outflow points
-- `Lake Fill` authors one basin seed plus one target surface level
-- `Open Water` authors one edge-connected water seed plus one target surface level
+- `Source` places authored dynamic inflow points
+- `Sink` places authored dynamic outflow points
+- `Lake Fill` authors one baseline inland-water body seed plus one target flat surface level
+- `Open Water` authors one baseline edge-connected water body seed plus one target flat surface
+  level
 - water authoring belongs on the same bottom-strip workflow as terrain sculpting so authors can
   switch between carving terrain and placing hydrology without changing editor shells
 - committed `Source`, `Sink`, `Lake Fill`, and `Open Water` records, plus any active surface-fill
@@ -194,6 +195,8 @@ WorldEditor water toolbar behavior:
   - the `Surface +m` control adjusts the preview surface
   - the dedicated `OK` button confirms the preview into authored world state
   - the dedicated `Cancel` button or `Escape` dismisses the preview
+- `Lake Fill` and `Open Water` preview must represent a flat baseline water surface, not a dynamic
+  shallow-water solve
 - surface-fill preview is editor-only transient state and is not saved unless confirmed
 - invalid surface-fill preview levels must not flood the visible map; they stay preview-only and
   uncommitted until the author adjusts the level or cancels
