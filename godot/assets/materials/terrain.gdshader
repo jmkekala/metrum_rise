@@ -19,6 +19,9 @@ uniform vec3 hillshade_light_tint : source_color = vec3(0.97, 0.99, 0.95);
 uniform float terrain_macro_variation_strength = 0.10;
 uniform float terrain_rock_slope_start = 0.15;
 uniform float terrain_rock_slope_end = 0.34;
+uniform float terrain_relief_sample_radius_texels = 3.0;
+uniform float terrain_relief_start_m = 2.0;
+uniform float terrain_relief_end_m = 16.0;
 uniform float terrain_shore_blend_strength = 0.52;
 uniform float terrain_shore_lookup_radius_texels = 2.0;
 uniform float cliff_slope_start = 0.26;
@@ -68,25 +71,24 @@ float macro_variation(vec2 world_xz) {
 	return clamp(a * 0.7 + b * 0.3, 0.0, 1.0);
 }
 
-vec3 terrain_color_from_height(float world_elevation, float macro_mask) {
-	vec3 low_wet = vec3(0.10, 0.18, 0.10);
-	vec3 shore = vec3(0.52, 0.50, 0.34);
-	vec3 grass_low = vec3(0.19, 0.34, 0.14);
-	vec3 grass_high = vec3(0.14, 0.25, 0.12);
-	vec3 upland = vec3(0.34, 0.33, 0.24);
-	vec3 rock = vec3(0.43, 0.44, 0.42);
+vec3 terrain_surface_color(float world_elevation, float macro_mask, float ruggedness) {
+	vec3 inland_base = mix(vec3(0.18, 0.31, 0.15), vec3(0.13, 0.25, 0.12), macro_mask);
+	vec3 dry_open = mix(vec3(0.32, 0.33, 0.24), vec3(0.28, 0.30, 0.22), macro_mask);
+	vec3 conifer_dark = mix(vec3(0.11, 0.21, 0.10), vec3(0.15, 0.27, 0.13), macro_mask);
+	vec3 upland = mix(vec3(0.30, 0.31, 0.23), vec3(0.36, 0.34, 0.25), macro_mask);
 	vec3 snow = vec3(0.93, 0.94, 0.96);
 
-	vec3 color = low_wet;
-	color = mix(color, grass_low, smoothstep(-30.0, 35.0, world_elevation));
-	color = mix(color, shore, 1.0 - smoothstep(8.0, 42.0, abs(world_elevation)));
-	color = mix(color, grass_high, smoothstep(80.0, 260.0, world_elevation));
-	color = mix(color, upland, smoothstep(300.0, 700.0, world_elevation));
-	color = mix(color, rock, smoothstep(800.0, 1400.0, world_elevation));
-	color = mix(color, snow, smoothstep(1550.0, 2200.0, world_elevation));
+	float lowland_bias = 1.0 - smoothstep(-60.0, 120.0, world_elevation);
+	float upland_bias = smoothstep(260.0, 900.0, world_elevation);
+	float alpine_bias = smoothstep(1500.0, 2200.0, world_elevation);
+
+	vec3 color = inland_base;
+	color = mix(color, dry_open, lowland_bias * 0.18);
+	color = mix(color, conifer_dark, ruggedness * 0.34);
+	color = mix(color, upland, upland_bias * 0.46);
+	color = mix(color, snow, alpine_bias);
 	vec3 macro_tint = mix(vec3(1.03, 1.01, 0.97), vec3(0.92, 1.01, 0.95), macro_mask);
 	color *= mix(vec3(1.0), macro_tint, terrain_macro_variation_strength);
-
 	return color;
 }
 
@@ -111,6 +113,22 @@ vec2 sample_height_gradient(vec2 uv) {
 vec3 sample_world_normal(vec2 uv) {
 	vec2 gradient = sample_height_gradient(uv);
 	return normalize(vec3(-gradient.x, 1.0, -gradient.y));
+}
+
+float sample_local_relief(vec2 uv) {
+	vec2 texel = terrain_relief_sample_radius_texels / max(heightmap_texture_size, vec2(1.0));
+	float center = sample_world_height(uv);
+	float h_x_pos = sample_world_height(uv + vec2(texel.x, 0.0));
+	float h_x_neg = sample_world_height(uv - vec2(texel.x, 0.0));
+	float h_y_pos = sample_world_height(uv + vec2(0.0, texel.y));
+	float h_y_neg = sample_world_height(uv - vec2(0.0, texel.y));
+	float h_d0 = sample_world_height(uv + texel);
+	float h_d1 = sample_world_height(uv - texel);
+	float h_d2 = sample_world_height(uv + vec2(texel.x, -texel.y));
+	float h_d3 = sample_world_height(uv + vec2(-texel.x, texel.y));
+	float max_h = max(center, max(max(h_x_pos, h_x_neg), max(max(h_y_pos, h_y_neg), max(max(h_d0, h_d1), max(h_d2, h_d3)))));
+	float min_h = min(center, min(min(h_x_pos, h_x_neg), min(min(h_y_pos, h_y_neg), min(min(h_d0, h_d1), min(h_d2, h_d3)))));
+	return max_h - min_h;
 }
 
 float shoreline_mask(vec2 uv) {
@@ -208,21 +226,24 @@ void fragment() {
 	float world_elevation = h * height_scale;
 	vec2 world_xz = (var_centered_uv - vec2(0.5)) * mesh_size;
 	float macro_mask = macro_variation(world_xz);
-	vec3 color = terrain_color_from_height(world_elevation, macro_mask);
+	float local_relief = sample_local_relief(var_centered_uv);
 	vec3 normal = sample_world_normal(var_centered_uv);
 	float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
+	float ruggedness = smoothstep(terrain_relief_start_m, terrain_relief_end_m, local_relief);
+	ruggedness = clamp(max(ruggedness, slope * 0.72), 0.0, 1.0);
+	vec3 color = terrain_surface_color(world_elevation, macro_mask, ruggedness);
 	vec3 cliff = cliff_masks(var_centered_uv);
 	float cliff_face = cliff.x;
 	float cliff_top = cliff.y;
 	float cliff_toe = cliff.z;
 	float rock_mask = smoothstep(terrain_rock_slope_start, terrain_rock_slope_end, slope);
-	rock_mask *= smoothstep(20.0, 220.0, world_elevation + (macro_mask - 0.5) * 120.0);
+	rock_mask *= mix(0.75, 1.0, ruggedness);
 	rock_mask = max(rock_mask, cliff_face * 0.92);
 	vec3 rock_color = mix(vec3(0.31, 0.29, 0.25), vec3(0.46, 0.45, 0.43), macro_mask);
 	color = mix(color, rock_color, rock_mask);
 	float shore_mask = shoreline_mask(var_centered_uv);
 	float shore_flatness = 1.0 - smoothstep(terrain_rock_slope_start, terrain_rock_slope_end + 0.10, slope);
-	vec3 shore_color = mix(vec3(0.38, 0.37, 0.25), vec3(0.20, 0.29, 0.18), smoothstep(60.0, 220.0, world_elevation));
+	vec3 shore_color = mix(vec3(0.34, 0.33, 0.24), vec3(0.18, 0.28, 0.16), ruggedness);
 	color = mix(color, shore_color, shore_mask * shore_flatness * terrain_shore_blend_strength);
 	color = mix(color, cliff_face_color, cliff_face * cliff_face_strength);
 	float hillshade = hillshade_mask(var_centered_uv);

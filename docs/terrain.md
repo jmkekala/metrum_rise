@@ -818,6 +818,36 @@ Deterministic v1 realism scope:
 - the first realism pass must stay cheap enough to share the existing terrain/water renderer path
   between gameplay and WorldEditor
 
+Deterministic terrain color ownership after the first realism pass:
+
+- the long-term terrain color model must be surface-classification-first and absolute-height-second
+- absolute world elevation may still influence the palette, but it must not be the primary terrain
+  material classifier
+- the primary terrain color inputs should be derived from the live visible terrain field:
+  - slope / local normal
+  - local relief / ruggedness
+  - shoreline or visible-water proximity
+  - narrow shore-transition cues derived from visible water, not only from `0 m`
+  - macro variation / large-scale breakup
+- absolute world elevation should be treated as a secondary modifier that nudges an already chosen
+  surface class rather than choosing the surface class by itself
+- default dry terrain must read as normal inland ground / forest floor, not as marsh, shoreline,
+  or tidal flats just because it is low or near one of many lakes
+- shoreline influence should remain a relatively narrow visual transition near visible water, not a
+  dominant lowland terrain class
+- imported DEM worlds and hand-authored blank worlds must share the same terrain-color ownership
+  model; terrain color must not assume a specific real-world altitude band such as Kuopio's
+  imported range
+- the renderer may still use absolute elevation to bias:
+  - colder / harsher upland tones
+  - alpine / snow transition
+  - gentle broad lowland hue shifts where appropriate
+  but those biases must remain weaker than the primary surface-classification cues
+- the terrain-color model must remain render-only and must not introduce authored material records,
+  biome records, or save-schema changes
+- the terrain-color model must remain cheap enough to share the same terrain renderer path between
+  gameplay and WorldEditor
+
 Deterministic shoreline contour rendering slice:
 
 - on coarse authored grids such as `10 m`, the preferred next shoreline-quality step is contour
@@ -897,6 +927,7 @@ Explicit non-goals of the first realism pass:
   rendering has been attempted
 - increasing `terrain_cell_m` density solely to get smoother visible cliff edges before
   breakline/band rendering has been attempted
+- using one absolute-height ramp as the long-term primary terrain material classifier
 
 ## Current Deterministic Non-Goals
 
@@ -946,6 +977,9 @@ What is implemented now:
   fresnel / procedural breakup treatment, including contour-style shoreline rendering on the
   existing `10 m` grid from the live visible water field plus render-only cliff breakline / cliff
   band treatment from the live terrain field
+- terrain coloring now uses surface classification first and absolute height second, so flat blank
+  worlds and imported DEM worlds share the same inland-first palette model instead of depending
+  mainly on one absolute-height ramp
 
 What is next:
 

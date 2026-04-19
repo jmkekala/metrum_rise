@@ -19,6 +19,9 @@ const HILLSHADE_LIGHT_TINT := Color(0.97, 0.99, 0.95)
 const TERRAIN_MACRO_VARIATION_STRENGTH := 0.10
 const TERRAIN_ROCK_SLOPE_START := 0.15
 const TERRAIN_ROCK_SLOPE_END := 0.34
+const TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS := 3.0
+const TERRAIN_RELIEF_START_M := 2.0
+const TERRAIN_RELIEF_END_M := 16.0
 const TERRAIN_SHORE_BLEND_STRENGTH := 0.28
 const TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS := 1.0
 const CLIFF_SLOPE_START := 0.26
@@ -114,6 +117,9 @@ func rebuild_from_simulation_state():
 	material.set_shader_parameter("terrain_macro_variation_strength", TERRAIN_MACRO_VARIATION_STRENGTH)
 	material.set_shader_parameter("terrain_rock_slope_start", TERRAIN_ROCK_SLOPE_START)
 	material.set_shader_parameter("terrain_rock_slope_end", TERRAIN_ROCK_SLOPE_END)
+	material.set_shader_parameter("terrain_relief_sample_radius_texels", TERRAIN_RELIEF_SAMPLE_RADIUS_TEXELS)
+	material.set_shader_parameter("terrain_relief_start_m", TERRAIN_RELIEF_START_M)
+	material.set_shader_parameter("terrain_relief_end_m", TERRAIN_RELIEF_END_M)
 	material.set_shader_parameter("terrain_shore_blend_strength", TERRAIN_SHORE_BLEND_STRENGTH)
 	material.set_shader_parameter("terrain_shore_lookup_radius_texels", TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS)
 	material.set_shader_parameter("cliff_slope_start", CLIFF_SLOPE_START)
