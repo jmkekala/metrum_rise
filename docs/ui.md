@@ -158,8 +158,8 @@ WorldEditor toolbar rules:
   `UIStyle` shell language as the gameplay toolbar
 - this toolbar is the primary tool-selection surface for world authoring
 - terrain tools live here, not in the top menu
-- WorldEditor terrain tools are `Raise`, `Lower`, and `Level`
-- selecting `Raise`, `Lower`, or `Level` opens an upward-expanding terrain brush row above the bottom toolbar shell
+- WorldEditor terrain tools are `Raise`, `Lower`, `Level`, and `Smooth`
+- selecting `Raise`, `Lower`, `Level`, or `Smooth` opens an upward-expanding terrain brush row above the bottom toolbar shell
 - that terrain brush row owns the shared `Diameter m` and `Strength` controls for all terrain brushes
 - active terrain brushes must show their diameter directly on the map with a visible brush preview
 - `Water` lives on the same toolbar surface as terrain sculpting
@@ -211,10 +211,11 @@ Current WorldEditor shortcuts:
 | 1 | Select `Raise` |
 | 2 | Select `Lower` |
 | 3 | Select `Level` |
-| 4 | Select `Water Source` |
-| 5 | Select `Water Sink` |
-| 6 | Select `Lake Fill` |
-| 7 | Select `Open Water` |
+| 4 | Select `Smooth` |
+| 5 | Select `Water Source` |
+| 6 | Select `Water Sink` |
+| 7 | Select `Lake Fill` |
+| 8 | Select `Open Water` |
 | Left Mouse | Sculpt terrain with the active tool; `Level` captures the clicked height for the stroke; surface-fill tools use first click for preview |
 | Shift+Left Mouse | Remove the nearest authored water feature for the active water tool |
 | Middle Mouse | Orbit camera |

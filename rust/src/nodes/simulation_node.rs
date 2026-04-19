@@ -32,6 +32,7 @@
 //! | | `get_noise_image_data` | `overlay_manager.gd` |
 //! | | `get_desirability_image_data` | `overlay_manager.gd` |
 //! | **Terrain** | `sculpt_terrain` | `terrain_tool.gd` |
+//! | | `smooth_terrain` | `world_editor.gd` |
 //! | | `is_terrain_dirty` | `terrain_renderer.gd` |
 //! | | `clear_terrain_dirty` | `terrain_renderer.gd` |
 //! | | `get_heightmap_data` | `terrain_renderer.gd` |
@@ -361,6 +362,25 @@ impl SimulationNode {
     ) {
         self.lock_core()
             .level_terrain_stroke_step_internal(pos, radius, target_height_m, strength);
+        self.snapshot.write().unwrap().terrain_dirty = true;
+    }
+
+    /// Smooths terrain toward the local neighborhood average.
+    #[func]
+    pub fn smooth_terrain(&mut self, pos: Vector2, radius: f32, strength: f32) {
+        self.lock_core()
+            .smooth_terrain_internal(pos, radius, strength);
+        let mut snapshot = self.snapshot.write().unwrap();
+        snapshot.terrain_dirty = true;
+        snapshot.water_dirty = true;
+        snapshot.network_dirty = true;
+    }
+
+    /// Applies one batched terrain-smooth step during an active editor stroke.
+    #[func]
+    pub fn smooth_terrain_stroke_step(&mut self, pos: Vector2, radius: f32, strength: f32) {
+        self.lock_core()
+            .smooth_terrain_stroke_step_internal(pos, radius, strength);
         self.snapshot.write().unwrap().terrain_dirty = true;
     }
 
@@ -1622,10 +1642,10 @@ impl SimulationNode {
         let mut markers = VarArray::new();
 
         for point in &core.world_water_boundary_points {
-            let terrain_height_m =
-                core.heightmap
-                    .sample_height_world(point.world_x, point.world_z)
-                    * config::HEIGHT_SCALE;
+            let terrain_height_m = core
+                .heightmap
+                .sample_height_world(point.world_x, point.world_z)
+                * config::HEIGHT_SCALE;
             let kind = match point.kind {
                 crate::simulation::world_definition::AuthoredWaterBoundaryKind::Source => "source",
                 crate::simulation::world_definition::AuthoredWaterBoundaryKind::Sink => "sink",
@@ -1644,10 +1664,10 @@ impl SimulationNode {
         }
 
         for lake in &core.world_lake_fills {
-            let terrain_height_m =
-                core.heightmap
-                    .sample_height_world(lake.world_x, lake.world_z)
-                    * config::HEIGHT_SCALE;
+            let terrain_height_m = core
+                .heightmap
+                .sample_height_world(lake.world_x, lake.world_z)
+                * config::HEIGHT_SCALE;
             markers.push(
                 &Self::world_water_authoring_marker_dict(
                     "lake_fill",

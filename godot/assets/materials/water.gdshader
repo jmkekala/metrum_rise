@@ -17,11 +17,12 @@ uniform float water_surface_smoothing = 0.94;
 uniform float water_surface_blend_radius_texels = 1.0;
 uniform vec2 watermap_texture_size = vec2(1.0, 1.0);
 
-varying float h;
-varying float w;
-varying float v;
-varying vec2 var_uv;
+varying vec2 var_centered_uv;
 varying vec3 var_world_pos;
+
+vec2 centered_uv(vec2 uv) {
+	return (uv * (watermap_texture_size - 1.0) + 0.5) / max(watermap_texture_size, vec2(1.0));
+}
 
 float sample_terrain_world_height(vec2 uv) {
 	return texture(heightmap, uv).r * height_scale;
@@ -29,6 +30,13 @@ float sample_terrain_world_height(vec2 uv) {
 
 float sample_raw_water_depth(vec2 uv) {
 	return texture(watermap, uv).r;
+}
+
+float sample_contour_water_depth(vec2 uv) {
+	// The watermap sampler uses linear filtering. Sampling it between texel
+	// centers yields a contour-style shoreline field on top of the authored
+	// grid instead of exposing whole-cell steps directly.
+	return sample_raw_water_depth(uv);
 }
 
 float sample_display_water_depth(vec2 uv) {
@@ -87,14 +95,13 @@ float sample_display_water_depth(vec2 uv) {
 }
 
 void vertex() {
-	var_uv = UV;
-	h = texture(heightmap, UV).r;
-	w = sample_display_water_depth(UV);
-	v = texture(velocity_map, UV).r;
+	var_centered_uv = centered_uv(UV);
+	float terrain_height = texture(heightmap, var_centered_uv).r;
+	float water_depth = sample_display_water_depth(var_centered_uv);
 	
 	// Terrain samples are still in pre-scaled storage units, but water depth is
 	// already world-space metres. Only the terrain sample should use height_scale.
-	VERTEX.y += h * height_scale + w + 0.05;
+	VERTEX.y += terrain_height * height_scale + water_depth + 0.05;
 	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
@@ -128,10 +135,11 @@ float water_surface_breakup(vec2 world_xz) {
 }
 
 void fragment() {
-	float depth_m = w;
-	float speed_sample = v;
-	float shore_mask = smoothstep(0.0, max(shore_softness_m, 0.001), depth_m);
-	if (shore_mask < 0.01) {
+	float contour_depth_m = sample_contour_water_depth(var_centered_uv);
+	float depth_m = contour_depth_m;
+	float speed_sample = texture(velocity_map, var_centered_uv).r;
+	float shore_mask = smoothstep(0.0, max(shore_softness_m, 0.001), contour_depth_m);
+	if (shore_mask < 0.001 && contour_depth_m <= 0.001) {
 		discard;
 	}
 	
@@ -145,7 +153,7 @@ void fragment() {
 	float speed = clamp(speed_sample * 0.5, 0.0, 1.0);
 	vec3 final_color = mix(base_color, foam_color.rgb, speed * 0.35);
 	float final_alpha = mix(shallow_water_color.a, deep_water_color.a, depth_factor) * shore_mask;
-	float shore_foam = 1.0 - smoothstep(0.0, max(shore_foam_band_m, 0.001), depth_m);
+	float shore_foam = 1.0 - smoothstep(0.0, max(shore_foam_band_m, 0.001), contour_depth_m);
 	final_color = mix(final_color, foam_color.rgb, shore_foam * 0.35 + speed * 0.10);
 	float fresnel = pow(
 		1.0 - clamp(dot(normalize(NORMAL), normalize(VIEW)), 0.0, 1.0),

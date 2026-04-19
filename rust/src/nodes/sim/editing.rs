@@ -113,6 +113,16 @@ impl SimCore {
         self.finish_terrain_authoring_edit_internal();
     }
 
+    /// Smooths terrain toward the local neighborhood average in a circular area.
+    pub fn smooth_terrain_internal(&mut self, pos: Vector2, radius: f32, strength: f32) {
+        self.push_undo_state(true, false, true, false);
+        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
+        let radius_cells = radius / self.config.terrain_cell_m;
+        self.heightmap
+            .smooth(center_x, center_y, radius_cells, strength);
+        self.finish_terrain_authoring_edit_internal();
+    }
+
     /// Applies one batched terrain-level step without running deferred rebuild work yet.
     pub fn level_terrain_stroke_step_internal(
         &mut self,
@@ -131,6 +141,21 @@ impl SimCore {
             target_height_m / config::HEIGHT_SCALE,
             strength,
         );
+        self.terrain_dirty = true;
+    }
+
+    /// Applies one batched terrain-smooth step without running deferred rebuild work yet.
+    pub fn smooth_terrain_stroke_step_internal(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        strength: f32,
+    ) {
+        self.prepare_batched_terrain_edit_internal();
+        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
+        let radius_cells = radius / self.config.terrain_cell_m;
+        self.heightmap
+            .smooth(center_x, center_y, radius_cells, strength);
         self.terrain_dirty = true;
     }
 

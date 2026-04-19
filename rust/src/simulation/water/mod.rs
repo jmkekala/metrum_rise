@@ -29,7 +29,6 @@ impl BaselineWaterState {
     fn replace_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
         self.depth.replace_from_dense(dense)
     }
-
 }
 
 struct DynamicWaterState {
@@ -79,48 +78,50 @@ impl DynamicWaterState {
         let depth_ref = &depth;
         let support_ref = support_surface;
 
-        flux.par_chunks_mut(w).enumerate().for_each(|(y, row_flux)| {
-            if y == 0 || y >= h - 1 {
-                return;
-            }
+        flux.par_chunks_mut(w)
+            .enumerate()
+            .for_each(|(y, row_flux)| {
+                if y == 0 || y >= h - 1 {
+                    return;
+                }
 
-            for x in 1..w - 1 {
-                let idx = y * w + x;
-                if depth_ref[idx] <= 1e-6 && row_flux[x].iter().all(|&f| f <= 0.0) {
-                    let n_top = (y - 1) * w + x;
-                    let n_bottom = (y + 1) * w + x;
-                    if depth_ref[idx - 1] <= 1e-6
-                        && depth_ref[idx + 1] <= 1e-6
-                        && depth_ref[n_top] <= 1e-6
-                        && depth_ref[n_bottom] <= 1e-6
-                    {
-                        continue;
+                for x in 1..w - 1 {
+                    let idx = y * w + x;
+                    if depth_ref[idx] <= 1e-6 && row_flux[x].iter().all(|&f| f <= 0.0) {
+                        let n_top = (y - 1) * w + x;
+                        let n_bottom = (y + 1) * w + x;
+                        if depth_ref[idx - 1] <= 1e-6
+                            && depth_ref[idx + 1] <= 1e-6
+                            && depth_ref[n_top] <= 1e-6
+                            && depth_ref[n_bottom] <= 1e-6
+                        {
+                            continue;
+                        }
                     }
-                }
 
-                let surface_self = support_ref[idx] + depth_ref[idx];
-                let mut cell_flux = row_flux[x];
-                let nx = [x - 1, x + 1, x, x];
-                let ny = [y, y, y - 1, y + 1];
+                    let surface_self = support_ref[idx] + depth_ref[idx];
+                    let mut cell_flux = row_flux[x];
+                    let nx = [x - 1, x + 1, x, x];
+                    let ny = [y, y, y - 1, y + 1];
 
-                for i in 0..4 {
-                    let n_idx = ny[i] * w + nx[i];
-                    let surface_neighbor = support_ref[n_idx] + depth_ref[n_idx];
-                    let h_diff = surface_self - surface_neighbor;
-                    cell_flux[i] = (cell_flux[i] + dt * g * a * (h_diff / l)).max(0.0);
-                }
-
-                let total_flux = cell_flux[0] + cell_flux[1] + cell_flux[2] + cell_flux[3];
-                if total_flux > 0.0 {
-                    let k = (depth_ref[idx] * l * l / (total_flux * dt)).min(1.0);
-                    for value in &mut cell_flux {
-                        *value *= k;
+                    for i in 0..4 {
+                        let n_idx = ny[i] * w + nx[i];
+                        let surface_neighbor = support_ref[n_idx] + depth_ref[n_idx];
+                        let h_diff = surface_self - surface_neighbor;
+                        cell_flux[i] = (cell_flux[i] + dt * g * a * (h_diff / l)).max(0.0);
                     }
-                }
 
-                row_flux[x] = cell_flux;
-            }
-        });
+                    let total_flux = cell_flux[0] + cell_flux[1] + cell_flux[2] + cell_flux[3];
+                    if total_flux > 0.0 {
+                        let k = (depth_ref[idx] * l * l / (total_flux * dt)).min(1.0);
+                        for value in &mut cell_flux {
+                            *value *= k;
+                        }
+                    }
+
+                    row_flux[x] = cell_flux;
+                }
+            });
 
         let flux_ref = &flux;
         depth
@@ -316,15 +317,15 @@ impl WaterSystem {
     }
 
     /// Replaces the baseline water depth buffer from a dense row-major snapshot.
-    pub(crate) fn replace_baseline_depth_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
+    pub(crate) fn replace_baseline_depth_from_dense(
+        &mut self,
+        dense: &[f32],
+    ) -> Result<(), String> {
         self.baseline.replace_from_dense(dense)
     }
 
     /// Replaces the dynamic water depth buffer from a dense row-major snapshot.
-    pub(crate) fn replace_dynamic_depth_from_dense(
-        &mut self,
-        dense: &[f32],
-    ) -> Result<(), String> {
+    pub(crate) fn replace_dynamic_depth_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
         self.dynamic.depth.replace_from_dense(dense)
     }
 

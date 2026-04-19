@@ -65,6 +65,7 @@ enum Tool {
 	RAISE,
 	LOWER,
 	LEVEL,
+	SMOOTH,
 	WATER_SOURCE,
 	WATER_SINK,
 	WATER_LAKE_FILL,
@@ -84,6 +85,7 @@ var _toolbar_status: Label
 var _raise_btn: Button
 var _lower_btn: Button
 var _level_btn: Button
+var _smooth_btn: Button
 var _terrain_tool_panel: PanelContainer
 var _terrain_tool_title: Label
 var _brush_diameter_spin: SpinBox
@@ -190,12 +192,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_3:
 				_set_active_tool(Tool.LEVEL)
 			KEY_4:
-				_set_active_tool(Tool.WATER_SOURCE)
+				_set_active_tool(Tool.SMOOTH)
 			KEY_5:
-				_set_active_tool(Tool.WATER_SINK)
+				_set_active_tool(Tool.WATER_SOURCE)
 			KEY_6:
-				_set_active_tool(Tool.WATER_LAKE_FILL)
+				_set_active_tool(Tool.WATER_SINK)
 			KEY_7:
+				_set_active_tool(Tool.WATER_LAKE_FILL)
+			KEY_8:
 				_set_active_tool(Tool.WATER_OPEN_WATER)
 			KEY_ESCAPE:
 				_set_active_tool(Tool.NONE)
@@ -477,6 +481,9 @@ func _build_ui() -> void:
 	_level_btn = _make_tool_button("Level", Tool.LEVEL)
 	row.add_child(_level_btn)
 
+	_smooth_btn = _make_tool_button("Smooth", Tool.SMOOTH)
+	row.add_child(_smooth_btn)
+
 	var water_group_separator := VSeparator.new()
 	row.add_child(water_group_separator)
 
@@ -533,6 +540,8 @@ func _set_active_tool(tool: Tool) -> void:
 			_set_status("Lower terrain tool active.")
 		Tool.LEVEL:
 			_set_status("Level terrain tool active. Click-drag to level toward the clicked height.")
+		Tool.SMOOTH:
+			_set_status("Smooth terrain tool active. Click-drag to relax terrain toward the local average.")
 		Tool.WATER_SOURCE:
 			_set_status("Water source tool active. Shift+Click removes nearest source.")
 		Tool.WATER_SINK:
@@ -564,6 +573,8 @@ func _update_tool_buttons() -> void:
 		_lower_btn.button_pressed = _active_tool == Tool.LOWER
 	if _level_btn:
 		_level_btn.button_pressed = _active_tool == Tool.LEVEL
+	if _smooth_btn:
+		_smooth_btn.button_pressed = _active_tool == Tool.SMOOTH
 	if _terrain_tool_panel:
 		_terrain_tool_panel.visible = _is_sculpt_tool(_active_tool)
 	if _terrain_tool_title:
@@ -574,6 +585,8 @@ func _update_tool_buttons() -> void:
 				_terrain_tool_title.text = "Lower Brush"
 			Tool.LEVEL:
 				_terrain_tool_title.text = "Level Brush"
+			Tool.SMOOTH:
+				_terrain_tool_title.text = "Smooth Brush"
 			_:
 				_terrain_tool_title.text = "Terrain Brush"
 	if _water_group_btn:
@@ -609,6 +622,8 @@ func _apply_sculpt(delta: float) -> void:
 				_level_target_height_m,
 				strength
 			)
+		Tool.SMOOTH:
+			sim.smooth_terrain_stroke_step(Vector2(intersection.x, intersection.z), radius, strength)
 	_live_sculpt_visual_pending = true
 
 func _begin_sculpt_stroke() -> void:
@@ -720,7 +735,7 @@ func _terrain_intersection_under_cursor():
 	return sim.intersect_terrain(ray_origin, ray_dir)
 
 func _is_sculpt_tool(tool: Tool) -> bool:
-	return tool == Tool.RAISE or tool == Tool.LOWER or tool == Tool.LEVEL
+	return tool == Tool.RAISE or tool == Tool.LOWER or tool == Tool.LEVEL or tool == Tool.SMOOTH
 
 func _is_water_tool(tool: Tool) -> bool:
 	return (
@@ -1178,6 +1193,9 @@ func _update_brush_preview() -> void:
 		Tool.LEVEL:
 			fill_color = Color(0.60, 0.48, 0.18, 0.10)
 			ring_color = Color(1.0, 0.94, 0.72, 0.88)
+		Tool.SMOOTH:
+			fill_color = Color(0.18, 0.44, 0.56, 0.10)
+			ring_color = Color(0.72, 0.94, 1.0, 0.88)
 
 	_brush_preview_material.set_shader_parameter("fill_color", fill_color)
 	_brush_preview_material.set_shader_parameter("ring_color", ring_color)

@@ -440,10 +440,12 @@ Current deterministic rules:
   - `Raise`
   - `Lower`
   - `Level`
-- selecting `Raise`, `Lower`, or `Level` opens a terrain brush submenu on the bottom toolbar
+  - `Smooth`
+- selecting `Raise`, `Lower`, `Level`, or `Smooth` opens a terrain brush submenu on the bottom toolbar
 - that terrain brush submenu owns the shared editor `Diameter m` and `Strength` controls
 - active terrain brushes show their footprint directly on the terrain so brush diameter is visible before and during sculpting
 - `Level` captures the clicked rendered terrain height at the start of the brush stroke and moves terrain toward that height while the stroke remains active
+- `Smooth` moves terrain toward the local neighborhood average inside the brush footprint and is intended for relaxing jagged cuts, banks, and shorelines after carving
 - world editor save/load is `WorldDefinition` only, not city-save persistence
 
 Current compatibility gap:
@@ -786,6 +788,8 @@ Deterministic rules:
   - small procedural surface breakup
 - coastline smoothing may be handled visually with soft shoreline masking, shoreline foam bands,
   or similar shader-side treatment
+- on coarse authored grids such as `10 m`, shoreline improvement should prefer sub-texel render
+  coverage / contour-style masking before increasing `terrain_cell_m` density
 - these visual passes must never change:
   - source terrain
   - visual terrain ownership rules
@@ -808,6 +812,35 @@ Deterministic v1 realism scope:
 - the first realism pass must stay cheap enough to share the existing terrain/water renderer path
   between gameplay and WorldEditor
 
+Deterministic shoreline contour rendering slice:
+
+- on coarse authored grids such as `10 m`, the preferred next shoreline-quality step is contour
+  extraction from the live visible water field, not additional blur radius and not a denser
+  authored map by default
+- shoreline contour extraction must remain render-only and must never become authored world state
+- the extraction input must be the same composed visible water depth used by the water renderer:
+  baseline-water plus dynamic-water composition after terrain alignment
+- shoreline extraction must use a waterline threshold at the visible shoreline boundary, not a
+  post-hoc artistic painted mask
+- the extraction algorithm may be marching squares or an equivalent contour/isoband method, but
+  the output contract is:
+  - smoother diagonal coastlines than raw cell edges
+  - smoother narrow channel shorelines than raw cell edges
+  - no visible whole-cell stair stepping as the primary shoreline shape in common camera views
+  - shoreline position must stay tied to the live water field, not drift arbitrarily for style
+- the renderer may realize that contour result as either:
+  - a dedicated shoreline mesh
+  - a higher-resolution shoreline mask or distance field
+  - another equivalent render-only contour representation
+- whichever render representation is chosen, it must update whenever terrain or visible water is
+  refreshed in gameplay or WorldEditor
+- the shoreline contour slice must not require any save-schema change, `WorldDefinition` schema
+  change, or additional authored shoreline records
+- sub-texel shoreline coverage smoothing remains an allowed fallback/interim treatment, but it is
+  not the long-term primary shoreline-quality solution on coarse grids
+- shoreline contour rendering may improve the visible water edge only; it does not create
+  sub-cell terrain-bank geometry and must not pretend to solve blocky terrain cuts by itself
+
 Deterministic asset policy:
 
 - external terrain/water material textures are optional later enhancements, not a prerequisite for
@@ -823,6 +856,8 @@ Explicit non-goals of the first realism pass:
 - erosion or sediment simulation for visual purposes
 - dependency on downloaded hillshade rasters
 - dependency on scanned PBR material libraries before terrain/water can look acceptable
+- increasing `terrain_cell_m` density solely to get a smoother visible shoreline before contour
+  rendering has been attempted
 
 ## Current Deterministic Non-Goals
 
@@ -869,11 +904,14 @@ What is implemented now:
   and WorldEditor; it is not stored as separate world data
 - terrain and water rendering now use a first render-only realism pass with slope-aware terrain
   shading, shoreline-aware terrain tinting, depth-aware water color, and shader-side shoreline /
-  fresnel / procedural breakup treatment
+  fresnel / procedural breakup treatment, including contour-style shoreline rendering on the
+  existing `10 m` grid from the live visible water field
 
 What is next:
 
 1. interactive DEM / GeoTIFF import UI for real-map authored worlds
 2. river-path hydrology on top of the baseline/dynamic water split
-3. chunk-window runtime processing
-4. later texture-assisted terrain/water materials if the shader-only realism pass is not enough
+3. dedicated shoreline mesh or distance-field rendering if the current contour-style shoreline
+   field still is not enough for close camera work
+4. chunk-window runtime processing
+5. later texture-assisted terrain/water materials if the shader-only realism pass is not enough

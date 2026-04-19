@@ -255,6 +255,81 @@ impl TerrainSystem {
         }
     }
 
+    /// Smooths terrain toward the local neighborhood average in a circular area.
+    ///
+    /// This uses a local patch snapshot so the brush is not biased by scan order.
+    /// Complexity is O(k) for k cells in the touched brush bounding box.
+    pub fn smooth(&mut self, center_x: f32, center_y: f32, radius: f32, strength: f32) {
+        let r_int = radius.ceil() as i32;
+        let cx_int = center_x as i32;
+        let cy_int = center_y as i32;
+
+        let min_x = (cx_int - r_int - 1).max(0) as usize;
+        let max_x = (cx_int + r_int + 1).min(self.width as i32 - 1) as usize;
+        let min_y = (cy_int - r_int - 1).max(0) as usize;
+        let max_y = (cy_int + r_int + 1).min(self.height as i32 - 1) as usize;
+
+        let patch_w = max_x - min_x + 1;
+        let patch_h = max_y - min_y + 1;
+        let mut patch = vec![0.0_f32; patch_w * patch_h];
+        for local_y in 0..patch_h {
+            for local_x in 0..patch_w {
+                patch[local_y * patch_w + local_x] =
+                    self.source_data.get(min_x + local_x, min_y + local_y);
+            }
+        }
+
+        for y in (cy_int - r_int)..=(cy_int + r_int) {
+            for x in (cx_int - r_int)..=(cx_int + r_int) {
+                if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+                    continue;
+                }
+
+                let dx = x as f32 - center_x;
+                let dy = y as f32 - center_y;
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq > radius * radius {
+                    continue;
+                }
+
+                let dist = dist_sq.sqrt();
+                let normalized_dist = dist / radius;
+                let falloff = (1.0 + (normalized_dist * std::f32::consts::PI).cos()) * 0.5;
+                let max_step = strength * falloff;
+
+                let ux = x as usize;
+                let uy = y as usize;
+                let local_x = ux - min_x;
+                let local_y = uy - min_y;
+                let mut sum = 0.0_f32;
+                let mut samples = 0.0_f32;
+
+                let sample_min_x = local_x.saturating_sub(1);
+                let sample_max_x = (local_x + 1).min(patch_w - 1);
+                let sample_min_y = local_y.saturating_sub(1);
+                let sample_max_y = (local_y + 1).min(patch_h - 1);
+                for sample_y in sample_min_y..=sample_max_y {
+                    for sample_x in sample_min_x..=sample_max_x {
+                        sum += patch[sample_y * patch_w + sample_x];
+                        samples += 1.0;
+                    }
+                }
+
+                let target_height = sum / samples.max(1.0_f32);
+                let current_h = patch[local_y * patch_w + local_x];
+                let delta = target_height - current_h;
+                let next_h = if delta.abs() <= max_step {
+                    target_height
+                } else {
+                    current_h + delta.signum() * max_step
+                };
+
+                self.source_data.set(ux, uy, next_h);
+                self.data.set(ux, uy, next_h);
+            }
+        }
+    }
+
     /// Synchronizes the visual data buffer with the source data.
     pub fn reset_visuals_from_source(&mut self) {
         self.data = self.source_data.clone();
@@ -408,5 +483,18 @@ mod tests {
 
         assert!((terrain.get_height(4, 4) - 3.0).abs() < 0.0001);
         assert!((terrain.get_height(5, 4) - 3.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn smooth_brush_moves_samples_toward_local_average_without_scan_bias() {
+        let mut terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
+        terrain.set_height(4, 4, 9.0);
+
+        terrain.smooth(4.0, 4.0, 2.0, 1.0);
+
+        assert!((terrain.get_height(4, 4) - 8.0).abs() < 0.0001);
+        assert!((terrain.get_height(5, 4) - 0.5).abs() < 0.0001);
+        assert!((terrain.get_height(4, 5) - 0.5).abs() < 0.0001);
+        assert!((terrain.get_height(0, 0) - 0.0).abs() < 0.0001);
     }
 }
