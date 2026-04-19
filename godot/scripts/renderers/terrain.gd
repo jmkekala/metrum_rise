@@ -14,8 +14,19 @@ const HILLSHADE_ALTITUDE_DEG := 38.0
 const HILLSHADE_STRENGTH := 0.58
 const HILLSHADE_AMBIENT := 0.24
 const HILLSHADE_CONTRAST := 1.35
-const HILLSHADE_SHADOW_TINT := Color(0.70, 0.78, 0.86)
-const HILLSHADE_LIGHT_TINT := Color(1.02, 1.01, 0.98)
+const HILLSHADE_SHADOW_TINT := Color(0.62, 0.71, 0.77)
+const HILLSHADE_LIGHT_TINT := Color(0.97, 0.99, 0.95)
+const TERRAIN_MACRO_VARIATION_STRENGTH := 0.10
+const TERRAIN_ROCK_SLOPE_START := 0.15
+const TERRAIN_ROCK_SLOPE_END := 0.34
+const TERRAIN_SHORE_BLEND_STRENGTH := 0.28
+const TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS := 1.0
+const CONTOUR_MINOR_INTERVAL_M := 5.0
+const CONTOUR_MAJOR_INTERVAL_M := 25.0
+const CONTOUR_MINOR_THICKNESS := 0.95
+const CONTOUR_MAJOR_THICKNESS := 1.25
+const CONTOUR_MINOR_STRENGTH := 0.14
+const CONTOUR_MAJOR_STRENGTH := 0.34
 
 @onready var simulation_node = $"../SimulationNode"
 var texture: ImageTexture
@@ -26,6 +37,8 @@ var overlay_image: Image
 
 var parcel_texture: ImageTexture
 var parcel_image: Image
+var water_proxy_texture: ImageTexture
+var shared_water_texture: Texture2D
 
 var overlay_mode: int = 0 # 0=None, 1=Pollution, 2=Noise, 3=Desirability
 var sim_speed: float = 0.0
@@ -59,12 +72,16 @@ func rebuild_from_simulation_state():
 	
 	parcel_image = Image.create(w, h, false, Image.FORMAT_RGBAF)
 	parcel_texture = ImageTexture.create_from_image(parcel_image)
+
+	var water_proxy_image := Image.create(w, h, false, Image.FORMAT_RF)
+	water_proxy_texture = ImageTexture.create_from_image(water_proxy_image)
 	
 	var material = ShaderMaterial.new()
 	material.shader = load("res://assets/materials/terrain.gdshader")
 	material.set_shader_parameter("heightmap", texture)
 	material.set_shader_parameter("overlay_texture", overlay_texture)
 	material.set_shader_parameter("parcel_texture", parcel_texture)
+	material.set_shader_parameter("watermap", water_proxy_texture)
 	material.set_shader_parameter("height_scale", 20.0)
 	material.set_shader_parameter("mesh_size", world_size)
 	material.set_shader_parameter("heightmap_texture_size", Vector2(float(w), float(h)))
@@ -79,10 +96,23 @@ func rebuild_from_simulation_state():
 	material.set_shader_parameter("hillshade_contrast", HILLSHADE_CONTRAST)
 	material.set_shader_parameter("hillshade_shadow_tint", HILLSHADE_SHADOW_TINT)
 	material.set_shader_parameter("hillshade_light_tint", HILLSHADE_LIGHT_TINT)
+	material.set_shader_parameter("terrain_macro_variation_strength", TERRAIN_MACRO_VARIATION_STRENGTH)
+	material.set_shader_parameter("terrain_rock_slope_start", TERRAIN_ROCK_SLOPE_START)
+	material.set_shader_parameter("terrain_rock_slope_end", TERRAIN_ROCK_SLOPE_END)
+	material.set_shader_parameter("terrain_shore_blend_strength", TERRAIN_SHORE_BLEND_STRENGTH)
+	material.set_shader_parameter("terrain_shore_lookup_radius_texels", TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS)
+	material.set_shader_parameter("contour_minor_interval_m", CONTOUR_MINOR_INTERVAL_M)
+	material.set_shader_parameter("contour_major_interval_m", CONTOUR_MAJOR_INTERVAL_M)
+	material.set_shader_parameter("contour_minor_thickness", CONTOUR_MINOR_THICKNESS)
+	material.set_shader_parameter("contour_major_thickness", CONTOUR_MAJOR_THICKNESS)
+	material.set_shader_parameter("contour_minor_strength", CONTOUR_MINOR_STRENGTH)
+	material.set_shader_parameter("contour_major_strength", CONTOUR_MAJOR_STRENGTH)
 	self.material_override = material
+	_sync_water_texture()
 	update_terrain_visuals()
 
 func _process(delta):
+	_sync_water_texture()
 	if simulation_node.is_terrain_dirty():
 		update_terrain_visuals()
 		simulation_node.clear_terrain_dirty()
@@ -134,6 +164,19 @@ func update_terrain_visuals():
 		overlay_texture.update(overlay_image)
 
 	# Grid-based zoning is now managed by ZoningTool.gd and SimulationNode direct rendering.
+
+func _sync_water_texture() -> void:
+	var material := self.material_override as ShaderMaterial
+	if material == null:
+		return
+	var water_node = get_node_or_null("../Water")
+	if water_node == null:
+		return
+	var next_texture: Texture2D = water_node.texture
+	if next_texture == null or next_texture == shared_water_texture:
+		return
+	shared_water_texture = next_texture
+	material.set_shader_parameter("watermap", shared_water_texture)
 
 func sculpt_at_mouse(delta):
 	var mouse_pos = get_viewport().get_mouse_position()

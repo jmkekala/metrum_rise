@@ -9,6 +9,59 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 impl SimCore {
+    fn begin_terrain_stroke_internal(&mut self) {
+        self.terrain_stroke_active = true;
+        self.terrain_stroke_has_changes = false;
+    }
+
+    fn prepare_batched_terrain_edit_internal(&mut self) {
+        if !self.terrain_stroke_active {
+            self.begin_terrain_stroke_internal();
+        }
+        if !self.terrain_stroke_has_changes {
+            self.push_undo_state(true, false, true, false);
+            self.terrain_stroke_has_changes = true;
+        }
+    }
+
+    fn finish_terrain_authoring_edit_internal(&mut self) {
+        self.terrain_dirty = true;
+
+        self.transit_network
+            .sync_to_terrain(&mut self.region_graph, &self.heightmap);
+        self.flatten_terrain_for_roads_internal();
+        if self.has_authored_water_internal() {
+            if let Err(err) = self.rebuild_authored_water_preview_internal() {
+                debug_log!(
+                    "world-editor",
+                    "rebuild_authored_water_after_sculpt failed: {}",
+                    err
+                );
+            }
+        }
+    }
+
+    /// Begins one batched terrain brush stroke.
+    pub fn start_terrain_stroke_internal(&mut self) {
+        if !self.terrain_stroke_active {
+            self.begin_terrain_stroke_internal();
+        }
+    }
+
+    /// Finalizes one batched terrain brush stroke and runs deferred rebuild work once.
+    pub fn end_terrain_stroke_internal(&mut self) -> bool {
+        if !self.terrain_stroke_active {
+            return false;
+        }
+        self.terrain_stroke_active = false;
+        let had_changes = self.terrain_stroke_has_changes;
+        self.terrain_stroke_has_changes = false;
+        if had_changes {
+            self.finish_terrain_authoring_edit_internal();
+        }
+        had_changes
+    }
+
     fn rebuild_building_entrances_internal(&mut self) {
         self.allocator
             .rebuild_entrance_cache(&self.region_graph, &self.transit_network.lane_system);
@@ -21,16 +74,64 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .sculpt(center_x, center_y, radius_cells, strength);
-        self.terrain_dirty = true;
+        self.finish_terrain_authoring_edit_internal();
+    }
 
-        self.transit_network
-            .sync_to_terrain(&mut self.region_graph, &self.heightmap);
-        self.flatten_terrain_for_roads_internal();
-        if self.has_authored_water_internal() {
-            if let Err(err) = self.rebuild_authored_water_preview_internal() {
-                debug_log!("world-editor", "rebuild_authored_water_after_sculpt failed: {}", err);
-            }
-        }
+    /// Applies one batched terrain sculpt step without running deferred rebuild work yet.
+    pub fn sculpt_terrain_stroke_step_internal(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        strength: f32,
+    ) {
+        self.prepare_batched_terrain_edit_internal();
+        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
+        let radius_cells = radius / self.config.terrain_cell_m;
+        self.heightmap
+            .sculpt(center_x, center_y, radius_cells, strength);
+        self.terrain_dirty = true;
+    }
+
+    /// Moves terrain toward one target rendered height in a circular area.
+    pub fn level_terrain_internal(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        target_height_m: f32,
+        strength: f32,
+    ) {
+        self.push_undo_state(true, false, true, false);
+        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
+        let radius_cells = radius / self.config.terrain_cell_m;
+        self.heightmap.level_to_height(
+            center_x,
+            center_y,
+            radius_cells,
+            target_height_m / config::HEIGHT_SCALE,
+            strength,
+        );
+        self.finish_terrain_authoring_edit_internal();
+    }
+
+    /// Applies one batched terrain-level step without running deferred rebuild work yet.
+    pub fn level_terrain_stroke_step_internal(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        target_height_m: f32,
+        strength: f32,
+    ) {
+        self.prepare_batched_terrain_edit_internal();
+        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
+        let radius_cells = radius / self.config.terrain_cell_m;
+        self.heightmap.level_to_height(
+            center_x,
+            center_y,
+            radius_cells,
+            target_height_m / config::HEIGHT_SCALE,
+            strength,
+        );
+        self.terrain_dirty = true;
     }
 
     /// Adds water to the simulation at a given grid position.
@@ -632,7 +733,7 @@ mod tests {
     };
     use crate::simulation::terrain::TerrainSystem;
     use crate::simulation::water::WaterSystem;
-    use godot::prelude::Vector3;
+    use godot::prelude::{Vector2, Vector3};
     use std::collections::VecDeque;
 
     fn test_core() -> SimCore {
@@ -660,6 +761,9 @@ mod tests {
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             world_lake_fill_preview: None,
+            terrain_stroke_active: false,
+            terrain_stroke_has_changes: false,
+            water_runtime_realtime_when_paused: false,
             terrain_dirty: false,
             water_dirty: false,
             network_dirty: false,
@@ -713,5 +817,22 @@ mod tests {
             core.region_graph.edge(0).vehicle_frontage_access,
             VehicleFrontageAccess::SameSideOnly
         );
+    }
+
+    #[test]
+    fn terrain_stroke_batching_pushes_one_undo_snapshot_and_finalizes_on_end() {
+        let mut core = test_core();
+        core.start_terrain_stroke_internal();
+        core.sculpt_terrain_stroke_step_internal(Vector2::new(0.0, 0.0), 15.0, 0.5);
+        core.sculpt_terrain_stroke_step_internal(Vector2::new(2.0, 1.0), 15.0, 0.5);
+
+        assert_eq!(core.undo_stack.len(), 1);
+        assert!(core.terrain_stroke_active);
+        assert!(core.terrain_stroke_has_changes);
+        assert!(core.terrain_dirty);
+
+        assert!(core.end_terrain_stroke_internal());
+        assert!(!core.terrain_stroke_active);
+        assert!(!core.terrain_stroke_has_changes);
     }
 }

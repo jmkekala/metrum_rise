@@ -8,6 +8,14 @@ extends MeshInstance3D
 
 const SHORE_SOFTNESS_M := 0.5
 const SHORE_FOAM_BAND_M := 0.5
+const SHALLOW_WATER_COLOR := Color(0.20, 0.37, 0.40, 0.58)
+const DEEP_WATER_COLOR := Color(0.05, 0.16, 0.29, 0.86)
+const WATER_FRESNEL_STRENGTH := 0.24
+const WATER_FRESNEL_POWER := 4.0
+const WATER_WAVE_COLOR_STRENGTH := 0.025
+const WATER_WAVE_ROUGHNESS_STRENGTH := 0.010
+const WATER_DISPLAY_SURFACE_SMOOTHING := 0.94
+const WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS := 1.0
 
 @onready var simulation_node = $"../SimulationNode"
 var texture: ImageTexture
@@ -52,6 +60,15 @@ func rebuild_from_simulation_state():
 	material.set_shader_parameter("height_scale", 20.0)
 	material.set_shader_parameter("shore_softness_m", SHORE_SOFTNESS_M)
 	material.set_shader_parameter("shore_foam_band_m", SHORE_FOAM_BAND_M)
+	material.set_shader_parameter("shallow_water_color", SHALLOW_WATER_COLOR)
+	material.set_shader_parameter("deep_water_color", DEEP_WATER_COLOR)
+	material.set_shader_parameter("water_fresnel_strength", WATER_FRESNEL_STRENGTH)
+	material.set_shader_parameter("water_fresnel_power", WATER_FRESNEL_POWER)
+	material.set_shader_parameter("water_wave_color_strength", WATER_WAVE_COLOR_STRENGTH)
+	material.set_shader_parameter("water_wave_roughness_strength", WATER_WAVE_ROUGHNESS_STRENGTH)
+	material.set_shader_parameter("water_surface_smoothing", WATER_DISPLAY_SURFACE_SMOOTHING)
+	material.set_shader_parameter("water_surface_blend_radius_texels", WATER_DISPLAY_SURFACE_BLEND_RADIUS_TEXELS)
+	material.set_shader_parameter("watermap_texture_size", Vector2(float(w), float(h)))
 	self.material_override = material
 	update_water_visuals()
 

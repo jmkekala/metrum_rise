@@ -209,6 +209,52 @@ impl TerrainSystem {
         }
     }
 
+    /// Moves terrain toward one target height in a circular area with smooth falloff.
+    pub fn level_to_height(
+        &mut self,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        target_height: f32,
+        strength: f32,
+    ) {
+        let r_int = radius.ceil() as i32;
+        let cx_int = center_x as i32;
+        let cy_int = center_y as i32;
+
+        for y in (cy_int - r_int)..=(cy_int + r_int) {
+            for x in (cx_int - r_int)..=(cx_int + r_int) {
+                if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+                    continue;
+                }
+
+                let dx = x as f32 - center_x;
+                let dy = y as f32 - center_y;
+                let dist_sq = dx * dx + dy * dy;
+
+                if dist_sq <= radius * radius {
+                    let dist = dist_sq.sqrt();
+                    let normalized_dist = dist / radius;
+                    let falloff = (1.0 + (normalized_dist * std::f32::consts::PI).cos()) * 0.5;
+
+                    let ux = x as usize;
+                    let uy = y as usize;
+                    let current_h = self.source_data.get(ux, uy);
+                    let delta = target_height - current_h;
+                    let max_step = strength * falloff;
+                    let next_h = if delta.abs() <= max_step {
+                        target_height
+                    } else {
+                        current_h + delta.signum() * max_step
+                    };
+
+                    self.source_data.set(ux, uy, next_h);
+                    self.data.set(ux, uy, next_h);
+                }
+            }
+        }
+    }
+
     /// Synchronizes the visual data buffer with the source data.
     pub fn reset_visuals_from_source(&mut self) {
         self.data = self.source_data.clone();
@@ -222,6 +268,15 @@ impl TerrainSystem {
     /// Returns a dense row-major snapshot of the authoritative source terrain buffer.
     pub(crate) fn clone_source_dense(&self) -> Vec<f32> {
         self.source_data.clone_dense()
+    }
+
+    /// Returns source terrain as rendered world-space metres for water and preview solves.
+    pub(crate) fn clone_source_dense_world_heights(&self) -> Vec<f32> {
+        self.source_data
+            .clone_dense()
+            .into_iter()
+            .map(|sample| sample * HEIGHT_SCALE)
+            .collect()
     }
 
     /// Replaces the visual terrain buffer from a dense row-major snapshot.
@@ -333,5 +388,25 @@ mod tests {
         assert!(hit.x.abs() < 1.0);
         assert!(hit.z.abs() < 1.0);
         assert!((hit.y - target.y).abs() < 1.0);
+    }
+
+    #[test]
+    fn level_brush_moves_samples_toward_target_without_overshoot() {
+        let mut terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
+        terrain.set_height(4, 4, 1.0);
+        terrain.set_height(5, 4, 4.0);
+
+        terrain.level_to_height(4.0, 4.0, 2.0, 3.0, 0.5);
+
+        assert!((terrain.get_height(4, 4) - 1.5).abs() < 0.0001);
+        assert!((terrain.get_height(5, 4) - 3.75).abs() < 0.0001);
+        assert!((terrain.get_height(0, 0) - 0.0).abs() < 0.0001);
+
+        for _ in 0..10 {
+            terrain.level_to_height(4.0, 4.0, 2.0, 3.0, 0.5);
+        }
+
+        assert!((terrain.get_height(4, 4) - 3.0).abs() < 0.0001);
+        assert!((terrain.get_height(5, 4) - 3.0).abs() < 0.0001);
     }
 }

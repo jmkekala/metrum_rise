@@ -21,9 +21,9 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
 use crate::simulation::world_definition::{
-    AuthoredLakeFill, AuthoredOpenWaterFill, AuthoredWaterBoundaryKind,
-    AuthoredWaterBoundaryPoint, LoadedWorldDefinition, WorldDefinitionView,
-    load_world_definition_from_sqlite, save_world_definition_to_sqlite,
+    AuthoredLakeFill, AuthoredOpenWaterFill, AuthoredWaterBoundaryKind, AuthoredWaterBoundaryPoint,
+    LoadedWorldDefinition, WorldDefinitionView, load_world_definition_from_sqlite,
+    save_world_definition_to_sqlite,
 };
 use godot::prelude::Vector2;
 use std::collections::VecDeque;
@@ -254,8 +254,8 @@ impl SimCore {
 
         match preview.kind {
             WorldWaterFillKind::Lake => {
-                if let Some(existing_idx) =
-                    self.world_lake_fill_index_at_position(preview.seed_world_x, preview.seed_world_z)
+                if let Some(existing_idx) = self
+                    .world_lake_fill_index_at_position(preview.seed_world_x, preview.seed_world_z)
                 {
                     self.world_lake_fills[existing_idx].surface_elevation_m =
                         preview.surface_elevation_m;
@@ -268,9 +268,10 @@ impl SimCore {
                 }
             }
             WorldWaterFillKind::OpenWater => {
-                if let Some(existing_idx) = self
-                    .world_open_water_fill_index_at_position(preview.seed_world_x, preview.seed_world_z)
-                {
+                if let Some(existing_idx) = self.world_open_water_fill_index_at_position(
+                    preview.seed_world_x,
+                    preview.seed_world_z,
+                ) {
                     self.world_open_water_fills[existing_idx].surface_elevation_m =
                         preview.surface_elevation_m;
                 } else {
@@ -540,6 +541,8 @@ impl SimCore {
         self.world_lake_fills.clear();
         self.world_open_water_fills.clear();
         self.world_lake_fill_preview = None;
+        self.terrain_stroke_active = false;
+        self.terrain_stroke_has_changes = false;
         self.terrain_dirty = true;
         self.water_dirty = true;
         self.network_dirty = true;
@@ -635,11 +638,7 @@ impl SimCore {
             .position(|lake| lake.world_x == world_x && lake.world_z == world_z)
     }
 
-    fn world_open_water_fill_index_at_position(
-        &self,
-        world_x: f32,
-        world_z: f32,
-    ) -> Option<usize> {
+    fn world_open_water_fill_index_at_position(&self, world_x: f32, world_z: f32) -> Option<usize> {
         self.world_open_water_fills
             .iter()
             .position(|water| water.world_x == world_x && water.world_z == world_z)
@@ -681,11 +680,7 @@ fn validate_positive_f32(value: f32, label: &str) -> Result<(), String> {
 }
 
 fn authored_water_terrain_world_heights(terrain: &TerrainSystem) -> Vec<f32> {
-    terrain
-        .clone_source_dense()
-        .into_iter()
-        .map(|sample| sample * HEIGHT_SCALE)
-        .collect()
+    terrain.clone_source_dense_world_heights()
 }
 
 fn evaluate_world_water_fill_preview(
@@ -1047,6 +1042,9 @@ mod tests {
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             world_lake_fill_preview: None,
+            terrain_stroke_active: false,
+            terrain_stroke_has_changes: false,
+            water_runtime_realtime_when_paused: true,
             terrain_dirty: false,
             water_dirty: false,
             network_dirty: false,

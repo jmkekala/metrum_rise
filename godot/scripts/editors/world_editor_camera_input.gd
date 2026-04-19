@@ -33,7 +33,9 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	if not _cam:
 		return
-	if get_viewport().gui_get_focus_owner() != null:
+	if _ui_captures_world_keyboard_input():
+		_orbit_active = false
+		_pan_active = false
 		return
 
 	var pan_axis := Vector2.ZERO
@@ -65,7 +67,7 @@ func _input(event: InputEvent) -> void:
 	if not _cam:
 		return
 
-	var over_ui := get_viewport().gui_get_hovered_control() != null or not _is_mouse_in_3d_area()
+	var over_ui := _ui_captures_world_pointer_input() or not _is_mouse_in_3d_area()
 
 	if event is InputEventMouseButton:
 		match event.button_index:
@@ -124,6 +126,31 @@ func _is_mouse_in_3d_area() -> bool:
 		and mouse_pos.y > panel_top_h
 		and mouse_pos.y < vp_size.y - panel_bot_h
 	)
+
+func _ui_has_modal_popup() -> bool:
+	var viewport := get_viewport()
+	var window := viewport as Window
+	return (
+		window != null
+		and window.has_method("has_visible_popup")
+		and window.has_visible_popup()
+	)
+
+func _ui_captures_world_pointer_input() -> bool:
+	var viewport := get_viewport()
+	return _ui_has_modal_popup() or viewport.gui_get_hovered_control() != null
+
+func _ui_captures_world_keyboard_input() -> bool:
+	var viewport := get_viewport()
+	var focus_owner := viewport.gui_get_focus_owner()
+	var editing_focus := (
+		focus_owner is SpinBox
+		or
+		focus_owner is LineEdit
+		or focus_owner is TextEdit
+		or focus_owner is CodeEdit
+	)
+	return _ui_has_modal_popup() or editing_focus
 
 func _update_transform() -> void:
 	if not _cam:

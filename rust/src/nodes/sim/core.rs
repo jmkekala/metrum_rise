@@ -58,6 +58,10 @@ fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option
 pub(crate) const ROAD_BUILD_COST_PER_METER: f64 = 100.0;
 /// Currency upkeep per meter of road per day, settled from the city treasury each day.
 pub(crate) const ROAD_UPKEEP_PER_METER_PER_DAY: f64 = 0.1;
+/// First continuous runtime water pass tick interval in simulated seconds.
+const CONTINUOUS_WATER_TICK_DT: f32 = 0.2;
+/// First continuous runtime water pass tick interval in real-time seconds.
+const CONTINUOUS_WATER_TICK_INTERVAL_S: f64 = CONTINUOUS_WATER_TICK_DT as f64;
 
 /// City-level fiscal ledger, separate from household budgets and building budgets.
 ///
@@ -206,6 +210,12 @@ pub struct SimCore {
     pub(crate) world_open_water_fills: Vec<AuthoredOpenWaterFill>,
     /// Transient world-editor lake-fill preview. Never saved into `WorldDefinition`.
     pub(crate) world_lake_fill_preview: Option<WorldLakeFillPreview>,
+    /// True while the world editor is accumulating one terrain brush stroke.
+    pub(crate) terrain_stroke_active: bool,
+    /// True once the active terrain brush stroke has applied at least one terrain mutation.
+    pub(crate) terrain_stroke_has_changes: bool,
+    /// Allows continuous water to advance in real time while the operational clock is paused.
+    pub(crate) water_runtime_realtime_when_paused: bool,
     /// Set by terrain mutations; cleared by the Godot render layer.
     pub terrain_dirty: bool,
     /// Set by water mutations; cleared by the Godot render layer.
@@ -312,6 +322,15 @@ pub enum SimCommand {
 }
 
 impl SimCore {
+    fn tick_continuous_water_runtime_internal(&mut self, dt: f32) {
+        if self.watermap.sources.is_empty() {
+            return;
+        }
+        let terrain_world = self.heightmap.clone_source_dense_world_heights();
+        self.watermap.tick(&terrain_world, dt);
+        self.water_dirty = true;
+    }
+
     fn print_sim_console_summary(&self, day_index: u32, minute_of_day: u16) {
         let mut at_home = 0usize;
         let mut at_work = 0usize;
@@ -899,6 +918,7 @@ pub fn run_sim_thread(
 ) {
     const TARGET_DT: f64 = 1.0 / 60.0;
     let target = Duration::from_micros(16_667); // ~60 Hz
+    let mut continuous_water_accumulator_s = 0.0_f64;
 
     loop {
         let frame_start = Instant::now();
@@ -1106,6 +1126,23 @@ pub fn run_sim_thread(
                             core.print_daily_building_economy_for_day(step_day_index);
                         }
                     }
+                }
+            }
+
+            let continuous_water_time_scale = if speed > 0.0 {
+                f64::from(speed)
+            } else if core.water_runtime_realtime_when_paused {
+                1.0
+            } else {
+                0.0
+            };
+            if continuous_water_time_scale > 0.0 {
+                continuous_water_accumulator_s += TARGET_DT * continuous_water_time_scale;
+                while continuous_water_accumulator_s + f64::EPSILON
+                    >= CONTINUOUS_WATER_TICK_INTERVAL_S
+                {
+                    core.tick_continuous_water_runtime_internal(CONTINUOUS_WATER_TICK_DT);
+                    continuous_water_accumulator_s -= CONTINUOUS_WATER_TICK_INTERVAL_S;
                 }
             }
 

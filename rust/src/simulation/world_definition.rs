@@ -532,7 +532,12 @@ fn validate_authored_water(
         }
     }
     for water in open_water_fills {
-        validate_world_position(config, water.world_x, water.world_z, "authored open water fill")?;
+        validate_world_position(
+            config,
+            water.world_x,
+            water.world_z,
+            "authored open water fill",
+        )?;
         if !water.surface_elevation_m.is_finite() {
             return Err(WorldDefinitionError::custom(
                 "authored open water fill surface_elevation_m must be finite",

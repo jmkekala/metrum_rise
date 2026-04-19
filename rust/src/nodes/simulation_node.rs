@@ -230,6 +230,28 @@ impl SimulationNode {
         }
         dict
     }
+
+    fn world_water_authoring_marker_dict(
+        kind: &str,
+        world_x: f32,
+        world_z: f32,
+        terrain_height_m: f32,
+        surface_elevation_m: Option<f32>,
+        rate_m_per_tick: Option<f32>,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("kind", GString::from(kind));
+        dict.set("world_x", f64::from(world_x));
+        dict.set("world_z", f64::from(world_z));
+        dict.set("terrain_height_m", f64::from(terrain_height_m));
+        if let Some(surface_elevation_m) = surface_elevation_m {
+            dict.set("surface_elevation_m", f64::from(surface_elevation_m));
+        }
+        if let Some(rate_m_per_tick) = rate_m_per_tick {
+            dict.set("rate_m_per_tick", f64::from(rate_m_per_tick));
+        }
+        dict
+    }
 }
 
 #[godot_api]
@@ -269,6 +291,77 @@ impl SimulationNode {
     pub fn sculpt_terrain(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.lock_core()
             .sculpt_terrain_internal(pos, radius, strength);
+        let mut snapshot = self.snapshot.write().unwrap();
+        snapshot.terrain_dirty = true;
+        snapshot.water_dirty = true;
+        snapshot.network_dirty = true;
+    }
+
+    /// Begins one batched world-editor terrain stroke.
+    #[func]
+    pub fn begin_terrain_stroke(&mut self) {
+        self.lock_core().start_terrain_stroke_internal();
+    }
+
+    /// Finalizes one batched world-editor terrain stroke.
+    #[func]
+    pub fn end_terrain_stroke(&mut self) -> bool {
+        let (ended, terrain_dirty, water_dirty, network_dirty) = {
+            let mut core = self.lock_core();
+            let ended = core.end_terrain_stroke_internal();
+            (
+                ended,
+                core.terrain_dirty,
+                core.water_dirty,
+                core.network_dirty,
+            )
+        };
+        if ended {
+            let mut snapshot = self.snapshot.write().unwrap();
+            snapshot.terrain_dirty = terrain_dirty;
+            snapshot.water_dirty = water_dirty;
+            snapshot.network_dirty = network_dirty;
+        }
+        ended
+    }
+
+    /// Applies one batched terrain sculpt step during an active editor stroke.
+    #[func]
+    pub fn sculpt_terrain_stroke_step(&mut self, pos: Vector2, radius: f32, strength: f32) {
+        self.lock_core()
+            .sculpt_terrain_stroke_step_internal(pos, radius, strength);
+        self.snapshot.write().unwrap().terrain_dirty = true;
+    }
+
+    /// Moves terrain toward a clicked rendered heightmap level.
+    #[func]
+    pub fn level_terrain(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        target_height_m: f32,
+        strength: f32,
+    ) {
+        self.lock_core()
+            .level_terrain_internal(pos, radius, target_height_m, strength);
+        let mut snapshot = self.snapshot.write().unwrap();
+        snapshot.terrain_dirty = true;
+        snapshot.water_dirty = true;
+        snapshot.network_dirty = true;
+    }
+
+    /// Applies one batched terrain-level step during an active editor stroke.
+    #[func]
+    pub fn level_terrain_stroke_step(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        target_height_m: f32,
+        strength: f32,
+    ) {
+        self.lock_core()
+            .level_terrain_stroke_step_internal(pos, radius, target_height_m, strength);
+        self.snapshot.write().unwrap().terrain_dirty = true;
     }
 
     /// Adds a volume of water at a specific grid position.
@@ -1439,9 +1532,11 @@ impl SimulationNode {
         };
         self.refresh_snapshot_from_core();
         match result {
-            Ok(preview) => {
-                Self::world_lake_fill_preview_dict(Some(preview), true, "open water preview updated")
-            }
+            Ok(preview) => Self::world_lake_fill_preview_dict(
+                Some(preview),
+                true,
+                "open water preview updated",
+            ),
             Err(err) => {
                 godot_error!("Begin world open water preview failed: {}", err);
                 Self::world_lake_fill_preview_dict(None, false, &err)
@@ -1482,7 +1577,11 @@ impl SimulationNode {
         match result {
             Ok(preview) => {
                 self.refresh_snapshot_from_core();
-                Self::world_lake_fill_preview_dict(Some(preview), true, "open water preview updated")
+                Self::world_lake_fill_preview_dict(
+                    Some(preview),
+                    true,
+                    "open water preview updated",
+                )
             }
             Err(err) => {
                 godot_error!("Update world open water preview failed: {}", err);
@@ -1514,6 +1613,73 @@ impl SimulationNode {
             "no open water preview is active"
         };
         Self::world_lake_fill_preview_dict(preview, true, message)
+    }
+
+    /// Returns committed authored-world water markers for world-editor overlays.
+    #[func]
+    pub fn get_world_water_authoring_markers(&self) -> VarArray {
+        let core = self.lock_core();
+        let mut markers = VarArray::new();
+
+        for point in &core.world_water_boundary_points {
+            let terrain_height_m =
+                core.heightmap
+                    .sample_height_world(point.world_x, point.world_z)
+                    * config::HEIGHT_SCALE;
+            let kind = match point.kind {
+                crate::simulation::world_definition::AuthoredWaterBoundaryKind::Source => "source",
+                crate::simulation::world_definition::AuthoredWaterBoundaryKind::Sink => "sink",
+            };
+            markers.push(
+                &Self::world_water_authoring_marker_dict(
+                    kind,
+                    point.world_x,
+                    point.world_z,
+                    terrain_height_m,
+                    None,
+                    Some(point.rate_m_per_tick),
+                )
+                .to_variant(),
+            );
+        }
+
+        for lake in &core.world_lake_fills {
+            let terrain_height_m =
+                core.heightmap
+                    .sample_height_world(lake.world_x, lake.world_z)
+                    * config::HEIGHT_SCALE;
+            markers.push(
+                &Self::world_water_authoring_marker_dict(
+                    "lake_fill",
+                    lake.world_x,
+                    lake.world_z,
+                    terrain_height_m,
+                    Some(lake.surface_elevation_m),
+                    None,
+                )
+                .to_variant(),
+            );
+        }
+
+        for open_water in &core.world_open_water_fills {
+            let terrain_height_m = core
+                .heightmap
+                .sample_height_world(open_water.world_x, open_water.world_z)
+                * config::HEIGHT_SCALE;
+            markers.push(
+                &Self::world_water_authoring_marker_dict(
+                    "open_water_fill",
+                    open_water.world_x,
+                    open_water.world_z,
+                    terrain_height_m,
+                    Some(open_water.surface_elevation_m),
+                    None,
+                )
+                .to_variant(),
+            );
+        }
+
+        markers
     }
 
     /// Commits the active transient lake-fill preview into authored world state.
@@ -1718,6 +1884,9 @@ impl INode3D for SimulationNode {
             world_lake_fills: Vec::new(),
             world_open_water_fills: Vec::new(),
             world_lake_fill_preview: None,
+            terrain_stroke_active: false,
+            terrain_stroke_has_changes: false,
+            water_runtime_realtime_when_paused: world_editor_mode,
             terrain_dirty: true,
             water_dirty: true,
             network_dirty: false,

@@ -231,6 +231,15 @@ Current deterministic sequence:
 2. run the Saint-Venant update on those dense scratch buffers
 3. sparsify the results back into chunk-backed storage
 
+Current first continuous-runtime rules:
+
+- source/sink-driven water now advances as a fixed-step runtime pass, not only during authored preview rebuilds
+- the first shipped continuous runtime cadence is `5 Hz` (`dt = 0.2 s`), not `60 Hz`
+- gameplay water runtime follows simulation speed and advances only while the gameplay clock is unpaused
+- world-editor water runtime may advance in real time while the authored operational clock remains paused
+- each continuous runtime water step must set `water_dirty` so Godot refreshes the rendered water surface
+- closed-basin `Lake Fill` and edge-connected `Open Water` remain authored baseline state; the first continuous runtime pass only evolves source/sink-driven water on top of that baseline
+
 This is allowed today only as a compatibility step. It is not the final large-world water runtime.
 
 ### 11. Save / Load Remains Dense At The Serialization Boundary
@@ -383,6 +392,11 @@ Current deterministic rules:
 - world editor terrain authoring is live through:
   - `Raise`
   - `Lower`
+  - `Level`
+- selecting `Raise`, `Lower`, or `Level` opens a terrain brush submenu on the bottom toolbar
+- that terrain brush submenu owns the shared editor `Diameter m` and `Strength` controls
+- active terrain brushes show their footprint directly on the terrain so brush diameter is visible before and during sculpting
+- `Level` captures the clicked rendered terrain height at the start of the brush stroke and moves terrain toward that height while the stroke remains active
 - world editor save/load is `WorldDefinition` only, not city-save persistence
 
 Current compatibility gap:
@@ -404,6 +418,9 @@ Current deterministic rules:
   - `Water Sink`
   - `Lake Fill`
   - `Open Water`
+- WorldEditor shows committed authored-water markers and active surface-fill preview markers in
+  the 3D world so water authoring locations remain visible while editing
+- these authored-water markers are editor-only overlays and are not part of gameplay rendering
 - authored water records are saved in and loaded from `WorldDefinition`
 - loading a `WorldDefinition` rebuilds runtime water preview from those authored records
 
@@ -459,12 +476,14 @@ Deterministic lake-fill preview rules:
   - one validity state
 - while preview is active, adjusting the `Surface +m` control must rebuild the runtime water preview
   immediately
-- a valid preview may be confirmed into authored world state
+- a valid preview may be confirmed into authored world state from a dedicated world-editor `OK`
+  action
 - an invalid preview must not flood the map; it must simply show no extra preview water and remain
   uncommitted
 - `Lake Fill` is valid only if the filled region stays off the world edge
 - `Open Water` is valid only if the filled region reaches the world edge
 - canceling the preview must restore the runtime water view to authored water only
+- world-editor surface-fill preview must expose a dedicated `Cancel` action in addition to `Escape`
 - saving, loading, creating a new world, or switching away from a surface-fill tool must discard
   any active transient surface-fill preview
 
@@ -780,11 +799,13 @@ What is implemented now:
 - save/load and renderer boundaries still use dense materialization
 - terrain rendering now derives hillshade procedurally from the live heightmap in both gameplay
   and WorldEditor; it is not stored as separate world data
+- terrain and water rendering now use a first render-only realism pass with slope-aware terrain
+  shading, shoreline-aware terrain tinting, depth-aware water color, and shader-side shoreline /
+  fresnel / procedural breakup treatment
 
 What is next:
 
-1. terrain / water realism pass v1 on the shared render path, still texture-free and render-only
-2. interactive DEM / GeoTIFF import UI for real-map authored worlds
-3. river-path hydrology after terrain import and first authored-water tools are stable
-4. chunk-window runtime processing
-5. later texture-assisted terrain/water materials if the shader-only realism pass is not enough
+1. interactive DEM / GeoTIFF import UI for real-map authored worlds
+2. river-path hydrology after terrain import and first authored-water tools are stable
+3. chunk-window runtime processing
+4. later texture-assisted terrain/water materials if the shader-only realism pass is not enough

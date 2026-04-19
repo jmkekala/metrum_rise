@@ -13,15 +13,58 @@ const DEFAULT_TERRAIN_CHUNK_M := 512.0
 const DEFAULT_BASE_ELEVATION_M := 0.0
 const DEFAULT_WATER_RATE := 0.5
 const DEFAULT_LAKE_SURFACE_OFFSET_M := 5.0
+const DEFAULT_SCULPT_DIAMETER_M := 30.0
+const DEFAULT_SCULPT_STRENGTH_PER_SEC := 2.0
+const MIN_SCULPT_DIAMETER_M := 5.0
+const MAX_SCULPT_DIAMETER_M := 200.0
+const MIN_SCULPT_STRENGTH_PER_SEC := 0.1
+const MAX_SCULPT_STRENGTH_PER_SEC := 20.0
+const LIVE_SCULPT_REFRESH_INTERVAL_SEC := 1.0 / 12.0
+const SURFACE_NUDGE_STEP_M := 0.5
+const SURFACE_NUDGE_FAST_STEP_M := 5.0
 const WORLDS_DIR := "user://worlds"
-const SCULPT_RADIUS_M := 15.0
-const SCULPT_STRENGTH_PER_SEC := 2.0
 const WATER_REMOVE_RADIUS_M := 40.0
+const WATER_MARKER_GROUND_OFFSET_M := 0.8
+const WATER_MARKER_STEM_HEIGHT_M := 14.0
+const WATER_MARKER_STEM_RADIUS_M := 0.38
+const WATER_MARKER_TIP_RADIUS_M := 1.85
+const WATER_FILL_STEM_RADIUS_M := 0.24
+const WATER_FILL_DISC_RADIUS_M := 5.0
+const WATER_FILL_DISC_THICKNESS_M := 0.42
+const WATER_FILL_MIN_STEM_M := 2.0
+const WATER_SOURCE_MARKER_COLOR := Color(0.31, 0.86, 1.0, 0.95)
+const WATER_SINK_MARKER_COLOR := Color(1.0, 0.56, 0.36, 0.95)
+const WATER_LAKE_MARKER_COLOR := Color(0.34, 0.80, 0.92, 0.88)
+const WATER_OPEN_WATER_MARKER_COLOR := Color(0.18, 0.48, 0.92, 0.88)
+const WATER_PREVIEW_MARKER_COLOR := Color(0.92, 0.97, 1.0, 0.92)
+const BRUSH_PREVIEW_SHADER := """
+shader_type spatial;
+render_mode unshaded, cull_disabled;
+
+uniform vec4 fill_color : source_color = vec4(0.20, 0.62, 0.28, 0.10);
+uniform vec4 ring_color : source_color = vec4(0.76, 1.0, 0.82, 0.85);
+
+void fragment() {
+	vec2 p = UV * 2.0 - 1.0;
+	float dist = length(p);
+	if (dist > 1.0) {
+		discard;
+	}
+	float fill = 1.0 - smoothstep(0.78, 1.0, dist);
+	float ring = smoothstep(0.74, 0.80, dist) * (1.0 - smoothstep(0.94, 1.0, dist));
+	float cross_x = (1.0 - smoothstep(0.0, 0.018, abs(p.x))) * (1.0 - smoothstep(0.0, 0.22, abs(p.y)));
+	float cross_y = (1.0 - smoothstep(0.0, 0.018, abs(p.y))) * (1.0 - smoothstep(0.0, 0.22, abs(p.x)));
+	float accent = max(ring, max(cross_x, cross_y));
+	ALBEDO = mix(fill_color.rgb, ring_color.rgb, accent);
+	ALPHA = fill * fill_color.a + accent * ring_color.a;
+}
+"""
 
 enum Tool {
 	NONE,
 	RAISE,
 	LOWER,
+	LEVEL,
 	WATER_SOURCE,
 	WATER_SINK,
 	WATER_LAKE_FILL,
@@ -40,6 +83,11 @@ var _current_world_path := ""
 var _toolbar_status: Label
 var _raise_btn: Button
 var _lower_btn: Button
+var _level_btn: Button
+var _terrain_tool_panel: PanelContainer
+var _terrain_tool_title: Label
+var _brush_diameter_spin: SpinBox
+var _brush_strength_spin: SpinBox
 var _water_group_btn: Button
 var _water_tool_panel: PanelContainer
 var _water_source_btn: Button
@@ -48,6 +96,8 @@ var _water_lake_fill_btn: Button
 var _water_open_water_btn: Button
 var _water_rate_spin: SpinBox
 var _lake_offset_spin: SpinBox
+var _preview_confirm_btn: Button
+var _preview_cancel_btn: Button
 
 var _new_world_window: Window
 var _new_world_name_edit: LineEdit
@@ -57,6 +107,13 @@ var _new_world_cell_spin: SpinBox
 var _new_world_chunk_spin: SpinBox
 var _new_world_base_spin: SpinBox
 var _debug_enabled := false
+var _brush_preview: MeshInstance3D
+var _brush_preview_material: ShaderMaterial
+var _water_marker_root: Node3D
+var _sculpt_stroke_active := false
+var _live_sculpt_refresh_timer := 0.0
+var _live_sculpt_visual_pending := false
+var _level_target_height_m := 0.0
 var _lake_preview_active := false
 var _lake_preview_seed_world_pos := Vector2.ZERO
 var _lake_preview_seed_height_m := 0.0
@@ -73,38 +130,72 @@ func _ready() -> void:
 	_attach_top_menu()
 	_configure_editor_camera()
 	_build_ui()
+	_ensure_brush_preview()
+	_ensure_water_marker_root()
 	_refresh_after_world_change(true)
 	_update_tool_buttons()
 	_set_status("Terrain world ready.")
 	_debug_log("ready world=%s path=%s" % [_current_world_name, _world_path_label()])
 
 func _process(delta: float) -> void:
-	if not _is_sculpt_tool(_active_tool):
+	_update_brush_preview()
+	if not _sculpt_stroke_active:
+		_live_sculpt_visual_pending = false
+		_live_sculpt_refresh_timer = 0.0
 		return
+	_live_sculpt_refresh_timer = max(_live_sculpt_refresh_timer - delta, 0.0)
 	if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		_end_sculpt_stroke()
+		return
+	if _ui_captures_world_pointer_input():
+		_flush_live_sculpt_visuals(false)
+		return
+	if not _is_sculpt_tool(_active_tool):
+		_flush_live_sculpt_visuals(false)
 		return
 	if _is_pointer_over_ui():
+		_flush_live_sculpt_visuals(false)
 		return
 	_apply_sculpt(delta)
+	_flush_live_sculpt_visuals(false)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_ESCAPE and _numeric_field_has_focus():
+			_clear_numeric_field_focus()
+			get_viewport().set_input_as_handled()
+			return
+		if _ui_captures_world_keyboard_input():
+			return
 		if event.keycode == KEY_ESCAPE and _lake_preview_active:
 			_cancel_lake_fill_preview()
 			get_viewport().set_input_as_handled()
 			return
+		if _lake_preview_active:
+			var surface_step := SURFACE_NUDGE_FAST_STEP_M if event.shift_pressed else SURFACE_NUDGE_STEP_M
+			match event.keycode:
+				KEY_BRACKETLEFT, KEY_MINUS:
+					_nudge_surface_offset(-surface_step)
+					get_viewport().set_input_as_handled()
+					return
+				KEY_BRACKETRIGHT, KEY_EQUAL, KEY_PLUS:
+					_nudge_surface_offset(surface_step)
+					get_viewport().set_input_as_handled()
+					return
 		match event.keycode:
 			KEY_1:
 				_set_active_tool(Tool.RAISE)
 			KEY_2:
 				_set_active_tool(Tool.LOWER)
 			KEY_3:
-				_set_active_tool(Tool.WATER_SOURCE)
+				_set_active_tool(Tool.LEVEL)
 			KEY_4:
-				_set_active_tool(Tool.WATER_SINK)
+				_set_active_tool(Tool.WATER_SOURCE)
 			KEY_5:
-				_set_active_tool(Tool.WATER_LAKE_FILL)
+				_set_active_tool(Tool.WATER_SINK)
 			KEY_6:
+				_set_active_tool(Tool.WATER_LAKE_FILL)
+			KEY_7:
 				_set_active_tool(Tool.WATER_OPEN_WATER)
 			KEY_ESCAPE:
 				_set_active_tool(Tool.NONE)
@@ -121,11 +212,22 @@ func _unhandled_input(event: InputEvent) -> void:
 					else:
 						menu_save()
 	elif event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed and _is_water_tool(_active_tool):
-			if _is_pointer_over_ui():
+		if event.button_index == MOUSE_BUTTON_LEFT:
+			if _is_sculpt_tool(_active_tool):
+				if event.pressed:
+					if _ui_captures_world_pointer_input():
+						return
+					_begin_sculpt_stroke()
+					if _sculpt_stroke_active:
+						get_viewport().set_input_as_handled()
+				else:
+					_end_sculpt_stroke()
 				return
-			_apply_water_tool(event.shift_pressed)
-			get_viewport().set_input_as_handled()
+			if event.pressed and _is_water_tool(_active_tool):
+				if _ui_captures_world_pointer_input():
+					return
+				_apply_water_tool(event.shift_pressed)
+				get_viewport().set_input_as_handled()
 
 func menu_new_world() -> void:
 	_ensure_new_world_window()
@@ -141,6 +243,7 @@ func menu_open_world() -> void:
 	var dialog := FileDialog.new()
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
 	dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	dialog.exclusive = true
 	dialog.filters = PackedStringArray(["*.sqlite ; WorldDefinition Files"])
 	dialog.current_dir = ProjectSettings.globalize_path(WORLDS_DIR)
 	dialog.file_selected.connect(func(path: String): _on_open_world_selected(path, dialog))
@@ -169,6 +272,7 @@ func menu_save_as() -> void:
 	var dialog := FileDialog.new()
 	dialog.access = FileDialog.ACCESS_FILESYSTEM
 	dialog.file_mode = FileDialog.FILE_MODE_SAVE_FILE
+	dialog.exclusive = true
 	dialog.filters = PackedStringArray(["*.sqlite ; WorldDefinition Files"])
 	dialog.current_dir = ProjectSettings.globalize_path(WORLDS_DIR)
 	dialog.current_file = "%s.sqlite" % _sanitize_filename(_current_world_name)
@@ -217,9 +321,67 @@ func _build_ui() -> void:
 	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bottom_margin.add_child(stack)
 
+	_terrain_tool_panel = PanelContainer.new()
+	_terrain_tool_panel.visible = false
+	_terrain_tool_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_terrain_tool_panel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_terrain_tool_panel.add_theme_stylebox_override("panel", UIStyle.hud_group_style())
+	stack.add_child(_terrain_tool_panel)
+
+	var terrain_margin := MarginContainer.new()
+	terrain_margin.add_theme_constant_override("margin_left", int(UIStyle.HUD_SHELL_PAD_X))
+	terrain_margin.add_theme_constant_override("margin_right", int(UIStyle.HUD_SHELL_PAD_X))
+	terrain_margin.add_theme_constant_override("margin_top", int(UIStyle.HUD_SHELL_PAD_Y))
+	terrain_margin.add_theme_constant_override("margin_bottom", int(UIStyle.HUD_SHELL_PAD_Y))
+	_terrain_tool_panel.add_child(terrain_margin)
+
+	var terrain_row := HBoxContainer.new()
+	terrain_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	terrain_row.add_theme_constant_override("separation", int(UIStyle.HUD_PANEL_GAP))
+	terrain_margin.add_child(terrain_row)
+
+	_terrain_tool_title = Label.new()
+	_terrain_tool_title.text = "Raise Brush"
+	_terrain_tool_title.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	terrain_row.add_child(_terrain_tool_title)
+
+	var terrain_separator := VSeparator.new()
+	terrain_row.add_child(terrain_separator)
+
+	var diameter_label := Label.new()
+	diameter_label.text = "Diameter m"
+	diameter_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	terrain_row.add_child(diameter_label)
+
+	_brush_diameter_spin = _make_hud_spin_box(
+		MIN_SCULPT_DIAMETER_M,
+		MAX_SCULPT_DIAMETER_M,
+		1.0,
+		DEFAULT_SCULPT_DIAMETER_M
+	)
+	_brush_diameter_spin.value_changed.connect(_on_brush_control_changed)
+	_brush_diameter_spin.focus_exited.connect(_release_brush_field_focus)
+	terrain_row.add_child(_brush_diameter_spin)
+
+	var strength_label := Label.new()
+	strength_label.text = "Strength"
+	strength_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	terrain_row.add_child(strength_label)
+
+	_brush_strength_spin = _make_hud_spin_box(
+		MIN_SCULPT_STRENGTH_PER_SEC,
+		MAX_SCULPT_STRENGTH_PER_SEC,
+		0.1,
+		DEFAULT_SCULPT_STRENGTH_PER_SEC
+	)
+	_brush_strength_spin.value_changed.connect(_on_brush_control_changed)
+	_brush_strength_spin.focus_exited.connect(_release_brush_field_focus)
+	terrain_row.add_child(_brush_strength_spin)
+
 	_water_tool_panel = PanelContainer.new()
 	_water_tool_panel.visible = false
 	_water_tool_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_water_tool_panel.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	_water_tool_panel.add_theme_stylebox_override("panel", UIStyle.hud_group_style())
 	stack.add_child(_water_tool_panel)
 
@@ -255,8 +417,7 @@ func _build_ui() -> void:
 	rate_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	water_row.add_child(rate_label)
 
-	_water_rate_spin = _make_spin_box(0.1, 20.0, 0.1, DEFAULT_WATER_RATE)
-	_water_rate_spin.custom_minimum_size = Vector2(110.0, UIStyle.HUD_BUTTON_HEIGHT)
+	_water_rate_spin = _make_hud_spin_box(0.1, 20.0, 0.1, DEFAULT_WATER_RATE)
 	water_row.add_child(_water_rate_spin)
 
 	var surface_label := Label.new()
@@ -264,10 +425,27 @@ func _build_ui() -> void:
 	surface_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
 	water_row.add_child(surface_label)
 
-	_lake_offset_spin = _make_spin_box(0.5, 200.0, 0.5, DEFAULT_LAKE_SURFACE_OFFSET_M)
-	_lake_offset_spin.custom_minimum_size = Vector2(110.0, UIStyle.HUD_BUTTON_HEIGHT)
+	_lake_offset_spin = _make_hud_spin_box(0.5, 200.0, 0.5, DEFAULT_LAKE_SURFACE_OFFSET_M)
 	_lake_offset_spin.value_changed.connect(_on_lake_offset_changed)
+	_lake_offset_spin.focus_exited.connect(_release_surface_field_focus)
 	water_row.add_child(_lake_offset_spin)
+
+	var preview_separator := VSeparator.new()
+	water_row.add_child(preview_separator)
+
+	_preview_confirm_btn = Button.new()
+	_preview_confirm_btn.text = "OK"
+	_preview_confirm_btn.focus_mode = Control.FOCUS_NONE
+	_preview_confirm_btn.custom_minimum_size = Vector2(88.0, UIStyle.HUD_BUTTON_HEIGHT)
+	_preview_confirm_btn.pressed.connect(_confirm_surface_fill_preview)
+	water_row.add_child(_preview_confirm_btn)
+
+	_preview_cancel_btn = Button.new()
+	_preview_cancel_btn.text = "Cancel"
+	_preview_cancel_btn.focus_mode = Control.FOCUS_NONE
+	_preview_cancel_btn.custom_minimum_size = Vector2(110.0, UIStyle.HUD_BUTTON_HEIGHT)
+	_preview_cancel_btn.pressed.connect(func(): _cancel_lake_fill_preview())
+	water_row.add_child(_preview_cancel_btn)
 
 	var center := CenterContainer.new()
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -296,9 +474,16 @@ func _build_ui() -> void:
 	_lower_btn = _make_tool_button("Lower", Tool.LOWER)
 	row.add_child(_lower_btn)
 
+	_level_btn = _make_tool_button("Level", Tool.LEVEL)
+	row.add_child(_level_btn)
+
+	var water_group_separator := VSeparator.new()
+	row.add_child(water_group_separator)
+
 	_water_group_btn = Button.new()
 	_water_group_btn.text = "Water"
 	_water_group_btn.toggle_mode = true
+	_water_group_btn.focus_mode = Control.FOCUS_NONE
 	_water_group_btn.custom_minimum_size = Vector2(120.0, UIStyle.HUD_BUTTON_HEIGHT)
 	_water_group_btn.pressed.connect(_toggle_water_group)
 	row.add_child(_water_group_btn)
@@ -316,6 +501,7 @@ func _make_tool_button(label: String, tool: Tool) -> Button:
 	var button := Button.new()
 	button.text = label
 	button.toggle_mode = true
+	button.focus_mode = Control.FOCUS_NONE
 	button.custom_minimum_size = Vector2(120.0, UIStyle.HUD_BUTTON_HEIGHT)
 	button.pressed.connect(func(): _toggle_tool(tool))
 	return button
@@ -334,6 +520,8 @@ func _toggle_water_group() -> void:
 
 func _set_active_tool(tool: Tool) -> void:
 	var previous_tool := _active_tool
+	if _is_sculpt_tool(previous_tool) and tool != previous_tool:
+		_end_sculpt_stroke()
 	if _is_surface_fill_tool(previous_tool) and tool != previous_tool:
 		_cancel_lake_fill_preview("", false)
 	_active_tool = tool
@@ -343,6 +531,8 @@ func _set_active_tool(tool: Tool) -> void:
 			_set_status("Raise terrain tool active.")
 		Tool.LOWER:
 			_set_status("Lower terrain tool active.")
+		Tool.LEVEL:
+			_set_status("Level terrain tool active. Click-drag to level toward the clicked height.")
 		Tool.WATER_SOURCE:
 			_set_status("Water source tool active. Shift+Click removes nearest source.")
 		Tool.WATER_SINK:
@@ -350,19 +540,19 @@ func _set_active_tool(tool: Tool) -> void:
 		Tool.WATER_LAKE_FILL:
 			if _lake_preview_active:
 				_set_status(
-					"Lake preview active. Adjust Surface +m, click again to confirm, Esc to cancel.",
+					"Lake preview active. Adjust Surface +m, press OK to confirm, Esc to cancel.",
 					not _lake_preview_valid
 				)
 			else:
-				_set_status("Lake fill tool active. Click to preview, click again to confirm, Shift+Click removes nearest lake fill.")
+				_set_status("Lake fill tool active. Click to preview, press OK to confirm, Shift+Click removes nearest lake fill.")
 		Tool.WATER_OPEN_WATER:
 			if _lake_preview_active:
 				_set_status(
-					"Open water preview active. Adjust Surface +m, click again to confirm, Esc to cancel.",
+					"Open water preview active. Adjust Surface +m, press OK to confirm, Esc to cancel.",
 					not _lake_preview_valid
 				)
 			else:
-				_set_status("Open water tool active. Click to preview, click again to confirm, Shift+Click removes nearest open water fill.")
+				_set_status("Open water tool active. Click to preview, press OK to confirm, Shift+Click removes nearest open water fill.")
 		_:
 			_set_status("No active world-authoring tool.")
 	_debug_log("active_tool=%s" % Tool.keys()[_active_tool])
@@ -372,6 +562,20 @@ func _update_tool_buttons() -> void:
 		_raise_btn.button_pressed = _active_tool == Tool.RAISE
 	if _lower_btn:
 		_lower_btn.button_pressed = _active_tool == Tool.LOWER
+	if _level_btn:
+		_level_btn.button_pressed = _active_tool == Tool.LEVEL
+	if _terrain_tool_panel:
+		_terrain_tool_panel.visible = _is_sculpt_tool(_active_tool)
+	if _terrain_tool_title:
+		match _active_tool:
+			Tool.RAISE:
+				_terrain_tool_title.text = "Raise Brush"
+			Tool.LOWER:
+				_terrain_tool_title.text = "Lower Brush"
+			Tool.LEVEL:
+				_terrain_tool_title.text = "Level Brush"
+			_:
+				_terrain_tool_title.text = "Terrain Brush"
 	if _water_group_btn:
 		_water_group_btn.button_pressed = _is_water_tool(_active_tool)
 	if _water_source_btn:
@@ -384,16 +588,68 @@ func _update_tool_buttons() -> void:
 		_water_open_water_btn.button_pressed = _active_tool == Tool.WATER_OPEN_WATER
 	if _water_tool_panel:
 		_water_tool_panel.visible = _is_water_tool(_active_tool)
+	_update_preview_action_buttons()
 
 func _apply_sculpt(delta: float) -> void:
 	var intersection = _terrain_intersection_under_cursor()
 	if intersection == null:
 		return
 
-	var strength := SCULPT_STRENGTH_PER_SEC * delta
-	if _active_tool == Tool.LOWER:
-		strength *= -1.0
-	sim.sculpt_terrain(Vector2(intersection.x, intersection.z), SCULPT_RADIUS_M, strength)
+	var radius := _brush_radius_m()
+	var strength := _brush_strength_per_sec() * delta
+	match _active_tool:
+		Tool.RAISE:
+			sim.sculpt_terrain_stroke_step(Vector2(intersection.x, intersection.z), radius, strength)
+		Tool.LOWER:
+			sim.sculpt_terrain_stroke_step(Vector2(intersection.x, intersection.z), radius, -strength)
+		Tool.LEVEL:
+			sim.level_terrain_stroke_step(
+				Vector2(intersection.x, intersection.z),
+				radius,
+				_level_target_height_m,
+				strength
+			)
+	_live_sculpt_visual_pending = true
+
+func _begin_sculpt_stroke() -> void:
+	var intersection = _terrain_intersection_under_cursor()
+	if intersection == null:
+		_end_sculpt_stroke()
+		return
+	sim.begin_terrain_stroke()
+	_sculpt_stroke_active = true
+	if _active_tool == Tool.LEVEL:
+		_level_target_height_m = intersection.y
+		_set_status("Level target captured at %.1f m." % _level_target_height_m)
+
+func _end_sculpt_stroke() -> void:
+	_flush_live_sculpt_visuals(true)
+	if _sculpt_stroke_active:
+		sim.end_terrain_stroke()
+	_sculpt_stroke_active = false
+
+func _flush_live_sculpt_visuals(force: bool) -> void:
+	if not _live_sculpt_visual_pending:
+		return
+	if not force and _live_sculpt_refresh_timer > 0.0:
+		return
+	terrain.update_terrain_visuals()
+	_refresh_water_markers()
+	sim.clear_terrain_dirty()
+	_live_sculpt_visual_pending = false
+	_live_sculpt_refresh_timer = LIVE_SCULPT_REFRESH_INTERVAL_SEC
+
+func _brush_diameter_m() -> float:
+	return float(_brush_diameter_spin.value) if _brush_diameter_spin else DEFAULT_SCULPT_DIAMETER_M
+
+func _brush_radius_m() -> float:
+	return _brush_diameter_m() * 0.5
+
+func _brush_strength_per_sec() -> float:
+	return float(_brush_strength_spin.value) if _brush_strength_spin else DEFAULT_SCULPT_STRENGTH_PER_SEC
+
+func _on_brush_control_changed(_value: float) -> void:
+	_release_brush_field_focus()
 
 func _apply_water_tool(remove_mode: bool) -> void:
 	var intersection = _terrain_intersection_under_cursor()
@@ -405,20 +661,24 @@ func _apply_water_tool(remove_mode: bool) -> void:
 		Tool.WATER_SOURCE:
 			if remove_mode:
 				if sim.remove_world_water_source_near(world_pos, WATER_REMOVE_RADIUS_M):
+					_refresh_water_markers()
 					_set_status("Removed nearest water source.")
 				else:
 					_set_status("No water source found nearby.", true)
 			elif sim.add_world_water_source(world_pos, float(_water_rate_spin.value)):
+				_refresh_water_markers()
 				_set_status("Added water source.")
 			else:
 				_set_status("Add water source failed.", true)
 		Tool.WATER_SINK:
 			if remove_mode:
 				if sim.remove_world_water_sink_near(world_pos, WATER_REMOVE_RADIUS_M):
+					_refresh_water_markers()
 					_set_status("Removed nearest water sink.")
 				else:
 					_set_status("No water sink found nearby.", true)
 			elif sim.add_world_water_sink(world_pos, float(_water_rate_spin.value)):
+				_refresh_water_markers()
 				_set_status("Added water sink.")
 			else:
 				_set_status("Add water sink failed.", true)
@@ -427,41 +687,27 @@ func _apply_water_tool(remove_mode: bool) -> void:
 				if _lake_preview_active:
 					_cancel_lake_fill_preview("", false)
 				if sim.remove_world_lake_fill_near(world_pos, WATER_REMOVE_RADIUS_M):
+					_refresh_water_markers()
 					_set_status("Removed nearest lake fill.")
 				else:
 					_set_status("No lake fill found nearby.", true)
 			else:
-				if _lake_preview_active:
-					if sim.commit_world_lake_fill_preview():
-						_clear_lake_fill_preview_state()
-						_set_status("Added lake fill.")
-					else:
-						var preview_state: Dictionary = sim.get_world_lake_fill_preview()
-						_consume_lake_fill_preview_state(preview_state, false)
-				else:
-					var surface_elevation: float = intersection.y + float(_lake_offset_spin.value)
-					var preview_state: Dictionary = sim.begin_world_lake_fill_preview(world_pos, surface_elevation)
-					_consume_lake_fill_preview_state(preview_state, true)
+				var surface_elevation: float = intersection.y + float(_lake_offset_spin.value)
+				var preview_state: Dictionary = sim.begin_world_lake_fill_preview(world_pos, surface_elevation)
+				_consume_lake_fill_preview_state(preview_state, true)
 		Tool.WATER_OPEN_WATER:
 			if remove_mode:
 				if _lake_preview_active:
 					_cancel_lake_fill_preview("", false)
 				if sim.remove_world_open_water_fill_near(world_pos, WATER_REMOVE_RADIUS_M):
+					_refresh_water_markers()
 					_set_status("Removed nearest open water fill.")
 				else:
 					_set_status("No open water fill found nearby.", true)
 			else:
-				if _lake_preview_active:
-					if sim.commit_world_open_water_fill_preview():
-						_clear_lake_fill_preview_state()
-						_set_status("Added open water fill.")
-					else:
-						var preview_state: Dictionary = sim.get_world_open_water_fill_preview()
-						_consume_lake_fill_preview_state(preview_state, false)
-				else:
-					var surface_elevation: float = intersection.y + float(_lake_offset_spin.value)
-					var preview_state: Dictionary = sim.begin_world_open_water_fill_preview(world_pos, surface_elevation)
-					_consume_lake_fill_preview_state(preview_state, true)
+				var surface_elevation: float = intersection.y + float(_lake_offset_spin.value)
+				var preview_state: Dictionary = sim.begin_world_open_water_fill_preview(world_pos, surface_elevation)
+				_consume_lake_fill_preview_state(preview_state, true)
 
 func _terrain_intersection_under_cursor():
 	var camera := get_viewport().get_camera_3d()
@@ -474,7 +720,7 @@ func _terrain_intersection_under_cursor():
 	return sim.intersect_terrain(ray_origin, ray_dir)
 
 func _is_sculpt_tool(tool: Tool) -> bool:
-	return tool == Tool.RAISE or tool == Tool.LOWER
+	return tool == Tool.RAISE or tool == Tool.LOWER or tool == Tool.LEVEL
 
 func _is_water_tool(tool: Tool) -> bool:
 	return (
@@ -490,6 +736,7 @@ func _is_surface_fill_tool(tool: Tool) -> bool:
 func _refresh_after_world_change(focus_camera: bool) -> void:
 	terrain.rebuild_from_simulation_state()
 	water.rebuild_from_simulation_state()
+	_refresh_water_markers()
 	if focus_camera:
 		_focus_camera_on_world()
 	_update_toolbar_summary()
@@ -546,6 +793,67 @@ func _on_lake_offset_changed(_value: float) -> void:
 	else:
 		preview_state = sim.update_world_lake_fill_preview(surface_elevation)
 	_consume_lake_fill_preview_state(preview_state, false)
+	_release_surface_field_focus()
+
+func _nudge_surface_offset(delta_m: float) -> void:
+	if not _lake_preview_active:
+		return
+	var next_value := clampf(
+		float(_lake_offset_spin.value) + delta_m,
+		_lake_offset_spin.min_value,
+		_lake_offset_spin.max_value
+	)
+	_lake_offset_spin.set_value_no_signal(next_value)
+	_on_lake_offset_changed(next_value)
+
+func _release_surface_field_focus() -> void:
+	if _lake_offset_spin and _lake_offset_spin.has_focus():
+		_lake_offset_spin.release_focus()
+
+func _release_brush_field_focus() -> void:
+	if _brush_diameter_spin and _brush_diameter_spin.has_focus():
+		_brush_diameter_spin.release_focus()
+	if _brush_strength_spin and _brush_strength_spin.has_focus():
+		_brush_strength_spin.release_focus()
+
+func _clear_numeric_field_focus() -> void:
+	var focus_owner := get_viewport().gui_get_focus_owner()
+	if focus_owner != null and _control_is_numeric_field(focus_owner):
+		focus_owner.release_focus()
+	_release_brush_field_focus()
+	_release_surface_field_focus()
+
+func _clear_editor_focus() -> void:
+	_clear_numeric_field_focus()
+	_release_brush_field_focus()
+	_release_surface_field_focus()
+	var focus_owner := get_viewport().gui_get_focus_owner()
+	if focus_owner != null:
+		focus_owner.release_focus()
+
+func _confirm_surface_fill_preview() -> void:
+	if not _lake_preview_active:
+		return
+	if not _lake_preview_valid:
+		_set_status("Surface-fill preview is not valid yet.", true)
+		return
+	var committed := false
+	if _lake_preview_kind == "open_water":
+		committed = sim.commit_world_open_water_fill_preview()
+	else:
+		committed = sim.commit_world_lake_fill_preview()
+	if committed:
+		var kind_label := "open water fill" if _lake_preview_kind == "open_water" else "lake fill"
+		_clear_lake_fill_preview_state()
+		_clear_editor_focus()
+		_set_status("Added %s." % kind_label)
+	else:
+		var preview_state: Dictionary = (
+			sim.get_world_open_water_fill_preview()
+			if _lake_preview_kind == "open_water"
+			else sim.get_world_lake_fill_preview()
+		)
+		_consume_lake_fill_preview_state(preview_state, false)
 
 func _consume_lake_fill_preview_state(preview_state: Dictionary, started_preview: bool) -> void:
 	var ok := bool(preview_state.get("ok", false))
@@ -565,6 +873,7 @@ func _consume_lake_fill_preview_state(preview_state: Dictionary, started_preview
 	_lake_preview_valid = bool(preview_state.get("valid", false))
 	_lake_preview_status = str(preview_state.get("status", "inactive"))
 	_lake_preview_kind = str(preview_state.get("kind", "lake"))
+	_refresh_water_markers()
 
 	if not ok:
 		_set_status(str(preview_state.get("message", "Lake fill preview failed.")), true)
@@ -581,12 +890,13 @@ func _consume_lake_fill_preview_state(preview_state: Dictionary, started_preview
 			else "Lake preview updated."
 		)
 		_set_status(
-			"%s Surface %.1f m over %d cells. Adjust Surface +m or click again to confirm." % [
+			"%s Surface %.1f m over %d cells. Adjust Surface +m and press OK to confirm." % [
 				prefix,
 				_lake_preview_surface_m,
 				int(preview_state.get("filled_cells", 0))
 			]
 		)
+		_update_preview_action_buttons()
 		return
 
 	match _lake_preview_status:
@@ -613,6 +923,7 @@ func _consume_lake_fill_preview_state(preview_state: Dictionary, started_preview
 			)
 		_:
 			_set_status(str(preview_state.get("message", "Lake fill preview is not valid.")), true)
+	_update_preview_action_buttons()
 
 func _cancel_lake_fill_preview(status_message: String = "Cancelled surface-fill preview.", update_status: bool = true) -> void:
 	if _lake_preview_active:
@@ -621,6 +932,7 @@ func _cancel_lake_fill_preview(status_message: String = "Cancelled surface-fill 
 		else:
 			sim.cancel_world_lake_fill_preview()
 	_clear_lake_fill_preview_state()
+	_clear_editor_focus()
 	if update_status:
 		_set_status(status_message)
 
@@ -632,9 +944,282 @@ func _clear_lake_fill_preview_state() -> void:
 	_lake_preview_valid = false
 	_lake_preview_status = "inactive"
 	_lake_preview_kind = "inactive"
+	_refresh_water_markers()
+	_update_preview_action_buttons()
+
+func _update_preview_action_buttons() -> void:
+	var surface_tool_active := _is_surface_fill_tool(_active_tool)
+	if _preview_confirm_btn:
+		_preview_confirm_btn.visible = surface_tool_active
+		_preview_confirm_btn.disabled = not (_lake_preview_active and _lake_preview_valid)
+	if _preview_cancel_btn:
+		_preview_cancel_btn.visible = surface_tool_active
+		_preview_cancel_btn.disabled = not _lake_preview_active
+
+func _ensure_brush_preview() -> void:
+	if _brush_preview:
+		return
+	_brush_preview = MeshInstance3D.new()
+	_brush_preview.name = "BrushPreview"
+	_brush_preview.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_brush_preview.visible = false
+	_brush_preview.rotation.x = -PI * 0.5
+
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2.ONE
+	_brush_preview.mesh = mesh
+
+	_brush_preview_material = ShaderMaterial.new()
+	var shader := Shader.new()
+	shader.code = BRUSH_PREVIEW_SHADER
+	_brush_preview_material.shader = shader
+	_brush_preview.material_override = _brush_preview_material
+	add_child(_brush_preview)
+
+func _ensure_water_marker_root() -> void:
+	if _water_marker_root:
+		return
+	_water_marker_root = Node3D.new()
+	_water_marker_root.name = "WorldWaterMarkers"
+	add_child(_water_marker_root)
+
+func _refresh_water_markers() -> void:
+	_ensure_water_marker_root()
+	for child in _water_marker_root.get_children():
+		child.free()
+
+	var committed_markers: Array = sim.get_world_water_authoring_markers()
+	for marker_variant in committed_markers:
+		var marker: Dictionary = marker_variant
+		_add_committed_water_marker(marker)
+
+	if _lake_preview_active:
+		_add_preview_water_marker()
+
+func _add_committed_water_marker(marker: Dictionary) -> void:
+	var kind := str(marker.get("kind", ""))
+	var world_x := float(marker.get("world_x", 0.0))
+	var world_z := float(marker.get("world_z", 0.0))
+	var terrain_height_m := float(marker.get("terrain_height_m", 0.0))
+	match kind:
+		"source":
+			_add_water_boundary_marker(
+				world_x,
+				terrain_height_m,
+				world_z,
+				WATER_SOURCE_MARKER_COLOR,
+				false
+			)
+		"sink":
+			_add_water_boundary_marker(
+				world_x,
+				terrain_height_m,
+				world_z,
+				WATER_SINK_MARKER_COLOR,
+				true
+			)
+		"lake_fill":
+			_add_water_fill_marker(
+				world_x,
+				terrain_height_m,
+				world_z,
+				float(marker.get("surface_elevation_m", terrain_height_m)),
+				WATER_LAKE_MARKER_COLOR,
+				false
+			)
+		"open_water_fill":
+			_add_water_fill_marker(
+				world_x,
+				terrain_height_m,
+				world_z,
+				float(marker.get("surface_elevation_m", terrain_height_m)),
+				WATER_OPEN_WATER_MARKER_COLOR,
+				false
+			)
+
+func _add_preview_water_marker() -> void:
+	var color := WATER_PREVIEW_MARKER_COLOR if _lake_preview_valid else UIStyle.TEXT_ALERT
+	_add_water_fill_marker(
+		_lake_preview_seed_world_pos.x,
+		_lake_preview_seed_height_m,
+		_lake_preview_seed_world_pos.y,
+		_lake_preview_surface_m,
+		color,
+		true
+	)
+
+func _add_water_boundary_marker(
+	world_x: float,
+	terrain_height_m: float,
+	world_z: float,
+	color: Color,
+	point_down: bool
+) -> void:
+	var base_y := terrain_height_m + WATER_MARKER_GROUND_OFFSET_M
+	var root := Node3D.new()
+	root.position = Vector3(world_x, base_y, world_z)
+	_water_marker_root.add_child(root)
+
+	var stem := MeshInstance3D.new()
+	stem.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var stem_mesh := CylinderMesh.new()
+	stem_mesh.top_radius = WATER_MARKER_STEM_RADIUS_M
+	stem_mesh.bottom_radius = WATER_MARKER_STEM_RADIUS_M
+	stem_mesh.height = WATER_MARKER_STEM_HEIGHT_M
+	stem.mesh = stem_mesh
+	stem.position = Vector3(0.0, WATER_MARKER_STEM_HEIGHT_M * 0.5, 0.0)
+	stem.material_override = _make_water_marker_material(color.darkened(0.18), 0.98, 2.8)
+	root.add_child(stem)
+
+	var tip := MeshInstance3D.new()
+	tip.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var tip_mesh := CylinderMesh.new()
+	tip_mesh.top_radius = 0.0 if point_down else WATER_MARKER_TIP_RADIUS_M
+	tip_mesh.bottom_radius = WATER_MARKER_TIP_RADIUS_M if point_down else 0.0
+	tip_mesh.height = WATER_MARKER_TIP_RADIUS_M * 1.9
+	tip.mesh = tip_mesh
+	tip.position = Vector3(0.0, WATER_MARKER_STEM_HEIGHT_M + WATER_MARKER_TIP_RADIUS_M * 0.7, 0.0)
+	tip.material_override = _make_water_marker_material(color, 1.0, 4.2)
+	root.add_child(tip)
+
+func _add_water_fill_marker(
+	world_x: float,
+	terrain_height_m: float,
+	world_z: float,
+	surface_elevation_m: float,
+	color: Color,
+	preview: bool
+) -> void:
+	var root := Node3D.new()
+	root.position = Vector3(world_x, 0.0, world_z)
+	_water_marker_root.add_child(root)
+
+	var terrain_y := terrain_height_m + WATER_MARKER_GROUND_OFFSET_M
+	var surface_y := surface_elevation_m + WATER_MARKER_GROUND_OFFSET_M
+	var stem_height := maxf(absf(surface_y - terrain_y), WATER_FILL_MIN_STEM_M)
+	var stem_center_y := (terrain_y + surface_y) * 0.5
+	var stem := MeshInstance3D.new()
+	stem.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var stem_mesh := CylinderMesh.new()
+	stem_mesh.top_radius = WATER_FILL_STEM_RADIUS_M
+	stem_mesh.bottom_radius = WATER_FILL_STEM_RADIUS_M
+	stem_mesh.height = stem_height
+	stem.mesh = stem_mesh
+	stem.position = Vector3(0.0, stem_center_y, 0.0)
+	stem.material_override = _make_water_marker_material(
+		color.darkened(0.12),
+		0.88 if preview else 0.78,
+		2.2 if preview else 1.6
+	)
+	root.add_child(stem)
+
+	var cap := MeshInstance3D.new()
+	cap.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var cap_mesh := CylinderMesh.new()
+	cap_mesh.top_radius = WATER_FILL_DISC_RADIUS_M
+	cap_mesh.bottom_radius = WATER_FILL_DISC_RADIUS_M
+	cap_mesh.height = WATER_FILL_DISC_THICKNESS_M
+	cap.mesh = cap_mesh
+	cap.position = Vector3(0.0, surface_y, 0.0)
+	cap.material_override = _make_water_marker_material(
+		color,
+		0.58 if preview else 0.44,
+		3.0 if preview else 2.2
+	)
+	root.add_child(cap)
+
+	var seed := MeshInstance3D.new()
+	seed.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var seed_mesh := SphereMesh.new()
+	seed_mesh.radius = WATER_MARKER_TIP_RADIUS_M * 0.45
+	seed_mesh.height = WATER_MARKER_TIP_RADIUS_M * 0.9
+	seed.mesh = seed_mesh
+	seed.position = Vector3(0.0, terrain_y, 0.0)
+	seed.material_override = _make_water_marker_material(color.lightened(0.08), 1.0, 3.8)
+	root.add_child(seed)
+
+func _make_water_marker_material(color: Color, alpha: float, emission_energy: float) -> StandardMaterial3D:
+	var material := StandardMaterial3D.new()
+	var shaded_color := color
+	shaded_color.a = alpha
+	material.albedo_color = shaded_color
+	material.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
+	material.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	material.cull_mode = StandardMaterial3D.CULL_DISABLED
+	material.emission_enabled = true
+	material.emission = color
+	material.emission_energy_multiplier = emission_energy
+	return material
+
+func _update_brush_preview() -> void:
+	if not _brush_preview:
+		return
+	if not _is_sculpt_tool(_active_tool) or _ui_captures_world_pointer_input():
+		_brush_preview.visible = false
+		return
+	var intersection = _terrain_intersection_under_cursor()
+	if intersection == null:
+		_brush_preview.visible = false
+		return
+
+	_brush_preview.visible = true
+	_brush_preview.position = Vector3(intersection.x, intersection.y + 0.12, intersection.z)
+	var preview_mesh := _brush_preview.mesh as QuadMesh
+	if preview_mesh:
+		preview_mesh.size = Vector2(_brush_diameter_m(), _brush_diameter_m())
+	_brush_preview.scale = Vector3.ONE
+
+	var fill_color := Color(0.20, 0.62, 0.28, 0.10)
+	var ring_color := Color(0.76, 1.0, 0.82, 0.85)
+	match _active_tool:
+		Tool.LOWER:
+			fill_color = Color(0.62, 0.22, 0.18, 0.10)
+			ring_color = Color(1.0, 0.80, 0.76, 0.85)
+		Tool.LEVEL:
+			fill_color = Color(0.60, 0.48, 0.18, 0.10)
+			ring_color = Color(1.0, 0.94, 0.72, 0.88)
+
+	_brush_preview_material.set_shader_parameter("fill_color", fill_color)
+	_brush_preview_material.set_shader_parameter("ring_color", ring_color)
 
 func _is_pointer_over_ui() -> bool:
-	return get_viewport().gui_get_hovered_control() != null
+	return _ui_captures_world_pointer_input()
+
+func _ui_has_modal_popup() -> bool:
+	var viewport := get_viewport()
+	var window := viewport as Window
+	return (
+		window != null
+		and window.has_method("has_visible_popup")
+		and window.has_visible_popup()
+	)
+
+func _ui_captures_world_pointer_input() -> bool:
+	var viewport := get_viewport()
+	return _ui_has_modal_popup() or viewport.gui_get_hovered_control() != null
+
+func _ui_captures_world_keyboard_input() -> bool:
+	var viewport := get_viewport()
+	var focus_owner := viewport.gui_get_focus_owner()
+	var editing_focus := (
+		focus_owner is SpinBox
+		or focus_owner is LineEdit
+		or focus_owner is TextEdit
+		or focus_owner is CodeEdit
+	)
+	return _ui_has_modal_popup() or editing_focus
+
+func _numeric_field_has_focus() -> bool:
+	var focus_owner := get_viewport().gui_get_focus_owner()
+	return focus_owner != null and _control_is_numeric_field(focus_owner)
+
+func _control_is_numeric_field(control: Control) -> bool:
+	var node: Node = control
+	while node != null:
+		if node is SpinBox:
+			return true
+		node = node.get_parent()
+	return false
 
 func _ensure_worlds_dir() -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(WORLDS_DIR))
@@ -647,7 +1232,7 @@ func _ensure_new_world_window() -> void:
 	_new_world_window.title = "New World"
 	_new_world_window.size = Vector2i(420, 360)
 	_new_world_window.unresizable = false
-	_new_world_window.exclusive = false
+	_new_world_window.exclusive = true
 	_new_world_window.close_requested.connect(_new_world_window.hide)
 	add_child(_new_world_window)
 
@@ -727,7 +1312,48 @@ func _make_spin_box(min_value: float, max_value: float, step: float, value: floa
 	spin.step = step
 	spin.value = value
 	spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_configure_numeric_spin_box(spin)
 	return spin
+
+func _make_hud_spin_box(min_value: float, max_value: float, step: float, value: float) -> SpinBox:
+	var spin := _make_spin_box(min_value, max_value, step, value)
+	spin.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	spin.custom_minimum_size = Vector2(96.0, UIStyle.HUD_BUTTON_HEIGHT)
+	return spin
+
+func _configure_numeric_spin_box(spin: SpinBox) -> void:
+	var line_edit := spin.get_line_edit()
+	if line_edit == null:
+		return
+	var allow_negative := spin.min_value < 0.0
+	var allow_decimal := absf(spin.step - roundf(spin.step)) > 0.0001
+	line_edit.text_changed.connect(func(new_text: String):
+		var sanitized := _sanitize_numeric_text(new_text, allow_negative, allow_decimal)
+		if sanitized != new_text:
+			line_edit.text = sanitized
+	)
+
+func _sanitize_numeric_text(text: String, allow_negative: bool, allow_decimal: bool) -> String:
+	var cleaned := ""
+	var saw_decimal := false
+	var saw_sign := false
+	for i in text.length():
+		var ch := text.substr(i, 1)
+		var code := ch.unicode_at(0)
+		if code >= 48 and code <= 57:
+			cleaned += ch
+			continue
+		if allow_negative and not saw_sign and cleaned.is_empty() and ch == "-":
+			cleaned += ch
+			saw_sign = true
+			continue
+		if allow_decimal and not saw_decimal and ch == ".":
+			if cleaned.is_empty() or cleaned == "-":
+				cleaned += "0"
+			cleaned += "."
+			saw_decimal = true
+			continue
+	return cleaned
 
 func _on_new_world_confirmed() -> void:
 	var world_name := _new_world_name_edit.text.strip_edges()

@@ -158,7 +158,10 @@ WorldEditor toolbar rules:
   `UIStyle` shell language as the gameplay toolbar
 - this toolbar is the primary tool-selection surface for world authoring
 - terrain tools live here, not in the top menu
-- WorldEditor v1 active tools are `Raise` and `Lower`
+- WorldEditor terrain tools are `Raise`, `Lower`, and `Level`
+- selecting `Raise`, `Lower`, or `Level` opens an upward-expanding terrain brush row above the bottom toolbar shell
+- that terrain brush row owns the shared `Diameter m` and `Strength` controls for all terrain brushes
+- active terrain brushes must show their diameter directly on the map with a visible brush preview
 - `Water` is the first follow-up tool group and will live on the same toolbar surface
 - when the water group ships, its first tool set must be:
   - `Source`
@@ -183,10 +186,14 @@ WorldEditor water toolbar behavior:
 - `Open Water` authors one edge-connected water seed plus one target surface level
 - water authoring belongs on the same bottom-strip workflow as terrain sculpting so authors can
   switch between carving terrain and placing hydrology without changing editor shells
+- committed `Source`, `Sink`, `Lake Fill`, and `Open Water` records, plus any active surface-fill
+  preview, must show visible 3D markers in WorldEditor so authored water locations are readable
+- these authored-water markers are WorldEditor-only overlays and must not appear in gameplay
 - `Lake Fill` and `Open Water` are two-phase actions:
   - first click starts a transient preview
   - the `Surface +m` control adjusts the preview surface
-  - second click confirms the preview into authored world state
+  - the dedicated `OK` button confirms the preview into authored world state
+  - the dedicated `Cancel` button or `Escape` dismisses the preview
 - surface-fill preview is editor-only transient state and is not saved unless confirmed
 - invalid surface-fill preview levels must not flood the visible map; they stay preview-only and
   uncommitted until the author adjusts the level or cancels
@@ -200,11 +207,12 @@ Current WorldEditor shortcuts:
 |-----|--------|
 | 1 | Select `Raise` |
 | 2 | Select `Lower` |
-| 3 | Select `Water Source` |
-| 4 | Select `Water Sink` |
-| 5 | Select `Lake Fill` |
-| 6 | Select `Open Water` |
-| Left Mouse | Sculpt terrain with the active tool; surface-fill tools use first click for preview and second click for confirm |
+| 3 | Select `Level` |
+| 4 | Select `Water Source` |
+| 5 | Select `Water Sink` |
+| 6 | Select `Lake Fill` |
+| 7 | Select `Open Water` |
+| Left Mouse | Sculpt terrain with the active tool; `Level` captures the clicked height for the stroke; surface-fill tools use first click for preview |
 | Shift+Left Mouse | Remove the nearest authored water feature for the active water tool |
 | Middle Mouse | Orbit camera |
 | Right Mouse | Pan camera |

@@ -32,7 +32,7 @@ except ImportError as exc:  # pragma: no cover - environment-dependent
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-WORLD_DEFINITION_FORMAT_VERSION = 1
+WORLD_DEFINITION_FORMAT_VERSION = 3
 WORLD_DEFINITION_SCHEMA = """
 CREATE TABLE world_definition_meta(
     format_version INTEGER NOT NULL,
@@ -52,6 +52,22 @@ CREATE TABLE world_terrain_chunks(
     height_samples INTEGER NOT NULL,
     source_height_blob_f32_le BLOB NOT NULL,
     PRIMARY KEY(chunk_x, chunk_z)
+);
+CREATE TABLE world_water_boundary_points(
+    kind INTEGER NOT NULL,
+    world_x REAL NOT NULL,
+    world_z REAL NOT NULL,
+    rate_m_per_tick REAL NOT NULL
+);
+CREATE TABLE world_lake_fills(
+    world_x REAL NOT NULL,
+    world_z REAL NOT NULL,
+    surface_elevation_m REAL NOT NULL
+);
+CREATE TABLE world_open_water_fills(
+    world_x REAL NOT NULL,
+    world_z REAL NOT NULL,
+    surface_elevation_m REAL NOT NULL
 );
 """
 HEIGHT_SCALE = 20.0
