@@ -109,6 +109,11 @@ Current deterministic rules:
   source terrain into it
 - save/load persists the authoritative source terrain only
 - renderer uploads use the visual terrain
+- procedural hillshade is a render-only derivation generated from the uploaded visual terrain
+  heightmap
+- procedural hillshade must never become authored world data or save-game data
+- terrain sculpting, DEM import, world load, and road-flattening visual refreshes must all update
+  hillshade automatically because it derives from the same visual terrain upload
 
 ### 4. Terrain Queries Read Authoritative Source Terrain
 
@@ -708,6 +713,8 @@ What is implemented now:
 - `WorldDefinition` now persists authored water boundary points, inland lake fills, and
   edge-connected open-water fills
 - save/load and renderer boundaries still use dense materialization
+- terrain rendering now derives hillshade procedurally from the live heightmap in both gameplay
+  and WorldEditor; it is not stored as separate world data
 
 What is next:
 

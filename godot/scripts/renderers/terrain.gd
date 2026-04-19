@@ -6,7 +6,16 @@
 ## The heightmap arrives as a flat PackedFloat32Array in row-major order (width × height f32 values).
 ## Overlay textures (pollution/noise/desirability) arrive as RGBA8 PackedByteArray and are
 ## uploaded to a shader texture each frame when the active overlay mode is non-zero.
+## Terrain hillshade is generated procedurally in the shader from the same live heightmap.
 extends MeshInstance3D
+
+const HILLSHADE_AZIMUTH_DEG := 315.0
+const HILLSHADE_ALTITUDE_DEG := 38.0
+const HILLSHADE_STRENGTH := 0.58
+const HILLSHADE_AMBIENT := 0.24
+const HILLSHADE_CONTRAST := 1.35
+const HILLSHADE_SHADOW_TINT := Color(0.70, 0.78, 0.86)
+const HILLSHADE_LIGHT_TINT := Color(1.02, 1.01, 0.98)
 
 @onready var simulation_node = $"../SimulationNode"
 var texture: ImageTexture
@@ -58,6 +67,18 @@ func rebuild_from_simulation_state():
 	material.set_shader_parameter("parcel_texture", parcel_texture)
 	material.set_shader_parameter("height_scale", 20.0)
 	material.set_shader_parameter("mesh_size", world_size)
+	material.set_shader_parameter("heightmap_texture_size", Vector2(float(w), float(h)))
+	material.set_shader_parameter(
+		"terrain_cell_m",
+		world_size.x / float(max(1, w - 1))
+	)
+	material.set_shader_parameter("hillshade_azimuth_deg", HILLSHADE_AZIMUTH_DEG)
+	material.set_shader_parameter("hillshade_altitude_deg", HILLSHADE_ALTITUDE_DEG)
+	material.set_shader_parameter("hillshade_strength", HILLSHADE_STRENGTH)
+	material.set_shader_parameter("hillshade_ambient", HILLSHADE_AMBIENT)
+	material.set_shader_parameter("hillshade_contrast", HILLSHADE_CONTRAST)
+	material.set_shader_parameter("hillshade_shadow_tint", HILLSHADE_SHADOW_TINT)
+	material.set_shader_parameter("hillshade_light_tint", HILLSHADE_LIGHT_TINT)
 	self.material_override = material
 	update_terrain_visuals()
 

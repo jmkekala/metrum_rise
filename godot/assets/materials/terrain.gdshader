@@ -6,6 +6,15 @@ uniform sampler2D parcel_texture;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
 uniform vec2 mesh_size = vec2(256.0, 256.0);
+uniform vec2 heightmap_texture_size = vec2(256.0, 256.0);
+uniform float terrain_cell_m = 10.0;
+uniform float hillshade_azimuth_deg = 315.0;
+uniform float hillshade_altitude_deg = 42.0;
+uniform float hillshade_strength = 0.42;
+uniform float hillshade_ambient = 0.36;
+uniform float hillshade_contrast = 1.15;
+uniform vec3 hillshade_shadow_tint : source_color = vec3(0.80, 0.86, 0.92);
+uniform vec3 hillshade_light_tint : source_color = vec3(1.03, 1.02, 0.99);
 uniform float contour_minor_interval_m = 10.0;
 uniform float contour_major_interval_m = 50.0;
 uniform float contour_minor_thickness = 1.0;
@@ -38,6 +47,35 @@ vec3 terrain_color_from_height(float world_elevation) {
 	return color;
 }
 
+float sample_world_height(vec2 uv) {
+	vec2 clamped_uv = clamp(uv, vec2(0.0), vec2(1.0));
+	return texture(heightmap, clamped_uv).r * height_scale;
+}
+
+float hillshade_mask(vec2 uv) {
+	vec2 texel = 1.0 / max(heightmap_texture_size, vec2(1.0));
+	float h_left = sample_world_height(uv - vec2(texel.x, 0.0));
+	float h_right = sample_world_height(uv + vec2(texel.x, 0.0));
+	float h_up = sample_world_height(uv - vec2(0.0, texel.y));
+	float h_down = sample_world_height(uv + vec2(0.0, texel.y));
+	float safe_cell = max(terrain_cell_m, 0.001);
+	float dzdx = (h_right - h_left) / (2.0 * safe_cell);
+	float dzdz = (h_down - h_up) / (2.0 * safe_cell);
+	vec3 normal = normalize(vec3(-dzdx, 1.0, -dzdz));
+
+	float azimuth = radians(hillshade_azimuth_deg);
+	float altitude = radians(hillshade_altitude_deg);
+	vec3 light_dir = normalize(vec3(
+		sin(azimuth) * cos(altitude),
+		sin(altitude),
+		-cos(azimuth) * cos(altitude)
+	));
+
+	float diffuse = clamp(dot(normal, light_dir), 0.0, 1.0);
+	float shaped = pow(diffuse, hillshade_contrast);
+	return clamp(mix(hillshade_ambient, 1.0, shaped), 0.0, 1.0);
+}
+
 float contour_mask(float world_elevation, float interval_m, float thickness) {
 	float safe_interval = max(interval_m, 0.001);
 	float scaled = world_elevation / safe_interval;
@@ -60,6 +98,9 @@ void vertex() {
 void fragment() {
 	float world_elevation = h * height_scale;
 	vec3 color = terrain_color_from_height(world_elevation);
+	float hillshade = hillshade_mask(var_centered_uv);
+	vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, hillshade);
+	color *= mix(vec3(1.0), hillshade_tint, hillshade_strength);
 	
 	// Overlay Heatmaps (Pollution, Noise, Desirability)
 	if (overlay_mode > 0) {
