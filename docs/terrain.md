@@ -673,6 +673,71 @@ Deterministic rules:
 - local active areas may run dynamic water simulation
 - the engine must not require a full-world dense shallow-water solve for every map size
 
+### 9. Keep The First Terrain / Water Realism Pass Render-Only
+
+Terrain and water should look more natural, but the first realism pass must stay strictly on the
+render side.
+
+Deterministic rules:
+
+- the first terrain/water realism pass must work in both gameplay and WorldEditor from the same
+  live terrain and water buffers
+- the first realism pass must not require external base textures
+- the first realism pass must not add authored-material data to `WorldDefinition`
+- the first realism pass must not add visual-material data to city saves
+- realism tuning should live in renderer/shader parameters, not in simulation state
+- terrain realism may derive from:
+  - world elevation
+  - slope / local normal
+  - procedural hillshade
+  - shoreline proximity
+  - low-frequency procedural color breakup
+- water realism may derive from:
+  - water depth
+  - water velocity
+  - shoreline proximity
+  - view-angle / fresnel-like response
+  - small procedural surface breakup
+- coastline smoothing may be handled visually with soft shoreline masking, shoreline foam bands,
+  or similar shader-side treatment
+- these visual passes must never change:
+  - source terrain
+  - visual terrain ownership rules
+  - authored water records
+  - runtime water depth / velocity / flux state
+  - save schema
+
+Deterministic v1 realism scope:
+
+- terrain should move away from one flat height-color ramp toward:
+  - slope-aware rock versus soil/vegetation weighting
+  - stronger relief readability from hillshade
+  - shoreline color transitions
+  - subtle macro variation so large areas are not one uniform tint
+- water should move away from one flat translucent surface toward:
+  - shallow-versus-deep color separation
+  - stronger coast readability
+  - view-angle-dependent reflectance / specular response
+  - mild procedural breakup so calm water does not look perfectly flat
+- the first realism pass must stay cheap enough to share the existing terrain/water renderer path
+  between gameplay and WorldEditor
+
+Deterministic asset policy:
+
+- external terrain/water material textures are optional later enhancements, not a prerequisite for
+  the first realism pass
+- if material textures are added later, they remain visual assets only
+- authored worlds and imported DEM worlds must remain valid and usable even when no external
+  material textures are present
+
+Explicit non-goals of the first realism pass:
+
+- authored material painting
+- biome simulation
+- erosion or sediment simulation for visual purposes
+- dependency on downloaded hillshade rasters
+- dependency on scanned PBR material libraries before terrain/water can look acceptable
+
 ## Current Deterministic Non-Goals
 
 The following are explicitly not implemented yet and should not be assumed by other systems:
@@ -718,8 +783,8 @@ What is implemented now:
 
 What is next:
 
-1. interactive DEM / GeoTIFF import UI for real-map authored worlds
-2. river-path hydrology after terrain import and first authored-water tools are stable
-3. chunk-window runtime processing
-6. later DEM import
-7. later authored hydrology
+1. terrain / water realism pass v1 on the shared render path, still texture-free and render-only
+2. interactive DEM / GeoTIFF import UI for real-map authored worlds
+3. river-path hydrology after terrain import and first authored-water tools are stable
+4. chunk-window runtime processing
+5. later texture-assisted terrain/water materials if the shader-only realism pass is not enough

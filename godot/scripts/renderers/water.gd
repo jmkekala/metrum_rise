@@ -6,6 +6,9 @@
 ## Velocity data is a parallel PackedFloat32Array used to drive foam/current shader effects.
 extends MeshInstance3D
 
+const SHORE_SOFTNESS_M := 0.5
+const SHORE_FOAM_BAND_M := 0.5
+
 @onready var simulation_node = $"../SimulationNode"
 var texture: ImageTexture
 var water_image: Image
@@ -25,8 +28,8 @@ func rebuild_from_simulation_state():
 	# Setup mesh (same as terrain but as a separate layer)
 	var plane_mesh = PlaneMesh.new()
 	plane_mesh.size = world_size
-	plane_mesh.subdivide_depth = w - 1
-	plane_mesh.subdivide_width = h - 1
+	plane_mesh.subdivide_width = max(0, w - 2)
+	plane_mesh.subdivide_depth = max(0, h - 2)
 	self.mesh = plane_mesh
 	
 	# Setup texture for water depth
@@ -47,6 +50,8 @@ func rebuild_from_simulation_state():
 	material.set_shader_parameter("watermap", texture)
 	material.set_shader_parameter("velocity_map", velocity_texture)
 	material.set_shader_parameter("height_scale", 20.0)
+	material.set_shader_parameter("shore_softness_m", SHORE_SOFTNESS_M)
+	material.set_shader_parameter("shore_foam_band_m", SHORE_FOAM_BAND_M)
 	self.material_override = material
 	update_water_visuals()
 
