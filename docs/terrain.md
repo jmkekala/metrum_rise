@@ -398,6 +398,7 @@ Current deterministic rules:
   - `Water Source`
   - `Water Sink`
   - `Lake Fill`
+  - `Open Water`
 - authored water records are saved in and loaded from `WorldDefinition`
 - loading a `WorldDefinition` rebuilds runtime water preview from those authored records
 
@@ -407,6 +408,7 @@ Deterministic first-slice scope:
   - `Water Source`
   - `Water Sink`
   - `Lake Fill`
+  - `Open Water`
 - this first slice must not start with freehand water-depth painting
 - this first slice must not require river-path drawing in order to be useful on imported or
   hand-sculpted maps
@@ -418,23 +420,55 @@ Deterministic ownership rules:
 - `Lake Fill` is an authored basin-fill record with:
   - one world-space seed position
   - one target water surface elevation
+- `Open Water` is an authored edge-connected fill record with:
+  - one world-space seed position
+  - one target water surface elevation
 - authored water records belong to `WorldDefinition`, not only to live city saves
 - authored water records must be engine-owned data types; they must not store raw runtime scratch
   buffers or renderer-only state
+- `Lake Fill` and `Open Water` preview state are transient editor runtime state, not authored
+  world data
+- transient surface-fill preview state must never be serialized into `WorldDefinition`
 
 Deterministic runtime-application rules:
 
 - loading a `WorldDefinition` must rebuild the runtime water state from authored water records
 - point sources and point sinks become live runtime water boundary conditions for that world
-- lake fills seed the initial water state for the contiguous basin that contains the authored seed
-  position and lies below the authored surface elevation
+- `Lake Fill` seeds the initial water state for the contiguous inland basin that contains the
+  authored seed position and lies below the authored surface elevation
+- `Open Water` seeds the initial water state for the contiguous edge-connected region that contains
+  the authored seed position and lies below the authored surface elevation
 - the authored water layer is the baseline; later runtime simulation may modify local details on
   top of it
+- terrain sculpting in WorldEditor must rebuild authored water preview immediately whenever any
+  authored water records or any active surface-fill preview exists
+
+Deterministic lake-fill preview rules:
+
+- selecting `Lake Fill` or `Open Water` and clicking terrain must start a transient preview, not
+  immediately write an authored water record
+- the preview owns:
+  - one snapped seed position
+  - one seed terrain height
+  - one current target water surface elevation
+  - one validity state
+- while preview is active, adjusting the `Surface +m` control must rebuild the runtime water preview
+  immediately
+- a valid preview may be confirmed into authored world state
+- an invalid preview must not flood the map; it must simply show no extra preview water and remain
+  uncommitted
+- `Lake Fill` is valid only if the filled region stays off the world edge
+- `Open Water` is valid only if the filled region reaches the world edge
+- canceling the preview must restore the runtime water view to authored water only
+- saving, loading, creating a new world, or switching away from a surface-fill tool must discard
+  any active transient surface-fill preview
 
 Current compatibility behavior:
 
 - the current first slice rebuilds a preview water state from authored records immediately after
   each authored-water edit
+- the current first slice also rebuilds authored water immediately after terrain sculpting so
+  water reacts to changed basin geometry during world editing
 - this preview rebake is not yet the final large-world dynamic water runtime
 - authored sources and sinks are persisted separately even though the current preview solve uses the
   shared runtime water system underneath
@@ -446,6 +480,7 @@ Deterministic non-goals of the first water slice:
 - no automatic hydrology extraction from hydrography vectors or rasters
 - no full river-channel authoring tool yet
 - no requirement that the whole world run one dense shallow-water solve at all times
+- `Lake Fill` is not the coastline or ocean tool; use `Open Water` for edge-connected water bodies
 
 ### 4. Gameplay `New Game` Now Loads A Selected `WorldDefinition`
 
@@ -668,8 +703,10 @@ What is implemented now:
 - blank-world `WorldDefinition` exists as a separate authored-world asset
 - authored world load resets runtime state to a fresh blank city baseline
 - offline DEM import can now generate a normal `WorldDefinition` from real GeoTIFF elevation tiles
-- first authored-water tools are live in WorldEditor through `Source`, `Sink`, and `Lake Fill`
-- `WorldDefinition` now persists authored water boundary points and lake fills
+- first authored-water tools are live in WorldEditor through `Source`, `Sink`, `Lake Fill`, and
+  `Open Water`
+- `WorldDefinition` now persists authored water boundary points, inland lake fills, and
+  edge-connected open-water fills
 - save/load and renderer boundaries still use dense materialization
 
 What is next:

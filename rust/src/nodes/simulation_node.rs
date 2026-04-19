@@ -23,6 +23,11 @@
 //! | | `create_blank_world` | `world_editor.gd` |
 //! | | `save_world_definition` | `world_editor.gd` |
 //! | | `load_world_definition` | `world_editor.gd` |
+//! | | `begin_world_lake_fill_preview` | `world_editor.gd` |
+//! | | `update_world_lake_fill_preview` | `world_editor.gd` |
+//! | | `get_world_lake_fill_preview` | `world_editor.gd` |
+//! | | `commit_world_lake_fill_preview` | `world_editor.gd` |
+//! | | `cancel_world_lake_fill_preview` | `world_editor.gd` |
 //! | **Environment** | `get_pollution_image_data` | `overlay_manager.gd` |
 //! | | `get_noise_image_data` | `overlay_manager.gd` |
 //! | | `get_desirability_image_data` | `overlay_manager.gd` |
@@ -59,6 +64,9 @@ use godot::prelude::*;
 
 use crate::config;
 use crate::nodes::sim::core::{CityTreasury, RenderSnapshot, SimCommand, SimCore, run_sim_thread};
+use crate::nodes::sim::core::{
+    WorldLakeFillPreview, WorldLakeFillPreviewStatus, WorldWaterFillKind,
+};
 use crate::simulation::buildings::allocator::BuildingAllocator;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::time::TimeSystem;
@@ -176,6 +184,51 @@ impl SimulationNode {
             core.build_snapshot()
         };
         *self.snapshot.write().unwrap() = snapshot;
+    }
+
+    fn world_lake_fill_preview_dict(
+        preview: Option<WorldLakeFillPreview>,
+        ok: bool,
+        message: &str,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("ok", ok);
+        dict.set("message", GString::from(message));
+        if let Some(preview) = preview {
+            dict.set("active", true);
+            dict.set("valid", preview.is_valid());
+            dict.set("seed_world_x", f64::from(preview.seed_world_x));
+            dict.set("seed_world_z", f64::from(preview.seed_world_z));
+            dict.set("seed_height_m", f64::from(preview.seed_height_m));
+            dict.set(
+                "surface_elevation_m",
+                f64::from(preview.surface_elevation_m),
+            );
+            dict.set("filled_cells", preview.filled_cells as i64);
+            dict.set(
+                "status",
+                GString::from(match preview.status {
+                    WorldLakeFillPreviewStatus::Ready => "ready",
+                    WorldLakeFillPreviewStatus::SurfaceBelowSeedTerrain => "below_seed",
+                    WorldLakeFillPreviewStatus::EscapesWorldEdge => "edge_escape",
+                    WorldLakeFillPreviewStatus::DoesNotReachWorldEdge => "not_edge_connected",
+                }),
+            );
+            dict.set(
+                "kind",
+                GString::from(match preview.kind {
+                    WorldWaterFillKind::Lake => "lake",
+                    WorldWaterFillKind::OpenWater => "open_water",
+                }),
+            );
+        } else {
+            dict.set("active", false);
+            dict.set("valid", false);
+            dict.set("filled_cells", 0_i64);
+            dict.set("status", GString::from("inactive"));
+            dict.set("kind", GString::from("inactive"));
+        }
+        dict
     }
 }
 
@@ -1350,12 +1403,125 @@ impl SimulationNode {
         removed
     }
 
-    /// Adds or updates one authored lake fill at the clicked terrain cell.
+    /// Starts one transient authored lake-fill preview at the clicked terrain cell.
     #[func]
-    pub fn add_world_lake_fill(&mut self, pos: Vector2, surface_elevation_m: f32) -> bool {
+    pub fn begin_world_lake_fill_preview(
+        &mut self,
+        pos: Vector2,
+        surface_elevation_m: f32,
+    ) -> VarDictionary {
         let result = {
             let mut core = self.lock_core();
-            core.add_world_lake_fill_internal(pos, surface_elevation_m)
+            core.begin_world_lake_fill_preview_internal(pos, surface_elevation_m)
+        };
+        self.refresh_snapshot_from_core();
+        match result {
+            Ok(preview) => {
+                Self::world_lake_fill_preview_dict(Some(preview), true, "lake fill preview updated")
+            }
+            Err(err) => {
+                godot_error!("Begin world lake fill preview failed: {}", err);
+                Self::world_lake_fill_preview_dict(None, false, &err)
+            }
+        }
+    }
+
+    /// Starts one transient authored open-water preview at the clicked terrain cell.
+    #[func]
+    pub fn begin_world_open_water_fill_preview(
+        &mut self,
+        pos: Vector2,
+        surface_elevation_m: f32,
+    ) -> VarDictionary {
+        let result = {
+            let mut core = self.lock_core();
+            core.begin_world_open_water_fill_preview_internal(pos, surface_elevation_m)
+        };
+        self.refresh_snapshot_from_core();
+        match result {
+            Ok(preview) => {
+                Self::world_lake_fill_preview_dict(Some(preview), true, "open water preview updated")
+            }
+            Err(err) => {
+                godot_error!("Begin world open water preview failed: {}", err);
+                Self::world_lake_fill_preview_dict(None, false, &err)
+            }
+        }
+    }
+
+    /// Updates the active transient lake-fill preview surface elevation.
+    #[func]
+    pub fn update_world_lake_fill_preview(&mut self, surface_elevation_m: f32) -> VarDictionary {
+        let result = {
+            let mut core = self.lock_core();
+            core.update_world_lake_fill_preview_internal(surface_elevation_m)
+        };
+        match result {
+            Ok(preview) => {
+                self.refresh_snapshot_from_core();
+                Self::world_lake_fill_preview_dict(Some(preview), true, "lake fill preview updated")
+            }
+            Err(err) => {
+                godot_error!("Update world lake fill preview failed: {}", err);
+                let active_preview = self.lock_core().world_water_fill_preview_internal();
+                Self::world_lake_fill_preview_dict(active_preview, false, &err)
+            }
+        }
+    }
+
+    /// Updates the active transient open-water preview surface elevation.
+    #[func]
+    pub fn update_world_open_water_fill_preview(
+        &mut self,
+        surface_elevation_m: f32,
+    ) -> VarDictionary {
+        let result = {
+            let mut core = self.lock_core();
+            core.update_world_open_water_fill_preview_internal(surface_elevation_m)
+        };
+        match result {
+            Ok(preview) => {
+                self.refresh_snapshot_from_core();
+                Self::world_lake_fill_preview_dict(Some(preview), true, "open water preview updated")
+            }
+            Err(err) => {
+                godot_error!("Update world open water preview failed: {}", err);
+                let active_preview = self.lock_core().world_water_fill_preview_internal();
+                Self::world_lake_fill_preview_dict(active_preview, false, &err)
+            }
+        }
+    }
+
+    /// Returns the current transient lake-fill preview state.
+    #[func]
+    pub fn get_world_lake_fill_preview(&self) -> VarDictionary {
+        let preview = self.lock_core().world_water_fill_preview_internal();
+        let message = if preview.is_some() {
+            "surface fill preview active"
+        } else {
+            "no surface fill preview is active"
+        };
+        Self::world_lake_fill_preview_dict(preview, true, message)
+    }
+
+    /// Returns the current transient open-water preview state.
+    #[func]
+    pub fn get_world_open_water_fill_preview(&self) -> VarDictionary {
+        let preview = self.lock_core().world_water_fill_preview_internal();
+        let message = if preview.is_some() {
+            "open water preview active"
+        } else {
+            "no open water preview is active"
+        };
+        Self::world_lake_fill_preview_dict(preview, true, message)
+    }
+
+    /// Commits the active transient lake-fill preview into authored world state.
+    #[func]
+    pub fn commit_world_lake_fill_preview(&mut self) -> bool {
+        let result = {
+            let mut core = self.lock_core();
+            core.commit_world_lake_fill_preview_internal()
         };
         match result {
             Ok(()) => {
@@ -1363,10 +1529,55 @@ impl SimulationNode {
                 true
             }
             Err(err) => {
-                godot_error!("Add world lake fill failed: {}", err);
+                godot_error!("Commit world lake fill preview failed: {}", err);
                 false
             }
         }
+    }
+
+    /// Commits the active transient open-water preview into authored world state.
+    #[func]
+    pub fn commit_world_open_water_fill_preview(&mut self) -> bool {
+        let result = {
+            let mut core = self.lock_core();
+            core.commit_world_open_water_fill_preview_internal()
+        };
+        match result {
+            Ok(()) => {
+                self.refresh_snapshot_from_core();
+                true
+            }
+            Err(err) => {
+                godot_error!("Commit world open water preview failed: {}", err);
+                false
+            }
+        }
+    }
+
+    /// Cancels the active transient lake-fill preview.
+    #[func]
+    pub fn cancel_world_lake_fill_preview(&mut self) -> bool {
+        let cancelled = {
+            let mut core = self.lock_core();
+            core.cancel_world_water_fill_preview_internal()
+        };
+        if cancelled {
+            self.refresh_snapshot_from_core();
+        }
+        cancelled
+    }
+
+    /// Cancels the active transient open-water preview.
+    #[func]
+    pub fn cancel_world_open_water_fill_preview(&mut self) -> bool {
+        let cancelled = {
+            let mut core = self.lock_core();
+            core.cancel_world_water_fill_preview_internal()
+        };
+        if cancelled {
+            self.refresh_snapshot_from_core();
+        }
+        cancelled
     }
 
     /// Removes the nearest authored lake fill within the given radius.
@@ -1375,6 +1586,19 @@ impl SimulationNode {
         let removed = {
             let mut core = self.lock_core();
             core.remove_world_lake_fill_near_internal(pos, radius_m)
+        };
+        if removed {
+            self.refresh_snapshot_from_core();
+        }
+        removed
+    }
+
+    /// Removes the nearest authored open-water fill within the given radius.
+    #[func]
+    pub fn remove_world_open_water_fill_near(&mut self, pos: Vector2, radius_m: f32) -> bool {
+        let removed = {
+            let mut core = self.lock_core();
+            core.remove_world_open_water_fill_near_internal(pos, radius_m)
         };
         if removed {
             self.refresh_snapshot_from_core();
@@ -1492,6 +1716,8 @@ impl INode3D for SimulationNode {
             undo_stack: VecDeque::new(),
             world_water_boundary_points: Vec::new(),
             world_lake_fills: Vec::new(),
+            world_open_water_fills: Vec::new(),
+            world_lake_fill_preview: None,
             terrain_dirty: true,
             water_dirty: true,
             network_dirty: false,

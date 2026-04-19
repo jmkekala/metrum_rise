@@ -65,7 +65,7 @@ impl WaterSystem {
     /// 2. Depth update (Saint-Venant mass conservation)
     /// 3. Velocity magnitude calculation for rendering
     pub fn tick(&mut self, terrain: &[f32], dt: f32) {
-        if terrain.len() != self.width * self.height {
+        if terrain.len() != self.width * self.height || self.width < 3 || self.height < 3 {
             return;
         }
 
@@ -200,6 +200,9 @@ impl WaterSystem {
             .par_chunks_mut(w)
             .enumerate()
             .for_each(|(y, row_vel)| {
+                if y == 0 || y >= h - 1 {
+                    return;
+                }
                 for x in 1..w - 1 {
                     let idx = y * w + x;
                     if depth_ref_2[idx] > 0.001 {
@@ -305,4 +308,21 @@ impl WaterSystem {
 
 fn water_chunk_cells_for_config(config: &WorldConfig) -> usize {
     ((config.terrain_chunk_m / config.terrain_cell_m).ceil() as usize).max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WaterSystem;
+
+    #[test]
+    fn tick_does_not_panic_when_water_reaches_boundary_rows() {
+        let mut water = WaterSystem::with_chunking(5, 5, 10.0, 4);
+        water.update_source(2, 0, 1.0);
+        let terrain = vec![0.0; 25];
+
+        water.tick(&terrain, 0.25);
+
+        assert_eq!(water.clone_depth_dense().len(), 25);
+        assert_eq!(water.clone_velocity_dense().len(), 25);
+    }
 }

@@ -276,17 +276,23 @@ func _on_help_menu_pressed(id: int) -> void:
 					[
 						"1  Raise terrain tool",
 						"2  Lower terrain tool",
+						"3  Water source tool",
+						"4  Water sink tool",
+						"5  Lake fill tool",
+						"6  Open water tool",
 						"Left Mouse  Sculpt terrain",
+						"Lake / Open Water: click once to preview, click again to confirm",
+						"Shift+Left Mouse  Remove nearest authored water feature",
+						"Escape  Cancel surface-fill preview / clear active tool",
 						"Middle Mouse  Orbit camera",
 						"Right Mouse  Pan camera",
 						"W / A / S / D  Pan camera",
 						"Mouse Wheel  Zoom camera",
 						"Ctrl+N  New world",
 						"Ctrl+O  Open world",
-						"Ctrl+S  Save world",
-						"Escape  Clear active tool"
+						"Ctrl+S  Save world"
 					],
-					Vector2i(380, 300)
+					Vector2i(440, 360)
 				))
 				return
 			_open_window(_ensure_text_window(

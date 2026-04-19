@@ -25,6 +25,7 @@ enum Tool {
 	WATER_SOURCE,
 	WATER_SINK,
 	WATER_LAKE_FILL,
+	WATER_OPEN_WATER,
 }
 
 @onready var sim: SimulationNode = $SimulationNode
@@ -44,6 +45,7 @@ var _water_tool_panel: PanelContainer
 var _water_source_btn: Button
 var _water_sink_btn: Button
 var _water_lake_fill_btn: Button
+var _water_open_water_btn: Button
 var _water_rate_spin: SpinBox
 var _lake_offset_spin: SpinBox
 
@@ -55,6 +57,13 @@ var _new_world_cell_spin: SpinBox
 var _new_world_chunk_spin: SpinBox
 var _new_world_base_spin: SpinBox
 var _debug_enabled := false
+var _lake_preview_active := false
+var _lake_preview_seed_world_pos := Vector2.ZERO
+var _lake_preview_seed_height_m := 0.0
+var _lake_preview_surface_m := 0.0
+var _lake_preview_valid := false
+var _lake_preview_status := "inactive"
+var _lake_preview_kind := "inactive"
 
 func _ready() -> void:
 	if not sim.is_world_editor_mode():
@@ -80,6 +89,10 @@ func _process(delta: float) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_ESCAPE and _lake_preview_active:
+			_cancel_lake_fill_preview()
+			get_viewport().set_input_as_handled()
+			return
 		match event.keycode:
 			KEY_1:
 				_set_active_tool(Tool.RAISE)
@@ -91,6 +104,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_set_active_tool(Tool.WATER_SINK)
 			KEY_5:
 				_set_active_tool(Tool.WATER_LAKE_FILL)
+			KEY_6:
+				_set_active_tool(Tool.WATER_OPEN_WATER)
 			KEY_ESCAPE:
 				_set_active_tool(Tool.NONE)
 			KEY_N:
@@ -138,6 +153,7 @@ func menu_save() -> void:
 		_debug_log("save requested without existing path -> save_as")
 		menu_save_as()
 		return
+	_cancel_lake_fill_preview("", false)
 	_debug_log("save world path=%s name=%s" % [_current_world_path, _current_world_name])
 	if sim.save_world_definition(_current_world_path, _current_world_name):
 		_set_status("Saved world: %s" % _current_world_name)
@@ -228,6 +244,9 @@ func _build_ui() -> void:
 	_water_lake_fill_btn = _make_tool_button("Lake Fill", Tool.WATER_LAKE_FILL)
 	water_row.add_child(_water_lake_fill_btn)
 
+	_water_open_water_btn = _make_tool_button("Open Water", Tool.WATER_OPEN_WATER)
+	water_row.add_child(_water_open_water_btn)
+
 	var water_separator := VSeparator.new()
 	water_row.add_child(water_separator)
 
@@ -240,13 +259,14 @@ func _build_ui() -> void:
 	_water_rate_spin.custom_minimum_size = Vector2(110.0, UIStyle.HUD_BUTTON_HEIGHT)
 	water_row.add_child(_water_rate_spin)
 
-	var lake_label := Label.new()
-	lake_label.text = "Lake +m"
-	lake_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
-	water_row.add_child(lake_label)
+	var surface_label := Label.new()
+	surface_label.text = "Surface +m"
+	surface_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	water_row.add_child(surface_label)
 
 	_lake_offset_spin = _make_spin_box(0.5, 200.0, 0.5, DEFAULT_LAKE_SURFACE_OFFSET_M)
 	_lake_offset_spin.custom_minimum_size = Vector2(110.0, UIStyle.HUD_BUTTON_HEIGHT)
+	_lake_offset_spin.value_changed.connect(_on_lake_offset_changed)
 	water_row.add_child(_lake_offset_spin)
 
 	var center := CenterContainer.new()
@@ -313,6 +333,9 @@ func _toggle_water_group() -> void:
 		_set_active_tool(Tool.WATER_SOURCE)
 
 func _set_active_tool(tool: Tool) -> void:
+	var previous_tool := _active_tool
+	if _is_surface_fill_tool(previous_tool) and tool != previous_tool:
+		_cancel_lake_fill_preview("", false)
 	_active_tool = tool
 	_update_tool_buttons()
 	match _active_tool:
@@ -325,7 +348,21 @@ func _set_active_tool(tool: Tool) -> void:
 		Tool.WATER_SINK:
 			_set_status("Water sink tool active. Shift+Click removes nearest sink.")
 		Tool.WATER_LAKE_FILL:
-			_set_status("Lake fill tool active. Shift+Click removes nearest lake fill.")
+			if _lake_preview_active:
+				_set_status(
+					"Lake preview active. Adjust Surface +m, click again to confirm, Esc to cancel.",
+					not _lake_preview_valid
+				)
+			else:
+				_set_status("Lake fill tool active. Click to preview, click again to confirm, Shift+Click removes nearest lake fill.")
+		Tool.WATER_OPEN_WATER:
+			if _lake_preview_active:
+				_set_status(
+					"Open water preview active. Adjust Surface +m, click again to confirm, Esc to cancel.",
+					not _lake_preview_valid
+				)
+			else:
+				_set_status("Open water tool active. Click to preview, click again to confirm, Shift+Click removes nearest open water fill.")
 		_:
 			_set_status("No active world-authoring tool.")
 	_debug_log("active_tool=%s" % Tool.keys()[_active_tool])
@@ -343,6 +380,8 @@ func _update_tool_buttons() -> void:
 		_water_sink_btn.button_pressed = _active_tool == Tool.WATER_SINK
 	if _water_lake_fill_btn:
 		_water_lake_fill_btn.button_pressed = _active_tool == Tool.WATER_LAKE_FILL
+	if _water_open_water_btn:
+		_water_open_water_btn.button_pressed = _active_tool == Tool.WATER_OPEN_WATER
 	if _water_tool_panel:
 		_water_tool_panel.visible = _is_water_tool(_active_tool)
 
@@ -385,16 +424,44 @@ func _apply_water_tool(remove_mode: bool) -> void:
 				_set_status("Add water sink failed.", true)
 		Tool.WATER_LAKE_FILL:
 			if remove_mode:
+				if _lake_preview_active:
+					_cancel_lake_fill_preview("", false)
 				if sim.remove_world_lake_fill_near(world_pos, WATER_REMOVE_RADIUS_M):
 					_set_status("Removed nearest lake fill.")
 				else:
 					_set_status("No lake fill found nearby.", true)
 			else:
-				var surface_elevation: float = intersection.y + float(_lake_offset_spin.value)
-				if sim.add_world_lake_fill(world_pos, surface_elevation):
-					_set_status("Added lake fill.")
+				if _lake_preview_active:
+					if sim.commit_world_lake_fill_preview():
+						_clear_lake_fill_preview_state()
+						_set_status("Added lake fill.")
+					else:
+						var preview_state: Dictionary = sim.get_world_lake_fill_preview()
+						_consume_lake_fill_preview_state(preview_state, false)
 				else:
-					_set_status("Add lake fill failed.", true)
+					var surface_elevation: float = intersection.y + float(_lake_offset_spin.value)
+					var preview_state: Dictionary = sim.begin_world_lake_fill_preview(world_pos, surface_elevation)
+					_consume_lake_fill_preview_state(preview_state, true)
+		Tool.WATER_OPEN_WATER:
+			if remove_mode:
+				if _lake_preview_active:
+					_cancel_lake_fill_preview("", false)
+				if sim.remove_world_open_water_fill_near(world_pos, WATER_REMOVE_RADIUS_M):
+					_set_status("Removed nearest open water fill.")
+				else:
+					_set_status("No open water fill found nearby.", true)
+			else:
+				if _lake_preview_active:
+					if sim.commit_world_open_water_fill_preview():
+						_clear_lake_fill_preview_state()
+						_set_status("Added open water fill.")
+					else:
+						var preview_state: Dictionary = sim.get_world_open_water_fill_preview()
+						_consume_lake_fill_preview_state(preview_state, false)
+				else:
+					var surface_elevation: float = intersection.y + float(_lake_offset_spin.value)
+					var preview_state: Dictionary = sim.begin_world_open_water_fill_preview(world_pos, surface_elevation)
+					_consume_lake_fill_preview_state(preview_state, true)
 
 func _terrain_intersection_under_cursor():
 	var camera := get_viewport().get_camera_3d()
@@ -414,7 +481,11 @@ func _is_water_tool(tool: Tool) -> bool:
 		tool == Tool.WATER_SOURCE
 		or tool == Tool.WATER_SINK
 		or tool == Tool.WATER_LAKE_FILL
+		or tool == Tool.WATER_OPEN_WATER
 	)
+
+func _is_surface_fill_tool(tool: Tool) -> bool:
+	return tool == Tool.WATER_LAKE_FILL or tool == Tool.WATER_OPEN_WATER
 
 func _refresh_after_world_change(focus_camera: bool) -> void:
 	terrain.rebuild_from_simulation_state()
@@ -464,6 +535,103 @@ func _set_status(message: String, is_error: bool = false) -> void:
 		"font_color",
 		UIStyle.TEXT_ALERT if is_error else UIStyle.TEXT_PRIMARY
 	)
+
+func _on_lake_offset_changed(_value: float) -> void:
+	if not _lake_preview_active:
+		return
+	var surface_elevation := _lake_preview_seed_height_m + float(_lake_offset_spin.value)
+	var preview_state: Dictionary
+	if _lake_preview_kind == "open_water":
+		preview_state = sim.update_world_open_water_fill_preview(surface_elevation)
+	else:
+		preview_state = sim.update_world_lake_fill_preview(surface_elevation)
+	_consume_lake_fill_preview_state(preview_state, false)
+
+func _consume_lake_fill_preview_state(preview_state: Dictionary, started_preview: bool) -> void:
+	var ok := bool(preview_state.get("ok", false))
+	var active := bool(preview_state.get("active", false))
+	if not active:
+		_clear_lake_fill_preview_state()
+		_set_status(str(preview_state.get("message", "Lake fill preview unavailable.")), true)
+		return
+
+	_lake_preview_active = true
+	_lake_preview_seed_world_pos = Vector2(
+		float(preview_state.get("seed_world_x", 0.0)),
+		float(preview_state.get("seed_world_z", 0.0))
+	)
+	_lake_preview_seed_height_m = float(preview_state.get("seed_height_m", 0.0))
+	_lake_preview_surface_m = float(preview_state.get("surface_elevation_m", 0.0))
+	_lake_preview_valid = bool(preview_state.get("valid", false))
+	_lake_preview_status = str(preview_state.get("status", "inactive"))
+	_lake_preview_kind = str(preview_state.get("kind", "lake"))
+
+	if not ok:
+		_set_status(str(preview_state.get("message", "Lake fill preview failed.")), true)
+		return
+
+	if _lake_preview_valid:
+		var prefix := (
+			"Open water preview ready."
+			if _lake_preview_kind == "open_water" and started_preview
+			else "Open water preview updated."
+			if _lake_preview_kind == "open_water"
+			else "Lake preview ready."
+			if started_preview
+			else "Lake preview updated."
+		)
+		_set_status(
+			"%s Surface %.1f m over %d cells. Adjust Surface +m or click again to confirm." % [
+				prefix,
+				_lake_preview_surface_m,
+				int(preview_state.get("filled_cells", 0))
+			]
+		)
+		return
+
+	match _lake_preview_status:
+		"below_seed":
+			if _lake_preview_kind == "open_water":
+				_set_status("Open water preview is below the seed terrain. Raise Surface +m or press Esc.", true)
+			else:
+				_set_status("Lake preview is below the seed terrain. Raise Surface +m or press Esc.", true)
+		"edge_escape":
+			if _lake_preview_kind == "open_water":
+				_set_status(
+					"Open water preview unexpectedly lost edge connection at %.1f m. Adjust Surface +m or press Esc." % _lake_preview_surface_m,
+					true
+				)
+			else:
+				_set_status(
+					"Lake preview escapes the basin at %.1f m. Lower Surface +m or press Esc." % _lake_preview_surface_m,
+					true
+				)
+		"not_edge_connected":
+			_set_status(
+				"Open water preview does not reach the world edge at %.1f m. Raise Surface +m or press Esc." % _lake_preview_surface_m,
+				true
+			)
+		_:
+			_set_status(str(preview_state.get("message", "Lake fill preview is not valid.")), true)
+
+func _cancel_lake_fill_preview(status_message: String = "Cancelled surface-fill preview.", update_status: bool = true) -> void:
+	if _lake_preview_active:
+		if _lake_preview_kind == "open_water":
+			sim.cancel_world_open_water_fill_preview()
+		else:
+			sim.cancel_world_lake_fill_preview()
+	_clear_lake_fill_preview_state()
+	if update_status:
+		_set_status(status_message)
+
+func _clear_lake_fill_preview_state() -> void:
+	_lake_preview_active = false
+	_lake_preview_seed_world_pos = Vector2.ZERO
+	_lake_preview_seed_height_m = 0.0
+	_lake_preview_surface_m = 0.0
+	_lake_preview_valid = false
+	_lake_preview_status = "inactive"
+	_lake_preview_kind = "inactive"
 
 func _is_pointer_over_ui() -> bool:
 	return get_viewport().gui_get_hovered_control() != null
@@ -575,6 +743,7 @@ func _on_new_world_confirmed() -> void:
 			float(_new_world_base_spin.value)
 		]
 	)
+	_cancel_lake_fill_preview("", false)
 	if sim.create_blank_world(
 		float(_new_world_width_spin.value) * 1000.0,
 		float(_new_world_height_spin.value) * 1000.0,
@@ -605,6 +774,7 @@ func _on_save_world_selected(path: String, dialog: FileDialog) -> void:
 
 func _finish_open_world_selection(path: String) -> void:
 	_debug_log("selected world file path=%s" % path)
+	_cancel_lake_fill_preview("", false)
 	if sim.load_world_definition(path):
 		_current_world_path = path
 		_current_world_name = path.get_file().get_basename()
@@ -620,6 +790,7 @@ func _finish_save_world_selection(path: String) -> void:
 	if world_name.is_empty():
 		world_name = path.get_file().get_basename()
 	_debug_log("selected save path=%s name=%s" % [path, world_name])
+	_cancel_lake_fill_preview("", false)
 	if sim.save_world_definition(path, world_name):
 		_current_world_path = path
 		_current_world_name = world_name

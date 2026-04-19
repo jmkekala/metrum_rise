@@ -63,6 +63,8 @@ impl SimCore {
         self.undo_stack.clear();
         self.world_water_boundary_points.clear();
         self.world_lake_fills.clear();
+        self.world_open_water_fills.clear();
+        self.world_lake_fill_preview = None;
         self.terrain_dirty = true;
         self.water_dirty = true;
     }

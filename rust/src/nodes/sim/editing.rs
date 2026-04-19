@@ -26,6 +26,11 @@ impl SimCore {
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
         self.flatten_terrain_for_roads_internal();
+        if self.has_authored_water_internal() {
+            if let Err(err) = self.rebuild_authored_water_preview_internal() {
+                debug_log!("world-editor", "rebuild_authored_water_after_sculpt failed: {}", err);
+            }
+        }
     }
 
     /// Adds water to the simulation at a given grid position.
@@ -653,6 +658,8 @@ mod tests {
             undo_stack: VecDeque::new(),
             world_water_boundary_points: Vec::new(),
             world_lake_fills: Vec::new(),
+            world_open_water_fills: Vec::new(),
+            world_lake_fill_preview: None,
             terrain_dirty: false,
             water_dirty: false,
             network_dirty: false,

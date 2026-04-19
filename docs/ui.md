@@ -164,6 +164,7 @@ WorldEditor toolbar rules:
   - `Source`
   - `Sink`
   - `Lake Fill`
+  - `Open Water`
 - these water tools are world-editor authoring tools, not gameplay HUD tools
 - water tools must not be exposed as top-menu actions
 - world-editor water authoring must not begin with a freehand water-depth paint brush
@@ -179,8 +180,19 @@ WorldEditor water toolbar behavior:
 - `Source` places authored inflow points
 - `Sink` places authored outflow points
 - `Lake Fill` authors one basin seed plus one target surface level
+- `Open Water` authors one edge-connected water seed plus one target surface level
 - water authoring belongs on the same bottom-strip workflow as terrain sculpting so authors can
   switch between carving terrain and placing hydrology without changing editor shells
+- `Lake Fill` and `Open Water` are two-phase actions:
+  - first click starts a transient preview
+  - the `Surface +m` control adjusts the preview surface
+  - second click confirms the preview into authored world state
+- surface-fill preview is editor-only transient state and is not saved unless confirmed
+- invalid surface-fill preview levels must not flood the visible map; they stay preview-only and
+  uncommitted until the author adjusts the level or cancels
+- `Lake Fill` is only for closed inland basins
+- `Open Water` is only for edge-connected water bodies such as coasts, archipelagos, and world-edge
+  lakes
 
 Current WorldEditor shortcuts:
 
@@ -191,7 +203,8 @@ Current WorldEditor shortcuts:
 | 3 | Select `Water Source` |
 | 4 | Select `Water Sink` |
 | 5 | Select `Lake Fill` |
-| Left Mouse | Sculpt terrain with the active tool |
+| 6 | Select `Open Water` |
+| Left Mouse | Sculpt terrain with the active tool; surface-fill tools use first click for preview and second click for confirm |
 | Shift+Left Mouse | Remove the nearest authored water feature for the active water tool |
 | Middle Mouse | Orbit camera |
 | Right Mouse | Pan camera |
@@ -201,7 +214,7 @@ Current WorldEditor shortcuts:
 | Ctrl+O | Open world |
 | Ctrl+S | Save world |
 | Ctrl+Shift+S | Save world as |
-| Escape | Clear active tool |
+| Escape | Cancel active surface-fill preview, otherwise clear active tool |
 
 **Keyboard shortcuts** (owned by `input_manager.gd`, toolbar reflects active tool visually):
 

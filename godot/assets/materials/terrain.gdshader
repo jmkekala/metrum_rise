@@ -6,6 +6,14 @@ uniform sampler2D parcel_texture;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
 uniform vec2 mesh_size = vec2(256.0, 256.0);
+uniform float contour_minor_interval_m = 10.0;
+uniform float contour_major_interval_m = 50.0;
+uniform float contour_minor_thickness = 1.0;
+uniform float contour_major_thickness = 1.4;
+uniform vec3 contour_minor_color : source_color = vec3(0.17, 0.24, 0.20);
+uniform vec3 contour_major_color : source_color = vec3(0.10, 0.16, 0.14);
+uniform float contour_minor_strength = 0.18;
+uniform float contour_major_strength = 0.40;
 
 varying float h;
 varying vec2 var_centered_uv;
@@ -30,6 +38,14 @@ vec3 terrain_color_from_height(float world_elevation) {
 	return color;
 }
 
+float contour_mask(float world_elevation, float interval_m, float thickness) {
+	float safe_interval = max(interval_m, 0.001);
+	float scaled = world_elevation / safe_interval;
+	float dist_to_line = abs(fract(scaled + 0.5) - 0.5);
+	float aa_width = max(fwidth(scaled) * thickness, 0.0001);
+	return 1.0 - smoothstep(0.0, aa_width, dist_to_line);
+}
+
 void vertex() {
 // ...
 
@@ -52,6 +68,19 @@ void fragment() {
 			color = mix(color, heatmap_col.rgb, 0.6);
 		}
 	}
+
+	float major_contour = contour_mask(
+		world_elevation,
+		contour_major_interval_m,
+		contour_major_thickness
+	);
+	float minor_contour = contour_mask(
+		world_elevation,
+		contour_minor_interval_m,
+		contour_minor_thickness
+	) * (1.0 - major_contour);
+	color = mix(color, contour_minor_color, minor_contour * contour_minor_strength);
+	color = mix(color, contour_major_color, major_contour * contour_major_strength);
 	
 	ALBEDO = color;
 }

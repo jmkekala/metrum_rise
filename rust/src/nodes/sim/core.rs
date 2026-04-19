@@ -28,7 +28,9 @@ use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
-use crate::simulation::world_definition::{AuthoredLakeFill, AuthoredWaterBoundaryPoint};
+use crate::simulation::world_definition::{
+    AuthoredLakeFill, AuthoredOpenWaterFill, AuthoredWaterBoundaryPoint,
+};
 
 fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
     let building_id = if egress {
@@ -93,6 +95,58 @@ impl CityTreasury {
     }
 }
 
+/// Validation state for one transient world-editor lake-fill preview.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorldLakeFillPreviewStatus {
+    /// The preview covers a closed basin and can be committed.
+    Ready,
+    /// The chosen surface is at or below the seed terrain height.
+    SurfaceBelowSeedTerrain,
+    /// The chosen surface spills out of the basin and reaches the world edge.
+    EscapesWorldEdge,
+    /// The chosen open-water surface does not connect to the world edge.
+    DoesNotReachWorldEdge,
+}
+
+/// Preview feature kind for world-editor surface fills.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorldWaterFillKind {
+    /// Closed inland basin fill.
+    Lake,
+    /// Edge-connected open-water fill.
+    OpenWater,
+}
+
+/// Transient lake-fill preview state owned by the world editor runtime.
+///
+/// This state is never serialized into `WorldDefinition`. It exists only so the
+/// editor can show live water feedback while the author adjusts the target
+/// surface elevation before confirming the lake fill.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WorldLakeFillPreview {
+    /// Preview feature kind.
+    pub kind: WorldWaterFillKind,
+    /// Snapped seed X coordinate in world metres.
+    pub seed_world_x: f32,
+    /// Snapped seed Z coordinate in world metres.
+    pub seed_world_z: f32,
+    /// Seed terrain height in rendered world metres.
+    pub seed_height_m: f32,
+    /// Preview surface elevation in rendered world metres.
+    pub surface_elevation_m: f32,
+    /// Preview validation outcome.
+    pub status: WorldLakeFillPreviewStatus,
+    /// Number of filled terrain cells in the preview flood.
+    pub filled_cells: usize,
+}
+
+impl WorldLakeFillPreview {
+    /// Returns `true` when the preview is valid and may be committed.
+    pub(crate) fn is_valid(self) -> bool {
+        self.status == WorldLakeFillPreviewStatus::Ready
+    }
+}
+
 /// A snapshot of simulation state for undo history.
 pub struct SimulationSnapshot {
     /// Terrain heightmap data.
@@ -148,6 +202,10 @@ pub struct SimCore {
     pub(crate) world_water_boundary_points: Vec<AuthoredWaterBoundaryPoint>,
     /// Authored-world lake fill records when editing or playing from a `WorldDefinition`.
     pub(crate) world_lake_fills: Vec<AuthoredLakeFill>,
+    /// Authored-world edge-connected open-water fills when editing or playing from a `WorldDefinition`.
+    pub(crate) world_open_water_fills: Vec<AuthoredOpenWaterFill>,
+    /// Transient world-editor lake-fill preview. Never saved into `WorldDefinition`.
+    pub(crate) world_lake_fill_preview: Option<WorldLakeFillPreview>,
     /// Set by terrain mutations; cleared by the Godot render layer.
     pub terrain_dirty: bool,
     /// Set by water mutations; cleared by the Godot render layer.

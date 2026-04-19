@@ -16,8 +16,9 @@ void vertex() {
 	w = texture(watermap, UV).r;
 	v = texture(velocity_map, UV).r;
 	
-	// Displacement: Offset vertically by terrain height + small bias
-	VERTEX.y += (h + w) * height_scale + 0.05;
+	// Terrain samples are still in pre-scaled storage units, but water depth is
+	// already world-space metres. Only the terrain sample should use height_scale.
+	VERTEX.y += h * height_scale + w + 0.05;
 }
 
 void fragment() {
