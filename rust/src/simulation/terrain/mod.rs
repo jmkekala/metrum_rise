@@ -330,6 +330,76 @@ impl TerrainSystem {
         }
     }
 
+    /// Moves terrain toward a clamped linear grade defined by two clicked anchor points.
+    ///
+    /// The target height for each touched sample is the linear interpolation between the two
+    /// anchor heights, projected onto the anchor segment and clamped to the segment endpoints.
+    pub fn slope_to_segment(
+        &mut self,
+        center_x: f32,
+        center_y: f32,
+        radius: f32,
+        start_x: f32,
+        start_y: f32,
+        start_height: f32,
+        end_x: f32,
+        end_y: f32,
+        end_height: f32,
+        strength: f32,
+    ) {
+        let seg_x = end_x - start_x;
+        let seg_y = end_y - start_y;
+        let seg_len_sq = seg_x * seg_x + seg_y * seg_y;
+        if seg_len_sq <= f32::EPSILON {
+            self.level_to_height(center_x, center_y, radius, start_height, strength);
+            return;
+        }
+
+        let r_int = radius.ceil() as i32;
+        let cx_int = center_x as i32;
+        let cy_int = center_y as i32;
+
+        for y in (cy_int - r_int)..=(cy_int + r_int) {
+            for x in (cx_int - r_int)..=(cx_int + r_int) {
+                if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
+                    continue;
+                }
+
+                let dx = x as f32 - center_x;
+                let dy = y as f32 - center_y;
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq > radius * radius {
+                    continue;
+                }
+
+                let dist = dist_sq.sqrt();
+                let normalized_dist = dist / radius;
+                let falloff = (1.0 + (normalized_dist * std::f32::consts::PI).cos()) * 0.5;
+                let max_step = strength * falloff;
+
+                let sample_x = x as f32;
+                let sample_y = y as f32;
+                let along_t = (((sample_x - start_x) * seg_x + (sample_y - start_y) * seg_y)
+                    / seg_len_sq)
+                    .clamp(0.0, 1.0);
+                let target_height = start_height + (end_height - start_height) * along_t;
+
+                let ux = x as usize;
+                let uy = y as usize;
+                let current_h = self.source_data.get(ux, uy);
+                let delta = target_height - current_h;
+                let next_h = if delta.abs() <= max_step {
+                    target_height
+                } else {
+                    current_h + delta.signum() * max_step
+                };
+
+                self.source_data.set(ux, uy, next_h);
+                self.data.set(ux, uy, next_h);
+            }
+        }
+    }
+
     /// Synchronizes the visual data buffer with the source data.
     pub fn reset_visuals_from_source(&mut self) {
         self.data = self.source_data.clone();
@@ -496,5 +566,29 @@ mod tests {
         assert!((terrain.get_height(5, 4) - 0.5).abs() < 0.0001);
         assert!((terrain.get_height(4, 5) - 0.5).abs() < 0.0001);
         assert!((terrain.get_height(0, 0) - 0.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn slope_brush_moves_samples_toward_segment_grade_and_clamps_to_endpoints() {
+        let mut terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0);
+
+        terrain.slope_to_segment(4.0, 4.0, 3.0, 2.0, 4.0, 2.0, 6.0, 4.0, 6.0, 1.0);
+
+        assert!((terrain.get_height(4, 4) - 1.0).abs() < 0.0001);
+        assert!((terrain.get_height(2, 4) - 0.25).abs() < 0.0001);
+        assert!((terrain.get_height(3, 4) - 0.75).abs() < 0.0001);
+        assert!((terrain.get_height(6, 4) - 0.25).abs() < 0.0001);
+
+        for _ in 0..30 {
+            terrain.slope_to_segment(4.0, 4.0, 3.0, 2.0, 4.0, 2.0, 6.0, 4.0, 6.0, 1.0);
+        }
+
+        assert!((terrain.get_height(2, 4) - 2.0).abs() < 0.0001);
+        assert!((terrain.get_height(3, 4) - 3.0).abs() < 0.0001);
+        assert!((terrain.get_height(4, 4) - 4.0).abs() < 0.0001);
+        assert!((terrain.get_height(5, 4) - 5.0).abs() < 0.0001);
+        assert!((terrain.get_height(6, 4) - 6.0).abs() < 0.0001);
+        assert!((terrain.get_height(1, 4) - 0.0).abs() < 0.0001);
+        assert!((terrain.get_height(7, 4) - 0.0).abs() < 0.0001);
     }
 }

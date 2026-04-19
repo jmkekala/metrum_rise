@@ -441,11 +441,17 @@ Current deterministic rules:
   - `Lower`
   - `Level`
   - `Smooth`
-- selecting `Raise`, `Lower`, `Level`, or `Smooth` opens a terrain brush submenu on the bottom toolbar
+  - `Slope`
+- selecting `Raise`, `Lower`, `Level`, `Smooth`, or `Slope` opens a terrain brush submenu on the bottom toolbar
 - that terrain brush submenu owns the shared editor `Diameter m` and `Strength` controls
 - active terrain brushes show their footprint directly on the terrain so brush diameter is visible before and during sculpting
 - `Level` captures the clicked rendered terrain height at the start of the brush stroke and moves terrain toward that height while the stroke remains active
 - `Smooth` moves terrain toward the local neighborhood average inside the brush footprint and is intended for relaxing jagged cuts, banks, and shorelines after carving
+- `Slope` is a two-phase terrain brush:
+  - first click captures the slope start anchor and its rendered terrain height
+  - second click captures the slope end anchor and its rendered terrain height
+  - after both anchors exist, brushing moves terrain toward the clamped linear grade between those two anchor heights
+- `Slope` must not extrapolate beyond the two captured anchors; samples before the first anchor clamp to the start height and samples beyond the second anchor clamp to the end height
 - world editor save/load is `WorldDefinition` only, not city-save persistence
 
 Current compatibility gap:

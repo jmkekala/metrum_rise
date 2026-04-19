@@ -123,6 +123,41 @@ impl SimCore {
         self.finish_terrain_authoring_edit_internal();
     }
 
+    /// Moves terrain toward a slope defined by two clicked world-space anchor points.
+    pub fn slope_terrain_internal(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        start_world: Vector2,
+        start_height_m: f32,
+        end_world: Vector2,
+        end_height_m: f32,
+        strength: f32,
+    ) {
+        self.push_undo_state(true, false, true, false);
+        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
+        let (start_x, start_y) = self
+            .heightmap
+            .world_to_grid_coords(start_world.x, start_world.y);
+        let (end_x, end_y) = self
+            .heightmap
+            .world_to_grid_coords(end_world.x, end_world.y);
+        let radius_cells = radius / self.config.terrain_cell_m;
+        self.heightmap.slope_to_segment(
+            center_x,
+            center_y,
+            radius_cells,
+            start_x,
+            start_y,
+            start_height_m / config::HEIGHT_SCALE,
+            end_x,
+            end_y,
+            end_height_m / config::HEIGHT_SCALE,
+            strength,
+        );
+        self.finish_terrain_authoring_edit_internal();
+    }
+
     /// Applies one batched terrain-level step without running deferred rebuild work yet.
     pub fn level_terrain_stroke_step_internal(
         &mut self,
@@ -156,6 +191,41 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .smooth(center_x, center_y, radius_cells, strength);
+        self.terrain_dirty = true;
+    }
+
+    /// Applies one batched terrain-slope step without running deferred rebuild work yet.
+    pub fn slope_terrain_stroke_step_internal(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        start_world: Vector2,
+        start_height_m: f32,
+        end_world: Vector2,
+        end_height_m: f32,
+        strength: f32,
+    ) {
+        self.prepare_batched_terrain_edit_internal();
+        let (center_x, center_y) = self.heightmap.world_to_grid_coords(pos.x, pos.y);
+        let (start_x, start_y) = self
+            .heightmap
+            .world_to_grid_coords(start_world.x, start_world.y);
+        let (end_x, end_y) = self
+            .heightmap
+            .world_to_grid_coords(end_world.x, end_world.y);
+        let radius_cells = radius / self.config.terrain_cell_m;
+        self.heightmap.slope_to_segment(
+            center_x,
+            center_y,
+            radius_cells,
+            start_x,
+            start_y,
+            start_height_m / config::HEIGHT_SCALE,
+            end_x,
+            end_y,
+            end_height_m / config::HEIGHT_SCALE,
+            strength,
+        );
         self.terrain_dirty = true;
     }
 

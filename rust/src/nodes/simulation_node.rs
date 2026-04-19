@@ -33,6 +33,7 @@
 //! | | `get_desirability_image_data` | `overlay_manager.gd` |
 //! | **Terrain** | `sculpt_terrain` | `terrain_tool.gd` |
 //! | | `smooth_terrain` | `world_editor.gd` |
+//! | | `slope_terrain` | `world_editor.gd` |
 //! | | `is_terrain_dirty` | `terrain_renderer.gd` |
 //! | | `clear_terrain_dirty` | `terrain_renderer.gd` |
 //! | | `get_heightmap_data` | `terrain_renderer.gd` |
@@ -381,6 +382,57 @@ impl SimulationNode {
     pub fn smooth_terrain_stroke_step(&mut self, pos: Vector2, radius: f32, strength: f32) {
         self.lock_core()
             .smooth_terrain_stroke_step_internal(pos, radius, strength);
+        self.snapshot.write().unwrap().terrain_dirty = true;
+    }
+
+    /// Moves terrain toward a slope defined by two clicked rendered anchor points.
+    #[func]
+    pub fn slope_terrain(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        start_world: Vector2,
+        start_height_m: f32,
+        end_world: Vector2,
+        end_height_m: f32,
+        strength: f32,
+    ) {
+        self.lock_core().slope_terrain_internal(
+            pos,
+            radius,
+            start_world,
+            start_height_m,
+            end_world,
+            end_height_m,
+            strength,
+        );
+        let mut snapshot = self.snapshot.write().unwrap();
+        snapshot.terrain_dirty = true;
+        snapshot.water_dirty = true;
+        snapshot.network_dirty = true;
+    }
+
+    /// Applies one batched terrain-slope step during an active editor stroke.
+    #[func]
+    pub fn slope_terrain_stroke_step(
+        &mut self,
+        pos: Vector2,
+        radius: f32,
+        start_world: Vector2,
+        start_height_m: f32,
+        end_world: Vector2,
+        end_height_m: f32,
+        strength: f32,
+    ) {
+        self.lock_core().slope_terrain_stroke_step_internal(
+            pos,
+            radius,
+            start_world,
+            start_height_m,
+            end_world,
+            end_height_m,
+            strength,
+        );
         self.snapshot.write().unwrap().terrain_dirty = true;
     }
 

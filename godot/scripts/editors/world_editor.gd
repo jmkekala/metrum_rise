@@ -37,6 +37,14 @@ const WATER_SINK_MARKER_COLOR := Color(1.0, 0.56, 0.36, 0.95)
 const WATER_LAKE_MARKER_COLOR := Color(0.34, 0.80, 0.92, 0.88)
 const WATER_OPEN_WATER_MARKER_COLOR := Color(0.18, 0.48, 0.92, 0.88)
 const WATER_PREVIEW_MARKER_COLOR := Color(0.92, 0.97, 1.0, 0.92)
+const SLOPE_GUIDE_START_COLOR := Color(0.98, 0.82, 0.34, 0.96)
+const SLOPE_GUIDE_END_COLOR := Color(0.34, 0.90, 1.0, 0.96)
+const SLOPE_GUIDE_LINE_COLOR := Color(0.90, 0.95, 1.0, 0.82)
+const SLOPE_GUIDE_MARKER_RADIUS_M := 1.6
+const SLOPE_GUIDE_STEM_HEIGHT_M := 6.0
+const SLOPE_GUIDE_STEM_RADIUS_M := 0.20
+const SLOPE_GUIDE_LINE_THICKNESS_M := 0.30
+const SLOPE_MIN_ANCHOR_DISTANCE_M := 1.0
 const BRUSH_PREVIEW_SHADER := """
 shader_type spatial;
 render_mode unshaded, cull_disabled;
@@ -66,6 +74,7 @@ enum Tool {
 	LOWER,
 	LEVEL,
 	SMOOTH,
+	SLOPE,
 	WATER_SOURCE,
 	WATER_SINK,
 	WATER_LAKE_FILL,
@@ -86,6 +95,7 @@ var _raise_btn: Button
 var _lower_btn: Button
 var _level_btn: Button
 var _smooth_btn: Button
+var _slope_btn: Button
 var _terrain_tool_panel: PanelContainer
 var _terrain_tool_title: Label
 var _brush_diameter_spin: SpinBox
@@ -112,10 +122,15 @@ var _debug_enabled := false
 var _brush_preview: MeshInstance3D
 var _brush_preview_material: ShaderMaterial
 var _water_marker_root: Node3D
+var _slope_guide_root: Node3D
 var _sculpt_stroke_active := false
 var _live_sculpt_refresh_timer := 0.0
 var _live_sculpt_visual_pending := false
 var _level_target_height_m := 0.0
+var _slope_start_world_pos := Vector3.ZERO
+var _slope_end_world_pos := Vector3.ZERO
+var _slope_has_start := false
+var _slope_has_end := false
 var _lake_preview_active := false
 var _lake_preview_seed_world_pos := Vector2.ZERO
 var _lake_preview_seed_height_m := 0.0
@@ -134,6 +149,7 @@ func _ready() -> void:
 	_build_ui()
 	_ensure_brush_preview()
 	_ensure_water_marker_root()
+	_ensure_slope_guide_root()
 	_refresh_after_world_change(true)
 	_update_tool_buttons()
 	_set_status("Terrain world ready.")
@@ -194,12 +210,14 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_4:
 				_set_active_tool(Tool.SMOOTH)
 			KEY_5:
-				_set_active_tool(Tool.WATER_SOURCE)
+				_set_active_tool(Tool.SLOPE)
 			KEY_6:
-				_set_active_tool(Tool.WATER_SINK)
+				_set_active_tool(Tool.WATER_SOURCE)
 			KEY_7:
-				_set_active_tool(Tool.WATER_LAKE_FILL)
+				_set_active_tool(Tool.WATER_SINK)
 			KEY_8:
+				_set_active_tool(Tool.WATER_LAKE_FILL)
+			KEY_9:
 				_set_active_tool(Tool.WATER_OPEN_WATER)
 			KEY_ESCAPE:
 				_set_active_tool(Tool.NONE)
@@ -220,6 +238,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			if _is_sculpt_tool(_active_tool):
 				if event.pressed:
 					if _ui_captures_world_pointer_input():
+						return
+					if _active_tool == Tool.SLOPE and not _slope_profile_ready():
+						_capture_slope_anchor()
+						get_viewport().set_input_as_handled()
 						return
 					_begin_sculpt_stroke()
 					if _sculpt_stroke_active:
@@ -484,6 +506,9 @@ func _build_ui() -> void:
 	_smooth_btn = _make_tool_button("Smooth", Tool.SMOOTH)
 	row.add_child(_smooth_btn)
 
+	_slope_btn = _make_tool_button("Slope", Tool.SLOPE)
+	row.add_child(_slope_btn)
+
 	var water_group_separator := VSeparator.new()
 	row.add_child(water_group_separator)
 
@@ -529,6 +554,8 @@ func _set_active_tool(tool: Tool) -> void:
 	var previous_tool := _active_tool
 	if _is_sculpt_tool(previous_tool) and tool != previous_tool:
 		_end_sculpt_stroke()
+	if previous_tool == Tool.SLOPE and tool != previous_tool:
+		_clear_slope_profile(false)
 	if _is_surface_fill_tool(previous_tool) and tool != previous_tool:
 		_cancel_lake_fill_preview("", false)
 	_active_tool = tool
@@ -542,6 +569,13 @@ func _set_active_tool(tool: Tool) -> void:
 			_set_status("Level terrain tool active. Click-drag to level toward the clicked height.")
 		Tool.SMOOTH:
 			_set_status("Smooth terrain tool active. Click-drag to relax terrain toward the local average.")
+		Tool.SLOPE:
+			if _slope_profile_ready():
+				_set_status("Slope tool active. Brush to apply the captured grade.")
+			elif _slope_has_start:
+				_set_status("Slope start captured. Click second point to define the slope.")
+			else:
+				_set_status("Slope tool active. Click first point, then second point, then brush the slope.")
 		Tool.WATER_SOURCE:
 			_set_status("Water source tool active. Shift+Click removes nearest source.")
 		Tool.WATER_SINK:
@@ -575,6 +609,8 @@ func _update_tool_buttons() -> void:
 		_level_btn.button_pressed = _active_tool == Tool.LEVEL
 	if _smooth_btn:
 		_smooth_btn.button_pressed = _active_tool == Tool.SMOOTH
+	if _slope_btn:
+		_slope_btn.button_pressed = _active_tool == Tool.SLOPE
 	if _terrain_tool_panel:
 		_terrain_tool_panel.visible = _is_sculpt_tool(_active_tool)
 	if _terrain_tool_title:
@@ -587,6 +623,8 @@ func _update_tool_buttons() -> void:
 				_terrain_tool_title.text = "Level Brush"
 			Tool.SMOOTH:
 				_terrain_tool_title.text = "Smooth Brush"
+			Tool.SLOPE:
+				_terrain_tool_title.text = "Slope Brush"
 			_:
 				_terrain_tool_title.text = "Terrain Brush"
 	if _water_group_btn:
@@ -601,11 +639,16 @@ func _update_tool_buttons() -> void:
 		_water_open_water_btn.button_pressed = _active_tool == Tool.WATER_OPEN_WATER
 	if _water_tool_panel:
 		_water_tool_panel.visible = _is_water_tool(_active_tool)
+	if _slope_guide_root:
+		_slope_guide_root.visible = _active_tool == Tool.SLOPE and (_slope_has_start or _slope_has_end)
 	_update_preview_action_buttons()
 
 func _apply_sculpt(delta: float) -> void:
 	var intersection = _terrain_intersection_under_cursor()
 	if intersection == null:
+		return
+
+	if _active_tool == Tool.SLOPE and not _slope_profile_ready():
 		return
 
 	var radius := _brush_radius_m()
@@ -624,6 +667,16 @@ func _apply_sculpt(delta: float) -> void:
 			)
 		Tool.SMOOTH:
 			sim.smooth_terrain_stroke_step(Vector2(intersection.x, intersection.z), radius, strength)
+		Tool.SLOPE:
+			sim.slope_terrain_stroke_step(
+				Vector2(intersection.x, intersection.z),
+				radius,
+				Vector2(_slope_start_world_pos.x, _slope_start_world_pos.z),
+				_slope_start_world_pos.y,
+				Vector2(_slope_end_world_pos.x, _slope_end_world_pos.z),
+				_slope_end_world_pos.y,
+				strength
+			)
 	_live_sculpt_visual_pending = true
 
 func _begin_sculpt_stroke() -> void:
@@ -735,7 +788,13 @@ func _terrain_intersection_under_cursor():
 	return sim.intersect_terrain(ray_origin, ray_dir)
 
 func _is_sculpt_tool(tool: Tool) -> bool:
-	return tool == Tool.RAISE or tool == Tool.LOWER or tool == Tool.LEVEL or tool == Tool.SMOOTH
+	return (
+		tool == Tool.RAISE
+		or tool == Tool.LOWER
+		or tool == Tool.LEVEL
+		or tool == Tool.SMOOTH
+		or tool == Tool.SLOPE
+	)
 
 func _is_water_tool(tool: Tool) -> bool:
 	return (
@@ -749,6 +808,7 @@ func _is_surface_fill_tool(tool: Tool) -> bool:
 	return tool == Tool.WATER_LAKE_FILL or tool == Tool.WATER_OPEN_WATER
 
 func _refresh_after_world_change(focus_camera: bool) -> void:
+	_clear_slope_profile(false)
 	terrain.rebuild_from_simulation_state()
 	water.rebuild_from_simulation_state()
 	_refresh_water_markers()
@@ -1166,10 +1226,132 @@ func _make_water_marker_material(color: Color, alpha: float, emission_energy: fl
 	material.emission_energy_multiplier = emission_energy
 	return material
 
+func _slope_profile_ready() -> bool:
+	return _slope_has_start and _slope_has_end
+
+func _capture_slope_anchor() -> void:
+	var intersection = _terrain_intersection_under_cursor()
+	if intersection == null:
+		return
+
+	var world_pos := Vector3(intersection.x, intersection.y, intersection.z)
+	if not _slope_has_start:
+		_slope_start_world_pos = world_pos
+		_slope_end_world_pos = Vector3.ZERO
+		_slope_has_start = true
+		_slope_has_end = false
+		_refresh_slope_guide()
+		_set_status("Slope start captured at %.1f m. Click the end point." % world_pos.y)
+		return
+
+	if world_pos.distance_to(_slope_start_world_pos) < SLOPE_MIN_ANCHOR_DISTANCE_M:
+		_set_status("Slope end point is too close to the start point.", true)
+		return
+
+	_slope_end_world_pos = world_pos
+	_slope_has_end = true
+	_refresh_slope_guide()
+	_set_status(
+		"Slope ready from %.1f m to %.1f m. Brush to apply the grade." % [
+			_slope_start_world_pos.y,
+			_slope_end_world_pos.y
+		]
+	)
+
+func _clear_slope_profile(update_status: bool = true) -> void:
+	_slope_has_start = false
+	_slope_has_end = false
+	_slope_start_world_pos = Vector3.ZERO
+	_slope_end_world_pos = Vector3.ZERO
+	_refresh_slope_guide()
+	if update_status and _active_tool == Tool.SLOPE:
+		_set_status("Slope tool active. Click first point, then second point, then brush the slope.")
+
+func _ensure_slope_guide_root() -> void:
+	if _slope_guide_root:
+		return
+	_slope_guide_root = Node3D.new()
+	_slope_guide_root.name = "SlopeGuide"
+	add_child(_slope_guide_root)
+
+func _refresh_slope_guide() -> void:
+	_ensure_slope_guide_root()
+	for child in _slope_guide_root.get_children():
+		child.free()
+
+	if not _slope_has_start:
+		_slope_guide_root.visible = false
+		return
+
+	var start_tip := _add_slope_guide_marker(_slope_start_world_pos, SLOPE_GUIDE_START_COLOR)
+	if _slope_has_end:
+		var end_tip := _add_slope_guide_marker(_slope_end_world_pos, SLOPE_GUIDE_END_COLOR)
+		_add_slope_guide_line(start_tip, end_tip)
+
+	_slope_guide_root.visible = _active_tool == Tool.SLOPE
+
+func _add_slope_guide_marker(world_pos: Vector3, color: Color) -> Vector3:
+	var root := Node3D.new()
+	root.position = world_pos
+	_slope_guide_root.add_child(root)
+
+	var stem := MeshInstance3D.new()
+	stem.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var stem_mesh := CylinderMesh.new()
+	stem_mesh.top_radius = SLOPE_GUIDE_STEM_RADIUS_M
+	stem_mesh.bottom_radius = SLOPE_GUIDE_STEM_RADIUS_M
+	stem_mesh.height = SLOPE_GUIDE_STEM_HEIGHT_M
+	stem.mesh = stem_mesh
+	stem.position = Vector3(0.0, SLOPE_GUIDE_STEM_HEIGHT_M * 0.5, 0.0)
+	stem.material_override = _make_water_marker_material(color.darkened(0.12), 0.98, 2.4)
+	root.add_child(stem)
+
+	var cap := MeshInstance3D.new()
+	cap.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var cap_mesh := SphereMesh.new()
+	cap_mesh.radius = SLOPE_GUIDE_MARKER_RADIUS_M
+	cap_mesh.height = SLOPE_GUIDE_MARKER_RADIUS_M * 2.0
+	cap.mesh = cap_mesh
+	cap.position = Vector3(0.0, SLOPE_GUIDE_STEM_HEIGHT_M, 0.0)
+	cap.material_override = _make_water_marker_material(color, 1.0, 3.6)
+	root.add_child(cap)
+
+	return world_pos + Vector3.UP * SLOPE_GUIDE_STEM_HEIGHT_M
+
+func _add_slope_guide_line(start_tip: Vector3, end_tip: Vector3) -> void:
+	var delta := end_tip - start_tip
+	var length := delta.length()
+	if length <= 0.001:
+		return
+
+	var direction := delta / length
+	var reference := Vector3.UP if absf(direction.dot(Vector3.UP)) < 0.98 else Vector3.FORWARD
+	var x_axis := reference.cross(direction).normalized()
+	var z_axis := direction.cross(x_axis).normalized()
+
+	var line := MeshInstance3D.new()
+	line.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var line_mesh := BoxMesh.new()
+	line_mesh.size = Vector3(
+		SLOPE_GUIDE_LINE_THICKNESS_M,
+		length,
+		SLOPE_GUIDE_LINE_THICKNESS_M
+	)
+	line.mesh = line_mesh
+	line.material_override = _make_water_marker_material(SLOPE_GUIDE_LINE_COLOR, 0.82, 2.0)
+	line.transform = Transform3D(
+		Basis(x_axis, direction, z_axis),
+		start_tip.lerp(end_tip, 0.5)
+	)
+	_slope_guide_root.add_child(line)
+
 func _update_brush_preview() -> void:
 	if not _brush_preview:
 		return
 	if not _is_sculpt_tool(_active_tool) or _ui_captures_world_pointer_input():
+		_brush_preview.visible = false
+		return
+	if _active_tool == Tool.SLOPE and not _slope_profile_ready():
 		_brush_preview.visible = false
 		return
 	var intersection = _terrain_intersection_under_cursor()
@@ -1196,6 +1378,9 @@ func _update_brush_preview() -> void:
 		Tool.SMOOTH:
 			fill_color = Color(0.18, 0.44, 0.56, 0.10)
 			ring_color = Color(0.72, 0.94, 1.0, 0.88)
+		Tool.SLOPE:
+			fill_color = Color(0.52, 0.42, 0.18, 0.12)
+			ring_color = Color(1.0, 0.94, 0.70, 0.90)
 
 	_brush_preview_material.set_shader_parameter("fill_color", fill_color)
 	_brush_preview_material.set_shader_parameter("ring_color", ring_color)
