@@ -386,19 +386,66 @@ Current compatibility gap:
 - the shared runtime bundle still contains gameplay systems; world editor simply leaves the
   simulation paused for terrain-only v1
 
-### 3. Water Is The First Follow-Up Authoring Slice
+### 3. The First Authored-Water Slice Is Live
 
-WorldEditor v1 intentionally stops at terrain authoring.
+WorldEditor no longer stops at terrain-only authoring.
 
-Required direction:
+Current deterministic rules:
 
-- add water authoring to the existing bottom toolbar surface
-- keep water ownership authored and deterministic
-- do not mix hydrology authoring into gameplay save/load UI
+- water authoring lives on the existing world-editor bottom toolbar surface
+- authored water ownership remains separate from gameplay save/load UI
+- the first implemented authored-water tools are:
+  - `Water Source`
+  - `Water Sink`
+  - `Lake Fill`
+- authored water records are saved in and loaded from `WorldDefinition`
+- loading a `WorldDefinition` rebuilds runtime water preview from those authored records
 
-Deterministic rule:
+Deterministic first-slice scope:
 
-- water is the first follow-up authoring feature after terrain-only world editing is stable
+- the first authored-water slice must add only:
+  - `Water Source`
+  - `Water Sink`
+  - `Lake Fill`
+- this first slice must not start with freehand water-depth painting
+- this first slice must not require river-path drawing in order to be useful on imported or
+  hand-sculpted maps
+
+Deterministic ownership rules:
+
+- `Water Source` is an authored inflow point with a world-space position and authored inflow rate
+- `Water Sink` is an authored outflow point with a world-space position and authored outflow rate
+- `Lake Fill` is an authored basin-fill record with:
+  - one world-space seed position
+  - one target water surface elevation
+- authored water records belong to `WorldDefinition`, not only to live city saves
+- authored water records must be engine-owned data types; they must not store raw runtime scratch
+  buffers or renderer-only state
+
+Deterministic runtime-application rules:
+
+- loading a `WorldDefinition` must rebuild the runtime water state from authored water records
+- point sources and point sinks become live runtime water boundary conditions for that world
+- lake fills seed the initial water state for the contiguous basin that contains the authored seed
+  position and lies below the authored surface elevation
+- the authored water layer is the baseline; later runtime simulation may modify local details on
+  top of it
+
+Current compatibility behavior:
+
+- the current first slice rebuilds a preview water state from authored records immediately after
+  each authored-water edit
+- this preview rebake is not yet the final large-world dynamic water runtime
+- authored sources and sinks are persisted separately even though the current preview solve uses the
+  shared runtime water system underneath
+
+Deterministic non-goals of the first water slice:
+
+- no arbitrary "paint some water depth into the map" authoring mode
+- no automatic river extraction from imported DEMs
+- no automatic hydrology extraction from hydrography vectors or rasters
+- no full river-channel authoring tool yet
+- no requirement that the whole world run one dense shallow-water solve at all times
 
 ### 4. Gameplay `New Game` Now Loads A Selected `WorldDefinition`
 
@@ -438,32 +485,143 @@ Deterministic rule:
 - whole-map dense materialization is a temporary compatibility path, not the target large-world
   runtime
 
-### 6. Heightmap / DEM Import Comes After Blank Worlds
+### 6. Offline Heightmap / DEM Import Is Live
 
-Imported terrain must write authoritative source terrain only.
+Authoritative rule:
 
-Deterministic rules:
+- imported terrain writes authoritative source terrain only
+- visual terrain is always derived from source terrain plus later road or water derivations
 
-- imported terrain writes source terrain, never visual-only terrain
-- visual terrain is always derived from source terrain plus road or water derivations
-- import validation must reject malformed or dimension-mismatched source rasters
+Current implemented slice:
+
+- real-map terrain import now exists as an offline editor-time tool:
+  - `tools/import_dem_world_definition.py`
+- the importer writes a normal `WorldDefinition` SQLite asset directly
+- the first validated source case is the National Land Survey of Finland Kuopio `324 km²`
+  `Korkeusmalli 2 m` tile batch under:
+  - `maps/raw/Kuopio/324km2/`
+- the default generated authored world is:
+  - `maps/processed/Kuopio/kuopio_324km2_10m.sqlite`
+
+Current source format rules:
+
+- v1 import accepts raster DEM/DTM data in single-band `GeoTIFF`
+- the first concrete target source class is tiled National Land Survey of Finland elevation data
+  such as `Korkeusmalli 2 m`:
+  - single-band `Float32`
+  - projected horizontal CRS
+  - explicit pixel size in metres
+  - explicit `NoData` value
+- v1 does not accept:
+  - hillshade rasters
+  - hydrography rasters
+  - RGB orthoimagery
+  - arbitrary grayscale PNG/JPEG images
+  - mixed DEM/DSM source batches
+
+Current ownership rules:
+
+- DEM import is world-editor only
+- the current importer creates a new `WorldDefinition`; it does not merge into an already edited
+  world
+- imported terrain becomes the new authoritative source terrain for that world extent
+- runtime coordinates remain centred world-local metres after import; source georeferencing is not
+  preserved as gameplay-space coordinates
+- import provenance may be stored as non-authoritative metadata, but gameplay must not depend on it
+- because the live runtime still multiplies terrain samples by `HEIGHT_SCALE` at render/query
+  boundaries, the importer currently converts DEM elevation metres into that pre-scaled runtime
+  sample space before writing source terrain
+
+Deterministic validation rules:
+
+- every selected source file must be readable and must expose georeferencing metadata
+- all selected tiles in one import batch must share:
+  - the same projected horizontal CRS
+  - the same pixel size
+  - the same sample type
+  - the same north-up axis orientation
+- v1 must reject source rasters with rotation / skew terms
+- v1 must reject missing or malformed `NoData` metadata
+- v1 must reject overlapping tiles that do not align exactly on pixel boundaries
+- v1 must reject any selected crop extent that contains `NoData` inside the requested world area
+- v1 must reject target `terrain_cell_m` values finer than the source raster pixel size; the
+  importer must not invent terrain detail by upsampling to a finer authored resolution
+
+Current deterministic import sequence:
+
+1. select one or more `GeoTIFF` DEM tiles
+2. validate source metadata and pixel-grid compatibility
+3. mosaic the source tiles into one temporary import raster in source CRS
+4. choose a rectangular import extent inside that mosaic
+5. create a new `WorldConfig` for the imported world:
+   - `width_m` and `height_m` come directly from the chosen import extent
+   - `terrain_cell_m` is user-selected but must be `>=` source pixel size
+   - `terrain_chunk_m` follows the normal authored-world chunk rules
+   - `terrain_base_elevation_m` stays an authored-world default only; it must not be used to
+     reinterpret imported heights
+6. resample the import raster into the authored terrain grid in canonical world metres
+7. write the resampled values into authoritative source terrain
+8. reset visual terrain from source terrain
+9. save the result as a normal `WorldDefinition`
+
+Current deterministic resampling rules:
+
+- resampling happens at terrain sample positions, not cell centres of a separate import-only grid
+- v1 uses bilinear interpolation from source DEM values
+- border-only nodata introduced by edge-aligned resampling is clamped from the nearest interior
+  valid sample; any remaining nodata after that is a hard rejection
+- source elevation values are numerically preserved apart from that resampling step; v1 does not
+  apply erosion, exaggeration, or artistic normalization during import
+- vertical datum conversion is out of scope for v1; import assumes the source height values are
+  already the desired authored elevations
+
+Allowed compatibility boundary:
+
+- DEM import may materialize one dense temporary mosaic and one dense target raster because import
+  is an offline editor operation, not a hot simulation path
+
+Explicit non-goals of v1 DEM import:
+
+- automatic extraction of rivers, lakes, or hydrology from the DEM
+- automatic terrain texturing or biome painting
+- importing hydrography vectors/raster as water gameplay state
+- preserving external CRS coordinates as live gameplay-space coordinates
+- patch-importing one DEM over part of an already edited authored world
+
+Remaining direction:
+
+- integrate DEM import into the WorldEditor UI instead of keeping it as an offline tool only
+- remove the importer's current dependency on the pre-`HEIGHT_SCALE` runtime compatibility layer
 
 ### 7. Add Authored Hydrology As A Separate Layer
 
 Hydrology must be authored separately from raw terrain elevation.
 
-Future authored hydrology data should include:
+The first authored-hydrology data set should include:
 
 - inflows / springs
 - outflows / sinks
-- river paths or channels
 - lake basins or lake surface levels
+
+Later authored hydrology may extend that with:
+
+- river paths or channels
 
 Deterministic rules:
 
 - a blank world with no hydrology remains dry
 - authored hydrology defines where water belongs before runtime simulation modifies local details
 - hydrology must not be stored as "just paint some water depth into the live runtime buffer"
+- imported hydrography may be used as an editor reference, but not as implicit gameplay water state
+- imported DEMs and imported hydrography remain separate inputs; one does not silently create the
+  other
+
+Deterministic imported-map guidance:
+
+- on real-map worlds, authors should place only the major inflows, major outflows, and major lake
+  fills first
+- the first authored-hydrology slice must be usable without an automatic river-generation pass
+- this allows imported DEM worlds to become playable water worlds before river-path tooling exists
 
 ### 8. Use A Hybrid Water Model For Very Large Worlds
 
@@ -479,11 +637,8 @@ Deterministic rules:
 
 The following are explicitly not implemented yet and should not be assumed by other systems:
 
-- blank-world editor UI
-- `New Game` selection flow for `WorldDefinition`
-- world-editor water tools
-- DEM / GeoTIFF import into authored worlds
-- authored hydrology layer
+- interactive WorldEditor DEM / GeoTIFF import UI
+- river-path hydrology authoring
 - chunk-streamed terrain renderer
 - chunk-window water simulation
 - authoritative terrain undo across source plus derived state
@@ -512,14 +667,15 @@ What is implemented now:
 - water keeps sparse depth, velocity, and flux at rest
 - blank-world `WorldDefinition` exists as a separate authored-world asset
 - authored world load resets runtime state to a fresh blank city baseline
+- offline DEM import can now generate a normal `WorldDefinition` from real GeoTIFF elevation tiles
+- first authored-water tools are live in WorldEditor through `Source`, `Sink`, and `Lake Fill`
+- `WorldDefinition` now persists authored water boundary points and lake fills
 - save/load and renderer boundaries still use dense materialization
 
 What is next:
 
-1. blank-world editor UI
-2. terrain-only world-editor tools
-3. world-editor water tools
-4. `New Game` from `WorldDefinition`
-5. chunk-window runtime processing
+1. interactive DEM / GeoTIFF import UI for real-map authored worlds
+2. river-path hydrology after terrain import and first authored-water tools are stable
+3. chunk-window runtime processing
 6. later DEM import
 7. later authored hydrology

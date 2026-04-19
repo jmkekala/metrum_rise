@@ -2,7 +2,7 @@
 //!
 //! Water depth and flux are stored on the same grid as the terrain heightmap.
 //! The tick is parallelised with `rayon` over grid rows.
-//! Water sources (player-placed) inject depth at a fixed rate per tick.
+//! Water boundary points (player-placed) inject or remove depth at a fixed rate.
 
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
@@ -24,7 +24,8 @@ pub struct WaterSystem {
     velocity: SparseChunkGrid<f32>,
     /// Directional flux per cell: `[Left, Right, Top, Bottom]` (m³/s).
     flux: SparseChunkGrid<[f32; 4]>,
-    /// Player-placed water sources: `(grid_x, grid_y, rate_m_per_tick)`.
+    /// Player-placed water boundary points: `(grid_x, grid_y, signed_rate)`.
+    /// Positive values add water; negative values remove water.
     pub sources: Vec<(usize, usize, f32)>,
 }
 
@@ -72,10 +73,10 @@ impl WaterSystem {
         let mut velocity = self.velocity.clone_dense();
         let mut flux = self.flux.clone_dense();
 
-        // 0. Inject water from sources (Sequential but small count)
+        // 0. Apply water boundary points (sequential but small count).
         for &(x, y, rate) in &self.sources {
             let idx = y * self.width + x;
-            depth[idx] += rate * dt;
+            depth[idx] = (depth[idx] + rate * dt).max(0.0);
         }
 
         let l = 1.0; // Pipe length
@@ -236,7 +237,7 @@ impl WaterSystem {
         }
     }
 
-    /// Updates or adds a water source at a specific grid cell.
+    /// Updates or adds a water boundary point at a specific grid cell.
     pub fn update_source(&mut self, x: usize, y: usize, rate_add: f32) {
         if x >= self.width || y >= self.height {
             return;

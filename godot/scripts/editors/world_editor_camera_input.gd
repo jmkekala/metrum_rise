@@ -10,6 +10,11 @@ var panel_bot_h := 104.0
 
 var _cam: Camera3D
 
+const MIN_DISTANCE := 0.5
+const MAX_DISTANCE := 200000.0
+const MIN_FAR_M := 20000.0
+const FAR_MARGIN_M := 5000.0
+
 var pivot := Vector3.ZERO
 var yaw := -0.785
 var pitch := -0.785
@@ -53,7 +58,7 @@ func _process(delta: float) -> void:
 ## Point the camera at `center` with enough distance to see a sphere of `radius`.
 func focus_on(center: Vector3, radius: float) -> void:
 	pivot = center
-	distance = max(radius * 2.5, 3.0)
+	distance = clampf(max(radius * 3.25, 3.0), MIN_DISTANCE, MAX_DISTANCE)
 	_update_transform()
 
 func _input(event: InputEvent) -> void:
@@ -74,12 +79,12 @@ func _input(event: InputEvent) -> void:
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_UP:
 				if not over_ui:
-					distance = maxf(0.5, distance / 1.2)
+					distance = maxf(MIN_DISTANCE, distance / 1.2)
 					_update_transform()
 					get_viewport().set_input_as_handled()
 			MOUSE_BUTTON_WHEEL_DOWN:
 				if not over_ui:
-					distance = minf(50000.0, distance * 1.2)
+					distance = minf(MAX_DISTANCE, distance * 1.2)
 					_update_transform()
 					get_viewport().set_input_as_handled()
 
@@ -123,6 +128,8 @@ func _is_mouse_in_3d_area() -> bool:
 func _update_transform() -> void:
 	if not _cam:
 		return
+	_cam.near = MIN_DISTANCE
+	_cam.far = maxf(distance * 4.0 + FAR_MARGIN_M, MIN_FAR_M)
 	var rotation := Basis(Vector3.UP, yaw) * Basis(Vector3.RIGHT, pitch)
 	_cam.global_position = pivot + rotation * Vector3(0.0, 0.0, distance)
 	_cam.look_at(pivot)

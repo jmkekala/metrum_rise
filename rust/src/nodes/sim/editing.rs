@@ -651,6 +651,8 @@ mod tests {
             config,
             treasury: CityTreasury::new(0.0),
             undo_stack: VecDeque::new(),
+            world_water_boundary_points: Vec::new(),
+            world_lake_fills: Vec::new(),
             terrain_dirty: false,
             water_dirty: false,
             network_dirty: false,

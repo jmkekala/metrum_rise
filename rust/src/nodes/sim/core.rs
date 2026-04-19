@@ -28,6 +28,7 @@ use crate::simulation::grid::zoning::ZoningSystem;
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::terrain::TerrainSystem;
 use crate::simulation::water::WaterSystem;
+use crate::simulation::world_definition::{AuthoredLakeFill, AuthoredWaterBoundaryPoint};
 
 fn access_phase_target(core: &SimCore, agent_idx: usize, egress: bool) -> Option<Vector3> {
     let building_id = if egress {
@@ -143,6 +144,10 @@ pub struct SimCore {
     pub treasury: CityTreasury,
     /// Undo history stack — kept in SimCore so all mutations are co-located.
     pub undo_stack: VecDeque<SimulationSnapshot>,
+    /// Authored-world inflow / outflow points when editing or playing from a `WorldDefinition`.
+    pub(crate) world_water_boundary_points: Vec<AuthoredWaterBoundaryPoint>,
+    /// Authored-world lake fill records when editing or playing from a `WorldDefinition`.
+    pub(crate) world_lake_fills: Vec<AuthoredLakeFill>,
     /// Set by terrain mutations; cleared by the Godot render layer.
     pub terrain_dirty: bool,
     /// Set by water mutations; cleared by the Godot render layer.

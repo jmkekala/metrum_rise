@@ -160,10 +160,27 @@ WorldEditor toolbar rules:
 - terrain tools live here, not in the top menu
 - WorldEditor v1 active tools are `Raise` and `Lower`
 - `Water` is the first follow-up tool group and will live on the same toolbar surface
+- when the water group ships, its first tool set must be:
+  - `Source`
+  - `Sink`
+  - `Lake Fill`
+- these water tools are world-editor authoring tools, not gameplay HUD tools
+- water tools must not be exposed as top-menu actions
+- world-editor water authoring must not begin with a freehand water-depth paint brush
 - WorldEditor does not include gameplay-only toolbar actions such as Roads, Zoning, Inspect,
   or Mods
 - WorldEditor does not include gameplay HUD widgets such as the clock, city-status panel, or
   R/C/I meter
+
+WorldEditor water toolbar behavior:
+
+- selecting `Water` opens an upward-expanding tool row above the bottom toolbar shell, the same
+  visual language used by gameplay submenus
+- `Source` places authored inflow points
+- `Sink` places authored outflow points
+- `Lake Fill` authors one basin seed plus one target surface level
+- water authoring belongs on the same bottom-strip workflow as terrain sculpting so authors can
+  switch between carving terrain and placing hydrology without changing editor shells
 
 Current WorldEditor shortcuts:
 
@@ -171,7 +188,11 @@ Current WorldEditor shortcuts:
 |-----|--------|
 | 1 | Select `Raise` |
 | 2 | Select `Lower` |
+| 3 | Select `Water Source` |
+| 4 | Select `Water Sink` |
+| 5 | Select `Lake Fill` |
 | Left Mouse | Sculpt terrain with the active tool |
+| Shift+Left Mouse | Remove the nearest authored water feature for the active water tool |
 | Middle Mouse | Orbit camera |
 | Right Mouse | Pan camera |
 | W / A / S / D | Pan camera |

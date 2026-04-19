@@ -8,4 +8,4 @@ enter - save map
 ctrl + l - load map
 
 Kuopio map:
-Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Survey of Finland Topographic Database/ Date: 17.04.2026)
+Credits: National Land Survey of Finland/Heighmap of Kuopio/the National Land Survey of Finland Topographic Database/ Date: 19.04.2026)

@@ -1,6 +1,6 @@
 ## Blank-world authoring shell — launched via `--world-editor`.
 ## Shares the same SimulationNode runtime as gameplay, but keeps the editor
-## paused and exposes only terrain-focused world-definition actions.
+## paused and exposes terrain and authored-water world-definition actions.
 extends Node3D
 
 const TopMenu = preload("res://scripts/ui/top_menu.gd")
@@ -11,14 +11,20 @@ const DEFAULT_HEIGHT_KM := 20.0
 const DEFAULT_TERRAIN_CELL_M := 10.0
 const DEFAULT_TERRAIN_CHUNK_M := 512.0
 const DEFAULT_BASE_ELEVATION_M := 0.0
+const DEFAULT_WATER_RATE := 0.5
+const DEFAULT_LAKE_SURFACE_OFFSET_M := 5.0
 const WORLDS_DIR := "user://worlds"
 const SCULPT_RADIUS_M := 15.0
 const SCULPT_STRENGTH_PER_SEC := 2.0
+const WATER_REMOVE_RADIUS_M := 40.0
 
 enum Tool {
 	NONE,
 	RAISE,
 	LOWER,
+	WATER_SOURCE,
+	WATER_SINK,
+	WATER_LAKE_FILL,
 }
 
 @onready var sim: SimulationNode = $SimulationNode
@@ -33,6 +39,13 @@ var _current_world_path := ""
 var _toolbar_status: Label
 var _raise_btn: Button
 var _lower_btn: Button
+var _water_group_btn: Button
+var _water_tool_panel: PanelContainer
+var _water_source_btn: Button
+var _water_sink_btn: Button
+var _water_lake_fill_btn: Button
+var _water_rate_spin: SpinBox
+var _lake_offset_spin: SpinBox
 
 var _new_world_window: Window
 var _new_world_name_edit: LineEdit
@@ -57,7 +70,7 @@ func _ready() -> void:
 	_debug_log("ready world=%s path=%s" % [_current_world_name, _world_path_label()])
 
 func _process(delta: float) -> void:
-	if _active_tool == Tool.NONE:
+	if not _is_sculpt_tool(_active_tool):
 		return
 	if not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
 		return
@@ -72,6 +85,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				_set_active_tool(Tool.RAISE)
 			KEY_2:
 				_set_active_tool(Tool.LOWER)
+			KEY_3:
+				_set_active_tool(Tool.WATER_SOURCE)
+			KEY_4:
+				_set_active_tool(Tool.WATER_SINK)
+			KEY_5:
+				_set_active_tool(Tool.WATER_LAKE_FILL)
 			KEY_ESCAPE:
 				_set_active_tool(Tool.NONE)
 			KEY_N:
@@ -86,6 +105,12 @@ func _unhandled_input(event: InputEvent) -> void:
 						menu_save_as()
 					else:
 						menu_save()
+	elif event is InputEventMouseButton:
+		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed and _is_water_tool(_active_tool):
+			if _is_pointer_over_ui():
+				return
+			_apply_water_tool(event.shift_pressed)
+			get_viewport().set_input_as_handled()
 
 func menu_new_world() -> void:
 	_ensure_new_world_window()
@@ -176,6 +201,54 @@ func _build_ui() -> void:
 	stack.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bottom_margin.add_child(stack)
 
+	_water_tool_panel = PanelContainer.new()
+	_water_tool_panel.visible = false
+	_water_tool_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_water_tool_panel.add_theme_stylebox_override("panel", UIStyle.hud_group_style())
+	stack.add_child(_water_tool_panel)
+
+	var water_margin := MarginContainer.new()
+	water_margin.add_theme_constant_override("margin_left", int(UIStyle.HUD_SHELL_PAD_X))
+	water_margin.add_theme_constant_override("margin_right", int(UIStyle.HUD_SHELL_PAD_X))
+	water_margin.add_theme_constant_override("margin_top", int(UIStyle.HUD_SHELL_PAD_Y))
+	water_margin.add_theme_constant_override("margin_bottom", int(UIStyle.HUD_SHELL_PAD_Y))
+	_water_tool_panel.add_child(water_margin)
+
+	var water_row := HBoxContainer.new()
+	water_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	water_row.add_theme_constant_override("separation", int(UIStyle.HUD_PANEL_GAP))
+	water_margin.add_child(water_row)
+
+	_water_source_btn = _make_tool_button("Source", Tool.WATER_SOURCE)
+	water_row.add_child(_water_source_btn)
+
+	_water_sink_btn = _make_tool_button("Sink", Tool.WATER_SINK)
+	water_row.add_child(_water_sink_btn)
+
+	_water_lake_fill_btn = _make_tool_button("Lake Fill", Tool.WATER_LAKE_FILL)
+	water_row.add_child(_water_lake_fill_btn)
+
+	var water_separator := VSeparator.new()
+	water_row.add_child(water_separator)
+
+	var rate_label := Label.new()
+	rate_label.text = "Rate"
+	rate_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	water_row.add_child(rate_label)
+
+	_water_rate_spin = _make_spin_box(0.1, 20.0, 0.1, DEFAULT_WATER_RATE)
+	_water_rate_spin.custom_minimum_size = Vector2(110.0, UIStyle.HUD_BUTTON_HEIGHT)
+	water_row.add_child(_water_rate_spin)
+
+	var lake_label := Label.new()
+	lake_label.text = "Lake +m"
+	lake_label.add_theme_color_override("font_color", UIStyle.TEXT_PRIMARY)
+	water_row.add_child(lake_label)
+
+	_lake_offset_spin = _make_spin_box(0.5, 200.0, 0.5, DEFAULT_LAKE_SURFACE_OFFSET_M)
+	_lake_offset_spin.custom_minimum_size = Vector2(110.0, UIStyle.HUD_BUTTON_HEIGHT)
+	water_row.add_child(_lake_offset_spin)
+
 	var center := CenterContainer.new()
 	center.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stack.add_child(center)
@@ -203,6 +276,13 @@ func _build_ui() -> void:
 	_lower_btn = _make_tool_button("Lower", Tool.LOWER)
 	row.add_child(_lower_btn)
 
+	_water_group_btn = Button.new()
+	_water_group_btn.text = "Water"
+	_water_group_btn.toggle_mode = true
+	_water_group_btn.custom_minimum_size = Vector2(120.0, UIStyle.HUD_BUTTON_HEIGHT)
+	_water_group_btn.pressed.connect(_toggle_water_group)
+	row.add_child(_water_group_btn)
+
 	var separator := VSeparator.new()
 	row.add_child(separator)
 
@@ -226,6 +306,12 @@ func _toggle_tool(tool: Tool) -> void:
 	else:
 		_set_active_tool(tool)
 
+func _toggle_water_group() -> void:
+	if _is_water_tool(_active_tool):
+		_set_active_tool(Tool.NONE)
+	else:
+		_set_active_tool(Tool.WATER_SOURCE)
+
 func _set_active_tool(tool: Tool) -> void:
 	_active_tool = tool
 	_update_tool_buttons()
@@ -234,8 +320,14 @@ func _set_active_tool(tool: Tool) -> void:
 			_set_status("Raise terrain tool active.")
 		Tool.LOWER:
 			_set_status("Lower terrain tool active.")
+		Tool.WATER_SOURCE:
+			_set_status("Water source tool active. Shift+Click removes nearest source.")
+		Tool.WATER_SINK:
+			_set_status("Water sink tool active. Shift+Click removes nearest sink.")
+		Tool.WATER_LAKE_FILL:
+			_set_status("Lake fill tool active. Shift+Click removes nearest lake fill.")
 		_:
-			_set_status("No active terrain tool.")
+			_set_status("No active world-authoring tool.")
 	_debug_log("active_tool=%s" % Tool.keys()[_active_tool])
 
 func _update_tool_buttons() -> void:
@@ -243,16 +335,19 @@ func _update_tool_buttons() -> void:
 		_raise_btn.button_pressed = _active_tool == Tool.RAISE
 	if _lower_btn:
 		_lower_btn.button_pressed = _active_tool == Tool.LOWER
+	if _water_group_btn:
+		_water_group_btn.button_pressed = _is_water_tool(_active_tool)
+	if _water_source_btn:
+		_water_source_btn.button_pressed = _active_tool == Tool.WATER_SOURCE
+	if _water_sink_btn:
+		_water_sink_btn.button_pressed = _active_tool == Tool.WATER_SINK
+	if _water_lake_fill_btn:
+		_water_lake_fill_btn.button_pressed = _active_tool == Tool.WATER_LAKE_FILL
+	if _water_tool_panel:
+		_water_tool_panel.visible = _is_water_tool(_active_tool)
 
 func _apply_sculpt(delta: float) -> void:
-	var camera := get_viewport().get_camera_3d()
-	if not camera:
-		return
-
-	var mouse_pos := get_viewport().get_mouse_position()
-	var ray_origin := camera.project_ray_origin(mouse_pos)
-	var ray_dir := camera.project_ray_normal(mouse_pos)
-	var intersection = sim.intersect_terrain(ray_origin, ray_dir)
+	var intersection = _terrain_intersection_under_cursor()
 	if intersection == null:
 		return
 
@@ -260,6 +355,66 @@ func _apply_sculpt(delta: float) -> void:
 	if _active_tool == Tool.LOWER:
 		strength *= -1.0
 	sim.sculpt_terrain(Vector2(intersection.x, intersection.z), SCULPT_RADIUS_M, strength)
+
+func _apply_water_tool(remove_mode: bool) -> void:
+	var intersection = _terrain_intersection_under_cursor()
+	if intersection == null:
+		return
+
+	var world_pos := Vector2(intersection.x, intersection.z)
+	match _active_tool:
+		Tool.WATER_SOURCE:
+			if remove_mode:
+				if sim.remove_world_water_source_near(world_pos, WATER_REMOVE_RADIUS_M):
+					_set_status("Removed nearest water source.")
+				else:
+					_set_status("No water source found nearby.", true)
+			elif sim.add_world_water_source(world_pos, float(_water_rate_spin.value)):
+				_set_status("Added water source.")
+			else:
+				_set_status("Add water source failed.", true)
+		Tool.WATER_SINK:
+			if remove_mode:
+				if sim.remove_world_water_sink_near(world_pos, WATER_REMOVE_RADIUS_M):
+					_set_status("Removed nearest water sink.")
+				else:
+					_set_status("No water sink found nearby.", true)
+			elif sim.add_world_water_sink(world_pos, float(_water_rate_spin.value)):
+				_set_status("Added water sink.")
+			else:
+				_set_status("Add water sink failed.", true)
+		Tool.WATER_LAKE_FILL:
+			if remove_mode:
+				if sim.remove_world_lake_fill_near(world_pos, WATER_REMOVE_RADIUS_M):
+					_set_status("Removed nearest lake fill.")
+				else:
+					_set_status("No lake fill found nearby.", true)
+			else:
+				var surface_elevation: float = intersection.y + float(_lake_offset_spin.value)
+				if sim.add_world_lake_fill(world_pos, surface_elevation):
+					_set_status("Added lake fill.")
+				else:
+					_set_status("Add lake fill failed.", true)
+
+func _terrain_intersection_under_cursor():
+	var camera := get_viewport().get_camera_3d()
+	if not camera:
+		return null
+
+	var mouse_pos := get_viewport().get_mouse_position()
+	var ray_origin := camera.project_ray_origin(mouse_pos)
+	var ray_dir := camera.project_ray_normal(mouse_pos)
+	return sim.intersect_terrain(ray_origin, ray_dir)
+
+func _is_sculpt_tool(tool: Tool) -> bool:
+	return tool == Tool.RAISE or tool == Tool.LOWER
+
+func _is_water_tool(tool: Tool) -> bool:
+	return (
+		tool == Tool.WATER_SOURCE
+		or tool == Tool.WATER_SINK
+		or tool == Tool.WATER_LAKE_FILL
+	)
 
 func _refresh_after_world_change(focus_camera: bool) -> void:
 	terrain.rebuild_from_simulation_state()
@@ -283,7 +438,7 @@ func _refresh_after_world_change(focus_camera: bool) -> void:
 
 func _focus_camera_on_world() -> void:
 	var world_size := sim.get_terrain_world_size()
-	var center := Vector3.ZERO
+	var center := Vector3(0.0, sim.get_height_at(Vector2.ZERO), 0.0)
 	var radius := maxf(world_size.x, world_size.y) * 0.5
 	editor_camera_input.focus_on(center, radius)
 
@@ -346,7 +501,7 @@ func _ensure_new_world_window() -> void:
 	margin.add_child(layout)
 
 	var intro := Label.new()
-	intro.text = "Create a terrain-only blank world for sculpting."
+	intro.text = "Create a blank world for terrain and water authoring."
 	intro.add_theme_color_override("font_color", UIStyle.TEXT_DIM)
 	layout.add_child(intro)
 

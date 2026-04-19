@@ -153,7 +153,7 @@ Runtime-spawned tools:
 | DirectionalLight3D | `DirectionalLight3D` | — | Primary scene light and shadow source. |
 | SimulationNode | Rust native | — | Owns the paused shared runtime and `WorldDefinition` bridge methods. |
 | Terrain | `MeshInstance3D` | `terrain.gd` | Terrain mesh renderer and dirty-flag refresh owner. |
-| Water | `MeshInstance3D` | `water.gd` | Water renderer; currently passive in terrain-only v1. |
+| Water | `MeshInstance3D` | `water.gd` | Water renderer for authored-water preview and gameplay water depth. |
 | CameraNode | `CameraNode` | — | World-editor camera. |
 | EditorCameraInput | `Node` | `world_editor_camera_input.gd` | World-editor orbit/pan/zoom controller with terrain-plane mouse pan plus keyboard pan. |
 
@@ -169,7 +169,7 @@ Runtime-spawned tools:
 | `asset_editor.gd` | `is_asset_editor_mode()`, `load_asset_packs()`, `get_registered_asset_ids()`, `get_pack_manifest_json()`, `get_asset_manifest_json()`, `load_economy_project()`, `validate_and_export_asset()` |
 | `buildings.gd` | `load_asset_packs()`, `get_registered_asset_ids()`, `get_lod0_native_path()`, `get_building_transforms_for_asset()`, `get_building_plot_transforms()` |
 | `economy_editor.gd` | `is_economy_editor_mode()`, `load_economy_project()`, `export_economy_project()`, `run_economy_sandbox()` |
-| `world_editor.gd` | `is_world_editor_mode()`, `create_blank_world()`, `save_world_definition()`, `load_world_definition()`, `get_heightmap_size()`, `get_terrain_world_size()`, `intersect_terrain()`, `sculpt_terrain()` |
+| `world_editor.gd` | `is_world_editor_mode()`, `create_blank_world()`, `save_world_definition()`, `load_world_definition()`, `get_heightmap_size()`, `get_terrain_world_size()`, `intersect_terrain()`, `sculpt_terrain()`, `add_world_water_source()`, `add_world_water_sink()`, `remove_world_water_source_near()`, `remove_world_water_sink_near()`, `add_world_lake_fill()`, `remove_world_lake_fill_near()` |
 | `network_tool.gd` | `intersect_terrain()`, `add_road()`, `get_closest_network_point()`, `get_closest_node()`, `get_road_mesh_data()`, `get_network_nodes()`, `get_node_pos()`, `get_height_at()`, `get_road_ghost_guides()` |
 | `road_tool.gd` | inherited `NetworkTool` methods, plus `check_border_candidate()` and `set_border_connection()` through deferred border checks |
 | `network_renderer.gd` | `is_network_dirty()`, `flatten_terrain_for_roads()`, `clear_terrain_dirty()`, `clear_network_dirty()` |
@@ -199,3 +199,5 @@ Runtime-spawned tools:
 | No-build mask texture | `PackedByteArray` | R8, one byte per world-space zone cell. |
 | `WorldDefinition` meta | SQLite row | One row storing world name plus `WorldConfig` values for a reusable blank-world asset. |
 | `WorldDefinition` terrain chunk payload | SQLite BLOB | Dense row-major `f32` source-terrain samples for one persisted authored chunk. |
+| `WorldDefinition` water boundary point | SQLite row | One authored `Source` or `Sink` with snapped world-space X/Z plus authored positive rate. |
+| `WorldDefinition` lake fill | SQLite row | One authored lake seed position plus one target surface elevation in rendered world metres. |

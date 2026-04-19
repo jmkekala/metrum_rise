@@ -1286,6 +1286,102 @@ impl SimulationNode {
         }
     }
 
+    /// Adds or strengthens one authored world-water source at the clicked terrain cell.
+    #[func]
+    pub fn add_world_water_source(&mut self, pos: Vector2, rate_m_per_tick: f32) -> bool {
+        let result = {
+            let mut core = self.lock_core();
+            core.add_world_water_source_internal(pos, rate_m_per_tick)
+        };
+        match result {
+            Ok(()) => {
+                self.refresh_snapshot_from_core();
+                true
+            }
+            Err(err) => {
+                godot_error!("Add world water source failed: {}", err);
+                false
+            }
+        }
+    }
+
+    /// Adds or strengthens one authored world-water sink at the clicked terrain cell.
+    #[func]
+    pub fn add_world_water_sink(&mut self, pos: Vector2, rate_m_per_tick: f32) -> bool {
+        let result = {
+            let mut core = self.lock_core();
+            core.add_world_water_sink_internal(pos, rate_m_per_tick)
+        };
+        match result {
+            Ok(()) => {
+                self.refresh_snapshot_from_core();
+                true
+            }
+            Err(err) => {
+                godot_error!("Add world water sink failed: {}", err);
+                false
+            }
+        }
+    }
+
+    /// Removes the nearest authored world-water source within the given radius.
+    #[func]
+    pub fn remove_world_water_source_near(&mut self, pos: Vector2, radius_m: f32) -> bool {
+        let removed = {
+            let mut core = self.lock_core();
+            core.remove_world_water_source_near_internal(pos, radius_m)
+        };
+        if removed {
+            self.refresh_snapshot_from_core();
+        }
+        removed
+    }
+
+    /// Removes the nearest authored world-water sink within the given radius.
+    #[func]
+    pub fn remove_world_water_sink_near(&mut self, pos: Vector2, radius_m: f32) -> bool {
+        let removed = {
+            let mut core = self.lock_core();
+            core.remove_world_water_sink_near_internal(pos, radius_m)
+        };
+        if removed {
+            self.refresh_snapshot_from_core();
+        }
+        removed
+    }
+
+    /// Adds or updates one authored lake fill at the clicked terrain cell.
+    #[func]
+    pub fn add_world_lake_fill(&mut self, pos: Vector2, surface_elevation_m: f32) -> bool {
+        let result = {
+            let mut core = self.lock_core();
+            core.add_world_lake_fill_internal(pos, surface_elevation_m)
+        };
+        match result {
+            Ok(()) => {
+                self.refresh_snapshot_from_core();
+                true
+            }
+            Err(err) => {
+                godot_error!("Add world lake fill failed: {}", err);
+                false
+            }
+        }
+    }
+
+    /// Removes the nearest authored lake fill within the given radius.
+    #[func]
+    pub fn remove_world_lake_fill_near(&mut self, pos: Vector2, radius_m: f32) -> bool {
+        let removed = {
+            let mut core = self.lock_core();
+            core.remove_world_lake_fill_near_internal(pos, radius_m)
+        };
+        if removed {
+            self.refresh_snapshot_from_core();
+        }
+        removed
+    }
+
     /// Returns the current city treasury balance in currency units. May be negative.
     #[func]
     pub fn get_treasury_balance(&self) -> f64 {
@@ -1394,6 +1490,8 @@ impl INode3D for SimulationNode {
                     .unwrap_or(100_000.0),
             ),
             undo_stack: VecDeque::new(),
+            world_water_boundary_points: Vec::new(),
+            world_lake_fills: Vec::new(),
             terrain_dirty: true,
             water_dirty: true,
             network_dirty: false,

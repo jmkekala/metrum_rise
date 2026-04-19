@@ -13,6 +13,7 @@ pub use chunks::{
 
 use godot::prelude::Vector3;
 
+use crate::config::HEIGHT_SCALE;
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
 
@@ -132,39 +133,32 @@ impl TerrainSystem {
     /// Casts a ray against the terrain surface and returns the intersection point.
     pub fn raycast_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Option<Vector3> {
         let (half_w, half_h) = self.half_world_extents();
-
-        // Linear search for entry/exit or surface intersection
-        let mut t = 0.0;
-        let max_dist = 10000.0; // Increased from 500 to support high-altitude camera
-        let step = 0.5; // Half-meter steps for safety
-
+        let (entry_t, exit_t) = raycast_xz_interval(ray_origin, ray_dir, half_w, half_h)?;
+        let mut prev_t = entry_t.max(0.0);
+        let step = (self.cell_size * 0.5).clamp(0.5, 5.0);
+        let max_t = if exit_t.is_finite() {
+            exit_t.max(prev_t)
+        } else {
+            prev_t + self.raycast_search_limit(ray_origin, half_w, half_h)
+        };
+        let prev_point = ray_origin + ray_dir * prev_t;
         let mut prev_diff =
-            ray_origin.y - self.sample_height_world(ray_origin.x, ray_origin.z) * 20.0;
+            prev_point.y - self.sample_height_world(prev_point.x, prev_point.z) * HEIGHT_SCALE;
 
-        while t < max_dist {
-            t += step;
+        while prev_t < max_t {
+            let t = (prev_t + step).min(max_t);
             let p = ray_origin + ray_dir * t;
-
-            // Bounds check
-            if p.x < -half_w || p.x > half_w || p.z < -half_h || p.z > half_h {
-                if t > 0.0 && p.y < -10.0 {
-                    break;
-                } // Went under map
-                continue;
-            }
-
-            let h = self.sample_height_world(p.x, p.z) * 20.0;
+            let h = self.sample_height_world(p.x, p.z) * HEIGHT_SCALE;
             let diff = p.y - h;
 
-            // Intersection detected (crossed the surface)
-            if diff.signum() != prev_diff.signum() {
-                // Binary search refinement for precision
-                let mut t_low = t - step;
+            if diff == 0.0 || diff.signum() != prev_diff.signum() {
+                // Binary search refinement for precision.
+                let mut t_low = prev_t;
                 let mut t_high = t;
                 for _ in 0..8 {
                     let t_mid = (t_low + t_high) * 0.5;
                     let pm = ray_origin + ray_dir * t_mid;
-                    let hm = self.sample_height_world(pm.x, pm.z) * 20.0;
+                    let hm = self.sample_height_world(pm.x, pm.z) * HEIGHT_SCALE;
                     if (pm.y - hm).signum() == prev_diff.signum() {
                         t_low = t_mid;
                     } else {
@@ -172,10 +166,10 @@ impl TerrainSystem {
                     }
                 }
 
-                let final_p = ray_origin + ray_dir * ((t_low + t_high) * 0.5);
-                return Some(final_p);
+                return Some(ray_origin + ray_dir * ((t_low + t_high) * 0.5));
             }
 
+            prev_t = t;
             prev_diff = diff;
         }
 
@@ -276,8 +270,68 @@ impl TerrainSystem {
     pub(crate) fn cell_size_m(&self) -> f32 {
         self.cell_size
     }
+
+    fn raycast_search_limit(&self, ray_origin: Vector3, half_w: f32, half_h: f32) -> f32 {
+        let world_diag = (half_w * 2.0).hypot(half_h * 2.0);
+        ray_origin.length() + world_diag + 10_000.0
+    }
 }
 
 fn terrain_chunk_cells_for_config(config: &WorldConfig) -> usize {
     ((config.terrain_chunk_m / config.terrain_cell_m).ceil() as usize).max(1)
+}
+
+fn raycast_xz_interval(
+    ray_origin: Vector3,
+    ray_dir: Vector3,
+    half_w: f32,
+    half_h: f32,
+) -> Option<(f32, f32)> {
+    let (tx0, tx1) = raycast_axis_interval(ray_origin.x, ray_dir.x, -half_w, half_w)?;
+    let (tz0, tz1) = raycast_axis_interval(ray_origin.z, ray_dir.z, -half_h, half_h)?;
+    let entry_t = tx0.max(tz0);
+    let exit_t = tx1.min(tz1);
+    if exit_t < entry_t.max(0.0) {
+        return None;
+    }
+    Some((entry_t, exit_t))
+}
+
+fn raycast_axis_interval(origin: f32, dir: f32, min: f32, max: f32) -> Option<(f32, f32)> {
+    if dir.abs() <= f32::EPSILON {
+        if origin < min || origin > max {
+            return None;
+        }
+        return Some((f32::NEG_INFINITY, f32::INFINITY));
+    }
+
+    let mut t0 = (min - origin) / dir;
+    let mut t1 = (max - origin) / dir;
+    if t0 > t1 {
+        std::mem::swap(&mut t0, &mut t1);
+    }
+    Some((t0, t1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TerrainSystem;
+    use crate::config::HEIGHT_SCALE;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn raycast_reaches_large_world_from_high_altitude_camera() {
+        let terrain = TerrainSystem::with_chunking(1801, 1801, 10.0, 64, 5.0);
+        let target = Vector3::new(0.0, 5.0 * HEIGHT_SCALE, 0.0);
+        let origin = Vector3::new(0.0, 20_800.0, 20_800.0);
+        let ray_dir = (target - origin).normalized();
+
+        let hit = terrain
+            .raycast_terrain(origin, ray_dir)
+            .expect("high-altitude ray should still hit terrain on a large world");
+
+        assert!(hit.x.abs() < 1.0);
+        assert!(hit.z.abs() < 1.0);
+        assert!((hit.y - target.y).abs() < 1.0);
+    }
 }
