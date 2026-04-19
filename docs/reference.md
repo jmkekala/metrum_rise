@@ -125,8 +125,8 @@ world-editor terrain ownership contract.
 | WorldEnvironment | `WorldEnvironment` | — | Global environment settings. |
 | DirectionalLight3D | `DirectionalLight3D` | — | Primary scene light and shadow source. |
 | SimulationNode | Rust native | — | Owns simulation state and exposes `#[func]` methods. |
-| Terrain | `MeshInstance3D` | `terrain.gd` | Heightmap mesh, sculpting, overlay textures. |
-| Water | `MeshInstance3D` | `water.gd` | Shallow-water surface renderer. |
+| Terrain | `MeshInstance3D` | `terrain.gd` | Live terrain renderer with hillshade, contour lines, cliff cues, and the render-only border skirt. |
+| Water | `MeshInstance3D` | `water.gd` | Baseline-plus-dynamic water renderer with shoreline treatment and the render-only map-edge water curtain. |
 | RoadTool | `Node3D` | `road_tool.gd` | Road authoring tool and road mesh owner. |
 | ZoningOverlay | `MeshInstance3D` | `zoning_overlay.gd` | Full-map zoning / occupancy / distance overlay. |
 | ZoningTool | `Node3D` | `zoning_tool.gd` | World-space zoning paint tool. |
@@ -136,7 +136,7 @@ world-editor terrain ownership contract.
 | MoveTool | `Node3D` | `move_tool.gd` | Road node drag / reposition tool. |
 | NetworkRenderer | `Node` | `network_renderer.gd` | Async network-dirty refresh coordinator. |
 | InputManager | `Node` | `input_manager.gd` | Global tool selection, save/load, undo, sim-speed routing. |
-| CameraNode | `CameraNode` | — | Main gameplay camera. |
+| CameraNode | `CameraNode` | — | Shared terrain-aware world-camera core for gameplay. |
 | MainUI | `CanvasLayer` | `main_ui.gd` | Procedurally built HUD and road property panel. |
 
 Runtime-spawned tools:
@@ -152,10 +152,10 @@ Runtime-spawned tools:
 | WorldEnvironment | `WorldEnvironment` | — | Global environment settings. |
 | DirectionalLight3D | `DirectionalLight3D` | — | Primary scene light and shadow source. |
 | SimulationNode | Rust native | — | Owns the paused shared runtime and `WorldDefinition` bridge methods. |
-| Terrain | `MeshInstance3D` | `terrain.gd` | Terrain mesh renderer and dirty-flag refresh owner. |
-| Water | `MeshInstance3D` | `water.gd` | Water renderer for authored-water preview and gameplay water depth. |
-| CameraNode | `CameraNode` | — | World-editor camera. |
-| EditorCameraInput | `Node` | `world_editor_camera_input.gd` | World-editor orbit/pan/zoom controller with terrain-plane mouse pan plus keyboard pan. |
+| Terrain | `MeshInstance3D` | `terrain.gd` | Terrain renderer and dirty-flag refresh owner, shared with gameplay. |
+| Water | `MeshInstance3D` | `water.gd` | Water renderer for authored-water preview and live water depth, shared with gameplay. |
+| CameraNode | `CameraNode` | — | Shared terrain-aware world-camera core for WorldEditor. |
+| EditorCameraInput | `Node` | `world_editor_camera_input.gd` | World-editor input wrapper and UI-capture gate around the shared `CameraNode` policy. |
 
 ### Script → Rust Method Inventory
 
@@ -169,7 +169,7 @@ Runtime-spawned tools:
 | `asset_editor.gd` | `is_asset_editor_mode()`, `load_asset_packs()`, `get_registered_asset_ids()`, `get_pack_manifest_json()`, `get_asset_manifest_json()`, `load_economy_project()`, `validate_and_export_asset()` |
 | `buildings.gd` | `load_asset_packs()`, `get_registered_asset_ids()`, `get_lod0_native_path()`, `get_building_transforms_for_asset()`, `get_building_plot_transforms()` |
 | `economy_editor.gd` | `is_economy_editor_mode()`, `load_economy_project()`, `export_economy_project()`, `run_economy_sandbox()` |
-| `world_editor.gd` | `is_world_editor_mode()`, `create_blank_world()`, `save_world_definition()`, `load_world_definition()`, `get_heightmap_size()`, `get_terrain_world_size()`, `intersect_terrain()`, `sculpt_terrain()`, `add_world_water_source()`, `add_world_water_sink()`, `remove_world_water_source_near()`, `remove_world_water_sink_near()`, `begin_world_lake_fill_preview()`, `update_world_lake_fill_preview()`, `get_world_lake_fill_preview()`, `commit_world_lake_fill_preview()`, `cancel_world_lake_fill_preview()`, `remove_world_lake_fill_near()`, `begin_world_open_water_fill_preview()`, `update_world_open_water_fill_preview()`, `get_world_open_water_fill_preview()`, `commit_world_open_water_fill_preview()`, `cancel_world_open_water_fill_preview()`, `remove_world_open_water_fill_near()` |
+| `world_editor.gd` | `is_world_editor_mode()`, `create_blank_world()`, `save_world_definition()`, `load_world_definition()`, `get_heightmap_size()`, `get_terrain_world_size()`, `get_height_at()`, `intersect_terrain()`, `begin_terrain_stroke()`, `sculpt_terrain_stroke_step()`, `level_terrain_stroke_step()`, `smooth_terrain_stroke_step()`, `slope_terrain_stroke_step()`, `end_terrain_stroke()`, `clear_terrain_dirty()`, `add_world_water_source()`, `add_world_water_sink()`, `remove_world_water_source_near()`, `remove_world_water_sink_near()`, `begin_world_lake_fill_preview()`, `update_world_lake_fill_preview()`, `get_world_lake_fill_preview()`, `commit_world_lake_fill_preview()`, `cancel_world_lake_fill_preview()`, `remove_world_lake_fill_near()`, `begin_world_open_water_fill_preview()`, `update_world_open_water_fill_preview()`, `get_world_open_water_fill_preview()`, `commit_world_open_water_fill_preview()`, `cancel_world_open_water_fill_preview()`, `remove_world_open_water_fill_near()`, `get_world_water_authoring_markers()` |
 | `network_tool.gd` | `intersect_terrain()`, `add_road()`, `get_closest_network_point()`, `get_closest_node()`, `get_road_mesh_data()`, `get_network_nodes()`, `get_node_pos()`, `get_height_at()`, `get_road_ghost_guides()` |
 | `road_tool.gd` | inherited `NetworkTool` methods, plus `check_border_candidate()` and `set_border_connection()` through deferred border checks |
 | `network_renderer.gd` | `is_network_dirty()`, `flatten_terrain_for_roads()`, `clear_terrain_dirty()`, `clear_network_dirty()` |
@@ -184,9 +184,9 @@ Runtime-spawned tools:
 
 | Buffer / return value | Type | Layout / meaning |
 |-----------------------|------|------------------|
-| Heightmap | `PackedFloat32Array` | Flat row-major `width × height` `f32` values in metres. |
-| Water depth | `PackedFloat32Array` | Same row-major layout as the heightmap. |
-| Water velocity | `PackedFloat32Array` | Same row-major layout; scalar magnitude per water cell. |
+| Heightmap | `PackedFloat32Array` | Flat row-major `width × height` `f32` raw terrain sample values in current runtime storage units; multiply by `HEIGHT_SCALE` to convert to rendered world metres. |
+| Water depth | `PackedFloat32Array` | Same row-major layout as the heightmap; visible combined water depth field in world metres. |
+| Water velocity | `PackedFloat32Array` | Same row-major layout; scalar dynamic-water speed per cell. |
 | Pedestrian transforms | `VarDictionary` | Keys = `pedestrian_type`; values = `PackedFloat32Array` with `12` floats per instance: `[basis.x(3), basis.y(3), basis.z(3), origin(3)]`. |
 | Car transforms | `VarDictionary` | Keys = `(vehicle_type * 10 + color_variant)`; values = `PackedFloat32Array` with the same `12`-float `Transform3D` layout. |
 | Building transforms | `PackedFloat32Array` | Returned per asset ID by `get_building_transforms_for_asset(asset_id)`, same `12`-float transform layout. |
@@ -199,5 +199,6 @@ Runtime-spawned tools:
 | No-build mask texture | `PackedByteArray` | R8, one byte per world-space zone cell. |
 | `WorldDefinition` meta | SQLite row | One row storing world name plus `WorldConfig` values for a reusable blank-world asset. |
 | `WorldDefinition` terrain chunk payload | SQLite BLOB | Dense row-major `f32` source-terrain samples for one persisted authored chunk. |
-| `WorldDefinition` water boundary point | SQLite row | One authored `Source` or `Sink` with snapped world-space X/Z plus authored positive rate. |
+| `WorldDefinition` water boundary point | SQLite row | One authored `Source` or `Sink` with snapped world-space X/Z, a `kind` field, and a positive authored rate; sink vs source comes from `kind`, not the sign. |
 | `WorldDefinition` lake fill | SQLite row | One authored lake seed position plus one target surface elevation in rendered world metres. |
+| `WorldDefinition` open-water fill | SQLite row | One authored edge-connected open-water seed position plus one target surface elevation in rendered world metres. |

@@ -190,7 +190,7 @@ WorldEditor water toolbar behavior:
 - `Open Water` authors one baseline edge-connected water body seed plus one target flat surface
   level
 - water authoring belongs on the same bottom-strip workflow as terrain sculpting so authors can
-  switch between carving terrain and placing hydrology without changing editor shells
+  switch between carving terrain and placing water features without changing editor shells
 - committed `Source`, `Sink`, `Lake Fill`, and `Open Water` records, plus any active surface-fill
   preview, must show visible 3D markers in WorldEditor so authored water locations are readable
 - these authored-water markers are WorldEditor-only overlays and must not appear in gameplay

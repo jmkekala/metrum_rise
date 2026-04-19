@@ -23,7 +23,10 @@ Interpretation rules:
 
 - Sections under `Implemented Runtime Contract` describe the live code unless explicitly marked as a
   compatibility gap.
-- Sections under `Planned Deterministic Implementation` are intended behavior, not shipped behavior.
+- Sections under `Implemented Editor / Rendering Slices` describe shipped editor, renderer, and
+  authored-world behavior.
+- Sections under `Remaining Planned Deterministic Implementation` are intended next steps, not
+  shipped behavior.
 - `must` means required for the owning contract.
 - `should` means intended unless a better measured implementation replaces it.
 - `may` means allowed but optional.
@@ -386,7 +389,7 @@ Required direction:
 - terrain base elevation and sample values should eventually become direct world-space metres
 - no future authored-world format should assume the current scaled-height compatibility contract
 
-### 6. `WorldDefinition` V1 Still Needs Richer Hydrology Ownership
+### 6. `WorldDefinition` V1 Keeps The First Authored-Water Slice
 
 Current state:
 
@@ -402,13 +405,12 @@ Current state:
 
 Remaining direction:
 
-- authored-world assets still need the baseline-water / dynamic-water split
-- authored-world load must stop rebuilding still water through the legacy runtime water solver
-- richer metadata and later hydrology ownership still remain future work
+- the current authored-water slice is the shipped water-authoring baseline and does not require a
+  separate richer hydrology system to be considered valid
+- richer metadata and optional later water-authoring extensions may still happen, but only if the
+  current `Source` / `Sink` / `Lake Fill` / `Open Water` workflow later proves insufficient
 
-## Planned Deterministic Implementation
-
-The next slices should be implemented in this order.
+## Implemented Editor / Rendering Slices
 
 ### 1. Blank-World WorldEditor V1 Is Live
 
@@ -427,10 +429,10 @@ Current deterministic rules:
 - the world-editor bottom toolbar is the primary authoring surface
 - a newly created blank world is dry and flat except for the authored base elevation
 
-### 2. WorldEditor V1 Is Terrain-Only And Launches Paused
+### 2. WorldEditor V1 Terrain And Water Authoring Is Live
 
 The current world editor uses the shared `SimulationNode` runtime but does not expose gameplay
-simulation controls.
+simulation controls or gameplay HUD surfaces.
 
 Current deterministic rules:
 
@@ -442,6 +444,11 @@ Current deterministic rules:
   - `Level`
   - `Smooth`
   - `Slope`
+- world editor water authoring is live through:
+  - `Source`
+  - `Sink`
+  - `Lake Fill`
+  - `Open Water`
 - selecting `Raise`, `Lower`, `Level`, `Smooth`, or `Slope` opens a terrain brush submenu on the bottom toolbar
 - that terrain brush submenu owns the shared editor `Diameter m` and `Strength` controls
 - active terrain brushes show their footprint directly on the terrain so brush diameter is visible before and during sculpting
@@ -452,13 +459,18 @@ Current deterministic rules:
   - second click captures the slope end anchor and its rendered terrain height
   - after both anchors exist, brushing moves terrain toward the clamped linear grade between those two anchor heights
 - `Slope` must not extrapolate beyond the two captured anchors; samples before the first anchor clamp to the start height and samples beyond the second anchor clamp to the end height
+- `Lake Fill` and `Open Water` use a preview-first workflow:
+  - first click seeds the preview
+  - `Surface +m` adjusts the previewed surface
+  - `OK` confirms
+  - `Cancel` / `Esc` dismisses the preview without writing authored state
 - world editor save/load is `WorldDefinition` only, not city-save persistence
 
 Current compatibility gap:
 
 - this is not yet the final terrain / water-only runtime boundary
-- the shared runtime bundle still contains gameplay systems; world editor simply leaves the
-  simulation paused for terrain-only v1
+- the shared runtime bundle still contains gameplay systems; world editor simply keeps gameplay
+  controls and HUD surfaces absent
 
 ### 3. Baseline Water And Dynamic Water Split Is Now The Required Stable Model
 
@@ -727,35 +739,31 @@ Remaining direction:
 - integrate DEM import into the WorldEditor UI instead of keeping it as an offline tool only
 - remove the importer's current dependency on the pre-`HEIGHT_SCALE` runtime compatibility layer
 
-### 7. Add Authored Hydrology As A Separate Layer
+## Remaining Planned Deterministic Implementation
 
-Hydrology must be authored separately from raw terrain elevation.
+The remaining slices below are still intended next steps.
 
-The first authored-hydrology data set should include:
+### 7. Optional Future: Richer Water Authoring
 
-- inflows / springs
-- outflows / sinks
-- lake basins or lake surface levels
+The current authored-water model is sufficient as the shipped baseline:
 
-Later authored hydrology may extend that with:
+- `Source`
+- `Sink`
+- `Lake Fill`
+- `Open Water`
 
-- river paths or channels
+We do not currently require a separate richer hydrology layer beyond that baseline.
 
-Deterministic rules:
+If richer water authoring is ever added later, the rules should remain:
 
-- a blank world with no hydrology remains dry
-- authored hydrology defines where water belongs before runtime simulation modifies local details
-- hydrology must not be stored as "just paint some water depth into the live runtime buffer"
+- any richer river/channel ownership stays separate from raw terrain elevation
+- richer water authoring must not be stored as "just paint some water depth into the live runtime
+  buffer"
 - imported hydrography may be used as an editor reference, but not as implicit gameplay water state
 - imported DEMs and imported hydrography remain separate inputs; one does not silently create the
   other
-
-Deterministic imported-map guidance:
-
-- on real-map worlds, authors should place only the major inflows, major outflows, and major lake
-  fills first
-- the first authored-hydrology slice must be usable without an automatic river-generation pass
-- this allows imported DEM worlds to become playable water worlds before river-path tooling exists
+- the current `Source` / `Sink` / `Lake Fill` / `Open Water` workflow remains valid even if no
+  richer river-path tooling is ever added
 
 ### 8. Use A Hybrid Water Model For Very Large Worlds
 
@@ -763,7 +771,8 @@ The intended large-world water model is hybrid.
 
 Deterministic rules:
 
-- authored hydrology defines the baseline rivers, lakes, inflows, and outflows for the whole world
+- the current authored-water baseline defines still water and boundary conditions for the whole
+  world
 - local active areas may run dynamic water simulation
 - the engine must not require a full-world dense shallow-water solve for every map size
 
@@ -964,7 +973,7 @@ Explicit non-goals of the first realism pass:
 The following are explicitly not implemented yet and should not be assumed by other systems:
 
 - interactive WorldEditor DEM / GeoTIFF import UI
-- river-path hydrology authoring
+- optional richer river-path / channel authoring beyond the current water tool set
 - chunk-streamed terrain renderer
 - chunk-window water simulation
 - authoritative terrain undo across source plus derived state
@@ -1020,8 +1029,12 @@ What is implemented now:
 What is next:
 
 1. interactive DEM / GeoTIFF import UI for real-map authored worlds
-2. river-path hydrology on top of the baseline/dynamic water split
-3. dedicated shoreline mesh or distance-field rendering if the current contour-style shoreline
+2. dedicated shoreline mesh or distance-field rendering if the current contour-style shoreline
    field still is not enough for close camera work
-4. chunk-window runtime processing
-5. later texture-assisted terrain/water materials if the shader-only realism pass is not enough
+3. chunk-window runtime processing
+4. later texture-assisted terrain/water materials if the shader-only realism pass is not enough
+
+Optional later only:
+
+- richer river-path / channel authoring if the current water-tool workflow later proves
+  insufficient for map making
