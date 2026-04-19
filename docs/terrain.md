@@ -847,6 +847,37 @@ Deterministic shoreline contour rendering slice:
 - shoreline contour rendering may improve the visible water edge only; it does not create
   sub-cell terrain-bank geometry and must not pretend to solve blocky terrain cuts by itself
 
+Deterministic cliff breakline / cliff band rendering slice:
+
+- on coarse authored grids such as `10 m`, the preferred next cliff-quality step is render-only
+  cliff extraction from the live terrain field, not manual authored cliff painting and not a
+  denser authored map by default
+- cliff rendering must remain render-only and must never become authored world state
+- the extraction input must be the same live visible terrain field used by terrain rendering after
+  terrain refresh, plus its derived slope / local-normal information
+- cliff detection must classify steep terrain from the live terrain field, not from a post-hoc
+  artist-painted mask
+- the extraction algorithm may use slope thresholds, hysteresis, marching squares, contour
+  extraction, or another equivalent method, but the output contract is:
+  - one upper cliff breakline tied to the visible terrain top edge
+  - one lower cliff breakline tied to the visible terrain toe / bottom edge
+  - one rendered cliff-face band or equivalent representation between those two lines
+  - smoother diagonal cliff edges than raw cell silhouettes in common camera views
+  - visibly stronger cliff readability than the current raw terrain mesh alone
+  - no arbitrary drift away from the live terrain field for style
+- the renderer may realize that cliff result as either:
+  - a dedicated cliff ribbon / band mesh
+  - a higher-resolution cliff mask or distance field
+  - another equivalent render-only breakline representation
+- whichever render representation is chosen, it must update whenever visible terrain is refreshed
+  in gameplay or WorldEditor
+- the cliff rendering slice must not require any save-schema change, `WorldDefinition` schema
+  change, or additional authored cliff records
+- cliff rendering may darken or re-shade the cliff face, but that shading must remain derived from
+  the live terrain field and must not introduce authored material ownership
+- cliff rendering improves visible cliff readability only; it does not create sub-cell terrain
+  geometry and must not pretend to solve coarse side silhouettes by itself
+
 Deterministic asset policy:
 
 - external terrain/water material textures are optional later enhancements, not a prerequisite for
@@ -864,6 +895,8 @@ Explicit non-goals of the first realism pass:
 - dependency on scanned PBR material libraries before terrain/water can look acceptable
 - increasing `terrain_cell_m` density solely to get a smoother visible shoreline before contour
   rendering has been attempted
+- increasing `terrain_cell_m` density solely to get smoother visible cliff edges before
+  breakline/band rendering has been attempted
 
 ## Current Deterministic Non-Goals
 
@@ -911,7 +944,8 @@ What is implemented now:
 - terrain and water rendering now use a first render-only realism pass with slope-aware terrain
   shading, shoreline-aware terrain tinting, depth-aware water color, and shader-side shoreline /
   fresnel / procedural breakup treatment, including contour-style shoreline rendering on the
-  existing `10 m` grid from the live visible water field
+  existing `10 m` grid from the live visible water field plus render-only cliff breakline / cliff
+  band treatment from the live terrain field
 
 What is next:
 

@@ -21,6 +21,18 @@ const TERRAIN_ROCK_SLOPE_START := 0.15
 const TERRAIN_ROCK_SLOPE_END := 0.34
 const TERRAIN_SHORE_BLEND_STRENGTH := 0.28
 const TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS := 1.0
+const CLIFF_SLOPE_START := 0.26
+const CLIFF_SLOPE_END := 0.44
+const CLIFF_RELIEF_START_M := 4.0
+const CLIFF_RELIEF_END_M := 14.0
+const CLIFF_SAMPLE_RADIUS_TEXELS := 2.25
+const CLIFF_LATERAL_SMOOTHING_TEXELS := 1.2
+const CLIFF_FACE_STRENGTH := 0.28
+const CLIFF_EDGE_STRENGTH := 0.46
+const CLIFF_CONTOUR_FADE := 0.78
+const CLIFF_FACE_COLOR := Color(0.35, 0.35, 0.32)
+const CLIFF_TOP_EDGE_COLOR := Color(0.27, 0.28, 0.22)
+const CLIFF_TOE_EDGE_COLOR := Color(0.19, 0.20, 0.18)
 const CONTOUR_MINOR_INTERVAL_M := 5.0
 const CONTOUR_MAJOR_INTERVAL_M := 25.0
 const CONTOUR_MINOR_THICKNESS := 0.95
@@ -47,6 +59,9 @@ var cached_overlay_state: bool = false
 var cached_overlay_mode: int = -1
 
 func _ready():
+	# Large displaced terrain self-shadowing is unstable at close zoom on the coarse grid.
+	# Keep terrain lit by procedural hillshade/cliff shading and let other scene objects cast.
+	cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	rebuild_from_simulation_state()
 
 func rebuild_from_simulation_state():
@@ -101,6 +116,18 @@ func rebuild_from_simulation_state():
 	material.set_shader_parameter("terrain_rock_slope_end", TERRAIN_ROCK_SLOPE_END)
 	material.set_shader_parameter("terrain_shore_blend_strength", TERRAIN_SHORE_BLEND_STRENGTH)
 	material.set_shader_parameter("terrain_shore_lookup_radius_texels", TERRAIN_SHORE_LOOKUP_RADIUS_TEXELS)
+	material.set_shader_parameter("cliff_slope_start", CLIFF_SLOPE_START)
+	material.set_shader_parameter("cliff_slope_end", CLIFF_SLOPE_END)
+	material.set_shader_parameter("cliff_relief_start_m", CLIFF_RELIEF_START_M)
+	material.set_shader_parameter("cliff_relief_end_m", CLIFF_RELIEF_END_M)
+	material.set_shader_parameter("cliff_sample_radius_texels", CLIFF_SAMPLE_RADIUS_TEXELS)
+	material.set_shader_parameter("cliff_lateral_smoothing_texels", CLIFF_LATERAL_SMOOTHING_TEXELS)
+	material.set_shader_parameter("cliff_face_strength", CLIFF_FACE_STRENGTH)
+	material.set_shader_parameter("cliff_edge_strength", CLIFF_EDGE_STRENGTH)
+	material.set_shader_parameter("cliff_contour_fade", CLIFF_CONTOUR_FADE)
+	material.set_shader_parameter("cliff_face_color", CLIFF_FACE_COLOR)
+	material.set_shader_parameter("cliff_top_edge_color", CLIFF_TOP_EDGE_COLOR)
+	material.set_shader_parameter("cliff_toe_edge_color", CLIFF_TOE_EDGE_COLOR)
 	material.set_shader_parameter("contour_minor_interval_m", CONTOUR_MINOR_INTERVAL_M)
 	material.set_shader_parameter("contour_major_interval_m", CONTOUR_MAJOR_INTERVAL_M)
 	material.set_shader_parameter("contour_minor_thickness", CONTOUR_MINOR_THICKNESS)

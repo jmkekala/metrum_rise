@@ -21,6 +21,18 @@ uniform float terrain_rock_slope_start = 0.15;
 uniform float terrain_rock_slope_end = 0.34;
 uniform float terrain_shore_blend_strength = 0.52;
 uniform float terrain_shore_lookup_radius_texels = 2.0;
+uniform float cliff_slope_start = 0.26;
+uniform float cliff_slope_end = 0.44;
+uniform float cliff_relief_start_m = 4.0;
+uniform float cliff_relief_end_m = 14.0;
+uniform float cliff_sample_radius_texels = 2.25;
+uniform float cliff_lateral_smoothing_texels = 1.2;
+uniform float cliff_face_strength = 0.34;
+uniform float cliff_edge_strength = 0.46;
+uniform float cliff_contour_fade = 0.78;
+uniform vec3 cliff_face_color : source_color = vec3(0.35, 0.35, 0.32);
+uniform vec3 cliff_top_edge_color : source_color = vec3(0.27, 0.28, 0.22);
+uniform vec3 cliff_toe_edge_color : source_color = vec3(0.19, 0.20, 0.18);
 uniform float contour_minor_interval_m = 2.5;
 uniform float contour_major_interval_m = 10.0;
 uniform float contour_minor_thickness = 0.95;
@@ -83,16 +95,22 @@ float sample_world_height(vec2 uv) {
 	return texture(heightmap, clamped_uv).r * height_scale;
 }
 
-vec3 sample_world_normal(vec2 uv) {
+vec2 sample_height_gradient(vec2 uv) {
 	vec2 texel = 1.0 / max(heightmap_texture_size, vec2(1.0));
 	float h_left = sample_world_height(uv - vec2(texel.x, 0.0));
 	float h_right = sample_world_height(uv + vec2(texel.x, 0.0));
 	float h_up = sample_world_height(uv - vec2(0.0, texel.y));
 	float h_down = sample_world_height(uv + vec2(0.0, texel.y));
 	float safe_cell = max(terrain_cell_m, 0.001);
-	float dzdx = (h_right - h_left) / (2.0 * safe_cell);
-	float dzdz = (h_down - h_up) / (2.0 * safe_cell);
-	return normalize(vec3(-dzdx, 1.0, -dzdz));
+	return vec2(
+		(h_right - h_left) / (2.0 * safe_cell),
+		(h_down - h_up) / (2.0 * safe_cell)
+	);
+}
+
+vec3 sample_world_normal(vec2 uv) {
+	vec2 gradient = sample_height_gradient(uv);
+	return normalize(vec3(-gradient.x, 1.0, -gradient.y));
 }
 
 float shoreline_mask(vec2 uv) {
@@ -134,6 +152,47 @@ float contour_mask(float world_elevation, float interval_m, float thickness) {
 	return 1.0 - smoothstep(0.0, aa_width, dist_to_line);
 }
 
+float slope_metric(vec2 uv) {
+	return 1.0 - clamp(sample_world_normal(uv).y, 0.0, 1.0);
+}
+
+float cliff_candidate(vec2 uv, vec2 along_uv) {
+	float slope_mask = smoothstep(cliff_slope_start, cliff_slope_end, slope_metric(uv));
+	float relief_m = abs(sample_world_height(uv + along_uv) - sample_world_height(uv - along_uv));
+	float relief_mask = smoothstep(cliff_relief_start_m, cliff_relief_end_m, relief_m);
+	return slope_mask * relief_mask;
+}
+
+vec3 cliff_masks(vec2 uv) {
+	vec2 gradient = sample_height_gradient(uv);
+	float gradient_length = length(gradient);
+	if (gradient_length <= 0.0001) {
+		return vec3(0.0);
+	}
+
+	vec2 texel = 1.0 / max(heightmap_texture_size, vec2(1.0));
+	vec2 upslope_dir = gradient / gradient_length;
+	vec2 along_uv = upslope_dir * texel * cliff_sample_radius_texels;
+	vec2 lateral_dir = vec2(-upslope_dir.y, upslope_dir.x);
+	vec2 lateral_uv = lateral_dir * texel * cliff_lateral_smoothing_texels;
+	float center = cliff_candidate(uv, along_uv);
+	float left = cliff_candidate(uv + lateral_uv, along_uv);
+	float right = cliff_candidate(uv - lateral_uv, along_uv);
+	float uphill = cliff_candidate(uv + along_uv, along_uv);
+	float uphill_left = cliff_candidate(uv + along_uv + lateral_uv, along_uv);
+	float uphill_right = cliff_candidate(uv + along_uv - lateral_uv, along_uv);
+	float downhill = cliff_candidate(uv - along_uv, along_uv);
+	float downhill_left = cliff_candidate(uv - along_uv + lateral_uv, along_uv);
+	float downhill_right = cliff_candidate(uv - along_uv - lateral_uv, along_uv);
+	float face = center * 0.5 + left * 0.25 + right * 0.25;
+	face = smoothstep(0.10, 0.82, face);
+	float uphill_avg = (uphill + uphill_left + uphill_right) / 3.0;
+	float downhill_avg = (downhill + downhill_left + downhill_right) / 3.0;
+	float top_edge = clamp(face - uphill_avg, 0.0, 1.0);
+	float toe_edge = clamp(face - downhill_avg, 0.0, 1.0);
+	return vec3(face, top_edge, toe_edge);
+}
+
 void vertex() {
 // ...
 
@@ -152,14 +211,20 @@ void fragment() {
 	vec3 color = terrain_color_from_height(world_elevation, macro_mask);
 	vec3 normal = sample_world_normal(var_centered_uv);
 	float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
+	vec3 cliff = cliff_masks(var_centered_uv);
+	float cliff_face = cliff.x;
+	float cliff_top = cliff.y;
+	float cliff_toe = cliff.z;
 	float rock_mask = smoothstep(terrain_rock_slope_start, terrain_rock_slope_end, slope);
 	rock_mask *= smoothstep(20.0, 220.0, world_elevation + (macro_mask - 0.5) * 120.0);
+	rock_mask = max(rock_mask, cliff_face * 0.92);
 	vec3 rock_color = mix(vec3(0.31, 0.29, 0.25), vec3(0.46, 0.45, 0.43), macro_mask);
 	color = mix(color, rock_color, rock_mask);
 	float shore_mask = shoreline_mask(var_centered_uv);
 	float shore_flatness = 1.0 - smoothstep(terrain_rock_slope_start, terrain_rock_slope_end + 0.10, slope);
 	vec3 shore_color = mix(vec3(0.38, 0.37, 0.25), vec3(0.20, 0.29, 0.18), smoothstep(60.0, 220.0, world_elevation));
 	color = mix(color, shore_color, shore_mask * shore_flatness * terrain_shore_blend_strength);
+	color = mix(color, cliff_face_color, cliff_face * cliff_face_strength);
 	float hillshade = hillshade_mask(var_centered_uv);
 	vec3 hillshade_tint = mix(hillshade_shadow_tint, hillshade_light_tint, hillshade);
 	color *= mix(vec3(1.0), hillshade_tint, hillshade_strength);
@@ -182,10 +247,13 @@ void fragment() {
 		contour_minor_interval_m,
 		contour_minor_thickness
 	) * (1.0 - major_contour);
-	color = mix(color, contour_minor_color, minor_contour * contour_minor_strength);
-	color = mix(color, contour_major_color, major_contour * contour_major_strength);
+	float contour_visibility = 1.0 - (cliff_face * cliff_contour_fade);
+	color = mix(color, contour_minor_color, minor_contour * contour_minor_strength * contour_visibility);
+	color = mix(color, contour_major_color, major_contour * contour_major_strength * contour_visibility);
+	color = mix(color, cliff_top_edge_color, cliff_top * cliff_edge_strength);
+	color = mix(color, cliff_toe_edge_color, cliff_toe * cliff_edge_strength);
 	
 	ALBEDO = color;
-	ROUGHNESS = mix(0.96, 0.76, rock_mask);
+	ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
 	SPECULAR = 0.08;
 }
