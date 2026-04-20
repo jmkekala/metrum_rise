@@ -27,6 +27,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: add service-building coverage so city stability is not only conceptual.
 - `WATER-01`: harden the new baseline-water / dynamic-water split and remove the remaining dense compatibility boundaries.
+- `ROAD-01`: replace the current centerline-first surface-road implementation with one deterministic roadbed model shared by preview, rendering, and terrain earthworks.
 - `MOB-01`: ship bicycle support as the next transport mode.
 - `ALLOC-01`: harden building allocator ownership and spec limits.
 - `DOC-01`: finish replacing old numbered backlog references in live docs.
@@ -47,7 +48,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 | Building placement / removal / frontage attachment          | [`building_allocator.md`](building_allocator.md)       |
 | Gameplay HUD / menus / floating windows                     | [`ui.md`](ui.md)                                       |
 | Asset-editor workflow and pack contract                     | [`asset_editor.md`](asset_editor.md)                   |
-| Road-renderer notes                                         | [`improved_roads.md`](improved_roads.md)               |
+| Road surface / roadbed replacement                         | [`improved_roads.md`](improved_roads.md)               |
 
 ## Recent Structural Changes
 
