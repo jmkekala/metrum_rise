@@ -1,4 +1,5 @@
 shader_type spatial;
+render_mode depth_prepass_alpha, shadows_disabled;
 
 uniform sampler2D heightmap : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;
@@ -16,12 +17,16 @@ uniform float water_wave_roughness_strength = 0.010;
 uniform float water_surface_smoothing = 0.94;
 uniform float water_surface_blend_radius_texels = 1.0;
 uniform vec2 watermap_texture_size = vec2(1.0, 1.0);
+uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
+uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
 
 varying vec2 var_centered_uv;
 varying vec3 var_world_pos;
 
 vec2 centered_uv(vec2 uv) {
-	return (uv * (watermap_texture_size - 1.0) + 0.5) / max(watermap_texture_size, vec2(1.0));
+	vec2 safe_inner_size = max(inner_sample_size_texels, vec2(1.0));
+	return (inner_sample_offset_texels + uv * (safe_inner_size - 1.0) + 0.5)
+		/ max(watermap_texture_size, vec2(1.0));
 }
 
 float sample_terrain_world_height(vec2 uv) {
@@ -160,7 +165,6 @@ void fragment() {
 		water_fresnel_power
 	);
 	final_color = mix(final_color, vec3(0.96, 0.98, 1.0), fresnel * water_fresnel_strength);
-	
 	ALBEDO = final_color;
 	ALPHA = final_alpha;
 	ROUGHNESS = clamp(0.10 + speed * 0.08 + abs(wave_signed) * water_wave_roughness_strength, 0.06, 0.22);

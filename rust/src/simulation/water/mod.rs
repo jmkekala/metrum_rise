@@ -7,9 +7,43 @@
 use crate::simulation::core::config::WorldConfig;
 use crate::simulation::core::sparse_chunk_grid::SparseChunkGrid;
 use rayon::prelude::*;
+use std::collections::HashSet;
 
 const DEFAULT_WATER_CHUNK_CELLS: usize = 64;
 const MAX_DYNAMIC_WATER_SUBSTEP_DT: f32 = 0.05;
+const WATER_RENDER_PATCH_BORDER_TEXELS: usize = 1;
+
+/// One deterministic render-patch snapshot of visible water.
+pub(crate) struct WaterPatchSnapshot {
+    /// Patch X index on the render-patch grid.
+    pub patch_x: usize,
+    /// Patch Z index on the render-patch grid.
+    pub patch_z: usize,
+    /// Number of owned samples across X without the border ring.
+    pub sample_width: usize,
+    /// Number of owned samples across Z without the border ring.
+    pub sample_height: usize,
+    /// Number of texture samples across X including the border ring.
+    pub texture_width: usize,
+    /// Number of texture samples across Z including the border ring.
+    pub texture_height: usize,
+    /// Inner owned sample start inside the texture, in texels.
+    pub inner_offset_x: usize,
+    /// Inner owned sample start inside the texture, in texels.
+    pub inner_offset_z: usize,
+    /// Patch minimum world-space X in metres.
+    pub world_origin_x: f32,
+    /// Patch minimum world-space Z in metres.
+    pub world_origin_z: f32,
+    /// Patch width in world metres.
+    pub world_size_x: f32,
+    /// Patch height in world metres.
+    pub world_size_z: f32,
+    /// Row-major visible water depth samples including the border ring.
+    pub depth_data: Vec<f32>,
+    /// Row-major dynamic-water velocity samples including the border ring.
+    pub velocity_data: Vec<f32>,
+}
 
 struct BaselineWaterState {
     depth: SparseChunkGrid<f32>,
@@ -216,8 +250,14 @@ pub struct WaterSystem {
     pub height: usize,
     /// Water sample spacing in metres.
     cell_size: f32,
+    /// Authored terrain-chunk span in metres used to derive render-patch ownership.
+    chunk_span_m: f32,
+    /// Number of terrain intervals owned by one render patch along one axis.
+    render_patch_interval_cells: usize,
     baseline: BaselineWaterState,
     dynamic: DynamicWaterState,
+    /// Render patches whose visible water textures must be refreshed.
+    dirty_render_patches: HashSet<(usize, usize)>,
 }
 
 impl WaterSystem {
@@ -228,12 +268,17 @@ impl WaterSystem {
 
     /// Creates a new water system with an explicit sparse chunk size.
     pub fn with_chunking(width: usize, height: usize, cell_size: f32, chunk_size: usize) -> Self {
+        let safe_cell_size = cell_size.max(f32::EPSILON);
+        let safe_chunk_size = chunk_size.max(1);
         Self {
             width,
             height,
-            cell_size: cell_size.max(f32::EPSILON),
-            baseline: BaselineWaterState::new(width, height, chunk_size),
-            dynamic: DynamicWaterState::new(width, height, chunk_size),
+            cell_size: safe_cell_size,
+            chunk_span_m: safe_cell_size * safe_chunk_size.saturating_sub(1) as f32,
+            render_patch_interval_cells: safe_chunk_size.saturating_sub(1).max(1),
+            baseline: BaselineWaterState::new(width, height, safe_chunk_size),
+            dynamic: DynamicWaterState::new(width, height, safe_chunk_size),
+            dirty_render_patches: HashSet::new(),
         }
     }
 
@@ -245,6 +290,14 @@ impl WaterSystem {
             config.terrain_cell_m,
             water_chunk_cells_for_config(config),
         )
+        .with_render_chunk_span(config.terrain_chunk_m)
+    }
+
+    fn with_render_chunk_span(mut self, chunk_span_m: f32) -> Self {
+        self.chunk_span_m = chunk_span_m.max(self.cell_size);
+        self.render_patch_interval_cells =
+            render_patch_interval_cells(self.cell_size, self.chunk_span_m);
+        self
     }
 
     /// Advances dynamic water by `dt` seconds over the terrain or baseline-water support surface.
@@ -259,6 +312,7 @@ impl WaterSystem {
         }
         self.dynamic
             .tick(&support_surface, dt, self.width, self.height);
+        self.mark_all_render_patches_dirty();
     }
 
     /// Adds a discrete amount of dynamic water depth to a specific grid cell.
@@ -269,6 +323,7 @@ impl WaterSystem {
                 dynamic_depth = 0.0;
             }
             self.dynamic.depth.set(x, y, dynamic_depth);
+            self.mark_render_patches_for_grid_rect(x, x, y, y);
         }
     }
 
@@ -288,6 +343,7 @@ impl WaterSystem {
         } else {
             self.dynamic.sources.push((x, y, rate_add));
         }
+        self.mark_render_patches_for_grid_rect(x, x, y, y);
     }
 
     /// Returns `true` when at least one dynamic water boundary point exists.
@@ -306,6 +362,7 @@ impl WaterSystem {
     }
 
     /// Returns a dense row-major snapshot of total visible water depth above terrain.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn clone_depth_dense(&self) -> Vec<f32> {
         let baseline = self.baseline.clone_dense();
         let dynamic = self.dynamic.depth.clone_dense();
@@ -321,12 +378,16 @@ impl WaterSystem {
         &mut self,
         dense: &[f32],
     ) -> Result<(), String> {
-        self.baseline.replace_from_dense(dense)
+        self.baseline.replace_from_dense(dense)?;
+        self.mark_all_render_patches_dirty();
+        Ok(())
     }
 
     /// Replaces the dynamic water depth buffer from a dense row-major snapshot.
     pub(crate) fn replace_dynamic_depth_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
-        self.dynamic.depth.replace_from_dense(dense)
+        self.dynamic.depth.replace_from_dense(dense)?;
+        self.mark_all_render_patches_dirty();
+        Ok(())
     }
 
     /// Returns a dense row-major snapshot of dynamic water velocity magnitude.
@@ -341,7 +402,9 @@ impl WaterSystem {
 
     /// Replaces the dynamic water velocity buffer from a dense row-major snapshot.
     pub(crate) fn replace_velocity_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
-        self.dynamic.velocity.replace_from_dense(dense)
+        self.dynamic.velocity.replace_from_dense(dense)?;
+        self.mark_all_render_patches_dirty();
+        Ok(())
     }
 
     /// Replaces the dynamic water flux buffer from a dense row-major snapshot.
@@ -352,6 +415,7 @@ impl WaterSystem {
     /// Clears all transient dynamic water depth, velocity, and flux while keeping authored sources.
     pub(crate) fn clear_dynamic_state(&mut self) {
         self.dynamic.clear_runtime_state();
+        self.mark_all_render_patches_dirty();
     }
 
     /// Returns a snapshot of all dynamic water boundary points.
@@ -372,6 +436,112 @@ impl WaterSystem {
         )
     }
 
+    /// Returns the number of render patches across the X axis.
+    pub(crate) fn render_patch_cols(&self) -> usize {
+        if self.width <= 1 {
+            1
+        } else {
+            (self.width - 1).div_ceil(self.render_patch_interval_cells)
+        }
+    }
+
+    /// Returns the number of render patches across the Z axis.
+    pub(crate) fn render_patch_rows(&self) -> usize {
+        if self.height <= 1 {
+            1
+        } else {
+            (self.height - 1).div_ceil(self.render_patch_interval_cells)
+        }
+    }
+
+    /// Returns the current set of dirty water render patches.
+    pub(crate) fn dirty_render_patches(&self) -> &HashSet<(usize, usize)> {
+        &self.dirty_render_patches
+    }
+
+    /// Clears the water render-patch dirtiness set.
+    pub(crate) fn clear_dirty_render_patches(&mut self) {
+        self.dirty_render_patches.clear();
+    }
+
+    /// Returns one visible-water render patch aligned to the terrain render grid.
+    pub(crate) fn visible_patch_snapshot(
+        &self,
+        patch_x: usize,
+        patch_z: usize,
+    ) -> Option<WaterPatchSnapshot> {
+        let (start_x, end_x, start_z, end_z) = self.render_patch_sample_bounds(patch_x, patch_z)?;
+        let sample_width = end_x - start_x + 1;
+        let sample_height = end_z - start_z + 1;
+        let texture_width = sample_width + WATER_RENDER_PATCH_BORDER_TEXELS * 2;
+        let texture_height = sample_height + WATER_RENDER_PATCH_BORDER_TEXELS * 2;
+        let mut depth_data = vec![0.0_f32; texture_width * texture_height];
+        let mut velocity_data = vec![0.0_f32; texture_width * texture_height];
+
+        for local_z in 0..texture_height {
+            let sample_z = border_clamped_index(
+                start_z,
+                end_z,
+                local_z,
+                WATER_RENDER_PATCH_BORDER_TEXELS,
+            );
+            for local_x in 0..texture_width {
+                let sample_x = border_clamped_index(
+                    start_x,
+                    end_x,
+                    local_x,
+                    WATER_RENDER_PATCH_BORDER_TEXELS,
+                );
+                let flat_idx = local_z * texture_width + local_x;
+                depth_data[flat_idx] = self.baseline.depth.get(sample_x, sample_z)
+                    + self.dynamic.depth.get(sample_x, sample_z);
+                velocity_data[flat_idx] = self.dynamic.velocity.get(sample_x, sample_z);
+            }
+        }
+
+        let (world_origin_x, world_origin_z) = self.grid_to_world_coords(start_x, start_z);
+        let world_size_x = (sample_width.saturating_sub(1)) as f32 * self.cell_size;
+        let world_size_z = (sample_height.saturating_sub(1)) as f32 * self.cell_size;
+        Some(WaterPatchSnapshot {
+            patch_x,
+            patch_z,
+            sample_width,
+            sample_height,
+            texture_width,
+            texture_height,
+            inner_offset_x: WATER_RENDER_PATCH_BORDER_TEXELS,
+            inner_offset_z: WATER_RENDER_PATCH_BORDER_TEXELS,
+            world_origin_x,
+            world_origin_z,
+            world_size_x,
+            world_size_z,
+            depth_data,
+            velocity_data,
+        })
+    }
+
+    /// Returns the visible water depth along the world-edge perimeter loop.
+    pub(crate) fn border_loop_depths(&self) -> Vec<f32> {
+        if self.width < 2 || self.height < 2 {
+            return Vec::new();
+        }
+
+        let mut depths = Vec::with_capacity(self.width * 2 + self.height * 2 - 4);
+        for x in 0..self.width {
+            depths.push(self.visible_depth_at(x, 0));
+        }
+        for z in 1..self.height {
+            depths.push(self.visible_depth_at(self.width - 1, z));
+        }
+        for x in (0..self.width.saturating_sub(1)).rev() {
+            depths.push(self.visible_depth_at(x, self.height - 1));
+        }
+        for z in (1..self.height.saturating_sub(1)).rev() {
+            depths.push(self.visible_depth_at(0, z));
+        }
+        depths
+    }
+
     /// Converts one world-space position to the nearest in-bounds water cell.
     pub(crate) fn world_to_grid_cell_clamped(&self, world_x: f32, world_z: f32) -> (usize, usize) {
         let (world_w, world_h) = self.world_size();
@@ -385,28 +555,137 @@ impl WaterSystem {
             .clamp(0.0, (self.height.saturating_sub(1)) as f32) as usize;
         (grid_x, grid_z)
     }
+
+    fn grid_to_world_coords(&self, grid_x: usize, grid_z: usize) -> (f32, f32) {
+        let (world_w, world_h) = self.world_size();
+        let half_w = world_w * 0.5;
+        let half_h = world_h * 0.5;
+        (
+            grid_x as f32 * self.cell_size - half_w,
+            grid_z as f32 * self.cell_size - half_h,
+        )
+    }
+
+    fn mark_all_render_patches_dirty(&mut self) {
+        for patch_z in 0..self.render_patch_rows() {
+            for patch_x in 0..self.render_patch_cols() {
+                self.dirty_render_patches.insert((patch_x, patch_z));
+            }
+        }
+    }
+
+    fn mark_render_patches_for_grid_rect(
+        &mut self,
+        min_x: usize,
+        max_x: usize,
+        min_z: usize,
+        max_z: usize,
+    ) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+
+        let (min_patch_x, max_patch_x) = self.patch_range_for_sample_range(min_x, max_x);
+        let (min_patch_z, max_patch_z) = self.patch_range_for_sample_range(min_z, max_z);
+        for patch_z in min_patch_z..=max_patch_z {
+            for patch_x in min_patch_x..=max_patch_x {
+                self.dirty_render_patches.insert((patch_x, patch_z));
+            }
+        }
+    }
+
+    fn patch_range_for_sample_range(&self, min_sample: usize, max_sample: usize) -> (usize, usize) {
+        let mut patch_min = min_sample / self.render_patch_interval_cells;
+        if min_sample > 0 && min_sample % self.render_patch_interval_cells == 0 {
+            patch_min = patch_min.saturating_sub(1);
+        }
+        let patch_max = max_sample / self.render_patch_interval_cells;
+        (
+            patch_min.min(self.render_patch_cols().saturating_sub(1)),
+            patch_max.min(self.render_patch_cols().saturating_sub(1)),
+        )
+    }
+
+    fn render_patch_sample_bounds(
+        &self,
+        patch_x: usize,
+        patch_z: usize,
+    ) -> Option<(usize, usize, usize, usize)> {
+        if patch_x >= self.render_patch_cols() || patch_z >= self.render_patch_rows() {
+            return None;
+        }
+
+        let start_x = patch_x * self.render_patch_interval_cells;
+        let start_z = patch_z * self.render_patch_interval_cells;
+        let end_x = (start_x + self.render_patch_interval_cells).min(self.width.saturating_sub(1));
+        let end_z =
+            (start_z + self.render_patch_interval_cells).min(self.height.saturating_sub(1));
+        Some((start_x, end_x, start_z, end_z))
+    }
+
+    fn visible_depth_at(&self, grid_x: usize, grid_z: usize) -> f32 {
+        self.baseline.depth.get(grid_x, grid_z) + self.dynamic.depth.get(grid_x, grid_z)
+    }
 }
 
 fn water_chunk_cells_for_config(config: &WorldConfig) -> usize {
     ((config.terrain_chunk_m / config.terrain_cell_m).ceil() as usize).max(1)
 }
 
+fn render_patch_interval_cells(cell_size: f32, chunk_span_m: f32) -> usize {
+    ((chunk_span_m / cell_size.max(f32::EPSILON)).round() as usize).max(1)
+}
+
+fn border_clamped_index(
+    start: usize,
+    end: usize,
+    bordered_index: usize,
+    border_texels: usize,
+) -> usize {
+    let sample_count = end.saturating_sub(start) + 1;
+    if bordered_index < border_texels {
+        start
+    } else if bordered_index >= border_texels + sample_count {
+        end
+    } else {
+        start + bordered_index - border_texels
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::WaterSystem;
+    use std::collections::HashSet;
 
     #[test]
-    fn combined_depth_adds_baseline_and_dynamic_layers() {
-        let mut water = WaterSystem::with_chunking(3, 3, 10.0, 4);
-        let mut baseline = vec![0.0; 9];
-        baseline[4] = 5.0;
+    fn visible_patch_snapshot_uses_chunk_local_combined_depth() {
+        let mut water = WaterSystem::with_chunking(9, 9, 10.0, 4).with_render_chunk_span(30.0);
+        let mut baseline = vec![0.0; 81];
+        baseline[3 + 3 * 9] = 5.0;
         water
             .replace_baseline_depth_from_dense(&baseline)
             .expect("baseline depth dimensions should match");
-        water.add_water(1, 1, 2.0);
+        water.add_water(3, 3, 2.0);
 
-        let combined = water.clone_depth_dense();
-        assert_eq!(combined[4], 7.0);
+        let patch = water
+            .visible_patch_snapshot(1, 1)
+            .expect("patch (1,1) should exist on a 9x9 water grid");
+
+        assert_eq!(patch.patch_x, 1);
+        assert_eq!(patch.patch_z, 1);
+        assert_eq!(patch.sample_width, 4);
+        assert_eq!(patch.sample_height, 4);
+        assert_eq!(patch.texture_width, 6);
+        assert_eq!(patch.texture_height, 6);
+        assert_eq!(patch.inner_offset_x, 1);
+        assert_eq!(patch.inner_offset_z, 1);
+        assert!((patch.world_origin_x + 10.0).abs() < 0.0001);
+        assert!((patch.world_origin_z + 10.0).abs() < 0.0001);
+        assert!((patch.world_size_x - 30.0).abs() < 0.0001);
+        assert!((patch.world_size_z - 30.0).abs() < 0.0001);
+        assert_eq!(patch.depth_data[0], 7.0);
+        assert_eq!(patch.depth_data[patch.texture_width + 1], 7.0);
+        assert_eq!(patch.velocity_data.len(), patch.depth_data.len());
     }
 
     #[test]
@@ -419,5 +698,16 @@ mod tests {
 
         assert_eq!(water.clone_depth_dense().len(), 25);
         assert_eq!(water.clone_velocity_dense().len(), 25);
+    }
+
+    #[test]
+    fn point_water_edit_marks_all_overlapping_render_patches() {
+        let mut water = WaterSystem::with_chunking(17, 17, 10.0, 4).with_render_chunk_span(30.0);
+
+        water.add_water(3, 3, 1.0);
+
+        let dirty: HashSet<(usize, usize)> = water.dirty_render_patches().iter().copied().collect();
+        let expected = HashSet::from([(0, 0), (1, 0), (0, 1), (1, 1)]);
+        assert_eq!(dirty, expected);
     }
 }

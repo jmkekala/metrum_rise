@@ -27,7 +27,6 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: add service-building coverage so city stability is not only conceptual.
 - `WATER-01`: harden the new baseline-water / dynamic-water split and remove the remaining dense compatibility boundaries.
-- `TERRAIN-01`: split terrain and water rendering away from whole-map dense upload before any default terrain-density move.
 - `MOB-01`: ship bicycle support as the next transport mode.
 - `ALLOC-01`: harden building allocator ownership and spec limits.
 - `DOC-01`: finish replacing old numbered backlog references in live docs.
@@ -114,6 +113,13 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Terrain rendering on the existing coarse authored grid now also includes render-only cliff breakline / cliff band treatment derived from the live terrain field, improving steep cuts and man-made cliffs without changing authored world data or forcing a denser map. See [`terrain.md`](terrain.md).
 - Terrain rendering now adds a render-only terrain-border skirt derived from the live terrain edge, with a side wall, bottom cap, and contour continuation down the cut surface so the world reads as a visible slice instead of a paper-thin plane. See [`terrain.md`](terrain.md).
 - Water rendering now also adds a render-only edge curtain where water reaches the map boundary, so outside views do not see straight through to the submerged terrain plane at the border. See [`terrain.md`](terrain.md).
+- `TERRAIN-01` is now live: terrain and water rendering no longer use one whole-world mesh plus one whole-map dense runtime upload. Both renderers now consume chunk-local patch snapshots aligned to the terrain patch grid, terrain/water roots now own per-patch child meshes instead of a single mesh boundary, dirty patch uploads stay local, and the old whole-map Godot render bridge methods were removed from the steady-state render path. This makes the `10 m` versus `5 m` terrain-density decision measurable on the actual large-world render boundary instead of on the old overlay-era compatibility path. See [`terrain.md`](terrain.md).
+- Earthworks cleanup note: the old whole-map terrain render boundary is no longer the active blocker for engineered ground. The remaining blockers are now explicit in [`earthworks.md`](earthworks.md): coarse `10 m` terrain fidelity near road corridors, fixed placed-road ownership under later terrain edits, and the still-missing local corridor / pad geometry layer.
+- Terrain / water patch rendering now also uses deterministic distance-based mesh LOD on top of the
+  split patch snapshot path, so far-field camera views can reuse the same resident patch snapshots
+  without paying full near-field vertex density for every visible patch. The temporary seam /
+  emissive terrain-debug visual modes used during patch-hardening were removed from the steady
+  runtime after the seam-width bug was fixed. See [`terrain.md`](terrain.md).
 - Gameplay and `WorldEditor` now share one terrain-aware world-camera core in `CameraNode`, including a common terrain-clearance rule that keeps the camera above the terrain surface while preserving separate scene-level zoom and clip policy. See [`ui.md`](ui.md).
 - Added a dedicated `MainMenu` front-door scene and `LaunchState` startup handoff so normal launch no longer boots an empty fallback gameplay map. `New Game` now begins from `user://worlds/`, `Load Game` begins from `user://saves/`, and gameplay only opens after one of those selections. See [`ui.md`](ui.md).
 - Gameplay `File -> New Game` now opens a `user://worlds/` picker and loads the selected `WorldDefinition` into the live gameplay scene, pausing immediately after the refresh. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).

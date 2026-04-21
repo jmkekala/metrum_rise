@@ -34,18 +34,23 @@
 //! | **Terrain** | `sculpt_terrain` | `terrain_tool.gd` |
 //! | | `smooth_terrain` | `world_editor.gd` |
 //! | | `slope_terrain` | `world_editor.gd` |
-//! | | `is_terrain_dirty` | `terrain_renderer.gd` |
-//! | | `clear_terrain_dirty` | `terrain_renderer.gd` |
-//! | | `get_heightmap_data` | `terrain_renderer.gd` |
+//! | | `is_terrain_dirty` | `terrain.gd` |
+//! | | `clear_terrain_dirty` | `terrain.gd` |
+//! | | `get_terrain_patch_layout` | `terrain.gd`, `water.gd` |
+//! | | `get_dirty_terrain_patches` | `terrain.gd` |
+//! | | `get_terrain_patch` | `terrain.gd` |
+//! | | `get_terrain_border_loop` | `terrain.gd`, `water.gd` |
 //! | | `get_height_at` | `road_tool.gd`, `building_tool.gd` |
 //! | | `intersect_terrain` | `input_manager.gd` (mouse pick) |
 //! | | `get_world_surface_height` | `road_tool.gd`, `move_tool.gd` |
 //! | | `intersect_world_surface` | `road_tool.gd`, `select_tool.gd` |
 //! | **Water** | `add_water` | `water_tool.gd` |
 //! | | `add_water_source` | `water_tool.gd` |
-//! | | `is_water_dirty` | `water_renderer.gd` |
-//! | | `clear_water_dirty` | `water_renderer.gd` |
-//! | | `get_water_data` | `water_renderer.gd` |
+//! | | `is_water_dirty` | `water.gd` |
+//! | | `clear_water_dirty` | `water.gd` |
+//! | | `get_dirty_water_patches` | `water.gd` |
+//! | | `get_water_patch` | `water.gd` |
+//! | | `get_water_border_depths` | `water.gd` |
 //! | **Network** | `add_road` | `road_tool.gd` |
 //! | | `is_network_dirty` | `network_renderer.gd` |
 //! | | `clear_network_dirty` | `network_renderer.gd` |
@@ -259,6 +264,54 @@ impl SimulationNode {
         }
         dict
     }
+
+    fn terrain_patch_dict(
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("patch_x", i64::try_from(patch.patch_x).unwrap_or(0));
+        dict.set("patch_z", i64::try_from(patch.patch_z).unwrap_or(0));
+        dict.set("sample_width", i64::try_from(patch.sample_width).unwrap_or(0));
+        dict.set("sample_height", i64::try_from(patch.sample_height).unwrap_or(0));
+        dict.set("texture_width", i64::try_from(patch.texture_width).unwrap_or(0));
+        dict.set("texture_height", i64::try_from(patch.texture_height).unwrap_or(0));
+        dict.set("inner_offset_x", i64::try_from(patch.inner_offset_x).unwrap_or(0));
+        dict.set("inner_offset_z", i64::try_from(patch.inner_offset_z).unwrap_or(0));
+        dict.set("world_origin_x", f64::from(patch.world_origin_x));
+        dict.set("world_origin_z", f64::from(patch.world_origin_z));
+        dict.set("world_size_x", f64::from(patch.world_size_x));
+        dict.set("world_size_z", f64::from(patch.world_size_z));
+        dict.set(
+            "height_data",
+            PackedFloat32Array::from_iter(patch.height_data.iter().copied()),
+        );
+        dict
+    }
+
+    fn water_patch_dict(patch: &crate::simulation::water::WaterPatchSnapshot) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set("patch_x", i64::try_from(patch.patch_x).unwrap_or(0));
+        dict.set("patch_z", i64::try_from(patch.patch_z).unwrap_or(0));
+        dict.set("sample_width", i64::try_from(patch.sample_width).unwrap_or(0));
+        dict.set("sample_height", i64::try_from(patch.sample_height).unwrap_or(0));
+        dict.set("texture_width", i64::try_from(patch.texture_width).unwrap_or(0));
+        dict.set("texture_height", i64::try_from(patch.texture_height).unwrap_or(0));
+        dict.set("inner_offset_x", i64::try_from(patch.inner_offset_x).unwrap_or(0));
+        dict.set("inner_offset_z", i64::try_from(patch.inner_offset_z).unwrap_or(0));
+        dict.set("world_origin_x", f64::from(patch.world_origin_x));
+        dict.set("world_origin_z", f64::from(patch.world_origin_z));
+        dict.set("world_size_x", f64::from(patch.world_size_x));
+        dict.set("world_size_z", f64::from(patch.world_size_z));
+        dict.set(
+            "depth_data",
+            PackedFloat32Array::from_iter(patch.depth_data.iter().copied()),
+        );
+        dict.set(
+            "velocity_data",
+            PackedFloat32Array::from_iter(patch.velocity_data.iter().copied()),
+        );
+        dict
+    }
 }
 
 #[godot_api]
@@ -469,6 +522,7 @@ impl SimulationNode {
     #[func]
     pub fn clear_terrain_dirty(&mut self) {
         self.lock_core().terrain_dirty = false;
+        self.lock_core().heightmap.clear_dirty_render_patches();
         self.snapshot.write().unwrap().terrain_dirty = false;
     }
 
@@ -476,6 +530,7 @@ impl SimulationNode {
     #[func]
     pub fn clear_water_dirty(&mut self) {
         self.lock_core().water_dirty = false;
+        self.lock_core().watermap.clear_dirty_render_patches();
         self.snapshot.write().unwrap().water_dirty = false;
     }
 
@@ -496,22 +551,94 @@ impl SimulationNode {
         self.snapshot.write().unwrap().network_dirty = false;
     }
 
-    /// Returns the raw heightmap data.
+    /// Returns render-patch layout metadata shared by terrain and water renderers.
     #[func]
-    pub fn get_heightmap_data(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(self.lock_core().heightmap.clone_visual_dense())
+    pub fn get_terrain_patch_layout(&self) -> VarDictionary {
+        let core = self.lock_core();
+        let mut dict = VarDictionary::new();
+        dict.set("patch_cols", i64::try_from(core.heightmap.render_patch_cols()).unwrap_or(0));
+        dict.set("patch_rows", i64::try_from(core.heightmap.render_patch_rows()).unwrap_or(0));
+        dict.set(
+            "patch_interval_cells",
+            i64::try_from(core.heightmap.render_patch_interval_cells()).unwrap_or(0),
+        );
+        dict.set("terrain_cell_m", f64::from(core.config.terrain_cell_m));
+        dict.set("chunk_span_m", f64::from(core.heightmap.chunk_span_m()));
+        dict
     }
 
-    /// Returns the visible total water depth above terrain.
+    /// Returns the currently dirty terrain render patches as flat `(x, z)` pairs.
     #[func]
-    pub fn get_water_data(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(self.lock_core().watermap.clone_depth_dense())
+    pub fn get_dirty_terrain_patches(&self) -> PackedInt32Array {
+        let core = self.lock_core();
+        let mut patches: Vec<(usize, usize)> =
+            core.heightmap.dirty_render_patches().iter().copied().collect();
+        patches.sort_unstable();
+        let mut packed = PackedInt32Array::new();
+        for (patch_x, patch_z) in patches {
+            packed.push(i32::try_from(patch_x).unwrap_or(i32::MAX));
+            packed.push(i32::try_from(patch_z).unwrap_or(i32::MAX));
+        }
+        packed
     }
 
-    /// Returns the dynamic water velocity magnitude data.
+    /// Returns one visual-terrain render patch, including its one-sample border ring.
     #[func]
-    pub fn get_water_velocity_data(&self) -> PackedFloat32Array {
-        PackedFloat32Array::from_iter(self.lock_core().watermap.clone_velocity_dense())
+    pub fn get_terrain_patch(&self, patch_x: i32, patch_z: i32) -> VarDictionary {
+        let Ok(patch_x) = usize::try_from(patch_x) else {
+            return VarDictionary::new();
+        };
+        let Ok(patch_z) = usize::try_from(patch_z) else {
+            return VarDictionary::new();
+        };
+        let core = self.lock_core();
+        let Some(patch) = core.heightmap.visual_patch_snapshot(patch_x, patch_z) else {
+            return VarDictionary::new();
+        };
+        Self::terrain_patch_dict(&patch)
+    }
+
+    /// Returns the terrain-border perimeter loop as world-space top positions.
+    #[func]
+    pub fn get_terrain_border_loop(&self) -> PackedVector3Array {
+        PackedVector3Array::from_iter(self.lock_core().heightmap.border_loop_positions())
+    }
+
+    /// Returns the currently dirty water render patches as flat `(x, z)` pairs.
+    #[func]
+    pub fn get_dirty_water_patches(&self) -> PackedInt32Array {
+        let core = self.lock_core();
+        let mut patches: Vec<(usize, usize)> =
+            core.watermap.dirty_render_patches().iter().copied().collect();
+        patches.sort_unstable();
+        let mut packed = PackedInt32Array::new();
+        for (patch_x, patch_z) in patches {
+            packed.push(i32::try_from(patch_x).unwrap_or(i32::MAX));
+            packed.push(i32::try_from(patch_z).unwrap_or(i32::MAX));
+        }
+        packed
+    }
+
+    /// Returns one visible-water render patch, including its one-sample border ring.
+    #[func]
+    pub fn get_water_patch(&self, patch_x: i32, patch_z: i32) -> VarDictionary {
+        let Ok(patch_x) = usize::try_from(patch_x) else {
+            return VarDictionary::new();
+        };
+        let Ok(patch_z) = usize::try_from(patch_z) else {
+            return VarDictionary::new();
+        };
+        let core = self.lock_core();
+        let Some(patch) = core.watermap.visible_patch_snapshot(patch_x, patch_z) else {
+            return VarDictionary::new();
+        };
+        Self::water_patch_dict(&patch)
+    }
+
+    /// Returns the visible water depth along the world-edge perimeter loop.
+    #[func]
+    pub fn get_water_border_depths(&self) -> PackedFloat32Array {
+        PackedFloat32Array::from_iter(self.lock_core().watermap.border_loop_depths())
     }
 
     /// Returns the dimensions of the heightmap.

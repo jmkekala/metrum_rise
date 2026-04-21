@@ -27,10 +27,10 @@ shadow_normal_bias = 3.5
 
 [node name="SimulationNode" type="SimulationNode" parent="."]
 
-[node name="Terrain" type="MeshInstance3D" parent="."]
+[node name="Terrain" type="Node3D" parent="."]
 script = ExtResource("1_terrain")
 
-[node name="Water" type="MeshInstance3D" parent="."]
+[node name="Water" type="Node3D" parent="."]
 script = ExtResource("2_water")
 
 [node name="RoadTool" type="Node3D" parent="."]

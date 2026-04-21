@@ -347,17 +347,25 @@ Authoritative rule:
 
 - city saves and `WorldDefinition` are separate persistence products with different ownership
 
-### 13. Godot Bridge Uploads Dense Snapshots On Demand
+### 13. Godot Bridge Uses Patch Snapshots For Terrain / Water Rendering
 
-The Godot render bridge still consumes full dense buffers.
+The live Godot render bridge now consumes chunk-local terrain / water patch snapshots instead of
+whole-map render buffers.
 
 Current deterministic rules:
 
-- `get_heightmap_data()` materializes dense visual terrain
-- `get_water_data()` materializes dense water depth
-- `get_water_velocity_data()` materializes dense water velocity
-- those whole-map APIs are compatibility-only render/debug boundaries, not the long-term steady
-  render path for gameplay or WorldEditor
+- `terrain.gd` consumes `get_terrain_patch_layout()`, `get_dirty_terrain_patches()`,
+  `get_terrain_patch()`, and `get_terrain_border_loop()`
+- `water.gd` consumes `get_dirty_water_patches()`, `get_water_patch()`, and
+  `get_water_border_depths()`
+- terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
+  per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
+  density for every resident patch
+- the old whole-map terrain / water Godot render APIs were removed from the steady terrain / water
+  bridge
+- dense terrain or water materialization may still exist at save/load, undo, or other explicit
+  compatibility boundaries, but it is no longer the gameplay or WorldEditor terrain / water render
+  path
 
 This is a rendering boundary, not an excuse for simulation systems to depend on dense storage.
 
@@ -670,20 +678,20 @@ Remaining direction:
 - `New Game` still loads directly into gameplay rather than through a richer front-end menu flow
 - city saves must remain runtime snapshots layered on top of that authored world baseline
 
-### 5. Split Terrain / Water Rendering Away From Whole-Map Dense Upload
+### 5. Chunk-Local Terrain / Water Rendering Is Now Live
 
-Now that `terrain_cell_m` exists, the render boundary itself must become chunk-local.
+Now that `terrain_cell_m` exists, the live render boundary is chunk-local instead of whole-world.
 
 Authoritative rule:
 
-- whole-map dense mesh and texture refresh is a temporary compatibility path
-- it must not be extended to justify denser authored terrain, larger worlds, or local
+- whole-map dense mesh and texture refresh is no longer the steady terrain / water render path
+- it must not be reintroduced to justify denser authored terrain, larger worlds, or local
   engineered-ground geometry
 
 Deterministic terrain-render rules:
 
-- visible terrain must render as chunk-local terrain patches rather than one whole-world plane
-- terrain render patches should follow authored terrain chunk boundaries by default
+- visible terrain now renders as chunk-local terrain patches rather than one whole-world plane
+- terrain render patches follow authored terrain chunk boundaries by default
 - if a different terrain render patch span is used later, it must be:
   - derived from `terrain_chunk_m`
   - a fixed integer multiple of `terrain_chunk_m`
@@ -693,7 +701,9 @@ Deterministic terrain-render rules:
   - the local visual-terrain window for that patch
   - one fixed border sample ring if needed for interpolation, normals, or shading continuity
 - unchanged patches must keep their existing GPU resources
-- camera motion alone must not rebuild already resident unchanged patches
+- camera motion alone must not rebuild or reupload already resident unchanged patch textures
+- camera motion may change the mesh-detail tier of an already resident patch, but that change must
+  reuse the resident patch snapshot and must not fall back to whole-map terrain or water uploads
 - only dirty patches and newly required visible patches may rebuild or upload
 - the visible terrain patch set must be derived from the camera or editor interest region plus one
   fixed padding margin to avoid pop-in
@@ -703,23 +713,21 @@ Deterministic terrain-render rules:
 
 Deterministic water-render rules:
 
-- visible water must stop depending on one whole-world depth texture refresh for every change
-- water rendering must consume chunk-local or other bounded window snapshots aligned to a fixed
-  world-space patching rule
-- the preferred patching rule is to align water render windows to the same terrain render patch
-  grid unless measured evidence later justifies a different fixed grid
+- visible water no longer depends on one whole-world depth texture refresh for every change
+- water rendering consumes chunk-local bounded window snapshots aligned to the same fixed terrain
+  render patch grid
 - `WATER-01` may still keep dynamic water simulation compatibility-dense internally while that work
   remains in progress, but once this render split lands the water renderer must not require
   whole-map texture refreshes just to display local changes
 
 Deterministic Godot-bridge rules:
 
-- the primary terrain/water render path must move from whole-map dense snapshot APIs to chunk-local
-  snapshot APIs
-- whole-map APIs such as `get_heightmap_data()`, `get_water_data()`, and
-  `get_water_velocity_data()` may remain for compatibility, debug tooling, or offline export, but
-  they must not remain the steady-state gameplay or WorldEditor render path
-- chunk-local snapshot APIs must expose enough metadata for deterministic reconstruction of one
+- the primary terrain/water render path now uses chunk-local snapshot APIs
+- whole-map Godot render APIs such as `get_heightmap_data()`, `get_water_data()`, and
+  `get_water_velocity_data()` were removed from the steady-state terrain / water render bridge
+- any future dense helper kept for compatibility, debug tooling, or offline export must stay
+  outside the steady-state gameplay and WorldEditor render path
+- chunk-local snapshot APIs expose enough metadata for deterministic reconstruction of one
   patch window:
   - patch identity
   - local dimensions
@@ -737,7 +745,7 @@ Deterministic density gate:
 
 - a default authored-terrain move from `10 m` to `5 m` or finer must not happen before this
   chunk-local terrain / water render split is live
-- the density decision must then be re-measured on the split path using the same world-space test
+- the density decision must now be re-measured on the split path using the same world-space test
   cases for:
   - system RAM
   - GPU VRAM
@@ -751,13 +759,18 @@ Deterministic density gate:
 
 Deterministic transition rules:
 
-- future engineered-ground local corridor / pad geometry should layer on top of the current terrain
-  runtime instead of replacing `TerrainSystem` first
+- future engineered-ground local corridor / pad geometry is required whether the implementation
+  extends the current terrain runtime or rewrites it
+- any terrain-runtime rewrite must still preserve:
+  - authoritative source terrain
+  - a derived far-field terrain surface outside engineered-ground tie-in boundaries
+  - chunk-local invalidation and rebuild boundaries
+  - the split terrain / water render-upload path
+  - visible-world query precedence over client-owned top surfaces and local corridor / pad geometry
 - post-placement terrain edits should rebuild earthworks around already placed client surfaces
   instead of resynchronizing those client surfaces to edited terrain
 
-The chunk-local render path, not the current whole-map compatibility upload, is the target
-large-world runtime boundary.
+The chunk-local render path is now the live large-world terrain / water runtime boundary.
 
 ### 6. Offline Heightmap / DEM Import Is Live
 

@@ -30,6 +30,7 @@ const WORLD_CAMERA_PIVOT_CLEARANCE_M := 0.25
 const WORLD_CAMERA_CLEARANCE_M := 1.5
 
 var _current_save_path := ""
+var _simulation_speed: float = 0.0
 
 func _ready():
 	if not has_node("../CulDeSacTool"):
@@ -314,19 +315,19 @@ func _finish_load_game_selection(path: String) -> void:
 	menu_load_game_from_path(path)
 
 func _toggle_pause():
-	var speed: float = 0.0 if terrain_node.sim_speed > 0.0 else 1.0
+	var speed: float = 0.0 if _simulation_speed > 0.0 else 1.0
 	set_simulation_speed(speed)
 
 func set_simulation_speed(speed: float):
 	var clamped_speed: float = maxf(speed, 0.0)
-	terrain_node.sim_speed = clamped_speed
+	_simulation_speed = clamped_speed
 	simulation_node.set_simulation_speed(clamped_speed)
 	if main_ui and main_ui.has_method("set_sim_speed_display"):
 		main_ui.set_sim_speed_display(clamped_speed)
 	print("Sim speed set to: ", clamped_speed)
 
 func step_simulation_speed(direction: int):
-	var current_speed: float = terrain_node.sim_speed
+	var current_speed: float = _simulation_speed
 	var target_index := 0
 	if direction > 0:
 		target_index = SIM_SPEED_STEPS.size() - 1

@@ -2,12 +2,13 @@ shader_type spatial;
 
 uniform sampler2D heightmap;
 uniform sampler2D overlay_texture;
-uniform sampler2D parcel_texture;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
-uniform vec2 mesh_size = vec2(256.0, 256.0);
+uniform vec2 world_size = vec2(256.0, 256.0);
 uniform vec2 heightmap_texture_size = vec2(256.0, 256.0);
+uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
+uniform vec2 inner_sample_size_texels = vec2(2.0, 2.0);
 uniform float terrain_cell_m = 10.0;
 uniform float hillshade_azimuth_deg = 315.0;
 uniform float hillshade_altitude_deg = 42.0;
@@ -47,6 +48,7 @@ uniform float contour_major_strength = 0.34;
 
 varying float h;
 varying vec2 var_centered_uv;
+varying vec3 var_world_pos;
 
 float hash12(vec2 p) {
 	vec3 p3 = fract(vec3(p.xyx) * 0.1031);
@@ -212,20 +214,18 @@ vec3 cliff_masks(vec2 uv) {
 }
 
 void vertex() {
-// ...
-
-	// TEXEL-CENTERED SAMPLING: Sample from the center of each float32 pixel
-	// UV 0.0 should map to the center of the first stored height sample.
-	vec2 centered_uv = (UV * (heightmap_texture_size - 1.0) + 0.5) / max(heightmap_texture_size, vec2(1.0));
+	vec2 safe_inner_size = max(inner_sample_size_texels, vec2(1.0));
+	vec2 centered_uv = (inner_sample_offset_texels + UV * (safe_inner_size - 1.0) + 0.5)
+		/ max(heightmap_texture_size, vec2(1.0));
 	var_centered_uv = centered_uv;
 	h = texture(heightmap, centered_uv).r;
 	VERTEX.y += h * height_scale;
+	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 
 void fragment() {
 	float world_elevation = h * height_scale;
-	vec2 world_xz = (var_centered_uv - vec2(0.5)) * mesh_size;
-	float macro_mask = macro_variation(world_xz);
+	float macro_mask = macro_variation(var_world_pos.xz);
 	float local_relief = sample_local_relief(var_centered_uv);
 	vec3 normal = sample_world_normal(var_centered_uv);
 	float slope = 1.0 - clamp(normal.y, 0.0, 1.0);
@@ -252,7 +252,15 @@ void fragment() {
 	
 	// Overlay Heatmaps (Pollution, Noise, Desirability)
 	if (overlay_mode > 0) {
-		vec4 heatmap_col = texture(overlay_texture, var_centered_uv);
+		vec2 world_uv = clamp(
+			vec2(
+				var_world_pos.x / max(world_size.x, 0.001),
+				var_world_pos.z / max(world_size.y, 0.001)
+			) + vec2(0.5),
+			vec2(0.0),
+			vec2(1.0)
+		);
+		vec4 heatmap_col = texture(overlay_texture, world_uv);
 		if (heatmap_col.a > 0.0) {
 			color = mix(color, heatmap_col.rgb, 0.6);
 		}
@@ -273,7 +281,6 @@ void fragment() {
 	color = mix(color, contour_major_color, major_contour * contour_major_strength * contour_visibility);
 	color = mix(color, cliff_top_edge_color, cliff_top * cliff_edge_strength);
 	color = mix(color, cliff_toe_edge_color, cliff_toe * cliff_edge_strength);
-	
 	ALBEDO = color;
 	ROUGHNESS = mix(mix(0.96, 0.76, rock_mask), 0.90, cliff_face * 0.70);
 	SPECULAR = 0.08;

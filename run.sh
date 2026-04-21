@@ -4,7 +4,15 @@
 # Debug modes:
 #   --debug              General debug logging (stdout)
 #   --debug <category>   Category-filtered debug logging (stdout)
-#                        Common categories: isect, economy, demand, road, border
+#                        Common categories: isect, economy, demand, road, border, terrain
+#   --debug terrain      Terrain + water patch residency/perf summaries (stdout)
+#                        Shows resident patch counts, desired bounds, cull distance, patch
+#                        create/remove/upload churn, and average renderer timings while flying.
+#   --debug terrain-verbose
+#                        Same as terrain plus residency-change logs whenever the patch window moves.
+#   --debug terrain-full
+#                        Same as terrain plus forced full-world terrain/water residency to compare
+#                        steady-state full-map cost against camera-driven patch churn.
 #   --debug traffic      Traffic/routing + road-network connectivity (stderr)
 #   --debug-traffic      Alias for --debug traffic
 #                        Shows per-road-placement split details, CCH rebuild connectivity
@@ -64,6 +72,19 @@ if [ $DEBUG -eq 1 ]; then
         if [ "$DEBUG_CATEGORY" = "road" ]; then
             echo "  After each committed road refresh: [DEBUG:road] ROAD_GEOMETRY_DUMP_BEGIN ... ROAD_GEOMETRY_DUMP_END"
             echo "  Includes edge geometry, compiled section cross-sections, and source/visual terrain samples."
+        elif [ "$DEBUG_CATEGORY" = "terrain" ]; then
+            export METRUM_DEBUG_TERRAIN=1
+            echo "  Terrain flight diagnostics enabled: [DEBUG:terrain] summaries every 0.5 s"
+            echo "  Includes resident patch counts, desired bounds, cull distance, and terrain/water timing."
+        elif [ "$DEBUG_CATEGORY" = "terrain-verbose" ]; then
+            export METRUM_DEBUG_TERRAIN=1
+            export METRUM_DEBUG_TERRAIN_VERBOSE=1
+            echo "  Terrain flight diagnostics enabled: summaries + residency-change logs."
+        elif [ "$DEBUG_CATEGORY" = "terrain-full" ]; then
+            export METRUM_DEBUG_TERRAIN=1
+            export METRUM_DEBUG_TERRAIN_FORCE_FULL_WORLD=1
+            echo "  Terrain flight diagnostics enabled with forced full-world terrain/water residency."
+            echo "  Use this to compare steady-state full-map cost against camera-driven patch churn."
         fi
     else
         echo "Debug logging enabled (output goes to stdout)"

@@ -96,10 +96,16 @@ But one important ownership gap still remains in the current runtime:
   terrain instead of treating the placed roadbed as fixed and reshaping terrain / earthworks
   around it
 
-It is now primarily a coarse-grid terrain representation problem. Phase 11 exists to quantify that
-gap on the shipped `10 m` terrain grid, compare it against a candidate `5 m` grid on the same
-world-space scenarios, and feed that result into the terrain-side render-boundary work owned by
-[`terrain.md`](terrain.md) before any default density move is attempted.
+The earlier terrain-side render-boundary blocker is already removed by [`TERRAIN-01`](roadmap.md),
+so this is now primarily a coarse-grid terrain representation problem plus the still-open fixed-road
+ownership gap above. Phase 11 exists to quantify that gap on the shipped `10 m` terrain grid,
+compare it against a candidate `5 m` grid on the same world-space scenarios, and measure that on
+the split terrain path owned by [`terrain.md`](terrain.md) before any default density move is
+attempted.
+
+The next representation step is now fixed in [`earthworks.md`](earthworks.md): if denser terrain is
+still not sufficient, roads move to client-owned local corridor geometry near the roadbed footprint
+instead of asking visual terrain to remain the final visible owner of the cut / fill shape.
 
 ## Roadbed Contract
 
@@ -503,16 +509,50 @@ Required Phase 12 work:
 
 - terrain-authoring edits must no longer resynchronize placed grounded `Standard` roads to edited
   source terrain as a side effect
-- once a road is committed, later terrain edits must rebuild visual terrain and earthworks around
-  that fixed roadbed instead
+- once a road is committed, later terrain edits must write source terrain first and then rebuild
+  visual terrain, local corridor geometry, and earthworks around that fixed roadbed instead
 - explicit road-edit operations remain the only way to move or regrade the committed road surface
 - placement-time grounding may still choose the initial roadbed, but that placement solve must not
   remain a live dependency of later terrain brushes
 - the same fixed-roadbed rule must stay consistent across committed render mesh, world-surface
-  queries, and terrain earthworks
+  queries, local corridor geometry caches, and terrain earthworks
+- if a later terrain edit would create an extreme surrounding cut / fill case, the road still stays
+  fixed; later earthwork geometry variants may change representation, but terrain brushes must not
+  silently move the committed roadbed
 
 Phase 12 is separate from Phase 11 because it changes ownership semantics first; denser terrain or
 local corridor geometry still remain possible follow-ups after that rule is in place.
+
+### Phase 13 - Road-Owned Local Corridor Geometry
+
+The next representation fix is now deterministic.
+
+Required Phase 13 work:
+
+- grounded roads must own local corridor geometry on both sides of the committed roadbed footprint
+- each road edge span must derive left and right earthwork strips from the compiled section anchors
+  already used by the roadbed and earthwork solve
+- each side strip must begin at the road-owned top-surface boundary and end at the deterministic
+  tie-in boundary for that same side
+- terrain inside that corridor may remain as compatibility / blend support, but it must no longer be
+  the final visible owner of the near-road cut / fill surface once corridor geometry exists
+- terminal road ends must emit deterministic cap geometry from the road-owned top surface to the
+  tie-in boundary
+- future node-patch perimeter tie-ins must follow the same ownership model so node ownership and
+  edge ownership still meet cleanly at the throat boundary
+- corridor geometry must be partitioned into touched terrain-chunk-aligned caches instead of one
+  monolithic world mesh
+- road visible-surface queries must resolve as road top surface first, then road-owned corridor
+  geometry, then visual terrain
+- the first shipped corridor-geometry variant is a deterministic slope strip; retaining or wall
+  variants are later geometry extensions, not a separate earthworks system
+
+Phase 13 is the first geometry step that directly removes the remaining "terrain smears back over
+the road corridor" limitation instead of only measuring it.
+
+The still-open building-pad client work and later retaining / wall variants tracked in
+[`earthworks.md`](earthworks.md) are later additions to the same subsystem, not blockers for the
+first roads-first Phase 13 slice.
 
 ## Test Contract
 

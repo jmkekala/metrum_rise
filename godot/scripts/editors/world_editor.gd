@@ -82,9 +82,9 @@ enum Tool {
 }
 
 @onready var sim: SimulationNode = $SimulationNode
-@onready var terrain: MeshInstance3D = $Terrain
-@onready var water: MeshInstance3D = $Water
-@onready var editor_camera_input: Node = $EditorCameraInput
+@onready var terrain = $Terrain
+@onready var water = $Water
+@onready var editor_camera_input = $EditorCameraInput
 
 var _active_tool: Tool = Tool.RAISE
 var _current_world_name := "Untitled World"

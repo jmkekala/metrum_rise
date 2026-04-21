@@ -152,8 +152,8 @@ Runtime-spawned tools:
 | WorldEnvironment | `WorldEnvironment` | — | Global environment settings. |
 | DirectionalLight3D | `DirectionalLight3D` | — | Primary scene light and shadow source. |
 | SimulationNode | Rust native | — | Owns the paused shared runtime and `WorldDefinition` bridge methods. |
-| Terrain | `MeshInstance3D` | `terrain.gd` | Terrain renderer and dirty-flag refresh owner, shared with gameplay. |
-| Water | `MeshInstance3D` | `water.gd` | Water renderer for authored-water preview and live water depth, shared with gameplay. |
+| Terrain | `Node3D` | `terrain.gd` | Terrain patch renderer and dirty-flag refresh owner, shared with gameplay. |
+| Water | `Node3D` | `water.gd` | Water patch renderer for authored-water preview and live water depth, shared with gameplay. |
 | CameraNode | `CameraNode` | — | Shared terrain-aware world-camera core for WorldEditor. |
 | EditorCameraInput | `Node` | `world_editor_camera_input.gd` | World-editor input wrapper and UI-capture gate around the shared `CameraNode` policy. |
 
@@ -163,8 +163,8 @@ Runtime-spawned tools:
 |--------|---------------------------------|
 | `input_manager.gd` | `undo_action()`, `save_game()`, `load_game()`, `load_world_definition()`, `set_simulation_speed()` |
 | `main_ui.gd` | `get_no_building_spawn()`, `get_edge_class()`, `get_edge_geometry_3d()`, `get_height_at()` |
-| `terrain.gd` | `get_heightmap_size()`, `get_terrain_world_size()`, `get_heightmap_data()`, `intersect_terrain()`, `sculpt_terrain()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
-| `water.gd` | `get_heightmap_size()`, `get_terrain_world_size()`, `get_water_data()`, `get_water_velocity_data()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
+| `terrain.gd` | `get_heightmap_size()`, `get_terrain_world_size()`, `get_terrain_patch_layout()`, `get_dirty_terrain_patches()`, `get_terrain_patch()`, `get_terrain_border_loop()`, `intersect_terrain()`, `sculpt_terrain()`, `is_terrain_dirty()`, `clear_terrain_dirty()`, `get_pollution_image_data()`, `get_noise_image_data()`, `get_desirability_image_data()` |
+| `water.gd` | `get_water_patch()`, `get_dirty_water_patches()`, `get_water_border_depths()`, `add_water_source()`, `is_water_dirty()`, `clear_water_dirty()` |
 | `agents.gd` | `get_agent_cull_far_m()`, `get_agent_cull_padding_m()`, `set_camera_aabb()`, `get_agent_transforms()`, `get_car_transforms()`, `get_agent_paths_debug()` |
 | `asset_editor.gd` | `is_asset_editor_mode()`, `load_asset_packs()`, `get_registered_asset_ids()`, `get_pack_manifest_json()`, `get_asset_manifest_json()`, `load_economy_project()`, `validate_and_export_asset()` |
 | `buildings.gd` | `load_asset_packs()`, `get_registered_asset_ids()`, `get_lod0_native_path()`, `get_building_transforms_for_asset()`, `get_building_plot_transforms()` |

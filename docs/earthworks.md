@@ -57,7 +57,7 @@ Terminology:
 
 The engineered-ground system must not rewrite authored source terrain.
 
-`TerrainSystem` continues to own:
+The terrain runtime continues to own:
 
 - source terrain
 - visual terrain storage
@@ -182,7 +182,23 @@ That means:
 
 Road-specific section and junction rules continue to live in [`improved_roads.md`](improved_roads.md).
 
-### 2. Terrain Density Is Still A Limitation
+### 2. Former Whole-Map Render Boundary Is No Longer The Blocker
+
+The earlier terrain-side blocker for earthworks work was the old whole-map dense render boundary.
+
+That blocker is now removed:
+
+- [`TERRAIN-01`](roadmap.md) is done
+- terrain and water rendering now use chunk-local patch upload and residency instead of one
+  whole-world mesh plus one whole-map dense steady-state upload
+- `10 m` versus `5 m` terrain characterization now runs on the split render path instead of on the
+  old overlay-era whole-map render boundary
+
+So the current earthworks problem is no longer "the renderer makes any denser or more local
+engineered-ground work pay a whole-world cost." The remaining problem is what the current terrain
+representation can express near engineered-ground footprints.
+
+### 3. Terrain Density Is Still A Limitation
 
 The current runtime still relies on the visual terrain heightfield to carry too much of the local
 cut / fill shape near roads.
@@ -204,7 +220,7 @@ The current deterministic characterization now proves:
 
 So terrain density is part of the answer, but not the whole answer.
 
-### 3. Current Runtime Compatibility Gap On Post-Placement Terrain Edits
+### 4. Current Runtime Compatibility Gap On Post-Placement Terrain Edits
 
 The current runtime still violates the fixed-client rule for grounded roads.
 
@@ -217,7 +233,7 @@ Current compatibility gap:
 - future building pads and foundations are not live yet, so their fixed-surface semantics are
   still a shared-target rule rather than a shipped behavior
 
-### 4. Current Terrain Runtime Is A Compatible Base, Not The Final Visual Carrier
+### 5. Current Terrain Runtime Is A Compatible Base, Not The Final Visual Carrier
 
 The current terrain runtime is sufficient for first-stage engineered ground:
 
@@ -230,38 +246,142 @@ terrain remains a single-height field.
 
 Current deterministic conclusion:
 
-- do not replace `TerrainSystem` just to continue earthworks work
+- a terrain-runtime rewrite is allowed if needed, but it is not by itself an earthworks solution
 - do not expect the current visual terrain heightfield, even at a denser cell size, to represent
   all near-footprint cut / fill detail by itself
 - treat future client-owned corridor or pad geometry as an additive layer above the current terrain
-  runtime, not as a reason to rewrite terrain storage first
+  ownership model, not as something denser terrain alone can replace
 
-## Open Questions
+## Geometry Decision
 
-The following questions remain intentionally open and still need concrete implementation decisions.
+The former whole-map dense terrain / water render boundary is intentionally not listed here as an
+open blocker, because [`TERRAIN-01`](roadmap.md) already removed it.
 
-### 1. What Exact Local Geometry Should Own The Tie-In Near The Footprint?
+### 1. Roads-First Tie-In Geometry Is A Client-Owned Corridor Mesh
 
-The shared target now requires client-owned local geometry near roads and future pads, but the
-exact runtime form is still open.
+The exact first geometry form is now fixed.
 
-Open decision:
+Deterministic choice:
 
-- whether the near-footprint layer should be implemented as corridor skirts, explicit slope meshes,
-  retaining-face meshes, pad perimeter geometry, or some combination of those depending on the
-  local cut / fill case
+- linear engineered-ground clients such as roads use client-owned corridor geometry on both sides
+  of the owned top surface
+- area / pad clients such as future flat building foundations use client-owned perimeter ring
+  geometry around the owned top surface
+- terrain owns only the far-field ground outside the deterministic tie-in boundary
+- the local geometry layer is the required near-footprint visible carrier; visual terrain inside
+  that local tie-in region becomes compatibility / blend support, not the final owner of the
+  visible cut / fill shape
 
-### 2. How Does The Fixed-Client Rule Land In Live Runtime?
+### 2. Road Corridor Geometry Uses Deterministic Section Anchors
 
-The contract is now explicit: once a client is placed, later terrain edits must reshape terrain and
-earthworks around it instead of moving the client implicitly.
+The first implementation slice is roads-first and must use one deterministic geometry form.
 
-Open decision:
+Required road geometry contract:
 
-- how placement-time grounding is separated from later terrain-authoring edits in the runtime so
-  committed roads, and later foundations, stay fixed unless the player explicitly edits that client
+- each compiled road section owns one left-side and one right-side local earthwork strip
+- each strip begins at the outer edge of the road-owned footprint for that section sample
+- each strip ends at the deterministic tie-in boundary already implied by the road earthwork solve
+- consecutive section samples stitch those inner and outer anchors into one continuous side mesh
+  per side
+- edge-local corridor geometry stops at the existing road throat boundaries so road-edge ownership
+  still hands off cleanly into node patches and terminal ownership
+- terminal road ends must emit deterministic cap geometry from the owned top-surface boundary to
+  the tie-in boundary
+- future node-patch tie-ins and future building pads follow the same owner model, but use a
+  perimeter ring instead of two longitudinal side strips
 
-### 3. When Do Buildings Become Live Engineered-Ground Clients?
+### 3. Slope Strips Are The First Required Variant
+
+The first required geometry variant is intentionally narrow.
+
+Required first variant:
+
+- the local corridor geometry must render a deterministic slope strip from the owned top surface to
+  the tie-in boundary
+- cut versus fill is determined from the support-surface anchor heights relative to the tie-in
+  boundary, not from ad hoc widening of sampled terrain
+- the first shipped geometry variant does not require retaining walls, cliff faces, or other
+  special-case vertical structures
+- future retaining or wall variants may replace the slope strip when deterministic thresholds say
+  the slope solution is no longer acceptable, but that is a later extension of the same ownership
+  model rather than a separate geometry system
+
+### 4. Terrain Runtime Rewrites Are Allowed, But The Ownership Contract Is Not Optional
+
+A terrain-runtime rewrite is acceptable if it materially improves the system and still preserves the
+shared engineered-ground rules.
+
+Required rule:
+
+- whether the implementation extends the current terrain runtime or rewrites it, the resulting
+  runtime must still preserve:
+  1. authoritative source terrain
+  2. explicit client-owned top surfaces
+  3. client-owned local corridor / pad geometry near the footprint
+  4. chunk-local invalidation and rebuild boundaries
+  5. visible-world query precedence
+  6. no regression back to whole-world rebuild or upload behavior
+
+### 5. Fixed-Client Runtime Behavior Is Deterministic After Commit
+
+The fixed-client rule now has one required runtime interpretation.
+
+Required runtime contract:
+
+- placement-time grounding may choose the initial support surface only before the client is
+  committed
+- committing the client freezes that support surface for later terrain-authoring edits
+- terrain-authoring edits write source terrain only
+- after the source-terrain edit, the runtime rebuilds only the touched local earthworks and derived
+  visual terrain around the already committed support surface
+- explicit client-edit operations remain the only path that may move, regrade, or replace the
+  committed support surface
+- if a later terrain edit would make the surrounding cut / fill extreme, the runtime still keeps
+  the committed client fixed; later geometry variants may change how that earthwork is represented,
+  but terrain brushes must not silently move the client
+
+### 6. Extra Geometry Uses Chunk-Local Client Caches And One Shared Query Order
+
+The extra geometry layer now has one required cache and query model.
+
+Required cache and query contract:
+
+- client-owned top surfaces remain owned by the client that authored them
+- client-owned corridor / pad geometry is stored in chunk-local caches aligned to terrain chunk
+  boundaries
+- when a client rebuilds, it must partition the produced local geometry into touched terrain chunks
+  instead of keeping one whole-world monolithic mesh
+- renderer uploads for that local geometry must stay bounded to the touched chunk caches
+- visible-world queries must resolve in this order:
+  1. client-owned top surface
+  2. client-owned local corridor / pad geometry for the touched chunk
+  3. visual terrain
+  4. source terrain only for terrain-only APIs
+- world-surface picking and visible-surface queries must not require a whole-world scan across every
+  engineered-ground client
+- rebuilding local corridor / pad geometry must not force whole-world terrain restamps or
+  whole-world render uploads
+
+## First-Draft Status
+
+The first roads-first earthworks implementation no longer has unresolved architecture blockers in
+this document.
+
+For the first draft, the following are now deterministic:
+
+- roads use client-owned corridor geometry near the footprint
+- the first geometry variant is the slope strip
+- committed clients stay fixed under later terrain-authoring edits
+- local earthwork geometry uses chunk-local caches and one explicit visible-world query order
+
+That means the remaining items below are later additions, not blockers for the first road corridor
+implementation.
+
+## Later Additions
+
+The following items remain intentionally open as later extensions of the same subsystem.
+
+### 1. When Do Buildings Become Live Engineered-Ground Clients?
 
 Future flat building pads and foundations are already part of the shared target, but they are not
 yet implemented as first-class engineered-ground clients.
@@ -272,16 +392,15 @@ Open decision:
   behavior integrate with allocator / zoning placement without inventing a second terrain-override
   model separate from roads
 
-### 4. What Exact Cache And Query Shape Supports The Extra Geometry Layer?
+### 2. When Do Later Geometry Variants Replace The First Slope Strip?
 
-The query precedence is already defined, but the runtime structure that serves it is still open.
+The first shipped geometry variant is intentionally only the slope strip.
 
 Open decision:
 
-- how client-owned local earthwork geometry is chunked, cached, rebuilt, and queried so that:
-  - world-surface picking stays deterministic
-  - chunk invalidation remains local
-  - renderer upload does not regress back to whole-world rebuild behavior
+- which deterministic thresholds or authored classes should replace the first slope-strip geometry
+  with retaining walls, cliff faces, or other later variants when the cut / fill case becomes too
+  extreme for the simple slope solution
 
 ## Shared Target
 
@@ -333,14 +452,15 @@ Deterministic conclusion:
 If denser terrain still leaves unacceptable overlap, the next fix must be a different
 representation rather than more density alone.
 
-### 4. Transition Path Extends `TerrainSystem` Rather Than Replacing It
+### 4. Transition Path Preserves Ownership Even If The Terrain Runtime Changes
 
-The shared target is a layered extension of the current terrain runtime.
+The shared target is an ownership contract first and an implementation choice second.
 
 Required transition path:
 
 - keep `source terrain` as the authoritative authored ground
-- keep `visual terrain` as the far-field derived terrain buffer and renderer upload source
+- keep a derived far-field terrain surface as the renderer upload source beyond engineered-ground
+  tie-in boundaries
 - split terrain and water render/upload work into chunk-local windows before treating denser
   terrain as a baseline runtime choice
 - add client-owned local corridor / pad geometry caches near engineered-ground footprints
@@ -350,5 +470,6 @@ Required transition path:
   3. visual terrain
   4. source terrain only for terrain-only APIs
 
-This means the long-term earthworks architecture is a targeted ownership refactor around the
-current terrain runtime, not a complete terrain-system replacement.
+This means the long-term earthworks architecture may extend or rewrite the current terrain runtime,
+but it must preserve the same client-ownership rules and must not regress back to a terrain-only
+model near engineered-ground footprints.
