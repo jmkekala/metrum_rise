@@ -9,7 +9,7 @@ impl SimCore {
     // ── Network Renderer ──
 
     /// Returns dictionary of road/intersection mesh data.
-    pub fn get_road_mesh_data_internal(&self) -> VarDictionary {
+    pub fn get_road_mesh_data_internal(&mut self) -> VarDictionary {
         let mesh_data = self
             .transit_network
             .generate_mesh_data(&self.region_graph, &self.heightmap);
@@ -79,6 +79,63 @@ impl SimCore {
         dict.set(
             "concrete_colors",
             PackedColorArray::from_iter(mesh_data.concrete_colors),
+        );
+        dict
+    }
+
+    /// Returns temporary compiled preview-surface data for the road tool.
+    pub fn get_preview_road_surface_internal(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+    ) -> VarDictionary {
+        let preview = self.transit_network.road_surface.compile_preview_surface(
+            &points.to_vec(),
+            fwd_lanes,
+            bkw_lanes,
+            &self.heightmap,
+        );
+
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "prepared_points",
+            PackedVector3Array::from_iter(preview.prepared_points),
+        );
+        dict.set(
+            "surface_vertices",
+            PackedVector3Array::from_iter(preview.surface_vertices),
+        );
+        dict.set("is_valid", preview.is_valid);
+        dict
+    }
+
+    /// Returns compiled road-surface debug line data for editor visualization.
+    pub fn get_road_surface_debug_data_internal(&mut self) -> VarDictionary {
+        self.transit_network
+            .road_surface
+            .compile_dirty(&self.region_graph, &self.heightmap);
+        let debug = self
+            .transit_network
+            .road_surface
+            .build_debug_line_data(&self.region_graph, &self.heightmap);
+
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "section_lines",
+            PackedVector3Array::from_iter(debug.section_lines),
+        );
+        dict.set(
+            "band_lines",
+            PackedVector3Array::from_iter(debug.band_lines),
+        );
+        dict.set(
+            "node_patch_lines",
+            PackedVector3Array::from_iter(debug.node_patch_lines),
+        );
+        dict.set(
+            "earthwork_chunk_lines",
+            PackedVector3Array::from_iter(debug.earthwork_chunk_lines),
         );
         dict
     }

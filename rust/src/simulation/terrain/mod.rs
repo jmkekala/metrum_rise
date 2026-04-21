@@ -85,33 +85,20 @@ impl TerrainSystem {
 
     /// Bilinearly interpolates the source height at any fractional world coordinate.
     pub fn get_height_interpolated(&self, x: f32, z: f32) -> f32 {
-        let x_clamped = x.clamp(0.0, (self.width - 1) as f32);
-        let z_clamped = z.clamp(0.0, (self.height - 1) as f32);
-
-        let x0 = x_clamped.floor() as usize;
-        let z0 = z_clamped.floor() as usize;
-        let x1 = (x0 + 1).min(self.width - 1);
-        let z1 = (z0 + 1).min(self.height - 1);
-
-        let fx = x_clamped.fract();
-        let fz = z_clamped.fract();
-
-        // Sample from SOURCE data for all interpolation
-        let h00 = self.source_data.get(x0, z0);
-        let h10 = self.source_data.get(x1, z0);
-        let h01 = self.source_data.get(x0, z1);
-        let h11 = self.source_data.get(x1, z1);
-
-        let h0 = h00 * (1.0 - fx) + h10 * fx;
-        let h1 = h01 * (1.0 - fx) + h11 * fx;
-
-        h0 * (1.0 - fz) + h1 * fz
+        self.interpolate_grid_height(&self.source_data, x, z)
     }
 
     /// Samples the authoritative source terrain at one world-space position.
     pub fn sample_height_world(&self, world_x: f32, world_z: f32) -> f32 {
         let (grid_x, grid_z) = self.world_to_grid_coords(world_x, world_z);
         self.get_height_interpolated(grid_x, grid_z)
+    }
+
+    /// Samples the current visual terrain buffer at one world-space position.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn sample_visual_height_world(&self, world_x: f32, world_z: f32) -> f32 {
+        let (grid_x, grid_z) = self.world_to_grid_coords(world_x, world_z);
+        self.interpolate_grid_height(&self.data, grid_x, grid_z)
     }
 
     /// Calculates the surface normal at a fractional coordinate using gradient sampling.
@@ -130,8 +117,49 @@ impl TerrainSystem {
         Vector3::new(-dx * 20.0, 1.0, -dz * 20.0).normalized()
     }
 
+    fn interpolate_grid_height(&self, grid: &SparseChunkGrid<f32>, x: f32, z: f32) -> f32 {
+        let x_clamped = x.clamp(0.0, (self.width - 1) as f32);
+        let z_clamped = z.clamp(0.0, (self.height - 1) as f32);
+
+        let x0 = x_clamped.floor() as usize;
+        let z0 = z_clamped.floor() as usize;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let z1 = (z0 + 1).min(self.height - 1);
+
+        let fx = x_clamped.fract();
+        let fz = z_clamped.fract();
+
+        let h00 = grid.get(x0, z0);
+        let h10 = grid.get(x1, z0);
+        let h01 = grid.get(x0, z1);
+        let h11 = grid.get(x1, z1);
+
+        let h0 = h00 * (1.0 - fx) + h10 * fx;
+        let h1 = h01 * (1.0 - fx) + h11 * fx;
+
+        h0 * (1.0 - fz) + h1 * fz
+    }
+
     /// Casts a ray against the terrain surface and returns the intersection point.
     pub fn raycast_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Option<Vector3> {
+        self.raycast_height_field(ray_origin, ray_dir, false)
+    }
+
+    /// Casts a ray against the current visual terrain surface.
+    pub(crate) fn raycast_visual_terrain(
+        &self,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+    ) -> Option<Vector3> {
+        self.raycast_height_field(ray_origin, ray_dir, true)
+    }
+
+    fn raycast_height_field(
+        &self,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+        visual: bool,
+    ) -> Option<Vector3> {
         let (half_w, half_h) = self.half_world_extents();
         let (entry_t, exit_t) = raycast_xz_interval(ray_origin, ray_dir, half_w, half_h)?;
         let mut prev_t = entry_t.max(0.0);
@@ -142,13 +170,13 @@ impl TerrainSystem {
             prev_t + self.raycast_search_limit(ray_origin, half_w, half_h)
         };
         let prev_point = ray_origin + ray_dir * prev_t;
-        let mut prev_diff =
-            prev_point.y - self.sample_height_world(prev_point.x, prev_point.z) * HEIGHT_SCALE;
+        let mut prev_diff = prev_point.y
+            - self.sample_height_world_impl(prev_point.x, prev_point.z, visual) * HEIGHT_SCALE;
 
         while prev_t < max_t {
             let t = (prev_t + step).min(max_t);
             let p = ray_origin + ray_dir * t;
-            let h = self.sample_height_world(p.x, p.z) * HEIGHT_SCALE;
+            let h = self.sample_height_world_impl(p.x, p.z, visual) * HEIGHT_SCALE;
             let diff = p.y - h;
 
             if diff == 0.0 || diff.signum() != prev_diff.signum() {
@@ -158,7 +186,7 @@ impl TerrainSystem {
                 for _ in 0..8 {
                     let t_mid = (t_low + t_high) * 0.5;
                     let pm = ray_origin + ray_dir * t_mid;
-                    let hm = self.sample_height_world(pm.x, pm.z) * HEIGHT_SCALE;
+                    let hm = self.sample_height_world_impl(pm.x, pm.z, visual) * HEIGHT_SCALE;
                     if (pm.y - hm).signum() == prev_diff.signum() {
                         t_low = t_mid;
                     } else {
@@ -174,6 +202,14 @@ impl TerrainSystem {
         }
 
         None
+    }
+
+    fn sample_height_world_impl(&self, world_x: f32, world_z: f32, visual: bool) -> f32 {
+        if visual {
+            self.sample_visual_height_world(world_x, world_z)
+        } else {
+            self.sample_height_world(world_x, world_z)
+        }
     }
 
     /// Modifies terrain height in a circular area with smooth falloff.
@@ -405,6 +441,28 @@ impl TerrainSystem {
         self.data = self.source_data.clone();
     }
 
+    /// Synchronizes one world-space visual region from the authoritative source terrain.
+    pub(crate) fn reset_visual_region_from_source_world(
+        &mut self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) {
+        let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) =
+            self.grid_rect_for_world_bounds(min_x, min_z, max_x, max_z)
+        else {
+            return;
+        };
+
+        for grid_z in min_grid_z..=max_grid_z {
+            for grid_x in min_grid_x..=max_grid_x {
+                self.data
+                    .set(grid_x, grid_z, self.source_data.get(grid_x, grid_z));
+            }
+        }
+    }
+
     /// Returns a dense row-major snapshot of the visual terrain buffer.
     pub(crate) fn clone_visual_dense(&self) -> Vec<f32> {
         self.data.clone_dense()
@@ -432,6 +490,16 @@ impl TerrainSystem {
     /// Replaces the authoritative source terrain buffer from a dense row-major snapshot.
     pub(crate) fn replace_source_from_dense(&mut self, dense: &[f32]) -> Result<(), String> {
         self.source_data.replace_from_dense(dense)
+    }
+
+    /// Returns the visual terrain sample stored at one integer grid coordinate.
+    pub(crate) fn visual_height_at_grid(&self, grid_x: usize, grid_z: usize) -> f32 {
+        self.data.get(grid_x, grid_z)
+    }
+
+    /// Writes one integer-grid visual terrain sample without modifying the authored source terrain.
+    pub(crate) fn set_visual_height_at_grid(&mut self, grid_x: usize, grid_z: usize, value: f32) {
+        self.data.set(grid_x, grid_z, value);
     }
 
     /// Returns the full terrain extent in metres.
@@ -466,9 +534,27 @@ impl TerrainSystem {
         )
     }
 
-    /// Returns the terrain sample spacing in metres.
-    pub(crate) fn cell_size_m(&self) -> f32 {
-        self.cell_size
+    /// Converts one world-space AABB to a clamped inclusive terrain-grid rectangle.
+    pub(crate) fn grid_rect_for_world_bounds(
+        &self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> Option<(usize, usize, usize, usize)> {
+        if self.width == 0 || self.height == 0 {
+            return None;
+        }
+
+        let (grid_min_x, grid_min_z) =
+            self.world_to_grid_coords(min_x.min(max_x), min_z.min(max_z));
+        let (grid_max_x, grid_max_z) =
+            self.world_to_grid_coords(min_x.max(max_x), min_z.max(max_z));
+        let min_grid_x = grid_min_x.floor().clamp(0.0, (self.width - 1) as f32) as usize;
+        let max_grid_x = grid_max_x.ceil().clamp(0.0, (self.width - 1) as f32) as usize;
+        let min_grid_z = grid_min_z.floor().clamp(0.0, (self.height - 1) as f32) as usize;
+        let max_grid_z = grid_max_z.ceil().clamp(0.0, (self.height - 1) as f32) as usize;
+        Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z))
     }
 
     fn raycast_search_limit(&self, ray_origin: Vector3, half_w: f32, half_h: f32) -> f32 {

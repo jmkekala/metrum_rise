@@ -61,6 +61,10 @@ if [ $DEBUG -eq 1 ]; then
     if [ -n "$DEBUG_CATEGORY" ]; then
         export METRUM_DEBUG_FILTER="$DEBUG_CATEGORY"
         echo "Debug logging enabled for category '$DEBUG_CATEGORY' (output goes to stdout)"
+        if [ "$DEBUG_CATEGORY" = "road" ]; then
+            echo "  After each committed road refresh: [DEBUG:road] ROAD_GEOMETRY_DUMP_BEGIN ... ROAD_GEOMETRY_DUMP_END"
+            echo "  Includes edge geometry, compiled section cross-sections, and source/visual terrain samples."
+        fi
     else
         echo "Debug logging enabled (output goes to stdout)"
     fi

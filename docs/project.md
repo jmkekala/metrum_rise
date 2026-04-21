@@ -27,7 +27,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - `QA-01`: revalidate and root-cause the old long-run sim-thread panic.
 - `CIV-01`: add service-building coverage so city stability is not only conceptual.
 - `WATER-01`: harden the new baseline-water / dynamic-water split and remove the remaining dense compatibility boundaries.
-- `ROAD-01`: replace the current centerline-first surface-road implementation with one deterministic roadbed model shared by preview, rendering, and terrain earthworks.
+- `TERRAIN-01`: split terrain and water rendering away from whole-map dense upload before any default terrain-density move.
 - `MOB-01`: ship bicycle support as the next transport mode.
 - `ALLOC-01`: harden building allocator ownership and spec limits.
 - `DOC-01`: finish replacing old numbered backlog references in live docs.
@@ -64,6 +64,30 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Added the first terrain chunk importer slice: `tools/build_terrain_chunks.py` now reads the
   Kuopio world manifest and exports internal `512 m` chunk assets with raw `f32` height payloads
   plus `2 m / 4 m / 8 m / 32 m` LOD files. See [`terrain.md`](terrain.md).
+- Tightened the shipped `ROAD-01` contract so compiled standard-road sections now follow the
+  solved edge elevation profile already stored on the graph instead of silently re-sampling source
+  terrain during render / earthwork compilation. This keeps preview, committed surface mesh, and
+  terrain earthworks on the same longitudinal grade solve in authored sloped worlds. See
+  [`improved_roads.md`](improved_roads.md).
+- `ROAD-01` core roadbed ownership is live: `TransitNetwork` now owns one `RoadSurfaceSystem`
+  cache that deterministically compiles preview geometry, committed road / sidewalk surfaces,
+  bridge decks, tunnel portals, lane-divider markings, terrain earthworks, and world-surface
+  picking from the same roadbed ownership model. Bridge earthworks are endpoint-only, tunnel
+  earthworks are portal-only, dirty terrain rebuilds stay bounded to touched chunks, the network
+  tools can visualize compiled sections / bands / node patches / earthwork chunks through the
+  debug overlay, and the old widened-ribbon renderer plus dense centerline flattening
+  compatibility path were removed. Phase 9 and Phase 10 are now live as well: grounded roads
+  stamp a deterministic outer shoulder / cut / fill margin beyond the paved footprint, and the
+  compiled carriageway keeps a bounded design crossfall instead of rolling to match the full
+  hillside slope. `ROAD-01` is still open because two remaining ownership gaps are now explicit in
+  the specs: authored `10 m` worlds can still smear visual terrain back over grounded roads on
+  moderate hills, and later terrain edits still resynchronize placed grounded roads instead of
+  reforming terrain / earthworks around a fixed placed roadbed. Phase 11 remains the deterministic
+  `10 m` versus `5 m` characterization gate, and Phase 12 is now the fixed-roadbed-under-later-
+  terrain-edits follow-up. The shared engineered-ground contract now lives in
+  [`earthworks.md`](earthworks.md), with road-specific rules staying in
+  [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
+  [`terrain.md`](terrain.md).
 - Added the first Rust-side terrain chunk loader in `rust/src/simulation/terrain/chunks.rs`,
   including strict `chunk.toml` validation and `.f32` payload loading for partial border chunks as
   well as full-size interior chunks. See [`terrain.md`](terrain.md).

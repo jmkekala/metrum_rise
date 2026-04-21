@@ -1,8 +1,8 @@
 ## Base class for all road-network editing tools (RoadTool, MoveTool, CulDeSacTool).
 ##
 ## Rust methods called: add_road(), get_closest_network_point(), get_closest_node(),
-##   get_road_mesh_data(), get_network_nodes(), get_node_pos(), get_height_at(),
-##   get_road_ghost_guides()
+##   get_road_mesh_data(), get_network_nodes(), get_node_pos(), get_world_surface_height(),
+##   get_road_ghost_guides(), intersect_world_surface(), get_road_surface_debug_data()
 ## Owns the shared preview mesh, blueprint spline, and node snapping MultiMesh.
 ## Subclasses override _handle_input() and _commit() for their specific editing behaviour.
 extends Node3D
@@ -22,8 +22,14 @@ var blueprint_mat: StandardMaterial3D
 var node_multimesh: MultiMeshInstance3D # Holographic snapping points
 var cursor_mesh: MeshInstance3D # Active hovered snap cursor
 var ghost_mesh: MeshInstance3D # Ghost guide lines (SimCity-style grid overlay, road tool only)
+var surface_debug_mesh: MeshInstance3D # Compiled roadbed debug overlay
+var _surface_debug_enabled: bool = false
+var _surface_debug_refresh_elapsed: float = 0.0
+
+const SURFACE_DEBUG_REFRESH_SEC := 0.2
 
 func _ready():
+	_surface_debug_enabled = _is_surface_debug_enabled()
 	_setup_visuals()
 
 func _setup_visuals():
@@ -43,6 +49,8 @@ func _setup_visuals():
 	blueprint_mat.transparency = StandardMaterial3D.TRANSPARENCY_ALPHA
 	blueprint_mat.cull_mode = StandardMaterial3D.CULL_DISABLED
 	blueprint_mat.shading_mode = StandardMaterial3D.SHADING_MODE_UNSHADED
+	blueprint_mat.no_depth_test = true
+	blueprint_mat.render_priority = 5
 	blueprint_mesh.material_override = blueprint_mat
 	
 	# Node Snapping Highlights
@@ -96,7 +104,20 @@ func _setup_visuals():
 		ghost_mesh.material_override = gm
 		add_child(ghost_mesh)
 
-func _process(_delta):
+	if _surface_debug_enabled:
+		surface_debug_mesh = MeshInstance3D.new()
+		surface_debug_mesh.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		var sm := StandardMaterial3D.new()
+		sm.vertex_color_use_as_albedo = true
+		sm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		sm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		sm.no_depth_test = true
+		sm.cull_mode = BaseMaterial3D.CULL_DISABLED
+		sm.render_priority = 10
+		surface_debug_mesh.material_override = sm
+		add_child(surface_debug_mesh)
+
+func _process(delta):
 	if active:
 		var pos = get_world_mouse_pos()
 		if cursor_mesh:
@@ -106,11 +127,14 @@ func _process(_delta):
 
 		_update_blueprint_visuals()
 		_update_node_visuals()
+		_update_surface_debug_overlay(delta)
 	else:
 		if cursor_mesh:
 			cursor_mesh.visible = false
 		if node_multimesh and node_multimesh.multimesh:
 			node_multimesh.multimesh.instance_count = 0
+		if surface_debug_mesh:
+			surface_debug_mesh.visible = false
 
 func _update_node_visuals():
 	if not simulation_node: return
@@ -141,8 +165,8 @@ func get_terrain_interaction():
 	var ray_origin = camera.project_ray_origin(mouse_pos)
 	var ray_dir = camera.project_ray_normal(mouse_pos)
 	
-	# HIGH-PRECISION RUST RAYCAST
-	return simulation_node.intersect_terrain(ray_origin, ray_dir)
+	# Combined world-surface raycast: compiled roadbed where owned, otherwise visual terrain.
+	return simulation_node.intersect_world_surface(ray_origin, ray_dir)
 
 func get_world_mouse_pos() -> Vector3:
 	var pos_variant = get_terrain_interaction()
@@ -168,9 +192,43 @@ func get_world_mouse_pos() -> Vector3:
 	is_valid = true
 	return pos
 
-func get_height_at(_world_pos: Vector3) -> float:
-	# Deprecated: use simulation_node.get_height_at instead
-	return 0.0
+func _is_surface_debug_enabled() -> bool:
+	var explicit_value := OS.get_environment("METRUM_DEBUG_SURFACE").strip_edges()
+	if not explicit_value.is_empty():
+		return explicit_value != "0"
+	var filter_value := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
+	return filter_value.contains("road-surface") or filter_value.contains("surface-debug")
+
+func _update_surface_debug_overlay(delta: float) -> void:
+	if surface_debug_mesh == null:
+		return
+	_surface_debug_refresh_elapsed = max(_surface_debug_refresh_elapsed - delta, 0.0)
+	if _surface_debug_refresh_elapsed > 0.0 and surface_debug_mesh.mesh != null:
+		surface_debug_mesh.visible = true
+		return
+
+	var debug_data = simulation_node.get_road_surface_debug_data()
+	if debug_data == null:
+		surface_debug_mesh.visible = false
+		return
+
+	var immediate := ImmediateMesh.new()
+	_append_debug_lines(immediate, debug_data.get("section_lines", PackedVector3Array()), Color(0.97, 0.84, 0.28, 0.90))
+	_append_debug_lines(immediate, debug_data.get("band_lines", PackedVector3Array()), Color(0.26, 0.92, 0.95, 0.78))
+	_append_debug_lines(immediate, debug_data.get("node_patch_lines", PackedVector3Array()), Color(1.0, 0.42, 0.38, 0.92))
+	_append_debug_lines(immediate, debug_data.get("earthwork_chunk_lines", PackedVector3Array()), Color(0.56, 1.0, 0.46, 0.70))
+	surface_debug_mesh.mesh = immediate
+	surface_debug_mesh.visible = true
+	_surface_debug_refresh_elapsed = SURFACE_DEBUG_REFRESH_SEC
+
+func _append_debug_lines(immediate: ImmediateMesh, points: PackedVector3Array, color: Color) -> void:
+	if points.size() < 2:
+		return
+	immediate.surface_begin(Mesh.PRIMITIVE_LINES)
+	for point in points:
+		immediate.surface_set_color(color)
+		immediate.surface_add_vertex(point)
+	immediate.surface_end()
 
 static var _texture_cache = {}
 

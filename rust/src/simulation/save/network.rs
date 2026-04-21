@@ -4,7 +4,7 @@ use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::pathing::cost::CostCalculator;
 use crate::simulation::terrain::TerrainSystem;
-use godot::prelude::{Vector2, Vector3};
+use godot::prelude::Vector3;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
 
@@ -251,16 +251,8 @@ pub(super) fn rebuild_loaded_graph_runtime(
     terrain: &mut TerrainSystem,
 ) {
     graph.rebuild_all_indices();
-    terrain.reset_visuals_from_source();
-    let mut flattened = terrain.clone_visual_dense();
-    transit_network.flatten_terrain(graph, terrain, &mut flattened, {
-        let (world_w, world_h) = terrain.world_size();
-        Vector2::new(world_w, world_h)
-    });
-    terrain
-        .replace_visual_from_dense(&flattened)
-        .expect("loaded road flatten output must match the terrain dimensions");
     transit_network.sync_to_terrain(graph, terrain);
+    transit_network.rebuild_all_terrain_earthworks(graph, terrain);
     for edge in graph.edges_iter_mut() {
         if edge.deleted {
             continue;

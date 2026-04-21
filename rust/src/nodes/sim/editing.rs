@@ -3,6 +3,7 @@
 use crate::config;
 use crate::debug_log;
 use crate::nodes::sim::core::{ROAD_BUILD_COST_PER_METER, SimCore};
+use crate::simulation::network::surface::RoadSurfaceSystem;
 use crate::traffic_log;
 use godot::prelude::*;
 use std::collections::HashSet;
@@ -29,7 +30,9 @@ impl SimCore {
 
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
-        self.flatten_terrain_for_roads_internal();
+        self.transit_network
+            .rebuild_dirty_terrain_earthworks(&self.region_graph, &mut self.heightmap);
+        self.rebuild_building_entrances_internal();
         if self.has_authored_water_internal() {
             if let Err(err) = self.rebuild_authored_water_preview_internal() {
                 debug_log!(
@@ -74,6 +77,8 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .sculpt(center_x, center_y, radius_cells, strength);
+        self.transit_network
+            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
 
@@ -89,6 +94,8 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .sculpt(center_x, center_y, radius_cells, strength);
+        self.transit_network
+            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.terrain_dirty = true;
     }
 
@@ -110,6 +117,8 @@ impl SimCore {
             target_height_m / config::HEIGHT_SCALE,
             strength,
         );
+        self.transit_network
+            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
 
@@ -120,6 +129,8 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .smooth(center_x, center_y, radius_cells, strength);
+        self.transit_network
+            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
 
@@ -155,6 +166,8 @@ impl SimCore {
             end_height_m / config::HEIGHT_SCALE,
             strength,
         );
+        self.transit_network
+            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.finish_terrain_authoring_edit_internal();
     }
 
@@ -176,6 +189,8 @@ impl SimCore {
             target_height_m / config::HEIGHT_SCALE,
             strength,
         );
+        self.transit_network
+            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.terrain_dirty = true;
     }
 
@@ -191,6 +206,8 @@ impl SimCore {
         let radius_cells = radius / self.config.terrain_cell_m;
         self.heightmap
             .smooth(center_x, center_y, radius_cells, strength);
+        self.transit_network
+            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.terrain_dirty = true;
     }
 
@@ -226,6 +243,8 @@ impl SimCore {
             end_height_m / config::HEIGHT_SCALE,
             strength,
         );
+        self.transit_network
+            .mark_surface_dirty_for_terrain_edit(&self.region_graph, pos, radius);
         self.terrain_dirty = true;
     }
 
@@ -354,6 +373,7 @@ impl SimCore {
         if edge_idx < 0 || edge_idx as usize >= self.region_graph.edge_count() {
             return;
         }
+        let edge_idx = edge_idx as usize;
 
         let class = match class_int {
             1 => crate::simulation::network::types::EdgeClass::Bridge,
@@ -361,10 +381,15 @@ impl SimCore {
             _ => crate::simulation::network::types::EdgeClass::Standard,
         };
 
+        let mut affected_nodes = HashSet::new();
         {
-            let edge = self.region_graph.edge_mut(edge_idx as usize);
+            let edge = self.region_graph.edge_mut(edge_idx);
+            affected_nodes.insert(edge.start_node);
+            affected_nodes.insert(edge.end_node);
             edge.class = class;
         }
+        self.transit_network
+            .mark_surface_dirty_for_nodes(&self.region_graph, &affected_nodes);
 
         self.rebuild_building_entrances_internal();
         self.transit_network
@@ -384,26 +409,8 @@ impl SimCore {
         }
         let dt_undo_ms = t_undo.elapsed().as_micros();
 
-        let mut fixed_points = points;
-
-        let mut class = crate::simulation::network::types::EdgeClass::Standard;
-
-        for p in &mut fixed_points {
-            let terrain_h = self.heightmap.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE;
-
-            if p.y - terrain_h > 1.0 {
-                class = crate::simulation::network::types::EdgeClass::Bridge;
-            } else if terrain_h - p.y > 1.0 {
-                class = crate::simulation::network::types::EdgeClass::Tunnel;
-            }
-        }
-
-        // Only force grounded roads to terrain
-        if class == crate::simulation::network::types::EdgeClass::Standard {
-            for p in &mut fixed_points {
-                p.y = self.heightmap.sample_height_world(p.x, p.z) * config::HEIGHT_SCALE;
-            }
-        }
+        let (fixed_points, class) =
+            RoadSurfaceSystem::classify_and_ground_road_points(&points, &self.heightmap);
 
         // Compute polyline length before fixed_points is moved into add_road.
         let build_length_m: f64 = fixed_points
@@ -447,6 +454,7 @@ impl SimCore {
     /// Repositions a network node in world space.
     pub fn move_network_node_internal(&mut self, node_id: i32, pos: Vector3) {
         if node_id >= 0 && (node_id as usize) < self.region_graph.node_count() {
+            let old_pos = self.region_graph.node(node_id as u32).pos;
             let affected_edges: HashSet<usize> = self
                 .region_graph
                 .node_adjacency(node_id as u32)
@@ -472,6 +480,18 @@ impl SimCore {
             self.transit_network
                 .rebuild_cch_and_check(&self.region_graph);
             self.transit_network.flow_fields.mark_all_dirty();
+            let mut affected_nodes = HashSet::from([node_id as u32]);
+            for &edge_idx in &affected_edges {
+                let edge = self.region_graph.edge(edge_idx);
+                affected_nodes.insert(edge.start_node);
+                affected_nodes.insert(edge.end_node);
+            }
+            self.transit_network.mark_surface_dirty_from_sets(
+                &self.region_graph,
+                &affected_edges,
+                &affected_nodes,
+            );
+            self.transit_network.mark_surface_point_dirty(old_pos);
             self.network_dirty = true;
         }
     }
@@ -632,23 +652,21 @@ impl SimCore {
         }
     }
 
-    /// Flattens the terrain to match the grade of the road network.
-    pub fn flatten_terrain_for_roads_internal(&mut self) {
-        let size = self.get_terrain_world_size_internal();
-        self.heightmap.reset_visuals_from_source();
-        let mut flattened = self.heightmap.clone_visual_dense();
-        self.transit_network.flatten_terrain(
-            &self.region_graph,
-            &self.heightmap,
-            &mut flattened,
-            size,
-        );
-        self.heightmap
-            .replace_visual_from_dense(&flattened)
-            .expect("road flatten output must match the live terrain dimensions");
+    /// Rebuilds road-surface-driven visual terrain after network edits.
+    pub fn rebuild_network_surface_terrain_internal(&mut self) {
+        let debug_edges = std::mem::take(&mut self.last_surface_debug_edges);
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
+        self.transit_network
+            .rebuild_all_terrain_earthworks(&self.region_graph, &mut self.heightmap);
         self.rebuild_building_entrances_internal();
+        if crate::debug::category_enabled("road") && !debug_edges.is_empty() {
+            let dump = self
+                .transit_network
+                .road_surface
+                .build_edge_geometry_debug_dump(&self.region_graph, &self.heightmap, &debug_edges);
+            debug_log!("road", "{}", dump);
+        }
         self.terrain_dirty = true;
     }
 
@@ -794,6 +812,22 @@ impl SimCore {
                 .rebuild(&mut self.region_graph);
             self.transit_network
                 .rebuild_cch_and_check(&self.region_graph);
+            let mut affected_nodes = HashSet::from([node_id as u32]);
+            let mut affected_edges = HashSet::new();
+            for &edge_idx in &adj {
+                if !self.region_graph.edge(edge_idx).deleted {
+                    let edge = self.region_graph.edge(edge_idx);
+                    affected_nodes.insert(edge.start_node);
+                    affected_nodes.insert(edge.end_node);
+                    affected_edges.insert(edge_idx);
+                }
+            }
+            self.transit_network.mark_surface_dirty_from_sets(
+                &self.region_graph,
+                &affected_edges,
+                &affected_nodes,
+            );
+            self.transit_network.mark_surface_point_dirty(old_pos);
             let new_pos = self.region_graph.node(node_id as u32).pos;
             debug_log!(
                 "economy",
@@ -839,7 +873,7 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: RegionGraph::new(),
-            transit_network: TransitNetwork::new(),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -866,6 +900,7 @@ mod tests {
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,
             last_road_timing: String::new(),
+            last_surface_debug_edges: Vec::new(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
     }
@@ -929,5 +964,65 @@ mod tests {
         assert!(core.end_terrain_stroke_internal());
         assert!(!core.terrain_stroke_active);
         assert!(!core.terrain_stroke_has_changes);
+    }
+
+    #[test]
+    fn sculpt_terrain_marks_road_surface_dirty() {
+        let mut core = test_core();
+        let n0 = core
+            .region_graph
+            .add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = core
+            .region_graph
+            .add_node(Vector3::new(8.0, 0.0, 0.0), NodeType::Junction);
+        let edge_idx = core.region_graph.add_edge(Edge {
+            start_node: n0,
+            end_node: n1,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            class: EdgeClass::Standard,
+            width: 7.0,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 10.0,
+            physical_length: 8.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(8.0, 0.0, 0.0)],
+            physical_geometry: vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(8.0, 0.0, 0.0)],
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        });
+
+        core.sculpt_terrain_internal(Vector2::new(4.0, 0.0), 5.0, 0.5);
+
+        assert!(
+            core.transit_network
+                .road_surface
+                .dirty_edges()
+                .contains(&edge_idx)
+        );
+        assert!(
+            core.transit_network
+                .road_surface
+                .dirty_nodes()
+                .contains(&n0)
+        );
+        assert!(
+            core.transit_network
+                .road_surface
+                .dirty_nodes()
+                .contains(&n1)
+        );
+        assert!(
+            !core
+                .transit_network
+                .road_surface
+                .dirty_terrain_chunks()
+                .is_empty()
+        );
     }
 }

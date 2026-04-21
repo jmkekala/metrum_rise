@@ -26,23 +26,51 @@ mod tests {
     }
 
     fn create_test_edge(n1: u32, n2: u32, p1: Vector3, p2: Vector3, width: f32) -> Edge {
+        create_surface_edge(
+            n1,
+            n2,
+            &[p1, p2],
+            width,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            ((width / config::LANE_WIDTH).round() as u8).max(1),
+            0,
+        )
+    }
+
+    fn create_surface_edge(
+        n1: u32,
+        n2: u32,
+        points: &[Vector3],
+        width: f32,
+        primary_type: TransitType,
+        class: EdgeClass,
+        allowed_types: u8,
+        fwd_lanes: u8,
+        bkw_lanes: u8,
+    ) -> Edge {
+        let physical_length = points
+            .windows(2)
+            .map(|segment| segment[0].distance_to(segment[1]))
+            .sum();
         Edge {
             start_node: n1,
             end_node: n2,
-            primary_type: TransitType::Road,
-            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
-            class: EdgeClass::Standard,
+            primary_type,
+            allowed_types,
+            class,
             width,
-            fwd_lanes: ((width / config::LANE_WIDTH).round() as u8).max(1),
-            bkw_lanes: 0,
+            fwd_lanes,
+            bkw_lanes,
             speed_limit: 13.0,
             base_cost: 0.0,
-            physical_length: (p2 - p1).length(),
+            physical_length,
             current_congestion: 0.0,
             start_clip: 0.0,
             end_clip: 0.0,
-            geometry: vec![p1, p2],
-            physical_geometry: vec![p1, p2],
+            geometry: points.to_vec(),
+            physical_geometry: points.to_vec(),
             deleted: false,
             no_building_spawn: false,
             vehicle_frontage_access:
@@ -93,18 +121,17 @@ mod tests {
 
     fn main_triangles(mesh_data: &NetworkMeshData, surface: VisibleSurface) -> Vec<[Vector3; 3]> {
         match surface {
-            VisibleSurface::Road => mesh_data
-                .road_vertices
-                .chunks_exact(3)
-                .map(|triangle| [triangle[0], triangle[1], triangle[2]])
-                .collect(),
-            VisibleSurface::Sidewalk => mesh_data
-                .sidewalk_vertices
-                .chunks_exact(3)
-                .map(|triangle| [triangle[0], triangle[1], triangle[2]])
-                .collect(),
+            VisibleSurface::Road => triangles_from_vertices(&mesh_data.road_vertices),
+            VisibleSurface::Sidewalk => triangles_from_vertices(&mesh_data.sidewalk_vertices),
             VisibleSurface::None => Vec::new(),
         }
+    }
+
+    fn triangles_from_vertices(vertices: &[Vector3]) -> Vec<[Vector3; 3]> {
+        vertices
+            .chunks_exact(3)
+            .map(|triangle| [triangle[0], triangle[1], triangle[2]])
+            .collect()
     }
 
     fn triangle_contains_point_xz(triangle: [Vector3; 3], point: Vector2) -> bool {
@@ -177,6 +204,38 @@ mod tests {
         }
     }
 
+    fn triangle_coverage_ratio(
+        triangles: &[[Vector3; 3]],
+        min: Vector2,
+        max: Vector2,
+        step: f32,
+    ) -> f32 {
+        let mut covered = 0usize;
+        let mut total = 0usize;
+        let mut z = min.y;
+        while z <= max.y {
+            let mut x = min.x;
+            while x <= max.x {
+                total += 1;
+                if triangles
+                    .iter()
+                    .copied()
+                    .any(|triangle| triangle_contains_point_xz(triangle, Vector2::new(x, z)))
+                {
+                    covered += 1;
+                }
+                x += step;
+            }
+            z += step;
+        }
+
+        if total == 0 {
+            0.0
+        } else {
+            covered as f32 / total as f32
+        }
+    }
+
     fn generate_editor_mesh(
         roads: &[(&[Vector3], u8, u8)],
     ) -> (RegionGraph, NetworkMeshData, TerrainSystem) {
@@ -201,6 +260,16 @@ mod tests {
         let terrain = TerrainSystem::new(256, 256);
         let mesh_data = network.generate_mesh_data(&graph, &terrain);
         (graph, mesh_data, terrain)
+    }
+
+    fn cross_slope_terrain(width: usize, height: usize) -> TerrainSystem {
+        let mut terrain = TerrainSystem::with_chunking(width, height, 1.0, 8, 0.0);
+        for z in 0..height {
+            for x in 0..width {
+                terrain.set_height(x, z, x as f32 * 0.005);
+            }
+        }
+        terrain
     }
 
     #[test]
@@ -321,6 +390,108 @@ mod tests {
 
         assert!(center_road >= 0.95);
         assert!(outer_sidewalk <= 0.05);
+    }
+
+    #[test]
+    fn test_cross_slope_standard_road_uses_bounded_compiled_cross_section_heights() {
+        let renderer = RoadRenderer;
+        let terrain = cross_slope_terrain(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(0.0, 0.0, 24.0), NodeType::Junction);
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(0.0, 0.0, -24.0),
+            Vector3::new(0.0, 0.0, 24.0),
+            10.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 80.0);
+
+        let left_y = mesh_data
+            .road_vertices
+            .iter()
+            .filter(|vertex| vertex.x <= -3.0)
+            .map(|vertex| vertex.y)
+            .fold(f32::INFINITY, f32::min);
+        let right_y = mesh_data
+            .road_vertices
+            .iter()
+            .filter(|vertex| vertex.x >= 3.0)
+            .map(|vertex| vertex.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        let max_normal_x = mesh_data
+            .road_normals
+            .iter()
+            .map(|normal| normal.x.abs())
+            .fold(0.0_f32, f32::max);
+
+        assert!(left_y.is_finite() && right_y.is_finite());
+        assert!(
+            right_y - left_y >= 0.29,
+            "expected bounded cross-slope road surface to still span height across width, got left_y={left_y:.3} right_y={right_y:.3}"
+        );
+        assert!(
+            right_y - left_y <= 0.5,
+            "expected grounded-road cross-slope to stay within the bounded design profile, got left_y={left_y:.3} right_y={right_y:.3}"
+        );
+        assert!(
+            max_normal_x >= 0.02,
+            "expected compiled bounded cross-slope normals to tilt with the surface, got max_normal_x={max_normal_x:.3}"
+        );
+    }
+
+    #[test]
+    fn test_compiled_surface_is_lifted_above_visual_terrain() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-20.0, 0.0, 0.0),
+            Vector3::new(20.0, 0.0, 0.0),
+            10.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 60.0);
+
+        let road_clearance = mesh_data
+            .road_vertices
+            .iter()
+            .map(|vertex| {
+                vertex.y
+                    - terrain.sample_visual_height_world(vertex.x, vertex.z) * config::HEIGHT_SCALE
+            })
+            .fold(f32::INFINITY, f32::min);
+        let sidewalk_clearance = mesh_data
+            .sidewalk_vertices
+            .iter()
+            .map(|vertex| {
+                vertex.y
+                    - terrain.sample_visual_height_world(vertex.x, vertex.z) * config::HEIGHT_SCALE
+            })
+            .fold(f32::INFINITY, f32::min);
+
+        assert!(
+            road_clearance >= 0.025,
+            "expected compiled road surface to render above terrain, got clearance={road_clearance:.4}"
+        );
+        assert!(
+            sidewalk_clearance >= 0.005,
+            "expected compiled sidewalk surface to render above terrain, got clearance={sidewalk_clearance:.4}"
+        );
     }
 
     #[test]
@@ -712,6 +883,173 @@ mod tests {
             VisibleSurface::Road,
         );
         assert!(branch_throat >= 0.7);
+    }
+
+    #[test]
+    fn test_bridge_deck_uses_compiled_surface_continuously() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let start = Vector3::new(-30.0, 6.0, 0.0);
+        let mid = Vector3::new(0.0, 6.0, 0.0);
+        let end = Vector3::new(30.0, 6.0, 0.0);
+        let n0 = graph.add_node(start, NodeType::Junction);
+        let n1 = graph.add_node(end, NodeType::Junction);
+        graph.add_edge(create_surface_edge(
+            n0,
+            n1,
+            &[start, mid, end],
+            10.0,
+            TransitType::Road,
+            EdgeClass::Bridge,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 90.0);
+
+        let deck_road = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-8.0, -4.0),
+            Vector2::new(8.0, 4.0),
+            0.25,
+            VisibleSurface::Road,
+        );
+        let deck_sidewalk = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-8.0, 4.4),
+            Vector2::new(8.0, 6.0),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+
+        assert!(deck_road >= 0.95);
+        assert!(deck_sidewalk >= 0.5);
+        assert!(
+            !mesh_data.concrete_vertices.is_empty(),
+            "expected bridge structural concrete to remain rendered"
+        );
+    }
+
+    #[test]
+    fn test_tunnel_surface_only_renders_portals() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let p0 = Vector3::new(-30.0, 0.0, 0.0);
+        let p1 = Vector3::new(-10.0, -6.0, 0.0);
+        let p2 = Vector3::new(10.0, -6.0, 0.0);
+        let p3 = Vector3::new(30.0, 0.0, 0.0);
+        let n0 = graph.add_node(p0, NodeType::Junction);
+        let n1 = graph.add_node(p3, NodeType::Junction);
+        graph.add_edge(create_surface_edge(
+            n0,
+            n1,
+            &[p0, p1, p2, p3],
+            10.0,
+            TransitType::Road,
+            EdgeClass::Tunnel,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 90.0);
+
+        let left_portal = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-29.0, -4.0),
+            Vector2::new(-18.0, 4.0),
+            0.25,
+            VisibleSurface::Road,
+        );
+        let right_portal = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(18.0, -4.0),
+            Vector2::new(29.0, 4.0),
+            0.25,
+            VisibleSurface::Road,
+        );
+        let buried_center = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-6.0, -4.0),
+            Vector2::new(6.0, 4.0),
+            0.25,
+            VisibleSurface::Road,
+        );
+
+        assert!(left_portal >= 0.2);
+        assert!(right_portal >= 0.2);
+        assert!(buried_center <= 0.05);
+    }
+
+    #[test]
+    fn test_compiled_lane_markings_terminate_at_junction_throats() {
+        let north = [Vector3::new(0.0, 0.0, -24.0), Vector3::new(0.0, 0.0, 0.0)];
+        let east = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)];
+        let west = [Vector3::new(-24.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)];
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&north, 1, 1), (&east, 1, 1), (&west, 1, 1)]);
+        validate_mesh(&mesh_data, 70.0);
+
+        let marking_triangles = triangles_from_vertices(&mesh_data.marking_vertices);
+        let arm_markings = triangle_coverage_ratio(
+            &marking_triangles,
+            Vector2::new(7.0, -0.25),
+            Vector2::new(15.0, 0.25),
+            0.1,
+        );
+        let center_markings = triangle_coverage_ratio(
+            &marking_triangles,
+            Vector2::new(-1.25, -1.25),
+            Vector2::new(1.25, 1.25),
+            0.1,
+        );
+
+        assert!(arm_markings >= 0.2);
+        assert!(center_markings <= 0.05);
+    }
+
+    #[test]
+    fn test_walkway_join_attaches_to_one_side_without_mirrored_apron() {
+        let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
+        let walkway = [Vector3::new(-12.0, 0.0, -12.0), Vector3::ZERO];
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&main, 1, 1), (&walkway, 0, 0)]);
+        validate_mesh(&mesh_data, 80.0);
+
+        let joined_side = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-9.5, -9.5),
+            Vector2::new(-6.5, -6.5),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+        let mirrored_side = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-9.5, 6.5),
+            Vector2::new(-6.5, 9.5),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+
+        assert!(
+            joined_side >= 0.6,
+            "expected joined quadrant to carry the footpath continuation, got joined_side={joined_side:.3} mirrored_side={mirrored_side:.3}"
+        );
+        assert!(
+            mirrored_side <= 0.05,
+            "expected only the joined quadrant to carry the footpath continuation, got joined_side={joined_side:.3} mirrored_side={mirrored_side:.3}"
+        );
     }
 
     #[test]

@@ -10,12 +10,12 @@
 use godot::prelude::*;
 pub mod graph;
 pub mod render;
+pub mod surface;
 pub mod types;
 pub use render::NetworkMeshData;
 pub mod interaction;
 /// Physical lane geometry and connectivity system.
 pub mod lanes;
-pub mod terrain;
 pub mod topology;
 use crate::config;
 use std::collections::HashSet;
@@ -23,8 +23,8 @@ use std::collections::HashSet;
 use crate::simulation::pathing::cch::CchGraph;
 use crate::simulation::pathing::flow_field::FlowFieldSystem;
 use graph::*;
-use render::TransitRenderer;
 use render::road::RoadRenderer;
+use surface::RoadSurfaceSystem;
 use types::*;
 
 /// Top-level road network manager for pathfinding integration and coordinate conversion.
@@ -50,11 +50,18 @@ pub struct TransitNetwork {
     pub flow_fields: FlowFieldSystem,
     /// Fixed-cadence accumulator for the frontage delay cache used by exact access planning.
     pub frontage_delay_elapsed_s: f32,
+    /// Phase 1 road-surface ownership shell for compiled roadbed data and dirty tracking.
+    pub road_surface: RoadSurfaceSystem,
 }
 
 impl TransitNetwork {
     /// Creates a new, empty transit network.
     pub fn new() -> Self {
+        Self::new_with_surface_chunk_span(RegionGraph::CHUNK_SIZE)
+    }
+
+    /// Creates a new, empty transit network with the given road-surface chunk span in metres.
+    pub fn new_with_surface_chunk_span(chunk_span_m: f32) -> Self {
         Self {
             cch_graph: CchGraph::new(0),
             cch_dirty_chunks: HashSet::new(),
@@ -64,6 +71,7 @@ impl TransitNetwork {
             bulk_dirty_edges: HashSet::new(),
             flow_fields: FlowFieldSystem::new(),
             frontage_delay_elapsed_s: 0.0,
+            road_surface: RoadSurfaceSystem::new(chunk_span_m),
         }
     }
 
@@ -104,6 +112,7 @@ impl TransitNetwork {
         self.metric_dirty = false;
         self.lane_system.clear();
         self.frontage_delay_elapsed_s = 0.0;
+        self.road_surface.clear();
         zoning.clear();
         allocator.clear();
     }
@@ -119,22 +128,8 @@ impl TransitNetwork {
         zoning: &mut crate::simulation::grid::zoning::ZoningSystem,
         allocator: &mut crate::simulation::buildings::allocator::BuildingAllocator,
     ) {
-        // 1. Simplify points
-        let mut simplified_points = Vec::with_capacity(points.len());
-        if !points.is_empty() {
-            simplified_points.push(points[0]);
-            for i in 1..points.len() {
-                if points[i].distance_to(*simplified_points.last().unwrap()) > 0.5 {
-                    simplified_points.push(points[i]);
-                }
-            }
-            if simplified_points.len() > 1
-                && simplified_points.last().unwrap() != &points[points.len() - 1]
-            {
-                simplified_points.pop();
-                simplified_points.push(points[points.len() - 1]);
-            }
-        }
+        // 1. Simplify points using the same threshold shared with preview compilation.
+        let mut simplified_points = RoadSurfaceSystem::simplify_road_input_points(&points);
 
         let count = simplified_points.len();
         if count < 2 {
@@ -157,34 +152,8 @@ impl TransitNetwork {
         simplified_points[0] = graph.node(start_id).pos;
         simplified_points[count - 1] = graph.node(end_id).pos;
 
-        // TAUBIN SMOOTHING (Volume-Preserving Harmonic Conformance)
-        // Irons out any kinks caused by Start/End node snapping without shrinking the spline.
-        let iters = 50;
-        if count > 2 {
-            let mut temp_h = vec![0.0; count];
-            let lambda = 0.5;
-            let mu = -0.53;
-            for _ in 0..iters {
-                // Positive Pass (Shrink/Smooth)
-                for j in 1..count - 1 {
-                    let laplacian = 0.5 * (simplified_points[j - 1].y + simplified_points[j + 1].y)
-                        - simplified_points[j].y;
-                    temp_h[j] = simplified_points[j].y + lambda * laplacian;
-                }
-                for j in 1..count - 1 {
-                    simplified_points[j].y = temp_h[j];
-                }
-                // Negative Pass (Inflate/Restore Volume)
-                for j in 1..count - 1 {
-                    let laplacian = 0.5 * (simplified_points[j - 1].y + simplified_points[j + 1].y)
-                        - simplified_points[j].y;
-                    temp_h[j] = simplified_points[j].y + mu * laplacian;
-                }
-                for j in 1..count - 1 {
-                    simplified_points[j].y = temp_h[j];
-                }
-            }
-        }
+        // 2. Apply the same Taubin height-smoothing pass shared with preview compilation.
+        RoadSurfaceSystem::taubin_smooth_road_heights(&mut simplified_points);
 
         // 3. Create a single edge from start to end with the full simplified geometry.
         {
@@ -294,6 +263,24 @@ impl TransitNetwork {
         topology::process_intersections(self, graph, edge_id, zoning, allocator);
         self.cleanup_duplicate_edges(graph); // Clean edge_id if it's dup
 
+        let mut surface_dirty_nodes: HashSet<u32> = HashSet::new();
+        surface_dirty_nodes.insert(graph.get_valid_node(start));
+        surface_dirty_nodes.insert(graph.get_valid_node(end));
+        if edge_id < graph.edge_count() && !graph.edge(edge_id).deleted {
+            surface_dirty_nodes.insert(graph.get_valid_node(graph.edge(edge_id).start_node));
+            surface_dirty_nodes.insert(graph.get_valid_node(graph.edge(edge_id).end_node));
+        }
+        for new_nid in node_count_before as u32..graph.node_count() as u32 {
+            surface_dirty_nodes.insert(graph.get_valid_node(new_nid));
+        }
+        for new_eid in edges_before..graph.edge_count() {
+            if !graph.edge(new_eid).deleted {
+                surface_dirty_nodes.insert(graph.get_valid_node(graph.edge(new_eid).start_node));
+                surface_dirty_nodes.insert(graph.get_valid_node(graph.edge(new_eid).end_node));
+            }
+        }
+        self.mark_surface_dirty_for_nodes(graph, &surface_dirty_nodes);
+
         if !self.bulk_load {
             // Incremental clip rebuild: only resample edges incident to nodes touched by this
             // road placement instead of doing the full O(E) resample + R-tree rebuild.
@@ -327,23 +314,36 @@ impl TransitNetwork {
 
     /// Generates visual mesh data for the entire road network.
     pub fn generate_mesh_data(
-        &self,
+        &mut self,
         graph: &RegionGraph,
         terrain: &crate::simulation::terrain::TerrainSystem,
     ) -> NetworkMeshData {
+        self.road_surface.compile_dirty(graph, terrain);
         let renderer = RoadRenderer;
-        renderer.generate_mesh_data(graph, &self.lane_system, terrain)
+        renderer.generate_mesh_data_with_surface(
+            graph,
+            &self.lane_system,
+            terrain,
+            &self.road_surface,
+        )
     }
 
-    /// Flattens the terrain surface underneath the road network.
-    pub fn flatten_terrain(
-        &self,
+    /// Rebuilds terrain earthworks only for the currently dirty roadbed chunks.
+    pub fn rebuild_dirty_terrain_earthworks(
+        &mut self,
         graph: &RegionGraph,
-        terrain: &crate::simulation::terrain::TerrainSystem,
-        output_heightmap: &mut [f32],
-        map_size: Vector2,
-    ) {
-        terrain::flatten_terrain_for_network(graph, terrain, output_heightmap, map_size);
+        terrain: &mut crate::simulation::terrain::TerrainSystem,
+    ) -> Vec<surface::SurfaceChunkKey> {
+        self.road_surface.rebuild_dirty_earthworks(graph, terrain)
+    }
+
+    /// Rebuilds terrain earthworks for the entire world from the compiled roadbed cache.
+    pub fn rebuild_all_terrain_earthworks(
+        &mut self,
+        graph: &RegionGraph,
+        terrain: &mut crate::simulation::terrain::TerrainSystem,
+    ) -> Vec<surface::SurfaceChunkKey> {
+        self.road_surface.rebuild_all_earthworks(graph, terrain)
     }
 
     /// Synchronizes road elevations with the terrain heightmap.
@@ -354,6 +354,21 @@ impl TransitNetwork {
     ) {
         graph.sync_to_terrain(terrain);
         self.lane_system.rebuild(graph);
+
+        // `sync_to_terrain` rewrites standard-edge section heights and then rebuilds junction
+        // clips globally. Since the visible renderer and earthworks now consume only compiled
+        // roadbed cache data, that cache must be invalidated for every visible surface edge here.
+        let mut edge_ids = HashSet::new();
+        let mut node_ids = HashSet::new();
+        for (edge_idx, edge) in graph.edges().iter().enumerate() {
+            if edge.deleted || !matches!(edge.primary_type, TransitType::Road | TransitType::Foot) {
+                continue;
+            }
+            edge_ids.insert(edge_idx);
+            node_ids.insert(graph.get_valid_node(edge.start_node));
+            node_ids.insert(graph.get_valid_node(edge.end_node));
+        }
+        self.mark_surface_dirty_from_sets(graph, &edge_ids, &node_ids);
     }
 
     /// Rebuilds the routing CCH hierarchy from scratch or perform incremental customization.
@@ -395,6 +410,54 @@ impl TransitNetwork {
     pub fn mark_point_dirty(&mut self, pos: Vector3) {
         let coords = RegionGraph::get_chunk_coords(pos);
         self.cch_dirty_chunks.insert(coords);
+    }
+
+    /// Marks the provided road edges and nodes dirty in the replacement road-surface shell.
+    pub fn mark_surface_dirty_from_sets(
+        &mut self,
+        graph: &RegionGraph,
+        edge_ids: &HashSet<usize>,
+        node_ids: &HashSet<u32>,
+    ) {
+        for &edge_idx in edge_ids {
+            self.road_surface.mark_edge_dirty(graph, edge_idx);
+        }
+        for &node_id in node_ids {
+            self.road_surface.mark_node_dirty(graph, node_id);
+        }
+    }
+
+    /// Marks the provided nodes plus all of their incident non-deleted edges dirty.
+    pub fn mark_surface_dirty_for_nodes(&mut self, graph: &RegionGraph, node_ids: &HashSet<u32>) {
+        let mut edge_ids = HashSet::new();
+        for &node_id in node_ids {
+            let valid = graph.get_valid_node(node_id);
+            if valid as usize >= graph.node_adjacency_count() {
+                continue;
+            }
+            for &edge_idx in graph.node_adjacency(valid) {
+                if !graph.edge(edge_idx).deleted {
+                    edge_ids.insert(edge_idx);
+                }
+            }
+        }
+        self.mark_surface_dirty_from_sets(graph, &edge_ids, node_ids);
+    }
+
+    /// Marks terrain-edit-adjacent roads and affected chunks dirty in the road-surface shell.
+    pub fn mark_surface_dirty_for_terrain_edit(
+        &mut self,
+        graph: &RegionGraph,
+        center: Vector2,
+        radius_m: f32,
+    ) {
+        self.road_surface
+            .mark_terrain_edit_dirty(graph, center, radius_m);
+    }
+
+    /// Marks the chunk containing this world-space point dirty in the road-surface shell.
+    pub fn mark_surface_point_dirty(&mut self, pos: Vector3) {
+        self.road_surface.mark_world_point_dirty(pos);
     }
 
     fn cleanup_duplicate_edges(&mut self, graph: &mut RegionGraph) {

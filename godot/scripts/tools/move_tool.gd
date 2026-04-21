@@ -42,7 +42,7 @@ func _process(delta):
 		var ground_pos = get_terrain_interaction()
 		if ground_pos != null:
 			# Automatically float 0.001m above target terrain unless explicitly raised
-			var terrain_h = simulation_node.get_height_at(Vector2(ground_pos.x, ground_pos.z))
+			var terrain_h = simulation_node.get_world_surface_height(Vector2(ground_pos.x, ground_pos.z))
 			# Keep the relative height difference, but drag planar!
 			# Or simpler: Just set it exactly at terra level if dragging planarly!
 			var target_pos = Vector3(ground_pos.x, terrain_h + 0.001, ground_pos.z)

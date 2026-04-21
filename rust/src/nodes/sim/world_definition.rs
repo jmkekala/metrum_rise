@@ -515,7 +515,8 @@ impl SimCore {
         self.heightmap = terrain;
         self.watermap = WaterSystem::from_world_config(&self.config);
         self.region_graph = crate::simulation::network::graph::RegionGraph::new();
-        self.transit_network = TransitNetwork::new();
+        self.transit_network =
+            TransitNetwork::new_with_surface_chunk_span(self.config.terrain_chunk_m);
         self.zoning = ZoningSystem::new(&self.config);
         self.pollution = PollutionSystem::new(&self.config);
         self.noise = NoiseSystem::new(&self.config);
@@ -543,6 +544,7 @@ impl SimCore {
         self.last_tick_duration = 0.0;
         self.last_agent_tick_us = 0;
         self.last_road_timing.clear();
+        self.last_surface_debug_edges.clear();
         self.camera_aabb = (0.0, 0.0, 0.0, 0.0);
     }
 
@@ -1019,7 +1021,7 @@ mod tests {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new(),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -1046,6 +1048,7 @@ mod tests {
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,
             last_road_timing: String::new(),
+            last_surface_debug_edges: Vec::new(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0),
         }
     }

@@ -246,6 +246,9 @@ pub struct SimCore {
     pub last_agent_tick_us: u64,
     /// Per-phase timing breakdown from the last road placement, for profiling.
     pub last_road_timing: String,
+    /// Edge ids touched by the most recent committed network edit and queued for one focused
+    /// road-surface debug dump after the next terrain/mesh rebuild.
+    pub(crate) last_surface_debug_edges: Vec<usize>,
     /// World-space AABB for frustum culling: (x_min, x_max, z_min, z_max).
     /// Agents outside this rect are excluded from `RenderSnapshot` transforms.
     /// Updated each frame via `SimCommand::SetCameraAabb`. Defaults to "show all".
@@ -981,6 +984,9 @@ pub fn run_sim_thread(
                                 affected_nodes.insert(c.region_graph.get_valid_node(e.end_node));
                             }
                         }
+                        c.last_surface_debug_edges.extend(dirty.iter().copied());
+                        c.last_surface_debug_edges.sort_unstable();
+                        c.last_surface_debug_edges.dedup();
 
                         let t_clips = Instant::now();
                         c.region_graph

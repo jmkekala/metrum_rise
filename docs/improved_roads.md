@@ -2,34 +2,33 @@
 
 ## Purpose
 
-This document owns the deterministic long-term replacement of the current surface-road
-implementation.
-
-Tracked work for this document lives under [`ROAD-01`](roadmap.md).
+This document owns the shipped roadbed runtime for surface roads and the remaining road-specific
+work tracked under [`ROAD-01`](roadmap.md).
 
 It answers these questions:
 
 - what the authoritative road surface model is
-- how road geometry interacts with terrain, rendering, and editor preview
+- how road geometry interacts with shared earthworks, rendering, and editor preview
 - which subsystem owns each piece of data
-- what deterministic rules the replacement must satisfy
-- which old code paths are compatibility-only and must eventually be removed
+- what deterministic rules the roadbed runtime must satisfy
+- which legacy ownership patterns must not be reintroduced
 
 It does not own:
 
 - lane routing policy or turn legality
 - frontage-side building entrance semantics
+- the shared engineered-ground / earthworks contract used by roads, pads, and future foundations
 - terrain storage internals or large-world terrain streaming policy
 
-Those remain owned by [`entrance_and_exit.md`](entrance_and_exit.md) and
-[`terrain.md`](terrain.md).
+Those remain owned by [`entrance_and_exit.md`](entrance_and_exit.md),
+[`earthworks.md`](earthworks.md), and [`terrain.md`](terrain.md).
 
 ## Document Conventions
 
 Interpretation rules:
 
 - `current runtime` means the shipped implementation in the repository today
-- `replacement target` means the required long-term implementation this document defines
+- `remaining work` means the not-yet-shipped follow-up tracked under [`ROAD-01`](roadmap.md)
 - `must` means required for the owning contract
 - `should` means intended unless a better measured implementation replaces it
 - `may` means optional
@@ -48,8 +47,8 @@ Terminology:
 
 ## Problem Statement
 
-The current runtime still has three architectural problems that make elevated DEM worlds expose
-road failures immediately:
+The original surface-road runtime had three architectural problems that made elevated DEM worlds
+expose road failures immediately:
 
 - the visible road surface is derived from centerline points whose `y` value is reused across the
   full width, so lateral offsets on cross-slopes float on one side and clip into terrain on the
@@ -59,12 +58,52 @@ road failures immediately:
 - the active standard-road path still treats the road as "centerline plus patched top surface"
   instead of as one authoritative roadbed with explicit width, bands, and node patches
 
-The replacement must remove those problems at the ownership level, not by adding more local
-patches to the existing renderer.
+The roadbed runtime must continue to solve those problems at the ownership level, not by
+reintroducing local patches to the retired renderer.
 
-## Replacement Goals
+## Current Runtime Summary
 
-The replacement target must guarantee:
+Phases 1-10 now establish the shipped roadbed replacement:
+
+- preview, committed surface rendering, world-surface queries, and terrain earthworks consume one
+  compiled roadbed cache
+- grounded `Standard` roads stamp both the paved footprint and a deterministic outer shoulder /
+  cut / fill transition margin into visual terrain
+- grounded `Standard` roads keep a bounded design crossfall instead of rolling the carriageway to
+  match the full hillside cross-slope, and the remaining mismatch is absorbed by terrain
+  earthworks
+- the old widened-ribbon top-surface renderer and centerline-only flattening path are retired
+
+This closes the rough-terrain ownership gap that previously let nearby terrain visually crowd or
+overlap the road edge after phases 1-8. Remaining visual limitations on very rough terrain now come
+primarily from terrain-cell resolution rather than from missing earthwork ownership or a
+terrain-following carriageway profile.
+
+## Current Runtime Gap
+
+The core roadbed ownership and bounded grounded-road crossfall are now live, but authored `10 m`
+terrain worlds can still visually smear terrain back across the road corridor on moderate hills.
+
+That remaining gap is no longer caused by:
+
+- centerline-only road ownership
+- a terrain-following carriageway crossfall solve
+- missing outer cut / fill earthwork margins
+
+But one important ownership gap still remains in the current runtime:
+
+- later terrain authoring still resynchronizes placed grounded `Standard` roads to edited source
+  terrain instead of treating the placed roadbed as fixed and reshaping terrain / earthworks
+  around it
+
+It is now primarily a coarse-grid terrain representation problem. Phase 11 exists to quantify that
+gap on the shipped `10 m` terrain grid, compare it against a candidate `5 m` grid on the same
+world-space scenarios, and feed that result into the terrain-side render-boundary work owned by
+[`terrain.md`](terrain.md) before any default density move is attempted.
+
+## Roadbed Contract
+
+The shipped roadbed runtime must guarantee:
 
 - one authoritative roadbed model drives preview, committed render mesh, terrain earthworks, and
   world-surface picking
@@ -91,12 +130,11 @@ The logical graph remains authoritative for:
 
 The logical graph must not be treated as the final visible road surface.
 
-### New `RoadSurfaceSystem`
+### `RoadSurfaceSystem`
 
-The replacement target introduces one authoritative road-surface layer, referred to here as
-`RoadSurfaceSystem`.
+The current runtime uses one authoritative road-surface layer, `RoadSurfaceSystem`.
 
-It must own:
+It owns:
 
 - edge longitudinal grade solutions
 - edge cross-sections and lateral bands
@@ -132,11 +170,11 @@ Editor preview must call the same road-surface solve code as committed placement
 
 The preview path and the committed path may differ in cache lifetime, but not in geometric rules.
 
-## Authoritative Replacement Model
+## Authoritative Roadbed Model
 
 ### 1. One Roadbed Model For All Surface Consumers
 
-The replacement target is a 2.5-D roadbed model shared by all road-surface consumers.
+The shipped roadbed runtime is a 2.5-D roadbed model shared by all road-surface consumers.
 
 For one world position `(x, z)` inside a surface road footprint:
 
@@ -206,13 +244,15 @@ At minimum, the model must support:
 - right curb / shoulder band
 - right sidewalk band
 
-The replacement target may later add medians, parking lanes, tram reservation bands, or cycle
+The runtime may later add medians, parking lanes, tram reservation bands, or cycle
 tracks, but the ownership model must already support arbitrary ordered lateral bands.
 
 Deterministic rule:
 
 - lateral roadbed height comes from the section's cross-section profile, not from terrain samples
   under the left or right edge
+- grounded `Standard` roads may use terrain only to choose a bounded design crossfall direction and
+  magnitude; they must not copy the full hillside left/right terrain delta into carriageway roll
 
 This is the key rule that removes the "half buried, half floating" failure mode.
 
@@ -234,7 +274,7 @@ The exact authored defaults may be simple at first, but the representation must 
 
 ### 6. Node Surface Uses Explicit Patches
 
-The replacement target does not rely on implicit overdraw alone to define junction ownership.
+The roadbed runtime does not rely on implicit overdraw alone to define junction ownership.
 
 Each relevant node must compile to one of these classes:
 
@@ -269,7 +309,7 @@ For every incident surface edge at one node:
 - sort incidents by angle around the node center with a stable tie-breaker
 - assemble ordered boundary loops from those throat points
 
-The replacement target may use deterministic triangulation such as ear clipping or another stable
+The runtime may use deterministic triangulation such as ear clipping or another stable
 polygon triangulation strategy, but it must satisfy:
 
 - the same boundary loop always triangulates to the same index order
@@ -279,7 +319,7 @@ polygon triangulation strategy, but it must satisfy:
 
 ### 8. Sidewalk Ownership Is Side-Aware
 
-The long-term replacement must stop treating sidewalks as a symmetric visual halo around the road
+The shipped roadbed runtime does not treat sidewalks as a symmetric visual halo around the road
 centerline.
 
 Sidewalk ownership must be explicit per side:
@@ -304,7 +344,7 @@ Required rules:
 
 ### 10. Normals Are Derived From Real Geometry
 
-The replacement target must stop treating all road-surface normals as `Vector3::UP`.
+The roadbed runtime does not treat all road-surface normals as `Vector3::UP`.
 
 Normals for:
 
@@ -316,63 +356,28 @@ Normals for:
 must be derived from the actual triangles or reconstructed cross-section planes so sloped and
 banked geometry shades correctly.
 
-## Terrain Interaction Contract
+## Road Earthworks Boundary
 
-### 1. Source Terrain Remains Authoritative Ground
+The shared engineered-ground contract now lives in [`earthworks.md`](earthworks.md). This document
+only owns the road-specific side of that boundary.
 
-The road system must not rewrite authored source terrain.
+Road-specific requirements:
 
-`TerrainSystem` continues to own:
+- grounded `Standard` roads use compiled roadbed sections and lateral bands as the support surface
+  that the shared earthworks system must honor
+- road-specific footprint ownership comes from carriageway, curb / shoulder, and sidewalk bands,
+  not from a centerline-only approximation
+- grounded roads require an outer deterministic cut / fill margin derived from those same compiled
+  sections
+- bounded grounded-road crossfall remains a roadbed rule owned here, while the shared tie-in back
+  to terrain is owned by [`earthworks.md`](earthworks.md)
 
-- source terrain
-- visual terrain
+Road-class-specific earthwork rules:
 
-Roads only contribute derived earthworks to the visual terrain buffer.
-
-### 2. Earthworks Derive From The Roadbed, Not From Edge Centerlines
-
-Earthworks must be generated from the compiled roadbed sections and node patches.
-
-They must not be generated by:
-
-- sampling only the edge centerline height
-- reusing the old "flat ribbon around the centerline" assumption
-- running a second independent smoothing pass after the road mesh is already decided
-
-Inside the paved / sidewalk footprint:
-
-- visual terrain must be cut or filled to the roadbed support surface defined by the road system
-
-Outside the footprint but inside the earthwork margin:
-
-- visual terrain transitions back to source terrain using deterministic shoulder / cut / fill rules
-
-### 3. Earthworks Must Be Chunk-Local
-
-The replacement target must retire full-world dense terrain flattening for local road edits.
-
-Required rule:
-
-- a road edit marks only touched terrain chunks dirty
-- earthwork recomputation runs only for those touched chunks
-- terrain visual upload stays bounded to those chunks or to a bounded compatibility window until
-  chunked terrain rendering replaces the current full-heightmap upload path
-
-The road replacement may temporarily ship through a compatibility boundary, but the final contract
-is chunk-local.
-
-### 4. Bridges And Tunnels Have Separate Earthwork Rules
-
-For `Bridge` edges:
-
-- the deck surface is owned by the roadbed like any other surface edge
-- terrain earthworks are limited to abutments or explicitly authored supports
-- the terrain directly under the span is not flattened to deck height
-
-For `Tunnel` edges:
-
-- the tunnel roadbed still exists for routing and underground rendering
-- surface terrain does not carve down to the tunnel deck except at portals
+- `Bridge` edges keep the deck surface on the roadbed path, but earthworks stay limited to
+  abutments or authored supports
+- `Tunnel` edges keep the underground roadbed for routing and underground rendering, but surface
+  terrain carving stays limited to portals
 
 ## Rendering Contract
 
@@ -390,7 +395,7 @@ ownership model.
 
 ### 2. Material Contract Can Stay Stable
 
-The replacement may preserve the current Godot material contract where useful:
+The current runtime preserves the Godot material contract where useful:
 
 - carriageway vertices use the carriageway material path
 - sidewalk vertices use the sidewalk material path
@@ -433,7 +438,7 @@ The preview may reuse temporary IDs and temporary caches, but it must not use a 
 
 ### 2. Combined World-Surface Picking Must Exist
 
-The long-term replacement must add a combined world-surface query that can return:
+The runtime exposes a combined world-surface query that can return:
 
 - roadbed height if a roadbed owns the point
 - otherwise terrain height
@@ -443,7 +448,7 @@ against terrain alone.
 
 ## Performance Contract
 
-The replacement must respect the project's scale target.
+The shipped roadbed runtime must respect the project's scale target.
 
 Required bounds:
 
@@ -460,198 +465,58 @@ Preferred cache structure:
 - avoid inventing a second unrelated spatial ownership grid when one of the existing chunk systems
   can index the same work
 
-## Migration Rules
+## Remaining Work
 
-The old renderer and flattening code are compatibility code only. They are not the long-term
-architecture.
+Phases 1-10 of [`ROAD-01`](roadmap.md) are shipped. They are intentionally not repeated here as
+rollout history; this document now focuses on the live roadbed contract plus the remaining active
+follow-up work.
 
-The replacement should land in deterministic slices:
+### Phase 11 - Coarse-Grid Fidelity Decision Gate
 
-1. Introduce `RoadSurfaceSystem` and compile cached edge sections from the existing logical graph.
-2. Move editor preview to that shared compilation path.
-3. Replace top-surface road and sidewalk mesh generation with cached corridor and node-patch
-   surfaces.
-4. Replace lane-marking generation so it anchors to throat / section data.
-5. Replace centerline-based terrain flattening with chunk-local earthwork stamping from the same
-   roadbed caches.
-6. Add combined world-surface picking for editor tools.
-7. Remove the old contour / patch / widened-ribbon renderer path and any dead cached junction
-   polygon state left behind.
+Phase 11 exists because the roadbed runtime is now coherent, but authored `10 m` worlds can still
+visually smear terrain back across a grounded road corridor on moderate hills.
 
-During migration:
+Required Phase 11 work:
 
-- the logical graph may remain the same
-- the road-surface caches may coexist with old render paths only long enough to validate parity
-- once one surface class is switched to the new compiler, that class should stop accumulating new
-  special-case patches in the old renderer
+- keep deterministic characterization tests for the same grounded hillside-road case on both the
+  shipped `10 m` terrain grid and a candidate `5 m` grid
+- measure visible terrain overlap back onto the compiled roadbed footprint instead of relying on
+  screenshots or manual editor inspection
+- keep the world-space road path, terrain function, and grading contract identical between the
+  `10 m` and `5 m` variants so the comparison isolates terrain-cell density
+- treat those tests as terrain-side evidence, not as permission to extend the current whole-map
+  dense terrain renderer upload path
+- use the characterization as a decision gate:
+  - if `5 m` materially reduces overlap, it remains a viable path
+  - if `5 m` still leaves unacceptable overlap, the next fix must be a different representation
+    such as road-owned corridor / skirt geometry rather than more heightfield density alone
 
-## Implementation Plan
+Phase 11 is a measurement and decision phase, not a claim that denser terrain alone is already the
+solution. Any default density move now depends on the chunk-local terrain / water render split
+defined in [`terrain.md`](terrain.md).
 
-The implementation plan for [`ROAD-01`](roadmap.md) is phase-based. Each phase must leave the
-runtime in a deterministic, testable state rather than introducing a large partially-owned rewrite.
+### Phase 12 - Keep Placed Roadbeds Fixed Under Later Terrain Edits
 
-### Phase 1 - Lock the new road-surface data model
+Placed-road ownership must stay explicit after the road is committed.
 
-- Add the `RoadSurfaceSystem` shell and make it the only future owner of compiled roadbed data.
-- Introduce explicit compiled-surface types for:
-  - edge sections
-  - lateral bands
-  - node patch classes
-  - node patch boundary loops
-  - per-chunk surface cache entries
-  - per-chunk earthwork cache entries
-- Keep `RegionGraph` authoritative only for logical topology, modal permissions, edge class, and
-  plan polyline control points.
-- Keep all roadbed heights in world metres inside the road surface compiler, even while
-  `TerrainSystem` still uses the current scaled storage internally.
-- Add deterministic dirty tracking for:
-  - touched edges
-  - touched nodes
-  - touched road surface chunks
-  - touched terrain chunks
-- Do not change the visible renderer yet.
+Required Phase 12 work:
 
-Goal: create one explicit place in the runtime where the replacement can accumulate authoritative
-surface state without immediately entangling it with the old renderer.
+- terrain-authoring edits must no longer resynchronize placed grounded `Standard` roads to edited
+  source terrain as a side effect
+- once a road is committed, later terrain edits must rebuild visual terrain and earthworks around
+  that fixed roadbed instead
+- explicit road-edit operations remain the only way to move or regrade the committed road surface
+- placement-time grounding may still choose the initial roadbed, but that placement solve must not
+  remain a live dependency of later terrain brushes
+- the same fixed-roadbed rule must stay consistent across committed render mesh, world-surface
+  queries, and terrain earthworks
 
-### Phase 2 - Compile edge sections and node patch inputs
-
-- Implement edge-section compilation from the existing logical graph:
-  - fixed section refinement
-  - longitudinal grade solve
-  - lateral-axis solve
-  - lateral band layout
-  - piecewise-linear cross-section profile
-- Implement node classification into `Terminal`, `PassThrough`, `WidthTransition`, and `Junction`.
-- Implement deterministic throat generation and ordered node-boundary loop assembly.
-- Keep the old road mesh path active, but compile and cache the new surface data in parallel.
-- Add Rust-side tests for:
-  - grade determinism
-  - section refinement determinism
-  - node classification
-  - throat ordering and stable boundary-loop generation
-
-Goal: make the core compiler real and testable before any Godot-visible mesh changes depend on it.
-
-### Phase 3 - Move preview onto the shared compiler
-
-- Replace the current preview-only road conditioning path with temporary `RoadSurfaceSystem`
-  compilation using the exact same:
-  - grade solve
-  - section refinement
-  - lateral profile
-  - node patch generation inputs
-- Keep preview cache lifetime temporary, but do not allow any separate "looks similar enough"
-  geometry path.
-- Add preview-versus-commit parity tests for:
-  - flat terrain
-  - cross-slope terrain
-  - bridge preview
-  - tunnel preview
-- Keep committed rendering on the old path for one phase longer so preview parity can be validated
-  separately.
-
-Goal: eliminate the first source of geometry drift by making preview an early consumer of the
-authoritative compiler.
-
-### Phase 4 - Replace standard-road top-surface rendering
-
-- Replace the standard-road carriageway and sidewalk top-surface renderer with mesh generation from:
-  - compiled edge sections
-  - compiled lateral bands
-  - compiled node patches
-- Generate normals from the actual compiled geometry instead of forcing `Vector3::UP`.
-- Keep the current Godot material contract where it does not block the new geometry ownership.
-- Remove any old standard-road surface code that still:
-  - offsets laterally from centerline Y only
-  - infers junction center ownership from overdraw alone
-  - depends on widened ribbons or node disks as the authoritative surface model
-- Add black-box mesh tests for:
-  - cross-slope roads
-  - arbitrary-angle bends
-  - T-junctions
-  - 4-way junctions
-  - width transitions
-  - car-only roads without sidewalks
-
-Goal: move visible surface-road ownership from the old renderer to the compiled roadbed for normal
-surface roads.
-
-### Phase 5 - Replace bridge, tunnel, and marking paths
-
-- Move bridge deck top surfaces to the compiled roadbed path using the same section and band model.
-- Move tunnel portal surface handling to the compiled roadbed path while still suppressing buried
-  surface sections where required by the spec.
-- Replace lane-marking generation so it derives from compiled throat / section data instead of
-  centerline offsets.
-- Ensure footpath joins use the same side-aware surface ownership model as the new standard-road
-  path.
-- Add tests for:
-  - bridge deck continuity
-  - tunnel portal ownership
-  - marking termination at throats
-  - footpath joins on one sidewalk side only
-
-Goal: remove the remaining top-surface exceptions so one surface compiler owns all visible road
-classes.
-
-### Phase 6 - Replace terrain earthworks with roadbed-derived stamping
-
-- Replace centerline-based terrain flattening with earthwork stamping from compiled sections and
-  node patches.
-- Stamp only touched terrain chunks rather than rebuilding full-world dense road flatten output for
-  each local edit.
-- Keep `TerrainSystem` authoritative for source and visual terrain storage; the road system only
-  supplies derived earthwork inputs.
-- For bridges:
-  - limit earthworks to abutments and explicitly authored support regions
-- For tunnels:
-  - limit earthworks to portals
-- Add tests for:
-  - paved-footprint agreement between visual terrain and roadbed support surface
-  - no under-span bridge flattening
-  - no along-span tunnel carving
-  - local invalidation bounded to touched terrain chunks
-
-Goal: remove the second source of geometry disagreement by making terrain earthworks consume the
-same compiled roadbed as the renderer.
-
-### Phase 7 - Add combined world-surface queries and tool migration
-
-- Add new combined world-surface queries that return:
-  - roadbed height when roadbed owns the point
-  - otherwise terrain height
-- Update road placement, move, inspect, and selection tools to use the combined query where road
-  ownership matters.
-- Keep existing terrain-only queries as terrain-only APIs unless and until the owning docs are
-  updated together.
-- Update debug and editor helpers so they can visualize:
-  - compiled sections
-  - lateral bands
-  - node patch loops
-  - earthwork chunk bounds
-
-Goal: make the editor and debug paths consume the same world-surface ownership model as the
-runtime renderer.
-
-### Phase 8 - Remove legacy paths and compatibility state
-
-- Delete the remaining old standard-road surface renderer path.
-- Delete the remaining centerline-only terrain flattening path.
-- Delete dead contour / patch / widened-ribbon compatibility code and any dead cached junction
-  polygon state left behind by the old renderer.
-- Delete preview fallbacks that still bypass the compiled roadbed path.
-- Rewrite or remove tests that assert old implementation shapes instead of the new black-box
-  contracts.
-- Update [`terrain.md`](terrain.md), [`reference.md`](reference.md), and any affected tool/API docs
-  so the shipped runtime contract matches the new implementation.
-
-Goal: leave one coherent road surface architecture in the repository instead of a permanent
-dual-path system.
+Phase 12 is separate from Phase 11 because it changes ownership semantics first; denser terrain or
+local corridor geometry still remain possible follow-ups after that rule is in place.
 
 ## Test Contract
 
-Tests for the replacement must be black-box contract tests, not shape snapshots of one internal
+Tests for the roadbed runtime must be black-box contract tests, not shape snapshots of one internal
 implementation.
 
 Must cover:
@@ -669,22 +534,30 @@ Must cover:
 - bridge span above terrain without terrain flatten under the span
 - tunnel portal behavior without surface carving along the buried segment
 - preview / commit parity for the same input path
-- terrain earthwork agreement with the roadbed inside the paved footprint
+- terrain earthwork agreement with the roadbed inside the paved footprint on supportive terrain
+  densities
+- deterministic cut / fill transition outside the paved footprint inside the earthwork margin
+- grounded hillside roads keep a bounded carriageway crossfall instead of following the full raw
+  terrain cross-slope
+- deterministic characterization of the same grounded hillside road at `10 m` and `5 m` terrain
+  resolution, including explicit measured overlap comparison
 - deterministic rebuild: same input graph produces the same section data and mesh indices
 - local invalidation: editing one edge does not force unrelated chunks to rebuild
 
-## Explicit Replacement Rule
+## Explicit Runtime Rule
 
-The current active top-surface road path is not to be patched into the long-term solution.
+The shipped roadbed runtime is the only valid path for surface roads. New work must extend it
+instead of reintroducing retired centerline ownership.
 
-The code to remove or retire from the active path includes:
+The following legacy patterns must not be reintroduced:
 
 - centerline-only lateral lift logic for road surface vertices
 - terrain flattening that samples only the centerline height and then separately resyncs the road
+- paved-footprint-only earthwork stamping as the final grounded-road terrain contract
 - any renderer code that treats node disks or widened ribbons as the sole ownership model
-- dead cached junction polygon state that no longer serves the replacement pipeline
+- dead cached junction polygon state that no longer serves the roadbed pipeline
 
-The long-term system is:
+The shipped system is:
 
 - one logical graph
 - one authoritative roadbed compiler

@@ -21,6 +21,22 @@ impl SimCore {
         self.heightmap.sample_height_world(pos.x, pos.y) * HEIGHT_SCALE
     }
 
+    /// Returns the visible world-surface height at the given world position.
+    ///
+    /// This prefers the compiled roadbed surface when it owns the queried point and otherwise
+    /// falls back to the current visual terrain buffer.
+    pub fn get_world_surface_height_internal(&mut self, pos: Vector2) -> f32 {
+        self.transit_network
+            .road_surface
+            .compile_dirty(&self.region_graph, &self.heightmap);
+        self.transit_network
+            .road_surface
+            .sample_visible_surface_height(&self.region_graph, &self.heightmap, pos.x, pos.y)
+            .unwrap_or_else(|| {
+                self.heightmap.sample_visual_height_world(pos.x, pos.y) * HEIGHT_SCALE
+            })
+    }
+
     /// Raycasts against the terrain heightmap.
     pub fn intersect_terrain_internal(
         &self,
@@ -28,5 +44,25 @@ impl SimCore {
         ray_dir: Vector3,
     ) -> Option<Vector3> {
         self.heightmap.raycast_terrain(ray_origin, ray_dir)
+    }
+
+    /// Raycasts against the visible world surface.
+    ///
+    /// The combined surface uses the compiled roadbed where road ownership exists and otherwise
+    /// falls back to the visual terrain surface.
+    pub fn intersect_world_surface_internal(
+        &mut self,
+        ray_origin: Vector3,
+        ray_dir: Vector3,
+    ) -> Option<Vector3> {
+        self.transit_network
+            .road_surface
+            .compile_dirty(&self.region_graph, &self.heightmap);
+        self.transit_network.road_surface.raycast_visible_surface(
+            &self.region_graph,
+            &self.heightmap,
+            ray_origin,
+            ray_dir,
+        )
     }
 }

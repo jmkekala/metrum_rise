@@ -2,11 +2,11 @@
 ##
 ## The sim thread adds roads/rails asynchronously and sets the `network_dirty` flag
 ## on `SimCore`. This node polls `is_network_dirty()` once per frame and triggers
-## the correct sequence: terrain flatten → terrain visual update → network mesh rebuild.
+## the correct sequence: network-surface terrain rebuild → terrain visual update → network mesh rebuild.
 ## Centralising the refresh here means adding a new transport mode (rail, etc.) only
 ## requires wiring that tool's mesh update call in one place.
 ##
-## Rust methods called: is_network_dirty(), flatten_terrain_for_roads(),
+## Rust methods called: is_network_dirty(), rebuild_network_surface_terrain(),
 ##   clear_terrain_dirty()
 extends Node
 
@@ -20,10 +20,10 @@ func _process(_delta: float) -> void:
 	if not simulation_node.is_network_dirty():
 		return
 
-	# 1. Flatten terrain to match new road/rail geometry.
-	simulation_node.flatten_terrain_for_roads()
+	# 1. Rebuild road-surface-driven visual terrain to match the edited network.
+	simulation_node.rebuild_network_surface_terrain()
 
-	# 2. Redraw the terrain mesh (flatten_terrain_for_roads sets terrain_dirty, but
+	# 2. Redraw the terrain mesh (rebuild_network_surface_terrain sets terrain_dirty, but
 	#    we update it eagerly here and clear the flag so terrain.gd._process skips it
 	#    this frame rather than running a redundant second pass).
 	terrain.update_terrain_visuals()

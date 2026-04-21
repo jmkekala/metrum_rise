@@ -87,7 +87,7 @@ func _highlight_closest_node():
 	
 	var ray_origin = camera.project_ray_origin(mouse_pos)
 	var ray_dir = camera.project_ray_normal(mouse_pos)
-	var pos = simulation_node.intersect_terrain(ray_origin, ray_dir)
+	var pos = simulation_node.intersect_world_surface(ray_origin, ray_dir)
 	if pos == null: return
 	
 	var nearest_node = simulation_node.get_closest_node(pos, 5.0)
@@ -162,7 +162,7 @@ func _get_hovered_lane_sphere():
 	
 	var ray_origin = camera.project_ray_origin(mouse_pos)
 	var ray_dir = camera.project_ray_normal(mouse_pos)
-	var pos_variant = simulation_node.intersect_terrain(ray_origin, ray_dir)
+	var pos_variant = simulation_node.intersect_world_surface(ray_origin, ray_dir)
 	if pos_variant == null: return null
 	var pos: Vector3 = pos_variant
 	
@@ -182,7 +182,7 @@ func _update_drag_line():
 	
 	var ray_origin = camera.project_ray_origin(mouse_pos)
 	var ray_dir = camera.project_ray_normal(mouse_pos)
-	var pos_variant = simulation_node.intersect_terrain(ray_origin, ray_dir)
+	var pos_variant = simulation_node.intersect_world_surface(ray_origin, ray_dir)
 	if pos_variant == null: return
 	var drag_end: Vector3 = pos_variant
 	drag_end.y += 0.5

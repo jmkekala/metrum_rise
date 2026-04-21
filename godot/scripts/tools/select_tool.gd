@@ -101,7 +101,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			var pos = null
 			var edge_idx := -1
 			if camera:
-				pos = simulation_node.intersect_terrain(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
+				pos = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
 				if pos != null:
 					edge_idx = simulation_node.get_hovered_edge(pos.x, pos.z)
 					var building_inspector = _get_building_inspector()
@@ -284,7 +284,7 @@ func _get_hovered_lane_sphere():
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return null
-	var pos_variant = simulation_node.intersect_terrain(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
+	var pos_variant = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
 	if pos_variant == null: return null
 	var pos: Vector3 = pos_variant
 	var best_dist = 1.2
@@ -300,7 +300,7 @@ func _get_hovered_cw_toggle():
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return null
-	var pos_variant = simulation_node.intersect_terrain(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
+	var pos_variant = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
 	if pos_variant == null: return null
 	var pos: Vector3 = pos_variant
 	var best_dist = 2.0
@@ -318,7 +318,7 @@ func _update_drag_line():
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return
-	var pos_variant = simulation_node.intersect_terrain(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
+	var pos_variant = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
 	if pos_variant == null: return
 	var drag_end: Vector3 = pos_variant
 	drag_end.y += 0.5
@@ -409,7 +409,7 @@ func _hovered_edge() -> int:
 	var mouse_pos = get_viewport().get_mouse_position()
 	var camera = get_viewport().get_camera_3d()
 	if not camera: return -1
-	var pos = simulation_node.intersect_terrain(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
+	var pos = simulation_node.intersect_world_surface(camera.project_ray_origin(mouse_pos), camera.project_ray_normal(mouse_pos))
 	if pos == null: return -1
 	return simulation_node.get_hovered_edge(pos.x, pos.z)
 

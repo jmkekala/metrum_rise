@@ -2,15 +2,16 @@
 
 ## Purpose
 
-This document owns world extent, terrain storage, terrain-to-road interaction, water storage,
-and the deterministic implementation path from the current chunk-aware runtime to a real large-world
-authoring pipeline.
+This document owns world extent, terrain storage, water storage, and the deterministic
+implementation path from the current chunk-aware runtime to a real large-world authoring pipeline.
 
 It answers questions like:
 
 - what `WorldConfig` means today
 - what terrain and water state is authoritative
 - when dense buffers are still allowed
+- how terrain and water render/upload boundaries must stay local as world size or terrain density
+  increases
 - what is already implemented
 - what the next deterministic implementation slices must do
 
@@ -37,7 +38,7 @@ Terminology:
 - `runtime terrain cell`: one live terrain sample in the current in-memory terrain grid
 - `authored terrain chunk`: the canonical chunk span described by `WorldConfig`
 - `source terrain`: the authoritative player- or importer-authored terrain surface
-- `visual terrain`: the derived terrain surface after road-bed carving
+- `visual terrain`: the derived terrain surface after engineered-ground earthworks
 - `WorldDefinition`: the reusable authored-world asset for blank-world v1
 
 ## Implemented Runtime Contract
@@ -101,7 +102,7 @@ Implication:
 The live `TerrainSystem` owns two sparse chunk-backed grids:
 
 - `source terrain`: authoritative sculpted terrain
-- `visual terrain`: derived terrain after road flattening
+- `visual terrain`: derived terrain after engineered-ground earthworks
 
 Current deterministic rules:
 
@@ -115,23 +116,36 @@ Current deterministic rules:
 - procedural hillshade is a render-only derivation generated from the uploaded visual terrain
   heightmap
 - procedural hillshade must never become authored world data or save-game data
-- terrain sculpting, DEM import, world load, and road-flattening visual refreshes must all update
+- terrain sculpting, DEM import, world load, and road-earthwork visual refreshes must all update
   hillshade automatically because it derives from the same visual terrain upload
 
-### 4. Terrain Queries Read Authoritative Source Terrain
+### 4. Surface Queries Distinguish Source Terrain From Visible World Surface
 
-Terrain height queries are authoritative against the source terrain surface, not the road-carved
-visual terrain.
+Terrain-only height queries are authoritative against the source terrain surface, not the
+engineered-ground-derived visual terrain. Separate world-surface queries read the current
+engineered-ground client surface first and fall back to visual terrain only when no client-owned
+surface owns the queried location.
 
 Current deterministic rules:
 
 - `get_height(x, y)` reads source terrain
 - `sample_height_world(x, z)` reads source terrain
-- raycasts and terrain height queries use source terrain interpolation in world space
-- road-bed carving is a visual derivation, not an edit to source terrain
+- `intersect_terrain()` and terrain height queries use source terrain interpolation in world space
+- `get_world_surface_height()` returns visible client-owned surface height when an engineered-ground
+  client owns the queried XZ location, otherwise visual terrain height
+- `intersect_world_surface()` raycasts the visible client-owned surface first and falls back to
+  visual terrain when no client-owned triangle is hit
+- engineered-ground earthworks are a visual derivation, not an edit to source terrain
 
-This preserves the rule that road placement must not feed back into the terrain that grade and
-slope calculations treat as authored ground.
+Editor interaction rule:
+
+- authored-ground editing tools must use the terrain-only query family
+- visible-surface placement, inspection, and selection tools must use the visible-world query
+  family
+- terrain-authoring tools must not implicitly move already placed engineered-ground client surfaces
+
+This preserves the rule that engineered-ground placement must not feed back into the terrain that
+grade and slope calculations treat as authored ground.
 
 ### 5. Terrain Height Storage Is Scaled At Query / Render Boundaries
 
@@ -183,26 +197,54 @@ Allowed dense boundaries today:
 
 - save/load
 - renderer upload to Godot
-- temporary compatibility scratch buffers inside terrain road-flattening
 - temporary compatibility scratch buffers inside water ticking
 - undo snapshots
 
-### 8. Road Flattening Is A Visual Derivation Step
+### 8. Engineered Ground Is A Chunk-Local Visual Derivation Step
 
-Road placement does not rewrite source terrain. The runtime derives a visual terrain buffer with
-road beds carved into it.
+Shared engineered-ground semantics now live in [`earthworks.md`](earthworks.md). This document owns
+the terrain-storage side of that boundary: source terrain stays authored ground, visual terrain is
+the derived buffer, and only touched chunks are reset and restamped.
 
 Current deterministic sequence:
 
-1. reset visual terrain from source terrain
-2. materialize a dense visual scratch buffer
-3. carve road beds into that visual scratch buffer
-4. replace sparse visual terrain from the dense scratch buffer
-5. sync road geometry back to terrain-dependent caches
+1. reset the touched visual terrain chunks from source terrain
+2. compile or refresh the affected engineered-ground client surface inputs
+3. rasterize footprint support plus deterministic outer earthwork-margin transitions from those
+   inputs into the touched visual chunks
+4. leave untouched visual chunks and all source terrain chunks unchanged
+5. rebuild dependent caches against the updated client state plus visual terrain
+
+Current runtime client state:
+
+- roads are the first live engineered-ground client
+- grounded roads stamp compiled support surfaces plus outer cut / fill margins into visual terrain
+- terrain-only queries still read source terrain, while visible-world queries use the client-owned
+  surface first and visual terrain second
+- future flat building pads and other engineered-ground clients should extend the same shared model
+  from [`earthworks.md`](earthworks.md) instead of inventing a separate terrain-flattening path
+
+Current deterministic editor rule:
+
+- terrain authoring edits source terrain first
+- after the source edit, touched engineered-ground clients rebuild and restamp visual terrain
+- terrain brushes do not directly sculpt roadbeds, flat pads, or future local earthwork geometry
+
+Remaining limitation:
+
+- steep and rough terrain still reflects the current terrain-cell resolution, so the corridor can
+  remain visually coarse even though the earthwork ownership and grounded-road crossfall rules are
+  now correct
+- Phase 11 now tracks deterministic `10 m` versus `5 m` hillside-road characterization tests so
+  terrain-density changes can be chosen from measured overlap data rather than assumed to be the
+  answer
+- current grounded-road terrain editing still resynchronizes placed `Standard` road geometry to the
+  edited source terrain before restamping visual terrain; the target contract is to keep placed
+  engineered-ground client surfaces fixed and reshape visual terrain around them instead
 
 Authoritative rule:
 
-- road flattening changes the visual terrain only
+- engineered-ground earthworks change the visual terrain only
 - source terrain remains the authored ground surface
 
 ### 9. Water Uses Sparse Depth / Velocity / Flux Storage
@@ -314,6 +356,8 @@ Current deterministic rules:
 - `get_heightmap_data()` materializes dense visual terrain
 - `get_water_data()` materializes dense water depth
 - `get_water_velocity_data()` materializes dense water velocity
+- those whole-map APIs are compatibility-only render/debug boundaries, not the long-term steady
+  render path for gameplay or WorldEditor
 
 This is a rendering boundary, not an excuse for simulation systems to depend on dense storage.
 
@@ -327,13 +371,14 @@ These are compatibility-only.
 
 Current gap:
 
-- road flattening materializes a full dense terrain buffer
+- terrain renderer upload still materializes one full dense visual-terrain buffer every refresh
 - water tick materializes full dense water buffers
 - render upload materializes full dense buffers every refresh
 
 Required direction:
 
 - these paths should later localize to chunk windows or active areas instead of whole-map buffers
+- denser authored terrain must not be adopted by extending this whole-map upload path
 
 ### 2. Dynamic Water Runtime Is Still Dense Inside The Compatibility Boundary
 
@@ -449,14 +494,21 @@ Current deterministic rules:
   - `Sink`
   - `Lake Fill`
   - `Open Water`
+- terrain brush picking uses `intersect_terrain()` and therefore targets authored source terrain,
+  not the visible engineered surface
+- `Raise`, `Lower`, `Level`, `Smooth`, and `Slope` write authoritative source terrain only
+- completing a terrain brush stroke rebuilds touched engineered-ground clients and restamps visual
+  terrain from the updated source terrain
+- terrain brushes must not directly deform road top surfaces, future flat foundation pads, or
+  future local corridor meshes
 - selecting `Raise`, `Lower`, `Level`, `Smooth`, or `Slope` opens a terrain brush submenu on the bottom toolbar
 - that terrain brush submenu owns the shared editor `Diameter m` and `Strength` controls
 - active terrain brushes show their footprint directly on the terrain so brush diameter is visible before and during sculpting
-- `Level` captures the clicked rendered terrain height at the start of the brush stroke and moves terrain toward that height while the stroke remains active
+- `Level` captures the clicked source-terrain height at the start of the brush stroke and moves terrain toward that height while the stroke remains active
 - `Smooth` moves terrain toward the local neighborhood average inside the brush footprint and is intended for relaxing jagged cuts, banks, and shorelines after carving
 - `Slope` is a two-phase terrain brush:
-  - first click captures the slope start anchor and its rendered terrain height
-  - second click captures the slope end anchor and its rendered terrain height
+  - first click captures the slope start anchor and its source-terrain height
+  - second click captures the slope end anchor and its source-terrain height
   - after both anchors exist, brushing moves terrain toward the clamped linear grade between those two anchor heights
 - `Slope` must not extrapolate beyond the two captured anchors; samples before the first anchor clamp to the start height and samples beyond the second anchor clamp to the end height
 - `Lake Fill` and `Open Water` use a preview-first workflow:
@@ -471,6 +523,9 @@ Current compatibility gap:
 - this is not yet the final terrain / water-only runtime boundary
 - the shared runtime bundle still contains gameplay systems; world editor simply keeps gameplay
   controls and HUD surfaces absent
+- after a terrain stroke, the current runtime still allows placed `Standard` roads to resync to
+  edited source terrain; the intended long-term contract is to keep placed roads and future
+  foundations fixed and reform terrain / earthworks around them instead
 
 ### 3. Baseline Water And Dynamic Water Split Is Now The Required Stable Model
 
@@ -615,21 +670,94 @@ Remaining direction:
 - `New Game` still loads directly into gameplay rather than through a richer front-end menu flow
 - city saves must remain runtime snapshots layered on top of that authored world baseline
 
-### 5. Move From Whole-Map Dense Compatibility Buffers To Chunk Windows
+### 5. Split Terrain / Water Rendering Away From Whole-Map Dense Upload
 
-Now that `terrain_cell_m` exists, dense scratch buffers must be localized.
+Now that `terrain_cell_m` exists, the render boundary itself must become chunk-local.
 
-Required direction:
+Authoritative rule:
 
-- road flattening should operate on touched chunk windows, not full-world dense terrain
-- water simulation should operate on active chunk windows or other bounded regions, not full-world
-  dense arrays
-- renderer upload should be able to refresh only the chunks the camera or editor currently needs
+- whole-map dense mesh and texture refresh is a temporary compatibility path
+- it must not be extended to justify denser authored terrain, larger worlds, or local
+  engineered-ground geometry
 
-Deterministic rule:
+Deterministic terrain-render rules:
 
-- whole-map dense materialization is a temporary compatibility path, not the target large-world
-  runtime
+- visible terrain must render as chunk-local terrain patches rather than one whole-world plane
+- terrain render patches should follow authored terrain chunk boundaries by default
+- if a different terrain render patch span is used later, it must be:
+  - derived from `terrain_chunk_m`
+  - a fixed integer multiple of `terrain_chunk_m`
+  - stable in code rather than camera-dependent
+- each terrain render patch owns local GPU resources for that patch only
+- rebuilding or uploading one patch may read only:
+  - the local visual-terrain window for that patch
+  - one fixed border sample ring if needed for interpolation, normals, or shading continuity
+- unchanged patches must keep their existing GPU resources
+- camera motion alone must not rebuild already resident unchanged patches
+- only dirty patches and newly required visible patches may rebuild or upload
+- the visible terrain patch set must be derived from the camera or editor interest region plus one
+  fixed padding margin to avoid pop-in
+- road earthworks and future engineered-ground clients must continue to invalidate only touched
+  terrain chunks; the renderer must reflect that locality instead of reintroducing full-world
+  uploads
+
+Deterministic water-render rules:
+
+- visible water must stop depending on one whole-world depth texture refresh for every change
+- water rendering must consume chunk-local or other bounded window snapshots aligned to a fixed
+  world-space patching rule
+- the preferred patching rule is to align water render windows to the same terrain render patch
+  grid unless measured evidence later justifies a different fixed grid
+- `WATER-01` may still keep dynamic water simulation compatibility-dense internally while that work
+  remains in progress, but once this render split lands the water renderer must not require
+  whole-map texture refreshes just to display local changes
+
+Deterministic Godot-bridge rules:
+
+- the primary terrain/water render path must move from whole-map dense snapshot APIs to chunk-local
+  snapshot APIs
+- whole-map APIs such as `get_heightmap_data()`, `get_water_data()`, and
+  `get_water_velocity_data()` may remain for compatibility, debug tooling, or offline export, but
+  they must not remain the steady-state gameplay or WorldEditor render path
+- chunk-local snapshot APIs must expose enough metadata for deterministic reconstruction of one
+  patch window:
+  - patch identity
+  - local dimensions
+  - world origin
+  - `terrain_cell_m`
+  - packed sample payloads for that window
+
+Deterministic overlay-separation rule:
+
+- zoning, parcel, or other editor overlays may keep their own representation if that remains cheap
+- those overlays must not force terrain or water back onto one whole-world mesh or one whole-world
+  texture upload path
+
+Deterministic density gate:
+
+- a default authored-terrain move from `10 m` to `5 m` or finer must not happen before this
+  chunk-local terrain / water render split is live
+- the density decision must then be re-measured on the split path using the same world-space test
+  cases for:
+  - system RAM
+  - GPU VRAM
+  - terrain upload cost
+  - water upload cost
+  - terrain brush cost
+  - earthwork restamp cost
+- if `5 m` still leaves unacceptable engineered-ground overlap after those measurements, the next
+  fix must be a different representation such as client-owned local corridor / pad geometry rather
+  than more heightfield density alone
+
+Deterministic transition rules:
+
+- future engineered-ground local corridor / pad geometry should layer on top of the current terrain
+  runtime instead of replacing `TerrainSystem` first
+- post-placement terrain edits should rebuild earthworks around already placed client surfaces
+  instead of resynchronizing those client surfaces to edited terrain
+
+The chunk-local render path, not the current whole-map compatibility upload, is the target
+large-world runtime boundary.
 
 ### 6. Offline Heightmap / DEM Import Is Live
 

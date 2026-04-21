@@ -39,6 +39,8 @@
 //! | | `get_heightmap_data` | `terrain_renderer.gd` |
 //! | | `get_height_at` | `road_tool.gd`, `building_tool.gd` |
 //! | | `intersect_terrain` | `input_manager.gd` (mouse pick) |
+//! | | `get_world_surface_height` | `road_tool.gd`, `move_tool.gd` |
+//! | | `intersect_world_surface` | `road_tool.gd`, `select_tool.gd` |
 //! | **Water** | `add_water` | `water_tool.gd` |
 //! | | `add_water_source` | `water_tool.gd` |
 //! | | `is_water_dirty` | `water_renderer.gd` |
@@ -47,7 +49,10 @@
 //! | **Network** | `add_road` | `road_tool.gd` |
 //! | | `is_network_dirty` | `network_renderer.gd` |
 //! | | `clear_network_dirty` | `network_renderer.gd` |
+//! | | `rebuild_network_surface_terrain` | `network_renderer.gd` |
 //! | | `get_road_mesh_data` | `network_renderer.gd` |
+//! | | `get_preview_road_surface` | `road_tool.gd` |
+//! | | `get_road_surface_debug_data` | `network_tool.gd` |
 //! | | `get_closest_network_point` | `road_tool.gd`, `zoning_tool.gd` |
 //! | | `check_border_candidate` | `road_tool.gd` |
 //! | | `set_border_connection` | `road_tool.gd` |
@@ -1212,7 +1217,41 @@ impl SimulationNode {
     /// Returns dictionary of road/intersection mesh data.
     #[func]
     pub fn get_road_mesh_data(&self) -> VarDictionary {
-        self.lock_core().get_road_mesh_data_internal()
+        let mut core = self.lock_core();
+        core.get_road_mesh_data_internal()
+    }
+
+    /// Returns temporary compiled preview-surface data for the road tool.
+    ///
+    /// Uses `try_lock` because this is called during live mouse movement and must not stall the
+    /// Godot main thread while the sim thread is holding the core mutex.
+    #[func]
+    pub fn get_preview_road_surface(
+        &self,
+        points: PackedVector3Array,
+        fwd_lanes: i32,
+        bkw_lanes: i32,
+    ) -> Variant {
+        let fwd_lanes = fwd_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+        let bkw_lanes = bkw_lanes.clamp(0, i32::from(u8::MAX)) as u8;
+        match self.try_lock_core() {
+            Some(core) => core
+                .get_preview_road_surface_internal(points, fwd_lanes, bkw_lanes)
+                .to_variant(),
+            None => Variant::nil(),
+        }
+    }
+
+    /// Returns compiled road-surface debug line data for editor visualization.
+    ///
+    /// Uses `try_lock` because this is only a debug/editor helper and should never stall the
+    /// Godot main thread while the simulation mutex is busy.
+    #[func]
+    pub fn get_road_surface_debug_data(&self) -> Variant {
+        match self.try_lock_core() {
+            Some(mut core) => core.get_road_surface_debug_data_internal().to_variant(),
+            None => Variant::nil(),
+        }
     }
 
     /// Returns the closest network point (node/edge) within range.
@@ -1379,16 +1418,25 @@ impl SimulationNode {
             .get_network_direction_at_point_internal(pos)
     }
 
-    /// Snap terrain to road levels.
+    /// Rebuilds visual terrain from the authoritative road-surface cache.
     #[func]
-    pub fn flatten_terrain_for_roads(&mut self) {
-        self.lock_core().flatten_terrain_for_roads_internal();
+    pub fn rebuild_network_surface_terrain(&mut self) {
+        self.lock_core().rebuild_network_surface_terrain_internal();
     }
 
     /// Returns terrain height at a position.
     #[func]
     pub fn get_height_at(&self, pos: Vector2) -> f32 {
         self.lock_core().get_height_at_internal(pos)
+    }
+
+    /// Returns the visible world-surface height at a position.
+    ///
+    /// This prefers the compiled roadbed when a road surface owns the queried XZ location and
+    /// otherwise falls back to the current visual terrain.
+    #[func]
+    pub fn get_world_surface_height(&self, pos: Vector2) -> f32 {
+        self.lock_core().get_world_surface_height_internal(pos)
     }
 
     /// Raycasts against the terrain heightmap.
@@ -1400,6 +1448,21 @@ impl SimulationNode {
     pub fn intersect_terrain(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
         match self.try_lock_core() {
             Some(core) => match core.intersect_terrain_internal(ray_origin, ray_dir) {
+                Some(p) => p.to_variant(),
+                None => Variant::nil(),
+            },
+            None => Variant::nil(),
+        }
+    }
+
+    /// Raycasts against the visible world surface.
+    ///
+    /// Uses `try_lock` for the same reason as `intersect_terrain`. The combined surface prefers
+    /// compiled roadbed ownership and otherwise falls back to the visible terrain surface.
+    #[func]
+    pub fn intersect_world_surface(&self, ray_origin: Vector3, ray_dir: Vector3) -> Variant {
+        match self.try_lock_core() {
+            Some(mut core) => match core.intersect_world_surface_internal(ray_origin, ray_dir) {
                 Some(p) => p.to_variant(),
                 None => Variant::nil(),
             },
@@ -1935,7 +1998,7 @@ impl INode3D for SimulationNode {
             heightmap: TerrainSystem::from_world_config(&config),
             watermap: WaterSystem::from_world_config(&config),
             region_graph: crate::simulation::network::graph::RegionGraph::new(),
-            transit_network: TransitNetwork::new(),
+            transit_network: TransitNetwork::new_with_surface_chunk_span(config.terrain_chunk_m),
             zoning: ZoningSystem::new(&config),
             pollution: PollutionSystem::new(&config),
             noise: NoiseSystem::new(&config),
@@ -1966,6 +2029,7 @@ impl INode3D for SimulationNode {
             last_tick_duration: 0.0,
             last_agent_tick_us: 0,
             last_road_timing: String::new(),
+            last_surface_debug_edges: Vec::new(),
             camera_aabb: (0.0, 0.0, 0.0, 0.0), // 0.0 == 0.0 → cull disabled by default
         };
 

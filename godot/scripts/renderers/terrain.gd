@@ -1,7 +1,7 @@
 ## Terrain mesh renderer — displays the heightmap and optionally handles gameplay sculpt input.
 ##
 ## Rust methods called: get_heightmap_size(), get_terrain_world_size(), get_heightmap_data(),
-##   sculpt_terrain(), flatten_terrain_for_roads(), is_terrain_dirty(), clear_terrain_dirty(),
+##   sculpt_terrain(), is_terrain_dirty(), clear_terrain_dirty(),
 ##   get_pollution_image_data(), get_noise_image_data(), get_desirability_image_data()
 ## The heightmap arrives as a flat PackedFloat32Array in row-major order (width × height f32 values).
 ## Overlay textures (pollution/noise/desirability) arrive as RGBA8 PackedByteArray and are

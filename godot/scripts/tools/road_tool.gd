@@ -1,9 +1,10 @@
-## Road drawing tool — straight and spline modes with live preview and lane configuration.
+## Road drawing tool — straight and spline modes with live compiled preview and lane configuration.
 ##
-## Extends NetworkTool. Adds: Taubin-smoothed spline preview, G1 continuity guard at
-## junctions, angle snapping (Shift, 15° steps), distance + angle HUD label, and SimCity-style
-## ghost guide lines projected from existing road endpoints (toggle with G key).
-## Commits via NetworkTool.add_road() with the smoothed polyline on left-click.
+## Extends NetworkTool. Adds: Rust-compiled roadbed preview, G1 continuity guard at junctions,
+## angle snapping (Shift, 15° steps), distance + angle HUD label, and SimCity-style ghost guide
+## lines projected from existing road endpoints (toggle with G key).
+## Commits via NetworkTool.add_road() on left-click while preview geometry is solved through the
+## shared road-surface compiler.
 ## State machine: IDLE → SETTING_CONTROL (spline handle) → SETTING_END → commit → IDLE.
 extends "res://scripts/tools/network_tool.gd"
 
@@ -36,6 +37,7 @@ var _label_world_pos: Vector3 = Vector3.ZERO
 var _ghost_enabled: bool = true  # toggled with G key
 # Cached guide data so we only call Rust when the network changes.
 var _ghost_guides_dirty: bool = true
+var _last_preview_surface: Dictionary = {}
 
 # ── Angle-snap reference ─────────────────────────────────────────────────────
 # Base angle (radians) for Shift snapping — set to the road tangent at start_pos
@@ -132,6 +134,7 @@ func _handle_click():
 			current_path.curve.bake_interval = 0.5
 			current_path.curve.up_vector_enabled = false # Prevent 'looking_at' errors on degenerate paths
 			add_child(current_path)
+			_last_preview_surface = {}
 			
 		State.SETTING_CONTROL:
 			control_pos = pos
@@ -177,41 +180,23 @@ func _update_preview():
 	_draw_blueprint()
 
 func _draw_blueprint():
-	var conditioned = _get_conditioned_geometry()
-	var preview_verts = conditioned.points
-	is_valid = conditioned.is_valid
-	
-	if preview_verts.size() > 1:
-		# Draw the ribbon mesh
+	var preview := _get_compiled_preview_surface()
+	if preview.is_empty():
+		blueprint_mesh.mesh = null
+		if _info_label:
+			_info_label.visible = false
+		return
+
+	var preview_verts: PackedVector3Array = preview.get("prepared_points", PackedVector3Array())
+	var surface_vertices: PackedVector3Array = preview.get("surface_vertices", PackedVector3Array())
+	is_valid = is_valid and bool(preview.get("is_valid", false))
+
+	if surface_vertices.size() >= 3:
 		var arr_mesh = ArrayMesh.new()
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
-		
-		var road_width = max(2.0, (fwd_lanes + bkw_lanes) * simulation_node.get_lane_width())
-		var half_w = road_width * 0.5
-		
-		var ribbon_verts = PackedVector3Array()
-		for i in range(preview_verts.size()):
-			var p = preview_verts[i]
-			# Apply visual lift purely for preview visibility to prevent depth-fight with terrain
-			p.y += 0.05
-			
-			var tangent
-			if i < preview_verts.size() - 1:
-				tangent = (preview_verts[i+1] - preview_verts[i]).normalized()
-			else:
-				tangent = (preview_verts[i] - preview_verts[i-1]).normalized()
-				
-			if tangent.length() < 0.001:
-				tangent = Vector3(0, 0, 1)
-				
-			var normal = Vector3(-tangent.z, 0, tangent.x)
-			
-			ribbon_verts.push_back(p - normal * half_w)
-			ribbon_verts.push_back(p + normal * half_w)
-		
-		arrays[Mesh.ARRAY_VERTEX] = ribbon_verts
-		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLE_STRIP, arrays)
+		arrays[Mesh.ARRAY_VERTEX] = surface_vertices
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		blueprint_mesh.mesh = arr_mesh
 
 		# ── HUD: distance + angle readout ──────────────────────────────────
@@ -249,17 +234,21 @@ func _draw_blueprint():
 			mid.y += 2.0
 			_label_world_pos = mid
 			_info_label.visible = true
+	else:
+		blueprint_mesh.mesh = null
+		if _info_label:
+			_info_label.visible = false
 
 func _commit_segment(end_pos):
 	if not is_valid: return
 
-	var conditioned = _get_conditioned_geometry()
-	var points = conditioned.points
-	if points.size() > 1 and conditioned.is_valid:
+	var preview := _get_compiled_preview_surface()
+	var points := current_path.curve.get_baked_points() if current_path else PackedVector3Array()
+	if points.size() > 1 and not preview.is_empty() and bool(preview.get("is_valid", false)):
 		simulation_node.add_road(points, fwd_lanes, bkw_lanes)
-		# Do NOT call flatten_terrain_for_roads / update_main_mesh here — the road
+		# Do NOT trigger the terrain/network visual refresh here — the road
 		# is queued to the sim thread and is not in the graph yet.  _process polls
-		# is_roads_dirty() and triggers the refresh once the road is actually added.
+		# is_network_dirty() and NetworkRenderer rebuilds the visuals once the road lands.
 
 		# Queue border check — must run AFTER the road is in the graph (nodes exist).
 		# NetworkRenderer drains _pending_border_checks when network_dirty fires.
@@ -289,6 +278,7 @@ func cancel_road():
 		blueprint_mesh.mesh = null
 		current_path.queue_free()
 	current_path = null
+	_last_preview_surface = {}
 	if _info_label:
 		_info_label.visible = false
 
@@ -361,7 +351,7 @@ func get_world_mouse_pos() -> Vector3:
 		hit.x = clampf(hit.x, -half_w, half_w)
 		hit.z = clampf(hit.z, -half_h, half_h)
 		hit = _snap_to_map_border(hit, half_w, half_h)
-		hit.y = simulation_node.get_height_at(Vector2(hit.x, hit.z))
+		hit.y = simulation_node.get_world_surface_height(Vector2(hit.x, hit.z))
 		is_valid = true
 		return hit
 
@@ -452,12 +442,12 @@ func get_world_mouse_pos() -> Vector3:
 
 		if found:
 			is_valid = true
-			return Vector3(best_x, simulation_node.get_height_at(Vector2(best_x, best_z)) + altitude_offset, best_z)
+			return Vector3(best_x, simulation_node.get_world_surface_height(Vector2(best_x, best_z)) + altitude_offset, best_z)
 
 	# 4. Snap to map border when cursor is within border_snap_dist of any edge.
 	if _is_near_border(pos, half_w, half_h, border_snap_dist):
 		pos = _snap_to_map_border(pos, half_w, half_h)
-		pos.y = simulation_node.get_height_at(Vector2(pos.x, pos.z))
+		pos.y = simulation_node.get_world_surface_height(Vector2(pos.x, pos.z))
 		is_valid = true
 		return pos
 
@@ -493,80 +483,26 @@ func _snap_to_map_border(pos: Vector3, half_w: float, half_h: float) -> Vector3:
 		pos.z = half_h
 	return pos
 
-## Returns conditioned geometry for both preview and commit.
-## Applies terrain sampling, Taubin smoothing, and slope/altitude validation.
-func _get_conditioned_geometry() -> Dictionary:
-	var result = {
-		"points": PackedVector3Array(),
-		"is_valid": true,
-		"is_bridge": false
-	}
-	if current_path == null: return result
-	var points = current_path.curve.get_baked_points()
-	if points.size() <= 1:
-		result.points = points
-		return result
-	
-	var start_h = points[0].y
-	var end_h = points[-1].y
-	
-	var start_terrain = simulation_node.get_height_at(Vector2(points[0].x, points[0].z))
-	var end_terrain = simulation_node.get_height_at(Vector2(points[-1].x, points[-1].z))
-	
-	var is_bridge_or_tunnel = abs(start_h - start_terrain) > 0.5 or abs(end_h - end_terrain) > 0.5 or (altitude_offset != 0.0)
-	result.is_bridge = is_bridge_or_tunnel
+## Returns preview geometry compiled through the shared Rust road-surface pipeline.
+## Falls back only to the most recent compiled result if the sim mutex is momentarily contended.
+func _get_compiled_preview_surface() -> Dictionary:
+	if current_path == null:
+		return {}
 
-	# 1. Sample raw terrain for all points ONLY if grounded
-	if not is_bridge_or_tunnel:
-		for i in range(points.size()):
-			points[i].y = simulation_node.get_height_at(Vector2(points[i].x, points[i].z))
-			
-	# 2. Taubin Smoothing
-	var iters = 50
-	var num_verts = points.size()
-	if num_verts > 2 and not is_bridge_or_tunnel:
-		var temp_h = []
-		temp_h.resize(num_verts)
-		var lambda_val = 0.5
-		var mu_val = -0.53
-		for it in range(iters):
-			for i in range(1, num_verts - 1):
-				var laplacian = 0.5 * (points[i-1].y + points[i+1].y) - points[i].y
-				temp_h[i] = points[i].y + lambda_val * laplacian
-			for i in range(1, num_verts - 1):
-				points[i].y = temp_h[i]
-			for i in range(1, num_verts - 1):
-				var laplacian = 0.5 * (points[i-1].y + points[i+1].y) - points[i].y
-				temp_h[i] = points[i].y + mu_val * laplacian
-			for i in range(1, num_verts - 1):
-				points[i].y = temp_h[i]
-	elif num_verts > 2 and is_bridge_or_tunnel:
-		for i in range(1, num_verts - 1):
-			var t = float(i) / (num_verts - 1)
-			points[i].y = lerp(start_h, end_h, t)
-	
-	# 3. Slope Validation
-	for i in range(1, points.size()):
-		var dist = Vector2(points[i].x, points[i].z).distance_to(Vector2(points[i-1].x, points[i-1].z))
-		if dist > 0.01:
-			var slope = abs(points[i].y - points[i-1].y) / dist
-			if slope > 0.41:
-				result.is_valid = false
-				break
-	
-	# 4. Bridge/Tunnel Height Validation
-	if result.is_valid and is_bridge_or_tunnel and num_verts > 2:
-		var mid_idx = num_verts / 2
-		var terrain_mid_h = simulation_node.get_height_at(Vector2(points[mid_idx].x, points[mid_idx].z))
-		if altitude_offset > 0.5: # Bridge
-			if points[mid_idx].y < terrain_mid_h + 1.0:
-				result.is_valid = false
-		elif altitude_offset < -0.5: # Tunnel
-			if points[mid_idx].y > terrain_mid_h - 1.0:
-				result.is_valid = false
-	
-	result.points = points
-	return result
+	var points: PackedVector3Array = current_path.curve.get_baked_points()
+	if points.size() <= 1:
+		return {
+			"prepared_points": points,
+			"surface_vertices": PackedVector3Array(),
+			"is_valid": true
+		}
+
+	var preview = simulation_node.get_preview_road_surface(points, fwd_lanes, bkw_lanes)
+	if preview == null:
+		return _last_preview_surface
+
+	_last_preview_surface = preview
+	return preview
 
 # ── Ghost guide lines ────────────────────────────────────────────────────────
 
@@ -602,14 +538,14 @@ func _rebuild_ghost_lines() -> void:
 		var az: float = guides[i * 4 + 1]
 		var dx: float = guides[i * 4 + 2]
 		var dz: float = guides[i * 4 + 3]
-		var ay: float = simulation_node.get_height_at(Vector2(ax, az)) + 0.06
+		var ay: float = simulation_node.get_world_surface_height(Vector2(ax, az)) + 0.06
 		var perp_x := -dz
 		var perp_z :=  dx
 
 		# ── Outward tangent guide (extends ahead from the endpoint) ──────────
 		var ex := ax + dx * OUTWARD_EXTEND
 		var ez := az + dz * OUTWARD_EXTEND
-		var ey: float = simulation_node.get_height_at(Vector2(ex, ez)) + 0.06
+		var ey: float = simulation_node.get_world_surface_height(Vector2(ex, ez)) + 0.06
 		var guide_col := Color(1.0, 1.0, 1.0, 0.30)
 		im.surface_set_color(guide_col)
 		im.surface_add_vertex(Vector3(ax, ay, az))
@@ -622,7 +558,7 @@ func _rebuild_ghost_lines() -> void:
 		while dist <= OUTWARD_EXTEND:
 			var tx := ax + dx * dist
 			var tz := az + dz * dist
-			var ty: float = simulation_node.get_height_at(Vector2(tx, tz)) + 0.07
+			var ty: float = simulation_node.get_world_surface_height(Vector2(tx, tz)) + 0.07
 			im.surface_set_color(tick_col)
 			im.surface_add_vertex(Vector3(tx - perp_x * TICK_HALF, ty, tz - perp_z * TICK_HALF))
 			im.surface_set_color(tick_col)
@@ -701,9 +637,9 @@ func _draw_offset_curve(im: ImmediateMesh, pts: Array, offset: float, col: Color
 		var oa: Vector2 = s[0]
 		var ob: Vector2 = s[1]
 		im.surface_set_color(col)
-		im.surface_add_vertex(Vector3(oa.x, simulation_node.get_height_at(oa) + Y_LIFT, oa.y))
+		im.surface_add_vertex(Vector3(oa.x, simulation_node.get_world_surface_height(oa) + Y_LIFT, oa.y))
 		im.surface_set_color(col)
-		im.surface_add_vertex(Vector3(ob.x, simulation_node.get_height_at(ob) + Y_LIFT, ob.y))
+		im.surface_add_vertex(Vector3(ob.x, simulation_node.get_world_surface_height(ob) + Y_LIFT, ob.y))
 
 ## Returns true when 2-D segments (a1→b1) and (a2→b2) properly intersect.
 func _segs_cross_2d(a1: Vector2, b1: Vector2, a2: Vector2, b2: Vector2) -> bool:
