@@ -4,7 +4,7 @@
 # Debug modes:
 #   --debug              General debug logging (stdout)
 #   --debug <category>   Category-filtered debug logging (stdout)
-#                        Common categories: isect, economy, demand, road, border, terrain
+#                        Common categories: isect, economy, demand, road, road-geometry, border, terrain
 #   --debug terrain      Terrain + water patch residency/perf summaries (stdout)
 #                        Shows resident patch counts, desired bounds, cull distance, patch
 #                        create/remove/upload churn, and average renderer timings while flying.
@@ -67,11 +67,22 @@ done
 if [ $DEBUG -eq 1 ]; then
     export METRUM_DEBUG=1
     if [ -n "$DEBUG_CATEGORY" ]; then
-        export METRUM_DEBUG_FILTER="$DEBUG_CATEGORY"
+        if [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
+            export METRUM_DEBUG_FILTER="road"
+            export METRUM_DEBUG_ROAD_GEOMETRY_DUMP=1
+            export METRUM_DEBUG_SURFACE=1
+        else
+            export METRUM_DEBUG_FILTER="$DEBUG_CATEGORY"
+        fi
         echo "Debug logging enabled for category '$DEBUG_CATEGORY' (output goes to stdout)"
         if [ "$DEBUG_CATEGORY" = "road" ]; then
+            echo "  Road placement timing summaries enabled."
+            echo "  Use '--debug road-geometry' when you want the full committed-road geometry dump."
+        elif [ "$DEBUG_CATEGORY" = "road-geometry" ]; then
+            echo "  Road placement timing summaries enabled."
             echo "  After each committed road refresh: [DEBUG:road] ROAD_GEOMETRY_DUMP_BEGIN ... ROAD_GEOMETRY_DUMP_END"
-            echo "  Includes edge geometry, compiled section cross-sections, and source/visual terrain samples."
+            echo "  Includes edge geometry, node class/throat diagnostics, compiled loops, and source/visual terrain samples."
+            echo "  Also enables the compiled road-surface overlay in the editor for visual comparison."
         elif [ "$DEBUG_CATEGORY" = "terrain" ]; then
             export METRUM_DEBUG_TERRAIN=1
             echo "  Terrain flight diagnostics enabled: [DEBUG:terrain] summaries every 0.5 s"

@@ -508,7 +508,7 @@ Current deterministic rules:
 - completing a terrain brush stroke rebuilds touched engineered-ground clients and restamps visual
   terrain from the updated source terrain
 - terrain brushes must not directly deform road top surfaces, future flat foundation pads, or
-  future local corridor meshes
+  future local earthwork meshes
 - selecting `Raise`, `Lower`, `Level`, `Smooth`, or `Slope` opens a terrain brush submenu on the bottom toolbar
 - that terrain brush submenu owns the shared editor `Diameter m` and `Strength` controls
 - active terrain brushes show their footprint directly on the terrain so brush diameter is visible before and during sculpting
@@ -754,19 +754,25 @@ Deterministic density gate:
   - terrain brush cost
   - earthwork restamp cost
 - if `5 m` still leaves unacceptable engineered-ground overlap after those measurements, the next
-  fix must be a different representation such as client-owned local corridor / pad geometry rather
-  than more heightfield density alone
+  fix must be a different representation such as client-owned closed local earthwork / tie-in
+  geometry rather than more heightfield density alone
 
 Deterministic transition rules:
 
-- future engineered-ground local corridor / pad geometry is required whether the implementation
-  extends the current terrain runtime or rewrites it
+- future engineered-ground closed local earthwork / tie-in geometry is required whether the
+  implementation extends the current terrain runtime or rewrites it
 - any terrain-runtime rewrite must still preserve:
   - authoritative source terrain
   - a derived far-field terrain surface outside engineered-ground tie-in boundaries
   - chunk-local invalidation and rebuild boundaries
   - the split terrain / water render-upload path
-  - visible-world query precedence over client-owned top surfaces and local corridor / pad geometry
+  - terrain render suppression anywhere client-owned top surfaces or closed local earthwork
+    geometry already own the visible surface
+  - terrain render suppression must remain bounded to true geometry overlap rather than acting as a
+    substitute for missing tie-in faces; road-edge closure must still be geometrically correct if
+    terrain-side suppression is turned off
+  - visible-world query precedence over client-owned top surfaces and closed local earthwork
+    geometry
 - post-placement terrain edits should rebuild earthworks around already placed client surfaces
   instead of resynchronizing those client surfaces to edited terrain
 

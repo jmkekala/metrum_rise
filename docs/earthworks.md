@@ -48,8 +48,8 @@ Terminology:
 - `earthwork margin`: the local transition zone outside the footprint where terrain ties back
   toward source terrain
 - `tie-in boundary`: the outer edge where engineered ground hands ownership back to visual terrain
-- `corridor mesh`: a local owner-controlled cut / fill mesh that represents the engineered slope or
-  retaining face near the footprint
+- `local earthwork mesh`: a local owner-controlled cut / fill mesh that represents the engineered
+  slope, retaining face, closure, or other tie-in geometry near the footprint
 
 ## Shared Model
 
@@ -129,7 +129,7 @@ Terrain-only queries remain authoritative against source terrain.
 Visible world-surface queries must resolve in this order:
 
 1. client-owned top surface
-2. client-owned local earthwork / corridor geometry when it exists
+2. client-owned local earthwork geometry when it exists
 3. visual terrain
 4. source terrain only for terrain-only APIs
 
@@ -162,7 +162,7 @@ Required rule:
 - terrain-authoring brushes must not silently move or regrade an already placed client support
   surface
 - engineered-ground clients must not silently intercept terrain-authoring brushes and treat them as
-  direct edits to a roadbed, pad, or local corridor mesh
+  direct edits to a roadbed, pad, or local earthwork mesh
 
 This keeps authored ground editing deterministic even after local engineered-ground geometry becomes
 more capable than the terrain heightfield alone.
@@ -249,64 +249,99 @@ Current deterministic conclusion:
 - a terrain-runtime rewrite is allowed if needed, but it is not by itself an earthworks solution
 - do not expect the current visual terrain heightfield, even at a denser cell size, to represent
   all near-footprint cut / fill detail by itself
-- treat future client-owned corridor or pad geometry as an additive layer above the current terrain
-  ownership model, not as something denser terrain alone can replace
+- the next solution must move near-footprint ownership into client-owned local earthwork geometry
+  instead of trying to keep terrain stamping as the primary visible carrier
 
 ## Geometry Decision
 
 The former whole-map dense terrain / water render boundary is intentionally not listed here as an
 open blocker, because [`TERRAIN-01`](roadmap.md) already removed it.
 
-### 1. Roads-First Tie-In Geometry Is A Client-Owned Corridor Mesh
+### 1. The Current Corridor-Sheet Prototype Is Retired
 
-The exact first geometry form is now fixed.
+The repository currently contains a roads-first corridor-sheet prototype, but it is not the target
+solution anymore.
 
 Deterministic choice:
 
-- linear engineered-ground clients such as roads use client-owned corridor geometry on both sides
-  of the owned top surface
-- area / pad clients such as future flat building foundations use client-owned perimeter ring
-  geometry around the owned top surface
-- terrain owns only the far-field ground outside the deterministic tie-in boundary
-- the local geometry layer is the required near-footprint visible carrier; visual terrain inside
-  that local tie-in region becomes compatibility / blend support, not the final owner of the
-  visible cut / fill shape
+- stop treating a thin visible corridor sheet plus terrain stamping / terrain suppression as the
+  final near-road representation
+- do not continue polishing the current corridor-sheet prototype as the long-term fix for flat
+  ground or arbitrary road angles
+- keep only the parts of that prototype that remain architecturally useful:
+  1. fixed-client semantics after commit
+  2. chunk-local invalidation and rebuild boundaries
+  3. visible-world query precedence
+  4. bounded render uploads
+  5. the rule that terrain is not the sole near-footprint owner
+- the replacement target is a closed road-owned earthwork mesh
 
-### 2. Road Corridor Geometry Uses Deterministic Section Anchors
+### 2. Roads-First Rewrite Uses A Closed Road-Owned Earthwork Mesh
 
-The first implementation slice is roads-first and must use one deterministic geometry form.
+The next implementation slice is still roads-first, but the geometry contract changes.
 
 Required road geometry contract:
 
-- each compiled road section owns one left-side and one right-side local earthwork strip
-- each strip begins at the outer edge of the road-owned footprint for that section sample
-- each strip ends at the deterministic tie-in boundary already implied by the road earthwork solve
-- consecutive section samples stitch those inner and outer anchors into one continuous side mesh
-  per side
-- edge-local corridor geometry stops at the existing road throat boundaries so road-edge ownership
-  still hands off cleanly into node patches and terminal ownership
-- terminal road ends must emit deterministic cap geometry from the owned top-surface boundary to
-  the tie-in boundary
-- future node-patch tie-ins and future building pads follow the same owner model, but use a
-  perimeter ring instead of two longitudinal side strips
+- grounded roads own closed local earthwork geometry adjoining the committed roadbed footprint
+- that local geometry must include:
+  1. the road-owned top-surface boundary condition
+  2. left and right tie-in faces from the footprint to the tie-in boundary
+  3. terminal cap geometry at dead ends
+  4. closure / underside geometry anywhere the side faces would otherwise expose a visible void
+- terrain owns only the far-field ground outside the deterministic tie-in boundary
+- flat-ground cases must collapse toward a visually minimal shoulder / verge join instead of
+  emitting a wide apron
+- sloped cases must emit real cut / fill faces instead of asking the terrain heightfield to fake
+  the entire join
 
-### 3. Slope Strips Are The First Required Variant
+### 3. Tie-In Boundaries Use Dense Local Sampling, Not Coarse Terrain Cells
 
-The first required geometry variant is intentionally narrow.
+The next geometry pass must stop deriving the visible outline mainly from coarse terrain cells or
+from the existing compiled road section spacing.
 
 Required first variant:
 
-- the local corridor geometry must render a deterministic slope strip from the owned top surface to
-  the tie-in boundary
-- cut versus fill is determined from the support-surface anchor heights relative to the tie-in
-  boundary, not from ad hoc widening of sampled terrain
-- the first shipped geometry variant does not require retaining walls, cliff faces, or other
-  special-case vertical structures
-- future retaining or wall variants may replace the slope strip when deterministic thresholds say
-  the slope solution is no longer acceptable, but that is a later extension of the same ownership
-  model rather than a separate geometry system
+- each road edge must derive one left-side and one right-side outer tie-in polyline
+- those tie-in polylines must be sampled from terrain at a maximum `2 m` longitudinal spacing in
+  world space
+- the visible tie-in boundary must not be inferred only from the authored terrain cell grid or
+  only from the current compiled road section spacing
+- consecutive samples stitch those inner and outer anchors into continuous side geometry per side
+- edge-local ownership still stops at the existing road throat boundaries so edge ownership hands
+  off cleanly into node patches and terminal ownership
+- node and bend ownership past those throats must be built from the incident road throat profiles,
+  not from one generic angle-sorted throat-point polygon or one global sidewalk annulus
+- two-edge non-pass-through nodes and `3+` arm nodes share the same mouth-profile connector model,
+  but they remain different topology classes with different builders
+- node top-surface ownership must compile to explicit road polygons plus explicit sidewalk sector
+  polygons; it must not rely on one outer loop and one inner loop whose difference is rendered as
+  a generic ring
+- future building pads follow the same owner model, but with a perimeter tie-in ring instead of
+  two longitudinal side runs
 
-### 4. Terrain Runtime Rewrites Are Allowed, But The Ownership Contract Is Not Optional
+### 4. The First Required Variant Is A Closed Slope / Closure Mesh
+
+The first required rewrite variant is still intentionally narrow, but it is no longer a thin
+visible strip.
+
+Required first variant:
+
+- the first shipped rewrite variant must use deterministic slope faces from the road-owned
+  footprint to the sampled tie-in boundary
+- cut versus fill is determined from the support-surface anchors relative to the sampled tie-in
+  boundary, not from ad hoc widening of stamped terrain
+- the first shipped rewrite variant does not require retaining walls, cliff faces, or other
+  special-case vertical structures
+- the mesh must be closed enough that visible side faces do not rely on terrain suppression to hide
+  open voids or missing underside geometry
+- terrain suppression is allowed only where client-owned geometry truly overlaps the terrain field;
+  it must not be used as a substitute for missing tie-in faces, and road-edge closure must remain
+  correct even if terrain-side suppression is disabled
+- future retaining or wall variants may replace the first slope / closure mesh when deterministic
+  thresholds say the simple slope solution is no longer acceptable, but that is a later extension
+  of the same ownership model rather than a separate geometry system
+
+### 5. Terrain Runtime Rewrites Are Allowed, But The Ownership Contract Is Not Optional
 
 A terrain-runtime rewrite is acceptable if it materially improves the system and still preserves the
 shared engineered-ground rules.
@@ -317,12 +352,12 @@ Required rule:
   runtime must still preserve:
   1. authoritative source terrain
   2. explicit client-owned top surfaces
-  3. client-owned local corridor / pad geometry near the footprint
+  3. client-owned local earthwork geometry near the footprint
   4. chunk-local invalidation and rebuild boundaries
   5. visible-world query precedence
   6. no regression back to whole-world rebuild or upload behavior
 
-### 5. Fixed-Client Runtime Behavior Is Deterministic After Commit
+### 6. Fixed-Client Runtime Behavior Is Deterministic After Commit
 
 The fixed-client rule now has one required runtime interpretation.
 
@@ -332,50 +367,58 @@ Required runtime contract:
   committed
 - committing the client freezes that support surface for later terrain-authoring edits
 - terrain-authoring edits write source terrain only
-- after the source-terrain edit, the runtime rebuilds only the touched local earthworks and derived
-  visual terrain around the already committed support surface
+- after the source-terrain edit, the runtime rebuilds only the touched local earthwork meshes and
+  derived visual terrain around the already committed support surface
 - explicit client-edit operations remain the only path that may move, regrade, or replace the
   committed support surface
 - if a later terrain edit would make the surrounding cut / fill extreme, the runtime still keeps
   the committed client fixed; later geometry variants may change how that earthwork is represented,
   but terrain brushes must not silently move the client
 
-### 6. Extra Geometry Uses Chunk-Local Client Caches And One Shared Query Order
+### 7. Extra Geometry Uses Chunk-Local Client Caches And One Shared Query Order
 
 The extra geometry layer now has one required cache and query model.
 
 Required cache and query contract:
 
 - client-owned top surfaces remain owned by the client that authored them
-- client-owned corridor / pad geometry is stored in chunk-local caches aligned to terrain chunk
+- client-owned local earthwork geometry is stored in chunk-local caches aligned to terrain chunk
   boundaries
 - when a client rebuilds, it must partition the produced local geometry into touched terrain chunks
   instead of keeping one whole-world monolithic mesh
 - renderer uploads for that local geometry must stay bounded to the touched chunk caches
 - visible-world queries must resolve in this order:
   1. client-owned top surface
-  2. client-owned local corridor / pad geometry for the touched chunk
+  2. client-owned local earthwork geometry for the touched chunk
   3. visual terrain
   4. source terrain only for terrain-only APIs
+- the terrain renderer must not continue drawing visual terrain in texels already owned by a
+  client-owned top surface or client-owned local earthwork geometry
+- terrain suppression must remain bounded to the footprint of actual client-owned geometry; it must
+  not be used to hide missing tie-in faces or other representation gaps
 - world-surface picking and visible-surface queries must not require a whole-world scan across every
   engineered-ground client
-- rebuilding local corridor / pad geometry must not force whole-world terrain restamps or
+- rebuilding local earthwork geometry must not force whole-world terrain restamps or
   whole-world render uploads
 
-## First-Draft Status
+## Roads-First Rewrite Status
 
-The first roads-first earthworks implementation no longer has unresolved architecture blockers in
-this document.
+The roads-first rewrite now has a deterministic target representation in this document, but the
+current corridor-sheet prototype is not the finished implementation.
 
-For the first draft, the following are now deterministic:
+For the roads-first rewrite, the following are now deterministic:
 
-- roads use client-owned corridor geometry near the footprint
-- the first geometry variant is the slope strip
+- the current corridor-sheet prototype is retired as the target solution
+- roads move to a closed local earthwork mesh near the footprint
+- the first geometry variant is the closed slope / closure mesh
+- tie-in boundaries use dense local sampling at a maximum `2 m` longitudinal spacing
 - committed clients stay fixed under later terrain-authoring edits
 - local earthwork geometry uses chunk-local caches and one explicit visible-world query order
+- terrain suppression remains a bounded overlap rule, not the primary visual carrier for the
+  near-road tie-in
 
-That means the remaining items below are later additions, not blockers for the first road corridor
-implementation.
+That means the remaining items below are later additions, not blockers for the first roads-first
+closed-mesh rewrite.
 
 ## Later Additions
 
@@ -392,27 +435,29 @@ Open decision:
   behavior integrate with allocator / zoning placement without inventing a second terrain-override
   model separate from roads
 
-### 2. When Do Later Geometry Variants Replace The First Slope Strip?
+### 2. When Do Later Geometry Variants Replace The First Closed Slope / Closure Mesh?
 
-The first shipped geometry variant is intentionally only the slope strip.
+The first shipped geometry variant is intentionally only the closed slope / closure mesh.
 
 Open decision:
 
-- which deterministic thresholds or authored classes should replace the first slope-strip geometry
-  with retaining walls, cliff faces, or other later variants when the cut / fill case becomes too
-  extreme for the simple slope solution
+- which deterministic thresholds or authored classes should replace the first closed slope /
+  closure mesh with retaining walls, cliff faces, or other later variants when the cut / fill case
+  becomes too extreme for the simple slope solution
 
 ## Shared Target
 
-### 1. Local Corridor / Pad Geometry Becomes Owner-Controlled
+### 1. Local Earthwork Geometry Becomes Owner-Controlled
 
-The longer-term shared target is for engineered-ground clients to own local tie-in geometry near
-their footprints instead of asking the terrain heightfield to represent every cut and fill detail.
+The longer-term shared target is for engineered-ground clients to own closed local tie-in geometry
+near their footprints instead of asking the terrain heightfield to represent every cut and fill
+detail.
 
 That means:
 
 - top support surface remains client-owned
-- side slopes, embankments, retaining faces, or local skirts become client-owned geometry
+- side slopes, embankments, retaining faces, closure faces, or local skirts become client-owned
+  geometry
 - terrain becomes the far-field ground that the local geometry ties back into
 
 ### 2. Roads And Future Foundations Use The Same Rules
@@ -432,8 +477,8 @@ The client shape differs, but the shared ownership model is the same:
 
 Placed-client rule:
 
-- once a road corridor or flat foundation pad is committed, later terrain brushes reshape authored
-  ground and derived earthworks around that placed client
+- once a road or flat foundation pad is committed, later terrain brushes reshape authored ground
+  and derived earthworks around that placed client
 - the placed client surface moves only when the player explicitly edits that client itself
 
 ### 3. Density Changes Must Be Measured, Not Assumed
@@ -463,7 +508,7 @@ Required transition path:
   tie-in boundaries
 - split terrain and water render/upload work into chunk-local windows before treating denser
   terrain as a baseline runtime choice
-- add client-owned local corridor / pad geometry caches near engineered-ground footprints
+- add client-owned local earthwork geometry caches near engineered-ground footprints
 - extend visible-surface queries to consider:
   1. client-owned top surface
   2. client-owned local earthwork geometry

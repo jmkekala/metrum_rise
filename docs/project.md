@@ -78,12 +78,13 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   compatibility path were removed. Phase 9 and Phase 10 are now live as well: grounded roads
   stamp a deterministic outer shoulder / cut / fill margin beyond the paved footprint, and the
   compiled carriageway keeps a bounded design crossfall instead of rolling to match the full
-  hillside slope. `ROAD-01` is still open because two remaining ownership gaps are now explicit in
-  the specs: authored `10 m` worlds can still smear visual terrain back over grounded roads on
-  moderate hills, and later terrain edits still resynchronize placed grounded roads instead of
-  reforming terrain / earthworks around a fixed placed roadbed. Phase 11 remains the deterministic
-  `10 m` versus `5 m` characterization gate, and Phase 12 is now the fixed-roadbed-under-later-
-  terrain-edits follow-up. The shared engineered-ground contract now lives in
+  hillside slope. `ROAD-01` is still open because the recent roads-first earthworks prototype was
+  taken far enough to prove the representation problem: the thin corridor-sheet plus
+  terrain-stamp approach does not produce acceptable flat-ground or arbitrary-angle tie-ins.
+  Phase 11 remains the deterministic `10 m` versus `5 m` characterization gate, Phase 12 is the
+  fixed-roadbed-under-later-terrain-edits follow-up, and Phase 13 is the closed road-owned
+  earthwork mesh rewrite rather than more polishing of the corridor-sheet prototype. The shared
+  engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
   [`terrain.md`](terrain.md).
@@ -114,12 +115,30 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - Terrain rendering now adds a render-only terrain-border skirt derived from the live terrain edge, with a side wall, bottom cap, and contour continuation down the cut surface so the world reads as a visible slice instead of a paper-thin plane. See [`terrain.md`](terrain.md).
 - Water rendering now also adds a render-only edge curtain where water reaches the map boundary, so outside views do not see straight through to the submerged terrain plane at the border. See [`terrain.md`](terrain.md).
 - `TERRAIN-01` is now live: terrain and water rendering no longer use one whole-world mesh plus one whole-map dense runtime upload. Both renderers now consume chunk-local patch snapshots aligned to the terrain patch grid, terrain/water roots now own per-patch child meshes instead of a single mesh boundary, dirty patch uploads stay local, and the old whole-map Godot render bridge methods were removed from the steady-state render path. This makes the `10 m` versus `5 m` terrain-density decision measurable on the actual large-world render boundary instead of on the old overlay-era compatibility path. See [`terrain.md`](terrain.md).
-- Earthworks cleanup note: the old whole-map terrain render boundary is no longer the active blocker for engineered ground. The remaining blockers are now explicit in [`earthworks.md`](earthworks.md): coarse `10 m` terrain fidelity near road corridors, fixed placed-road ownership under later terrain edits, and the still-missing local corridor / pad geometry layer.
+- Earthworks cleanup note: the old whole-map terrain render boundary is no longer the active
+  blocker for engineered ground. The remaining blocker is now the near-road representation itself:
+  the current corridor-sheet prototype is retired, and [`earthworks.md`](earthworks.md) plus
+  [`improved_roads.md`](improved_roads.md) now reset the target to a closed road-owned earthwork
+  mesh with dense local tie-in sampling.
 - Terrain / water patch rendering now also uses deterministic distance-based mesh LOD on top of the
   split patch snapshot path, so far-field camera views can reuse the same resident patch snapshots
   without paying full near-field vertex density for every visible patch. The temporary seam /
   emissive terrain-debug visual modes used during patch-hardening were removed from the steady
   runtime after the seam-width bug was fixed. See [`terrain.md`](terrain.md).
+- The first roads-first engineered-ground prototype did useful architectural work but is no longer
+  treated as the final path: later terrain edits can keep committed roads fixed, chunk-local
+  rebuilds and visible-surface precedence remain required, and terrain / road ownership stays
+  explicit, but the thin corridor-sheet visual carrier is now retired in favor of a closed
+  road-owned earthwork mesh rewrite. See [`earthworks.md`](earthworks.md),
+  [`improved_roads.md`](improved_roads.md), and [`terrain.md`](terrain.md).
+- `ROAD-01` is now pinned to one deterministic target architecture: the next road geometry pass
+  must stop using one generic throat-point node fill and move to topology-classified
+  throat-profile builders for `Bend` and `JunctionN`, while keeping the existing graph / clip /
+  lane ownership layers intact. See [`improved_roads.md`](improved_roads.md).
+- The retired annulus/corridor prototype still produced useful conclusions that remain valid after
+  the code revert: arbitrary-angle bends and multi-arm junctions need explicit road and sidewalk
+  piece ownership, not one sampled outer loop plus one sampled inner loop with triangulation
+  layered on afterward. See [`improved_roads.md`](improved_roads.md).
 - Gameplay and `WorldEditor` now share one terrain-aware world-camera core in `CameraNode`, including a common terrain-clearance rule that keeps the camera above the terrain surface while preserving separate scene-level zoom and clip policy. See [`ui.md`](ui.md).
 - Added a dedicated `MainMenu` front-door scene and `LaunchState` startup handoff so normal launch no longer boots an empty fallback gameplay map. `New Game` now begins from `user://worlds/`, `Load Game` begins from `user://saves/`, and gameplay only opens after one of those selections. See [`ui.md`](ui.md).
 - Gameplay `File -> New Game` now opens a `user://worlds/` picker and loads the selected `WorldDefinition` into the live gameplay scene, pausing immediately after the refresh. See [`terrain.md`](terrain.md) and [`ui.md`](ui.md).

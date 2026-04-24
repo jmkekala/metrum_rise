@@ -104,8 +104,9 @@ the split terrain path owned by [`terrain.md`](terrain.md) before any default de
 attempted.
 
 The next representation step is now fixed in [`earthworks.md`](earthworks.md): if denser terrain is
-still not sufficient, roads move to client-owned local corridor geometry near the roadbed footprint
-instead of asking visual terrain to remain the final visible owner of the cut / fill shape.
+still not sufficient, roads move to a closed road-owned local earthwork mesh near the roadbed
+footprint instead of asking visual terrain to remain the final visible owner of the cut / fill
+shape.
 
 ## Roadbed Contract
 
@@ -287,7 +288,8 @@ Each relevant node must compile to one of these classes:
 - `Terminal`
 - `PassThrough`
 - `WidthTransition`
-- `Junction`
+- `Bend`
+- `JunctionN`
 
 Classification must be deterministic from:
 
@@ -301,29 +303,79 @@ Required behavior:
 - `Terminal` nodes emit a terminal patch
 - `PassThrough` nodes emit no node patch and hand corridor ownership directly edge-to-edge
 - `WidthTransition` nodes emit a transition patch even when the node is nearly straight
-- `Junction` nodes emit a full node patch
+- `Bend` nodes emit a dedicated two-mouth bend continuation patch
+- `JunctionN` nodes emit a full multi-mouth node patch
 
-### 7. Node Patch Boundaries Are Built From Throats
+### 7. Node Geometry Is Built From Throat Profiles, Not One Generic Fill Polygon
 
 Node patches must be bounded by incident edge throats, not by ad hoc circular disks that ignore the
-real corridor width.
+real corridor width, and not by one generic angle-sorted throat-point fill rule.
 
 For every incident surface edge at one node:
 
 - compute a throat section at the node handoff distance
-- derive left and right boundary points for each relevant lateral band
-- sort incidents by angle around the node center with a stable tie-breaker
-- assemble ordered boundary loops from those throat points
+- compute that handoff distance from the exact junction throat clip carried on the graph edge, and
+  for acute bends / junction sectors derive that clip from the intersection of adjacent outer
+  roadbed boundaries rather than from a fixed half-width constant
+- derive one canonical mouth profile from that throat section
+- that mouth profile must preserve the ordered semantic boundary stack for that road class
+- for the default standard-road slice, the minimum required boundary stack is:
+  1. left outer sidewalk edge
+  2. left carriageway edge
+  3. right carriageway edge
+  4. right outer sidewalk edge
+- later profile variants may add more band boundaries, but the runtime must not collapse back to
+  one anonymous throat endpoint pair
 
-The runtime may use deterministic triangulation such as ear clipping or another stable
-polygon triangulation strategy, but it must satisfy:
+Required topology-specific build rules:
 
-- the same boundary loop always triangulates to the same index order
-- the patch owns the junction center explicitly
-- no sidewalk triangles appear inside the carriageway-owned area
-- no carriageway seam appears between incident edges and the node patch
+- `Terminal`: build one terminal closure from the single mouth profile
+- `PassThrough`: emit no node patch
+- `WidthTransition`: connect the two compatible anti-parallel mouth profiles directly
+- `Bend`: connect the two non-parallel mouth profiles directly; do not treat a two-edge bend as a
+  generic junction fill
+- `JunctionN`: sort mouth profiles by centerline angle around the node with a stable tie-breaker,
+  then build one adjacent-mouth sector for each consecutive pair
+- node top-surface ownership must compile to explicit road polygons plus explicit sidewalk sector
+  polygons; it must not compile one global outer loop and one global inner loop and render their
+  difference as a generic sidewalk ring
 
-### 8. Sidewalk Ownership Is Side-Aware
+### 8. Adjacent-Mouth Connectors Are The General Node Solver
+
+Node geometry for both `Bend` and `JunctionN` uses the same deterministic connector model.
+
+For every adjacent mouth pair and for every paired semantic boundary level:
+
+- build one connector between the two mouth-profile boundary curves
+- the connector inputs are the paired boundary endpoints plus their inward throat tangents
+- the connector must be sampled at a fixed longitudinal step no larger than `1 m`
+- the same mouth-profile inputs must always produce the same sampled connector points
+
+Required construction rule:
+
+- the runtime must not generate the full node from a single angle-sorted cloud of throat endpoints
+- instead, the runtime builds the node from the ordered set of adjacent-mouth sectors
+- each sector is assembled band-by-band from the corresponding paired connectors
+
+### 9. Carriageway Core And Sidewalk Sectors Are Separate Ownership Layers
+
+Node geometry must keep the carriageway-owned center separate from the sidewalk-owned perimeter.
+
+Required rule:
+
+- `Bend` nodes do not own an artificial octagon or disk in the middle; they are only the direct
+  continuation between the two mouths
+- `JunctionN` nodes must build one carriageway-owned center polygon bounded by the innermost
+  carriageway connectors
+- the outer sidewalk / curb envelope must be built as explicit perimeter sectors around that
+  carriageway core
+- the runtime must not emit one annular sidewalk mesh around a whole node patch
+- no sidewalk triangles may own the carriageway center
+- no carriageway seam may appear between an incident edge throat and the node-owned continuation
+- triangulation remains deterministic, but triangulation happens after the connector geometry is
+  established, not before
+
+### 10. Sidewalk Ownership Is Side-Aware
 
 The shipped roadbed runtime does not treat sidewalks as a symmetric visual halo around the road
 centerline.
@@ -333,11 +385,13 @@ Sidewalk ownership must be explicit per side:
 - left and right sidewalk bands are separate authored / derived bands
 - footpath connections attach to one side or the other, not to an abstract road-center sidewalk
 - crosswalk and frontage-side semantics must stay aligned with [`entrance_and_exit.md`](entrance_and_exit.md)
+- pedestrian crosswalk mouths must use the same deterministic throat clip / mouth positions as the
+  visible road surface; they must not invent a separate shallower node boundary
 
 This document does not define the pedestrian-routing rules, but it does require the road surface
 representation to preserve side-aware geometry so those rules can use it later.
 
-### 9. Lane Markings Derive From The Same Surface Model
+### 11. Lane Markings Derive From The Same Surface Model
 
 Lane markings remain a separate render layer, but their geometry must derive from the same section
 and throat data as the top surface.
@@ -345,10 +399,11 @@ and throat data as the top surface.
 Required rules:
 
 - markings follow solved section heights, not independent centerline offsets
-- markings terminate at node throats unless one specific node patch rule extends them
+- markings attach to mouth profiles and terminate or continue according to the chosen node builder,
+  not according to one generic node-fill polygon
 - markings never extend into carriageway areas not owned by the current edge corridor
 
-### 10. Normals Are Derived From Real Geometry
+### 12. Normals Are Derived From Real Geometry
 
 The roadbed runtime does not treat all road-surface normals as `Vector3::UP`.
 
@@ -510,49 +565,77 @@ Required Phase 12 work:
 - terrain-authoring edits must no longer resynchronize placed grounded `Standard` roads to edited
   source terrain as a side effect
 - once a road is committed, later terrain edits must write source terrain first and then rebuild
-  visual terrain, local corridor geometry, and earthworks around that fixed roadbed instead
+  visual terrain, local earthwork geometry, and earthworks around that fixed roadbed instead
 - explicit road-edit operations remain the only way to move or regrade the committed road surface
 - placement-time grounding may still choose the initial roadbed, but that placement solve must not
   remain a live dependency of later terrain brushes
 - the same fixed-roadbed rule must stay consistent across committed render mesh, world-surface
-  queries, local corridor geometry caches, and terrain earthworks
+  queries, local earthwork geometry caches, and terrain earthworks
 - if a later terrain edit would create an extreme surrounding cut / fill case, the road still stays
   fixed; later earthwork geometry variants may change representation, but terrain brushes must not
   silently move the committed roadbed
 
 Phase 12 is separate from Phase 11 because it changes ownership semantics first; denser terrain or
-local corridor geometry still remain possible follow-ups after that rule is in place.
+local earthwork geometry still remain possible follow-ups after that rule is in place.
 
-### Phase 13 - Road-Owned Local Corridor Geometry
+Live status:
 
-The next representation fix is now deterministic.
+- committed roadbeds now stay fixed under later terrain-authoring edits; terrain sync rebuilds
+  road-owned caches around the placed road instead of re-grounding the road geometry itself
+
+### Phase 13 - Closed Road-Owned Earthwork Mesh Rewrite
+
+The next representation fix is now deterministic, and it replaces the current corridor-sheet
+prototype instead of polishing it further.
 
 Required Phase 13 work:
 
-- grounded roads must own local corridor geometry on both sides of the committed roadbed footprint
-- each road edge span must derive left and right earthwork strips from the compiled section anchors
-  already used by the roadbed and earthwork solve
-- each side strip must begin at the road-owned top-surface boundary and end at the deterministic
-  tie-in boundary for that same side
-- terrain inside that corridor may remain as compatibility / blend support, but it must no longer be
-  the final visible owner of the near-road cut / fill surface once corridor geometry exists
+- grounded roads must own closed local earthwork geometry on both sides of the committed roadbed
+  footprint
+- each road edge span must derive left and right outer tie-in polylines from terrain sampled at a
+  maximum `2 m` longitudinal spacing in world space
+- each side mesh must begin at the road-owned top-surface boundary and end at the sampled tie-in
+  boundary for that same side
+- the visible tie-in boundary must not be inferred only from the authored terrain cell grid or only
+  from the current compiled road section spacing
+- the first shipped rewrite variant must include deterministic slope faces plus closure /
+  underside geometry wherever otherwise-visible voids would appear
+- flat-ground cases must collapse toward a minimal shoulder / verge join instead of emitting a wide
+  apron or visible side sheet
 - terminal road ends must emit deterministic cap geometry from the road-owned top surface to the
   tie-in boundary
+- node geometry must move from the current generic throat-point patch fill to the shared
+  throat-profile connector model for `Bend` and `JunctionN`
+- two-edge non-pass-through nodes must be built by the dedicated `Bend` builder rather than by the
+  generic multi-arm node path
+- multi-arm nodes must be built from adjacent mouth-profile sectors around one carriageway-owned
+  center, not from one angle-sorted cloud of throat endpoints
 - future node-patch perimeter tie-ins must follow the same ownership model so node ownership and
   edge ownership still meet cleanly at the throat boundary
-- corridor geometry must be partitioned into touched terrain-chunk-aligned caches instead of one
-  monolithic world mesh
-- road visible-surface queries must resolve as road top surface first, then road-owned corridor
-  geometry, then visual terrain
-- the first shipped corridor-geometry variant is a deterministic slope strip; retaining or wall
-  variants are later geometry extensions, not a separate earthworks system
+- local earthwork geometry must be partitioned into touched terrain-chunk-aligned caches instead of
+  one monolithic world mesh
+- road visible-surface queries must resolve as road top surface first, then road-owned local
+  earthwork geometry, then visual terrain
+- terrain suppression may only hide true overlap beneath client-owned geometry; it must not act as
+  a substitute for missing tie-in faces, and road-edge visibility must remain correct without a
+  terrain texture-mask carrier
+- retaining or wall variants are later geometry extensions, not a separate earthworks system
 
-Phase 13 is the first geometry step that directly removes the remaining "terrain smears back over
-the road corridor" limitation instead of only measuring it.
+Phase 13 is now explicitly a rewrite of the failed corridor-sheet representation, not an extension
+of it.
 
 The still-open building-pad client work and later retaining / wall variants tracked in
 [`earthworks.md`](earthworks.md) are later additions to the same subsystem, not blockers for the
-first roads-first Phase 13 slice.
+first roads-first closed-mesh rewrite.
+
+Current status:
+
+- the earlier corridor-sheet prototype is not accepted as the Phase 13 endpoint and should not be
+  polished further
+- the useful conclusions from that prototype remain in force: fixed-roadbed ownership, chunk-local
+  rebuilds, and explicit visible-surface precedence stay part of the target contract
+- the remaining Phase 13 work is still the closed local earthwork mesh rewrite defined above,
+  especially the topology-classified throat-profile node builders
 
 ## Test Contract
 
@@ -565,10 +648,12 @@ Must cover:
 - straight grounded road on strong cross-slope
 - arbitrary-angle bend with sidewalks
 - obtuse bend with sidewalks
+- shallow-angle bend with sidewalks
 - pass-through split with no center bubble
 - width transition on a nearly straight corridor
 - T-junction center owned by carriageway
 - 4-way junction center owned by carriageway
+- `N > 4` multi-arm node center owned by carriageway
 - car-only road with no sidewalk bands
 - footpath joining only one sidewalk side
 - bridge span above terrain without terrain flatten under the span

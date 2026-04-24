@@ -984,9 +984,15 @@ pub fn run_sim_thread(
                                 affected_nodes.insert(c.region_graph.get_valid_node(e.end_node));
                             }
                         }
-                        c.last_surface_debug_edges.extend(dirty.iter().copied());
-                        c.last_surface_debug_edges.sort_unstable();
-                        c.last_surface_debug_edges.dedup();
+                        if crate::debug::category_enabled("road")
+                            && std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
+                                .map(|value| !value.is_empty() && value != "0")
+                                .unwrap_or(false)
+                        {
+                            c.last_surface_debug_edges.extend(dirty.iter().copied());
+                            c.last_surface_debug_edges.sort_unstable();
+                            c.last_surface_debug_edges.dedup();
+                        }
 
                         let t_clips = Instant::now();
                         c.region_graph

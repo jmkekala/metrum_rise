@@ -10,6 +10,12 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 impl SimCore {
+    fn road_geometry_dump_enabled() -> bool {
+        std::env::var("METRUM_DEBUG_ROAD_GEOMETRY_DUMP")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false)
+    }
+
     fn begin_terrain_stroke_internal(&mut self) {
         self.terrain_stroke_active = true;
         self.terrain_stroke_has_changes = false;
@@ -660,7 +666,10 @@ impl SimCore {
         self.transit_network
             .rebuild_all_terrain_earthworks(&self.region_graph, &mut self.heightmap);
         self.rebuild_building_entrances_internal();
-        if crate::debug::category_enabled("road") && !debug_edges.is_empty() {
+        if crate::debug::category_enabled("road")
+            && Self::road_geometry_dump_enabled()
+            && !debug_edges.is_empty()
+        {
             let dump = self
                 .transit_network
                 .road_surface

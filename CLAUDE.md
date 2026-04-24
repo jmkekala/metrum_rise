@@ -40,7 +40,7 @@ The compiled library must be at `godot/bin/libmetrum_rise.so`. `run.sh` handles 
 
 **This project is performance-first.** The 1M-agent scale target is non-negotiable and must be kept in mind for every decision, including small ones. Correctness without acceptable performance is not a done state.
 
-- Determinism is the default. Given the same save state, inputs, and tick sequence, the simulation should produce the same results. Any intentional randomness must be explicit, controlled, and justified; cosmetic variance should not silently change simulation outcomes.
+- Determinism is the default. Given the same save state, inputs, and tick sequence, the simulation should produce the same results. Any intentional randomness must be explicit, controlled, and justified; cosmetic variance should not silently change simulation outcomes. Heuristic solutions are not tolerated.
 - Measure before you add. Every new system must have a clear complexity bound. If a proposed implementation would degrade an existing O(1) or O(log N) path to O(N) or worse at city scale, it is not acceptable.
 - Reuse before you build. Before writing new data structures, algorithms, or abstractions, check whether an existing one already solves the problem. `DataGrid<T>`, the road-edge `rstar` R-tree, the 16 m node lookup grid, the 512 m building/routing chunk indices, the SoA agent layout, and Rayon parallelism cover the majority of simulation needs. Adding another spatial structure when one of those already answers the query is a maintenance cost with no benefit.
 - Hot-path allocations are bugs. Any allocation inside a per-tick or per-agent loop is a correctness issue at scale, not a style issue.
