@@ -266,8 +266,7 @@ impl TerrainSystem {
 
     /// Modifies terrain height in a circular area with smooth falloff.
     pub fn sculpt(&mut self, center_x: f32, center_y: f32, radius: f32, strength: f32) {
-        let Some((min_x, max_x, min_y, max_y)) =
-            self.brush_grid_bounds(center_x, center_y, radius)
+        let Some((min_x, max_x, min_y, max_y)) = self.brush_grid_bounds(center_x, center_y, radius)
         else {
             return;
         };
@@ -312,8 +311,7 @@ impl TerrainSystem {
         target_height: f32,
         strength: f32,
     ) {
-        let Some((min_x, max_x, min_y, max_y)) =
-            self.brush_grid_bounds(center_x, center_y, radius)
+        let Some((min_x, max_x, min_y, max_y)) = self.brush_grid_bounds(center_x, center_y, radius)
         else {
             return;
         };
@@ -360,8 +358,7 @@ impl TerrainSystem {
     /// This uses a local patch snapshot so the brush is not biased by scan order.
     /// Complexity is O(k) for k cells in the touched brush bounding box.
     pub fn smooth(&mut self, center_x: f32, center_y: f32, radius: f32, strength: f32) {
-        let Some((min_x, max_x, min_y, max_y)) =
-            self.brush_grid_bounds(center_x, center_y, radius)
+        let Some((min_x, max_x, min_y, max_y)) = self.brush_grid_bounds(center_x, center_y, radius)
         else {
             return;
         };
@@ -453,8 +450,7 @@ impl TerrainSystem {
         end_height: f32,
         strength: f32,
     ) {
-        let Some((min_x, max_x, min_y, max_y)) =
-            self.brush_grid_bounds(center_x, center_y, radius)
+        let Some((min_x, max_x, min_y, max_y)) = self.brush_grid_bounds(center_x, center_y, radius)
         else {
             return;
         };
@@ -650,12 +646,8 @@ impl TerrainSystem {
         let mut height_data = vec![0.0_f32; texture_width * texture_height];
 
         for local_z in 0..texture_height {
-            let sample_z = border_clamped_index(
-                start_z,
-                end_z,
-                local_z,
-                TERRAIN_RENDER_PATCH_BORDER_TEXELS,
-            );
+            let sample_z =
+                border_clamped_index(start_z, end_z, local_z, TERRAIN_RENDER_PATCH_BORDER_TEXELS);
             for local_x in 0..texture_width {
                 let sample_x = border_clamped_index(
                     start_x,
@@ -982,7 +974,8 @@ mod tests {
 
     #[test]
     fn visual_patch_snapshot_uses_chunk_local_window_with_border_ring() {
-        let mut terrain = TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0).with_render_chunk_span(30.0);
+        let mut terrain =
+            TerrainSystem::with_chunking(9, 9, 10.0, 4, 0.0).with_render_chunk_span(30.0);
         terrain.set_height(3, 3, 33.0);
         terrain.set_height(6, 6, 66.0);
 
@@ -1014,7 +1007,8 @@ mod tests {
 
         terrain.set_height(3, 3, 5.0);
 
-        let dirty: HashSet<(usize, usize)> = terrain.dirty_render_patches().iter().copied().collect();
+        let dirty: HashSet<(usize, usize)> =
+            terrain.dirty_render_patches().iter().copied().collect();
         let expected = HashSet::from([(0, 0), (1, 0), (0, 1), (1, 1)]);
         assert_eq!(dirty, expected);
     }

@@ -3,8 +3,8 @@
 use crate::config::ROAD_H_OFFSET;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::surface::{
-    RoadSurfaceBandKind, RoadSurfaceNodeBoundaryLoop, RoadSurfaceNodePatchClass,
-    RoadSurfaceSection, RoadSurfaceSystem,
+    RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
+    RoadSurfaceVisualPolygon,
 };
 use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
@@ -13,11 +13,12 @@ use std::collections::HashSet;
 
 use super::{
     MARKING_LAYER_Y, MARKING_WIDTH, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, concrete_color,
-    road_color, sidewalk_color,
+    earthwork_color, road_color, sidewalk_color,
 };
 
 const BAND_EPSILON_M: f32 = 0.001;
 const BRIDGE_CONCRETE_THICKNESS_M: f32 = 0.35;
+const EARTHWORK_SURFACE_LIFT_M: f32 = ROAD_H_OFFSET * 0.25;
 const SIDEWALK_SURFACE_LIFT_M: f32 = ROAD_H_OFFSET;
 const ROAD_SURFACE_LIFT_M: f32 = ROAD_H_OFFSET + 0.02;
 /// Surface classes replaced by the compiled roadbed renderer.
@@ -40,18 +41,8 @@ pub(super) fn build_compiled_surface_coverage(
     }
 
     let mut edge_indices = HashSet::new();
-    for edge_idx in 0..graph.edge_count() {
-        let edge = graph.edge(edge_idx);
-        if !edge_uses_compiled_surface(edge) {
-            continue;
-        }
-        let Some(sections) = road_surface.compiled_sections().get(&edge_idx) else {
-            continue;
-        };
-        if !road_surface
-            .visible_section_ranges_for_edge(graph, terrain, edge_idx, sections)
-            .is_empty()
-        {
+    for (&edge_idx, _) in road_surface.compiled_visual_span_pieces() {
+        if edge_idx < graph.edge_count() && edge_uses_compiled_surface(graph.edge(edge_idx)) {
             edge_indices.insert(edge_idx);
         }
     }
@@ -77,23 +68,32 @@ pub(super) fn emit_compiled_surface_mesh(
     terrain: &TerrainSystem,
     coverage: &CompiledSurfaceCoverage,
 ) {
+    emit_compiled_earthwork_mesh(mesh, road_surface, coverage);
+
     let mut edge_indices: Vec<usize> = coverage.edge_indices.iter().copied().collect();
     edge_indices.sort_unstable();
     for edge_idx in edge_indices {
         let edge = graph.edge(edge_idx);
-        let Some(sections) = road_surface.compiled_sections().get(&edge_idx) else {
+        let Some(piece) = road_surface.compiled_visual_span_pieces().get(&edge_idx) else {
             continue;
         };
-        for (start_index, end_index) in
-            road_surface.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections)
-        {
-            if end_index <= start_index {
+        for polygon in &piece.sidewalk_surface_polygons {
+            emit_surface_polygon(mesh, MeshLayer::Sidewalk, polygon, sidewalk_color());
+        }
+        for polygon in &piece.road_surface_polygons {
+            emit_surface_polygon(mesh, MeshLayer::Road, polygon, road_color());
+        }
+        if edge.class == EdgeClass::Bridge {
+            let Some(sections) = road_surface.compiled_sections().get(&edge_idx) else {
                 continue;
-            }
-            let visible_sections = &sections[start_index..=end_index];
-            emit_compiled_edge_bands(mesh, visible_sections);
-            if edge.class == EdgeClass::Bridge {
-                emit_compiled_bridge_concrete(mesh, visible_sections);
+            };
+            for (start_index, end_index) in
+                road_surface.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections)
+            {
+                if end_index <= start_index {
+                    continue;
+                }
+                emit_compiled_bridge_concrete(mesh, &sections[start_index..=end_index]);
             }
         }
     }
@@ -101,27 +101,76 @@ pub(super) fn emit_compiled_surface_mesh(
     let mut node_ids: Vec<u32> = coverage.node_ids.iter().copied().collect();
     node_ids.sort_unstable();
     for node_id in node_ids {
-        let Some(patch) = road_surface.compiled_node_patches().get(&node_id) else {
+        let Some(piece) = road_surface.compiled_visual_node_pieces().get(&node_id) else {
             continue;
         };
-        if patch.class == RoadSurfaceNodePatchClass::PassThrough {
+        for polygon in &piece.sidewalk_surface_polygons {
+            emit_surface_polygon(mesh, MeshLayer::Sidewalk, polygon, sidewalk_color());
+        }
+        for polygon in &piece.road_surface_polygons {
+            emit_surface_polygon(mesh, MeshLayer::Road, polygon, road_color());
+        }
+    }
+}
+
+fn emit_compiled_earthwork_mesh(
+    mesh: &mut NetworkMeshData,
+    road_surface: &RoadSurfaceSystem,
+    coverage: &CompiledSurfaceCoverage,
+) {
+    let mut edge_indices: Vec<usize> = coverage.edge_indices.iter().copied().collect();
+    edge_indices.sort_unstable();
+    for edge_idx in edge_indices {
+        let Some(piece) = road_surface.compiled_visual_span_pieces().get(&edge_idx) else {
             continue;
+        };
+        for face in &piece.render_earthwork_faces {
+            match face.kind {
+                RoadSurfaceEarthworkFaceKind::Slope => {
+                    emit_surface_polygon(
+                        mesh,
+                        MeshLayer::Earthwork,
+                        &face.polygon,
+                        earthwork_color(),
+                    );
+                }
+                RoadSurfaceEarthworkFaceKind::RetainingWall => {
+                    emit_surface_polygon(
+                        mesh,
+                        MeshLayer::Concrete,
+                        &face.polygon,
+                        concrete_color(),
+                    );
+                }
+            }
         }
-        for loop_points in &patch.boundary_loops {
-            emit_loop_fan(
-                mesh,
-                MeshLayer::Sidewalk,
-                &loop_world_points(loop_points),
-                sidewalk_color(),
-            );
-        }
-        for loop_points in &patch.carriageway_boundary_loops {
-            emit_loop_fan(
-                mesh,
-                MeshLayer::Road,
-                &loop_world_points(loop_points),
-                road_color(),
-            );
+    }
+
+    let mut node_ids: Vec<u32> = coverage.node_ids.iter().copied().collect();
+    node_ids.sort_unstable();
+    for node_id in node_ids {
+        let Some(piece) = road_surface.compiled_visual_node_pieces().get(&node_id) else {
+            continue;
+        };
+        for face in &piece.render_earthwork_faces {
+            match face.kind {
+                RoadSurfaceEarthworkFaceKind::Slope => {
+                    emit_surface_polygon(
+                        mesh,
+                        MeshLayer::Earthwork,
+                        &face.polygon,
+                        earthwork_color(),
+                    );
+                }
+                RoadSurfaceEarthworkFaceKind::RetainingWall => {
+                    emit_surface_polygon(
+                        mesh,
+                        MeshLayer::Concrete,
+                        &face.polygon,
+                        concrete_color(),
+                    );
+                }
+            }
         }
     }
 }
@@ -180,79 +229,6 @@ pub(super) fn emit_compiled_lane_markings(
 
 fn edge_uses_compiled_surface(edge: &Edge) -> bool {
     !edge.deleted && matches!(edge.primary_type, TransitType::Road | TransitType::Foot)
-}
-
-fn emit_compiled_edge_bands(mesh: &mut NetworkMeshData, sections: &[RoadSurfaceSection]) {
-    if sections.len() < 2 {
-        return;
-    }
-
-    for pair in sections.windows(2) {
-        if pair[0].bands.len() != pair[1].bands.len() {
-            continue;
-        }
-        for (band_a, band_b) in pair[0].bands.iter().zip(&pair[1].bands) {
-            let width_a = (band_a.lateral_end_m - band_a.lateral_start_m).abs();
-            let width_b = (band_b.lateral_end_m - band_b.lateral_start_m).abs();
-            if width_a <= BAND_EPSILON_M && width_b <= BAND_EPSILON_M {
-                continue;
-            }
-            let layer = if band_a.kind == RoadSurfaceBandKind::Carriageway
-                && band_b.kind == RoadSurfaceBandKind::Carriageway
-            {
-                MeshLayer::Road
-            } else {
-                MeshLayer::Sidewalk
-            };
-            let color = if layer == MeshLayer::Road {
-                road_color()
-            } else {
-                sidewalk_color()
-            };
-            let surface_lift_m = surface_lift_for_layer(layer);
-
-            let a0 = lift_surface_point(
-                section_boundary_world_point(
-                    &pair[0],
-                    band_a.lateral_start_m,
-                    band_a.height_start_m,
-                ),
-                surface_lift_m,
-            );
-            let a1 = lift_surface_point(
-                section_boundary_world_point(&pair[0], band_a.lateral_end_m, band_a.height_end_m),
-                surface_lift_m,
-            );
-            let b0 = lift_surface_point(
-                section_boundary_world_point(
-                    &pair[1],
-                    band_b.lateral_start_m,
-                    band_b.height_start_m,
-                ),
-                surface_lift_m,
-            );
-            let b1 = lift_surface_point(
-                section_boundary_world_point(&pair[1], band_b.lateral_end_m, band_b.height_end_m),
-                surface_lift_m,
-            );
-            if triangle_is_too_small(a0, b0, b1) && triangle_is_too_small(a0, b1, a1) {
-                continue;
-            }
-
-            emit_surface_quad(
-                mesh,
-                layer,
-                [a0, b0, b1, a1],
-                [
-                    Vector2::new(pair[0].s_m, 0.0),
-                    Vector2::new(pair[1].s_m, 0.0),
-                    Vector2::new(pair[1].s_m, 1.0),
-                    Vector2::new(pair[0].s_m, 1.0),
-                ],
-                color,
-            );
-        }
-    }
 }
 
 fn emit_compiled_bridge_concrete(mesh: &mut NetworkMeshData, sections: &[RoadSurfaceSection]) {
@@ -435,29 +411,30 @@ fn emit_marking_segment(
     );
 }
 
-fn emit_loop_fan(mesh: &mut NetworkMeshData, layer: MeshLayer, points: &[Vector3], color: Color) {
-    if points.len() < 3 {
+fn emit_surface_polygon(
+    mesh: &mut NetworkMeshData,
+    layer: MeshLayer,
+    polygon: &RoadSurfaceVisualPolygon,
+    color: Color,
+) {
+    if polygon.triangles_world.is_empty() {
         return;
     }
 
     let surface_lift_m = surface_lift_for_layer(layer);
-    let mut center = Vector3::ZERO;
-    for point in points {
-        center += *point;
-    }
-    center /= points.len() as f32;
-    center = lift_surface_point(center, surface_lift_m);
-
-    for index in 0..points.len() {
-        let current = lift_surface_point(points[index], surface_lift_m);
-        let next = lift_surface_point(points[(index + 1) % points.len()], surface_lift_m);
-        if triangle_is_too_small(center, current, next) {
+    for triangle in &polygon.triangles_world {
+        let lifted = [
+            lift_surface_point(triangle[0], surface_lift_m),
+            lift_surface_point(triangle[1], surface_lift_m),
+            lift_surface_point(triangle[2], surface_lift_m),
+        ];
+        if triangle_is_too_small(lifted[0], lifted[1], lifted[2]) {
             continue;
         }
         super::push_triangle(
             mesh,
             layer,
-            [center, current, next],
+            lifted,
             [
                 Vector2::ZERO,
                 Vector2::new(1.0, 0.0),
@@ -468,20 +445,13 @@ fn emit_loop_fan(mesh: &mut NetworkMeshData, layer: MeshLayer, points: &[Vector3
     }
 }
 
-fn loop_world_points(boundary_loop: &RoadSurfaceNodeBoundaryLoop) -> Vec<Vector3> {
-    boundary_loop
-        .points
-        .iter()
-        .map(|point| point.point_world)
-        .collect()
-}
-
 fn lift_surface_point(point: Vector3, lift_m: f32) -> Vector3 {
     Vector3::new(point.x, point.y + lift_m, point.z)
 }
 
 fn surface_lift_for_layer(layer: MeshLayer) -> f32 {
     match layer {
+        MeshLayer::Earthwork => EARTHWORK_SURFACE_LIFT_M,
         MeshLayer::Sidewalk => SIDEWALK_SURFACE_LIFT_M,
         MeshLayer::Road => ROAD_SURFACE_LIFT_M,
         MeshLayer::Marking | MeshLayer::Concrete => 0.0,

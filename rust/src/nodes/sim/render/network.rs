@@ -15,6 +15,22 @@ impl SimCore {
             .generate_mesh_data(&self.region_graph, &self.heightmap);
         let mut dict = VarDictionary::new();
         dict.set(
+            "earthwork_vertices",
+            PackedVector3Array::from_iter(mesh_data.earthwork_vertices),
+        );
+        dict.set(
+            "earthwork_normals",
+            PackedVector3Array::from_iter(mesh_data.earthwork_normals),
+        );
+        dict.set(
+            "earthwork_uvs",
+            PackedVector2Array::from_iter(mesh_data.earthwork_uvs),
+        );
+        dict.set(
+            "earthwork_colors",
+            PackedColorArray::from_iter(mesh_data.earthwork_colors),
+        );
+        dict.set(
             "sidewalk_vertices",
             PackedVector3Array::from_iter(mesh_data.sidewalk_vertices),
         );
@@ -130,8 +146,8 @@ impl SimCore {
             PackedVector3Array::from_iter(debug.band_lines),
         );
         dict.set(
-            "node_patch_lines",
-            PackedVector3Array::from_iter(debug.node_patch_lines),
+            "piece_boundary_lines",
+            PackedVector3Array::from_iter(debug.piece_boundary_lines),
         );
         dict.set(
             "earthwork_chunk_lines",

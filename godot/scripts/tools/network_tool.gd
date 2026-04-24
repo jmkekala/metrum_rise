@@ -215,7 +215,7 @@ func _update_surface_debug_overlay(delta: float) -> void:
 	var immediate := ImmediateMesh.new()
 	_append_debug_lines(immediate, debug_data.get("section_lines", PackedVector3Array()), Color(0.97, 0.84, 0.28, 0.90))
 	_append_debug_lines(immediate, debug_data.get("band_lines", PackedVector3Array()), Color(0.26, 0.92, 0.95, 0.78))
-	_append_debug_lines(immediate, debug_data.get("node_patch_lines", PackedVector3Array()), Color(1.0, 0.42, 0.38, 0.92))
+	_append_debug_lines(immediate, debug_data.get("piece_boundary_lines", PackedVector3Array()), Color(1.0, 0.42, 0.38, 0.92))
 	_append_debug_lines(immediate, debug_data.get("earthwork_chunk_lines", PackedVector3Array()), Color(0.56, 1.0, 0.46, 0.70))
 	surface_debug_mesh.mesh = immediate
 	surface_debug_mesh.visible = true
@@ -254,6 +254,7 @@ func _load_texture(path: String) -> Texture2D:
 static var _road_mat: ShaderMaterial = null
 static var _concrete_mat: ShaderMaterial = null
 static var _marking_mat: StandardMaterial3D = null
+static var _earthwork_mat: StandardMaterial3D = null
 
 func update_main_mesh():
 	if name != "RoadTool":
@@ -289,10 +290,28 @@ func update_main_mesh():
 		_concrete_mat.set_shader_parameter("roughness_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_rough_4k.png"))
 		_concrete_mat.set_shader_parameter("displacement_tex", _load_texture("res://assets/textures/general/concrete_layers/concrete_layers_02_disp_4k.png"))
 
+	if _earthwork_mat == null:
+		_earthwork_mat = StandardMaterial3D.new()
+		_earthwork_mat.vertex_color_use_as_albedo = true
+		_earthwork_mat.roughness = 1.0
+		_earthwork_mat.metallic = 0.0
+		_earthwork_mat.cull_mode = BaseMaterial3D.CULL_BACK
+
 	var arr_mesh = ArrayMesh.new()
 	var surface_map = [] # To keep track of which material goes to which surface
 	
-	# Surface 0: Sidewalk base
+	# Surface 0: Earthwork tie-in faces
+	if data.has("earthwork_vertices") and data.earthwork_vertices.size() > 0:
+		var arrays = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = data.earthwork_vertices
+		arrays[Mesh.ARRAY_NORMAL] = data.earthwork_normals
+		arrays[Mesh.ARRAY_COLOR] = data.earthwork_colors
+		arrays[Mesh.ARRAY_TEX_UV] = data.earthwork_uvs
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		surface_map.push_back(_earthwork_mat)
+
+	# Surface 1: Sidewalk base
 	if data.has("sidewalk_vertices") and data.sidewalk_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -303,7 +322,7 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_road_mat)
 
-	# Surface 1: Asphalt & Junctions
+	# Surface 2: Asphalt & Junctions
 	if data.has("road_vertices") and data.road_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -314,7 +333,7 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_road_mat)
 
-	# Surface 2: Markings (lane lines + crosswalk stripes — unlit white, semi-transparent)
+	# Surface 3: Markings (lane lines + crosswalk stripes — unlit white, semi-transparent)
 	if data.has("marking_vertices") and data.marking_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -325,7 +344,7 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_marking_mat)
 
-	# Surface 3: Concrete
+	# Surface 4: Concrete
 	if data.has("concrete_vertices") and data.concrete_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)

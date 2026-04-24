@@ -73,7 +73,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   bridge decks, tunnel portals, lane-divider markings, terrain earthworks, and world-surface
   picking from the same roadbed ownership model. Bridge earthworks are endpoint-only, tunnel
   earthworks are portal-only, dirty terrain rebuilds stay bounded to touched chunks, the network
-  tools can visualize compiled sections / bands / node patches / earthwork chunks through the
+  tools can visualize compiled sections / bands / piece boundaries / earthwork chunks through the
   debug overlay, and the old widened-ribbon renderer plus dense centerline flattening
   compatibility path were removed. Phase 9 and Phase 10 are now live as well: grounded roads
   stamp a deterministic outer shoulder / cut / fill margin beyond the paved footprint, and the
@@ -83,8 +83,48 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   terrain-stamp approach does not produce acceptable flat-ground or arbitrary-angle tie-ins.
   Phase 11 remains the deterministic `10 m` versus `5 m` characterization gate, Phase 12 is the
   fixed-roadbed-under-later-terrain-edits follow-up, and Phase 13 is the closed road-owned
-  earthwork mesh rewrite rather than more polishing of the corridor-sheet prototype. The shared
-  engineered-ground contract now lives in
+  earthwork mesh rewrite rather than more polishing of the corridor-sheet prototype. That rewrite
+  now has one explicit target split: the logical graph stays as connectivity/routing authority,
+  while the visible road system becomes a separate deterministic piece/profile carrier built from
+  `Span`, `Bend`, `Terminal`, and `JunctionN` pieces. The hard-cut carrier replacement is now live
+  in the road-surface runtime: renderer output, visible-surface queries, road-surface debug
+  overlays, and road-driven earthwork stamping all consume explicit visual pieces instead of a
+  node-patch carrier. `Terminal`, `Bend`, and `JunctionN` now compile explicit road / sidewalk
+  polygons from mouth profiles, width changes are no longer treated as a separate visual node
+  piece, cached visual polygons now carry deterministic triangles for render/query/stamp reuse,
+  span pieces now also own the earthwork chunk coverage and terrain-stamping carrier instead of
+  falling back to raw section windows after compile, `Bend` and `JunctionN` no longer share one
+  generic connected-node builder, adjacent mouth-side sectors no longer collapse to one fallback
+  quad when side profiles differ, node incident ordering now reads inward directions from compiled
+  span mouth profiles instead of from section tangents, `JunctionN` adjacent-gap sectors now use
+  the ordered-mouth ownership rule directly (`current.left` with `next.right`) instead of a
+  heuristic gap-facing side selector, and node
+  pieces now also own explicit earthwork polygons and outer earthwork boundaries instead of
+  borrowing visible polygons for node earthwork bounds and terrain stamping. Span outer boundary
+  loops now also compile directly from section ranges instead of being extracted from emitted
+  polygons. The `Bend` path no longer borrows the generic junction-style center asphalt core
+  either: two-way corners now use direct sampled mouth-to-mouth sector geometry with fixed
+  `<= 1 m` connector steps, `Terminal` outer boundary loops now come directly from explicit cap
+  geometry instead of generic polygon extraction, bend outer boundary loops now come directly from
+  compiled bend sectors instead of a generic polygon extraction pass, and footpath mouths now
+  compile directly in the incident-mouth builder instead of through a separate fallback helper.
+  `Bend` and `JunctionN` no longer share one connector-strip polygon builder either. `JunctionN`
+  also no longer relies on one global angle-sorted center asphalt polygon; its carriageway core is
+  now assembled from adjacent-mouth wedges around the node, its outer boundary loops now come
+  directly from compiled adjacent-gap sectors instead of a second-pass mouth reconstruction, and
+  it no longer shares the bend-side sector builder as its final geometry carrier. The shared
+  node-piece assembler no longer infers node earthwork ownership from visible geometry either:
+  `Terminal`, `Bend`, and `JunctionN` now pass explicit earthwork polygons and explicit earthwork
+  outer loops directly from their own builders. Node earthwork stamping no longer regenerates
+  tie-in faces from boundary loops at stamp time, span pieces now do the same, and combined
+  visible-world queries can now hit compiled span and node earthwork geometry before falling
+  through to terrain. The render path now exposes that same compiled earthwork carrier as a
+  dedicated visible layer instead of stopping it at compile, chunking, stamping, and queries,
+  but render now consumes a cleaner render-only earthwork face set rather than the full support
+  carrier. Gentle tie-in faces stay on the earthwork material path, while steep faces now route
+  deterministically to the retaining / wall concrete path. The remaining work here is now
+  refinement and later variants, not another carrier rewrite.
+  The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
   [`terrain.md`](terrain.md).
@@ -119,7 +159,8 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   blocker for engineered ground. The remaining blocker is now the near-road representation itself:
   the current corridor-sheet prototype is retired, and [`earthworks.md`](earthworks.md) plus
   [`improved_roads.md`](improved_roads.md) now reset the target to a closed road-owned earthwork
-  mesh with dense local tie-in sampling.
+  mesh carried by a separate piece/profile visual road layer rather than by graph-derived node
+  fills.
 - Terrain / water patch rendering now also uses deterministic distance-based mesh LOD on top of the
   split patch snapshot path, so far-field camera views can reuse the same resident patch snapshots
   without paying full near-field vertex density for every visible patch. The temporary seam /
@@ -132,9 +173,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   road-owned earthwork mesh rewrite. See [`earthworks.md`](earthworks.md),
   [`improved_roads.md`](improved_roads.md), and [`terrain.md`](terrain.md).
 - `ROAD-01` is now pinned to one deterministic target architecture: the next road geometry pass
-  must stop using one generic throat-point node fill and move to topology-classified
-  throat-profile builders for `Bend` and `JunctionN`, while keeping the existing graph / clip /
-  lane ownership layers intact. See [`improved_roads.md`](improved_roads.md).
+  must stop treating the logical graph as the visible-shape carrier and instead compile a separate
+  deterministic piece/profile geometry layer with `Span`, `Bend`, `Terminal`, and `JunctionN`
+  pieces, while keeping the existing graph / clip / lane ownership layers intact. See
+  [`improved_roads.md`](improved_roads.md).
 - The retired annulus/corridor prototype still produced useful conclusions that remain valid after
   the code revert: arbitrary-angle bends and multi-arm junctions need explicit road and sidewalk
   piece ownership, not one sampled outer loop plus one sampled inner loop with triangulation

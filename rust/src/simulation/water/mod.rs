@@ -479,19 +479,11 @@ impl WaterSystem {
         let mut velocity_data = vec![0.0_f32; texture_width * texture_height];
 
         for local_z in 0..texture_height {
-            let sample_z = border_clamped_index(
-                start_z,
-                end_z,
-                local_z,
-                WATER_RENDER_PATCH_BORDER_TEXELS,
-            );
+            let sample_z =
+                border_clamped_index(start_z, end_z, local_z, WATER_RENDER_PATCH_BORDER_TEXELS);
             for local_x in 0..texture_width {
-                let sample_x = border_clamped_index(
-                    start_x,
-                    end_x,
-                    local_x,
-                    WATER_RENDER_PATCH_BORDER_TEXELS,
-                );
+                let sample_x =
+                    border_clamped_index(start_x, end_x, local_x, WATER_RENDER_PATCH_BORDER_TEXELS);
                 let flat_idx = local_z * texture_width + local_x;
                 depth_data[flat_idx] = self.baseline.depth.get(sample_x, sample_z)
                     + self.dynamic.depth.get(sample_x, sample_z);
@@ -618,8 +610,7 @@ impl WaterSystem {
         let start_x = patch_x * self.render_patch_interval_cells;
         let start_z = patch_z * self.render_patch_interval_cells;
         let end_x = (start_x + self.render_patch_interval_cells).min(self.width.saturating_sub(1));
-        let end_z =
-            (start_z + self.render_patch_interval_cells).min(self.height.saturating_sub(1));
+        let end_z = (start_z + self.render_patch_interval_cells).min(self.height.saturating_sub(1));
         Some((start_x, end_x, start_z, end_z))
     }
 

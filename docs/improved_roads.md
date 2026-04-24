@@ -38,10 +38,15 @@ Terminology:
 - `logical graph`: the existing network topology used for routing and editing
 - `road plan polyline`: an edge's world-space XZ path before any surface-width expansion
 - `roadbed`: the authoritative drivable / walkable 2.5-D surface generated from the logical graph
+- `visual carrier`: the deterministic geometry layer used for rendering, visible-surface queries,
+  and road-driven earthworks
+- `piece`: one compiled visual road element such as `Span`, `Bend`, `Terminal`, or `JunctionN`
+- `profile`: the ordered side-aware road boundary stack carried by one visual piece
 - `section`: one sampled cross-section of the roadbed along an edge
 - `band`: one lateral surface band such as carriageway, curb, sidewalk, shoulder, or median
-- `throat`: the edge-local boundary where an edge corridor hands off into a node patch
-- `node patch`: the junction or terminal surface patch connecting incident edge corridors
+- `throat`: the edge-local boundary where an edge corridor hands off into a visual piece
+- `legacy node patch`: the retired loop-based junction / terminal carrier that previously tried to
+  connect incident edge corridors
 - `earthworks`: the derived cut / fill imprint that the roadbed applies to visual terrain
 - `surface chunk`: one cached local render / query unit for the roadbed
 
@@ -55,8 +60,8 @@ expose road failures immediately:
   other
 - terrain carving, editor preview, and final road mesh are not driven from one shared solved
   surface model, so they can disagree about the same road's height
-- the active standard-road path still treats the road as "centerline plus patched top surface"
-  instead of as one authoritative roadbed with explicit width, bands, and node patches
+- the active standard-road path must stop treating the road as "centerline plus patched top
+  surface" and instead own one authoritative roadbed with explicit width, bands, and visual pieces
 
 The roadbed runtime must continue to solve those problems at the ownership level, not by
 reintroducing local patches to the retired renderer.
@@ -135,7 +140,11 @@ The logical graph remains authoritative for:
 - authored edge class (`Standard`, `Bridge`, `Tunnel`)
 - plan polyline control points in world XZ
 
-The logical graph must not be treated as the final visible road surface.
+The logical graph must not be treated as:
+
+- the final visible road surface
+- the final earthwork boundary carrier
+- a generic node polygon carrier for bends or junctions
 
 ### `RoadSurfaceSystem`
 
@@ -145,7 +154,9 @@ It owns:
 
 - edge longitudinal grade solutions
 - edge cross-sections and lateral bands
-- node patch classification and triangulation inputs
+- the deterministic visual carrier compiled from the graph and the solved roadbed
+- visual piece classification (`Span`, `Bend`, `Terminal`, `JunctionN`)
+- piece-local profile boundaries and mouth / throat handoff data
 - the surface mesh cache used by the renderer
 - the surface query cache used by editor preview and picking
 - the earthwork stamps that terrain applies to the visual terrain buffer
@@ -279,108 +290,107 @@ That function must support at least:
 The exact authored defaults may be simple at first, but the representation must not hard-code
 "single flat ribbon" as the only possible shape.
 
-### 6. Node Surface Uses Explicit Patches
+### 6. Visual Presentation Is A Separate Piece/Profile Carrier
 
-The roadbed runtime does not rely on implicit overdraw alone to define junction ownership.
-
-Each relevant node must compile to one of these classes:
-
-- `Terminal`
-- `PassThrough`
-- `WidthTransition`
-- `Bend`
-- `JunctionN`
-
-Classification must be deterministic from:
-
-- incident edge classes
-- incident edge directions in XZ
-- lateral-profile compatibility
-- modal surface presence on each side
-
-Required behavior:
-
-- `Terminal` nodes emit a terminal patch
-- `PassThrough` nodes emit no node patch and hand corridor ownership directly edge-to-edge
-- `WidthTransition` nodes emit a transition patch even when the node is nearly straight
-- `Bend` nodes emit a dedicated two-mouth bend continuation patch
-- `JunctionN` nodes emit a full multi-mouth node patch
-
-### 7. Node Geometry Is Built From Throat Profiles, Not One Generic Fill Polygon
-
-Node patches must be bounded by incident edge throats, not by ad hoc circular disks that ignore the
-real corridor width, and not by one generic angle-sorted throat-point fill rule.
-
-For every incident surface edge at one node:
-
-- compute a throat section at the node handoff distance
-- compute that handoff distance from the exact junction throat clip carried on the graph edge, and
-  for acute bends / junction sectors derive that clip from the intersection of adjacent outer
-  roadbed boundaries rather than from a fixed half-width constant
-- derive one canonical mouth profile from that throat section
-- that mouth profile must preserve the ordered semantic boundary stack for that road class
-- for the default standard-road slice, the minimum required boundary stack is:
-  1. left outer sidewalk edge
-  2. left carriageway edge
-  3. right carriageway edge
-  4. right outer sidewalk edge
-- later profile variants may add more band boundaries, but the runtime must not collapse back to
-  one anonymous throat endpoint pair
-
-Required topology-specific build rules:
-
-- `Terminal`: build one terminal closure from the single mouth profile
-- `PassThrough`: emit no node patch
-- `WidthTransition`: connect the two compatible anti-parallel mouth profiles directly
-- `Bend`: connect the two non-parallel mouth profiles directly; do not treat a two-edge bend as a
-  generic junction fill
-- `JunctionN`: sort mouth profiles by centerline angle around the node with a stable tie-breaker,
-  then build one adjacent-mouth sector for each consecutive pair
-- node top-surface ownership must compile to explicit road polygons plus explicit sidewalk sector
-  polygons; it must not compile one global outer loop and one global inner loop and render their
-  difference as a generic sidewalk ring
-
-### 8. Adjacent-Mouth Connectors Are The General Node Solver
-
-Node geometry for both `Bend` and `JunctionN` uses the same deterministic connector model.
-
-For every adjacent mouth pair and for every paired semantic boundary level:
-
-- build one connector between the two mouth-profile boundary curves
-- the connector inputs are the paired boundary endpoints plus their inward throat tangents
-- the connector must be sampled at a fixed longitudinal step no larger than `1 m`
-- the same mouth-profile inputs must always produce the same sampled connector points
-
-Required construction rule:
-
-- the runtime must not generate the full node from a single angle-sorted cloud of throat endpoints
-- instead, the runtime builds the node from the ordered set of adjacent-mouth sectors
-- each sector is assembled band-by-band from the corresponding paired connectors
-
-### 9. Carriageway Core And Sidewalk Sectors Are Separate Ownership Layers
-
-Node geometry must keep the carriageway-owned center separate from the sidewalk-owned perimeter.
+The roadbed runtime must split simulation topology from visible geometry.
 
 Required rule:
 
-- `Bend` nodes do not own an artificial octagon or disk in the middle; they are only the direct
-  continuation between the two mouths
-- `JunctionN` nodes must build one carriageway-owned center polygon bounded by the innermost
-  carriageway connectors
-- the outer sidewalk / curb envelope must be built as explicit perimeter sectors around that
-  carriageway core
-- the runtime must not emit one annular sidewalk mesh around a whole node patch
-- no sidewalk triangles may own the carriageway center
-- no carriageway seam may appear between an incident edge throat and the node-owned continuation
-- triangulation remains deterministic, but triangulation happens after the connector geometry is
-  established, not before
+- the logical graph continues to own connectivity, IDs, lane semantics, and authored plan curves
+- the visual carrier becomes a separate deterministic geometry layer built from that graph data
+- the minimum required visual piece set is:
+  1. `Span`
+  2. `Bend`
+  3. `Terminal`
+  4. `JunctionN`
+- the renderer, visible-surface queries, and road-driven earthworks must consume that same visual
+  carrier instead of rebuilding independent geometry from raw graph clips
 
-### 10. Sidewalk Ownership Is Side-Aware
+### 7. Every Piece Owns One Ordered Side-Aware Profile
+
+The runtime must not treat a road as one anonymous width around a centerline.
+
+Each visual piece must own one ordered side-aware profile.
+
+For the default standard-road slice, the minimum required profile stack is:
+
+1. left outer sidewalk edge
+2. left curb / shoulder edge
+3. left carriageway edge
+4. right carriageway edge
+5. right curb / shoulder edge
+6. right outer sidewalk edge
+
+Later profile variants may add more band boundaries, but the runtime must not collapse back to one
+anonymous throat endpoint pair.
+
+### 8. `Span` Owns Ordinary Edge Corridors And `Bend` Owns Every Two-Way Corner
+
+Ordinary edge corridors and two-edge corners must not be represented by a generic node polygon.
+
+Required rule:
+
+- every non-terminal edge run compiles to one or more `Span` pieces using the solved longitudinal
+  grade plus the ordered section profile
+- every degree-`2` non-pass-through corner compiles to a dedicated `Bend` piece
+- a `Bend` is a normal visual road piece, not a fallback or special-case patch
+- triangle networks therefore compile as `3 spans + 3 bends`; they do not require a generic node
+  polygon carrier
+- the `Bend` piece owns both carriageway and sidewalk continuation through the corner, so the
+  runtime must not leave that continuation to overlapping edge strips or to terrain-side fill
+- the `Bend` piece must not synthesize a shared junction-style asphalt core polygon; it connects
+  its two mouths directly through piece-owned sector geometry
+- the `Bend` piece outer boundary loops must come directly from those compiled bend sectors rather
+  than from a later generic polygon-boundary extraction pass
+
+### 9. `Terminal` And `JunctionN` Own Their Geometry Explicitly
+
+`Terminal` and `JunctionN` must remain explicit visual pieces with deterministic ownership.
+
+Required rule:
+
+- `Terminal` owns its cap / closure geometry directly from the incident piece profile
+- `Terminal` outer boundary loops must come directly from that compiled cap geometry rather than
+  from a later generic polygon-boundary extraction pass
+- `JunctionN` owns one carriageway center plus explicit perimeter sidewalk sectors between adjacent
+  mouths
+- `JunctionN` must not be built from one generic angle-sorted cloud of throat endpoints
+- `JunctionN` must not be rendered as one global sidewalk annulus between one outer loop and one
+  inner loop
+- `JunctionN` must not synthesize one generic center asphalt polygon from all mouth inner points;
+  the carriageway core is assembled from explicit adjacent-mouth wedges around the node
+- `JunctionN` must not run a second-pass center/core polygon builder after sector compilation; the
+  explicit adjacent-gap sectors are themselves the live carriageway carrier
+- `JunctionN` must not reuse the `Bend` side-sector builder as its final geometry carrier; it
+  owns a dedicated adjacent-gap sector builder for multi-arm node geometry
+- no sidewalk triangles may own the carriageway center
+- no carriageway seam may appear between an incident `Span` throat and the node-owned continuation
+
+### 10. Mouths And Adjacent Sectors Are The General Connector Model
 
 The shipped roadbed runtime does not treat sidewalks as a symmetric visual halo around the road
 centerline.
 
-Sidewalk ownership must be explicit per side:
+For every incident surface edge at one piece boundary:
+
+- compute a throat section at the deterministic handoff distance
+- compute that handoff distance from the exact clip carried on the graph edge, and for acute
+  bends / junction sectors derive that clip from adjacent outer roadbed boundaries rather than
+  from a fixed half-width constant
+- derive one canonical mouth profile from that throat section
+- preserve the ordered semantic profile stack through that mouth
+
+General connector rule:
+
+- `Bend` connects exactly two mouth profiles directly
+- `JunctionN` sorts mouths by centerline angle around the node with a stable tie-breaker, then
+  builds one adjacent-mouth sector for each consecutive pair
+- each adjacent sector is assembled band-by-band from paired mouth boundaries
+- connector sampling must use a fixed deterministic step no larger than `1 m`
+- the runtime must not generate the full node from a single generic fill polygon and hope later
+  triangulation recovers the intended ownership
+
+Sidewalk ownership remains explicit per side:
 
 - left and right sidewalk bands are separate authored / derived bands
 - footpath connections attach to one side or the other, not to an abstract road-center sidewalk
@@ -476,7 +486,7 @@ definition of who owns the junction center.
 Ownership comes from:
 
 - edge corridor boundaries
-- node patch boundaries
+- visual piece boundaries
 - explicit band surfaces
 
 Overdraw is only a draw-order convenience after that ownership is already known.
@@ -492,7 +502,7 @@ committed road:
 - class selection or validation
 - grade solve
 - section generation
-- node patch generation
+- visual piece generation
 
 The preview may reuse temporary IDs and temporary caches, but it must not use a separate
 "looks similar enough" geometry path.
@@ -550,7 +560,7 @@ Required Phase 11 work:
 - use the characterization as a decision gate:
   - if `5 m` materially reduces overlap, it remains a viable path
   - if `5 m` still leaves unacceptable overlap, the next fix must be a different representation
-    such as road-owned corridor / skirt geometry rather than more heightfield density alone
+    such as road-owned closed local earthwork geometry rather than more heightfield density alone
 
 Phase 11 is a measurement and decision phase, not a claim that denser terrain alone is already the
 solution. Any default density move now depends on the chunk-local terrain / water render split
@@ -578,11 +588,6 @@ Required Phase 12 work:
 Phase 12 is separate from Phase 11 because it changes ownership semantics first; denser terrain or
 local earthwork geometry still remain possible follow-ups after that rule is in place.
 
-Live status:
-
-- committed roadbeds now stay fixed under later terrain-authoring edits; terrain sync rebuilds
-  road-owned caches around the placed road instead of re-grounding the road geometry itself
-
 ### Phase 13 - Closed Road-Owned Earthwork Mesh Rewrite
 
 The next representation fix is now deterministic, and it replaces the current corridor-sheet
@@ -604,14 +609,15 @@ Required Phase 13 work:
   apron or visible side sheet
 - terminal road ends must emit deterministic cap geometry from the road-owned top surface to the
   tie-in boundary
-- node geometry must move from the current generic throat-point patch fill to the shared
-  throat-profile connector model for `Bend` and `JunctionN`
-- two-edge non-pass-through nodes must be built by the dedicated `Bend` builder rather than by the
-  generic multi-arm node path
-- multi-arm nodes must be built from adjacent mouth-profile sectors around one carriageway-owned
-  center, not from one angle-sorted cloud of throat endpoints
-- future node-patch perimeter tie-ins must follow the same ownership model so node ownership and
-  edge ownership still meet cleanly at the throat boundary
+- the visual road carrier must split from the logical graph:
+  - the graph remains connectivity and routing authority
+  - the visual carrier becomes explicit geometry pieces
+- the minimum required visual piece set is `Span`, `Bend`, `Terminal`, and `JunctionN`
+- two-edge non-pass-through nodes must be built as `Bend` pieces, not by a generic junction fill
+- multi-arm nodes must be built as `JunctionN` pieces with one carriageway-owned center plus
+  explicit adjacent-mouth sidewalk sectors
+- future node-piece perimeter tie-ins must follow the same ownership model so edge ownership and
+  node ownership still meet cleanly at the throat boundary
 - local earthwork geometry must be partitioned into touched terrain-chunk-aligned caches instead of
   one monolithic world mesh
 - road visible-surface queries must resolve as road top surface first, then road-owned local
@@ -634,8 +640,183 @@ Current status:
   polished further
 - the useful conclusions from that prototype remain in force: fixed-roadbed ownership, chunk-local
   rebuilds, and explicit visible-surface precedence stay part of the target contract
-- the remaining Phase 13 work is still the closed local earthwork mesh rewrite defined above,
-  especially the topology-classified throat-profile node builders
+- the Phase 13 carrier rewrite is now live in code; the remaining work is refinement on top of
+  that shipped carrier, not another representation reset
+- the graph/visual split is now live in code:
+  - committed spans now own explicit road / sidewalk polygons plus explicit earthwork polygons and
+    outer earthwork boundaries
+  - committed spans now compile their outer boundary loops directly from section ranges instead of
+    extracting them back out of emitted polygons
+  - committed terminals compile explicit cap polygons from the mouth profile
+  - committed two-way bends now compile through a dedicated `Bend` builder instead of sharing one
+    generic connected-node path with `JunctionN`
+  - committed two-way bends compile explicit band-by-band bend polygons from paired mouth profiles
+  - multi-arm nodes now compile through a dedicated `JunctionN` builder fed by ordered incident
+    mouths and adjacent gap sectors rather than by the old generic connected-node path
+  - multi-arm nodes compile explicit `JunctionN` road polygons plus sidewalk sector polygons
+  - adjacent mouth-side sectors no longer fall back to one emergency quad when side profiles do
+    not have matching band counts; they use one deterministic merged depth-break connector solve
+  - node incident ordering and bend / junction classification no longer recover throat directions
+    from compiled edge sections; they read deterministic inward directions from compiled span
+    mouth profiles
+  - width changes are no longer treated as a separate visual node-piece class; ordinary spans own
+    that handoff directly
+  - compiled visual polygons now cache deterministic triangles so rendering, surface queries, and
+    earthwork stamping no longer re-fan concave node sectors differently at each call site
+  - `JunctionN` adjacent-mouth sectors now use the ordered-mouth ownership rule directly: for each
+    adjacent CCW gap, the sector is built from `current.left` and `next.right` instead of from a
+    heuristic gap-facing side selector
+  - adjacent mouth-side sectors now insert fixed-step connector samples at `<= 1 m` in addition to
+    profile breakpoints, and `Bend` no longer borrows the generic junction-style center asphalt
+    polygon
+  - `Terminal` outer boundary loops are now compiled directly from explicit cap geometry instead of
+    being reconstructed from emitted polygons afterward
+  - `Bend` outer boundary loops are now compiled directly from explicit bend sectors instead of
+    being reconstructed from emitted polygons afterward
+  - footpath mouths now compile directly inside the incident piece-mouth path instead of through a
+    separate fallback helper
+  - `JunctionN` no longer borrows one global angle-sorted center asphalt polygon; its center
+    carriageway is assembled from adjacent-mouth wedges around the node
+  - `JunctionN` outer boundary loops are now compiled directly from explicit adjacent-gap sectors
+    instead of being reconstructed in a second pass from the ordered mouth list
+  - `Bend` and `JunctionN` no longer share one connector-strip polygon builder; each piece class
+    now owns its own connector-strip sampling path
+  - renderer output, visible-surface queries, debug overlays, and road-driven earthwork stamping
+    now consume explicit visual pieces instead of a node-patch carrier
+  - terrain earthwork chunk coverage and stamping no longer walk compiled edge sections after
+    piece compilation; they consume span-owned earthwork polygons and span-owned outer earthwork
+    boundaries
+  - span-piece earthwork stamping no longer regenerates tie-in faces from boundary loops at stamp
+    time; spans now compile explicit tie-in side polygons plus explicit tie-in outer loops during
+    piece compile
+  - node pieces now also compile explicit earthwork polygons and earthwork outer boundaries, so
+    node earthwork chunking, bounds, and terrain stamping no longer borrow the visible polygon
+    carrier at runtime
+  - `Terminal`, `Bend`, and `JunctionN` now pass explicit earthwork polygons and explicit
+    earthwork outer loops directly from their own builders instead of relying on a shared
+    node-piece assembler to infer earthwork ownership from visible geometry
+  - node-piece earthwork stamping no longer regenerates tie-in faces from boundary loops at stamp
+    time; `Terminal`, `Bend`, and `JunctionN` now compile explicit tie-in side polygons plus
+    explicit tie-in outer loops during piece compile
+  - the visible road mesh now includes a dedicated earthwork layer fed directly from compiled span
+    and node earthwork ownership instead of stopping that carrier at chunking, terrain stamping,
+    and world-surface queries
+  - render no longer draws the full support carrier directly: spans and node pieces now compile a
+    separate render-only earthwork face set, so hidden support polygons stay available for
+    stamping / queries without leaking into the visible road mesh
+  - render-only earthwork faces are now classified deterministically as either `Slope` or
+    `RetainingWall`, and the renderer routes those two face classes to different materials instead
+    of painting every tie-in face as generic exposed earthwork
+  - visible-world height/raycast queries can now hit compiled span and node earthwork geometry
+    before falling through to terrain
+- the remaining Phase 13 work is no longer the carrier rewrite itself; the main remaining gap is
+  refinement work inside that live carrier: richer retaining / wall variants, better material
+  treatment, and carrying the same explicit piece-owned geometry model through those variants
+  without regressing the shared piece/profile ownership model
+
+## Legacy Retirement Map
+
+The piece/profile rewrite does not retire the entire roadbed runtime. It retires the parts of the
+previous carrier that synthesized visible road ownership from generic node patches and loop
+triangulation.
+
+The following current code remains architecturally useful and should be extended rather than
+thrown away:
+
+- logical graph ownership in `rust/src/simulation/network/mod.rs` and `graph/`
+- solved edge grades, section sampling, and lateral band definitions in
+  `rust/src/simulation/network/surface/mod.rs`
+- chunk-local surface and earthwork cache boundaries in
+  `rust/src/simulation/network/surface/mod.rs`
+- Godot-side refresh timing and mesh-upload orchestration in
+  `godot/scripts/renderers/network_renderer.gd`
+
+The following code is legacy under the new target and is already removed or explicitly retired.
+
+### Rust Legacy Carrier To Retire
+
+- `RoadSurfaceNodePatchClass` and `RoadSurfaceNodePatch` in
+  `rust/src/simulation/network/surface/mod.rs`
+  - this is still the old node-patch carrier
+  - it collapses arbitrary non-pass-through two-edge cases into a generic `Junction` path instead
+    of a real `Bend` piece
+- `RoadSurfaceNodeBoundaryPoint` and `RoadSurfaceNodeBoundaryLoop` in
+  `rust/src/simulation/network/surface/mod.rs`
+  - these exist only to support the current loop-synthesis carrier
+- `compile_node_patch`, `classify_node_patch`, `build_node_patch_boundary_loops`,
+  `build_throat_boundary_points`, `build_terminal_boundary_loop`, and `finalize_boundary_loop` in
+  `rust/src/simulation/network/surface/mod.rs`
+  - these are the current generic node-fill builders that the rewrite is replacing
+- any generic node-piece outer-boundary extraction path that tries to infer `Terminal`, `Bend`, or
+  `JunctionN` ownership from already-emitted polygons
+  - all live node-piece classes now compile explicit outer boundary loops directly from their own
+    piece geometry
+- any shared node-piece earthwork inference path that tries to clone visible polygons or visible
+  outer loops into node earthwork ownership
+  - all live node-piece classes now compile and pass explicit earthwork polygons and explicit
+    earthwork outer loops directly from their own builders
+- any shared connector-strip polygon builder used as the live geometry carrier for both `Bend` and
+  `JunctionN`
+  - those piece classes now own separate connector-strip builders even though they still share
+    lower-level geometry utilities like point sampling
+- the separate `build_footpath_piece_mouth(...)` fallback helper
+  - footpath mouths now compile directly inside the main incident-mouth builder
+- node-patch earthwork helpers in `rust/src/simulation/network/surface/mod.rs`
+  - `node_patch_overlaps_chunk`
+  - `visit_visible_node_triangles`
+  - `stamp_node_patch_earthwork_margins_for_chunk`
+  - `stamp_node_patch_earthworks_for_chunk`
+  - `node_patch_bounds`
+  - any other helper whose job is specifically to turn a node patch loop into render or earthwork
+    ownership
+- section-window edge earthwork stamping helpers in `rust/src/simulation/network/surface/mod.rs`
+  - `stamp_edge_earthworks_for_chunk`
+  - `stamp_standard_edge_earthwork_margins_for_chunk`
+  - `stamp_edge_earthwork_margin_side`
+  - once compiled span pieces exist, earthwork chunk coverage and terrain stamping must not fall
+    back to raw edge-section windows as the steady-state authority
+- tests that lock in loop-based node-patch behavior in
+  `rust/src/simulation/network/surface/mod.rs`
+  - for example `throat_boundary_loops_are_angle_sorted_and_stable`
+  - these must be replaced by black-box piece/profile tests once the new carrier lands
+
+### Rust Renderer Paths To Retire
+
+- loop-fan node rendering in `rust/src/simulation/network/render/road/standard_surface.rs`
+  - this renderer path is now retired
+  - `emit_compiled_surface_mesh(...)` now consumes explicit road polygons and sidewalk polygons
+    from the visual carrier
+- any renderer path that assumes node ownership comes from one outer loop plus one carriageway loop
+  rather than from explicit `Span` / `Bend` / `Terminal` / `JunctionN` piece geometry
+
+### Rust Debug / Bridge Paths To Retire Or Rename
+
+- `piece_boundary_lines` in `rust/src/nodes/sim/render/network.rs`
+  - this is the piece-oriented replacement debug channel
+  - it must not regress back to exposing raw node patches as the visual authority
+- any future geometry dumps that still serialize `compiled_node_patches`, `boundary_loops`, or
+  `carriageway_boundary_loops` as if those were the final visual authority
+
+### Godot-Side Legacy Bridges To Retire Or Rename
+
+- `piece_boundary_lines` debug overlay consumption in
+  `godot/scripts/tools/network_tool.gd`
+  - this is the first hard-cut replacement for the old `node_patch_lines` bridge
+  - the overlay must keep visualizing explicit road pieces rather than regressing to node-patch
+    terminology
+- any editor/debug terminology that still tells the user the visual road authority is a node patch
+  or a generic junction fill
+
+### Explicit Non-Legacy Boundaries
+
+The following are not legacy by themselves and should not be thrown away just because they are old:
+
+- edge section sampling
+- lateral band definitions
+- chunk-local dirtying and rebuild boundaries
+- preview/commit parity as a rule
+- the graph as simulation authority
+- Godot mesh upload as a thin presentation bridge
 
 ## Test Contract
 
@@ -649,6 +830,7 @@ Must cover:
 - arbitrary-angle bend with sidewalks
 - obtuse bend with sidewalks
 - shallow-angle bend with sidewalks
+- triangle network composed of three independent bends
 - pass-through split with no center bubble
 - width transition on a nearly straight corridor
 - T-junction center owned by carriageway
@@ -680,11 +862,15 @@ The following legacy patterns must not be reintroduced:
 - terrain flattening that samples only the centerline height and then separately resyncs the road
 - paved-footprint-only earthwork stamping as the final grounded-road terrain contract
 - any renderer code that treats node disks or widened ribbons as the sole ownership model
+- any visual road carrier that tries to derive final bends or multi-arm junctions from one generic
+  graph-driven fill polygon
+- any annulus-style node sidewalk model built from one outer loop and one inner loop
 - dead cached junction polygon state that no longer serves the roadbed pipeline
 
 The shipped system is:
 
 - one logical graph
 - one authoritative roadbed compiler
+- one deterministic visual carrier built from explicit road pieces
 - one terrain earthwork contract derived from that roadbed
 - one render cache derived from that same roadbed

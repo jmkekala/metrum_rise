@@ -9,6 +9,14 @@ use godot::prelude::*;
 ///
 /// Includes vertices, normals, UVs, and colors for multiple visual layers (sidewalk, road, markings, concrete).
 pub struct NetworkMeshData {
+    /// Vertices for the road-owned earthwork layer.
+    pub earthwork_vertices: Vec<Vector3>,
+    /// Normals for the earthwork layer.
+    pub earthwork_normals: Vec<Vector3>,
+    /// UV coordinates for the earthwork layer.
+    pub earthwork_uvs: Vec<Vector2>,
+    /// Vertex colors for the earthwork layer.
+    pub earthwork_colors: Vec<Color>,
     /// Vertices for the sidewalk/curb layer.
     pub sidewalk_vertices: Vec<Vector3>,
     /// Normals for the sidewalk layer.
@@ -47,6 +55,10 @@ impl NetworkMeshData {
     /// Creates a new, empty network mesh data container.
     pub fn new() -> Self {
         Self {
+            earthwork_vertices: Vec::new(),
+            earthwork_normals: Vec::new(),
+            earthwork_uvs: Vec::new(),
+            earthwork_colors: Vec::new(),
             sidewalk_vertices: Vec::new(),
             sidewalk_normals: Vec::new(),
             sidewalk_uvs: Vec::new(),

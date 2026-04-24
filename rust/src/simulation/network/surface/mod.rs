@@ -1,9 +1,10 @@
 //! Authoritative road-surface ownership layer and the first live compiler slices.
 //!
 //! This module now owns both the Phase 1 cache / dirty-tracking shell and the
-//! first Phase 2 compiler pass for deterministic edge sections plus node-patch
-//! inputs. It now drives the shipped preview, committed render mesh, earthworks,
-//! and world-surface query paths from one deterministic compiled roadbed cache.
+//! first Phase 2 compiler pass for deterministic edge sections plus explicit
+//! visual road pieces. It now drives the shipped preview, committed render mesh,
+//! earthworks, and world-surface query paths from one deterministic compiled
+//! roadbed cache.
 
 use godot::prelude::{Vector2, Vector3};
 use std::collections::{HashMap, HashSet};
@@ -25,6 +26,7 @@ const MAX_STANDARD_DESIGN_CROSSFALL_RATE: f32 = 0.03;
 const STANDARD_CROSSFALL_DEADZONE_RATE: f32 = 0.005;
 const SIDEWALK_SLOPE_RATE: f32 = 0.02;
 const SAMPLE_EPSILON_M: f32 = 0.001;
+const NODE_CONNECTOR_SAMPLE_STEP_M: f32 = 1.0;
 const ROAD_POINT_SIMPLIFY_DISTANCE_M: f32 = 0.5;
 const TAUBIN_SMOOTHING_ITERS: usize = 50;
 const TAUBIN_LAMBDA: f32 = 0.5;
@@ -38,24 +40,12 @@ const EARTHWORK_MAX_MARGIN_M: f32 = 18.0;
 const EARTHWORK_MARGIN_SAMPLE_STEP_M: f32 = 1.0;
 const EARTHWORK_CUT_SLOPE_RATE: f32 = 0.5;
 const EARTHWORK_FILL_SLOPE_RATE: f32 = 0.5;
+const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
 const BRIDGE_ABUTMENT_LENGTH_M: f32 = 12.0;
 const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
 
 /// Chunk key used by the road-surface and earthwork caches.
 pub type SurfaceChunkKey = (i32, i32);
-
-/// Classification of one compiled node patch in the replacement road-surface model.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RoadSurfaceNodePatchClass {
-    /// One incident surface edge ends here and requires a terminal patch.
-    Terminal,
-    /// Two nearly anti-parallel compatible edges hand corridor ownership edge-to-edge.
-    PassThrough,
-    /// A nearly straight node still requires a transition patch because widths differ.
-    WidthTransition,
-    /// A multi-arm or otherwise non-pass-through node requires a full junction patch.
-    Junction,
-}
 
 /// Ordered lateral surface-band kinds supported by the replacement roadbed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -112,35 +102,73 @@ pub struct RoadSurfaceSection {
     pub bands: Vec<RoadSurfaceBand>,
 }
 
-/// One boundary sample used while assembling a node patch loop.
-#[derive(Clone, Debug, PartialEq)]
-pub struct RoadSurfaceNodeBoundaryPoint {
-    /// Surface band that owns this boundary point.
-    pub band_kind: RoadSurfaceBandKind,
-    /// Polar angle around the node center in radians.
-    pub angle_rad: f32,
-    /// World-space boundary point in metres.
-    pub point_world: Vector3,
+/// Piece classification for explicit visual node ownership during the graph/visual split.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RoadSurfaceVisualNodePieceKind {
+    /// One incident surface edge ends here and requires a terminal visual piece.
+    Terminal,
+    /// Two non-pass-through incident edges require one explicit bend visual piece.
+    Bend,
+    /// Three or more incident edges require an explicit multi-mouth junction visual piece.
+    JunctionN,
 }
 
-/// One ordered boundary loop for a compiled node patch.
+/// One explicit polygon owned by the visual road carrier.
 #[derive(Clone, Debug, PartialEq)]
-pub struct RoadSurfaceNodeBoundaryLoop {
-    /// Ordered loop boundary points.
-    pub points: Vec<RoadSurfaceNodeBoundaryPoint>,
+pub struct RoadSurfaceVisualPolygon {
+    /// Ordered world-space polygon points.
+    pub points_world: Vec<Vector3>,
+    /// Deterministic cached triangles covering the polygon in world space.
+    pub triangles_world: Vec<[Vector3; 3]>,
 }
 
-/// Compiled node-patch shell for the replacement road-surface system.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RoadSurfaceEarthworkFaceKind {
+    Slope,
+    RetainingWall,
+}
+
 #[derive(Clone, Debug, PartialEq)]
-pub struct RoadSurfaceNodePatch {
+pub(crate) struct RoadSurfaceEarthworkRenderFace {
+    pub(crate) kind: RoadSurfaceEarthworkFaceKind,
+    pub(crate) polygon: RoadSurfaceVisualPolygon,
+}
+
+/// Explicit visual node piece compiled from the solved roadbed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoadSurfaceVisualNodePiece {
     /// Owning node id.
     pub node_id: u32,
-    /// Node patch classification.
-    pub class: RoadSurfaceNodePatchClass,
-    /// Ordered outer roadbed boundary loops used by later deterministic triangulation.
-    pub boundary_loops: Vec<RoadSurfaceNodeBoundaryLoop>,
-    /// Ordered carriageway-owned boundary loops used by standard-road top-surface rendering.
-    pub carriageway_boundary_loops: Vec<RoadSurfaceNodeBoundaryLoop>,
+    /// Piece classification for rendering and debug.
+    pub kind: RoadSurfaceVisualNodePieceKind,
+    /// Outer piece-owned boundaries used for debug and surface chunk bounds.
+    pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    /// Explicit asphalt-owned polygons for the node piece.
+    pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    /// Explicit sidewalk-owned polygons for the node piece.
+    pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
+}
+
+/// Explicit visual span piece compiled from one edge corridor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoadSurfaceVisualSpanPiece {
+    /// Owning edge id.
+    pub edge_idx: usize,
+    /// Outer piece-owned boundaries used for debug and surface chunk bounds.
+    pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    /// Explicit asphalt-owned polygons for the span piece.
+    pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    /// Explicit sidewalk-owned polygons for the span piece.
+    pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    edge_class: EdgeClass,
+    start_mouth_profile: Option<IncidentMouthProfile>,
+    end_mouth_profile: Option<IncidentMouthProfile>,
+    pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
 }
 
 /// Cached render-side surface ownership for one chunk.
@@ -175,8 +203,8 @@ pub struct PreviewRoadSurfaceResult {
     pub prepared_points: Vec<Vector3>,
     /// Compiled section cache for the temporary preview edge.
     pub compiled_sections: Vec<RoadSurfaceSection>,
-    /// Compiled terminal node patches for the temporary preview edge.
-    pub compiled_node_patches: Vec<RoadSurfaceNodePatch>,
+    /// Explicit visual node pieces for the temporary preview edge endpoints.
+    pub compiled_visual_node_pieces: Vec<RoadSurfaceVisualNodePiece>,
     /// Triangulated top-surface preview mesh vertices, lifted slightly for editor visibility.
     pub surface_vertices: Vec<Vector3>,
     /// Preview validity after grade and bridge / tunnel clearance checks.
@@ -187,7 +215,7 @@ pub struct PreviewRoadSurfaceResult {
 pub(crate) struct RoadSurfaceDebugData {
     pub(crate) section_lines: Vec<Vector3>,
     pub(crate) band_lines: Vec<Vector3>,
-    pub(crate) node_patch_lines: Vec<Vector3>,
+    pub(crate) piece_boundary_lines: Vec<Vector3>,
     pub(crate) earthwork_chunk_lines: Vec<Vector3>,
 }
 
@@ -197,10 +225,12 @@ enum IncidentEdgeSide {
     End,
 }
 
-#[derive(Clone, Copy)]
-enum NodeBoundarySelector {
-    OuterRoadbed,
-    Carriageway,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CompiledNodeKind {
+    Terminal,
+    PassThrough,
+    Bend,
+    JunctionN,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -209,11 +239,61 @@ enum ChunkCacheKind {
     Earthwork,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct IncidentSurfaceEdge {
     edge_idx: usize,
     side: IncidentEdgeSide,
     direction_xz: Vector2,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct IncidentMouthBand {
+    kind: RoadSurfaceBandKind,
+    start_point_world: Vector3,
+    end_point_world: Vector3,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct IncidentMouthProfile {
+    inward_direction_xz: Vector2,
+    boundary_points_world: Vec<Vector3>,
+    bands: Vec<IncidentMouthBand>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct IncidentPieceSide {
+    boundary_points_outer_to_inner: Vec<Vector3>,
+    band_kinds_outer_to_inner: Vec<RoadSurfaceBandKind>,
+    inner_point_world: Vector3,
+    inner_surface_kind: RoadSurfaceBandKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct IncidentPieceMouth {
+    left: IncidentPieceSide,
+    right: IncidentPieceSide,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct OrderedIncidentPieceMouth {
+    mouth: IncidentPieceMouth,
+    direction_angle_ccw: f32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct BendSectorGeometry {
+    outer_start_point_world: Vector3,
+    outer_end_point_world: Vector3,
+    road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct JunctionGapSectorGeometry {
+    outer_start_point_world: Vector3,
+    outer_end_point_world: Vector3,
+    road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
 }
 
 /// Ownership cache and compiler for the replacement road-surface pipeline.
@@ -225,7 +305,8 @@ pub struct RoadSurfaceSystem {
     dirty_surface_chunks: HashSet<SurfaceChunkKey>,
     dirty_terrain_chunks: HashSet<SurfaceChunkKey>,
     compiled_sections: HashMap<usize, Vec<RoadSurfaceSection>>,
-    compiled_node_patches: HashMap<u32, RoadSurfaceNodePatch>,
+    compiled_visual_span_pieces: HashMap<usize, RoadSurfaceVisualSpanPiece>,
+    compiled_visual_node_pieces: HashMap<u32, RoadSurfaceVisualNodePiece>,
     surface_chunk_cache: HashMap<SurfaceChunkKey, RoadSurfaceChunkCacheEntry>,
     earthwork_chunk_cache: HashMap<SurfaceChunkKey, RoadEarthworkChunkCacheEntry>,
 }
@@ -241,7 +322,8 @@ impl RoadSurfaceSystem {
             dirty_surface_chunks: HashSet::new(),
             dirty_terrain_chunks: HashSet::new(),
             compiled_sections: HashMap::new(),
-            compiled_node_patches: HashMap::new(),
+            compiled_visual_span_pieces: HashMap::new(),
+            compiled_visual_node_pieces: HashMap::new(),
             surface_chunk_cache: HashMap::new(),
             earthwork_chunk_cache: HashMap::new(),
         }
@@ -277,9 +359,14 @@ impl RoadSurfaceSystem {
         &self.compiled_sections
     }
 
-    /// Returns the currently cached compiled node patches by node id.
-    pub fn compiled_node_patches(&self) -> &HashMap<u32, RoadSurfaceNodePatch> {
-        &self.compiled_node_patches
+    /// Returns the currently cached explicit visual span pieces by edge id.
+    pub fn compiled_visual_span_pieces(&self) -> &HashMap<usize, RoadSurfaceVisualSpanPiece> {
+        &self.compiled_visual_span_pieces
+    }
+
+    /// Returns the currently cached explicit visual node pieces by node id.
+    pub fn compiled_visual_node_pieces(&self) -> &HashMap<u32, RoadSurfaceVisualNodePiece> {
+        &self.compiled_visual_node_pieces
     }
 
     /// Returns the current per-chunk surface cache shell.
@@ -304,11 +391,31 @@ impl RoadSurfaceSystem {
         let point = Vector2::new(world_x, world_z);
         let mut best_height_m: Option<f32> = None;
 
-        for node_id in node_ids {
-            let Some(patch) = self.compiled_node_patches.get(&node_id) else {
+        for &node_id in &node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
-            self.visit_visible_node_triangles(graph, terrain, node_id, patch, &mut |triangle| {
+            self.visit_visible_node_piece_triangles(
+                graph,
+                terrain,
+                node_id,
+                piece,
+                &mut |triangle| {
+                    let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
+                    else {
+                        return;
+                    };
+                    let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
+                    best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+                },
+            );
+        }
+
+        for &edge_idx in &edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                continue;
+            };
+            self.visit_visible_span_piece_triangles(piece, &mut |triangle| {
                 let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
                 else {
                     return;
@@ -318,15 +425,29 @@ impl RoadSurfaceSystem {
             });
         }
 
-        for edge_idx in edge_indices {
-            let Some(sections) = self.compiled_sections.get(&edge_idx) else {
+        for &edge_idx in &edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            self.visit_visible_edge_triangles(
+            self.visit_span_piece_earthwork_triangles(piece, &mut |triangle| {
+                let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
+                else {
+                    return;
+                };
+                let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
+                best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+            });
+        }
+
+        for &node_id in &node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+            self.visit_node_piece_earthwork_triangles(
                 graph,
                 terrain,
-                edge_idx,
-                sections,
+                node_id,
+                piece,
                 &mut |triangle| {
                     let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
                     else {
@@ -372,11 +493,33 @@ impl RoadSurfaceSystem {
         let mut best_t = terrain_t;
         let mut best_hit = None;
 
-        for node_id in node_ids {
-            let Some(patch) = self.compiled_node_patches.get(&node_id) else {
+        for &node_id in &node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
-            self.visit_visible_node_triangles(graph, terrain, node_id, patch, &mut |triangle| {
+            self.visit_visible_node_piece_triangles(
+                graph,
+                terrain,
+                node_id,
+                piece,
+                &mut |triangle| {
+                    let Some(t) = Self::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
+                    else {
+                        return;
+                    };
+                    if t >= 0.0 && t <= best_t {
+                        best_t = t;
+                        best_hit = Some(ray_origin + ray_dir * t);
+                    }
+                },
+            );
+        }
+
+        for &edge_idx in &edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                continue;
+            };
+            self.visit_visible_span_piece_triangles(piece, &mut |triangle| {
                 let Some(t) = Self::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
                 else {
                     return;
@@ -388,15 +531,31 @@ impl RoadSurfaceSystem {
             });
         }
 
-        for edge_idx in edge_indices {
-            let Some(sections) = self.compiled_sections.get(&edge_idx) else {
+        for &edge_idx in &edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            self.visit_visible_edge_triangles(
+            self.visit_span_piece_earthwork_triangles(piece, &mut |triangle| {
+                let Some(t) = Self::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
+                else {
+                    return;
+                };
+                if t >= 0.0 && t <= best_t {
+                    best_t = t;
+                    best_hit = Some(ray_origin + ray_dir * t);
+                }
+            });
+        }
+
+        for &node_id in &node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+            self.visit_node_piece_earthwork_triangles(
                 graph,
                 terrain,
-                edge_idx,
-                sections,
+                node_id,
+                piece,
                 &mut |triangle| {
                     let Some(t) = Self::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
                     else {
@@ -421,6 +580,7 @@ impl RoadSurfaceSystem {
         let mut data = RoadSurfaceDebugData::default();
 
         let mut edge_indices: Vec<usize> = self.compiled_sections.keys().copied().collect();
+        edge_indices.retain(|edge_idx| self.compiled_visual_span_pieces.contains_key(edge_idx));
         edge_indices.sort_unstable();
         for edge_idx in edge_indices {
             if edge_idx >= graph.edge_count() {
@@ -448,26 +608,45 @@ impl RoadSurfaceSystem {
                     data.band_lines.push(profile_b[index]);
                 }
             }
-        }
 
-        let mut node_ids: Vec<u32> = self.compiled_node_patches.keys().copied().collect();
-        node_ids.sort_unstable();
-        for node_id in node_ids {
-            let Some(patch) = self.compiled_node_patches.get(&node_id) else {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            for boundary_loop in &patch.boundary_loops {
+            for boundary_loop in &piece.outer_boundary_loops {
                 let points: Vec<Vector3> = boundary_loop
-                    .points
+                    .points_world
                     .iter()
-                    .map(|point| point.point_world + Vector3::UP * 0.24)
+                    .map(|point| *point + Vector3::UP * 0.22)
                     .collect();
                 if points.len() < 2 {
                     continue;
                 }
                 for index in 0..points.len() {
-                    data.node_patch_lines.push(points[index]);
-                    data.node_patch_lines
+                    data.piece_boundary_lines.push(points[index]);
+                    data.piece_boundary_lines
+                        .push(points[(index + 1) % points.len()]);
+                }
+            }
+        }
+
+        let mut node_ids: Vec<u32> = self.compiled_visual_node_pieces.keys().copied().collect();
+        node_ids.sort_unstable();
+        for node_id in node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+            for boundary_loop in &piece.outer_boundary_loops {
+                let points: Vec<Vector3> = boundary_loop
+                    .points_world
+                    .iter()
+                    .map(|point| *point + Vector3::UP * 0.24)
+                    .collect();
+                if points.len() < 2 {
+                    continue;
+                }
+                for index in 0..points.len() {
+                    data.piece_boundary_lines.push(points[index]);
+                    data.piece_boundary_lines
                         .push(points[(index + 1) % points.len()]);
                 }
             }
@@ -580,7 +759,7 @@ impl RoadSurfaceSystem {
             }
 
             let at_start = graph.get_valid_node(edge.start_node) == node_id;
-            if self.tunnel_throat_is_visible(edge_idx, edge, at_start, terrain) {
+            if self.tunnel_throat_is_visible(edge_idx, at_start, terrain) {
                 has_visible_surface_attachment = true;
             }
         }
@@ -711,7 +890,7 @@ impl RoadSurfaceSystem {
                 edge_class,
                 prepared_points,
                 compiled_sections: Vec::new(),
-                compiled_node_patches: Vec::new(),
+                compiled_visual_node_pieces: Vec::new(),
                 surface_vertices: Vec::new(),
                 is_valid: true,
             };
@@ -737,11 +916,11 @@ impl RoadSurfaceSystem {
             .get(&edge_idx)
             .cloned()
             .unwrap_or_default();
-        let compiled_node_patches = [start_node, end_node]
+        let compiled_visual_node_pieces = [start_node, end_node]
             .into_iter()
             .filter_map(|node_id| {
                 preview_surface
-                    .compiled_node_patches()
+                    .compiled_visual_node_pieces()
                     .get(&node_id)
                     .cloned()
             })
@@ -758,7 +937,7 @@ impl RoadSurfaceSystem {
             edge_class,
             prepared_points,
             compiled_sections,
-            compiled_node_patches,
+            compiled_visual_node_pieces,
             surface_vertices,
             is_valid,
         }
@@ -768,7 +947,8 @@ impl RoadSurfaceSystem {
     pub fn clear(&mut self) {
         self.clear_dirty_tracking();
         self.compiled_sections.clear();
-        self.compiled_node_patches.clear();
+        self.compiled_visual_span_pieces.clear();
+        self.compiled_visual_node_pieces.clear();
         self.surface_chunk_cache.clear();
         self.earthwork_chunk_cache.clear();
         self.compiled_once = false;
@@ -843,12 +1023,46 @@ impl RoadSurfaceSystem {
         sorted_nodes.sort_unstable();
         sorted_nodes.dedup();
 
-        for node_id in sorted_nodes {
-            if self.node_has_surface_edges(graph, node_id) {
-                let patch = self.compile_node_patch(graph, node_id);
-                self.compiled_node_patches.insert(node_id, patch);
+        let mut span_edge_ids: HashSet<usize> = self.dirty_edges.iter().copied().collect();
+        for &node_id in &sorted_nodes {
+            if node_id as usize >= graph.node_adjacency_count() {
+                continue;
+            }
+            for &edge_idx in graph.node_adjacency(node_id) {
+                span_edge_ids.insert(edge_idx);
+            }
+        }
+        let mut sorted_span_edges: Vec<usize> = span_edge_ids.into_iter().collect();
+        sorted_span_edges.sort_unstable();
+        sorted_span_edges.dedup();
+        for edge_idx in sorted_span_edges {
+            if edge_idx >= graph.edge_count() {
+                self.compiled_visual_span_pieces.remove(&edge_idx);
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            if !Self::is_surface_edge(edge) {
+                self.compiled_visual_span_pieces.remove(&edge_idx);
+                continue;
+            }
+            if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
+                self.compiled_visual_span_pieces.insert(edge_idx, span_piece);
             } else {
-                self.compiled_node_patches.remove(&node_id);
+                self.compiled_visual_span_pieces.remove(&edge_idx);
+            }
+        }
+
+        for &node_id in &sorted_nodes {
+            if self.node_has_surface_edges(graph, node_id) {
+                let visual_piece = self.compile_visual_node_piece(graph, terrain, node_id);
+                if let Some(visual_piece) = visual_piece {
+                    self.compiled_visual_node_pieces
+                        .insert(node_id, visual_piece);
+                } else {
+                    self.compiled_visual_node_pieces.remove(&node_id);
+                }
+            } else {
+                self.compiled_visual_node_pieces.remove(&node_id);
             }
         }
 
@@ -968,10 +1182,23 @@ impl RoadSurfaceSystem {
             );
         }
 
+        for &edge_idx in &edge_ids {
+            if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
+                self.compiled_visual_span_pieces.insert(edge_idx, span_piece);
+            } else {
+                self.compiled_visual_span_pieces.remove(&edge_idx);
+            }
+        }
+
         let node_ids = self.all_surface_node_ids(graph);
         for node_id in node_ids {
-            let patch = self.compile_node_patch(graph, node_id);
-            self.compiled_node_patches.insert(node_id, patch);
+            let visual_piece = self.compile_visual_node_piece(graph, terrain, node_id);
+            if let Some(visual_piece) = visual_piece {
+                self.compiled_visual_node_pieces
+                    .insert(node_id, visual_piece);
+            } else {
+                self.compiled_visual_node_pieces.remove(&node_id);
+            }
         }
 
         let all_surface_chunks = self.collect_all_chunks(graph, ChunkCacheKind::Surface);
@@ -1002,24 +1229,26 @@ impl RoadSurfaceSystem {
             };
 
             for &edge_idx in &entry.edge_indices {
-                if edge_idx >= graph.edge_count() {
-                    continue;
-                }
-                let edge = graph.edge(edge_idx);
-                let Some(sections) = self.compiled_sections.get(&edge_idx) else {
+                let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                     continue;
                 };
-                self.stamp_edge_earthworks_for_chunk(edge, sections, chunk, terrain);
+                self.stamp_visual_span_piece_earthworks_for_chunk(piece, chunk, terrain);
             }
 
             for &node_id in &entry.node_ids {
                 if node_id as usize >= graph.node_count() {
                     continue;
                 }
-                let Some(patch) = self.compiled_node_patches.get(&node_id) else {
+                let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                     continue;
                 };
-                self.stamp_node_patch_earthworks_for_chunk(graph, node_id, patch, chunk, terrain);
+                self.stamp_visual_node_piece_earthworks_for_chunk(
+                    graph,
+                    node_id,
+                    piece,
+                    chunk,
+                    terrain,
+                );
             }
         }
     }
@@ -1137,92 +1366,1237 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn compile_node_patch(&self, graph: &RegionGraph, node_id: u32) -> RoadSurfaceNodePatch {
+    fn compile_visual_node_piece(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+    ) -> Option<RoadSurfaceVisualNodePiece> {
         let valid = graph.get_valid_node(node_id);
-        let incidents = self.collect_incident_surface_edges(graph, valid);
-        let class = self.classify_node_patch(graph, &incidents);
-        let boundary_loops = self.build_node_patch_boundary_loops(
-            graph,
-            valid,
-            class,
-            &incidents,
-            NodeBoundarySelector::OuterRoadbed,
-        );
-        let carriageway_boundary_loops = self.build_node_patch_boundary_loops(
-            graph,
-            valid,
-            class,
-            &incidents,
-            NodeBoundarySelector::Carriageway,
-        );
-
-        RoadSurfaceNodePatch {
-            node_id: valid,
-            class,
-            boundary_loops,
-            carriageway_boundary_loops,
+        let incidents = self.sorted_incident_surface_edges(graph, valid);
+        match self.classify_visual_node_kind(&incidents) {
+            CompiledNodeKind::Terminal => incidents
+                .first()
+                .and_then(|incident| {
+                    self.build_terminal_visual_node_piece(graph, terrain, valid, *incident)
+                }),
+            CompiledNodeKind::PassThrough => None,
+            CompiledNodeKind::Bend => {
+                self.build_bend_visual_node_piece(graph, terrain, valid, &incidents)
+            }
+            CompiledNodeKind::JunctionN => {
+                self.build_junction_visual_node_piece(graph, terrain, valid, &incidents)
+            }
         }
     }
 
-    fn classify_node_patch(
+    fn compile_visual_span_piece(
         &self,
         graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        edge_idx: usize,
+    ) -> Option<RoadSurfaceVisualSpanPiece> {
+        if edge_idx >= graph.edge_count() {
+            return None;
+        }
+        let edge = graph.edge(edge_idx);
+        let sections = self.compiled_sections.get(&edge_idx)?;
+        let visible_ranges = self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
+        let (mut road_surface_polygons, mut sidewalk_surface_polygons) =
+            self.compile_surface_polygons_for_ranges(sections, &visible_ranges);
+
+        if road_surface_polygons.is_empty() && sidewalk_surface_polygons.is_empty() {
+            return None;
+        }
+
+        Self::sort_visual_polygons(&mut road_surface_polygons);
+        Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
+        let outer_boundary_loops = Self::build_span_outer_boundary_loops(sections, &visible_ranges);
+        if outer_boundary_loops.is_empty() {
+            return None;
+        }
+
+        let earthwork_ranges = self.earthwork_section_ranges_for_edge(edge, sections, terrain);
+        let (mut earthwork_road_surface_polygons, mut earthwork_sidewalk_surface_polygons) =
+            self.compile_surface_polygons_for_ranges(sections, &earthwork_ranges);
+        Self::sort_visual_polygons(&mut earthwork_road_surface_polygons);
+        Self::sort_visual_polygons(&mut earthwork_sidewalk_surface_polygons);
+        let earthwork_boundary_loops =
+            Self::build_span_outer_boundary_loops(sections, &earthwork_ranges);
+        let mut earthwork_top_surface_polygons = earthwork_road_surface_polygons;
+        earthwork_top_surface_polygons.extend(earthwork_sidewalk_surface_polygons);
+        let (
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        ) =
+            self.build_closed_earthwork_geometry_from_boundary_loops(
+                &earthwork_boundary_loops,
+                &earthwork_top_surface_polygons,
+                terrain,
+            );
+
+        let start_mouth_profile = Self::section_range_mouth_profile(
+            sections,
+            &visible_ranges,
+            IncidentEdgeSide::Start,
+        );
+        let end_mouth_profile = Self::section_range_mouth_profile(
+            sections,
+            &visible_ranges,
+            IncidentEdgeSide::End,
+        );
+
+        Some(RoadSurfaceVisualSpanPiece {
+            edge_idx,
+            outer_boundary_loops,
+            road_surface_polygons,
+            sidewalk_surface_polygons,
+            edge_class: edge.class,
+            start_mouth_profile,
+            end_mouth_profile,
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        })
+    }
+
+    fn compile_surface_polygons_for_ranges(
+        &self,
+        sections: &[RoadSurfaceSection],
+        ranges: &[(usize, usize)],
+    ) -> (Vec<RoadSurfaceVisualPolygon>, Vec<RoadSurfaceVisualPolygon>) {
+        let mut road_surface_polygons = Vec::new();
+        let mut sidewalk_surface_polygons = Vec::new();
+
+        for &(start_index, end_index) in ranges {
+            if end_index <= start_index {
+                continue;
+            }
+            for pair in sections[start_index..=end_index].windows(2) {
+                if pair[0].bands.len() != pair[1].bands.len() {
+                    continue;
+                }
+                for (band_a, band_b) in pair[0].bands.iter().zip(&pair[1].bands) {
+                    let width_a = (band_a.lateral_end_m - band_a.lateral_start_m).abs();
+                    let width_b = (band_b.lateral_end_m - band_b.lateral_start_m).abs();
+                    if width_a <= BAND_WIDTH_MATCH_EPSILON_M
+                        && width_b <= BAND_WIDTH_MATCH_EPSILON_M
+                    {
+                        continue;
+                    }
+
+                    let Some(polygon) = Self::make_visual_strip_polygon(vec![
+                        self.section_boundary_world_point(
+                            &pair[0],
+                            band_a.lateral_start_m,
+                            band_a.height_start_m,
+                        ),
+                        self.section_boundary_world_point(
+                            &pair[1],
+                            band_b.lateral_start_m,
+                            band_b.height_start_m,
+                        ),
+                        self.section_boundary_world_point(
+                            &pair[1],
+                            band_b.lateral_end_m,
+                            band_b.height_end_m,
+                        ),
+                        self.section_boundary_world_point(
+                            &pair[0],
+                            band_a.lateral_end_m,
+                            band_a.height_end_m,
+                        ),
+                    ]) else {
+                        continue;
+                    };
+
+                    if band_a.kind == RoadSurfaceBandKind::Carriageway
+                        && band_b.kind == RoadSurfaceBandKind::Carriageway
+                    {
+                        road_surface_polygons.push(polygon);
+                    } else {
+                        sidewalk_surface_polygons.push(polygon);
+                    }
+                }
+            }
+        }
+
+        (road_surface_polygons, sidewalk_surface_polygons)
+    }
+
+    fn build_span_outer_boundary_loops(
+        sections: &[RoadSurfaceSection],
+        ranges: &[(usize, usize)],
+    ) -> Vec<RoadSurfaceVisualPolygon> {
+        let mut loops = Vec::new();
+        for &(start_index, end_index) in ranges {
+            if end_index <= start_index {
+                continue;
+            }
+            let mut left_points = Vec::new();
+            let mut right_points = Vec::new();
+            for section in &sections[start_index..=end_index] {
+                let Some((left_point, right_point)) =
+                    Self::section_outer_boundary_pair(section)
+                else {
+                    continue;
+                };
+                left_points.push(left_point);
+                right_points.push(right_point);
+            }
+            if left_points.len() < 2 || right_points.len() < 2 {
+                continue;
+            }
+            right_points.reverse();
+            let mut loop_points = left_points;
+            loop_points.extend(right_points);
+            if let Some(loop_polygon) = Self::make_visual_polygon(loop_points) {
+                loops.push(loop_polygon);
+            }
+        }
+        Self::sort_visual_polygons(&mut loops);
+        loops
+    }
+
+    fn section_range_mouth_profile(
+        sections: &[RoadSurfaceSection],
+        ranges: &[(usize, usize)],
+        side: IncidentEdgeSide,
+    ) -> Option<IncidentMouthProfile> {
+        let section = match side {
+            IncidentEdgeSide::Start => {
+                let &(start_index, _) = ranges.first()?;
+                sections.get(start_index)?
+            }
+            IncidentEdgeSide::End => {
+                let &(_, end_index) = ranges.last()?;
+                sections.get(end_index)?
+            }
+        };
+        Self::build_mouth_profile_from_section(section, side)
+    }
+
+    fn build_mouth_profile_from_section(
+        section: &RoadSurfaceSection,
+        side: IncidentEdgeSide,
+    ) -> Option<IncidentMouthProfile> {
+        let mut boundary_points_world = Vec::with_capacity(section.bands.len() + 1);
+        let mut bands = Vec::with_capacity(section.bands.len());
+
+        if side == IncidentEdgeSide::Start {
+            for band in &section.bands {
+                let start_point_world = Self::section_boundary_world_point_static(
+                    section,
+                    band.lateral_start_m,
+                    band.height_start_m,
+                );
+                let end_point_world = Self::section_boundary_world_point_static(
+                    section,
+                    band.lateral_end_m,
+                    band.height_end_m,
+                );
+                if boundary_points_world.is_empty() {
+                    boundary_points_world.push(start_point_world);
+                }
+                boundary_points_world.push(end_point_world);
+                bands.push(IncidentMouthBand {
+                    kind: band.kind,
+                    start_point_world,
+                    end_point_world,
+                });
+            }
+        } else {
+            for band in section.bands.iter().rev() {
+                let start_point_world = Self::section_boundary_world_point_static(
+                    section,
+                    band.lateral_end_m,
+                    band.height_end_m,
+                );
+                let end_point_world = Self::section_boundary_world_point_static(
+                    section,
+                    band.lateral_start_m,
+                    band.height_start_m,
+                );
+                if boundary_points_world.is_empty() {
+                    boundary_points_world.push(start_point_world);
+                }
+                boundary_points_world.push(end_point_world);
+                bands.push(IncidentMouthBand {
+                    kind: band.kind,
+                    start_point_world,
+                    end_point_world,
+                });
+            }
+        }
+
+        Some(IncidentMouthProfile {
+            inward_direction_xz: match side {
+                IncidentEdgeSide::Start => section.tangent_xz,
+                IncidentEdgeSide::End => -section.tangent_xz,
+            },
+            boundary_points_world,
+            bands,
+        })
+    }
+
+    fn build_terminal_visual_node_piece(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        incident: IncidentSurfaceEdge,
+    ) -> Option<RoadSurfaceVisualNodePiece> {
+        let mouth = self.build_incident_mouth_profile(incident)?;
+        if mouth.boundary_points_world.len() < 2 {
+            return None;
+        }
+
+        let node_pos = graph.node(node_id).pos;
+        let cap_depth = mouth
+            .boundary_points_world
+            .iter()
+            .map(|point| Vector2::new(point.x - node_pos.x, point.z - node_pos.z).length())
+            .fold(0.5, f32::max);
+        let cap_offset = -incident.direction_xz.normalized() * cap_depth;
+        let extruded_points: Vec<Vector3> = mouth
+            .boundary_points_world
+            .iter()
+            .map(|point| Vector3::new(point.x + cap_offset.x, point.y, point.z + cap_offset.y))
+            .collect();
+
+        let mut road_surface_polygons = Vec::new();
+        let mut sidewalk_surface_polygons = Vec::new();
+        for (index, band) in mouth.bands.iter().enumerate() {
+            let polygon = Self::make_visual_polygon(vec![
+                band.start_point_world,
+                extruded_points[index],
+                extruded_points[index + 1],
+                band.end_point_world,
+            ])?;
+            if band.kind == RoadSurfaceBandKind::Carriageway {
+                road_surface_polygons.push(polygon);
+            } else {
+                sidewalk_surface_polygons.push(polygon);
+            }
+        }
+
+        let outer_boundary_loops =
+            Self::build_terminal_outer_boundary_loops(&mouth, &extruded_points);
+        let top_surface_polygons =
+            Self::combined_surface_polygons(&road_surface_polygons, &sidewalk_surface_polygons);
+        let (
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        ) =
+            self.build_closed_earthwork_geometry_from_boundary_loops(
+                &outer_boundary_loops,
+                &top_surface_polygons,
+                terrain,
+            );
+
+        self.assemble_explicit_node_piece(
+            node_id,
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            outer_boundary_loops,
+            road_surface_polygons,
+            sidewalk_surface_polygons,
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        )
+    }
+
+    fn build_bend_visual_node_piece(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
         incidents: &[IncidentSurfaceEdge],
-    ) -> RoadSurfaceNodePatchClass {
+    ) -> Option<RoadSurfaceVisualNodePiece> {
+        if incidents.len() != 2 {
+            return None;
+        }
+        let node_pos = graph.node(node_id).pos;
+        let mouths = self.build_ordered_piece_mouths(incidents)?;
+        let sectors = Self::collect_bend_sectors(node_pos, &mouths);
+        if sectors.is_empty() {
+            return None;
+        }
+        let mut road_surface_polygons = Vec::new();
+        let mut sidewalk_surface_polygons = Vec::new();
+        for sector in &sectors {
+            road_surface_polygons.extend(sector.road_surface_polygons.iter().cloned());
+            sidewalk_surface_polygons.extend(sector.sidewalk_surface_polygons.iter().cloned());
+        }
+        let outer_boundary_loops = Self::build_bend_outer_boundary_loops(node_pos, &sectors);
+        let top_surface_polygons =
+            Self::combined_surface_polygons(&road_surface_polygons, &sidewalk_surface_polygons);
+        let (
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        ) =
+            self.build_closed_earthwork_geometry_from_boundary_loops(
+                &outer_boundary_loops,
+                &top_surface_polygons,
+                terrain,
+            );
+
+        self.assemble_explicit_node_piece(
+            node_id,
+            RoadSurfaceVisualNodePieceKind::Bend,
+            outer_boundary_loops,
+            road_surface_polygons,
+            sidewalk_surface_polygons,
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        )
+    }
+
+    fn build_junction_visual_node_piece(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        incidents: &[IncidentSurfaceEdge],
+    ) -> Option<RoadSurfaceVisualNodePiece> {
+        if incidents.len() < 3 {
+            return None;
+        }
+        let node_pos = graph.node(node_id).pos;
+        let mouths = self.build_ordered_piece_mouths(incidents)?;
+        let gap_sectors = Self::collect_junction_gap_sectors(node_pos, &mouths);
+        if gap_sectors.is_empty() {
+            return None;
+        }
+        let mut road_surface_polygons = Vec::new();
+        let mut sidewalk_surface_polygons = Vec::new();
+        for sector in &gap_sectors {
+            road_surface_polygons.extend(sector.road_surface_polygons.iter().cloned());
+            sidewalk_surface_polygons.extend(sector.sidewalk_surface_polygons.iter().cloned());
+        }
+        let outer_boundary_loops =
+            Self::build_junction_outer_boundary_loops(node_pos, &gap_sectors);
+        let top_surface_polygons =
+            Self::combined_surface_polygons(&road_surface_polygons, &sidewalk_surface_polygons);
+        let (
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        ) =
+            self.build_closed_earthwork_geometry_from_boundary_loops(
+                &outer_boundary_loops,
+                &top_surface_polygons,
+                terrain,
+            );
+
+        self.assemble_explicit_node_piece(
+            node_id,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            outer_boundary_loops,
+            road_surface_polygons,
+            sidewalk_surface_polygons,
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        )
+    }
+
+    fn build_ordered_piece_mouths(
+        &self,
+        incidents: &[IncidentSurfaceEdge],
+    ) -> Option<Vec<OrderedIncidentPieceMouth>> {
+        let mut mouths = Vec::with_capacity(incidents.len());
+        for &incident in incidents {
+            mouths.push(OrderedIncidentPieceMouth {
+                mouth: self.build_incident_piece_mouth(incident)?,
+                direction_angle_ccw: Self::normalized_angle_ccw(incident.direction_xz),
+            });
+        }
+        Some(mouths)
+    }
+
+    fn build_terminal_outer_boundary_loops(
+        mouth: &IncidentMouthProfile,
+        extruded_points: &[Vector3],
+    ) -> Vec<RoadSurfaceVisualPolygon> {
+        let mut loop_points = Vec::with_capacity(
+            mouth.boundary_points_world.len() + extruded_points.len(),
+        );
+        loop_points.extend(mouth.boundary_points_world.iter().copied());
+        loop_points.extend(extruded_points.iter().rev().copied());
+        let mut loops = Vec::new();
+        if let Some(loop_polygon) = Self::make_visual_polygon(loop_points) {
+            loops.push(loop_polygon);
+        }
+        Self::sort_visual_polygons(&mut loops);
+        loops
+    }
+
+    fn combined_surface_polygons(
+        road_surface_polygons: &[RoadSurfaceVisualPolygon],
+        sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Vec<RoadSurfaceVisualPolygon> {
+        let mut polygons = road_surface_polygons.to_vec();
+        polygons.extend(sidewalk_surface_polygons.iter().cloned());
+        polygons
+    }
+
+    fn build_closed_earthwork_geometry_from_boundary_loops(
+        &self,
+        boundary_loops: &[RoadSurfaceVisualPolygon],
+        top_surface_polygons: &[RoadSurfaceVisualPolygon],
+        terrain: &TerrainSystem,
+    ) -> (
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceEarthworkRenderFace>,
+    ) {
+        let mut earthwork_surface_polygons = top_surface_polygons.to_vec();
+        let mut earthwork_outer_boundary_loops = Vec::new();
+        let mut render_earthwork_faces = Vec::new();
+
+        for boundary_loop in boundary_loops {
+            let Some((outer_loop, side_polygons, render_faces)) =
+                self.build_closed_earthwork_loop_geometry(&boundary_loop.points_world, terrain)
+            else {
+                continue;
+            };
+            earthwork_outer_boundary_loops.push(outer_loop);
+            earthwork_surface_polygons.extend(side_polygons);
+            render_earthwork_faces.extend(render_faces);
+        }
+
+        Self::sort_visual_polygons(&mut earthwork_surface_polygons);
+        Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
+        Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
+        (
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        )
+    }
+
+    fn build_closed_earthwork_loop_geometry(
+        &self,
+        boundary_points: &[Vector3],
+        terrain: &TerrainSystem,
+    ) -> Option<(
+        RoadSurfaceVisualPolygon,
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceEarthworkRenderFace>,
+    )> {
+        if boundary_points.len() < 3 {
+            return None;
+        }
+
+        let mut centroid_xz = Vector2::ZERO;
+        for point in boundary_points {
+            centroid_xz += Vector2::new(point.x, point.z);
+        }
+        centroid_xz /= boundary_points.len() as f32;
+
+        let outer_points: Vec<Vector3> = boundary_points
+            .iter()
+            .map(|point| {
+                let outward = Vector2::new(point.x - centroid_xz.x, point.z - centroid_xz.y);
+                self.earthwork_transition_point(*point, outward, terrain)
+            })
+            .collect();
+        let outer_loop = Self::make_visual_polygon(outer_points.clone())?;
+        let mut side_polygons = Vec::new();
+        let mut render_faces = Vec::new();
+        for index in 0..boundary_points.len() {
+            let current = boundary_points[index];
+            let next = boundary_points[(index + 1) % boundary_points.len()];
+            let outer_current = outer_points[index];
+            let outer_next = outer_points[(index + 1) % outer_points.len()];
+            let Some(polygon) =
+                Self::make_visual_polygon(vec![current, next, outer_next, outer_current])
+            else {
+                continue;
+            };
+            let face_kind =
+                Self::classify_earthwork_face_kind(current, next, outer_next, outer_current);
+            render_faces.push(RoadSurfaceEarthworkRenderFace {
+                kind: face_kind,
+                polygon: polygon.clone(),
+            });
+            side_polygons.push(polygon);
+        }
+
+        Some((outer_loop, side_polygons, render_faces))
+    }
+
+    fn classify_earthwork_face_kind(
+        inner_start: Vector3,
+        inner_end: Vector3,
+        outer_end: Vector3,
+        outer_start: Vector3,
+    ) -> RoadSurfaceEarthworkFaceKind {
+        let setback_a = Vector2::new(outer_start.x - inner_start.x, outer_start.z - inner_start.z)
+            .length();
+        let setback_b =
+            Vector2::new(outer_end.x - inner_end.x, outer_end.z - inner_end.z).length();
+        let avg_setback = (setback_a + setback_b) * 0.5;
+        if avg_setback <= SAMPLE_EPSILON_M {
+            return RoadSurfaceEarthworkFaceKind::RetainingWall;
+        }
+
+        let max_height_delta = (outer_start.y - inner_start.y)
+            .abs()
+            .max((outer_end.y - inner_end.y).abs());
+        let slope_ratio = max_height_delta / avg_setback.max(SAMPLE_EPSILON_M);
+        if slope_ratio >= EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD {
+            RoadSurfaceEarthworkFaceKind::RetainingWall
+        } else {
+            RoadSurfaceEarthworkFaceKind::Slope
+        }
+    }
+
+    fn build_incident_mouth_profile(&self, incident: IncidentSurfaceEdge) -> Option<IncidentMouthProfile> {
+        let piece = self.compiled_visual_span_pieces.get(&incident.edge_idx)?;
+        match incident.side {
+            IncidentEdgeSide::Start => piece.start_mouth_profile.clone(),
+            IncidentEdgeSide::End => piece.end_mouth_profile.clone(),
+        }
+    }
+
+    fn build_incident_piece_mouth(&self, incident: IncidentSurfaceEdge) -> Option<IncidentPieceMouth> {
+        let mouth = self.build_incident_mouth_profile(incident)?;
+        let carriageway_indices: Vec<usize> = mouth
+            .bands
+            .iter()
+            .enumerate()
+            .filter_map(|(index, band)| {
+                (band.kind == RoadSurfaceBandKind::Carriageway).then_some(index)
+            })
+            .collect();
+
+        if let (Some(&first_carriageway), Some(&last_carriageway)) =
+            (carriageway_indices.first(), carriageway_indices.last())
+        {
+            let left = IncidentPieceSide {
+                boundary_points_outer_to_inner: mouth.boundary_points_world
+                    [0..=first_carriageway]
+                    .to_vec(),
+                band_kinds_outer_to_inner: mouth.bands[0..first_carriageway]
+                    .iter()
+                    .map(|band| band.kind)
+                    .collect(),
+                inner_point_world: mouth.boundary_points_world[first_carriageway],
+                inner_surface_kind: RoadSurfaceBandKind::Carriageway,
+            };
+            let right = IncidentPieceSide {
+                boundary_points_outer_to_inner: mouth.boundary_points_world[last_carriageway + 1..]
+                    .iter()
+                    .rev()
+                    .copied()
+                    .collect(),
+                band_kinds_outer_to_inner: mouth.bands[last_carriageway + 1..]
+                    .iter()
+                    .rev()
+                    .map(|band| band.kind)
+                    .collect(),
+                inner_point_world: mouth.boundary_points_world[last_carriageway + 1],
+                inner_surface_kind: RoadSurfaceBandKind::Carriageway,
+            };
+            Some(IncidentPieceMouth { left, right })
+        } else {
+            let first_point = *mouth.boundary_points_world.first()?;
+            let last_point = *mouth.boundary_points_world.last()?;
+            let center_point = first_point.lerp(last_point, 0.5);
+            let foot_kind = mouth
+                .bands
+                .first()
+                .map(|band| band.kind)
+                .unwrap_or(RoadSurfaceBandKind::Footpath);
+            let left = IncidentPieceSide {
+                boundary_points_outer_to_inner: vec![first_point, center_point],
+                band_kinds_outer_to_inner: vec![foot_kind],
+                inner_point_world: center_point,
+                inner_surface_kind: foot_kind,
+            };
+            let right = IncidentPieceSide {
+                boundary_points_outer_to_inner: vec![last_point, center_point],
+                band_kinds_outer_to_inner: vec![foot_kind],
+                inner_point_world: center_point,
+                inner_surface_kind: foot_kind,
+            };
+            Some(IncidentPieceMouth { left, right })
+        }
+    }
+
+    fn build_bend_connector_polygons(
+        side_a: &IncidentPieceSide,
+        side_b: &IncidentPieceSide,
+    ) -> Vec<(RoadSurfaceBandKind, RoadSurfaceVisualPolygon)> {
+        let mut polygons = Vec::new();
+        let normalized_breaks = Self::bend_connector_sample_breaks(side_a, side_b);
+        for interval in normalized_breaks.windows(2) {
+            let t0 = interval[0];
+            let t1 = interval[1];
+            if t1 - t0 <= 0.0001 {
+                continue;
+            }
+            let Some(a0) = Self::sample_side_point(side_a, t0) else {
+                continue;
+            };
+            let Some(a1) = Self::sample_side_point(side_a, t1) else {
+                continue;
+            };
+            let Some(b0) = Self::sample_side_point(side_b, t0) else {
+                continue;
+            };
+            let Some(b1) = Self::sample_side_point(side_b, t1) else {
+                continue;
+            };
+            let kind = Self::sector_surface_kind(side_a, side_b, (t0 + t1) * 0.5);
+            let Some(polygon) = Self::make_visual_polygon(vec![a0, b0, b1, a1]) else {
+                continue;
+            };
+            polygons.push((kind, polygon));
+        }
+        polygons
+    }
+
+    fn build_junction_gap_connector_polygons(
+        side_a: &IncidentPieceSide,
+        side_b: &IncidentPieceSide,
+    ) -> Vec<(RoadSurfaceBandKind, RoadSurfaceVisualPolygon)> {
+        let mut polygons = Vec::new();
+        let normalized_breaks = Self::junction_gap_connector_sample_breaks(side_a, side_b);
+        for interval in normalized_breaks.windows(2) {
+            let t0 = interval[0];
+            let t1 = interval[1];
+            if t1 - t0 <= 0.0001 {
+                continue;
+            }
+            let Some(a0) = Self::sample_side_point(side_a, t0) else {
+                continue;
+            };
+            let Some(a1) = Self::sample_side_point(side_a, t1) else {
+                continue;
+            };
+            let Some(b0) = Self::sample_side_point(side_b, t0) else {
+                continue;
+            };
+            let Some(b1) = Self::sample_side_point(side_b, t1) else {
+                continue;
+            };
+            let kind = Self::sector_surface_kind(side_a, side_b, (t0 + t1) * 0.5);
+            let Some(polygon) = Self::make_visual_polygon(vec![a0, b0, b1, a1]) else {
+                continue;
+            };
+            polygons.push((kind, polygon));
+        }
+        polygons
+    }
+
+    fn bend_connector_sample_breaks(side_a: &IncidentPieceSide, side_b: &IncidentPieceSide) -> Vec<f32> {
+        let mut breaks = Self::merged_side_breaks(side_a, side_b);
+        let max_length = Self::side_total_length(side_a).max(Self::side_total_length(side_b));
+        if max_length > SAMPLE_EPSILON_M {
+            let mut distance = NODE_CONNECTOR_SAMPLE_STEP_M;
+            while distance < max_length - SAMPLE_EPSILON_M {
+                breaks.push((distance / max_length).clamp(0.0, 1.0));
+                distance += NODE_CONNECTOR_SAMPLE_STEP_M;
+            }
+        }
+        breaks.sort_by(|a, b| a.total_cmp(b));
+        breaks.dedup_by(|a, b| (*a - *b).abs() <= 0.0001);
+        if breaks.first().copied().unwrap_or(1.0) > 0.0 {
+            breaks.insert(0, 0.0);
+        }
+        if breaks.last().copied().unwrap_or(0.0) < 1.0 {
+            breaks.push(1.0);
+        }
+        breaks
+    }
+
+    fn junction_gap_connector_sample_breaks(
+        side_a: &IncidentPieceSide,
+        side_b: &IncidentPieceSide,
+    ) -> Vec<f32> {
+        let mut breaks = Self::merged_side_breaks(side_a, side_b);
+        let max_length = Self::side_total_length(side_a).max(Self::side_total_length(side_b));
+        if max_length > SAMPLE_EPSILON_M {
+            let mut distance = NODE_CONNECTOR_SAMPLE_STEP_M;
+            while distance < max_length - SAMPLE_EPSILON_M {
+                breaks.push((distance / max_length).clamp(0.0, 1.0));
+                distance += NODE_CONNECTOR_SAMPLE_STEP_M;
+            }
+        }
+        breaks.sort_by(|a, b| a.total_cmp(b));
+        breaks.dedup_by(|a, b| (*a - *b).abs() <= 0.0001);
+        if breaks.first().copied().unwrap_or(1.0) > 0.0 {
+            breaks.insert(0, 0.0);
+        }
+        if breaks.last().copied().unwrap_or(0.0) < 1.0 {
+            breaks.push(1.0);
+        }
+        breaks
+    }
+
+    fn section_outer_boundary_pair(section: &RoadSurfaceSection) -> Option<(Vector3, Vector3)> {
+        let first_band = section.bands.first()?;
+        let last_band = section.bands.last()?;
+        let left_point = Self::section_boundary_world_point_static(
+            section,
+            first_band.lateral_start_m,
+            first_band.height_start_m,
+        );
+        let right_point = Self::section_boundary_world_point_static(
+            section,
+            last_band.lateral_end_m,
+            last_band.height_end_m,
+        );
+        Some((left_point, right_point))
+    }
+
+    fn merged_side_breaks(side_a: &IncidentPieceSide, side_b: &IncidentPieceSide) -> Vec<f32> {
+        let mut breaks = Self::side_depth_breaks(side_a);
+        breaks.extend(Self::side_depth_breaks(side_b));
+        breaks.sort_by(|a, b| a.total_cmp(b));
+        breaks.dedup_by(|a, b| (*a - *b).abs() <= 0.0001);
+        if breaks.first().copied().unwrap_or(1.0) > 0.0 {
+            breaks.insert(0, 0.0);
+        }
+        if breaks.last().copied().unwrap_or(0.0) < 1.0 {
+            breaks.push(1.0);
+        }
+        breaks
+    }
+
+    fn side_total_length(side: &IncidentPieceSide) -> f32 {
+        *Self::side_cumulative_lengths(side).last().unwrap_or(&0.0)
+    }
+
+    fn side_depth_breaks(side: &IncidentPieceSide) -> Vec<f32> {
+        let cumulative = Self::side_cumulative_lengths(side);
+        let total_length = *cumulative.last().unwrap_or(&0.0);
+        if total_length <= SAMPLE_EPSILON_M {
+            return vec![0.0, 1.0];
+        }
+
+        cumulative
+            .into_iter()
+            .map(|distance| (distance / total_length).clamp(0.0, 1.0))
+            .collect()
+    }
+
+    fn side_cumulative_lengths(side: &IncidentPieceSide) -> Vec<f32> {
+        let mut cumulative = Vec::with_capacity(side.boundary_points_outer_to_inner.len());
+        let mut running = 0.0;
+        cumulative.push(0.0);
+        for pair in side.boundary_points_outer_to_inner.windows(2) {
+            running += pair[0].distance_to(pair[1]);
+            cumulative.push(running);
+        }
+        cumulative
+    }
+
+    fn sample_side_point(side: &IncidentPieceSide, t: f32) -> Option<Vector3> {
+        let cumulative = Self::side_cumulative_lengths(side);
+        let total_length = *cumulative.last()?;
+        let clamped_t = t.clamp(0.0, 1.0);
+        if total_length <= SAMPLE_EPSILON_M {
+            return side.boundary_points_outer_to_inner.first().copied();
+        }
+
+        let target = clamped_t * total_length;
+        for (index, pair) in side.boundary_points_outer_to_inner.windows(2).enumerate() {
+            let start_distance = cumulative[index];
+            let end_distance = cumulative[index + 1];
+            let segment_length = end_distance - start_distance;
+            if segment_length <= SAMPLE_EPSILON_M {
+                continue;
+            }
+            if target <= end_distance + SAMPLE_EPSILON_M || index + 2 == cumulative.len() {
+                let factor = ((target - start_distance) / segment_length).clamp(0.0, 1.0);
+                return Some(pair[0].lerp(pair[1], factor));
+            }
+        }
+
+        side.boundary_points_outer_to_inner.last().copied()
+    }
+
+    fn surface_kind_at_depth(side: &IncidentPieceSide, t: f32) -> RoadSurfaceBandKind {
+        let cumulative = Self::side_cumulative_lengths(side);
+        let total_length = *cumulative.last().unwrap_or(&0.0);
+        if total_length <= SAMPLE_EPSILON_M {
+            return side
+                .band_kinds_outer_to_inner
+                .first()
+                .copied()
+                .unwrap_or(side.inner_surface_kind);
+        }
+
+        let target = t.clamp(0.0, 1.0) * total_length;
+        for index in 0..side.band_kinds_outer_to_inner.len() {
+            if index + 1 >= cumulative.len() {
+                break;
+            }
+            if target <= cumulative[index + 1] + SAMPLE_EPSILON_M {
+                return side.band_kinds_outer_to_inner[index];
+            }
+        }
+
+        side.band_kinds_outer_to_inner
+            .last()
+            .copied()
+            .unwrap_or(side.inner_surface_kind)
+    }
+
+    fn sector_surface_kind(
+        side_a: &IncidentPieceSide,
+        side_b: &IncidentPieceSide,
+        t: f32,
+    ) -> RoadSurfaceBandKind {
+        let kind_a = Self::surface_kind_at_depth(side_a, t);
+        let kind_b = Self::surface_kind_at_depth(side_b, t);
+        if kind_a == RoadSurfaceBandKind::Carriageway
+            || kind_b == RoadSurfaceBandKind::Carriageway
+        {
+            RoadSurfaceBandKind::Carriageway
+        } else {
+            RoadSurfaceBandKind::Sidewalk
+        }
+    }
+
+    fn build_junction_gap_sector_geometry(
+        node_pos: Vector3,
+        current: &OrderedIncidentPieceMouth,
+        next: &OrderedIncidentPieceMouth,
+    ) -> Option<JunctionGapSectorGeometry> {
+        let (current_side, next_side) = Self::select_adjacent_gap_sides(current, next)?;
+
+        let mut road_surface_polygons = Vec::new();
+        let mut sidewalk_surface_polygons = Vec::new();
+        if current_side.inner_surface_kind == RoadSurfaceBandKind::Carriageway
+            && next_side.inner_surface_kind == RoadSurfaceBandKind::Carriageway
+        {
+            if let Some(polygon) = Self::make_visual_polygon(vec![
+                node_pos,
+                current_side.inner_point_world,
+                next_side.inner_point_world,
+            ]) {
+                road_surface_polygons.push(polygon);
+            }
+        }
+
+        for (band_kind, polygon) in
+            Self::build_junction_gap_connector_polygons(current_side, next_side)
+        {
+            if band_kind == RoadSurfaceBandKind::Carriageway {
+                road_surface_polygons.push(polygon);
+            } else {
+                sidewalk_surface_polygons.push(polygon);
+            }
+        }
+
+        (!road_surface_polygons.is_empty() || !sidewalk_surface_polygons.is_empty())
+            .then_some(JunctionGapSectorGeometry {
+                outer_start_point_world: *current_side.boundary_points_outer_to_inner.first()?,
+                outer_end_point_world: *next_side.boundary_points_outer_to_inner.first()?,
+                road_surface_polygons,
+                sidewalk_surface_polygons,
+            })
+    }
+
+    fn build_bend_sector_geometry(
+        node_pos: Vector3,
+        current: &OrderedIncidentPieceMouth,
+        next: &OrderedIncidentPieceMouth,
+    ) -> Option<BendSectorGeometry> {
+        let (current_side, next_side) = Self::select_adjacent_gap_sides(current, next)?;
+        let mut road_surface_polygons = Vec::new();
+        let mut sidewalk_surface_polygons = Vec::new();
+        if current_side.inner_surface_kind == RoadSurfaceBandKind::Carriageway
+            && next_side.inner_surface_kind == RoadSurfaceBandKind::Carriageway
+        {
+            if let Some(polygon) = Self::make_visual_polygon(vec![
+                node_pos,
+                current_side.inner_point_world,
+                next_side.inner_point_world,
+            ]) {
+                road_surface_polygons.push(polygon);
+            }
+        }
+        for (band_kind, polygon) in
+            Self::build_bend_connector_polygons(current_side, next_side)
+        {
+            if band_kind == RoadSurfaceBandKind::Carriageway {
+                road_surface_polygons.push(polygon);
+            } else {
+                sidewalk_surface_polygons.push(polygon);
+            }
+        }
+        (!road_surface_polygons.is_empty() || !sidewalk_surface_polygons.is_empty())
+            .then_some(BendSectorGeometry {
+                outer_start_point_world: *current_side.boundary_points_outer_to_inner.first()?,
+                outer_end_point_world: *next_side.boundary_points_outer_to_inner.first()?,
+                road_surface_polygons,
+                sidewalk_surface_polygons,
+            })
+    }
+
+    fn collect_bend_sectors(
+        node_pos: Vector3,
+        mouths: &[OrderedIncidentPieceMouth],
+    ) -> Vec<BendSectorGeometry> {
+        let mut sectors = Vec::new();
+        for index in 0..mouths.len() {
+            let next_index = (index + 1) % mouths.len();
+            let Some(sector) =
+                Self::build_bend_sector_geometry(node_pos, &mouths[index], &mouths[next_index])
+            else {
+                continue;
+            };
+            sectors.push(sector);
+        }
+        sectors
+    }
+
+    fn build_bend_outer_boundary_loops(
+        node_pos: Vector3,
+        sectors: &[BendSectorGeometry],
+    ) -> Vec<RoadSurfaceVisualPolygon> {
+        let mut loop_points = Vec::new();
+        for sector in sectors {
+            loop_points.push(sector.outer_start_point_world);
+            loop_points.push(sector.outer_end_point_world);
+        }
+        loop_points.dedup_by(|a, b| (*a - *b).length_squared() <= 0.0001);
+        Self::sort_points_around_node(node_pos, &mut loop_points);
+        let mut loops = Vec::new();
+        if let Some(loop_polygon) = Self::make_visual_polygon(loop_points) {
+            loops.push(loop_polygon);
+        }
+        Self::sort_visual_polygons(&mut loops);
+        loops
+    }
+
+    fn collect_junction_gap_sectors(
+        node_pos: Vector3,
+        mouths: &[OrderedIncidentPieceMouth],
+    ) -> Vec<JunctionGapSectorGeometry> {
+        let mut sectors = Vec::new();
+        for index in 0..mouths.len() {
+            let next_index = (index + 1) % mouths.len();
+            let Some(sector) = Self::build_junction_gap_sector_geometry(
+                node_pos,
+                &mouths[index],
+                &mouths[next_index],
+            )
+            else {
+                continue;
+            };
+            sectors.push(sector);
+        }
+        sectors
+    }
+
+    fn build_junction_outer_boundary_loops(
+        node_pos: Vector3,
+        sectors: &[JunctionGapSectorGeometry],
+    ) -> Vec<RoadSurfaceVisualPolygon> {
+        let mut loop_points = Vec::new();
+        for sector in sectors {
+            loop_points.push(sector.outer_start_point_world);
+            loop_points.push(sector.outer_end_point_world);
+        }
+        loop_points.dedup_by(|a, b| (*a - *b).length_squared() <= 0.0001);
+        Self::sort_points_around_node(node_pos, &mut loop_points);
+        let mut loops = Vec::new();
+        if let Some(loop_polygon) = Self::make_visual_polygon(loop_points) {
+            loops.push(loop_polygon);
+        }
+        Self::sort_visual_polygons(&mut loops);
+        loops
+    }
+
+    fn sort_points_around_node(node_pos: Vector3, points_world: &mut [Vector3]) {
+        points_world.sort_by(|a, b| {
+            (a.z - node_pos.z)
+                .atan2(a.x - node_pos.x)
+                .total_cmp(&(b.z - node_pos.z).atan2(b.x - node_pos.x))
+                .then(a.x.total_cmp(&b.x))
+                .then(a.z.total_cmp(&b.z))
+                .then(a.y.total_cmp(&b.y))
+        });
+    }
+
+    fn normalized_angle_ccw(direction_xz: Vector2) -> f32 {
+        let angle = direction_xz.y.atan2(direction_xz.x);
+        if angle < 0.0 {
+            angle + std::f32::consts::TAU
+        } else {
+            angle
+        }
+    }
+
+    fn select_adjacent_gap_sides<'a>(
+        current: &'a OrderedIncidentPieceMouth,
+        next: &'a OrderedIncidentPieceMouth,
+    ) -> Option<(&'a IncidentPieceSide, &'a IncidentPieceSide)> {
+        let gap_span = if next.direction_angle_ccw < current.direction_angle_ccw {
+            next.direction_angle_ccw + std::f32::consts::TAU - current.direction_angle_ccw
+        } else {
+            next.direction_angle_ccw - current.direction_angle_ccw
+        };
+        (gap_span > 0.0001).then_some((&current.mouth.left, &next.mouth.right))
+    }
+
+    fn assemble_explicit_node_piece(
+        &self,
+        node_id: u32,
+        kind: RoadSurfaceVisualNodePieceKind,
+        outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+        mut road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+        mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+        mut earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+        mut earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+        mut render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
+    ) -> Option<RoadSurfaceVisualNodePiece> {
+        if road_surface_polygons.is_empty() && sidewalk_surface_polygons.is_empty() {
+            return None;
+        }
+        Self::sort_visual_polygons(&mut road_surface_polygons);
+        Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
+        Self::sort_visual_polygons(&mut earthwork_surface_polygons);
+        Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
+        Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
+        if outer_boundary_loops.is_empty() {
+            return None;
+        }
+        if earthwork_outer_boundary_loops.is_empty() {
+            return None;
+        }
+        Some(RoadSurfaceVisualNodePiece {
+            node_id,
+            kind,
+            outer_boundary_loops,
+            road_surface_polygons,
+            sidewalk_surface_polygons,
+            earthwork_surface_polygons,
+            earthwork_outer_boundary_loops,
+            render_earthwork_faces,
+        })
+    }
+
+    fn sort_visual_polygons(polygons: &mut [RoadSurfaceVisualPolygon]) {
+        polygons.sort_by(|a, b| {
+            match (a.points_world.first(), b.points_world.first()) {
+                (Some(point_a), Some(point_b)) => point_a
+                    .x
+                    .total_cmp(&point_b.x)
+                    .then(point_a.z.total_cmp(&point_b.z))
+                    .then(point_a.y.total_cmp(&point_b.y)),
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+            .then(a.points_world.len().cmp(&b.points_world.len()))
+            .then_with(|| {
+                a.points_world
+                    .iter()
+                    .zip(&b.points_world)
+                    .find_map(|(point_a, point_b)| {
+                        let ordering = point_a
+                            .x
+                            .total_cmp(&point_b.x)
+                            .then(point_a.z.total_cmp(&point_b.z))
+                            .then(point_a.y.total_cmp(&point_b.y));
+                        (ordering != std::cmp::Ordering::Equal).then_some(ordering)
+                    })
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+    }
+
+    fn sort_earthwork_render_faces(faces: &mut [RoadSurfaceEarthworkRenderFace]) {
+        faces.sort_by(|a, b| {
+            let kind_order = match (a.kind, b.kind) {
+                (
+                    RoadSurfaceEarthworkFaceKind::Slope,
+                    RoadSurfaceEarthworkFaceKind::RetainingWall,
+                ) => std::cmp::Ordering::Less,
+                (
+                    RoadSurfaceEarthworkFaceKind::RetainingWall,
+                    RoadSurfaceEarthworkFaceKind::Slope,
+                ) => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            };
+            if kind_order != std::cmp::Ordering::Equal {
+                return kind_order;
+            }
+            match (a.polygon.points_world.first(), b.polygon.points_world.first()) {
+                (Some(point_a), Some(point_b)) => point_a
+                    .x
+                    .total_cmp(&point_b.x)
+                    .then(point_a.z.total_cmp(&point_b.z))
+                    .then(point_a.y.total_cmp(&point_b.y)),
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+            .then(a.polygon.points_world.len().cmp(&b.polygon.points_world.len()))
+            .then_with(|| {
+                a.polygon
+                    .points_world
+                    .iter()
+                    .zip(&b.polygon.points_world)
+                    .find_map(|(point_a, point_b)| {
+                        let ordering = point_a
+                            .x
+                            .total_cmp(&point_b.x)
+                            .then(point_a.z.total_cmp(&point_b.z))
+                            .then(point_a.y.total_cmp(&point_b.y));
+                        (ordering != std::cmp::Ordering::Equal).then_some(ordering)
+                    })
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+    }
+
+    fn classify_visual_node_kind(&self, incidents: &[IncidentSurfaceEdge]) -> CompiledNodeKind {
         match incidents.len() {
-            0 | 1 => RoadSurfaceNodePatchClass::Terminal,
+            0 | 1 => CompiledNodeKind::Terminal,
             2 => {
                 let a = incidents[0];
                 let b = incidents[1];
                 let straight = a.direction_xz.dot(b.direction_xz) <= -PASS_THROUGH_DOT_THRESHOLD;
                 if !straight {
-                    return RoadSurfaceNodePatchClass::Junction;
+                    return CompiledNodeKind::Bend;
                 }
-                let compatible = self.sections_are_profile_compatible(graph, a, b);
-                if compatible {
-                    RoadSurfaceNodePatchClass::PassThrough
-                } else {
-                    RoadSurfaceNodePatchClass::WidthTransition
-                }
+                CompiledNodeKind::PassThrough
             }
-            _ => RoadSurfaceNodePatchClass::Junction,
+            _ => CompiledNodeKind::JunctionN,
         }
     }
 
-    fn sections_are_profile_compatible(
+    fn classify_surface_node_kind(&self, graph: &RegionGraph, node_id: u32) -> Option<CompiledNodeKind> {
+        let incidents = self.sorted_incident_surface_edges(graph, node_id);
+        (!incidents.is_empty()).then(|| self.classify_visual_node_kind(&incidents))
+    }
+
+    fn sorted_incident_surface_edges(
         &self,
         graph: &RegionGraph,
-        a: IncidentSurfaceEdge,
-        b: IncidentSurfaceEdge,
-    ) -> bool {
-        let edge_a = graph.edge(a.edge_idx);
-        let edge_b = graph.edge(b.edge_idx);
-        if edge_a.class != edge_b.class {
-            return false;
-        }
-
-        let Some(section_a) = self.throat_section_for_incident(graph, a) else {
-            return false;
-        };
-        let Some(section_b) = self.throat_section_for_incident(graph, b) else {
-            return false;
-        };
-
-        if section_a.bands.len() != section_b.bands.len() {
-            return false;
-        }
-
-        section_a
-            .bands
-            .iter()
-            .zip(&section_b.bands)
-            .all(|(band_a, band_b)| {
-                band_a.kind == band_b.kind
-                    && ((band_a.lateral_end_m - band_a.lateral_start_m)
-                        - (band_b.lateral_end_m - band_b.lateral_start_m))
-                        .abs()
-                        <= BAND_WIDTH_MATCH_EPSILON_M
-            })
+        node_id: u32,
+    ) -> Vec<IncidentSurfaceEdge> {
+        let mut incidents = self.collect_incident_surface_edges(graph, node_id);
+        incidents.sort_by(|a, b| {
+            Self::normalized_angle_ccw(a.direction_xz)
+                .total_cmp(&Self::normalized_angle_ccw(b.direction_xz))
+                .then(a.edge_idx.cmp(&b.edge_idx))
+                .then(a.side.cmp(&b.side))
+        });
+        incidents
     }
 
     fn collect_incident_surface_edges(
@@ -1236,7 +2610,7 @@ impl RoadSurfaceSystem {
 
         let mut incidents = Vec::new();
         for &edge_idx in graph.node_adjacency(node_id) {
-            if edge_idx >= graph.edge_count() || !self.compiled_sections.contains_key(&edge_idx) {
+            if edge_idx >= graph.edge_count() {
                 continue;
             }
             let edge = graph.edge(edge_idx);
@@ -1254,250 +2628,30 @@ impl RoadSurfaceSystem {
             let Some(side) = side else {
                 continue;
             };
-            let Some(section) = self.throat_section_for_side(edge_idx, edge, side) else {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            let mut direction_xz = section.tangent_xz;
-            if side == IncidentEdgeSide::End {
-                direction_xz = -direction_xz;
-            }
+            let Some(direction_xz) = (match side {
+                IncidentEdgeSide::Start => piece
+                    .start_mouth_profile
+                    .as_ref()
+                    .map(|mouth| mouth.inward_direction_xz),
+                IncidentEdgeSide::End => piece
+                    .end_mouth_profile
+                    .as_ref()
+                    .map(|mouth| mouth.inward_direction_xz),
+            }) else {
+                continue;
+            };
             incidents.push(IncidentSurfaceEdge {
                 edge_idx,
                 side,
-                direction_xz: direction_xz.normalized(),
+                direction_xz,
             });
         }
 
         incidents.sort_by(|a, b| a.edge_idx.cmp(&b.edge_idx).then(a.side.cmp(&b.side)));
         incidents
-    }
-
-    fn build_node_patch_boundary_loops(
-        &self,
-        graph: &RegionGraph,
-        node_id: u32,
-        class: RoadSurfaceNodePatchClass,
-        incidents: &[IncidentSurfaceEdge],
-        selector: NodeBoundarySelector,
-    ) -> Vec<RoadSurfaceNodeBoundaryLoop> {
-        if class == RoadSurfaceNodePatchClass::PassThrough {
-            return Vec::new();
-        }
-
-        if class == RoadSurfaceNodePatchClass::Terminal {
-            return incidents
-                .first()
-                .and_then(|incident| {
-                    self.build_terminal_boundary_loop(graph, node_id, *incident, selector)
-                })
-                .into_iter()
-                .collect();
-        }
-
-        let mut points = Vec::new();
-        for incident in incidents {
-            if let Some(mut throat_points) =
-                self.build_throat_boundary_points(graph, node_id, *incident, selector)
-            {
-                points.append(&mut throat_points);
-            }
-        }
-        self.finalize_boundary_loop(points).into_iter().collect()
-    }
-
-    fn finalize_boundary_loop(
-        &self,
-        mut points: Vec<RoadSurfaceNodeBoundaryPoint>,
-    ) -> Option<RoadSurfaceNodeBoundaryLoop> {
-        if points.len() < 3 {
-            return None;
-        }
-
-        points.sort_by(|a, b| {
-            a.angle_rad
-                .total_cmp(&b.angle_rad)
-                .then_with(|| a.point_world.x.total_cmp(&b.point_world.x))
-                .then_with(|| a.point_world.z.total_cmp(&b.point_world.z))
-                .then_with(|| a.point_world.y.total_cmp(&b.point_world.y))
-        });
-        points.dedup_by(|a, b| (a.point_world - b.point_world).length_squared() <= 0.0001);
-        if points.len() < 3 {
-            return None;
-        }
-        Some(RoadSurfaceNodeBoundaryLoop { points })
-    }
-
-    fn build_throat_boundary_points(
-        &self,
-        graph: &RegionGraph,
-        node_id: u32,
-        incident: IncidentSurfaceEdge,
-        selector: NodeBoundarySelector,
-    ) -> Option<Vec<RoadSurfaceNodeBoundaryPoint>> {
-        let section = self.throat_section_for_incident(graph, incident)?;
-        let node_pos = graph.node(node_id).pos;
-        let (first_kind, first_point, last_kind, last_point) =
-            self.selected_boundary_points(section, selector)?;
-
-        Some(vec![
-            RoadSurfaceNodeBoundaryPoint {
-                band_kind: first_kind,
-                angle_rad: (first_point.z - node_pos.z).atan2(first_point.x - node_pos.x),
-                point_world: first_point,
-            },
-            RoadSurfaceNodeBoundaryPoint {
-                band_kind: last_kind,
-                angle_rad: (last_point.z - node_pos.z).atan2(last_point.x - node_pos.x),
-                point_world: last_point,
-            },
-        ])
-    }
-
-    fn build_terminal_boundary_loop(
-        &self,
-        graph: &RegionGraph,
-        node_id: u32,
-        incident: IncidentSurfaceEdge,
-        selector: NodeBoundarySelector,
-    ) -> Option<RoadSurfaceNodeBoundaryLoop> {
-        let section = self.throat_section_for_incident(graph, incident)?;
-        let node_pos = graph.node(node_id).pos;
-        let (first_kind, first_point, last_kind, last_point) =
-            self.selected_boundary_points(section, selector)?;
-        let cap_depth = Vector2::new(first_point.x - node_pos.x, first_point.z - node_pos.z)
-            .length()
-            .max(Vector2::new(last_point.x - node_pos.x, last_point.z - node_pos.z).length())
-            .max(0.5);
-        let cap_offset = -incident.direction_xz.normalized() * cap_depth;
-        let midpoint_height = (first_point.y + last_point.y) * 0.5;
-        let outside_left = Vector3::new(
-            first_point.x + cap_offset.x,
-            first_point.y,
-            first_point.z + cap_offset.y,
-        );
-        let outside_mid = Vector3::new(
-            node_pos.x + cap_offset.x,
-            midpoint_height,
-            node_pos.z + cap_offset.y,
-        );
-        let outside_right = Vector3::new(
-            last_point.x + cap_offset.x,
-            last_point.y,
-            last_point.z + cap_offset.y,
-        );
-
-        self.finalize_boundary_loop(vec![
-            RoadSurfaceNodeBoundaryPoint {
-                band_kind: first_kind,
-                angle_rad: (first_point.z - node_pos.z).atan2(first_point.x - node_pos.x),
-                point_world: first_point,
-            },
-            RoadSurfaceNodeBoundaryPoint {
-                band_kind: first_kind,
-                angle_rad: (outside_left.z - node_pos.z).atan2(outside_left.x - node_pos.x),
-                point_world: outside_left,
-            },
-            RoadSurfaceNodeBoundaryPoint {
-                band_kind: first_kind,
-                angle_rad: (outside_mid.z - node_pos.z).atan2(outside_mid.x - node_pos.x),
-                point_world: outside_mid,
-            },
-            RoadSurfaceNodeBoundaryPoint {
-                band_kind: last_kind,
-                angle_rad: (outside_right.z - node_pos.z).atan2(outside_right.x - node_pos.x),
-                point_world: outside_right,
-            },
-            RoadSurfaceNodeBoundaryPoint {
-                band_kind: last_kind,
-                angle_rad: (last_point.z - node_pos.z).atan2(last_point.x - node_pos.x),
-                point_world: last_point,
-            },
-        ])
-    }
-
-    fn selected_boundary_points(
-        &self,
-        section: &RoadSurfaceSection,
-        selector: NodeBoundarySelector,
-    ) -> Option<(RoadSurfaceBandKind, Vector3, RoadSurfaceBandKind, Vector3)> {
-        match selector {
-            NodeBoundarySelector::OuterRoadbed => {
-                let first_band = section.bands.first()?;
-                let last_band = section.bands.last()?;
-                Some((
-                    first_band.kind,
-                    self.section_boundary_world_point(
-                        section,
-                        first_band.lateral_start_m,
-                        first_band.height_start_m,
-                    ),
-                    last_band.kind,
-                    self.section_boundary_world_point(
-                        section,
-                        last_band.lateral_end_m,
-                        last_band.height_end_m,
-                    ),
-                ))
-            }
-            NodeBoundarySelector::Carriageway => {
-                let mut carriageway_bands = section
-                    .bands
-                    .iter()
-                    .filter(|band| band.kind == RoadSurfaceBandKind::Carriageway);
-                let first_band = carriageway_bands.next()?;
-                let last_band = carriageway_bands.last().unwrap_or(first_band);
-                Some((
-                    first_band.kind,
-                    self.section_boundary_world_point(
-                        section,
-                        first_band.lateral_start_m,
-                        first_band.height_start_m,
-                    ),
-                    last_band.kind,
-                    self.section_boundary_world_point(
-                        section,
-                        last_band.lateral_end_m,
-                        last_band.height_end_m,
-                    ),
-                ))
-            }
-        }
-    }
-
-    fn throat_section_for_incident(
-        &self,
-        graph: &RegionGraph,
-        incident: IncidentSurfaceEdge,
-    ) -> Option<&RoadSurfaceSection> {
-        if incident.edge_idx >= graph.edge_count() {
-            return None;
-        }
-        let edge = graph.edge(incident.edge_idx);
-        self.throat_section_for_side(incident.edge_idx, edge, incident.side)
-    }
-
-    fn throat_section_for_side(
-        &self,
-        edge_idx: usize,
-        edge: &Edge,
-        side: IncidentEdgeSide,
-    ) -> Option<&RoadSurfaceSection> {
-        let sections = self.compiled_sections.get(&edge_idx)?;
-        if sections.is_empty() {
-            return None;
-        }
-        let total_length = sections.last()?.s_m.max(0.0);
-        let target_s = match side {
-            IncidentEdgeSide::Start => edge.start_clip.clamp(0.0, total_length),
-            IncidentEdgeSide::End => (total_length - edge.end_clip).clamp(0.0, total_length),
-        };
-
-        sections.iter().min_by(|a, b| {
-            (a.s_m - target_s)
-                .abs()
-                .total_cmp(&(b.s_m - target_s).abs())
-                .then_with(|| a.s_m.total_cmp(&b.s_m))
-        })
     }
 
     fn build_lateral_bands(
@@ -1916,50 +3070,69 @@ impl RoadSurfaceSystem {
             .get_edges_near_aabb(query_min, query_max)
             .into_iter()
             .filter(|edge_idx| {
-                *edge_idx < graph.edge_count()
-                    && self.compiled_sections.contains_key(edge_idx)
-                    && self.edge_overlaps_chunk(graph.edge(*edge_idx), chunk, kind)
+                let Some(piece) = self.compiled_visual_span_pieces.get(edge_idx) else {
+                    return false;
+                };
+                self.visual_span_piece_overlaps_chunk(*edge_idx, piece, chunk, kind)
             })
             .collect();
         edge_indices.sort_unstable();
         edge_indices.dedup();
 
-        let mut node_ids: Vec<u32> = self
-            .compiled_node_patches
-            .iter()
-            .filter_map(|(&node_id, patch)| {
-                self.node_patch_overlaps_chunk(graph, node_id, patch, chunk, kind)
-                    .then_some(node_id)
-            })
-            .collect();
+        let mut node_ids: Vec<u32> = match kind {
+            ChunkCacheKind::Surface | ChunkCacheKind::Earthwork => self
+                .compiled_visual_node_pieces
+                .iter()
+                .filter_map(|(&node_id, piece)| {
+                    self.visual_node_piece_overlaps_chunk(node_id, piece, chunk, kind)
+                        .then_some(node_id)
+                })
+                .collect(),
+        };
         node_ids.sort_unstable();
         node_ids.dedup();
 
         (edge_indices, node_ids)
     }
 
-    fn node_patch_overlaps_chunk(
+    fn visual_node_piece_overlaps_chunk(
         &self,
-        graph: &RegionGraph,
         node_id: u32,
-        patch: &RoadSurfaceNodePatch,
+        piece: &RoadSurfaceVisualNodePiece,
         chunk: SurfaceChunkKey,
         kind: ChunkCacheKind,
     ) -> bool {
-        if patch.class == RoadSurfaceNodePatchClass::PassThrough {
-            return false;
-        }
-        let Some((min, max)) = self.node_patch_bounds(graph, node_id, patch, kind) else {
+        let Some((min, max)) = self.visual_node_piece_bounds(piece, kind) else {
             return false;
         };
 
         let min_chunk = self.chunk_coords_for_world(min.x, min.z);
         let max_chunk = self.chunk_coords_for_world(max.x, max.z);
-        (node_id as usize) < graph.node_count()
-            && chunk.0 >= min_chunk.0
+        chunk.0 >= min_chunk.0
             && chunk.0 <= max_chunk.0
             && chunk.1 >= min_chunk.1
             && chunk.1 <= max_chunk.1
+            && piece.node_id == node_id
+    }
+
+    fn visual_span_piece_overlaps_chunk(
+        &self,
+        edge_idx: usize,
+        piece: &RoadSurfaceVisualSpanPiece,
+        chunk: SurfaceChunkKey,
+        kind: ChunkCacheKind,
+    ) -> bool {
+        let Some((min, max)) = self.visual_span_piece_bounds(piece, kind) else {
+            return false;
+        };
+
+        let min_chunk = self.chunk_coords_for_world(min.x, min.z);
+        let max_chunk = self.chunk_coords_for_world(max.x, max.z);
+        chunk.0 >= min_chunk.0
+            && chunk.0 <= max_chunk.0
+            && chunk.1 >= min_chunk.1
+            && chunk.1 <= max_chunk.1
+            && piece.edge_idx == edge_idx
     }
 
     fn collect_query_contributors(
@@ -1976,6 +3149,10 @@ impl RoadSurfaceSystem {
                     edge_indices.extend(entry.edge_indices.iter().copied());
                     node_ids.extend(entry.node_ids.iter().copied());
                 }
+                if let Some(entry) = self.earthwork_chunk_cache.get(&chunk) {
+                    edge_indices.extend(entry.edge_indices.iter().copied());
+                    node_ids.extend(entry.node_ids.iter().copied());
+                }
             }
         }
 
@@ -1986,73 +3163,80 @@ impl RoadSurfaceSystem {
         (edge_indices, node_ids)
     }
 
-    fn visit_visible_edge_triangles<F>(
+    fn visit_visible_span_piece_triangles<F>(&self, piece: &RoadSurfaceVisualSpanPiece, visitor: &mut F)
+    where
+        F: FnMut([Vector3; 3]),
+    {
+        for polygon in piece
+            .road_surface_polygons
+            .iter()
+            .chain(&piece.sidewalk_surface_polygons)
+        {
+            Self::visit_visual_polygon_triangles(polygon, visitor);
+        }
+    }
+
+    fn visit_span_piece_earthwork_triangles<F>(
         &self,
-        graph: &RegionGraph,
-        terrain: &TerrainSystem,
-        edge_idx: usize,
-        sections: &[RoadSurfaceSection],
+        piece: &RoadSurfaceVisualSpanPiece,
         visitor: &mut F,
     ) where
         F: FnMut([Vector3; 3]),
     {
-        for (start_index, end_index) in
-            self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections)
-        {
-            if end_index <= start_index {
-                continue;
-            }
-            for pair in sections[start_index..=end_index].windows(2) {
-                let profile_a = self.section_profile_world_points(&pair[0], 0.0);
-                let profile_b = self.section_profile_world_points(&pair[1], 0.0);
-                if profile_a.len() < 2 || profile_a.len() != profile_b.len() {
-                    continue;
-                }
-
-                for index in 0..profile_a.len() - 1 {
-                    let a0 = profile_a[index];
-                    let a1 = profile_a[index + 1];
-                    let b0 = profile_b[index];
-                    let b1 = profile_b[index + 1];
-                    visitor([a0, b0, b1]);
-                    visitor([a0, b1, a1]);
-                }
-            }
+        for polygon in &piece.earthwork_surface_polygons {
+            Self::visit_visual_polygon_triangles(polygon, visitor);
         }
     }
 
-    fn visit_visible_node_triangles<F>(
+    fn visit_visible_node_piece_triangles<F>(
         &self,
         graph: &RegionGraph,
         terrain: &TerrainSystem,
         node_id: u32,
-        patch: &RoadSurfaceNodePatch,
+        piece: &RoadSurfaceVisualNodePiece,
         visitor: &mut F,
     ) where
         F: FnMut([Vector3; 3]),
     {
-        if patch.class == RoadSurfaceNodePatchClass::PassThrough
-            || !self.node_uses_visible_surface(graph, terrain, node_id)
-        {
+        if !self.node_uses_visible_surface(graph, terrain, node_id) {
             return;
         }
 
-        for boundary_loop in &patch.boundary_loops {
-            let points: Vec<Vector3> = boundary_loop
-                .points
-                .iter()
-                .map(|point| point.point_world)
-                .collect();
-            if points.len() < 3 {
-                continue;
-            }
-            let mut center = Vector3::ZERO;
-            for point in &points {
-                center += *point;
-            }
-            center /= points.len() as f32;
-            for index in 0..points.len() {
-                visitor([center, points[index], points[(index + 1) % points.len()]]);
+        for polygon in piece
+            .road_surface_polygons
+            .iter()
+            .chain(&piece.sidewalk_surface_polygons)
+        {
+            Self::visit_visual_polygon_triangles(polygon, visitor);
+        }
+    }
+
+    fn visit_node_piece_earthwork_triangles<F>(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        piece: &RoadSurfaceVisualNodePiece,
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        if !self.node_piece_uses_earthworks(graph, node_id, terrain) {
+            return;
+        }
+
+        for polygon in &piece.earthwork_surface_polygons {
+            Self::visit_visual_polygon_triangles(polygon, visitor);
+        }
+    }
+
+    fn visit_visual_polygon_triangles<F>(polygon: &RoadSurfaceVisualPolygon, visitor: &mut F)
+    where
+        F: FnMut([Vector3; 3]),
+    {
+        for &triangle in &polygon.triangles_world {
+            if Self::triangle_has_area_xz(triangle) {
+                visitor(triangle);
             }
         }
     }
@@ -2069,25 +3253,19 @@ impl RoadSurfaceSystem {
 
         let edge = graph.edge(edge_idx);
         let total_length = sections.last()?.s_m.max(0.0);
-        let start_class = self
-            .compiled_node_patches
-            .get(&graph.get_valid_node(edge.start_node))
-            .map(|patch| patch.class);
-        let end_class = self
-            .compiled_node_patches
-            .get(&graph.get_valid_node(edge.end_node))
-            .map(|patch| patch.class);
+        let start_kind = self.classify_surface_node_kind(graph, graph.get_valid_node(edge.start_node));
+        let end_kind = self.classify_surface_node_kind(graph, graph.get_valid_node(edge.end_node));
         let start_handoff = if matches!(
-            start_class,
-            Some(RoadSurfaceNodePatchClass::Junction | RoadSurfaceNodePatchClass::WidthTransition)
+            start_kind,
+            Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN)
         ) {
             edge.start_clip.clamp(0.0, total_length)
         } else {
             0.0
         };
         let end_handoff = if matches!(
-            end_class,
-            Some(RoadSurfaceNodePatchClass::Junction | RoadSurfaceNodePatchClass::WidthTransition)
+            end_kind,
+            Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN)
         ) {
             (total_length - edge.end_clip).clamp(0.0, total_length)
         } else {
@@ -2106,18 +3284,6 @@ impl RoadSurfaceSystem {
             .rposition(|section| section.s_m - SAMPLE_EPSILON_M <= end_handoff)
             .unwrap_or(sections.len().saturating_sub(1));
         (end_index > start_index).then_some((start_index, end_index))
-    }
-
-    fn outer_surface_bounds(
-        &self,
-        section: &RoadSurfaceSection,
-    ) -> Option<((f32, f32), (f32, f32))> {
-        let first_band = section.bands.first()?;
-        let last_band = section.bands.last()?;
-        Some((
-            (first_band.lateral_start_m, first_band.height_start_m),
-            (last_band.lateral_end_m, last_band.height_end_m),
-        ))
     }
 
     fn edge_earthwork_extent_m(&self, edge: &Edge) -> f32 {
@@ -2207,198 +3373,39 @@ impl RoadSurfaceSystem {
         EARTHWORK_MAX_MARGIN_M
     }
 
-    fn stamp_standard_edge_earthwork_margins_for_chunk(
+    fn stamp_visual_span_piece_earthworks_for_chunk(
         &self,
-        sections: &[RoadSurfaceSection],
+        piece: &RoadSurfaceVisualSpanPiece,
         chunk: SurfaceChunkKey,
         terrain: &mut TerrainSystem,
     ) {
-        if sections.len() < 2 {
-            return;
-        }
-
-        for pair in sections.windows(2) {
-            let Some((left_a, right_a)) = self.outer_surface_bounds(&pair[0]) else {
-                continue;
-            };
-            let Some((left_b, right_b)) = self.outer_surface_bounds(&pair[1]) else {
-                continue;
-            };
-
-            self.stamp_edge_earthwork_margin_side(
-                &pair[0], left_a.0, left_a.1, &pair[1], left_b.0, left_b.1, -1.0, chunk, terrain,
-            );
-            self.stamp_edge_earthwork_margin_side(
-                &pair[0], right_a.0, right_a.1, &pair[1], right_b.0, right_b.1, 1.0, chunk, terrain,
-            );
+        for polygon in &piece.earthwork_surface_polygons {
+            Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+                self.stamp_triangle_to_chunk(terrain, chunk, triangle);
+            });
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn stamp_edge_earthwork_margin_side(
-        &self,
-        section_a: &RoadSurfaceSection,
-        lateral_a: f32,
-        height_a: f32,
-        section_b: &RoadSurfaceSection,
-        lateral_b: f32,
-        height_b: f32,
-        outward_sign: f32,
-        chunk: SurfaceChunkKey,
-        terrain: &mut TerrainSystem,
-    ) {
-        let road_a = self.section_boundary_world_point(section_a, lateral_a, height_a);
-        let road_b = self.section_boundary_world_point(section_b, lateral_b, height_b);
-        let outer_a =
-            self.earthwork_transition_point(road_a, section_a.lateral_xz * outward_sign, terrain);
-        let outer_b =
-            self.earthwork_transition_point(road_b, section_b.lateral_xz * outward_sign, terrain);
-
-        self.stamp_triangle_to_chunk(terrain, chunk, [road_a, road_b, outer_b]);
-        self.stamp_triangle_to_chunk(terrain, chunk, [road_a, outer_b, outer_a]);
-    }
-
-    fn stamp_node_patch_earthwork_margins_for_chunk(
-        &self,
-        boundary_loop: &RoadSurfaceNodeBoundaryLoop,
-        chunk: SurfaceChunkKey,
-        terrain: &mut TerrainSystem,
-    ) {
-        if boundary_loop.points.len() < 3 {
-            return;
-        }
-
-        let mut centroid_xz = Vector2::ZERO;
-        for point in &boundary_loop.points {
-            centroid_xz += Vector2::new(point.point_world.x, point.point_world.z);
-        }
-        centroid_xz /= boundary_loop.points.len() as f32;
-
-        let outer_points: Vec<Vector3> = boundary_loop
-            .points
-            .iter()
-            .map(|point| {
-                let outward = Vector2::new(
-                    point.point_world.x - centroid_xz.x,
-                    point.point_world.z - centroid_xz.y,
-                );
-                self.earthwork_transition_point(point.point_world, outward, terrain)
-            })
-            .collect();
-
-        for index in 0..boundary_loop.points.len() {
-            let current = boundary_loop.points[index].point_world;
-            let next = boundary_loop.points[(index + 1) % boundary_loop.points.len()].point_world;
-            let outer_current = outer_points[index];
-            let outer_next = outer_points[(index + 1) % outer_points.len()];
-            self.stamp_triangle_to_chunk(terrain, chunk, [current, next, outer_next]);
-            self.stamp_triangle_to_chunk(terrain, chunk, [current, outer_next, outer_current]);
-        }
-    }
-
-    fn stamp_edge_earthworks_for_chunk(
-        &self,
-        edge: &Edge,
-        sections: &[RoadSurfaceSection],
-        chunk: SurfaceChunkKey,
-        terrain: &mut TerrainSystem,
-    ) {
-        for (start_index, end_index) in
-            self.earthwork_section_ranges_for_edge(edge, sections, terrain)
-        {
-            if end_index <= start_index {
-                continue;
-            }
-            for pair in sections[start_index..=end_index].windows(2) {
-                if pair[0].bands.len() != pair[1].bands.len() {
-                    continue;
-                }
-                for (band_a, band_b) in pair[0].bands.iter().zip(&pair[1].bands) {
-                    let width_a = (band_a.lateral_end_m - band_a.lateral_start_m).abs();
-                    let width_b = (band_b.lateral_end_m - band_b.lateral_start_m).abs();
-                    if width_a <= BAND_WIDTH_MATCH_EPSILON_M
-                        && width_b <= BAND_WIDTH_MATCH_EPSILON_M
-                    {
-                        continue;
-                    }
-
-                    let a0 = self.section_boundary_world_point(
-                        &pair[0],
-                        band_a.lateral_start_m,
-                        band_a.height_start_m,
-                    );
-                    let a1 = self.section_boundary_world_point(
-                        &pair[0],
-                        band_a.lateral_end_m,
-                        band_a.height_end_m,
-                    );
-                    let b0 = self.section_boundary_world_point(
-                        &pair[1],
-                        band_b.lateral_start_m,
-                        band_b.height_start_m,
-                    );
-                    let b1 = self.section_boundary_world_point(
-                        &pair[1],
-                        band_b.lateral_end_m,
-                        band_b.height_end_m,
-                    );
-                    self.stamp_triangle_to_chunk(terrain, chunk, [a0, b0, b1]);
-                    self.stamp_triangle_to_chunk(terrain, chunk, [a0, b1, a1]);
-                }
-            }
-
-            if edge.class == EdgeClass::Standard {
-                self.stamp_standard_edge_earthwork_margins_for_chunk(
-                    &sections[start_index..=end_index],
-                    chunk,
-                    terrain,
-                );
-            }
-        }
-    }
-
-    fn stamp_node_patch_earthworks_for_chunk(
+    fn stamp_visual_node_piece_earthworks_for_chunk(
         &self,
         graph: &RegionGraph,
         node_id: u32,
-        patch: &RoadSurfaceNodePatch,
+        piece: &RoadSurfaceVisualNodePiece,
         chunk: SurfaceChunkKey,
         terrain: &mut TerrainSystem,
     ) {
-        if patch.class == RoadSurfaceNodePatchClass::PassThrough
-            || !self.node_patch_uses_earthworks(graph, node_id, terrain)
-        {
+        if !self.node_piece_uses_earthworks(graph, node_id, terrain) {
             return;
         }
 
-        for boundary_loop in &patch.boundary_loops {
-            let points: Vec<Vector3> = boundary_loop
-                .points
-                .iter()
-                .map(|point| point.point_world)
-                .collect();
-            if points.len() < 3 {
-                continue;
-            }
-            let mut center = Vector3::ZERO;
-            for point in &points {
-                center += *point;
-            }
-            center /= points.len() as f32;
-
-            for index in 0..points.len() {
-                self.stamp_triangle_to_chunk(
-                    terrain,
-                    chunk,
-                    [center, points[index], points[(index + 1) % points.len()]],
-                );
-            }
-
-            self.stamp_node_patch_earthwork_margins_for_chunk(boundary_loop, chunk, terrain);
+        for polygon in &piece.earthwork_surface_polygons {
+            Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+                self.stamp_triangle_to_chunk(terrain, chunk, triangle);
+            });
         }
     }
 
-    fn node_patch_uses_earthworks(
+    fn node_piece_uses_earthworks(
         &self,
         graph: &RegionGraph,
         node_id: u32,
@@ -2421,7 +3428,7 @@ impl RoadSurfaceSystem {
             }
 
             let at_start = graph.get_valid_node(edge.start_node) == node_id;
-            if self.tunnel_throat_is_visible(edge_idx, edge, at_start, terrain) {
+            if self.tunnel_throat_is_visible(edge_idx, at_start, terrain) {
                 return true;
             }
         }
@@ -2587,21 +3594,28 @@ impl RoadSurfaceSystem {
     fn tunnel_throat_is_visible(
         &self,
         edge_idx: usize,
-        edge: &Edge,
         at_start: bool,
         terrain: &TerrainSystem,
     ) -> bool {
-        self.throat_section_for_side(
-            edge_idx,
-            edge,
-            if at_start {
-                IncidentEdgeSide::Start
-            } else {
-                IncidentEdgeSide::End
-            },
-        )
-        .map(|section| self.section_is_tunnel_surface_visible(section, terrain))
-        .unwrap_or(false)
+        let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+            return false;
+        };
+        let mouth = if at_start {
+            piece.start_mouth_profile.as_ref()
+        } else {
+            piece.end_mouth_profile.as_ref()
+        };
+        let Some(mouth) = mouth else {
+            return false;
+        };
+        let mut average_point = Vector3::ZERO;
+        for point in &mouth.boundary_points_world {
+            average_point += *point;
+        }
+        average_point /= mouth.boundary_points_world.len() as f32;
+        let terrain_height =
+            terrain.sample_height_world(average_point.x, average_point.z) * config::HEIGHT_SCALE;
+        average_point.y >= terrain_height - TUNNEL_PORTAL_STAMP_DEPTH_M
     }
 
     fn stamp_triangle_to_chunk(
@@ -2666,6 +3680,165 @@ impl RoadSurfaceSystem {
         }
     }
 
+    fn make_visual_polygon(mut points_world: Vec<Vector3>) -> Option<RoadSurfaceVisualPolygon> {
+        points_world.dedup_by(|a, b| (*a - *b).length_squared() <= 0.0001);
+        if points_world.len() >= 2
+            && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
+                <= 0.0001
+        {
+            points_world.pop();
+        }
+        let signed_area = Self::signed_polygon_area_xz(&points_world);
+        if signed_area.abs() <= 0.002 {
+            return None;
+        }
+        if signed_area < 0.0 {
+            points_world.reverse();
+        }
+        let Some((start_index, _)) = points_world
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                a.x.total_cmp(&b.x)
+                    .then(a.z.total_cmp(&b.z))
+                    .then(a.y.total_cmp(&b.y))
+            })
+        else {
+            return None;
+        };
+        points_world.rotate_left(start_index);
+        let triangles_world = Self::triangulate_simple_polygon_xz(&points_world)?;
+        Some(RoadSurfaceVisualPolygon {
+            points_world,
+            triangles_world,
+        })
+    }
+
+    fn make_visual_strip_polygon(mut points_world: Vec<Vector3>) -> Option<RoadSurfaceVisualPolygon> {
+        points_world.dedup_by(|a, b| (*a - *b).length_squared() <= 0.0001);
+        if points_world.len() >= 2
+            && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
+                <= 0.0001
+        {
+            points_world.pop();
+        }
+        if points_world.len() < 3 {
+            return None;
+        }
+        let triangles_world = Self::triangulate_fan_polygon_xz(&points_world)?;
+        Some(RoadSurfaceVisualPolygon {
+            points_world,
+            triangles_world,
+        })
+    }
+
+    fn triangulate_fan_polygon_xz(points_world: &[Vector3]) -> Option<Vec<[Vector3; 3]>> {
+        if points_world.len() < 3 {
+            return None;
+        }
+        let anchor = points_world[0];
+        let mut triangles = Vec::with_capacity(points_world.len().saturating_sub(2));
+        for index in 1..points_world.len() - 1 {
+            let triangle = [anchor, points_world[index], points_world[index + 1]];
+            if Self::triangle_has_area_xz(triangle) {
+                triangles.push(triangle);
+            }
+        }
+        (!triangles.is_empty()).then_some(triangles)
+    }
+
+    fn triangulate_simple_polygon_xz(points_world: &[Vector3]) -> Option<Vec<[Vector3; 3]>> {
+        if points_world.len() < 3 {
+            return None;
+        }
+        if points_world.len() == 3 {
+            let triangle = [points_world[0], points_world[1], points_world[2]];
+            return Self::triangle_has_area_xz(triangle).then_some(vec![triangle]);
+        }
+
+        let mut remaining: Vec<usize> = (0..points_world.len()).collect();
+        let mut triangles = Vec::with_capacity(points_world.len() - 2);
+        let mut guard = 0usize;
+        let guard_limit = points_world.len() * points_world.len();
+
+        while remaining.len() > 3 && guard < guard_limit {
+            let mut clipped_ear = false;
+            for index in 0..remaining.len() {
+                let prev = remaining[(index + remaining.len() - 1) % remaining.len()];
+                let current = remaining[index];
+                let next = remaining[(index + 1) % remaining.len()];
+                let triangle = [points_world[prev], points_world[current], points_world[next]];
+                let projected_cross = (triangle[1].x - triangle[0].x)
+                    * (triangle[2].z - triangle[0].z)
+                    - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
+                if projected_cross <= 0.002 {
+                    continue;
+                }
+
+                let contains_other_vertex = remaining.iter().copied().any(|candidate| {
+                    if candidate == prev || candidate == current || candidate == next {
+                        return false;
+                    }
+                    Self::triangle_barycentric_weights_xz(
+                        triangle,
+                        Vector2::new(points_world[candidate].x, points_world[candidate].z),
+                    )
+                    .is_some()
+                });
+                if contains_other_vertex {
+                    continue;
+                }
+
+                triangles.push(triangle);
+                remaining.remove(index);
+                clipped_ear = true;
+                break;
+            }
+
+            if !clipped_ear {
+                return None;
+            }
+            guard += 1;
+        }
+
+        if remaining.len() == 3 {
+            let triangle = [
+                points_world[remaining[0]],
+                points_world[remaining[1]],
+                points_world[remaining[2]],
+            ];
+            if Self::triangle_has_area_xz(triangle) {
+                triangles.push(triangle);
+            }
+        }
+
+        (!triangles.is_empty()).then_some(triangles)
+    }
+
+    fn signed_polygon_area_xz(points: &[Vector3]) -> f32 {
+        if points.len() < 3 {
+            return 0.0;
+        }
+        let mut signed_area = 0.0;
+        for index in 0..points.len() {
+            let current = points[index];
+            let next = points[(index + 1) % points.len()];
+            signed_area += current.x * next.z - next.x * current.z;
+        }
+        signed_area * 0.5
+    }
+
+    #[cfg(test)]
+    fn polygon_has_area_xz(points: &[Vector3]) -> bool {
+        Self::signed_polygon_area_xz(points).abs() > 0.002
+    }
+
+    fn triangle_has_area_xz(triangle: [Vector3; 3]) -> bool {
+        let projected_cross = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
+            - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
+        projected_cross.abs() > 0.002
+    }
+
     fn triangle_barycentric_weights_xz(
         triangle: [Vector3; 3],
         point: Vector2,
@@ -2726,6 +3899,14 @@ impl RoadSurfaceSystem {
         lateral_offset_m: f32,
         height_m: f32,
     ) -> Vector3 {
+        Self::section_boundary_world_point_static(section, lateral_offset_m, height_m)
+    }
+
+    fn section_boundary_world_point_static(
+        section: &RoadSurfaceSection,
+        lateral_offset_m: f32,
+        height_m: f32,
+    ) -> Vector3 {
         Vector3::new(
             section.center_xz.x + section.lateral_xz.x * lateral_offset_m,
             height_m,
@@ -2746,8 +3927,22 @@ impl RoadSurfaceSystem {
             .get(&edge_idx)
             .map(Vec::as_slice)
             .unwrap_or(&[]);
-        let surface_chunks = self.edge_chunks(edge, ChunkCacheKind::Surface);
-        let earthwork_chunks = self.edge_chunks(edge, ChunkCacheKind::Earthwork);
+        let surface_chunks = self
+            .compiled_visual_span_pieces
+            .get(&edge_idx)
+            .and_then(|piece| {
+                self.visual_span_piece_bounds(piece, ChunkCacheKind::Surface)
+                    .map(|(min, max)| self.bounds_to_chunk_keys(min, max))
+            })
+            .unwrap_or_else(|| self.edge_chunks(edge, ChunkCacheKind::Surface));
+        let earthwork_chunks = self
+            .compiled_visual_span_pieces
+            .get(&edge_idx)
+            .and_then(|piece| {
+                self.visual_span_piece_bounds(piece, ChunkCacheKind::Earthwork)
+                    .map(|(min, max)| self.bounds_to_chunk_keys(min, max))
+            })
+            .unwrap_or_else(|| self.edge_chunks(edge, ChunkCacheKind::Earthwork));
 
         let _ = writeln!(dump, "    {{");
         let _ = writeln!(dump, "      \"edge_idx\": {edge_idx},");
@@ -2930,7 +4125,10 @@ impl RoadSurfaceSystem {
         self.compiled_sections.retain(|edge_idx, _| {
             *edge_idx < graph.edge_count() && Self::is_surface_edge(graph.edge(*edge_idx))
         });
-        self.compiled_node_patches
+        self.compiled_visual_span_pieces.retain(|edge_idx, _| {
+            *edge_idx < graph.edge_count() && Self::is_surface_edge(graph.edge(*edge_idx))
+        });
+        self.compiled_visual_node_pieces
             .retain(|node_id, _| (*node_id as usize) < graph.node_count());
         self.surface_chunk_cache
             .retain(|_, entry| !entry.edge_indices.is_empty() || !entry.node_ids.is_empty());
@@ -2963,25 +4161,12 @@ impl RoadSurfaceSystem {
 
     fn collect_all_chunks(
         &self,
-        graph: &RegionGraph,
+        _graph: &RegionGraph,
         kind: ChunkCacheKind,
     ) -> Vec<SurfaceChunkKey> {
         let mut chunks = HashSet::new();
-        for (&edge_idx, _) in &self.compiled_sections {
-            if edge_idx < graph.edge_count() {
-                for chunk in self.edge_chunks(graph.edge(edge_idx), kind) {
-                    chunks.insert(chunk);
-                }
-            }
-        }
-        for (&node_id, patch) in &self.compiled_node_patches {
-            if patch.class == RoadSurfaceNodePatchClass::PassThrough {
-                continue;
-            }
-            if node_id as usize >= graph.node_count() {
-                continue;
-            }
-            let Some((min, max)) = self.node_patch_bounds(graph, node_id, patch, kind) else {
+        for piece in self.compiled_visual_span_pieces.values() {
+            let Some((min, max)) = self.visual_span_piece_bounds(piece, kind) else {
                 continue;
             };
             let min_chunk = self.chunk_coords_for_world(min.x, min.z);
@@ -2989,6 +4174,22 @@ impl RoadSurfaceSystem {
             for cx in min_chunk.0..=max_chunk.0 {
                 for cz in min_chunk.1..=max_chunk.1 {
                     chunks.insert((cx, cz));
+                }
+            }
+        }
+        match kind {
+            ChunkCacheKind::Surface | ChunkCacheKind::Earthwork => {
+                for piece in self.compiled_visual_node_pieces.values() {
+                    let Some((min, max)) = self.visual_node_piece_bounds(piece, kind) else {
+                        continue;
+                    };
+                    let min_chunk = self.chunk_coords_for_world(min.x, min.z);
+                    let max_chunk = self.chunk_coords_for_world(max.x, max.z);
+                    for cx in min_chunk.0..=max_chunk.0 {
+                        for cz in min_chunk.1..=max_chunk.1 {
+                            chunks.insert((cx, cz));
+                        }
+                    }
                 }
             }
         }
@@ -3046,11 +4247,9 @@ impl RoadSurfaceSystem {
         ))
     }
 
-    fn node_patch_bounds(
+    fn visual_node_piece_bounds(
         &self,
-        graph: &RegionGraph,
-        node_id: u32,
-        patch: &RoadSurfaceNodePatch,
+        piece: &RoadSurfaceVisualNodePiece,
         kind: ChunkCacheKind,
     ) -> Option<(Vector3, Vector3)> {
         let mut min_x = f32::MAX;
@@ -3059,39 +4258,108 @@ impl RoadSurfaceSystem {
         let mut max_z = f32::MIN;
         let mut saw_point = false;
 
-        if (node_id as usize) < graph.node_count() {
-            let pos = graph.node(node_id).pos;
-            min_x = min_x.min(pos.x);
-            max_x = max_x.max(pos.x);
-            min_z = min_z.min(pos.z);
-            max_z = max_z.max(pos.z);
-            saw_point = true;
+        match kind {
+            ChunkCacheKind::Surface => {
+                for point in piece
+                    .outer_boundary_loops
+                    .iter()
+                    .flat_map(|polygon| polygon.points_world.iter())
+                {
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_z = min_z.min(point.z);
+                    max_z = max_z.max(point.z);
+                    saw_point = true;
+                }
+            }
+            ChunkCacheKind::Earthwork => {
+                for point in piece
+                    .earthwork_outer_boundary_loops
+                    .iter()
+                    .flat_map(|polygon| polygon.points_world.iter())
+                {
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_z = min_z.min(point.z);
+                    max_z = max_z.max(point.z);
+                    saw_point = true;
+                }
+                if !saw_point {
+                    for point in piece
+                        .earthwork_surface_polygons
+                        .iter()
+                        .flat_map(|polygon| polygon.points_world.iter())
+                    {
+                        min_x = min_x.min(point.x);
+                        max_x = max_x.max(point.x);
+                        min_z = min_z.min(point.z);
+                        max_z = max_z.max(point.z);
+                        saw_point = true;
+                    }
+                }
+            }
         }
 
-        for point in patch
-            .boundary_loops
-            .iter()
-            .flat_map(|boundary_loop| boundary_loop.points.iter())
-        {
-            min_x = min_x.min(point.point_world.x);
-            max_x = max_x.max(point.point_world.x);
-            min_z = min_z.min(point.point_world.z);
-            max_z = max_z.max(point.point_world.z);
-            saw_point = true;
+        saw_point.then_some((
+            Vector3::new(min_x, 0.0, min_z),
+            Vector3::new(max_x, 0.0, max_z),
+        ))
+    }
+
+    fn visual_span_piece_bounds(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+        kind: ChunkCacheKind,
+    ) -> Option<(Vector3, Vector3)> {
+        let mut min_x = f32::MAX;
+        let mut max_x = f32::MIN;
+        let mut min_z = f32::MAX;
+        let mut max_z = f32::MIN;
+        let mut saw_point = false;
+
+        match kind {
+            ChunkCacheKind::Surface => {
+                for point in piece
+                    .outer_boundary_loops
+                    .iter()
+                    .flat_map(|polygon| polygon.points_world.iter())
+                {
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_z = min_z.min(point.z);
+                    max_z = max_z.max(point.z);
+                    saw_point = true;
+                }
+            }
+            ChunkCacheKind::Earthwork => {
+                for point in piece
+                    .earthwork_outer_boundary_loops
+                    .iter()
+                    .flat_map(|polygon| polygon.points_world.iter())
+                {
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_z = min_z.min(point.z);
+                    max_z = max_z.max(point.z);
+                    saw_point = true;
+                }
+                if !saw_point {
+                    for point in piece
+                        .earthwork_surface_polygons
+                        .iter()
+                        .flat_map(|polygon| polygon.points_world.iter())
+                    {
+                        min_x = min_x.min(point.x);
+                        max_x = max_x.max(point.x);
+                        min_z = min_z.min(point.z);
+                        max_z = max_z.max(point.z);
+                        saw_point = true;
+                    }
+                }
+            }
         }
 
-        if !saw_point {
-            return None;
-        }
-
-        if kind == ChunkCacheKind::Earthwork {
-            min_x -= EARTHWORK_MAX_MARGIN_M;
-            max_x += EARTHWORK_MAX_MARGIN_M;
-            min_z -= EARTHWORK_MAX_MARGIN_M;
-            max_z += EARTHWORK_MAX_MARGIN_M;
-        }
-
-        Some((
+        saw_point.then_some((
             Vector3::new(min_x, 0.0, min_z),
             Vector3::new(max_x, 0.0, max_z),
         ))
@@ -3140,14 +4408,7 @@ impl RoadSurfaceSystem {
         )
     }
 
-    fn edge_chunks(&self, edge: &Edge, kind: ChunkCacheKind) -> Vec<SurfaceChunkKey> {
-        if !Self::is_surface_edge(edge) {
-            return Vec::new();
-        }
-        let Some((min, max)) = self.edge_bounds(edge, kind) else {
-            return Vec::new();
-        };
-
+    fn bounds_to_chunk_keys(&self, min: Vector3, max: Vector3) -> Vec<SurfaceChunkKey> {
         let min_chunk = self.chunk_coords_for_world(min.x, min.z);
         let max_chunk = self.chunk_coords_for_world(max.x, max.z);
         let mut chunks = Vec::new();
@@ -3159,22 +4420,15 @@ impl RoadSurfaceSystem {
         chunks
     }
 
-    fn edge_overlaps_chunk(
-        &self,
-        edge: &Edge,
-        chunk: SurfaceChunkKey,
-        kind: ChunkCacheKind,
-    ) -> bool {
+    fn edge_chunks(&self, edge: &Edge, kind: ChunkCacheKind) -> Vec<SurfaceChunkKey> {
+        if !Self::is_surface_edge(edge) {
+            return Vec::new();
+        }
         let Some((min, max)) = self.edge_bounds(edge, kind) else {
-            return false;
+            return Vec::new();
         };
 
-        let min_chunk = self.chunk_coords_for_world(min.x, min.z);
-        let max_chunk = self.chunk_coords_for_world(max.x, max.z);
-        chunk.0 >= min_chunk.0
-            && chunk.0 <= max_chunk.0
-            && chunk.1 >= min_chunk.1
-            && chunk.1 <= max_chunk.1
+        self.bounds_to_chunk_keys(min, max)
     }
 }
 
@@ -3182,7 +4436,8 @@ impl RoadSurfaceSystem {
 mod tests {
     use super::{
         EARTHWORK_MAX_MARGIN_M, EARTHWORK_PAVEMENT_DEPTH_M, PreviewRoadSurfaceResult,
-        RoadSurfaceNodePatch, RoadSurfaceNodePatchClass, RoadSurfaceSection, RoadSurfaceSystem,
+        RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+        RoadSurfaceVisualNodePieceKind,
     };
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -3434,7 +4689,7 @@ mod tests {
     ) -> (
         PreviewRoadSurfaceResult,
         Vec<RoadSurfaceSection>,
-        Vec<RoadSurfaceNodePatch>,
+        Vec<RoadSurfaceVisualNodePiece>,
     ) {
         let preview = surface.compile_preview_surface(raw_points, fwd_lanes, bkw_lanes, terrain);
         if preview.prepared_points.len() < 2 {
@@ -3469,11 +4724,20 @@ mod tests {
             .get(&edge_idx)
             .cloned()
             .unwrap_or_default();
-        let compiled_node_patches = [start_node, end_node]
+        let compiled_visual_node_pieces = [start_node, end_node]
             .into_iter()
-            .filter_map(|node_id| committed.compiled_node_patches().get(&node_id).cloned())
+            .filter_map(|node_id| {
+                committed
+                    .compiled_visual_node_pieces()
+                    .get(&node_id)
+                    .cloned()
+            })
             .collect();
-        (preview, compiled_sections, compiled_node_patches)
+        (
+            preview,
+            compiled_sections,
+            compiled_visual_node_pieces,
+        )
     }
 
     #[test]
@@ -3706,7 +4970,7 @@ mod tests {
     }
 
     #[test]
-    fn node_classification_matches_surface_profiles() {
+    fn node_piece_classification_matches_surface_profiles() {
         let terrain = flat_terrain(64, 64);
 
         let mut pass_graph = RegionGraph::new();
@@ -3733,9 +4997,11 @@ mod tests {
         ));
         let mut pass_surface = RoadSurfaceSystem::new(16.0);
         pass_surface.compile_dirty(&pass_graph, &terrain);
-        assert_eq!(
-            pass_surface.compiled_node_patches().get(&pb).unwrap().class,
-            RoadSurfaceNodePatchClass::PassThrough
+        assert!(
+            pass_surface
+                .compiled_visual_node_pieces()
+                .get(&pb)
+                .is_none()
         );
 
         let mut width_graph = RegionGraph::new();
@@ -3762,13 +5028,11 @@ mod tests {
         ));
         let mut width_surface = RoadSurfaceSystem::new(16.0);
         width_surface.compile_dirty(&width_graph, &terrain);
-        assert_eq!(
+        assert!(
             width_surface
-                .compiled_node_patches()
+                .compiled_visual_node_pieces()
                 .get(&wb)
-                .unwrap()
-                .class,
-            RoadSurfaceNodePatchClass::WidthTransition
+                .is_none()
         );
 
         let mut junction_graph = RegionGraph::new();
@@ -3797,11 +5061,11 @@ mod tests {
         junction_surface.compile_dirty(&junction_graph, &terrain);
         assert_eq!(
             junction_surface
-                .compiled_node_patches()
+                .compiled_visual_node_pieces()
                 .get(&jb)
                 .unwrap()
-                .class,
-            RoadSurfaceNodePatchClass::Junction
+                .kind,
+            RoadSurfaceVisualNodePieceKind::Bend
         );
 
         let mut terminal_graph = RegionGraph::new();
@@ -3820,16 +5084,195 @@ mod tests {
         terminal_surface.compile_dirty(&terminal_graph, &terrain);
         assert_eq!(
             terminal_surface
-                .compiled_node_patches()
+                .compiled_visual_node_pieces()
                 .get(&ta)
                 .unwrap()
-                .class,
-            RoadSurfaceNodePatchClass::Terminal
+                .kind,
+            RoadSurfaceVisualNodePieceKind::Terminal
         );
     }
 
     #[test]
-    fn throat_boundary_loops_are_angle_sorted_and_stable() {
+    fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
+        let terrain = flat_terrain(64, 64);
+
+        let mut bend_graph = RegionGraph::new();
+        let bend_center = bend_graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let bend_a = bend_graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        let bend_b = bend_graph.add_node(Vector3::new(0.0, 0.0, 20.0), NodeType::Junction);
+        bend_graph.add_edge(test_edge(
+            bend_center,
+            bend_a,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        bend_graph.add_edge(test_edge(
+            bend_center,
+            bend_b,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 20.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        let mut bend_surface = RoadSurfaceSystem::new(16.0);
+        bend_surface.compile_dirty(&bend_graph, &terrain);
+        let bend_piece = bend_surface
+            .compiled_visual_node_pieces()
+            .get(&bend_center)
+            .unwrap();
+        assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+        assert!(!bend_piece.outer_boundary_loops.is_empty());
+        assert!(!bend_piece.road_surface_polygons.is_empty());
+        assert!(!bend_piece.sidewalk_surface_polygons.is_empty());
+        assert!(bend_piece
+            .outer_boundary_loops
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(bend_piece
+            .road_surface_polygons
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(bend_piece
+            .sidewalk_surface_polygons
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(!bend_piece.earthwork_surface_polygons.is_empty());
+        assert!(!bend_piece.earthwork_outer_boundary_loops.is_empty());
+        assert!(!bend_piece.render_earthwork_faces.is_empty());
+        assert!(bend_piece
+            .earthwork_surface_polygons
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(bend_piece
+            .render_earthwork_faces
+            .iter()
+            .all(|face| RoadSurfaceSystem::polygon_has_area_xz(&face.polygon.points_world)));
+        assert!(
+            bend_piece.earthwork_surface_polygons.len()
+                > bend_piece.road_surface_polygons.len() + bend_piece.sidewalk_surface_polygons.len()
+        );
+        assert_ne!(
+            bend_piece.earthwork_outer_boundary_loops,
+            bend_piece.outer_boundary_loops
+        );
+
+        let mut terminal_graph = RegionGraph::new();
+        let terminal_center =
+            terminal_graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let terminal_end =
+            terminal_graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        terminal_graph.add_edge(test_edge(
+            terminal_center,
+            terminal_end,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        let mut terminal_surface = RoadSurfaceSystem::new(16.0);
+        terminal_surface.compile_dirty(&terminal_graph, &terrain);
+        let terminal_piece = terminal_surface
+            .compiled_visual_node_pieces()
+            .get(&terminal_center)
+            .unwrap();
+        assert_eq!(terminal_piece.kind, RoadSurfaceVisualNodePieceKind::Terminal);
+        assert_eq!(terminal_piece.outer_boundary_loops.len(), 1);
+        assert!(!terminal_piece.road_surface_polygons.is_empty());
+        assert!(!terminal_piece.sidewalk_surface_polygons.is_empty());
+        assert!(terminal_piece
+            .road_surface_polygons
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(terminal_piece
+            .sidewalk_surface_polygons
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(!terminal_piece.earthwork_surface_polygons.is_empty());
+        assert!(!terminal_piece.earthwork_outer_boundary_loops.is_empty());
+        assert!(!terminal_piece.render_earthwork_faces.is_empty());
+        assert!(
+            terminal_piece.earthwork_surface_polygons.len()
+                > terminal_piece.road_surface_polygons.len()
+                    + terminal_piece.sidewalk_surface_polygons.len()
+        );
+        assert_ne!(
+            terminal_piece.earthwork_outer_boundary_loops,
+            terminal_piece.outer_boundary_loops
+        );
+    }
+
+    #[test]
+    fn span_visual_pieces_compile_explicit_band_polygons() {
+        let terrain = flat_terrain(64, 64);
+        let mut graph = RegionGraph::new();
+        let a = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let b = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+        let edge_idx = graph.add_edge(test_edge(
+            a,
+            b,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        let span_piece = surface.compiled_visual_span_pieces().get(&edge_idx).unwrap();
+        assert!(!span_piece.outer_boundary_loops.is_empty());
+        assert!(!span_piece.road_surface_polygons.is_empty());
+        assert!(!span_piece.sidewalk_surface_polygons.is_empty());
+        assert!(span_piece
+            .road_surface_polygons
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(span_piece
+            .sidewalk_surface_polygons
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(!span_piece.earthwork_surface_polygons.is_empty());
+        assert!(!span_piece.earthwork_outer_boundary_loops.is_empty());
+        assert!(!span_piece.render_earthwork_faces.is_empty());
+        assert!(
+            span_piece.earthwork_surface_polygons.len()
+                > span_piece.road_surface_polygons.len() + span_piece.sidewalk_surface_polygons.len()
+        );
+        assert_ne!(
+            span_piece.earthwork_outer_boundary_loops,
+            span_piece.outer_boundary_loops
+        );
+    }
+
+    #[test]
+    fn earthwork_face_classification_distinguishes_slopes_from_walls() {
+        assert_eq!(
+            RoadSurfaceSystem::classify_earthwork_face_kind(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 0.0, 0.0),
+                Vector3::new(2.0, 0.5, 0.0),
+                Vector3::new(1.0, 0.5, 0.0),
+            ),
+            RoadSurfaceEarthworkFaceKind::Slope
+        );
+        assert_eq!(
+            RoadSurfaceSystem::classify_earthwork_face_kind(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 0.0, 0.0),
+                Vector3::new(1.1, 3.0, 0.0),
+                Vector3::new(0.1, 3.0, 0.0),
+            ),
+            RoadSurfaceEarthworkFaceKind::RetainingWall
+        );
+    }
+
+    #[test]
+    fn visual_node_pieces_are_deterministic_for_multi_arm_nodes() {
         let mut graph = RegionGraph::new();
         let left = graph.add_node(Vector3::new(-10.0, 0.0, 0.0), NodeType::Junction);
         let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -3862,6 +5305,7 @@ mod tests {
             TransitType::Road,
             TransitFlags::CAR | TransitFlags::FOOT,
         ));
+        graph.rebuild_adjacency_list();
 
         let terrain = flat_terrain(64, 64);
         let mut surface_a = RoadSurfaceSystem::new(16.0);
@@ -3869,17 +5313,25 @@ mod tests {
         surface_a.compile_dirty(&graph, &terrain);
         surface_b.compile_dirty(&graph, &terrain);
 
-        let patch_a = surface_a.compiled_node_patches().get(&center).unwrap();
-        let patch_b = surface_b.compiled_node_patches().get(&center).unwrap();
-        assert_eq!(patch_a.class, RoadSurfaceNodePatchClass::Junction);
-        assert_eq!(patch_a, patch_b);
-        assert_eq!(patch_a.boundary_loops.len(), 1);
-        assert_eq!(patch_a.boundary_loops[0].points.len(), 4);
+        let piece_a = surface_a.compiled_visual_node_pieces().get(&center).unwrap();
+        let piece_b = surface_b.compiled_visual_node_pieces().get(&center).unwrap();
+        assert_eq!(piece_a.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+        assert_eq!(piece_a, piece_b);
         assert!(
-            patch_a.boundary_loops[0]
-                .points
-                .windows(2)
-                .all(|pair| pair[0].angle_rad <= pair[1].angle_rad)
+            !piece_a.outer_boundary_loops.is_empty(),
+            "expected explicit visual node pieces to expose deterministic outer boundaries"
+        );
+        assert!(
+            !piece_a.road_surface_polygons.is_empty(),
+            "expected explicit JunctionN builder to emit road-owned polygons"
+        );
+        assert!(
+            piece_a.sidewalk_surface_polygons.len() >= 3,
+            "expected explicit JunctionN builder to emit multiple sidewalk sectors"
+        );
+        assert!(
+            !piece_a.earthwork_outer_boundary_loops.is_empty(),
+            "expected explicit visual node pieces to expose deterministic earthwork boundaries"
         );
     }
 
@@ -3889,13 +5341,13 @@ mod tests {
         let surface = RoadSurfaceSystem::new(16.0);
         let raw_points = vec![Vector3::new(0.0, 0.2, 0.0), Vector3::new(24.0, 0.2, 0.0)];
 
-        let (preview, committed_sections, committed_patches) =
+        let (preview, committed_sections, committed_visual_pieces) =
             compile_committed_preview_reference(&surface, &raw_points, &terrain, 1, 1);
 
         assert_eq!(preview.edge_class, EdgeClass::Standard);
         assert!(preview.is_valid);
         assert_eq!(preview.compiled_sections, committed_sections);
-        assert_eq!(preview.compiled_node_patches, committed_patches);
+        assert_eq!(preview.compiled_visual_node_pieces, committed_visual_pieces);
     }
 
     #[test]
@@ -3916,13 +5368,13 @@ mod tests {
             Vector3::new(16.0, y2, 0.0),
         ];
 
-        let (preview, committed_sections, committed_patches) =
+        let (preview, committed_sections, committed_visual_pieces) =
             compile_committed_preview_reference(&surface, &raw_points, &terrain, 1, 1);
 
         assert_eq!(preview.edge_class, EdgeClass::Standard);
         assert!(preview.is_valid);
         assert_eq!(preview.compiled_sections, committed_sections);
-        assert_eq!(preview.compiled_node_patches, committed_patches);
+        assert_eq!(preview.compiled_visual_node_pieces, committed_visual_pieces);
     }
 
     #[test]
@@ -3935,13 +5387,13 @@ mod tests {
             Vector3::new(32.0, 3.0, 0.0),
         ];
 
-        let (preview, committed_sections, committed_patches) =
+        let (preview, committed_sections, committed_visual_pieces) =
             compile_committed_preview_reference(&surface, &raw_points, &terrain, 1, 1);
 
         assert_eq!(preview.edge_class, EdgeClass::Bridge);
         assert!(preview.is_valid);
         assert_eq!(preview.compiled_sections, committed_sections);
-        assert_eq!(preview.compiled_node_patches, committed_patches);
+        assert_eq!(preview.compiled_visual_node_pieces, committed_visual_pieces);
     }
 
     #[test]
@@ -3954,13 +5406,13 @@ mod tests {
             Vector3::new(32.0, -3.0, 0.0),
         ];
 
-        let (preview, committed_sections, committed_patches) =
+        let (preview, committed_sections, committed_visual_pieces) =
             compile_committed_preview_reference(&surface, &raw_points, &terrain, 1, 1);
 
         assert_eq!(preview.edge_class, EdgeClass::Tunnel);
         assert!(preview.is_valid);
         assert_eq!(preview.compiled_sections, committed_sections);
-        assert_eq!(preview.compiled_node_patches, committed_patches);
+        assert_eq!(preview.compiled_visual_node_pieces, committed_visual_pieces);
     }
 
     #[test]
@@ -4355,6 +5807,76 @@ mod tests {
     }
 
     #[test]
+    fn visible_surface_height_hits_terminal_earthwork_before_terrain() {
+        let terrain = flat_terrain(97, 97);
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(test_edge(
+            center,
+            end,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        let terminal_piece = surface
+            .compiled_visual_node_pieces()
+            .get(&center)
+            .expect("terminal should compile a visual node piece");
+        let inner_point = terminal_piece.outer_boundary_loops[0].points_world[0];
+        let outer_point = terminal_piece.earthwork_outer_boundary_loops[0].points_world[0];
+        let sample_x = (inner_point.x + outer_point.x) * 0.5;
+        let sample_z = (inner_point.z + outer_point.z) * 0.5;
+
+        assert!(
+            surface
+                .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
+                .is_some(),
+            "terminal earthwork margin should be queryable before terrain at the midpoint between the piece boundary and the tie-in boundary"
+        );
+    }
+
+    #[test]
+    fn visible_surface_height_hits_span_earthwork_before_terrain() {
+        let terrain = flat_terrain(97, 97);
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(0.0, 0.0, 24.0), NodeType::Junction);
+        let edge_idx = graph.add_edge(test_edge(
+            start,
+            end,
+            vec![Vector3::new(0.0, 0.0, -24.0), Vector3::new(0.0, 0.0, 24.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        let span_piece = surface
+            .compiled_visual_span_pieces()
+            .get(&edge_idx)
+            .expect("standard edge should compile a visual span piece");
+        let inner_point = span_piece.outer_boundary_loops[0].points_world[0];
+        let outer_point = span_piece.earthwork_outer_boundary_loops[0].points_world[0];
+        let sample_x = (inner_point.x + outer_point.x) * 0.5;
+        let sample_z = (inner_point.z + outer_point.z) * 0.5;
+
+        assert!(
+            surface
+                .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
+                .is_some(),
+            "span earthwork margin should be queryable before terrain at the midpoint between the piece boundary and the tie-in boundary"
+        );
+    }
+
+    #[test]
     fn visible_surface_height_skips_buried_tunnel_midspan() {
         let terrain = flat_terrain(97, 33);
         let mut graph = RegionGraph::new();
@@ -4446,7 +5968,7 @@ mod tests {
 
         assert!(!debug.section_lines.is_empty());
         assert!(!debug.band_lines.is_empty());
-        assert!(!debug.node_patch_lines.is_empty());
+        assert!(!debug.piece_boundary_lines.is_empty());
         assert!(!debug.earthwork_chunk_lines.is_empty());
     }
 

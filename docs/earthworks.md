@@ -276,12 +276,29 @@ Deterministic choice:
   5. the rule that terrain is not the sole near-footprint owner
 - the replacement target is a closed road-owned earthwork mesh
 
-### 2. Roads-First Rewrite Uses A Closed Road-Owned Earthwork Mesh
+### 2. Roads-First Rewrite Uses A Separate Piece/Profile Carrier Plus A Closed Road-Owned Earthwork Mesh
 
 The next implementation slice is still roads-first, but the geometry contract changes.
 
 Required road geometry contract:
 
+- the logical road graph remains the simulation and connectivity authority only; it must not remain
+  the direct visible-shape carrier
+- the visible road system compiles a separate deterministic piece/profile geometry layer
+- the minimum required visual piece set is:
+  1. `Span`
+  2. `Bend`
+  3. `Terminal`
+  4. `JunctionN`
+- each visual piece must own one ordered side-aware road profile rather than one anonymous width:
+  1. left outer sidewalk edge
+  2. left curb / shoulder edge
+  3. left carriageway edge
+  4. right carriageway edge
+  5. right curb / shoulder edge
+  6. right outer sidewalk edge
+- edge-side and node-side earthworks must derive from those same piece-owned profile boundaries
+  instead of from separate terrain-side widening or generic node-fill polygons
 - grounded roads own closed local earthwork geometry adjoining the committed roadbed footprint
 - that local geometry must include:
   1. the road-owned top-surface boundary condition
@@ -294,28 +311,28 @@ Required road geometry contract:
 - sloped cases must emit real cut / fill faces instead of asking the terrain heightfield to fake
   the entire join
 
-### 3. Tie-In Boundaries Use Dense Local Sampling, Not Coarse Terrain Cells
+### 3. Tie-In Boundaries Follow Piece-Owned Boundaries, Not Coarse Terrain Cells Or Generic Node Loops
 
 The next geometry pass must stop deriving the visible outline mainly from coarse terrain cells or
 from the existing compiled road section spacing.
 
 Required first variant:
 
-- each road edge must derive one left-side and one right-side outer tie-in polyline
+- each `Span` must derive one left-side and one right-side outer tie-in polyline
 - those tie-in polylines must be sampled from terrain at a maximum `2 m` longitudinal spacing in
   world space
 - the visible tie-in boundary must not be inferred only from the authored terrain cell grid or
   only from the current compiled road section spacing
 - consecutive samples stitch those inner and outer anchors into continuous side geometry per side
-- edge-local ownership still stops at the existing road throat boundaries so edge ownership hands
-  off cleanly into node patches and terminal ownership
-- node and bend ownership past those throats must be built from the incident road throat profiles,
-  not from one generic angle-sorted throat-point polygon or one global sidewalk annulus
-- two-edge non-pass-through nodes and `3+` arm nodes share the same mouth-profile connector model,
-  but they remain different topology classes with different builders
-- node top-surface ownership must compile to explicit road polygons plus explicit sidewalk sector
-  polygons; it must not rely on one outer loop and one inner loop whose difference is rendered as
-  a generic ring
+- edge-local ownership still stops at deterministic road throats so `Span` ownership hands off
+  cleanly into `Bend`, `Terminal`, or `JunctionN` ownership
+- `Bend` and `JunctionN` pieces must be built from incident mouth profiles and their ordered band
+  boundaries, not from one generic angle-sorted throat-point polygon and not from one global outer
+  loop plus one global inner loop
+- two-edge non-pass-through nodes and `3+` arm nodes share the same band semantics, but they
+  remain different visual piece classes with different builders
+- node top-surface ownership must compile to explicit road polygons plus explicit sidewalk sectors
+  owned by those pieces; it must not rely on one annulus-style ring carrier
 - future building pads follow the same owner model, but with a perimeter tie-in ring instead of
   two longitudinal side runs
 
@@ -403,22 +420,25 @@ Required cache and query contract:
 
 ## Roads-First Rewrite Status
 
-The roads-first rewrite now has a deterministic target representation in this document, but the
-current corridor-sheet prototype is not the finished implementation.
+The roads-first rewrite is no longer only a target representation in this document. The piece /
+profile carrier and the closed local road-owned earthwork carrier are now the live road runtime.
 
-For the roads-first rewrite, the following are now deterministic:
+For the roads-first rewrite, the following are now both deterministic and implemented:
 
 - the current corridor-sheet prototype is retired as the target solution
-- roads move to a closed local earthwork mesh near the footprint
-- the first geometry variant is the closed slope / closure mesh
+- the logical graph and the visible road carrier are split: graph owns connectivity, while the
+  visible road system owns deterministic geometry pieces
+- the minimum required visual piece set is `Span`, `Bend`, `Terminal`, and `JunctionN`
+- roads use a closed local earthwork mesh near the footprint
+- the first live geometry variant is the closed slope / closure mesh
 - tie-in boundaries use dense local sampling at a maximum `2 m` longitudinal spacing
 - committed clients stay fixed under later terrain-authoring edits
 - local earthwork geometry uses chunk-local caches and one explicit visible-world query order
 - terrain suppression remains a bounded overlap rule, not the primary visual carrier for the
   near-road tie-in
 
-That means the remaining items below are later additions, not blockers for the first roads-first
-closed-mesh rewrite.
+That means the remaining items below are later additions and refinements, not blockers for the
+live roads-first closed-mesh runtime.
 
 ## Later Additions
 

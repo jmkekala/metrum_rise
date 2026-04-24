@@ -271,12 +271,30 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
         dict.set("patch_x", i64::try_from(patch.patch_x).unwrap_or(0));
         dict.set("patch_z", i64::try_from(patch.patch_z).unwrap_or(0));
-        dict.set("sample_width", i64::try_from(patch.sample_width).unwrap_or(0));
-        dict.set("sample_height", i64::try_from(patch.sample_height).unwrap_or(0));
-        dict.set("texture_width", i64::try_from(patch.texture_width).unwrap_or(0));
-        dict.set("texture_height", i64::try_from(patch.texture_height).unwrap_or(0));
-        dict.set("inner_offset_x", i64::try_from(patch.inner_offset_x).unwrap_or(0));
-        dict.set("inner_offset_z", i64::try_from(patch.inner_offset_z).unwrap_or(0));
+        dict.set(
+            "sample_width",
+            i64::try_from(patch.sample_width).unwrap_or(0),
+        );
+        dict.set(
+            "sample_height",
+            i64::try_from(patch.sample_height).unwrap_or(0),
+        );
+        dict.set(
+            "texture_width",
+            i64::try_from(patch.texture_width).unwrap_or(0),
+        );
+        dict.set(
+            "texture_height",
+            i64::try_from(patch.texture_height).unwrap_or(0),
+        );
+        dict.set(
+            "inner_offset_x",
+            i64::try_from(patch.inner_offset_x).unwrap_or(0),
+        );
+        dict.set(
+            "inner_offset_z",
+            i64::try_from(patch.inner_offset_z).unwrap_or(0),
+        );
         dict.set("world_origin_x", f64::from(patch.world_origin_x));
         dict.set("world_origin_z", f64::from(patch.world_origin_z));
         dict.set("world_size_x", f64::from(patch.world_size_x));
@@ -292,12 +310,30 @@ impl SimulationNode {
         let mut dict = VarDictionary::new();
         dict.set("patch_x", i64::try_from(patch.patch_x).unwrap_or(0));
         dict.set("patch_z", i64::try_from(patch.patch_z).unwrap_or(0));
-        dict.set("sample_width", i64::try_from(patch.sample_width).unwrap_or(0));
-        dict.set("sample_height", i64::try_from(patch.sample_height).unwrap_or(0));
-        dict.set("texture_width", i64::try_from(patch.texture_width).unwrap_or(0));
-        dict.set("texture_height", i64::try_from(patch.texture_height).unwrap_or(0));
-        dict.set("inner_offset_x", i64::try_from(patch.inner_offset_x).unwrap_or(0));
-        dict.set("inner_offset_z", i64::try_from(patch.inner_offset_z).unwrap_or(0));
+        dict.set(
+            "sample_width",
+            i64::try_from(patch.sample_width).unwrap_or(0),
+        );
+        dict.set(
+            "sample_height",
+            i64::try_from(patch.sample_height).unwrap_or(0),
+        );
+        dict.set(
+            "texture_width",
+            i64::try_from(patch.texture_width).unwrap_or(0),
+        );
+        dict.set(
+            "texture_height",
+            i64::try_from(patch.texture_height).unwrap_or(0),
+        );
+        dict.set(
+            "inner_offset_x",
+            i64::try_from(patch.inner_offset_x).unwrap_or(0),
+        );
+        dict.set(
+            "inner_offset_z",
+            i64::try_from(patch.inner_offset_z).unwrap_or(0),
+        );
         dict.set("world_origin_x", f64::from(patch.world_origin_x));
         dict.set("world_origin_z", f64::from(patch.world_origin_z));
         dict.set("world_size_x", f64::from(patch.world_size_x));
@@ -556,8 +592,14 @@ impl SimulationNode {
     pub fn get_terrain_patch_layout(&self) -> VarDictionary {
         let core = self.lock_core();
         let mut dict = VarDictionary::new();
-        dict.set("patch_cols", i64::try_from(core.heightmap.render_patch_cols()).unwrap_or(0));
-        dict.set("patch_rows", i64::try_from(core.heightmap.render_patch_rows()).unwrap_or(0));
+        dict.set(
+            "patch_cols",
+            i64::try_from(core.heightmap.render_patch_cols()).unwrap_or(0),
+        );
+        dict.set(
+            "patch_rows",
+            i64::try_from(core.heightmap.render_patch_rows()).unwrap_or(0),
+        );
         dict.set(
             "patch_interval_cells",
             i64::try_from(core.heightmap.render_patch_interval_cells()).unwrap_or(0),
@@ -571,8 +613,12 @@ impl SimulationNode {
     #[func]
     pub fn get_dirty_terrain_patches(&self) -> PackedInt32Array {
         let core = self.lock_core();
-        let mut patches: Vec<(usize, usize)> =
-            core.heightmap.dirty_render_patches().iter().copied().collect();
+        let mut patches: Vec<(usize, usize)> = core
+            .heightmap
+            .dirty_render_patches()
+            .iter()
+            .copied()
+            .collect();
         patches.sort_unstable();
         let mut packed = PackedInt32Array::new();
         for (patch_x, patch_z) in patches {
@@ -608,8 +654,12 @@ impl SimulationNode {
     #[func]
     pub fn get_dirty_water_patches(&self) -> PackedInt32Array {
         let core = self.lock_core();
-        let mut patches: Vec<(usize, usize)> =
-            core.watermap.dirty_render_patches().iter().copied().collect();
+        let mut patches: Vec<(usize, usize)> = core
+            .watermap
+            .dirty_render_patches()
+            .iter()
+            .copied()
+            .collect();
         patches.sort_unstable();
         let mut packed = PackedInt32Array::new();
         for (patch_x, patch_z) in patches {

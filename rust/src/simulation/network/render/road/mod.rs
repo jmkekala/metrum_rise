@@ -18,6 +18,7 @@ pub(super) const MARKING_WIDTH: f32 = 0.16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum MeshLayer {
+    Earthwork,
     Sidewalk,
     Road,
     Marking,
@@ -121,6 +122,12 @@ pub(super) fn push_triangle(
     }
 
     let target = match layer {
+        MeshLayer::Earthwork => (
+            &mut mesh.earthwork_vertices,
+            &mut mesh.earthwork_normals,
+            &mut mesh.earthwork_uvs,
+            &mut mesh.earthwork_colors,
+        ),
         MeshLayer::Sidewalk => (
             &mut mesh.sidewalk_vertices,
             &mut mesh.sidewalk_normals,
@@ -152,6 +159,10 @@ pub(super) fn push_triangle(
         target.2.push(uvs[index]);
         target.3.push(color);
     }
+}
+
+pub(super) fn earthwork_color() -> Color {
+    Color::from_rgba(0.48, 0.41, 0.30, 1.0)
 }
 
 pub(super) fn road_color() -> Color {

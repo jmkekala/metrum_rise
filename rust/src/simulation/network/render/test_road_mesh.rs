@@ -117,6 +117,7 @@ mod tests {
         validate_triangles(&mesh_data.road_vertices, max_dist, "road");
         validate_triangles(&mesh_data.marking_vertices, max_dist, "marking");
         validate_triangles(&mesh_data.concrete_vertices, max_dist, "concrete");
+        validate_triangles(&mesh_data.earthwork_vertices, max_dist, "earthwork");
     }
 
     fn main_triangles(mesh_data: &NetworkMeshData, surface: VisibleSurface) -> Vec<[Vector3; 3]> {
@@ -447,6 +448,80 @@ mod tests {
     }
 
     #[test]
+    fn test_cross_slope_standard_road_emits_visible_earthwork_mesh() {
+        let renderer = RoadRenderer;
+        let terrain = cross_slope_terrain(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(0.0, 0.0, 24.0), NodeType::Junction);
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(0.0, 0.0, -24.0),
+            Vector3::new(0.0, 0.0, 24.0),
+            10.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 80.0);
+
+        let earthwork_triangles = triangles_from_vertices(&mesh_data.earthwork_vertices);
+        let earthwork_coverage = triangle_coverage_ratio(
+            &earthwork_triangles,
+            Vector2::new(5.5, -12.0),
+            Vector2::new(12.0, 12.0),
+            0.5,
+        );
+
+        assert!(
+            !mesh_data.earthwork_vertices.is_empty(),
+            "expected explicit earthwork render layer for grounded cross-slope roads"
+        );
+        assert!(
+            earthwork_coverage >= 0.10,
+            "expected visible earthwork coverage outside the paved footprint, got {earthwork_coverage:.3}"
+        );
+    }
+
+    #[test]
+    fn test_flat_standard_road_hides_support_earthwork_under_paved_center() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(create_test_edge(
+            n0,
+            n1,
+            Vector3::new(-24.0, 0.0, 0.0),
+            Vector3::new(24.0, 0.0, 0.0),
+            10.0,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 80.0);
+
+        let earthwork_triangles = triangles_from_vertices(&mesh_data.earthwork_vertices);
+        let center_coverage = triangle_coverage_ratio(
+            &earthwork_triangles,
+            Vector2::new(-12.0, -2.0),
+            Vector2::new(12.0, 2.0),
+            0.5,
+        );
+
+        assert!(
+            center_coverage <= 0.02,
+            "expected render-only earthwork faces to stay out of the flat road center, got {center_coverage:.3}"
+        );
+    }
+
+    #[test]
     fn test_compiled_surface_is_lifted_above_visual_terrain() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
@@ -723,6 +798,42 @@ mod tests {
     }
 
     #[test]
+    fn test_triangle_network_keeps_all_three_bend_corners_road_owned() {
+        let ab = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)];
+        let bc = [Vector3::new(24.0, 0.0, 0.0), Vector3::new(12.0, 0.0, 20.0)];
+        let ca = [Vector3::new(12.0, 0.0, 20.0), Vector3::new(0.0, 0.0, 0.0)];
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&ab, 1, 1), (&bc, 1, 1), (&ca, 1, 1)]);
+        validate_mesh(&mesh_data, 80.0);
+
+        let corner_a_road = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(1.0, 1.0),
+            Vector2::new(4.5, 4.5),
+            0.25,
+            VisibleSurface::Road,
+        );
+        let corner_b_road = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(19.5, 1.0),
+            Vector2::new(23.0, 4.5),
+            0.25,
+            VisibleSurface::Road,
+        );
+        let corner_c_road = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(10.0, 14.5),
+            Vector2::new(14.0, 18.5),
+            0.25,
+            VisibleSurface::Road,
+        );
+
+        assert!(corner_a_road >= 0.35, "corner_a_road={corner_a_road:.3}");
+        assert!(corner_b_road >= 0.35, "corner_b_road={corner_b_road:.3}");
+        assert!(corner_c_road >= 0.35, "corner_c_road={corner_c_road:.3}");
+    }
+
+    #[test]
     fn test_t_junction_center_is_visibly_road() {
         let vertical = [Vector3::new(0.0, 0.0, -20.0), Vector3::new(0.0, 0.0, 0.0)];
         let horizontal = [Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
@@ -790,9 +901,19 @@ mod tests {
             0.25,
             VisibleSurface::Sidewalk,
         );
+        let outer_band_road = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-2.0, -4.8),
+            Vector2::new(2.0, -3.8),
+            0.25,
+            VisibleSurface::Road,
+        );
 
-        assert!(junction_core >= 0.8);
-        assert!(outer_band >= 0.25);
+        assert!(junction_core >= 0.8, "junction_core={junction_core:.3}");
+        assert!(
+            outer_band >= 0.25,
+            "outer_sidewalk={outer_band:.3} outer_road={outer_band_road:.3}"
+        );
     }
 
     #[test]
