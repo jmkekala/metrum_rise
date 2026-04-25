@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode depth_prepass_alpha, shadows_disabled;
+render_mode depth_prepass_alpha, shadows_disabled, cull_disabled;
 
 uniform sampler2D heightmap : repeat_disable, filter_linear;
 uniform sampler2D watermap : repeat_disable, filter_linear;

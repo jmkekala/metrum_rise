@@ -219,6 +219,9 @@ Current runtime client state:
 
 - roads are the first live engineered-ground client
 - grounded roads stamp compiled support surfaces plus outer cut / fill margins into visual terrain
+- grounded road-owned asphalt, shoulder / curb, and sidewalk footprints also provide exact clip
+  polygons to terrain and water render patches so neither terrain nor water remains a visible carrier
+  under the committed road footprint
 - terrain-only queries still read source terrain, while visible-world queries use the client-owned
   surface first and visual terrain second
 - future flat building pads and other engineered-ground clients should extend the same shared model
@@ -361,6 +364,9 @@ Current deterministic rules:
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch
+- road-touched terrain and water patches may switch from cached rectangular `PlaneMesh` topology to
+  clipped local `ArrayMesh` topology; the road refresh path only asks affected water patches to
+  rebuild after a network edit
 - the old whole-map terrain / water Godot render APIs were removed from the steady terrain / water
   bridge
 - dense terrain or water materialization may still exist at save/load, undo, or other explicit
@@ -766,11 +772,11 @@ Deterministic transition rules:
   - a derived far-field terrain surface outside engineered-ground tie-in boundaries
   - chunk-local invalidation and rebuild boundaries
   - the split terrain / water render-upload path
-  - terrain render suppression anywhere client-owned top surfaces or closed local earthwork
-    geometry already own the visible surface
-  - terrain render suppression must remain bounded to true geometry overlap rather than acting as a
-    substitute for missing tie-in faces; road-edge closure must still be geometrically correct if
-    terrain-side suppression is turned off
+  - clipped terrain topology anywhere grounded `Standard` road top surfaces own the visible
+    surface; shader discard or alpha masking must not be the ordinary road seam carrier
+  - terrain render suppression for structural local earthwork geometry must remain bounded to true
+    geometry overlap rather than acting as a substitute for missing tie-in faces; road-edge closure
+    must still be geometrically correct if terrain-side suppression is turned off
   - visible-world query precedence over client-owned top surfaces and closed local earthwork
     geometry
 - post-placement terrain edits should rebuild earthworks around already placed client surfaces

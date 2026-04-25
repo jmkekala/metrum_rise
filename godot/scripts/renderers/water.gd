@@ -238,13 +238,7 @@ func _create_patch(key: Vector2i) -> void:
 	var patch_center_x := world_origin_x + world_size_x * 0.5
 	var patch_center_z := world_origin_z + world_size_z * 0.5
 	var initial_lod_step := _mesh_lod_step_for_patch_center(patch_center_x, patch_center_z)
-	var patch_mesh := _patch_mesh(
-		sample_width,
-		sample_height,
-		world_size_x,
-		world_size_z,
-		initial_lod_step
-	)
+	var patch_mesh: Mesh = _water_patch_mesh_from_data(patch_data, initial_lod_step)
 
 	var patch_node: MeshInstance3D = MeshInstance3D.new()
 	patch_node.name = "WaterPatch_%d_%d" % [key.x, key.y]
@@ -293,8 +287,16 @@ func _create_patch(key: Vector2i) -> void:
 		"sample_height": sample_height,
 		"world_size_x": world_size_x,
 		"world_size_z": world_size_z,
+		"world_origin_x": world_origin_x,
+		"world_origin_z": world_origin_z,
 		"lod_step": initial_lod_step,
 	}
+
+func refresh_road_clipped_patches(flat_pairs: PackedInt32Array) -> void:
+	var dirty_keys: Array[Vector2i] = _dirty_patch_keys(flat_pairs)
+	for key in dirty_keys:
+		if patches.has(key):
+			_upload_patch(key)
 
 func _upload_patch(key: Vector2i) -> void:
 	if not patches.has(key):
@@ -334,6 +336,14 @@ func _upload_patch(key: Vector2i) -> void:
 	var patch_node: MeshInstance3D = patch["node"]
 	var world_size_x := float(patch_data["world_size_x"])
 	var world_size_z := float(patch_data["world_size_z"])
+	var lod_step := int(patch.get("lod_step", 1))
+	patch["sample_width"] = int(patch_data["sample_width"])
+	patch["sample_height"] = int(patch_data["sample_height"])
+	patch["world_size_x"] = world_size_x
+	patch["world_size_z"] = world_size_z
+	patch["world_origin_x"] = float(patch_data["world_origin_x"])
+	patch["world_origin_z"] = float(patch_data["world_origin_z"])
+	patch_node.mesh = _water_patch_mesh_from_data(patch_data, lod_step)
 	patch_node.position = Vector3(
 		float(patch_data["world_origin_x"]) + world_size_x * 0.5,
 		0.0,
@@ -418,6 +428,294 @@ func _dirty_patch_keys(flat_pairs: PackedInt32Array) -> Array[Vector2i]:
 	for index in range(pair_count):
 		keys.append(Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1]))
 	return keys
+
+func _patch_has_road_clip_polygons(patch_data: Dictionary) -> bool:
+	if not patch_data.has("road_clip_polygon_counts") or not patch_data.has("road_clip_polygon_points"):
+		return false
+	var counts: PackedInt32Array = patch_data["road_clip_polygon_counts"] as PackedInt32Array
+	var points: PackedVector3Array = patch_data["road_clip_polygon_points"] as PackedVector3Array
+	if counts.size() == 0:
+		return false
+	var expected_points := 0
+	for count in counts:
+		if count < 3:
+			return false
+		expected_points += count
+	return expected_points == points.size()
+
+func _water_patch_mesh_from_data(patch_data: Dictionary, lod_step: int) -> Mesh:
+	if _patch_has_road_clip_polygons(patch_data):
+		return _clipped_water_patch_mesh(patch_data, lod_step)
+	return _patch_mesh(
+		int(patch_data["sample_width"]),
+		int(patch_data["sample_height"]),
+		float(patch_data["world_size_x"]),
+		float(patch_data["world_size_z"]),
+		lod_step
+	)
+
+func _road_clip_polygons_from_patch_data(patch_data: Dictionary) -> Array:
+	var counts: PackedInt32Array = patch_data["road_clip_polygon_counts"] as PackedInt32Array
+	var points: PackedVector3Array = patch_data["road_clip_polygon_points"] as PackedVector3Array
+	var polygons: Array = []
+	var cursor := 0
+	for count in counts:
+		var polygon := PackedVector2Array()
+		for offset in range(count):
+			var point: Vector3 = points[cursor + offset]
+			polygon.append(Vector2(point.x, point.z))
+		polygons.append({
+			"points": polygon,
+			"bounds": _polygon_bounds(polygon),
+		})
+		cursor += count
+	return polygons
+
+func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMesh:
+	var sample_width := int(patch_data["sample_width"])
+	var sample_height := int(patch_data["sample_height"])
+	var world_size_x := float(patch_data["world_size_x"])
+	var world_size_z := float(patch_data["world_size_z"])
+	var world_origin_x := float(patch_data["world_origin_x"])
+	var world_origin_z := float(patch_data["world_origin_z"])
+	var center_x := world_origin_x + world_size_x * 0.5
+	var center_z := world_origin_z + world_size_z * 0.5
+	var x_vertex_count: int = _mesh_subdivisions_for_sample_count(sample_width, lod_step) + 2
+	var z_vertex_count: int = _mesh_subdivisions_for_sample_count(sample_height, lod_step) + 2
+	var x_interval_count: int = maxi(1, x_vertex_count - 1)
+	var z_interval_count: int = maxi(1, z_vertex_count - 1)
+	var clip_polygons: Array = _road_clip_polygons_from_patch_data(patch_data)
+	var surface_tool := SurfaceTool.new()
+	surface_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var emitted_vertices: int = 0
+
+	for z_index in range(z_interval_count):
+		var z0 := float(z_index) / float(z_interval_count)
+		var z1 := float(z_index + 1) / float(z_interval_count)
+		var world_z0 := world_origin_z + z0 * world_size_z
+		var world_z1 := world_origin_z + z1 * world_size_z
+		for x_index in range(x_interval_count):
+			var x0 := float(x_index) / float(x_interval_count)
+			var x1 := float(x_index + 1) / float(x_interval_count)
+			var world_x0 := world_origin_x + x0 * world_size_x
+			var world_x1 := world_origin_x + x1 * world_size_x
+			var cell := PackedVector2Array([
+				Vector2(world_x0, world_z0),
+				Vector2(world_x1, world_z0),
+				Vector2(world_x1, world_z1),
+				Vector2(world_x0, world_z1),
+			])
+			emitted_vertices += _emit_clipped_water_cell(
+				surface_tool,
+				cell,
+				clip_polygons,
+				center_x,
+				center_z,
+				world_origin_x,
+				world_origin_z,
+				world_size_x,
+				world_size_z
+			)
+
+	if emitted_vertices == 0:
+		return ArrayMesh.new()
+	return surface_tool.commit()
+
+func _emit_clipped_water_cell(
+	surface_tool: SurfaceTool,
+	cell: PackedVector2Array,
+	clip_polygons: Array,
+	center_x: float,
+	center_z: float,
+	world_origin_x: float,
+	world_origin_z: float,
+	world_size_x: float,
+	world_size_z: float
+) -> int:
+	var cell_bounds := _polygon_bounds(cell)
+	var intersecting_clips: Array = []
+	for clip in clip_polygons:
+		var clip_points: PackedVector2Array = clip["points"]
+		var clip_bounds: Rect2 = clip["bounds"]
+		if not _bounds_intersect(cell_bounds, clip_bounds):
+			continue
+		if _cell_fully_inside_polygon(cell, clip_points):
+			return 0
+		if _polygon_intersects_cell(clip_points, clip_bounds, cell, cell_bounds):
+			intersecting_clips.append(clip_points)
+
+	if intersecting_clips.is_empty():
+		return _emit_unclipped_water_cell(
+			surface_tool,
+			cell,
+			center_x,
+			center_z,
+			world_origin_x,
+			world_origin_z,
+			world_size_x,
+			world_size_z
+		)
+
+	var pieces: Array = [cell]
+	for clip_points_variant in intersecting_clips:
+		var clip_points: PackedVector2Array = clip_points_variant
+		var next_pieces: Array = []
+		for piece in pieces:
+			var clipped_pieces: Array[PackedVector2Array] = Geometry2D.clip_polygons(piece, clip_points)
+			for clipped_piece in clipped_pieces:
+				if clipped_piece.size() >= 3 and _polygon_within_bounds(clipped_piece, cell_bounds):
+					next_pieces.append(clipped_piece)
+		pieces = next_pieces
+		if pieces.is_empty():
+			return 0
+
+	var emitted_vertices := 0
+	for piece in pieces:
+		var indices: PackedInt32Array = Geometry2D.triangulate_polygon(piece)
+		for index in range(0, indices.size(), 3):
+			_add_clipped_water_vertex(surface_tool, piece[indices[index + 2]], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+			emitted_vertices += 1
+			_add_clipped_water_vertex(surface_tool, piece[indices[index + 1]], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+			emitted_vertices += 1
+			_add_clipped_water_vertex(surface_tool, piece[indices[index]], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+			emitted_vertices += 1
+	return emitted_vertices
+
+func _emit_unclipped_water_cell(
+	surface_tool: SurfaceTool,
+	cell: PackedVector2Array,
+	center_x: float,
+	center_z: float,
+	world_origin_x: float,
+	world_origin_z: float,
+	world_size_x: float,
+	world_size_z: float
+) -> int:
+	_add_clipped_water_vertex(surface_tool, cell[0], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+	_add_clipped_water_vertex(surface_tool, cell[2], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+	_add_clipped_water_vertex(surface_tool, cell[1], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+	_add_clipped_water_vertex(surface_tool, cell[0], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+	_add_clipped_water_vertex(surface_tool, cell[3], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+	_add_clipped_water_vertex(surface_tool, cell[2], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
+	return 6
+
+func _add_clipped_water_vertex(
+	surface_tool: SurfaceTool,
+	world_xz: Vector2,
+	center_x: float,
+	center_z: float,
+	world_origin_x: float,
+	world_origin_z: float,
+	world_size_x: float,
+	world_size_z: float
+) -> void:
+	var uv := Vector2(
+		clampf((world_xz.x - world_origin_x) / maxf(world_size_x, 0.001), 0.0, 1.0),
+		clampf((world_xz.y - world_origin_z) / maxf(world_size_z, 0.001), 0.0, 1.0)
+	)
+	surface_tool.set_normal(Vector3.UP)
+	surface_tool.set_uv(uv)
+	surface_tool.add_vertex(Vector3(world_xz.x - center_x, 0.0, world_xz.y - center_z))
+
+func _polygon_bounds(polygon: PackedVector2Array) -> Rect2:
+	if polygon.size() == 0:
+		return Rect2()
+	var min_x := polygon[0].x
+	var max_x := polygon[0].x
+	var min_y := polygon[0].y
+	var max_y := polygon[0].y
+	for point in polygon:
+		min_x = minf(min_x, point.x)
+		max_x = maxf(max_x, point.x)
+		min_y = minf(min_y, point.y)
+		max_y = maxf(max_y, point.y)
+	return Rect2(Vector2(min_x, min_y), Vector2(max_x - min_x, max_y - min_y))
+
+func _bounds_intersect(a: Rect2, b: Rect2) -> bool:
+	return (
+		a.position.x <= b.position.x + b.size.x
+		and a.position.x + a.size.x >= b.position.x
+		and a.position.y <= b.position.y + b.size.y
+		and a.position.y + a.size.y >= b.position.y
+	)
+
+func _polygon_intersects_cell(
+	polygon: PackedVector2Array,
+	polygon_bounds: Rect2,
+	cell: PackedVector2Array,
+	cell_bounds: Rect2
+) -> bool:
+	if not _bounds_intersect(cell_bounds, polygon_bounds):
+		return false
+	for cell_point in cell:
+		if Geometry2D.is_point_in_polygon(cell_point, polygon):
+			return true
+	for polygon_point in polygon:
+		if _point_in_bounds(polygon_point, cell_bounds):
+			return true
+	for polygon_index in range(polygon.size()):
+		var polygon_a := polygon[polygon_index]
+		var polygon_b := polygon[(polygon_index + 1) % polygon.size()]
+		for cell_index in range(cell.size()):
+			var cell_a := cell[cell_index]
+			var cell_b := cell[(cell_index + 1) % cell.size()]
+			if _segments_intersect(polygon_a, polygon_b, cell_a, cell_b):
+				return true
+	return false
+
+func _cell_fully_inside_polygon(cell: PackedVector2Array, polygon: PackedVector2Array) -> bool:
+	for point in cell:
+		if Geometry2D.is_point_in_polygon(point, polygon):
+			continue
+		if _point_on_polygon_boundary(point, polygon):
+			continue
+		return false
+	return true
+
+func _point_on_polygon_boundary(point: Vector2, polygon: PackedVector2Array) -> bool:
+	for index in range(polygon.size()):
+		if _point_on_segment(point, polygon[index], polygon[(index + 1) % polygon.size()]):
+			return true
+	return false
+
+func _polygon_within_bounds(polygon: PackedVector2Array, bounds: Rect2) -> bool:
+	for point in polygon:
+		if not _point_in_bounds(point, bounds):
+			return false
+	return true
+
+func _point_in_bounds(point: Vector2, bounds: Rect2) -> bool:
+	const EPSILON := 0.01
+	return (
+		point.x >= bounds.position.x - EPSILON
+		and point.x <= bounds.position.x + bounds.size.x + EPSILON
+		and point.y >= bounds.position.y - EPSILON
+		and point.y <= bounds.position.y + bounds.size.y + EPSILON
+	)
+
+func _segments_intersect(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> bool:
+	var ab := b - a
+	var cd := d - c
+	var denom := _cross_2d(ab, cd)
+	var ca := c - a
+	if absf(denom) <= 0.00001:
+		return _point_on_segment(c, a, b) or _point_on_segment(d, a, b) or _point_on_segment(a, c, d) or _point_on_segment(b, c, d)
+	var t := _cross_2d(ca, cd) / denom
+	var u := _cross_2d(ca, ab) / denom
+	return t >= -0.00001 and t <= 1.00001 and u >= -0.00001 and u <= 1.00001
+
+func _point_on_segment(point: Vector2, a: Vector2, b: Vector2) -> bool:
+	var ab := b - a
+	var ap := point - a
+	if absf(_cross_2d(ab, ap)) > 0.00001:
+		return false
+	var dot := ap.dot(ab)
+	if dot < -0.00001:
+		return false
+	return dot <= ab.length_squared() + 0.00001
+
+func _cross_2d(a: Vector2, b: Vector2) -> float:
+	return a.x * b.y - a.y * b.x
 
 func _patch_mesh(
 	sample_width: int,
@@ -504,14 +802,11 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 	var current_lod_step := int(patch.get("lod_step", 1))
 	if current_lod_step == target_lod_step:
 		return
+	var patch_data: Dictionary = simulation_node.get_water_patch(key.x, key.y)
+	if patch_data.is_empty():
+		return
 	patch["lod_step"] = target_lod_step
-	patch_node.mesh = _patch_mesh(
-		int(patch["sample_width"]),
-		int(patch["sample_height"]),
-		float(patch["world_size_x"]),
-		float(patch["world_size_z"]),
-		target_lod_step
-	)
+	patch_node.mesh = _water_patch_mesh_from_data(patch_data, target_lod_step)
 
 func _ensure_fallback_height_texture() -> void:
 	if fallback_height_texture != null:

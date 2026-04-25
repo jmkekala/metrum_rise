@@ -664,7 +664,7 @@ impl SimCore {
         self.transit_network
             .sync_to_terrain(&mut self.region_graph, &self.heightmap);
         self.transit_network
-            .rebuild_all_terrain_earthworks(&self.region_graph, &mut self.heightmap);
+            .rebuild_dirty_terrain_earthworks(&self.region_graph, &mut self.heightmap);
         self.rebuild_building_entrances_internal();
         if crate::debug::category_enabled("road")
             && Self::road_geometry_dump_enabled()

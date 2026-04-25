@@ -388,30 +388,70 @@ impl RoadSurfaceSystem {
         let mut patch_keys = HashSet::new();
 
         for piece in self.compiled_visual_span_pieces.values() {
-            for kind in [ChunkCacheKind::Surface, ChunkCacheKind::Earthwork] {
-                let Some((min, max)) = self.visual_span_piece_bounds(piece, kind) else {
-                    continue;
-                };
-                for key in terrain.render_patch_keys_for_world_bounds(min.x, min.z, max.x, max.z) {
-                    patch_keys.insert(key);
-                }
+            let Some((min, max)) = self.visual_span_piece_bounds(piece, ChunkCacheKind::Surface)
+            else {
+                continue;
+            };
+            for key in terrain.render_patch_keys_for_world_bounds(min.x, min.z, max.x, max.z) {
+                patch_keys.insert(key);
             }
         }
 
         for piece in self.compiled_visual_node_pieces.values() {
-            for kind in [ChunkCacheKind::Surface, ChunkCacheKind::Earthwork] {
-                let Some((min, max)) = self.visual_node_piece_bounds(piece, kind) else {
-                    continue;
-                };
-                for key in terrain.render_patch_keys_for_world_bounds(min.x, min.z, max.x, max.z) {
-                    patch_keys.insert(key);
-                }
+            let Some((min, max)) = self.visual_node_piece_bounds(piece, ChunkCacheKind::Surface)
+            else {
+                continue;
+            };
+            for key in terrain.render_patch_keys_for_world_bounds(min.x, min.z, max.x, max.z) {
+                patch_keys.insert(key);
             }
         }
 
         let mut keys: Vec<(usize, usize)> = patch_keys.into_iter().collect();
         keys.sort_unstable();
         keys
+    }
+
+    pub(crate) fn terrain_clip_polygons_for_world_bounds(
+        &self,
+        graph: &RegionGraph,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> Vec<RoadSurfaceVisualPolygon> {
+        let mut polygons = Vec::new();
+
+        for piece in self.compiled_visual_span_pieces.values() {
+            if piece.edge_class != EdgeClass::Standard {
+                continue;
+            }
+            Self::collect_terrain_clip_polygons_from_piece(
+                &piece.outer_boundary_loops,
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+                &mut polygons,
+            );
+        }
+
+        for (&node_id, piece) in &self.compiled_visual_node_pieces {
+            if !self.node_has_standard_surface_edges(graph, node_id) {
+                continue;
+            }
+            Self::collect_terrain_clip_polygons_from_piece(
+                &piece.outer_boundary_loops,
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+                &mut polygons,
+            );
+        }
+
+        Self::sort_visual_polygons(&mut polygons);
+        polygons
     }
 
     pub(crate) fn sample_visible_surface_height(
@@ -4769,6 +4809,56 @@ impl RoadSurfaceSystem {
             })
     }
 
+    fn node_has_standard_surface_edges(&self, graph: &RegionGraph, node_id: u32) -> bool {
+        (node_id as usize) < graph.node_adjacency_count()
+            && graph.node_adjacency(node_id).iter().any(|&edge_idx| {
+                if edge_idx >= graph.edge_count() {
+                    return false;
+                }
+                let edge = graph.edge(edge_idx);
+                Self::is_surface_edge(edge) && edge.class == EdgeClass::Standard
+            })
+    }
+
+    fn collect_terrain_clip_polygons_from_piece(
+        source: &[RoadSurfaceVisualPolygon],
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+        out: &mut Vec<RoadSurfaceVisualPolygon>,
+    ) {
+        for polygon in source {
+            if Self::visual_polygon_overlaps_bounds_xz(polygon, min_x, min_z, max_x, max_z) {
+                out.push(polygon.clone());
+            }
+        }
+    }
+
+    fn visual_polygon_overlaps_bounds_xz(
+        polygon: &RoadSurfaceVisualPolygon,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> bool {
+        let mut polygon_min_x = f32::MAX;
+        let mut polygon_max_x = f32::MIN;
+        let mut polygon_min_z = f32::MAX;
+        let mut polygon_max_z = f32::MIN;
+        for point in &polygon.points_world {
+            polygon_min_x = polygon_min_x.min(point.x);
+            polygon_max_x = polygon_max_x.max(point.x);
+            polygon_min_z = polygon_min_z.min(point.z);
+            polygon_max_z = polygon_max_z.max(point.z);
+        }
+
+        polygon_min_x <= max_x
+            && polygon_max_x >= min_x
+            && polygon_min_z <= max_z
+            && polygon_max_z >= min_z
+    }
+
     fn is_surface_edge(edge: &Edge) -> bool {
         !edge.deleted && matches!(edge.primary_type, TransitType::Road | TransitType::Foot)
     }
@@ -5715,6 +5805,134 @@ mod tests {
         assert!(
             min_outer_abs_x >= max_inner_abs_x + 0.5,
             "expected span earthwork tie-in to stay outside the paved footprint, got min_outer_abs_x={min_outer_abs_x:.3} max_inner_abs_x={max_inner_abs_x:.3}"
+        );
+    }
+
+    #[test]
+    fn terrain_clip_polygons_include_standard_grounded_footprints() {
+        let terrain = flat_terrain(97, 97);
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(0.0, 0.0, 24.0), NodeType::Junction);
+        graph.add_edge(test_edge(
+            start,
+            end,
+            vec![Vector3::new(0.0, 0.0, -24.0), Vector3::new(0.0, 0.0, 24.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        let clip_polygons =
+            surface.terrain_clip_polygons_for_world_bounds(&graph, -16.0, -32.0, 16.0, 32.0);
+
+        assert!(
+            !clip_polygons.is_empty(),
+            "expected grounded standard road footprint polygons to clip terrain topology"
+        );
+        assert!(
+            clip_polygons
+                .iter()
+                .flat_map(|polygon| polygon.points_world.iter())
+                .any(|point| point.x.abs() > 5.0),
+            "expected terrain clip polygons to include the full sidewalk / shoulder footprint"
+        );
+        assert!(
+            clip_polygons.len() <= 3,
+            "expected piece outer footprint loops, not per-band terrain clip cutters"
+        );
+    }
+
+    #[test]
+    fn road_locked_terrain_patches_are_bounded_to_visible_footprint() {
+        let terrain = flat_terrain(257, 257);
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(0.0, 0.0, -48.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(0.0, 0.0, 48.0), NodeType::Junction);
+        graph.add_edge(test_edge(
+            start,
+            end,
+            vec![Vector3::new(0.0, 0.0, -48.0), Vector3::new(0.0, 0.0, 48.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        let mut footprint_min_x = f32::MAX;
+        let mut footprint_max_x = f32::MIN;
+        let mut footprint_min_z = f32::MAX;
+        let mut footprint_max_z = f32::MIN;
+        for point in surface
+            .compiled_visual_span_pieces()
+            .values()
+            .flat_map(|piece| piece.outer_boundary_loops.iter())
+            .chain(
+                surface
+                    .compiled_visual_node_pieces()
+                    .values()
+                    .flat_map(|piece| piece.outer_boundary_loops.iter()),
+            )
+            .flat_map(|polygon| polygon.points_world.iter())
+        {
+            footprint_min_x = footprint_min_x.min(point.x);
+            footprint_max_x = footprint_max_x.max(point.x);
+            footprint_min_z = footprint_min_z.min(point.z);
+            footprint_max_z = footprint_max_z.max(point.z);
+        }
+
+        let keys = surface.terrain_render_patch_keys_with_visible_road(&terrain);
+        assert!(!keys.is_empty());
+        assert!(
+            keys.len() < terrain.render_patch_cols() * terrain.render_patch_rows() / 8,
+            "road-locked render patches must stay local to the visible road footprint"
+        );
+        for (patch_x, patch_z) in keys {
+            let patch = terrain.visual_patch_snapshot(patch_x, patch_z).unwrap();
+            let patch_max_x = patch.world_origin_x + patch.world_size_x;
+            let patch_max_z = patch.world_origin_z + patch.world_size_z;
+            assert!(
+                patch.world_origin_x <= footprint_max_x
+                    && patch_max_x >= footprint_min_x
+                    && patch.world_origin_z <= footprint_max_z
+                    && patch_max_z >= footprint_min_z,
+                "road-locked patch ({patch_x}, {patch_z}) must overlap the road footprint, not only the earthwork envelope"
+            );
+        }
+    }
+
+    #[test]
+    fn terrain_clip_polygons_skip_bridge_midspans() {
+        let terrain = flat_terrain(97, 97);
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(0.0, 0.0, 24.0), NodeType::Junction);
+        graph.add_edge(test_edge(
+            start,
+            end,
+            vec![Vector3::new(0.0, 8.0, -24.0), Vector3::new(0.0, 8.0, 24.0)],
+            10.0,
+            EdgeClass::Bridge,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        let clip_polygons =
+            surface.terrain_clip_polygons_for_world_bounds(&graph, -16.0, -32.0, 16.0, 32.0);
+
+        assert!(
+            clip_polygons.is_empty(),
+            "bridge midspans must not cut terrain topology like grounded standard roads"
         );
     }
 

@@ -12,6 +12,7 @@ extends Node
 
 @onready var simulation_node = $"../SimulationNode"
 @onready var terrain = $"../Terrain"
+@onready var water = $"../Water"
 @onready var road_tool = $"../RoadTool"
 @onready var zoning_overlay = $"../ZoningOverlay"
 # @onready var rail_tool = $"../RailTool"  # uncomment when RailTool exists
@@ -31,7 +32,8 @@ func _process(_delta: float) -> void:
 	var terrain_rebuild_start_us := Time.get_ticks_usec()
 	simulation_node.rebuild_network_surface_terrain()
 	var terrain_rebuild_ms := float(Time.get_ticks_usec() - terrain_rebuild_start_us) / 1000.0
-	var dirty_patch_pairs := int(simulation_node.get_dirty_terrain_patches().size() / 2)
+	var dirty_terrain_patch_keys: PackedInt32Array = simulation_node.get_dirty_terrain_patches()
+	var dirty_patch_pairs := int(dirty_terrain_patch_keys.size() / 2)
 
 	# 2. Redraw the terrain mesh (rebuild_network_surface_terrain sets terrain_dirty, but
 	#    we update it eagerly here and clear the flag so terrain.gd._process skips it
@@ -40,6 +42,11 @@ func _process(_delta: float) -> void:
 	terrain.update_terrain_visuals()
 	var terrain_visuals_ms := float(Time.get_ticks_usec() - terrain_visuals_start_us) / 1000.0
 	simulation_node.clear_terrain_dirty()
+
+	var water_visuals_start_us := Time.get_ticks_usec()
+	if water and water.has_method("refresh_road_clipped_patches"):
+		water.refresh_road_clipped_patches(dirty_terrain_patch_keys)
+	var water_visuals_ms := float(Time.get_ticks_usec() - water_visuals_start_us) / 1000.0
 
 	# 3. Rebuild each network's visual mesh.
 	var road_mesh_start_us := Time.get_ticks_usec()
@@ -62,11 +69,12 @@ func _process(_delta: float) -> void:
 	if _road_debug_enabled:
 		var total_ms := float(Time.get_ticks_usec() - total_start_us) / 1000.0
 		print(
-			"[DEBUG:road] refresh terrain_rebuild_ms=%.3f dirty_patches=%d terrain_visuals_ms=%.3f road_mesh_ms=%.3f border_checks_ms=%.3f total_ms=%.3f"
+			"[DEBUG:road] refresh terrain_rebuild_ms=%.3f dirty_patches=%d terrain_visuals_ms=%.3f water_visuals_ms=%.3f road_mesh_ms=%.3f border_checks_ms=%.3f total_ms=%.3f"
 			% [
 				terrain_rebuild_ms,
 				dirty_patch_pairs,
 				terrain_visuals_ms,
+				water_visuals_ms,
 				road_mesh_ms,
 				border_checks_ms,
 				total_ms,

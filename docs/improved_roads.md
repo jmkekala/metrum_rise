@@ -232,13 +232,15 @@ Deterministic rule:
   road surface
 - the seam outside the owned footprint must be explicit:
   - the terrain mesh is clipped / triangulated so its inner edge follows the road-owned outer
-    boundary, or
-  - road-owned tie-in geometry starts on the exact same outer-boundary vertices and extends to the
-    terrain tie-in boundary
-- road-footprint suppression is valid only where road-owned top or tie-in geometry exists; it must
-  not be used as a broad visual band-aid that leaves holes between road and terrain
-- terrain patches intersecting compiled road or visible earthwork ownership must not drop to a
-  coarser mesh LOD that can reintroduce overlap after the support stamp was already solved
+    boundary
+  - road-owned tie-in geometry is reserved for structural / retaining variants, not the ordinary
+    grounded `Standard` seam
+- road-footprint suppression must be produced by omitted terrain topology, not by a shader mask or
+  broad visual band-aid that leaves holes between road and terrain
+- terrain patches intersecting the compiled road-owned footprint must not drop to a coarser mesh
+  LOD that can reintroduce overlap after the support stamp was already solved
+- road-locked terrain patch selection must not use the wider earthwork envelope; otherwise one
+  raised or lowered road can force unrelated far-field terrain into the clipped mesh path
 - when authored terrain is coarser than the required close-up road-support fidelity, road-locked
   terrain render patches must subdivide to a denser visible mesh step so the rendered terrain
   continues to follow the stamped support surface instead of cutting across it with coarse triangles
@@ -262,7 +264,8 @@ For grounded `Standard` roads, asphalt, shoulder / curb, and sidewalk geometry a
 ground inside the owned footprint. Explicit road-owned earthwork geometry remains part of the
 deterministic ownership model for terrain integration, structural cases, seam tie-ins, and future
 retaining variants, but ordinary grounded roads must not render that carrier as a separate visible
-mesh layer below asphalt or sidewalk.
+mesh layer below asphalt or sidewalk. Ordinary grounded roads must instead cut the terrain mesh to
+the road-owned footprint.
 
 ### 2. Edge Surface Is Sampled As Ordered Sections
 
@@ -698,9 +701,8 @@ Current status:
 - the useful conclusions from that prototype remain in force: fixed-roadbed ownership, chunk-local
   rebuilds, and explicit visible-surface precedence stay part of the target contract
 - Phase 13 is partially live in code: the piece/profile carrier and deterministic ownership data
-  are live, but grounded `Standard` roads are not complete until the visible seam from the outer
-  sidewalk / shoulder edge back to terrain is closed by road-owned tie-in geometry or exact clipped
-  terrain topology
+  are live, and road-touched terrain patches now receive exact road footprint clip polygons instead
+  of using the terrain shader's road mask discard path
 - the graph/visual split is now live in code:
   - committed spans now own explicit road / sidewalk polygons plus explicit earthwork polygons and
     outer earthwork boundaries
@@ -758,28 +760,34 @@ Current status:
     time; `Terminal`, `Bend`, and `JunctionN` now compile explicit tie-in side polygons plus
     explicit tie-in outer loops during piece compile
   - terrain visual stamping is now footprint-first, but it is not accepted as the final visible
-    seam carrier: grounded `Standard` roads may suppress terrain under asphalt / sidewalk only
-    after a visible tie-in from the outer sidewalk / shoulder edge to terrain, or exact clipped
-    terrain topology, exists
+    seam carrier: grounded `Standard` roads must suppress terrain under asphalt / sidewalk by
+    clipping terrain topology to the road-owned outer sidewalk / shoulder edge
+  - road-touched terrain patches now build a clipped `ArrayMesh` from the piece-owned road
+    footprint clip polygons instead of relying on one rectangular `PlaneMesh` plus fragment discard
+  - clipped terrain patch emission now bypasses exact polygon clipping for cells that are clearly
+    untouched by the road footprint, and drops cells that are fully road-owned before they reach the
+    expensive boundary clipper
+  - visible water patches now consume the same road footprint clip polygons and rebuild only
+    road-touched water patch meshes after a road edit, so water cannot remain as a hidden visual
+    carrier under grounded asphalt, shoulder / curb, or sidewalk
   - paved-footprint support now follows the solved road profile per top-surface triangle instead of
     stamping one flat minimum-height slab per piece
   - compiled span and node pieces still own explicit earthwork geometry for deterministic terrain
-    integration, chunking, and structural cases, but grounded `Standard` roads must expose or
-    replace that carrier with a valid seam carrier before terrain-under-footprint masking is a
-    complete visual solution
+    integration, chunking, and structural cases, but grounded `Standard` roads must replace
+    terrain-under-footprint hiding with clipped terrain topology
   - render no longer draws the full support carrier directly: spans and node pieces compile a
     separate render-only earthwork face set, but suppressing that visible layer for grounded
-    `Standard` roads is only valid after another visible seam carrier closes the road-to-terrain
-    boundary
+    `Standard` roads is only valid when terrain patches are clipped to the road-owned seam
   - render-only earthwork faces are now classified deterministically as either `Slope` or
     `RetainingWall`, and the renderer routes those two face classes to different materials instead
     of painting every tie-in face as generic exposed earthwork
   - visible-world height/raycast queries now hit compiled earthwork geometry only for intentionally
     surfaced structural cases; grounded `Standard` roads fall through from top surface to
     integrated terrain outside the owned footprint
-- the remaining Phase 13 work is not just material refinement: the next blocking slice is the
-  grounded-road seam carrier itself. Richer retaining / wall variants and better materials come
-  after the deterministic seam / tie-in closure works without relying on terrain masking to hide
+- the remaining Phase 13 work is not just material refinement: the next blocking slice is clipped
+  terrain and water topology validation and hardening across flat, diagonal, sloped,
+  water-overlap, bend, terminal, and `JunctionN` cases. Richer retaining / wall variants and better
+  materials come after the deterministic seam works without relying on shader masking to hide
   missing geometry
 
 ## Legacy Retirement Map

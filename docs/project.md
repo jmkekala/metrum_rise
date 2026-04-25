@@ -81,12 +81,16 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   slope. Terrain under the owned footprint is now specified as road-following support, not as an
   independent visible surface or trench carrier, terrain render patches intersecting compiled road
   ownership now stay at full mesh resolution and use a denser visible mesh step near roads so
-  terrain triangles cannot simplify back through the roadbed. Road-locked terrain patches now also
-  carry an explicit road-ownership mask, but that mask is only an overlap-removal tool: grounded
-  `Standard` roads are not visually complete until the seam from the outer sidewalk / shoulder
-  edge back to terrain is closed by road-owned tie-in geometry or exact clipped terrain topology.
-  `ROAD-01` is
-  still open because the recent roads-first earthworks prototype was
+  terrain triangles cannot simplify back through the roadbed. Road-locked terrain patch selection is
+  bounded to the road-owned footprint rather than the wider earthwork envelope, road-locked patches
+  now carry explicit road footprint clip polygons instead of a road-ownership shader mask, and
+  road-touched terrain patches now build clipped double-sided `ArrayMesh` topology instead of
+  relying on fragment discard. The clipped-patch renderer now fast-paths untouched / fully
+  road-owned cells, and visible water patches now receive the same road footprint clips so water is
+  omitted under grounded asphalt, shoulder / curb, and sidewalk.
+  `ROAD-01` remains open until that clipped topology is validated against flat, diagonal, sloped,
+  water-overlap, and junction cases.
+  `ROAD-01` is still open because the recent roads-first earthworks prototype was
   taken far enough to prove the representation problem: the thin corridor-sheet plus
   terrain-stamp approach does not produce acceptable flat-ground or arbitrary-angle tie-ins.
   Phase 11 remains the deterministic `10 m` versus `5 m` characterization gate, Phase 12 is the
@@ -97,7 +101,7 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   `Span`, `Bend`, `Terminal`, and `JunctionN` pieces. The hard-cut carrier replacement is partially
   live in the road-surface runtime: renderer output, visible-surface queries, road-surface debug
   overlays, and road-driven earthwork stamping all consume explicit visual pieces instead of a
-  node-patch carrier, but the grounded-road seam carrier remains the blocking visual gap.
+  node-patch carrier, but clipped terrain topology still needs visual validation and hardening.
   `Terminal`, `Bend`, and `JunctionN` now compile explicit road / sidewalk
   polygons from mouth profiles, width changes are no longer treated as a separate visual node
   piece, cached visual polygons now carry deterministic triangles for render/query/stamp reuse,
@@ -129,11 +133,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   visible-world queries can now hit compiled span and node earthwork geometry before falling
   through to terrain. The render path still compiles a cleaner render-only earthwork face set for
   structural or intentionally exposed cases, but suppressing that visible layer for grounded
-  `Standard` roads is not accepted as complete until another visible seam carrier closes the
-  road-to-terrain boundary. Gentle tie-in faces stay on the earthwork material path only when they
-  are intentionally surfaced, while steep faces route deterministically to the retaining / wall
-  concrete path. The remaining blocking work is seam / tie-in closure, followed by retaining,
-  wall, and material variants.
+  `Standard` roads is not accepted as complete until terrain patches are clipped to the
+  road-owned seam. Gentle tie-in faces stay on the earthwork material path only when they are
+  intentionally surfaced, while steep faces route deterministically to the retaining / wall
+  concrete path. The remaining blocking work is clipped terrain topology validation and hardening,
+  followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

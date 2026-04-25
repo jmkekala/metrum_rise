@@ -330,9 +330,6 @@ impl SimulationNode {
         let texture_width = sample_width + base_patch.inner_offset_x * 2;
         let texture_height = sample_height + base_patch.inner_offset_z * 2;
         let mut height_data = Vec::with_capacity(texture_width * texture_height);
-        let mut road_ownership_mask_data = Vec::with_capacity(texture_width * texture_height);
-        let mut has_road_ownership = false;
-
         for local_z in 0..texture_height {
             let clamped_inner_z = if local_z < base_patch.inner_offset_z {
                 0
@@ -376,12 +373,6 @@ impl SimulationNode {
                     );
                 let support_height_m = paved_support_height_m.unwrap_or(base_visual_height_m);
                 height_data.push(support_height_m / crate::config::HEIGHT_SCALE);
-                if paved_support_height_m.is_some() {
-                    road_ownership_mask_data.push(1.0);
-                    has_road_ownership = true;
-                } else {
-                    road_ownership_mask_data.push(0.0);
-                }
             }
         }
 
@@ -401,13 +392,47 @@ impl SimulationNode {
             height_data,
         };
         let mut dict = Self::terrain_patch_dict(&refined_patch);
-        if has_road_ownership {
-            dict.set(
-                "road_ownership_mask_data",
-                PackedFloat32Array::from_iter(road_ownership_mask_data),
-            );
-        }
+        Self::append_road_clip_polygons_for_bounds(
+            &mut dict,
+            core,
+            base_patch.world_origin_x,
+            base_patch.world_origin_z,
+            base_patch.world_origin_x + base_patch.world_size_x,
+            base_patch.world_origin_z + base_patch.world_size_z,
+        );
         dict
+    }
+
+    fn append_road_clip_polygons_for_bounds(
+        dict: &mut VarDictionary,
+        core: &SimCore,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) {
+        let road_clip_polygons = core
+            .transit_network
+            .road_surface
+            .terrain_clip_polygons_for_world_bounds(&core.region_graph, min_x, min_z, max_x, max_z);
+        if road_clip_polygons.is_empty() {
+            return;
+        }
+
+        let mut polygon_counts = Vec::with_capacity(road_clip_polygons.len());
+        let mut polygon_points = Vec::new();
+        for polygon in road_clip_polygons {
+            polygon_counts.push(i32::try_from(polygon.points_world.len()).unwrap_or(0));
+            polygon_points.extend(polygon.points_world);
+        }
+        dict.set(
+            "road_clip_polygon_counts",
+            PackedInt32Array::from_iter(polygon_counts),
+        );
+        dict.set(
+            "road_clip_polygon_points",
+            PackedVector3Array::from_iter(polygon_points),
+        );
     }
 
     fn water_patch_dict(patch: &crate::simulation::water::WaterPatchSnapshot) -> VarDictionary {
@@ -804,7 +829,16 @@ impl SimulationNode {
         let Some(patch) = core.watermap.visible_patch_snapshot(patch_x, patch_z) else {
             return VarDictionary::new();
         };
-        Self::water_patch_dict(&patch)
+        let mut dict = Self::water_patch_dict(&patch);
+        Self::append_road_clip_polygons_for_bounds(
+            &mut dict,
+            &core,
+            patch.world_origin_x,
+            patch.world_origin_z,
+            patch.world_origin_x + patch.world_size_x,
+            patch.world_origin_z + patch.world_size_z,
+        );
+        dict
     }
 
     /// Returns the visible water depth along the world-edge perimeter loop.
