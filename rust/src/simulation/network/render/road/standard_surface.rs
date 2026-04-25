@@ -126,9 +126,10 @@ fn emit_compiled_earthwork_mesh(
         let Some(piece) = road_surface.compiled_visual_span_pieces().get(&edge_idx) else {
             continue;
         };
-        if !road_surface.span_piece_uses_visible_earthwork(piece) {
+        if !road_surface.span_piece_emits_visible_tie_in(piece) {
             continue;
         }
+        let structural_tie_in = road_surface.span_piece_uses_visible_earthwork(piece);
         for face in &piece.render_earthwork_faces {
             match face.kind {
                 RoadSurfaceEarthworkFaceKind::Slope => {
@@ -136,7 +137,11 @@ fn emit_compiled_earthwork_mesh(
                         mesh,
                         MeshLayer::Earthwork,
                         &face.polygon,
-                        earthwork_color(),
+                        if structural_tie_in {
+                            earthwork_color()
+                        } else {
+                            terrain_tie_in_color()
+                        },
                     );
                 }
                 RoadSurfaceEarthworkFaceKind::RetainingWall => {
@@ -157,9 +162,11 @@ fn emit_compiled_earthwork_mesh(
         let Some(piece) = road_surface.compiled_visual_node_pieces().get(&node_id) else {
             continue;
         };
-        if !road_surface.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
+        if !road_surface.node_piece_emits_visible_tie_in(graph, node_id, terrain, piece) {
             continue;
         }
+        let structural_tie_in =
+            road_surface.node_piece_uses_visible_earthwork(graph, node_id, terrain);
         for face in &piece.render_earthwork_faces {
             match face.kind {
                 RoadSurfaceEarthworkFaceKind::Slope => {
@@ -167,7 +174,11 @@ fn emit_compiled_earthwork_mesh(
                         mesh,
                         MeshLayer::Earthwork,
                         &face.polygon,
-                        earthwork_color(),
+                        if structural_tie_in {
+                            earthwork_color()
+                        } else {
+                            terrain_tie_in_color()
+                        },
                     );
                 }
                 RoadSurfaceEarthworkFaceKind::RetainingWall => {
@@ -181,6 +192,10 @@ fn emit_compiled_earthwork_mesh(
             }
         }
     }
+}
+
+fn terrain_tie_in_color() -> Color {
+    Color::from_rgba(0.34, 0.48, 0.30, 1.0)
 }
 
 pub(super) fn emit_compiled_lane_markings(

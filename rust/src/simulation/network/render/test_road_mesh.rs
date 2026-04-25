@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_slope_standard_road_uses_integrated_terrain_instead_of_visible_earthwork_mesh() {
+    fn test_cross_slope_standard_road_emits_visible_tie_in_mesh() {
         let renderer = RoadRenderer;
         let terrain = cross_slope_terrain(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -469,13 +469,13 @@ mod tests {
         validate_mesh(&mesh_data, 80.0);
 
         assert!(
-            mesh_data.earthwork_vertices.is_empty(),
-            "grounded standard roads should integrate into terrain instead of emitting a separate visible earthwork mesh"
+            !mesh_data.earthwork_vertices.is_empty(),
+            "grounded standard roads should emit deterministic terrain-colored tie-in faces so clipped terrain cannot expose open seams"
         );
     }
 
     #[test]
-    fn test_flat_standard_road_emits_no_visible_earthwork_mesh() {
+    fn test_flat_standard_road_emits_visible_tie_in_mesh() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -496,8 +496,8 @@ mod tests {
         validate_mesh(&mesh_data, 80.0);
 
         assert!(
-            mesh_data.earthwork_vertices.is_empty(),
-            "flat grounded standard roads should not emit any separate visible earthwork mesh"
+            !mesh_data.earthwork_vertices.is_empty(),
+            "flat grounded standard roads still need deterministic tie-in faces because the road footprint is clipped out of terrain topology"
         );
     }
 

@@ -127,17 +127,15 @@ Required rule:
   toward source terrain using deterministic cut / fill rules
 - the seam between the road-owned top surface and surrounding terrain must be covered by a
   deterministic tie-in carrier:
-  - either terrain chunks are clipped / triangulated so their inner boundary exactly follows the
-    road-owned outer boundary
-  - or the client emits local earthwork / tie-in geometry whose inner edge reuses the same
-    road-owned outer-boundary vertices and whose outer edge ties back to terrain
+  - terrain chunks are clipped / triangulated so they do not render below the road-owned footprint
+  - the client emits local tie-in geometry whose inner edge reuses the same road-owned
+    outer-boundary vertices and whose outer edge ties back to terrain
 - terrain suppression alone is not a seam solution; it may only hide terrain under geometry that
   actually exists
 - for grounded clients, the runtime must not render a second visible support mesh under an ordinary
   grounded footprint just to hide terrain overlap
-- explicit local earthwork geometry remains valid as an internal ownership / stamping carrier and
-  as a visible carrier for structural or explicitly exposed cases, but ordinary grounded roads must
-  not depend on a separate visible mesh below asphalt, shoulder, curb, or sidewalk
+- explicit local tie-in geometry is the visible seam carrier outside the asphalt, shoulder, curb, or
+  sidewalk footprint; it is not a second support mesh below those bands
 
 Deterministic seam contract:
 
@@ -151,9 +149,9 @@ Deterministic seam contract:
      seam vertices
 - terrain masking, terrain alpha, terrain discard, or footprint suppression is not a seam carrier;
   those tools are valid only after one of the visible carriers above already covers the boundary
-- grounded `Standard` roads must use exact clipped terrain topology as the normal seam carrier; a
-  separate visible local tie-in mesh is reserved for structural classes and deterministic retaining
-  / wall variants rather than as the ordinary grounded-road join
+- grounded `Standard` roads use a two-part seam carrier: exact clipped terrain topology removes
+  terrain from the road-owned footprint, and deterministic local tie-in faces close the exposed
+  outer sidewalk / shoulder edge back to terrain
 - the clipped terrain inner edge must reuse the same ordered vertices and heights as the road-owned
   outer sidewalk / shoulder boundary; it must not resample, offset, snap, or simplify that edge
 - clipped terrain patches must receive exact road footprint clip polygons from the same `Span`,
@@ -177,11 +175,11 @@ For roads, that means:
 - grounded `Standard` roads replace the near-road visible terrain locally:
   - asphalt and sidewalk render as the visible terrain replacement inside the road-owned footprint
   - the terrain renderer emits no terrain under the road-owned footprint
-  - the seam to far-field terrain is covered by clipped terrain topology whose inner boundary is
-    the road-owned outer sidewalk / shoulder edge
+  - the seam to far-field terrain is covered by deterministic local tie-in faces whose inner
+    boundary is the road-owned outer sidewalk / shoulder edge
   - terrain suppression is allowed only as a consequence of the clipped terrain topology
   - the runtime must not render a separate visible cut / fill support mesh below ordinary grounded
-    asphalt or sidewalk
+    asphalt or sidewalk; visible tie-in faces live outside that footprint
 - structural or intentionally exposed cases such as bridge abutments, tunnel portals, or future
   retaining variants may still render explicit earthwork / wall geometry where terrain alone is
   not the intended visible carrier
@@ -529,6 +527,9 @@ The following are still blockers for the live grounded-road result:
   and the terrain shader-mask discard path has been removed
 - the terrain renderer now short-circuits clipped patch emission for untouched cells and fully
   road-owned cells, so only seam-crossing cells pay the exact polygon-clipping cost
+- grounded `Standard` roads now also render terrain-colored local tie-in faces from the road-owned
+  outer sidewalk / shoulder edge back to terrain, closing the exposed boundary that clipped terrain
+  alone cannot cover
 - visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
   water meshes receive the same road footprint clip polygons after a network edit, so water is no
   longer allowed to render under grounded road-owned asphalt, shoulder / curb, or sidewalk
@@ -536,8 +537,8 @@ The following are still blockers for the live grounded-road result:
   diagonal, sloped, water-overlap, bend, terminal, and `JunctionN` cases
 - terrain suppression / masking is not accepted as the live seam solution; road-shaped terrain holes
   must continue to be produced by terrain mesh topology
-- retaining / wall variants are later replacements for cases where deterministic thresholds require
-  structural faces, not the ordinary grounded-road seam carrier
+- retaining / wall variants are later material / classification refinements for tie-in faces whose
+  deterministic thresholds require structural treatment
 
 That means the remaining items below are later additions only after clipped terrain topology is
 implemented; they are not a substitute for closing the road-to-terrain boundary.
