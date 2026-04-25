@@ -50,6 +50,8 @@
 //! | | `clear_water_dirty` | `water.gd` |
 //! | | `get_dirty_water_patches` | `water.gd` |
 //! | | `get_water_patch` | `water.gd` |
+//! | | `get_water_patch_debug` | `water.gd` |
+//! | | `get_water_patch_authored_fill_debug` | `water.gd` |
 //! | | `get_water_border_depths` | `water.gd` |
 //! | **Network** | `add_road` | `road_tool.gd` |
 //! | | `is_network_dirty` | `network_renderer.gd` |
@@ -477,6 +479,81 @@ impl SimulationNode {
         );
         dict
     }
+
+    fn water_patch_layer_debug_dict(
+        stats: &crate::simulation::water::WaterPatchLayerStats,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "total_samples",
+            i64::try_from(stats.total_samples).unwrap_or(0),
+        );
+        dict.set(
+            "baseline_nonzero",
+            i64::try_from(stats.baseline_nonzero).unwrap_or(0),
+        );
+        dict.set("baseline_max", f64::from(stats.baseline_max));
+        dict.set("baseline_sum", f64::from(stats.baseline_sum));
+        dict.set(
+            "dynamic_nonzero",
+            i64::try_from(stats.dynamic_nonzero).unwrap_or(0),
+        );
+        dict.set("dynamic_max", f64::from(stats.dynamic_max));
+        dict.set("dynamic_sum", f64::from(stats.dynamic_sum));
+        dict.set(
+            "combined_nonzero",
+            i64::try_from(stats.combined_nonzero).unwrap_or(0),
+        );
+        dict.set("combined_max", f64::from(stats.combined_max));
+        dict.set("combined_sum", f64::from(stats.combined_sum));
+        dict.set(
+            "velocity_nonzero",
+            i64::try_from(stats.velocity_nonzero).unwrap_or(0),
+        );
+        dict.set("velocity_max", f64::from(stats.velocity_max));
+        dict.set("velocity_sum", f64::from(stats.velocity_sum));
+        dict.set(
+            "source_count_in_patch",
+            i64::try_from(stats.source_count_in_patch).unwrap_or(0),
+        );
+        dict.set("source_rate_sum", f64::from(stats.source_rate_sum));
+        dict.set("source_rate_abs_sum", f64::from(stats.source_rate_abs_sum));
+        dict.set(
+            "source_count_total",
+            i64::try_from(stats.source_count_total).unwrap_or(0),
+        );
+        dict
+    }
+
+    fn authored_water_patch_fill_debug_dict(
+        fill: &crate::nodes::sim::world_definition::AuthoredWaterPatchFillDebug,
+    ) -> VarDictionary {
+        let mut dict = VarDictionary::new();
+        dict.set(
+            "kind",
+            GString::from(match fill.kind {
+                WorldWaterFillKind::Lake => "lake",
+                WorldWaterFillKind::OpenWater => "open_water",
+            }),
+        );
+        dict.set("fill_index", i64::from(fill.fill_index));
+        dict.set("preview", fill.preview);
+        dict.set("world_x", f64::from(fill.world_x));
+        dict.set("world_z", f64::from(fill.world_z));
+        dict.set("surface_elevation_m", f64::from(fill.surface_elevation_m));
+        dict.set(
+            "filled_cells",
+            i64::try_from(fill.filled_cells).unwrap_or(0),
+        );
+        dict.set("touches_world_edge", fill.touches_world_edge);
+        dict.set(
+            "patch_nonzero_samples",
+            i64::try_from(fill.patch_nonzero_samples).unwrap_or(0),
+        );
+        dict.set("patch_max_depth_m", f64::from(fill.patch_max_depth_m));
+        dict.set("patch_sum_depth_m", f64::from(fill.patch_sum_depth_m));
+        dict
+    }
 }
 
 #[godot_api]
@@ -839,6 +916,41 @@ impl SimulationNode {
             patch.world_origin_z + patch.world_size_z,
         );
         dict
+    }
+
+    /// Returns debug-only baseline/dynamic/combined water stats for one render patch.
+    #[func]
+    pub fn get_water_patch_debug(&self, patch_x: i32, patch_z: i32) -> VarDictionary {
+        let Ok(patch_x) = usize::try_from(patch_x) else {
+            return VarDictionary::new();
+        };
+        let Ok(patch_z) = usize::try_from(patch_z) else {
+            return VarDictionary::new();
+        };
+        let core = self.lock_core();
+        let Some(stats) = core.watermap.visible_patch_layer_stats(patch_x, patch_z) else {
+            return VarDictionary::new();
+        };
+        Self::water_patch_layer_debug_dict(&stats)
+    }
+
+    /// Returns debug-only authored baseline-water fill contributors for one render patch.
+    #[func]
+    pub fn get_water_patch_authored_fill_debug(&self, patch_x: i32, patch_z: i32) -> VarArray {
+        let Ok(patch_x) = usize::try_from(patch_x) else {
+            return VarArray::new();
+        };
+        let Ok(patch_z) = usize::try_from(patch_z) else {
+            return VarArray::new();
+        };
+        let core = self.lock_core();
+        let contributors = core.authored_water_patch_fill_debug_internal(patch_x, patch_z);
+        let mut array = VarArray::new();
+        for contributor in contributors {
+            let dict = Self::authored_water_patch_fill_debug_dict(&contributor);
+            array.push(&dict.to_variant());
+        }
+        array
     }
 
     /// Returns the visible water depth along the world-edge perimeter loop.

@@ -427,7 +427,15 @@ impl RoadSurfaceSystem {
                 continue;
             }
             Self::collect_terrain_clip_polygons_from_piece(
-                &piece.outer_boundary_loops,
+                &piece.road_surface_polygons,
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+                &mut polygons,
+            );
+            Self::collect_terrain_clip_polygons_from_piece(
+                &piece.sidewalk_surface_polygons,
                 min_x,
                 min_z,
                 max_x,
@@ -441,7 +449,15 @@ impl RoadSurfaceSystem {
                 continue;
             }
             Self::collect_terrain_clip_polygons_from_piece(
-                &piece.outer_boundary_loops,
+                &piece.road_surface_polygons,
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+                &mut polygons,
+            );
+            Self::collect_terrain_clip_polygons_from_piece(
+                &piece.sidewalk_surface_polygons,
                 min_x,
                 min_z,
                 max_x,
@@ -5842,8 +5858,28 @@ mod tests {
             "expected terrain clip polygons to include the full sidewalk / shoulder footprint"
         );
         assert!(
-            clip_polygons.len() <= 3,
-            "expected piece outer footprint loops, not per-band terrain clip cutters"
+            clip_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)),
+            "expected every terrain clip cutter to be a valid paved surface polygon"
+        );
+        let expected_surface_polygon_count: usize = surface
+            .compiled_visual_span_pieces()
+            .values()
+            .map(|piece| piece.road_surface_polygons.len() + piece.sidewalk_surface_polygons.len())
+            .sum::<usize>()
+            + surface
+                .compiled_visual_node_pieces()
+                .values()
+                .map(|piece| {
+                    piece.road_surface_polygons.len() + piece.sidewalk_surface_polygons.len()
+                })
+                .sum::<usize>();
+        assert!(
+            clip_polygons.len() == expected_surface_polygon_count,
+            "expected terrain clip cutters to come from local road/sidewalk surface polygons, got {} cutters for {} visible surface polygons",
+            clip_polygons.len(),
+            expected_surface_polygon_count
         );
     }
 

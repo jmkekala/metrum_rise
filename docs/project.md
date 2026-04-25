@@ -86,8 +86,9 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   now carry explicit road footprint clip polygons instead of a road-ownership shader mask, and
   road-touched terrain patches now build clipped double-sided `ArrayMesh` topology instead of
   relying on fragment discard. The clipped-patch renderer now fast-paths untouched / fully
-  road-owned cells, and visible water patches now receive the same road footprint clips so water is
-  omitted under grounded asphalt, shoulder / curb, and sidewalk.
+  road-owned cells, and visible water patches now use depth-owned local topology plus the same road
+  footprint clips so full water patch planes cannot leak through dry terrain or under grounded
+  asphalt, shoulder / curb, and sidewalk.
   `ROAD-01` remains open until that clipped topology is validated against flat, diagonal, sloped,
   water-overlap, and junction cases.
   `ROAD-01` is still open because the recent roads-first earthworks prototype was

@@ -18,9 +18,11 @@ extends Node
 # @onready var rail_tool = $"../RailTool"  # uncomment when RailTool exists
 
 var _road_debug_enabled: bool = false
+var _road_geometry_debug_enabled: bool = false
 
 func _ready() -> void:
 	_road_debug_enabled = _is_road_debug_enabled()
+	_road_geometry_debug_enabled = _is_road_geometry_debug_enabled()
 
 func _process(_delta: float) -> void:
 	if not simulation_node.is_network_dirty():
@@ -80,6 +82,8 @@ func _process(_delta: float) -> void:
 				total_ms,
 			]
 		)
+		if _road_geometry_debug_enabled:
+			_print_road_geometry_patch_debug(dirty_terrain_patch_keys)
 
 func _is_road_debug_enabled() -> bool:
 	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
@@ -87,3 +91,33 @@ func _is_road_debug_enabled() -> bool:
 		return false
 	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
 	return filter == "road" or filter == "road-geometry"
+
+func _is_road_geometry_debug_enabled() -> bool:
+	if OS.get_environment("METRUM_DEBUG_ROAD_GEOMETRY_DUMP").strip_edges() == "1":
+		return true
+	var debug_value := OS.get_environment("METRUM_DEBUG").strip_edges()
+	if debug_value != "1":
+		return false
+	var filter := OS.get_environment("METRUM_DEBUG_FILTER").strip_edges().to_lower()
+	return filter == "road-geometry"
+
+func _print_road_geometry_patch_debug(dirty_terrain_patch_keys: PackedInt32Array) -> void:
+	var diagnostic_start_us := Time.get_ticks_usec()
+	print(
+		"[DEBUG:road] road_geometry_patch_debug dirty_patch_pairs=%d"
+		% int(dirty_terrain_patch_keys.size() / 2)
+	)
+	if terrain and terrain.has_method("road_geometry_debug_patch_lines"):
+		var terrain_lines: Array = terrain.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
+		for line_variant in terrain_lines:
+			print("[DEBUG:road] %s" % String(line_variant))
+	if water and water.has_method("road_geometry_debug_patch_lines"):
+		var water_lines: Array = water.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
+		for line_variant in water_lines:
+			print("[DEBUG:road] %s" % String(line_variant))
+	if zoning_overlay and zoning_overlay.has_method("road_geometry_debug_patch_lines"):
+		var zoning_lines: Array = zoning_overlay.road_geometry_debug_patch_lines(dirty_terrain_patch_keys)
+		for line_variant in zoning_lines:
+			print("[DEBUG:road] %s" % String(line_variant))
+	var diagnostic_ms := float(Time.get_ticks_usec() - diagnostic_start_us) / 1000.0
+	print("[DEBUG:road] road_geometry_patch_debug_ms=%.3f" % diagnostic_ms)

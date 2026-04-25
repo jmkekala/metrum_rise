@@ -1,5 +1,5 @@
 shader_type spatial;
-render_mode cull_disabled;
+render_mode cull_disabled, unshaded;
 
 uniform sampler2D heightmap;
 uniform sampler2D overlay_texture;
@@ -75,8 +75,9 @@ float macro_variation(vec2 world_xz) {
 }
 
 vec3 terrain_surface_color(float world_elevation, float macro_mask, float ruggedness) {
-	vec3 inland_base = mix(vec3(0.18, 0.31, 0.15), vec3(0.13, 0.25, 0.12), macro_mask);
-	vec3 dry_open = mix(vec3(0.32, 0.33, 0.24), vec3(0.28, 0.30, 0.22), macro_mask);
+	vec3 dry_lowland = mix(vec3(0.36, 0.49, 0.29), vec3(0.28, 0.41, 0.24), macro_mask);
+	vec3 inland_base = mix(vec3(0.23, 0.38, 0.18), vec3(0.18, 0.32, 0.15), macro_mask);
+	vec3 dry_open = mix(vec3(0.38, 0.38, 0.25), vec3(0.32, 0.34, 0.22), macro_mask);
 	vec3 conifer_dark = mix(vec3(0.11, 0.21, 0.10), vec3(0.15, 0.27, 0.13), macro_mask);
 	vec3 upland = mix(vec3(0.30, 0.31, 0.23), vec3(0.36, 0.34, 0.25), macro_mask);
 	vec3 snow = vec3(0.93, 0.94, 0.96);
@@ -85,8 +86,10 @@ vec3 terrain_surface_color(float world_elevation, float macro_mask, float rugged
 	float upland_bias = smoothstep(260.0, 900.0, world_elevation);
 	float alpine_bias = smoothstep(1500.0, 2200.0, world_elevation);
 
-	vec3 color = inland_base;
-	color = mix(color, dry_open, lowland_bias * 0.18);
+	// Dry terrain at elevation 0 is still land. Water color only comes from the
+	// water renderer, so blank/test maps must not look like a flooded slab.
+	vec3 color = mix(inland_base, dry_lowland, lowland_bias * 0.82);
+	color = mix(color, dry_open, lowland_bias * 0.10);
 	color = mix(color, conifer_dark, ruggedness * 0.34);
 	color = mix(color, upland, upland_bias * 0.46);
 	color = mix(color, snow, alpine_bias);

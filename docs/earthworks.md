@@ -529,9 +529,9 @@ The following are still blockers for the live grounded-road result:
   and the terrain shader-mask discard path has been removed
 - the terrain renderer now short-circuits clipped patch emission for untouched cells and fully
   road-owned cells, so only seam-crossing cells pay the exact polygon-clipping cost
-- visible water patches now receive the same road footprint clip polygons and rebuild only
-  road-touched water meshes after a network edit, so water is no longer allowed to render under
-  grounded road-owned asphalt, shoulder / curb, or sidewalk
+- visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
+  water meshes receive the same road footprint clip polygons after a network edit, so water is no
+  longer allowed to render under grounded road-owned asphalt, shoulder / curb, or sidewalk
 - the remaining blocker is validation and hardening of the clipped patch topology against flat,
   diagonal, sloped, water-overlap, bend, terminal, and `JunctionN` cases
 - terrain suppression / masking is not accepted as the live seam solution; road-shaped terrain holes

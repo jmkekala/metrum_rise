@@ -29,10 +29,47 @@ use godot::prelude::Vector2;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
+const AUTHORED_WATER_DEBUG_VISIBLE_EPSILON: f32 = 0.001;
+
 #[derive(Clone, Copy, Debug, Default)]
 struct LakeFillApplication {
     touches_world_edge: bool,
     filled_cells: usize,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct LakeFillPatchContribution {
+    application: LakeFillApplication,
+    patch_nonzero_samples: usize,
+    patch_max_depth_m: f32,
+    patch_sum_depth_m: f32,
+}
+
+/// Debug summary for one authored water fill that contributes to a render patch.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AuthoredWaterPatchFillDebug {
+    /// Authored fill kind that produced the patch contribution.
+    pub(crate) kind: WorldWaterFillKind,
+    /// Committed fill index in its authored list, or `-1` for a transient preview.
+    pub(crate) fill_index: i32,
+    /// Whether this contribution came from the active transient preview.
+    pub(crate) preview: bool,
+    /// Snapped seed X coordinate in world metres.
+    pub(crate) world_x: f32,
+    /// Snapped seed Z coordinate in world metres.
+    pub(crate) world_z: f32,
+    /// Authored flat water surface elevation in metres.
+    pub(crate) surface_elevation_m: f32,
+    /// Number of cells in the complete fill body.
+    pub(crate) filled_cells: usize,
+    /// Whether the complete fill body touches the world edge.
+    pub(crate) touches_world_edge: bool,
+    /// Number of non-zero water samples contributed inside the requested patch.
+    pub(crate) patch_nonzero_samples: usize,
+    /// Maximum contributed water depth inside the requested patch.
+    pub(crate) patch_max_depth_m: f32,
+    /// Sum of contributed water depths inside the requested patch.
+    pub(crate) patch_sum_depth_m: f32,
 }
 
 impl SimCore {
@@ -647,6 +684,77 @@ impl SimCore {
             || self.world_lake_fill_preview.is_some()
     }
 
+    /// Returns debug-only authored fill contributors for one visible water render patch.
+    pub(crate) fn authored_water_patch_fill_debug_internal(
+        &self,
+        patch_x: usize,
+        patch_z: usize,
+    ) -> Vec<AuthoredWaterPatchFillDebug> {
+        let Some((start_x, end_x, start_z, end_z)) = self
+            .watermap
+            .render_patch_owned_sample_bounds(patch_x, patch_z)
+        else {
+            return Vec::new();
+        };
+        let terrain_world = authored_water_terrain_world_heights(&self.heightmap);
+        let mut contributors = Vec::new();
+
+        for (fill_index, lake) in self.world_lake_fills.iter().enumerate() {
+            if let Some(contributor) = self.authored_water_fill_patch_contributor(
+                WorldWaterFillKind::Lake,
+                fill_index as i32,
+                false,
+                lake.world_x,
+                lake.world_z,
+                lake.surface_elevation_m,
+                &terrain_world,
+                (start_x, end_x, start_z, end_z),
+            ) {
+                contributors.push(contributor);
+            }
+        }
+
+        for (fill_index, open_water) in self.world_open_water_fills.iter().enumerate() {
+            if let Some(contributor) = self.authored_water_fill_patch_contributor(
+                WorldWaterFillKind::OpenWater,
+                fill_index as i32,
+                false,
+                open_water.world_x,
+                open_water.world_z,
+                open_water.surface_elevation_m,
+                &terrain_world,
+                (start_x, end_x, start_z, end_z),
+            ) {
+                contributors.push(contributor);
+            }
+        }
+
+        if let Some(preview) = self.world_lake_fill_preview {
+            if preview.is_valid() {
+                if let Some(contributor) = self.authored_water_fill_patch_contributor(
+                    preview.kind,
+                    -1,
+                    true,
+                    preview.seed_world_x,
+                    preview.seed_world_z,
+                    preview.surface_elevation_m,
+                    &terrain_world,
+                    (start_x, end_x, start_z, end_z),
+                ) {
+                    contributors.push(contributor);
+                }
+            }
+        }
+
+        contributors.sort_by(|a, b| {
+            b.patch_sum_depth_m
+                .total_cmp(&a.patch_sum_depth_m)
+                .then_with(|| b.patch_nonzero_samples.cmp(&a.patch_nonzero_samples))
+                .then_with(|| a.fill_index.cmp(&b.fill_index))
+        });
+        contributors
+    }
+
     fn refresh_world_water_fill_preview_state_internal(&mut self) {
         let Some(preview) = self.world_lake_fill_preview else {
             return;
@@ -659,6 +767,50 @@ impl SimCore {
             preview.seed_world_z,
             preview.surface_elevation_m,
         ));
+    }
+
+    fn authored_water_fill_patch_contributor(
+        &self,
+        kind: WorldWaterFillKind,
+        fill_index: i32,
+        preview: bool,
+        world_x: f32,
+        world_z: f32,
+        surface_elevation_m: f32,
+        terrain_world: &[f32],
+        patch_bounds: (usize, usize, usize, usize),
+    ) -> Option<AuthoredWaterPatchFillDebug> {
+        let (seed_x, seed_z) = self.watermap.world_to_grid_cell_clamped(world_x, world_z);
+        let contribution = collect_lake_fill_patch_contribution(
+            terrain_world,
+            self.watermap.width,
+            self.watermap.height,
+            seed_x,
+            seed_z,
+            surface_elevation_m,
+            patch_bounds,
+        );
+        let is_valid = match kind {
+            WorldWaterFillKind::Lake => !contribution.application.touches_world_edge,
+            WorldWaterFillKind::OpenWater => contribution.application.touches_world_edge,
+        };
+        if !is_valid || contribution.patch_nonzero_samples == 0 {
+            return None;
+        }
+
+        Some(AuthoredWaterPatchFillDebug {
+            kind,
+            fill_index,
+            preview,
+            world_x,
+            world_z,
+            surface_elevation_m,
+            filled_cells: contribution.application.filled_cells,
+            touches_world_edge: contribution.application.touches_world_edge,
+            patch_nonzero_samples: contribution.patch_nonzero_samples,
+            patch_max_depth_m: contribution.patch_max_depth_m,
+            patch_sum_depth_m: contribution.patch_sum_depth_m,
+        })
     }
 }
 
@@ -903,6 +1055,102 @@ fn apply_lake_fill_to_depth(
     }
 
     application
+}
+
+fn collect_lake_fill_patch_contribution(
+    terrain_world: &[f32],
+    width: usize,
+    height: usize,
+    seed_x: usize,
+    seed_z: usize,
+    surface_elevation_m: f32,
+    patch_bounds: (usize, usize, usize, usize),
+) -> LakeFillPatchContribution {
+    if seed_x >= width || seed_z >= height || terrain_world.len() != width.saturating_mul(height) {
+        return LakeFillPatchContribution::default();
+    }
+
+    let seed_idx = seed_z * width + seed_x;
+    if terrain_world[seed_idx] >= surface_elevation_m {
+        return LakeFillPatchContribution::default();
+    }
+
+    let (patch_start_x, patch_end_x, patch_start_z, patch_end_z) = patch_bounds;
+    let mut visited = vec![false; width * height];
+    let mut queue = VecDeque::new();
+    let mut contribution = LakeFillPatchContribution::default();
+    visited[seed_idx] = true;
+    queue.push_back((seed_x, seed_z));
+
+    while let Some((x, z)) = queue.pop_front() {
+        let idx = z * width + x;
+        let terrain_height = terrain_world[idx];
+        if terrain_height > surface_elevation_m {
+            continue;
+        }
+
+        if x == 0 || z == 0 || x + 1 == width || z + 1 == height {
+            contribution.application.touches_world_edge = true;
+        }
+
+        let depth_m = surface_elevation_m - terrain_height;
+        contribution.application.filled_cells += 1;
+        if (patch_start_x..=patch_end_x).contains(&x)
+            && (patch_start_z..=patch_end_z).contains(&z)
+            && depth_m > AUTHORED_WATER_DEBUG_VISIBLE_EPSILON
+        {
+            contribution.patch_nonzero_samples += 1;
+            contribution.patch_max_depth_m = contribution.patch_max_depth_m.max(depth_m);
+            contribution.patch_sum_depth_m += depth_m;
+        }
+
+        if x > 0 {
+            enqueue_lake_fill_neighbor(
+                x - 1,
+                z,
+                width,
+                surface_elevation_m,
+                terrain_world,
+                &mut visited,
+                &mut queue,
+            );
+        }
+        if x + 1 < width {
+            enqueue_lake_fill_neighbor(
+                x + 1,
+                z,
+                width,
+                surface_elevation_m,
+                terrain_world,
+                &mut visited,
+                &mut queue,
+            );
+        }
+        if z > 0 {
+            enqueue_lake_fill_neighbor(
+                x,
+                z - 1,
+                width,
+                surface_elevation_m,
+                terrain_world,
+                &mut visited,
+                &mut queue,
+            );
+        }
+        if z + 1 < height {
+            enqueue_lake_fill_neighbor(
+                x,
+                z + 1,
+                width,
+                surface_elevation_m,
+                terrain_world,
+                &mut visited,
+                &mut queue,
+            );
+        }
+    }
+
+    contribution
 }
 
 fn enqueue_lake_fill_neighbor(
@@ -1160,6 +1408,27 @@ mod tests {
 
         assert!(core.world_lake_fill_preview.is_none());
         assert_eq!(core.world_lake_fills.len(), 1);
+    }
+
+    #[test]
+    fn authored_water_patch_debug_identifies_committed_lake_fill() {
+        let mut core = test_core_with_small_world();
+        carve_closed_basin(&mut core);
+
+        core.begin_world_lake_fill_preview_internal(Vector2::ZERO, 100.0)
+            .expect("preview should start");
+        core.commit_world_lake_fill_preview_internal()
+            .expect("preview should commit");
+
+        let contributors = core.authored_water_patch_fill_debug_internal(0, 0);
+
+        assert_eq!(contributors.len(), 1);
+        assert_eq!(contributors[0].kind, WorldWaterFillKind::Lake);
+        assert_eq!(contributors[0].fill_index, 0);
+        assert!(!contributors[0].preview);
+        assert!(contributors[0].patch_nonzero_samples > 0);
+        assert!(contributors[0].patch_max_depth_m > 0.0);
+        assert!(contributors[0].patch_sum_depth_m > 0.0);
     }
 
     #[test]

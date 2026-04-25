@@ -12,6 +12,7 @@ use std::collections::HashSet;
 const DEFAULT_WATER_CHUNK_CELLS: usize = 64;
 const MAX_DYNAMIC_WATER_SUBSTEP_DT: f32 = 0.05;
 const WATER_RENDER_PATCH_BORDER_TEXELS: usize = 1;
+const WATER_DEBUG_VISIBLE_EPSILON: f32 = 0.001;
 
 /// One deterministic render-patch snapshot of visible water.
 pub(crate) struct WaterPatchSnapshot {
@@ -43,6 +44,44 @@ pub(crate) struct WaterPatchSnapshot {
     pub depth_data: Vec<f32>,
     /// Row-major dynamic-water velocity samples including the border ring.
     pub velocity_data: Vec<f32>,
+}
+
+/// Debug-only layer split for one visible water render patch.
+pub(crate) struct WaterPatchLayerStats {
+    /// Number of row-major samples in the patch texture including the border ring.
+    pub(crate) total_samples: usize,
+    /// Number of samples whose authored baseline depth is visibly non-zero.
+    pub(crate) baseline_nonzero: usize,
+    /// Maximum authored baseline depth in metres.
+    pub(crate) baseline_max: f32,
+    /// Sum of authored baseline depth samples in metres.
+    pub(crate) baseline_sum: f32,
+    /// Number of samples whose dynamic source/sink depth is visibly non-zero.
+    pub(crate) dynamic_nonzero: usize,
+    /// Maximum dynamic source/sink depth in metres.
+    pub(crate) dynamic_max: f32,
+    /// Sum of dynamic source/sink depth samples in metres.
+    pub(crate) dynamic_sum: f32,
+    /// Number of samples whose composed visible depth is visibly non-zero.
+    pub(crate) combined_nonzero: usize,
+    /// Maximum composed visible depth in metres.
+    pub(crate) combined_max: f32,
+    /// Sum of composed visible depth samples in metres.
+    pub(crate) combined_sum: f32,
+    /// Number of samples whose dynamic velocity is visibly non-zero.
+    pub(crate) velocity_nonzero: usize,
+    /// Maximum dynamic velocity magnitude in metres per second.
+    pub(crate) velocity_max: f32,
+    /// Sum of dynamic velocity magnitudes in metres per second.
+    pub(crate) velocity_sum: f32,
+    /// Number of authored source/sink boundary points inside the owned patch samples.
+    pub(crate) source_count_in_patch: usize,
+    /// Signed sum of authored source/sink rates inside the owned patch samples.
+    pub(crate) source_rate_sum: f32,
+    /// Absolute sum of authored source/sink rates inside the owned patch samples.
+    pub(crate) source_rate_abs_sum: f32,
+    /// Total authored source/sink boundary points in the runtime water layer.
+    pub(crate) source_count_total: usize,
 }
 
 struct BaselineWaterState {
@@ -459,6 +498,15 @@ impl WaterSystem {
         &self.dirty_render_patches
     }
 
+    /// Returns the owned sample bounds for one render patch, excluding its render border ring.
+    pub(crate) fn render_patch_owned_sample_bounds(
+        &self,
+        patch_x: usize,
+        patch_z: usize,
+    ) -> Option<(usize, usize, usize, usize)> {
+        self.render_patch_sample_bounds(patch_x, patch_z)
+    }
+
     /// Clears the water render-patch dirtiness set.
     pub(crate) fn clear_dirty_render_patches(&mut self) {
         self.dirty_render_patches.clear();
@@ -510,6 +558,87 @@ impl WaterSystem {
             depth_data,
             velocity_data,
         })
+    }
+
+    /// Returns debug-only baseline/dynamic/combined water stats for one visible render patch.
+    pub(crate) fn visible_patch_layer_stats(
+        &self,
+        patch_x: usize,
+        patch_z: usize,
+    ) -> Option<WaterPatchLayerStats> {
+        let (start_x, end_x, start_z, end_z) = self.render_patch_sample_bounds(patch_x, patch_z)?;
+        let sample_width = end_x - start_x + 1;
+        let sample_height = end_z - start_z + 1;
+        let texture_width = sample_width + WATER_RENDER_PATCH_BORDER_TEXELS * 2;
+        let texture_height = sample_height + WATER_RENDER_PATCH_BORDER_TEXELS * 2;
+
+        let mut stats = WaterPatchLayerStats {
+            total_samples: texture_width * texture_height,
+            baseline_nonzero: 0,
+            baseline_max: 0.0,
+            baseline_sum: 0.0,
+            dynamic_nonzero: 0,
+            dynamic_max: 0.0,
+            dynamic_sum: 0.0,
+            combined_nonzero: 0,
+            combined_max: 0.0,
+            combined_sum: 0.0,
+            velocity_nonzero: 0,
+            velocity_max: 0.0,
+            velocity_sum: 0.0,
+            source_count_in_patch: 0,
+            source_rate_sum: 0.0,
+            source_rate_abs_sum: 0.0,
+            source_count_total: self.dynamic.sources.len(),
+        };
+
+        for local_z in 0..texture_height {
+            let sample_z =
+                border_clamped_index(start_z, end_z, local_z, WATER_RENDER_PATCH_BORDER_TEXELS);
+            for local_x in 0..texture_width {
+                let sample_x =
+                    border_clamped_index(start_x, end_x, local_x, WATER_RENDER_PATCH_BORDER_TEXELS);
+                let baseline_depth = self.baseline.depth.get(sample_x, sample_z);
+                let dynamic_depth = self.dynamic.depth.get(sample_x, sample_z);
+                let combined_depth = baseline_depth + dynamic_depth;
+                let velocity = self.dynamic.velocity.get(sample_x, sample_z);
+
+                accumulate_patch_sample(
+                    baseline_depth,
+                    &mut stats.baseline_nonzero,
+                    &mut stats.baseline_max,
+                    &mut stats.baseline_sum,
+                );
+                accumulate_patch_sample(
+                    dynamic_depth,
+                    &mut stats.dynamic_nonzero,
+                    &mut stats.dynamic_max,
+                    &mut stats.dynamic_sum,
+                );
+                accumulate_patch_sample(
+                    combined_depth,
+                    &mut stats.combined_nonzero,
+                    &mut stats.combined_max,
+                    &mut stats.combined_sum,
+                );
+                accumulate_patch_sample(
+                    velocity,
+                    &mut stats.velocity_nonzero,
+                    &mut stats.velocity_max,
+                    &mut stats.velocity_sum,
+                );
+            }
+        }
+
+        for &(source_x, source_z, rate) in &self.dynamic.sources {
+            if (start_x..=end_x).contains(&source_x) && (start_z..=end_z).contains(&source_z) {
+                stats.source_count_in_patch += 1;
+                stats.source_rate_sum += rate;
+                stats.source_rate_abs_sum += rate.abs();
+            }
+        }
+
+        Some(stats)
     }
 
     /// Returns the visible water depth along the world-edge perimeter loop.
@@ -643,6 +772,19 @@ fn border_clamped_index(
     }
 }
 
+fn accumulate_patch_sample(
+    value: f32,
+    nonzero_count: &mut usize,
+    max_value: &mut f32,
+    sum_value: &mut f32,
+) {
+    if value > WATER_DEBUG_VISIBLE_EPSILON {
+        *nonzero_count += 1;
+    }
+    *max_value = (*max_value).max(value);
+    *sum_value += value;
+}
+
 #[cfg(test)]
 mod tests {
     use super::WaterSystem;
@@ -677,6 +819,37 @@ mod tests {
         assert_eq!(patch.depth_data[0], 7.0);
         assert_eq!(patch.depth_data[patch.texture_width + 1], 7.0);
         assert_eq!(patch.velocity_data.len(), patch.depth_data.len());
+    }
+
+    #[test]
+    fn visible_patch_layer_stats_split_baseline_dynamic_depth() {
+        let mut water = WaterSystem::with_chunking(9, 9, 10.0, 4).with_render_chunk_span(30.0);
+        let mut baseline = vec![0.0; 81];
+        baseline[3 + 3 * 9] = 5.0;
+        water
+            .replace_baseline_depth_from_dense(&baseline)
+            .expect("baseline depth dimensions should match");
+        water.add_water(3, 3, 2.0);
+        water.update_source(3, 3, 1.25);
+
+        let stats = water
+            .visible_patch_layer_stats(1, 1)
+            .expect("patch (1,1) should exist on a 9x9 water grid");
+
+        assert_eq!(stats.total_samples, 36);
+        assert_eq!(stats.baseline_nonzero, 4);
+        assert!((stats.baseline_max - 5.0).abs() < 0.0001);
+        assert!((stats.baseline_sum - 20.0).abs() < 0.0001);
+        assert_eq!(stats.dynamic_nonzero, 4);
+        assert!((stats.dynamic_max - 2.0).abs() < 0.0001);
+        assert!((stats.dynamic_sum - 8.0).abs() < 0.0001);
+        assert_eq!(stats.combined_nonzero, 4);
+        assert!((stats.combined_max - 7.0).abs() < 0.0001);
+        assert!((stats.combined_sum - 28.0).abs() < 0.0001);
+        assert_eq!(stats.source_count_in_patch, 1);
+        assert_eq!(stats.source_count_total, 1);
+        assert!((stats.source_rate_sum - 1.25).abs() < 0.0001);
+        assert!((stats.source_rate_abs_sum - 1.25).abs() < 0.0001);
     }
 
     #[test]

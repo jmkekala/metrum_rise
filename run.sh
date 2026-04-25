@@ -82,6 +82,7 @@ if [ $DEBUG -eq 1 ]; then
             echo "  Road placement timing summaries enabled."
             echo "  After each committed road refresh: [DEBUG:road] ROAD_GEOMETRY_DUMP_BEGIN ... ROAD_GEOMETRY_DUMP_END"
             echo "  Includes edge geometry, node class/throat diagnostics, compiled loops, and source/visual terrain samples."
+            echo "  Also prints terrain/water patch clip, mesh, baseline-vs-dynamic water diagnostics, and authored fill contributors for road-touched patches."
             echo "  Also enables the compiled road-surface overlay in the editor for visual comparison."
         elif [ "$DEBUG_CATEGORY" = "terrain" ]; then
             export METRUM_DEBUG_TERRAIN=1

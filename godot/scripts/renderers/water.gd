@@ -1,6 +1,7 @@
 ## Water patch renderer — uploads chunk-local visible water patches and world-edge water curtains.
 ##
-## Rust methods called: get_water_patch(), get_dirty_water_patches(), get_water_border_depths(),
+## Rust methods called: get_water_patch(), get_water_patch_debug(),
+##   get_water_patch_authored_fill_debug(), get_dirty_water_patches(), get_water_border_depths(),
 ##   add_water_source(), is_water_dirty(), clear_water_dirty()
 extends Node3D
 
@@ -31,7 +32,6 @@ const WATER_PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 
 var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
-var patch_mesh_cache: Dictionary = {}
 var patch_prewarm_queue: Array[Vector2i] = []
 var fallback_height_texture: ImageTexture
 var water_border_instance: MeshInstance3D
@@ -429,6 +429,130 @@ func _dirty_patch_keys(flat_pairs: PackedInt32Array) -> Array[Vector2i]:
 		keys.append(Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1]))
 	return keys
 
+func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[String]:
+	var lines: Array[String] = []
+	lines.append(_road_geometry_water_border_line())
+	var keys: Array[Vector2i] = _dirty_patch_keys(flat_pairs)
+	if keys.is_empty():
+		lines.append("water_patch none")
+		return lines
+	for key in keys:
+		var patch_data: Dictionary = simulation_node.get_water_patch(key.x, key.y)
+		if patch_data.is_empty():
+			lines.append("water_patch key=(%d,%d) missing_patch_data=true" % [key.x, key.y])
+			continue
+		var patch: Dictionary = patches.get(key, {})
+		var patch_node: MeshInstance3D = patch.get("node", null) as MeshInstance3D
+		var mesh: Mesh = null
+		if patch_node != null:
+			mesh = patch_node.mesh
+		var depth_stats: Dictionary = _road_geometry_float_stats(
+			patch_data["depth_data"] as PackedFloat32Array
+		)
+		var layer_stats: Dictionary = {}
+		if simulation_node.has_method("get_water_patch_debug"):
+			layer_stats = simulation_node.get_water_patch_debug(key.x, key.y) as Dictionary
+		var depth_sample_count: int = (patch_data["depth_data"] as PackedFloat32Array).size()
+		var layer_sample_count: int = int(layer_stats.get("total_samples", depth_sample_count))
+		var baseline_nonzero_count: int = int(layer_stats.get("baseline_nonzero", -1))
+		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
+		lines.append(
+			"water_patch key=(%d,%d) resident=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f baseline_nonzero=%d/%d baseline_max=%.3f baseline_sum=%.3f dynamic_nonzero=%d/%d dynamic_max=%.3f dynamic_sum=%.3f combined_nonzero=%d/%d combined_max=%.3f combined_sum=%.3f velocity_nonzero=%d/%d velocity_max=%.3f velocity_sum=%.3f source_points=%d/%d source_rate_sum=%.3f source_rate_abs_sum=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f)"
+			% [
+				key.x,
+				key.y,
+				str(resident_patch_lookup.has(key)),
+				_road_geometry_mesh_label(mesh),
+				int(patch_data["sample_width"]),
+				int(patch_data["sample_height"]),
+				int(patch_data["texture_width"]),
+				int(patch_data["texture_height"]),
+				float(patch_data["world_origin_x"]),
+				float(patch_data["world_origin_z"]),
+				float(patch_data["world_size_x"]),
+				float(patch_data["world_size_z"]),
+				int(depth_stats.get("nonzero", 0)),
+				depth_sample_count,
+				float(depth_stats.get("min", 0.0)),
+				float(depth_stats.get("max", 0.0)),
+				float(depth_stats.get("sum", 0.0)),
+				baseline_nonzero_count,
+				layer_sample_count,
+				float(layer_stats.get("baseline_max", -1.0)),
+				float(layer_stats.get("baseline_sum", -1.0)),
+				int(layer_stats.get("dynamic_nonzero", -1)),
+				layer_sample_count,
+				float(layer_stats.get("dynamic_max", -1.0)),
+				float(layer_stats.get("dynamic_sum", -1.0)),
+				int(layer_stats.get("combined_nonzero", -1)),
+				layer_sample_count,
+				float(layer_stats.get("combined_max", -1.0)),
+				float(layer_stats.get("combined_sum", -1.0)),
+				int(layer_stats.get("velocity_nonzero", -1)),
+				layer_sample_count,
+				float(layer_stats.get("velocity_max", -1.0)),
+				float(layer_stats.get("velocity_sum", -1.0)),
+				int(layer_stats.get("source_count_in_patch", -1)),
+				int(layer_stats.get("source_count_total", -1)),
+				float(layer_stats.get("source_rate_sum", -1.0)),
+				float(layer_stats.get("source_rate_abs_sum", -1.0)),
+				int(clip_stats.get("polygon_count", 0)),
+				int(clip_stats.get("point_count", 0)),
+				float(clip_stats.get("area", 0.0)),
+				_road_geometry_bounds_label(clip_stats),
+				float(clip_stats.get("max_bbox_x", 0.0)),
+				float(clip_stats.get("max_bbox_z", 0.0)),
+			]
+		)
+		if baseline_nonzero_count > 0 and simulation_node.has_method("get_water_patch_authored_fill_debug"):
+			var fill_debug: Array = simulation_node.get_water_patch_authored_fill_debug(key.x, key.y) as Array
+			if fill_debug.is_empty():
+				lines.append(
+					"water_patch_baseline_fill key=(%d,%d) contributors=0 warning=baseline_without_authored_contributor"
+					% [key.x, key.y]
+				)
+			for fill_variant in fill_debug:
+				var fill: Dictionary = fill_variant as Dictionary
+				lines.append(
+					"water_patch_baseline_fill key=(%d,%d) kind=%s index=%d preview=%s seed=(%.1f,%.1f) surface=%.3f filled_cells=%d touches_edge=%s patch_nonzero=%d patch_max=%.3f patch_sum=%.3f"
+					% [
+						key.x,
+						key.y,
+						str(fill.get("kind", "unknown")),
+						int(fill.get("fill_index", -999)),
+						str(bool(fill.get("preview", false))),
+						float(fill.get("world_x", 0.0)),
+						float(fill.get("world_z", 0.0)),
+						float(fill.get("surface_elevation_m", 0.0)),
+						int(fill.get("filled_cells", 0)),
+						str(bool(fill.get("touches_world_edge", false))),
+						int(fill.get("patch_nonzero_samples", 0)),
+						float(fill.get("patch_max_depth_m", 0.0)),
+						float(fill.get("patch_sum_depth_m", 0.0)),
+					]
+				)
+	return lines
+
+func _road_geometry_water_border_line() -> String:
+	var border_depths: PackedFloat32Array = simulation_node.get_water_border_depths()
+	var depth_stats: Dictionary = _road_geometry_float_stats(border_depths)
+	var border_mesh: Mesh = null
+	if water_border_instance != null:
+		border_mesh = water_border_instance.mesh
+	var terrain_revision: int = _current_terrain_border_revision()
+	return (
+		"water_border mesh=\"%s\" terrain_border_revision=%d depth_nonzero=%d/%d depth_min=%.3f depth_max=%.3f depth_sum=%.3f"
+		% [
+			_road_geometry_mesh_label(border_mesh),
+			terrain_revision,
+			int(depth_stats.get("nonzero", 0)),
+			border_depths.size(),
+			float(depth_stats.get("min", 0.0)),
+			float(depth_stats.get("max", 0.0)),
+			float(depth_stats.get("sum", 0.0)),
+		]
+	)
+
 func _patch_has_road_clip_polygons(patch_data: Dictionary) -> bool:
 	if not patch_data.has("road_clip_polygon_counts") or not patch_data.has("road_clip_polygon_points"):
 		return false
@@ -444,17 +568,11 @@ func _patch_has_road_clip_polygons(patch_data: Dictionary) -> bool:
 	return expected_points == points.size()
 
 func _water_patch_mesh_from_data(patch_data: Dictionary, lod_step: int) -> Mesh:
-	if _patch_has_road_clip_polygons(patch_data):
-		return _clipped_water_patch_mesh(patch_data, lod_step)
-	return _patch_mesh(
-		int(patch_data["sample_width"]),
-		int(patch_data["sample_height"]),
-		float(patch_data["world_size_x"]),
-		float(patch_data["world_size_z"]),
-		lod_step
-	)
+	return _clipped_water_patch_mesh(patch_data, lod_step)
 
 func _road_clip_polygons_from_patch_data(patch_data: Dictionary) -> Array:
+	if not _patch_has_road_clip_polygons(patch_data):
+		return []
 	var counts: PackedInt32Array = patch_data["road_clip_polygon_counts"] as PackedInt32Array
 	var points: PackedVector3Array = patch_data["road_clip_polygon_points"] as PackedVector3Array
 	var polygons: Array = []
@@ -471,6 +589,49 @@ func _road_clip_polygons_from_patch_data(patch_data: Dictionary) -> Array:
 		cursor += count
 	return polygons
 
+func _clip_polygon_bins(
+	clip_polygons: Array,
+	world_origin_x: float,
+	world_origin_z: float,
+	world_size_x: float,
+	world_size_z: float,
+	x_interval_count: int,
+	z_interval_count: int
+) -> Dictionary:
+	var bins: Dictionary = {}
+	var safe_world_size_x: float = maxf(world_size_x, 0.001)
+	var safe_world_size_z: float = maxf(world_size_z, 0.001)
+	for clip in clip_polygons:
+		var clip_bounds: Rect2 = clip["bounds"]
+		var min_x_index: int = clampi(
+			int(floor((clip_bounds.position.x - world_origin_x) / safe_world_size_x * float(x_interval_count))),
+			0,
+			x_interval_count - 1
+		)
+		var max_x_index: int = clampi(
+			int(floor((clip_bounds.position.x + clip_bounds.size.x - world_origin_x) / safe_world_size_x * float(x_interval_count))),
+			0,
+			x_interval_count - 1
+		)
+		var min_z_index: int = clampi(
+			int(floor((clip_bounds.position.y - world_origin_z) / safe_world_size_z * float(z_interval_count))),
+			0,
+			z_interval_count - 1
+		)
+		var max_z_index: int = clampi(
+			int(floor((clip_bounds.position.y + clip_bounds.size.y - world_origin_z) / safe_world_size_z * float(z_interval_count))),
+			0,
+			z_interval_count - 1
+		)
+		for z_index in range(min_z_index, max_z_index + 1):
+			for x_index in range(min_x_index, max_x_index + 1):
+				var bin_index: int = z_index * x_interval_count + x_index
+				if not bins.has(bin_index):
+					bins[bin_index] = []
+				var bin: Array = bins[bin_index]
+				bin.append(clip)
+	return bins
+
 func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMesh:
 	var sample_width := int(patch_data["sample_width"])
 	var sample_height := int(patch_data["sample_height"])
@@ -478,6 +639,11 @@ func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMe
 	var world_size_z := float(patch_data["world_size_z"])
 	var world_origin_x := float(patch_data["world_origin_x"])
 	var world_origin_z := float(patch_data["world_origin_z"])
+	var texture_width := int(patch_data["texture_width"])
+	var texture_height := int(patch_data["texture_height"])
+	var inner_offset_x := int(patch_data["inner_offset_x"])
+	var inner_offset_z := int(patch_data["inner_offset_z"])
+	var depth_data: PackedFloat32Array = patch_data["depth_data"] as PackedFloat32Array
 	var center_x := world_origin_x + world_size_x * 0.5
 	var center_z := world_origin_z + world_size_z * 0.5
 	var x_vertex_count: int = _mesh_subdivisions_for_sample_count(sample_width, lod_step) + 2
@@ -485,6 +651,15 @@ func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMe
 	var x_interval_count: int = maxi(1, x_vertex_count - 1)
 	var z_interval_count: int = maxi(1, z_vertex_count - 1)
 	var clip_polygons: Array = _road_clip_polygons_from_patch_data(patch_data)
+	var clip_bins: Dictionary = _clip_polygon_bins(
+		clip_polygons,
+		world_origin_x,
+		world_origin_z,
+		world_size_x,
+		world_size_z,
+		x_interval_count,
+		z_interval_count
+	)
 	var surface_tool := SurfaceTool.new()
 	surface_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
 	var emitted_vertices: int = 0
@@ -499,16 +674,32 @@ func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMe
 			var x1 := float(x_index + 1) / float(x_interval_count)
 			var world_x0 := world_origin_x + x0 * world_size_x
 			var world_x1 := world_origin_x + x1 * world_size_x
+			if not _water_cell_has_visible_depth(
+				depth_data,
+				sample_width,
+				sample_height,
+				texture_width,
+				texture_height,
+				inner_offset_x,
+				inner_offset_z,
+				x_index,
+				z_index,
+				x_interval_count,
+				z_interval_count
+			):
+				continue
 			var cell := PackedVector2Array([
 				Vector2(world_x0, world_z0),
 				Vector2(world_x1, world_z0),
 				Vector2(world_x1, world_z1),
 				Vector2(world_x0, world_z1),
 			])
+			var bin_index: int = z_index * x_interval_count + x_index
+			var cell_clip_polygons: Array = clip_bins.get(bin_index, [])
 			emitted_vertices += _emit_clipped_water_cell(
 				surface_tool,
 				cell,
-				clip_polygons,
+				cell_clip_polygons,
 				center_x,
 				center_z,
 				world_origin_x,
@@ -521,6 +712,60 @@ func _clipped_water_patch_mesh(patch_data: Dictionary, lod_step: int) -> ArrayMe
 		return ArrayMesh.new()
 	return surface_tool.commit()
 
+func _water_cell_has_visible_depth(
+	depth_data: PackedFloat32Array,
+	sample_width: int,
+	sample_height: int,
+	texture_width: int,
+	texture_height: int,
+	inner_offset_x: int,
+	inner_offset_z: int,
+	x_index: int,
+	z_index: int,
+	x_interval_count: int,
+	z_interval_count: int
+) -> bool:
+	const MIN_VISIBLE_DEPTH_M := 0.001
+	if (
+		depth_data.is_empty()
+		or sample_width <= 0
+		or sample_height <= 0
+		or texture_width <= 0
+		or texture_height <= 0
+	):
+		return false
+	var max_sample_x: int = max(0, sample_width - 1)
+	var max_sample_z: int = max(0, sample_height - 1)
+	var start_sample_x: int = clampi(
+		int(floor(float(x_index) / float(maxi(1, x_interval_count)) * float(max_sample_x))),
+		0,
+		max_sample_x
+	)
+	var end_sample_x: int = clampi(
+		int(ceil(float(x_index + 1) / float(maxi(1, x_interval_count)) * float(max_sample_x))),
+		0,
+		max_sample_x
+	)
+	var start_sample_z: int = clampi(
+		int(floor(float(z_index) / float(maxi(1, z_interval_count)) * float(max_sample_z))),
+		0,
+		max_sample_z
+	)
+	var end_sample_z: int = clampi(
+		int(ceil(float(z_index + 1) / float(maxi(1, z_interval_count)) * float(max_sample_z))),
+		0,
+		max_sample_z
+	)
+	for sample_z in range(start_sample_z, end_sample_z + 1):
+		var texture_z: int = clampi(inner_offset_z + sample_z, 0, texture_height - 1)
+		var row_offset: int = texture_z * texture_width
+		for sample_x in range(start_sample_x, end_sample_x + 1):
+			var texture_x: int = clampi(inner_offset_x + sample_x, 0, texture_width - 1)
+			var sample_index: int = row_offset + texture_x
+			if sample_index >= 0 and sample_index < depth_data.size() and depth_data[sample_index] > MIN_VISIBLE_DEPTH_M:
+				return true
+	return false
+
 func _emit_clipped_water_cell(
 	surface_tool: SurfaceTool,
 	cell: PackedVector2Array,
@@ -532,6 +777,18 @@ func _emit_clipped_water_cell(
 	world_size_x: float,
 	world_size_z: float
 ) -> int:
+	if clip_polygons.is_empty():
+		return _emit_unclipped_water_cell(
+			surface_tool,
+			cell,
+			center_x,
+			center_z,
+			world_origin_x,
+			world_origin_z,
+			world_size_x,
+			world_size_z
+		)
+
 	var cell_bounds := _polygon_bounds(cell)
 	var intersecting_clips: Array = []
 	for clip in clip_polygons:
@@ -716,46 +973,6 @@ func _point_on_segment(point: Vector2, a: Vector2, b: Vector2) -> bool:
 
 func _cross_2d(a: Vector2, b: Vector2) -> float:
 	return a.x * b.y - a.y * b.x
-
-func _patch_mesh(
-	sample_width: int,
-	sample_height: int,
-	world_size_x: float,
-	world_size_z: float,
-	lod_step: int
-) -> PlaneMesh:
-	var mesh_cache_key := _patch_mesh_cache_key(
-		sample_width,
-		sample_height,
-		world_size_x,
-		world_size_z,
-		lod_step
-	)
-	var patch_mesh: PlaneMesh
-	if patch_mesh_cache.has(mesh_cache_key):
-		patch_mesh = patch_mesh_cache[mesh_cache_key]
-	else:
-		patch_mesh = PlaneMesh.new()
-		patch_mesh.size = Vector2(world_size_x, world_size_z)
-		patch_mesh.subdivide_width = _mesh_subdivisions_for_sample_count(sample_width, lod_step)
-		patch_mesh.subdivide_depth = _mesh_subdivisions_for_sample_count(sample_height, lod_step)
-		patch_mesh_cache[mesh_cache_key] = patch_mesh
-	return patch_mesh
-
-func _patch_mesh_cache_key(
-	sample_width: int,
-	sample_height: int,
-	world_size_x: float,
-	world_size_z: float,
-	lod_step: int
-) -> String:
-	return "%d:%d:%.3f:%.3f:%d" % [
-		sample_width,
-		sample_height,
-		world_size_x,
-		world_size_z,
-		lod_step,
-	]
 
 func _mesh_subdivisions_for_sample_count(sample_count: int, lod_step: int) -> int:
 	var interval_count: int = max(0, sample_count - 1)
@@ -960,6 +1177,125 @@ func _current_terrain_border_revision() -> int:
 	if terrain_node != null and terrain_node.has_method("get_border_revision"):
 		return int(terrain_node.get_border_revision())
 	return -1
+
+func _road_geometry_float_stats(values: PackedFloat32Array) -> Dictionary:
+	if values.is_empty():
+		return {
+			"min": 0.0,
+			"max": 0.0,
+			"nonzero": 0,
+			"sum": 0.0,
+		}
+	var min_value: float = values[0]
+	var max_value: float = values[0]
+	var nonzero_count: int = 0
+	var sum_value: float = 0.0
+	for value_variant in values:
+		var value: float = float(value_variant)
+		min_value = minf(min_value, value)
+		max_value = maxf(max_value, value)
+		sum_value += value
+		if absf(value) > 0.001:
+			nonzero_count += 1
+	return {
+		"min": min_value,
+		"max": max_value,
+		"nonzero": nonzero_count,
+		"sum": sum_value,
+	}
+
+func _road_geometry_clip_stats(patch_data: Dictionary) -> Dictionary:
+	var stats: Dictionary = {
+		"polygon_count": 0,
+		"point_count": 0,
+		"area": 0.0,
+		"has_bounds": false,
+		"min_x": 0.0,
+		"max_x": 0.0,
+		"min_z": 0.0,
+		"max_z": 0.0,
+		"max_bbox_x": 0.0,
+		"max_bbox_z": 0.0,
+	}
+	if not _patch_has_road_clip_polygons(patch_data):
+		return stats
+	var polygons: Array = _road_clip_polygons_from_patch_data(patch_data)
+	var has_bounds: bool = false
+	var min_x: float = 0.0
+	var max_x: float = 0.0
+	var min_z: float = 0.0
+	var max_z: float = 0.0
+	var point_count: int = 0
+	var total_area: float = 0.0
+	var max_bbox_x: float = 0.0
+	var max_bbox_z: float = 0.0
+	for clip_variant in polygons:
+		var clip: Dictionary = clip_variant
+		var points: PackedVector2Array = clip["points"]
+		var bounds: Rect2 = clip["bounds"]
+		point_count += points.size()
+		total_area += absf(_road_geometry_polygon_area(points))
+		max_bbox_x = maxf(max_bbox_x, bounds.size.x)
+		max_bbox_z = maxf(max_bbox_z, bounds.size.y)
+		if not has_bounds:
+			min_x = bounds.position.x
+			max_x = bounds.position.x + bounds.size.x
+			min_z = bounds.position.y
+			max_z = bounds.position.y + bounds.size.y
+			has_bounds = true
+		else:
+			min_x = minf(min_x, bounds.position.x)
+			max_x = maxf(max_x, bounds.position.x + bounds.size.x)
+			min_z = minf(min_z, bounds.position.y)
+			max_z = maxf(max_z, bounds.position.y + bounds.size.y)
+	stats["polygon_count"] = polygons.size()
+	stats["point_count"] = point_count
+	stats["area"] = total_area
+	stats["has_bounds"] = has_bounds
+	stats["min_x"] = min_x
+	stats["max_x"] = max_x
+	stats["min_z"] = min_z
+	stats["max_z"] = max_z
+	stats["max_bbox_x"] = max_bbox_x
+	stats["max_bbox_z"] = max_bbox_z
+	return stats
+
+func _road_geometry_polygon_area(points: PackedVector2Array) -> float:
+	if points.size() < 3:
+		return 0.0
+	var area: float = 0.0
+	for index in range(points.size()):
+		var a: Vector2 = points[index]
+		var b: Vector2 = points[(index + 1) % points.size()]
+		area += a.x * b.y - b.x * a.y
+	return area * 0.5
+
+func _road_geometry_bounds_label(stats: Dictionary) -> String:
+	if not bool(stats.get("has_bounds", false)):
+		return "none"
+	return "[(%.3f,%.3f)..(%.3f,%.3f)]" % [
+		float(stats.get("min_x", 0.0)),
+		float(stats.get("min_z", 0.0)),
+		float(stats.get("max_x", 0.0)),
+		float(stats.get("max_z", 0.0)),
+	]
+
+func _road_geometry_mesh_label(mesh: Mesh) -> String:
+	if mesh == null:
+		return "null"
+	if mesh is ArrayMesh:
+		var array_mesh: ArrayMesh = mesh as ArrayMesh
+		var vertex_count: int = 0
+		for surface_index in range(array_mesh.get_surface_count()):
+			var arrays: Array = array_mesh.surface_get_arrays(surface_index)
+			if arrays.size() > Mesh.ARRAY_VERTEX:
+				var vertices: PackedVector3Array = arrays[Mesh.ARRAY_VERTEX] as PackedVector3Array
+				vertex_count += vertices.size()
+		return "ArrayMesh surfaces=%d vertices=%d" % [
+			array_mesh.get_surface_count(),
+			vertex_count,
+		]
+	return mesh.get_class()
 
 func _terrain_debug_is_enabled() -> bool:
 	var explicit_value := OS.get_environment("METRUM_DEBUG_TERRAIN").strip_edges()

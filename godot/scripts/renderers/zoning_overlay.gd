@@ -53,6 +53,11 @@ func _ready():
 	distance_image = Image.create(zone_grid_w, zone_grid_h, false, Image.FORMAT_R8)
 	occupied_image = Image.create(zone_grid_w, zone_grid_h, false, Image.FORMAT_R8)
 	no_build_image = Image.create(zone_grid_w, zone_grid_h, false, Image.FORMAT_R8)
+	zone_image.fill(Color.BLACK)
+	style_lut_image.fill(Color.TRANSPARENT)
+	distance_image.fill(Color.BLACK)
+	occupied_image.fill(Color.BLACK)
+	no_build_image.fill(Color.BLACK)
 
 	zone_tex     = ImageTexture.create_from_image(zone_image)
 	style_lut_image.set_data(profile_style_lut_size, 1, false, Image.FORMAT_RGBA8, style_bytes)
@@ -84,6 +89,7 @@ func _ready():
 	# y=0.005: above terrain (y=0) so zones are visible, below road meshes (y=ROAD_H_OFFSET=0.01)
 	# so opaque roads occlude the overlay via depth test.
 	position = Vector3(0.0, 0.005, 0.0)
+	visible = false
 
 func _process(delta):
 	# Fade tool_active value
@@ -92,6 +98,7 @@ func _process(delta):
 		var mat = self.material_override as ShaderMaterial
 		if mat:
 			mat.set_shader_parameter("tool_active", _tool_active)
+	visible = _tool_active > 0.001 or _tool_active_target > 0.0
 
 	# Upload dirty textures
 	if _zone_dirty:
@@ -151,6 +158,8 @@ func mark_no_build_dirty():
 ## Call from InputManager when the zoning tool activates/deactivates.
 func set_tool_active(active: bool):
 	_tool_active_target = 1.0 if active else 0.0
+	if active:
+		visible = true
 	_rebuild_no_build_overlay()
 
 ## Force a full refresh of all textures (e.g. after save/load).
@@ -160,6 +169,27 @@ func full_refresh():
 	_occupied_dirty = true
 	_no_build_dirty = true
 	_rebuild_no_build_overlay()
+
+func road_geometry_debug_patch_lines(_flat_pairs: PackedInt32Array) -> Array[String]:
+	var zone_bytes: PackedByteArray = simulation_node.get_zone_profile_texture_data_rg8()
+	var nonzero_cells: int = 0
+	var cell_count: int = int(zone_bytes.size() / 2)
+	for cell_index in range(cell_count):
+		var byte_index: int = cell_index * 2
+		var runtime_id: int = int(zone_bytes[byte_index]) | (int(zone_bytes[byte_index + 1]) << 8)
+		if runtime_id != 0:
+			nonzero_cells += 1
+	var lines: Array[String] = [
+		"zoning_overlay visible=%s tool_active=%.3f target=%.3f zone_nonzero=%d/%d"
+		% [
+			str(visible),
+			_tool_active,
+			_tool_active_target,
+			nonzero_cells,
+			cell_count,
+		]
+	]
+	return lines
 
 # ── No-build edge hatched overlay ──────────────────────────────────────────
 

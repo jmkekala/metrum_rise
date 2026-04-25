@@ -364,9 +364,11 @@ Current deterministic rules:
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch
-- road-touched terrain and water patches may switch from cached rectangular `PlaneMesh` topology to
-  clipped local `ArrayMesh` topology; the road refresh path only asks affected water patches to
-  rebuild after a network edit
+- road-touched terrain patches may switch from cached rectangular `PlaneMesh` topology to clipped
+  local `ArrayMesh` topology
+- visible water patches always build depth-owned local `ArrayMesh` topology; dry cells emit no water
+  mesh instead of relying on shader discard, and road-touched water patches additionally clip that
+  depth-owned topology against the road footprint after a network edit
 - the old whole-map terrain / water Godot render APIs were removed from the steady terrain / water
   bridge
 - dense terrain or water materialization may still exist at save/load, undo, or other explicit
@@ -733,6 +735,12 @@ Deterministic Godot-bridge rules:
   `get_water_velocity_data()` were removed from the steady-state terrain / water render bridge
 - any future dense helper kept for compatibility, debug tooling, or offline export must stay
   outside the steady-state gameplay and WorldEditor render path
+- `road-geometry` water diagnostics must report authored baseline depth, dynamic source/sink
+  depth, and composed visible depth separately so dark water-patch regressions identify the owning
+  water layer instead of only the final rendered sum
+- when a road-touched water patch contains authored baseline water, `road-geometry` diagnostics
+  must also list the committed `Lake Fill` / `Open Water` records or active preview that actually
+  contributed non-zero samples inside that patch
 - chunk-local snapshot APIs expose enough metadata for deterministic reconstruction of one
   patch window:
   - patch identity
