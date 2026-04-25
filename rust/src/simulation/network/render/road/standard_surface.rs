@@ -21,6 +21,7 @@ const BRIDGE_CONCRETE_THICKNESS_M: f32 = 0.35;
 const EARTHWORK_SURFACE_LIFT_M: f32 = ROAD_H_OFFSET * 0.25;
 const SIDEWALK_SURFACE_LIFT_M: f32 = ROAD_H_OFFSET;
 const ROAD_SURFACE_LIFT_M: f32 = ROAD_H_OFFSET + 0.02;
+const STANDARD_TIE_IN_CLOSURE_WIDTH_M: f32 = 0.35;
 /// Surface classes replaced by the compiled roadbed renderer.
 pub(super) struct CompiledSurfaceCoverage {
     pub edge_indices: HashSet<usize>,
@@ -123,36 +124,14 @@ fn emit_compiled_earthwork_mesh(
     let mut edge_indices: Vec<usize> = coverage.edge_indices.iter().copied().collect();
     edge_indices.sort_unstable();
     for edge_idx in edge_indices {
+        let edge = graph.edge(edge_idx);
         let Some(piece) = road_surface.compiled_visual_span_pieces().get(&edge_idx) else {
             continue;
         };
-        if !road_surface.span_piece_emits_visible_tie_in(piece) {
-            continue;
-        }
-        let structural_tie_in = road_surface.span_piece_uses_visible_earthwork(piece);
-        for face in &piece.render_earthwork_faces {
-            match face.kind {
-                RoadSurfaceEarthworkFaceKind::Slope => {
-                    emit_surface_polygon(
-                        mesh,
-                        MeshLayer::Earthwork,
-                        &face.polygon,
-                        if structural_tie_in {
-                            earthwork_color()
-                        } else {
-                            terrain_tie_in_color()
-                        },
-                    );
-                }
-                RoadSurfaceEarthworkFaceKind::RetainingWall => {
-                    emit_surface_polygon(
-                        mesh,
-                        MeshLayer::Concrete,
-                        &face.polygon,
-                        concrete_color(),
-                    );
-                }
-            }
+        if road_surface.span_piece_uses_visible_earthwork(piece) {
+            emit_structural_earthwork_faces(mesh, &piece.render_earthwork_faces);
+        } else if edge.class == EdgeClass::Standard {
+            emit_standard_tie_in_closure(mesh, &piece.outer_boundary_loops, terrain);
         }
     }
 
@@ -162,40 +141,116 @@ fn emit_compiled_earthwork_mesh(
         let Some(piece) = road_surface.compiled_visual_node_pieces().get(&node_id) else {
             continue;
         };
-        if !road_surface.node_piece_emits_visible_tie_in(graph, node_id, terrain, piece) {
-            continue;
+        if road_surface.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
+            emit_structural_earthwork_faces(mesh, &piece.render_earthwork_faces);
+        } else {
+            emit_standard_tie_in_closure(mesh, &piece.outer_boundary_loops, terrain);
         }
-        let structural_tie_in =
-            road_surface.node_piece_uses_visible_earthwork(graph, node_id, terrain);
-        for face in &piece.render_earthwork_faces {
-            match face.kind {
-                RoadSurfaceEarthworkFaceKind::Slope => {
-                    emit_surface_polygon(
-                        mesh,
-                        MeshLayer::Earthwork,
-                        &face.polygon,
-                        if structural_tie_in {
-                            earthwork_color()
-                        } else {
-                            terrain_tie_in_color()
-                        },
-                    );
-                }
-                RoadSurfaceEarthworkFaceKind::RetainingWall => {
-                    emit_surface_polygon(
-                        mesh,
-                        MeshLayer::Concrete,
-                        &face.polygon,
-                        concrete_color(),
-                    );
-                }
+    }
+}
+
+fn emit_structural_earthwork_faces(
+    mesh: &mut NetworkMeshData,
+    faces: &[crate::simulation::network::surface::RoadSurfaceEarthworkRenderFace],
+) {
+    for face in faces {
+        match face.kind {
+            RoadSurfaceEarthworkFaceKind::Slope => {
+                emit_surface_polygon(mesh, MeshLayer::Earthwork, &face.polygon, earthwork_color());
+            }
+            RoadSurfaceEarthworkFaceKind::RetainingWall => {
+                emit_surface_polygon(mesh, MeshLayer::Concrete, &face.polygon, concrete_color());
             }
         }
     }
 }
 
-fn terrain_tie_in_color() -> Color {
-    Color::from_rgba(0.34, 0.48, 0.30, 1.0)
+fn emit_standard_tie_in_closure(
+    mesh: &mut NetworkMeshData,
+    boundary_loops: &[RoadSurfaceVisualPolygon],
+    terrain: &TerrainSystem,
+) {
+    for boundary_loop in boundary_loops {
+        emit_standard_tie_in_loop(mesh, boundary_loop, terrain);
+    }
+}
+
+fn emit_standard_tie_in_loop(
+    mesh: &mut NetworkMeshData,
+    boundary_loop: &RoadSurfaceVisualPolygon,
+    terrain: &TerrainSystem,
+) {
+    if boundary_loop.points_world.len() < 3 {
+        return;
+    }
+
+    let winding_ccw = signed_polygon_area_xz(&boundary_loop.points_world) > 0.0;
+    for index in 0..boundary_loop.points_world.len() {
+        let current = boundary_loop.points_world[index];
+        let next = boundary_loop.points_world[(index + 1) % boundary_loop.points_world.len()];
+        let edge_xz = Vector2::new(next.x - current.x, next.z - current.z);
+        if edge_xz.length_squared() <= MIN_SEGMENT_LEN * MIN_SEGMENT_LEN {
+            continue;
+        }
+
+        let outward = edge_outward_normal_xz(edge_xz, winding_ccw);
+        if outward.length_squared() <= 0.0001 {
+            continue;
+        }
+
+        let outer_current = standard_tie_in_outer_point(current, outward, terrain);
+        let outer_next = standard_tie_in_outer_point(next, outward, terrain);
+        super::push_quad(
+            mesh,
+            MeshLayer::Earthwork,
+            [current, next, outer_next, outer_current],
+            [
+                Vector2::ZERO,
+                Vector2::new(1.0, 0.0),
+                Vector2::new(1.0, 1.0),
+                Vector2::new(0.0, 1.0),
+            ],
+            terrain_tie_in_closure_color(),
+        );
+    }
+}
+
+fn standard_tie_in_outer_point(
+    inner: Vector3,
+    outward_xz: Vector2,
+    terrain: &TerrainSystem,
+) -> Vector3 {
+    let outer_x = inner.x + outward_xz.x * STANDARD_TIE_IN_CLOSURE_WIDTH_M;
+    let outer_z = inner.z + outward_xz.y * STANDARD_TIE_IN_CLOSURE_WIDTH_M;
+    let outer_y =
+        terrain.sample_visual_height_world(outer_x, outer_z) * crate::config::HEIGHT_SCALE;
+    Vector3::new(outer_x, outer_y, outer_z)
+}
+
+fn signed_polygon_area_xz(points: &[Vector3]) -> f32 {
+    if points.len() < 3 {
+        return 0.0;
+    }
+    let mut twice_area = 0.0;
+    for index in 0..points.len() {
+        let current = points[index];
+        let next = points[(index + 1) % points.len()];
+        twice_area += current.x * next.z - next.x * current.z;
+    }
+    twice_area * 0.5
+}
+
+fn edge_outward_normal_xz(edge_xz: Vector2, winding_ccw: bool) -> Vector2 {
+    let tangent = edge_xz.normalized();
+    if winding_ccw {
+        Vector2::new(tangent.y, -tangent.x)
+    } else {
+        Vector2::new(-tangent.y, tangent.x)
+    }
+}
+
+fn terrain_tie_in_closure_color() -> Color {
+    Color::from_rgba(0.24, 0.36, 0.20, 1.0)
 }
 
 pub(super) fn emit_compiled_lane_markings(

@@ -222,10 +222,11 @@ Current runtime client state:
 - grounded road-owned asphalt, shoulder / curb, and sidewalk footprints also provide exact clip
   polygons to terrain and water render patches so neither terrain nor water remains a visible carrier
   under the committed road footprint
-- grounded roads render deterministic local tie-in faces from the clipped footprint edge back to
-  terrain so the terrain renderer never has to expose an unbacked cut edge
+- grounded roads render a narrow deterministic closure strip from the clipped footprint edge to
+  nearby terrain so the terrain renderer never has to expose an unbacked cut edge
 - terrain-only queries still read source terrain, while visible-world queries use the client-owned
-  surface first, local tie-in faces second, and visual terrain third
+  surface first, structural local earthwork geometry second, and visual terrain third; the ordinary
+  grounded closure strip is render-only
 - future flat building pads and other engineered-ground clients should extend the same shared model
   from [`earthworks.md`](earthworks.md) instead of inventing a separate terrain-flattening path
 

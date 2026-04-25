@@ -520,7 +520,7 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            if !self.span_piece_emits_visible_tie_in(piece) {
+            if !self.span_piece_uses_visible_earthwork(piece) {
                 continue;
             }
             self.visit_span_piece_earthwork_triangles(piece, &mut |triangle| {
@@ -537,7 +537,7 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
-            if !self.node_piece_emits_visible_tie_in(graph, node_id, terrain, piece) {
+            if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
                 continue;
             }
             self.visit_node_piece_earthwork_triangles(
@@ -690,7 +690,7 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
-            if !self.span_piece_emits_visible_tie_in(piece) {
+            if !self.span_piece_uses_visible_earthwork(piece) {
                 continue;
             }
             self.visit_span_piece_earthwork_triangles(piece, &mut |triangle| {
@@ -709,7 +709,7 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
-            if !self.node_piece_emits_visible_tie_in(graph, node_id, terrain, piece) {
+            if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
                 continue;
             }
             self.visit_node_piece_earthwork_triangles(
@@ -935,13 +935,6 @@ impl RoadSurfaceSystem {
         piece.edge_class != EdgeClass::Standard
     }
 
-    pub(crate) fn span_piece_emits_visible_tie_in(
-        &self,
-        piece: &RoadSurfaceVisualSpanPiece,
-    ) -> bool {
-        !piece.render_earthwork_faces.is_empty()
-    }
-
     pub(crate) fn node_piece_uses_visible_earthwork(
         &self,
         graph: &RegionGraph,
@@ -974,17 +967,6 @@ impl RoadSurfaceSystem {
         }
 
         false
-    }
-
-    pub(crate) fn node_piece_emits_visible_tie_in(
-        &self,
-        graph: &RegionGraph,
-        node_id: u32,
-        terrain: &TerrainSystem,
-        piece: &RoadSurfaceVisualNodePiece,
-    ) -> bool {
-        self.node_piece_uses_earthworks(graph, node_id, terrain)
-            && !piece.render_earthwork_faces.is_empty()
     }
 
     fn span_piece_integrated_surface_offset_m(&self, piece: &RoadSurfaceVisualSpanPiece) -> f32 {
@@ -6731,7 +6713,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_surface_height_exposes_grounded_terminal_tie_in_margin() {
+    fn visible_surface_height_skips_grounded_terminal_earthwork_margin() {
         let terrain = flat_terrain(97, 97);
         let mut graph = RegionGraph::new();
         let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -6760,13 +6742,13 @@ mod tests {
         assert!(
             surface
                 .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
-                .is_some(),
-            "grounded standard terminal tie-in margins are visible seam carriers, so visible-surface queries must include them"
+                .is_none(),
+            "grounded standard terminal earthwork margin stays outside visible-surface queries; the renderer owns only a narrow visual seam closure"
         );
     }
 
     #[test]
-    fn visible_surface_height_exposes_grounded_span_tie_in_margin() {
+    fn visible_surface_height_skips_grounded_span_earthwork_margin() {
         let terrain = flat_terrain(97, 97);
         let mut graph = RegionGraph::new();
         let start = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
@@ -6795,8 +6777,8 @@ mod tests {
         assert!(
             surface
                 .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
-                .is_some(),
-            "grounded standard span tie-in margins are visible seam carriers, so visible-surface queries must include them"
+                .is_none(),
+            "grounded standard span earthwork margin stays outside visible-surface queries; the renderer owns only a narrow visual seam closure"
         );
     }
 

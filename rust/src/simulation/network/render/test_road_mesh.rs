@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_slope_standard_road_emits_visible_tie_in_mesh() {
+    fn test_cross_slope_standard_road_emits_visible_closure_strip() {
         let renderer = RoadRenderer;
         let terrain = cross_slope_terrain(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -470,12 +470,12 @@ mod tests {
 
         assert!(
             !mesh_data.earthwork_vertices.is_empty(),
-            "grounded standard roads should emit deterministic terrain-colored tie-in faces so clipped terrain cannot expose open seams"
+            "grounded standard roads should emit a narrow terrain-colored closure strip so clipped terrain cannot expose open seams"
         );
     }
 
     #[test]
-    fn test_flat_standard_road_emits_visible_tie_in_mesh() {
+    fn test_flat_standard_road_emits_visible_closure_strip() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -497,7 +497,7 @@ mod tests {
 
         assert!(
             !mesh_data.earthwork_vertices.is_empty(),
-            "flat grounded standard roads still need deterministic tie-in faces because the road footprint is clipped out of terrain topology"
+            "flat grounded standard roads still need a narrow closure strip because the road footprint is clipped out of terrain topology"
         );
     }
 

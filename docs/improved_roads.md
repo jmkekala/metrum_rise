@@ -233,9 +233,9 @@ Deterministic rule:
 - the seam outside the owned footprint must be explicit:
   - the terrain mesh is clipped / triangulated so its inner edge follows the road-owned outer
     boundary
-  - road-owned terrain-colored tie-in faces close the visible boundary from that outer edge back to
-    terrain; structural / retaining variants may replace those faces with explicit engineered
-    materials
+  - a narrow road-owned terrain-colored closure strip closes the visible boundary from that outer
+    edge to nearby terrain; structural / retaining variants may replace wider engineered faces with
+    explicit engineered materials
 - road-footprint suppression must be produced by omitted terrain topology, not by a shader mask or
   broad visual band-aid that leaves holes between road and terrain
 - terrain patches intersecting the compiled road-owned footprint must not drop to a coarser mesh
@@ -266,8 +266,8 @@ ground inside the owned footprint. Explicit road-owned earthwork geometry remain
 deterministic ownership model for terrain integration, structural cases, seam tie-ins, and future
 retaining variants, but ordinary grounded roads must not render that carrier as a separate visible
 mesh layer below asphalt or sidewalk. Ordinary grounded roads must instead cut the terrain mesh to
-the road-owned footprint and render local terrain-colored tie-in faces outside that footprint so the
-road / terrain border has no open side holes.
+the road-owned footprint and render only a narrow local terrain-colored closure strip outside that
+footprint so the road / terrain border has no open side holes.
 
 ### 2. Edge Surface Is Sampled As Ordered Sections
 
@@ -776,15 +776,17 @@ Current status:
     stamping one flat minimum-height slab per piece
   - compiled span and node pieces still own explicit earthwork geometry for deterministic terrain
     integration, chunking, seam closure, and structural cases, and grounded `Standard` roads now
-    combine clipped terrain topology with terrain-colored local tie-in faces
+    combine clipped terrain topology with a narrow terrain-colored closure strip
   - render no longer draws a support mesh below asphalt or sidewalk: spans and node pieces compile a
-    separate render-only tie-in face set, and grounded `Standard` roads render those faces only
-    outside the road-owned footprint to close the road / terrain edge
+    separate render-only tie-in face set for structural cases, while grounded `Standard` roads
+    render only a 0.35 m closure strip outside the road-owned footprint to close the road / terrain
+    edge
   - render-only earthwork faces are now classified deterministically as either `Slope` or
     `RetainingWall`, and the renderer routes those two face classes to different materials instead
     of painting every tie-in face as generic exposed earthwork
-  - visible-world height/raycast queries now hit compiled tie-in geometry for both ordinary
-    grounded seams and intentionally surfaced structural cases
+  - visible-world height/raycast queries still hit compiled earthwork geometry only for
+    intentionally surfaced structural cases; the ordinary grounded closure strip is render-only and
+    deliberately too narrow to become a gameplay/query surface
 - the remaining Phase 13 work is not just material refinement: the next blocking slice is clipped
   terrain and water topology validation and hardening across flat, diagonal, sloped,
   water-overlap, bend, terminal, and `JunctionN` cases. Richer retaining / wall variants and better
