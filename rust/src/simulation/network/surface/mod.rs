@@ -166,6 +166,8 @@ pub struct RoadSurfaceVisualSpanPiece {
     edge_class: EdgeClass,
     start_mouth_profile: Option<IncidentMouthProfile>,
     end_mouth_profile: Option<IncidentMouthProfile>,
+    clearance_road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    clearance_sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
@@ -379,6 +381,39 @@ impl RoadSurfaceSystem {
         &self.earthwork_chunk_cache
     }
 
+    pub(crate) fn terrain_render_patch_keys_with_visible_road(
+        &self,
+        terrain: &TerrainSystem,
+    ) -> Vec<(usize, usize)> {
+        let mut patch_keys = HashSet::new();
+
+        for piece in self.compiled_visual_span_pieces.values() {
+            for kind in [ChunkCacheKind::Surface, ChunkCacheKind::Earthwork] {
+                let Some((min, max)) = self.visual_span_piece_bounds(piece, kind) else {
+                    continue;
+                };
+                for key in terrain.render_patch_keys_for_world_bounds(min.x, min.z, max.x, max.z) {
+                    patch_keys.insert(key);
+                }
+            }
+        }
+
+        for piece in self.compiled_visual_node_pieces.values() {
+            for kind in [ChunkCacheKind::Surface, ChunkCacheKind::Earthwork] {
+                let Some((min, max)) = self.visual_node_piece_bounds(piece, kind) else {
+                    continue;
+                };
+                for key in terrain.render_patch_keys_for_world_bounds(min.x, min.z, max.x, max.z) {
+                    patch_keys.insert(key);
+                }
+            }
+        }
+
+        let mut keys: Vec<(usize, usize)> = patch_keys.into_iter().collect();
+        keys.sort_unstable();
+        keys
+    }
+
     pub(crate) fn sample_visible_surface_height(
         &self,
         graph: &RegionGraph,
@@ -429,6 +464,9 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
+            if !self.span_piece_uses_visible_earthwork(piece) {
+                continue;
+            }
             self.visit_span_piece_earthwork_triangles(piece, &mut |triangle| {
                 let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
                 else {
@@ -443,6 +481,9 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
+            if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
+                continue;
+            }
             self.visit_node_piece_earthwork_triangles(
                 graph,
                 terrain,
@@ -457,6 +498,64 @@ impl RoadSurfaceSystem {
                     best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
                 },
             );
+        }
+
+        best_height_m
+    }
+
+    pub(crate) fn sample_paved_support_height(
+        &self,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        world_x: f32,
+        world_z: f32,
+    ) -> Option<f32> {
+        let chunk = self.chunk_coords_for_world(world_x, world_z);
+        let (edge_indices, node_ids) = self.collect_query_contributors(chunk, chunk);
+        let point = Vector2::new(world_x, world_z);
+        let mut best_height_m: Option<f32> = None;
+
+        for &node_id in &node_ids {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+            if !self.node_piece_uses_earthworks(graph, node_id, terrain) {
+                continue;
+            }
+            let height_offset_m =
+                self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
+
+            for polygon in piece
+                .road_surface_polygons
+                .iter()
+                .chain(&piece.sidewalk_surface_polygons)
+            {
+                Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+                    let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
+                    else {
+                        return;
+                    };
+                    let height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc
+                        - height_offset_m;
+                    best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+                });
+            }
+        }
+
+        for &edge_idx in &edge_indices {
+            let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                continue;
+            };
+            let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
+            self.visit_span_piece_clearance_triangles(piece, &mut |triangle| {
+                let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(triangle, point)
+                else {
+                    return;
+                };
+                let height_m =
+                    triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc - height_offset_m;
+                best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
+            });
         }
 
         best_height_m
@@ -535,6 +634,9 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
                 continue;
             };
+            if !self.span_piece_uses_visible_earthwork(piece) {
+                continue;
+            }
             self.visit_span_piece_earthwork_triangles(piece, &mut |triangle| {
                 let Some(t) = Self::ray_triangle_intersection_t(triangle, ray_origin, ray_dir)
                 else {
@@ -551,6 +653,9 @@ impl RoadSurfaceSystem {
             let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
                 continue;
             };
+            if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
+                continue;
+            }
             self.visit_node_piece_earthwork_triangles(
                 graph,
                 terrain,
@@ -765,6 +870,68 @@ impl RoadSurfaceSystem {
         }
 
         has_supported_surface && has_visible_surface_attachment
+    }
+
+    pub(crate) fn span_piece_uses_visible_earthwork(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+    ) -> bool {
+        piece.edge_class != EdgeClass::Standard
+    }
+
+    pub(crate) fn node_piece_uses_visible_earthwork(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+        terrain: &TerrainSystem,
+    ) -> bool {
+        if node_id as usize >= graph.node_adjacency_count() {
+            return false;
+        }
+
+        for &edge_idx in graph.node_adjacency(node_id) {
+            if edge_idx >= graph.edge_count() {
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            if edge.deleted || !Self::is_surface_edge(edge) {
+                continue;
+            }
+
+            match edge.class {
+                EdgeClass::Standard => {}
+                EdgeClass::Bridge => return true,
+                EdgeClass::Tunnel => {
+                    let at_start = graph.get_valid_node(edge.start_node) == node_id;
+                    if self.tunnel_throat_is_visible(edge_idx, at_start, terrain) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        false
+    }
+
+    fn span_piece_integrated_surface_offset_m(&self, piece: &RoadSurfaceVisualSpanPiece) -> f32 {
+        if self.span_piece_uses_visible_earthwork(piece) {
+            EARTHWORK_PAVEMENT_DEPTH_M
+        } else {
+            0.0
+        }
+    }
+
+    fn node_piece_integrated_surface_offset_m(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+        terrain: &TerrainSystem,
+    ) -> f32 {
+        if self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
+            EARTHWORK_PAVEMENT_DEPTH_M
+        } else {
+            0.0
+        }
     }
 
     pub(crate) fn visible_section_ranges_for_edge(
@@ -1046,7 +1213,8 @@ impl RoadSurfaceSystem {
                 continue;
             }
             if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
-                self.compiled_visual_span_pieces.insert(edge_idx, span_piece);
+                self.compiled_visual_span_pieces
+                    .insert(edge_idx, span_piece);
             } else {
                 self.compiled_visual_span_pieces.remove(&edge_idx);
             }
@@ -1184,7 +1352,8 @@ impl RoadSurfaceSystem {
 
         for &edge_idx in &edge_ids {
             if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
-                self.compiled_visual_span_pieces.insert(edge_idx, span_piece);
+                self.compiled_visual_span_pieces
+                    .insert(edge_idx, span_piece);
             } else {
                 self.compiled_visual_span_pieces.remove(&edge_idx);
             }
@@ -1243,11 +1412,7 @@ impl RoadSurfaceSystem {
                     continue;
                 };
                 self.stamp_visual_node_piece_earthworks_for_chunk(
-                    graph,
-                    node_id,
-                    piece,
-                    chunk,
-                    terrain,
+                    graph, node_id, piece, chunk, terrain,
                 );
             }
         }
@@ -1375,11 +1540,9 @@ impl RoadSurfaceSystem {
         let valid = graph.get_valid_node(node_id);
         let incidents = self.sorted_incident_surface_edges(graph, valid);
         match self.classify_visual_node_kind(&incidents) {
-            CompiledNodeKind::Terminal => incidents
-                .first()
-                .and_then(|incident| {
-                    self.build_terminal_visual_node_piece(graph, terrain, valid, *incident)
-                }),
+            CompiledNodeKind::Terminal => incidents.first().and_then(|incident| {
+                self.build_terminal_visual_node_piece(graph, terrain, valid, *incident)
+            }),
             CompiledNodeKind::PassThrough => None,
             CompiledNodeKind::Bend => {
                 self.build_bend_visual_node_piece(graph, terrain, valid, &incidents)
@@ -1401,7 +1564,8 @@ impl RoadSurfaceSystem {
         }
         let edge = graph.edge(edge_idx);
         let sections = self.compiled_sections.get(&edge_idx)?;
-        let visible_ranges = self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
+        let visible_ranges =
+            self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
         let (mut road_surface_polygons, mut sidewalk_surface_polygons) =
             self.compile_surface_polygons_for_ranges(sections, &visible_ranges);
 
@@ -1417,35 +1581,22 @@ impl RoadSurfaceSystem {
         }
 
         let earthwork_ranges = self.earthwork_section_ranges_for_edge(edge, sections, terrain);
-        let (mut earthwork_road_surface_polygons, mut earthwork_sidewalk_surface_polygons) =
+        let (mut clearance_road_surface_polygons, mut clearance_sidewalk_surface_polygons) =
             self.compile_surface_polygons_for_ranges(sections, &earthwork_ranges);
-        Self::sort_visual_polygons(&mut earthwork_road_surface_polygons);
-        Self::sort_visual_polygons(&mut earthwork_sidewalk_surface_polygons);
+        Self::sort_visual_polygons(&mut clearance_road_surface_polygons);
+        Self::sort_visual_polygons(&mut clearance_sidewalk_surface_polygons);
         let earthwork_boundary_loops =
             Self::build_span_outer_boundary_loops(sections, &earthwork_ranges);
-        let mut earthwork_top_surface_polygons = earthwork_road_surface_polygons;
-        earthwork_top_surface_polygons.extend(earthwork_sidewalk_surface_polygons);
-        let (
-            earthwork_surface_polygons,
-            earthwork_outer_boundary_loops,
-            render_earthwork_faces,
-        ) =
+        let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &earthwork_boundary_loops,
-                &earthwork_top_surface_polygons,
                 terrain,
             );
 
-        let start_mouth_profile = Self::section_range_mouth_profile(
-            sections,
-            &visible_ranges,
-            IncidentEdgeSide::Start,
-        );
-        let end_mouth_profile = Self::section_range_mouth_profile(
-            sections,
-            &visible_ranges,
-            IncidentEdgeSide::End,
-        );
+        let start_mouth_profile =
+            Self::section_range_mouth_profile(sections, &visible_ranges, IncidentEdgeSide::Start);
+        let end_mouth_profile =
+            Self::section_range_mouth_profile(sections, &visible_ranges, IncidentEdgeSide::End);
 
         Some(RoadSurfaceVisualSpanPiece {
             edge_idx,
@@ -1455,6 +1606,8 @@ impl RoadSurfaceSystem {
             edge_class: edge.class,
             start_mouth_profile,
             end_mouth_profile,
+            clearance_road_surface_polygons,
+            clearance_sidewalk_surface_polygons,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
@@ -1537,8 +1690,7 @@ impl RoadSurfaceSystem {
             let mut left_points = Vec::new();
             let mut right_points = Vec::new();
             for section in &sections[start_index..=end_index] {
-                let Some((left_point, right_point)) =
-                    Self::section_outer_boundary_pair(section)
+                let Some((left_point, right_point)) = Self::section_outer_boundary_pair(section)
                 else {
                     continue;
                 };
@@ -1683,16 +1835,9 @@ impl RoadSurfaceSystem {
 
         let outer_boundary_loops =
             Self::build_terminal_outer_boundary_loops(&mouth, &extruded_points);
-        let top_surface_polygons =
-            Self::combined_surface_polygons(&road_surface_polygons, &sidewalk_surface_polygons);
-        let (
-            earthwork_surface_polygons,
-            earthwork_outer_boundary_loops,
-            render_earthwork_faces,
-        ) =
+        let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
-                &top_surface_polygons,
                 terrain,
             );
 
@@ -1731,16 +1876,9 @@ impl RoadSurfaceSystem {
             sidewalk_surface_polygons.extend(sector.sidewalk_surface_polygons.iter().cloned());
         }
         let outer_boundary_loops = Self::build_bend_outer_boundary_loops(node_pos, &sectors);
-        let top_surface_polygons =
-            Self::combined_surface_polygons(&road_surface_polygons, &sidewalk_surface_polygons);
-        let (
-            earthwork_surface_polygons,
-            earthwork_outer_boundary_loops,
-            render_earthwork_faces,
-        ) =
+        let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
-                &top_surface_polygons,
                 terrain,
             );
 
@@ -1780,16 +1918,9 @@ impl RoadSurfaceSystem {
         }
         let outer_boundary_loops =
             Self::build_junction_outer_boundary_loops(node_pos, &gap_sectors);
-        let top_surface_polygons =
-            Self::combined_surface_polygons(&road_surface_polygons, &sidewalk_surface_polygons);
-        let (
-            earthwork_surface_polygons,
-            earthwork_outer_boundary_loops,
-            render_earthwork_faces,
-        ) =
+        let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
-                &top_surface_polygons,
                 terrain,
             );
 
@@ -1823,9 +1954,8 @@ impl RoadSurfaceSystem {
         mouth: &IncidentMouthProfile,
         extruded_points: &[Vector3],
     ) -> Vec<RoadSurfaceVisualPolygon> {
-        let mut loop_points = Vec::with_capacity(
-            mouth.boundary_points_world.len() + extruded_points.len(),
-        );
+        let mut loop_points =
+            Vec::with_capacity(mouth.boundary_points_world.len() + extruded_points.len());
         loop_points.extend(mouth.boundary_points_world.iter().copied());
         loop_points.extend(extruded_points.iter().rev().copied());
         let mut loops = Vec::new();
@@ -1836,26 +1966,16 @@ impl RoadSurfaceSystem {
         loops
     }
 
-    fn combined_surface_polygons(
-        road_surface_polygons: &[RoadSurfaceVisualPolygon],
-        sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
-    ) -> Vec<RoadSurfaceVisualPolygon> {
-        let mut polygons = road_surface_polygons.to_vec();
-        polygons.extend(sidewalk_surface_polygons.iter().cloned());
-        polygons
-    }
-
     fn build_closed_earthwork_geometry_from_boundary_loops(
         &self,
         boundary_loops: &[RoadSurfaceVisualPolygon],
-        top_surface_polygons: &[RoadSurfaceVisualPolygon],
         terrain: &TerrainSystem,
     ) -> (
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceVisualPolygon>,
         Vec<RoadSurfaceEarthworkRenderFace>,
     ) {
-        let mut earthwork_surface_polygons = top_surface_polygons.to_vec();
+        let mut earthwork_surface_polygons = Vec::new();
         let mut earthwork_outer_boundary_loops = Vec::new();
         let mut render_earthwork_faces = Vec::new();
 
@@ -1893,16 +2013,11 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        let mut centroid_xz = Vector2::ZERO;
-        for point in boundary_points {
-            centroid_xz += Vector2::new(point.x, point.z);
-        }
-        centroid_xz /= boundary_points.len() as f32;
-
         let outer_points: Vec<Vector3> = boundary_points
             .iter()
-            .map(|point| {
-                let outward = Vector2::new(point.x - centroid_xz.x, point.z - centroid_xz.y);
+            .enumerate()
+            .map(|(index, point)| {
+                let outward = Self::closed_loop_vertex_outward_xz(boundary_points, index);
                 self.earthwork_transition_point(*point, outward, terrain)
             })
             .collect();
@@ -1931,16 +2046,62 @@ impl RoadSurfaceSystem {
         Some((outer_loop, side_polygons, render_faces))
     }
 
+    fn closed_loop_vertex_outward_xz(boundary_points: &[Vector3], index: usize) -> Vector2 {
+        if boundary_points.len() < 3 {
+            return Vector2::RIGHT;
+        }
+
+        let len = boundary_points.len();
+        let prev = boundary_points[(index + len - 1) % len];
+        let current = boundary_points[index];
+        let next = boundary_points[(index + 1) % len];
+        let incoming = Vector2::new(current.x - prev.x, current.z - prev.z);
+        let outgoing = Vector2::new(next.x - current.x, next.z - current.z);
+        let winding_ccw = Self::signed_polygon_area_xz(boundary_points) > 0.0;
+        let outward_incoming = Self::edge_outward_normal_xz(incoming, winding_ccw);
+        let outward_outgoing = Self::edge_outward_normal_xz(outgoing, winding_ccw);
+        let mut outward = outward_incoming + outward_outgoing;
+        if outward.length_squared() <= SAMPLE_EPSILON_M {
+            outward = if outward_incoming.length_squared() > SAMPLE_EPSILON_M {
+                outward_incoming
+            } else {
+                outward_outgoing
+            };
+        }
+        if outward.length_squared() <= SAMPLE_EPSILON_M {
+            let centroid = boundary_points.iter().fold(Vector2::ZERO, |sum, point| {
+                sum + Vector2::new(point.x, point.z)
+            }) / boundary_points.len() as f32;
+            outward = Vector2::new(current.x - centroid.x, current.z - centroid.y);
+        }
+        if outward.length_squared() <= SAMPLE_EPSILON_M {
+            Vector2::RIGHT
+        } else {
+            outward.normalized()
+        }
+    }
+
+    fn edge_outward_normal_xz(edge_xz: Vector2, winding_ccw: bool) -> Vector2 {
+        if edge_xz.length_squared() <= SAMPLE_EPSILON_M {
+            return Vector2::ZERO;
+        }
+        let tangent = edge_xz.normalized();
+        if winding_ccw {
+            Vector2::new(tangent.y, -tangent.x)
+        } else {
+            Vector2::new(-tangent.y, tangent.x)
+        }
+    }
+
     fn classify_earthwork_face_kind(
         inner_start: Vector3,
         inner_end: Vector3,
         outer_end: Vector3,
         outer_start: Vector3,
     ) -> RoadSurfaceEarthworkFaceKind {
-        let setback_a = Vector2::new(outer_start.x - inner_start.x, outer_start.z - inner_start.z)
-            .length();
-        let setback_b =
-            Vector2::new(outer_end.x - inner_end.x, outer_end.z - inner_end.z).length();
+        let setback_a =
+            Vector2::new(outer_start.x - inner_start.x, outer_start.z - inner_start.z).length();
+        let setback_b = Vector2::new(outer_end.x - inner_end.x, outer_end.z - inner_end.z).length();
         let avg_setback = (setback_a + setback_b) * 0.5;
         if avg_setback <= SAMPLE_EPSILON_M {
             return RoadSurfaceEarthworkFaceKind::RetainingWall;
@@ -1957,7 +2118,10 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn build_incident_mouth_profile(&self, incident: IncidentSurfaceEdge) -> Option<IncidentMouthProfile> {
+    fn build_incident_mouth_profile(
+        &self,
+        incident: IncidentSurfaceEdge,
+    ) -> Option<IncidentMouthProfile> {
         let piece = self.compiled_visual_span_pieces.get(&incident.edge_idx)?;
         match incident.side {
             IncidentEdgeSide::Start => piece.start_mouth_profile.clone(),
@@ -1965,7 +2129,10 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn build_incident_piece_mouth(&self, incident: IncidentSurfaceEdge) -> Option<IncidentPieceMouth> {
+    fn build_incident_piece_mouth(
+        &self,
+        incident: IncidentSurfaceEdge,
+    ) -> Option<IncidentPieceMouth> {
         let mouth = self.build_incident_mouth_profile(incident)?;
         let carriageway_indices: Vec<usize> = mouth
             .bands
@@ -1979,29 +2146,35 @@ impl RoadSurfaceSystem {
         if let (Some(&first_carriageway), Some(&last_carriageway)) =
             (carriageway_indices.first(), carriageway_indices.last())
         {
-            let left = IncidentPieceSide {
+            // `boundary_points_world` is ordered from geometric right outer edge to geometric left
+            // outer edge relative to the outward throat direction, so the first slice is the
+            // right-side profile and the final slice is the left-side profile. Each side profile
+            // must carry one carriageway half inward to the shared centerline so junction sectors
+            // can classify deep connector strips as road instead of leaving only a tiny center
+            // wedge owned by asphalt.
+            let right = IncidentPieceSide {
                 boundary_points_outer_to_inner: mouth.boundary_points_world
-                    [0..=first_carriageway]
+                    [0..=first_carriageway + 1]
                     .to_vec(),
-                band_kinds_outer_to_inner: mouth.bands[0..first_carriageway]
+                band_kinds_outer_to_inner: mouth.bands[0..=first_carriageway]
                     .iter()
                     .map(|band| band.kind)
                     .collect(),
-                inner_point_world: mouth.boundary_points_world[first_carriageway],
+                inner_point_world: mouth.boundary_points_world[first_carriageway + 1],
                 inner_surface_kind: RoadSurfaceBandKind::Carriageway,
             };
-            let right = IncidentPieceSide {
-                boundary_points_outer_to_inner: mouth.boundary_points_world[last_carriageway + 1..]
+            let left = IncidentPieceSide {
+                boundary_points_outer_to_inner: mouth.boundary_points_world[last_carriageway..]
                     .iter()
                     .rev()
                     .copied()
                     .collect(),
-                band_kinds_outer_to_inner: mouth.bands[last_carriageway + 1..]
+                band_kinds_outer_to_inner: mouth.bands[last_carriageway..]
                     .iter()
                     .rev()
                     .map(|band| band.kind)
                     .collect(),
-                inner_point_world: mouth.boundary_points_world[last_carriageway + 1],
+                inner_point_world: mouth.boundary_points_world[last_carriageway],
                 inner_surface_kind: RoadSurfaceBandKind::Carriageway,
             };
             Some(IncidentPieceMouth { left, right })
@@ -2014,13 +2187,13 @@ impl RoadSurfaceSystem {
                 .first()
                 .map(|band| band.kind)
                 .unwrap_or(RoadSurfaceBandKind::Footpath);
-            let left = IncidentPieceSide {
+            let right = IncidentPieceSide {
                 boundary_points_outer_to_inner: vec![first_point, center_point],
                 band_kinds_outer_to_inner: vec![foot_kind],
                 inner_point_world: center_point,
                 inner_surface_kind: foot_kind,
             };
-            let right = IncidentPieceSide {
+            let left = IncidentPieceSide {
                 boundary_points_outer_to_inner: vec![last_point, center_point],
                 band_kinds_outer_to_inner: vec![foot_kind],
                 inner_point_world: center_point,
@@ -2096,7 +2269,10 @@ impl RoadSurfaceSystem {
         polygons
     }
 
-    fn bend_connector_sample_breaks(side_a: &IncidentPieceSide, side_b: &IncidentPieceSide) -> Vec<f32> {
+    fn bend_connector_sample_breaks(
+        side_a: &IncidentPieceSide,
+        side_b: &IncidentPieceSide,
+    ) -> Vec<f32> {
         let mut breaks = Self::merged_side_breaks(side_a, side_b);
         let max_length = Self::side_total_length(side_a).max(Self::side_total_length(side_b));
         if max_length > SAMPLE_EPSILON_M {
@@ -2258,8 +2434,7 @@ impl RoadSurfaceSystem {
     ) -> RoadSurfaceBandKind {
         let kind_a = Self::surface_kind_at_depth(side_a, t);
         let kind_b = Self::surface_kind_at_depth(side_b, t);
-        if kind_a == RoadSurfaceBandKind::Carriageway
-            || kind_b == RoadSurfaceBandKind::Carriageway
+        if kind_a == RoadSurfaceBandKind::Carriageway || kind_b == RoadSurfaceBandKind::Carriageway
         {
             RoadSurfaceBandKind::Carriageway
         } else {
@@ -2298,13 +2473,14 @@ impl RoadSurfaceSystem {
             }
         }
 
-        (!road_surface_polygons.is_empty() || !sidewalk_surface_polygons.is_empty())
-            .then_some(JunctionGapSectorGeometry {
+        (!road_surface_polygons.is_empty() || !sidewalk_surface_polygons.is_empty()).then_some(
+            JunctionGapSectorGeometry {
                 outer_start_point_world: *current_side.boundary_points_outer_to_inner.first()?,
                 outer_end_point_world: *next_side.boundary_points_outer_to_inner.first()?,
                 road_surface_polygons,
                 sidewalk_surface_polygons,
-            })
+            },
+        )
     }
 
     fn build_bend_sector_geometry(
@@ -2326,22 +2502,21 @@ impl RoadSurfaceSystem {
                 road_surface_polygons.push(polygon);
             }
         }
-        for (band_kind, polygon) in
-            Self::build_bend_connector_polygons(current_side, next_side)
-        {
+        for (band_kind, polygon) in Self::build_bend_connector_polygons(current_side, next_side) {
             if band_kind == RoadSurfaceBandKind::Carriageway {
                 road_surface_polygons.push(polygon);
             } else {
                 sidewalk_surface_polygons.push(polygon);
             }
         }
-        (!road_surface_polygons.is_empty() || !sidewalk_surface_polygons.is_empty())
-            .then_some(BendSectorGeometry {
+        (!road_surface_polygons.is_empty() || !sidewalk_surface_polygons.is_empty()).then_some(
+            BendSectorGeometry {
                 outer_start_point_world: *current_side.boundary_points_outer_to_inner.first()?,
                 outer_end_point_world: *next_side.boundary_points_outer_to_inner.first()?,
                 road_surface_polygons,
                 sidewalk_surface_polygons,
-            })
+            },
+        )
     }
 
     fn collect_bend_sectors(
@@ -2391,8 +2566,7 @@ impl RoadSurfaceSystem {
                 node_pos,
                 &mouths[index],
                 &mouths[next_index],
-            )
-            else {
+            ) else {
                 continue;
             };
             sectors.push(sector);
@@ -2534,7 +2708,10 @@ impl RoadSurfaceSystem {
             if kind_order != std::cmp::Ordering::Equal {
                 return kind_order;
             }
-            match (a.polygon.points_world.first(), b.polygon.points_world.first()) {
+            match (
+                a.polygon.points_world.first(),
+                b.polygon.points_world.first(),
+            ) {
                 (Some(point_a), Some(point_b)) => point_a
                     .x
                     .total_cmp(&point_b.x)
@@ -2544,7 +2721,12 @@ impl RoadSurfaceSystem {
                 (Some(_), None) => std::cmp::Ordering::Greater,
                 (None, None) => std::cmp::Ordering::Equal,
             }
-            .then(a.polygon.points_world.len().cmp(&b.polygon.points_world.len()))
+            .then(
+                a.polygon
+                    .points_world
+                    .len()
+                    .cmp(&b.polygon.points_world.len()),
+            )
             .then_with(|| {
                 a.polygon
                     .points_world
@@ -2579,7 +2761,11 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn classify_surface_node_kind(&self, graph: &RegionGraph, node_id: u32) -> Option<CompiledNodeKind> {
+    fn classify_surface_node_kind(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+    ) -> Option<CompiledNodeKind> {
         let incidents = self.sorted_incident_surface_edges(graph, node_id);
         (!incidents.is_empty()).then(|| self.classify_visual_node_kind(&incidents))
     }
@@ -3163,8 +3349,11 @@ impl RoadSurfaceSystem {
         (edge_indices, node_ids)
     }
 
-    fn visit_visible_span_piece_triangles<F>(&self, piece: &RoadSurfaceVisualSpanPiece, visitor: &mut F)
-    where
+    fn visit_visible_span_piece_triangles<F>(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+        visitor: &mut F,
+    ) where
         F: FnMut([Vector3; 3]),
     {
         for polygon in piece
@@ -3184,6 +3373,22 @@ impl RoadSurfaceSystem {
         F: FnMut([Vector3; 3]),
     {
         for polygon in &piece.earthwork_surface_polygons {
+            Self::visit_visual_polygon_triangles(polygon, visitor);
+        }
+    }
+
+    fn visit_span_piece_clearance_triangles<F>(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+        visitor: &mut F,
+    ) where
+        F: FnMut([Vector3; 3]),
+    {
+        for polygon in piece
+            .clearance_road_surface_polygons
+            .iter()
+            .chain(&piece.clearance_sidewalk_surface_polygons)
+        {
             Self::visit_visual_polygon_triangles(polygon, visitor);
         }
     }
@@ -3253,7 +3458,8 @@ impl RoadSurfaceSystem {
 
         let edge = graph.edge(edge_idx);
         let total_length = sections.last()?.s_m.max(0.0);
-        let start_kind = self.classify_surface_node_kind(graph, graph.get_valid_node(edge.start_node));
+        let start_kind =
+            self.classify_surface_node_kind(graph, graph.get_valid_node(edge.start_node));
         let end_kind = self.classify_surface_node_kind(graph, graph.get_valid_node(edge.end_node));
         let start_handoff = if matches!(
             start_kind,
@@ -3379,11 +3585,23 @@ impl RoadSurfaceSystem {
         chunk: SurfaceChunkKey,
         terrain: &mut TerrainSystem,
     ) {
-        for polygon in &piece.earthwork_surface_polygons {
-            Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                self.stamp_triangle_to_chunk(terrain, chunk, triangle);
-            });
+        let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
+        if piece.edge_class == EdgeClass::Standard {
+            self.stamp_piece_surface_geometry_for_chunk(
+                &piece.earthwork_surface_polygons,
+                chunk,
+                terrain,
+                0.0,
+            );
         }
+
+        self.stamp_piece_top_surface_clearance_for_chunk(
+            &piece.clearance_road_surface_polygons,
+            &piece.clearance_sidewalk_surface_polygons,
+            chunk,
+            terrain,
+            height_offset_m,
+        );
     }
 
     fn stamp_visual_node_piece_earthworks_for_chunk(
@@ -3398,11 +3616,23 @@ impl RoadSurfaceSystem {
             return;
         }
 
-        for polygon in &piece.earthwork_surface_polygons {
-            Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
-                self.stamp_triangle_to_chunk(terrain, chunk, triangle);
-            });
+        let height_offset_m = self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
+        if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
+            self.stamp_piece_surface_geometry_for_chunk(
+                &piece.earthwork_surface_polygons,
+                chunk,
+                terrain,
+                0.0,
+            );
         }
+
+        self.stamp_piece_top_surface_clearance_for_chunk(
+            &piece.road_surface_polygons,
+            &piece.sidewalk_surface_polygons,
+            chunk,
+            terrain,
+            height_offset_m,
+        );
     }
 
     fn node_piece_uses_earthworks(
@@ -3618,11 +3848,64 @@ impl RoadSurfaceSystem {
         average_point.y >= terrain_height - TUNNEL_PORTAL_STAMP_DEPTH_M
     }
 
-    fn stamp_triangle_to_chunk(
+    fn stamp_piece_top_surface_clearance_for_chunk(
         &self,
+        road_surface_polygons: &[RoadSurfaceVisualPolygon],
+        sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
+        chunk: SurfaceChunkKey,
         terrain: &mut TerrainSystem,
+        height_offset_m: f32,
+    ) {
+        self.stamp_piece_surface_geometry_for_chunk(
+            road_surface_polygons,
+            chunk,
+            terrain,
+            height_offset_m,
+        );
+        self.stamp_piece_surface_geometry_for_chunk(
+            sidewalk_surface_polygons,
+            chunk,
+            terrain,
+            height_offset_m,
+        );
+    }
+
+    fn stamp_piece_surface_geometry_for_chunk(
+        &self,
+        polygons: &[RoadSurfaceVisualPolygon],
+        chunk: SurfaceChunkKey,
+        terrain: &mut TerrainSystem,
+        height_offset_m: f32,
+    ) {
+        let conservative_margin_m = terrain.cell_size_m() * std::f32::consts::SQRT_2 * 0.5;
+        let mut candidates: HashMap<(usize, usize), (f32, f32)> = HashMap::new();
+
+        for polygon in polygons {
+            Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
+                self.collect_profile_clearance_triangle_candidates(
+                    terrain,
+                    chunk,
+                    triangle,
+                    conservative_margin_m,
+                    height_offset_m,
+                    &mut candidates,
+                );
+            });
+        }
+
+        for ((grid_x, grid_z), (_, height_sample)) in candidates {
+            terrain.set_visual_height_at_grid(grid_x, grid_z, height_sample);
+        }
+    }
+
+    fn collect_profile_clearance_triangle_candidates(
+        &self,
+        terrain: &TerrainSystem,
         chunk: SurfaceChunkKey,
         triangle: [Vector3; 3],
+        conservative_margin_m: f32,
+        height_offset_m: f32,
+        candidates: &mut HashMap<(usize, usize), (f32, f32)>,
     ) {
         let projected_cross = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
             - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
@@ -3635,49 +3918,83 @@ impl RoadSurfaceSystem {
             .iter()
             .map(|point| point.x)
             .fold(chunk_max.x, f32::min)
-            .max(chunk_min.x);
+            .max(chunk_min.x - conservative_margin_m);
         let max_x = triangle
             .iter()
             .map(|point| point.x)
             .fold(chunk_min.x, f32::max)
-            .min(chunk_max.x);
+            .min(chunk_max.x + conservative_margin_m);
         let min_z = triangle
             .iter()
             .map(|point| point.z)
             .fold(chunk_max.z, f32::min)
-            .max(chunk_min.z);
+            .max(chunk_min.z - conservative_margin_m);
         let max_z = triangle
             .iter()
             .map(|point| point.z)
             .fold(chunk_min.z, f32::max)
-            .min(chunk_max.z);
+            .min(chunk_max.z + conservative_margin_m);
         let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) =
             terrain.grid_rect_for_world_bounds(min_x, min_z, max_x, max_z)
         else {
             return;
         };
+        let (grid_width, grid_height) = terrain.grid_dimensions();
+        if grid_width == 0 || grid_height == 0 {
+            return;
+        }
+        let max_grid_x_index = grid_width.saturating_sub(1);
+        let max_grid_z_index = grid_height.saturating_sub(1);
+        let grid_min_x = min_grid_x.saturating_sub(1).min(max_grid_x_index);
+        let grid_max_x = max_grid_x.saturating_add(1).min(max_grid_x_index);
+        let grid_min_z = min_grid_z.saturating_sub(1).min(max_grid_z_index);
+        let grid_max_z = max_grid_z.saturating_add(1).min(max_grid_z_index);
 
-        for grid_z in min_grid_z..=max_grid_z {
-            for grid_x in min_grid_x..=max_grid_x {
+        for grid_z in grid_min_z..=grid_max_z {
+            for grid_x in grid_min_x..=grid_max_x {
                 let (world_x, world_z) = terrain.grid_to_world_coords(grid_x, grid_z);
-                let Some((wa, wb, wc)) =
-                    Self::triangle_barycentric_weights_xz(triangle, Vector2::new(world_x, world_z))
+                let point_xz = Vector2::new(world_x, world_z);
+                if !Self::point_is_inside_or_near_triangle_xz(
+                    triangle,
+                    point_xz,
+                    conservative_margin_m,
+                ) {
+                    continue;
+                }
+                let Some((distance_squared, height_sample)) =
+                    Self::profile_clearance_candidate_from_triangle(
+                        triangle,
+                        point_xz,
+                        height_offset_m,
+                    )
                 else {
                     continue;
                 };
-                let support_height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
-                let target_sample =
-                    (support_height_m - EARTHWORK_PAVEMENT_DEPTH_M) / config::HEIGHT_SCALE;
-                let source_sample = terrain.get_height(grid_x, grid_z);
-                let current_visual = terrain.visual_height_at_grid(grid_x, grid_z);
-                let blended = if target_sample < source_sample {
-                    current_visual.min(target_sample)
-                } else {
-                    current_visual.max(target_sample)
-                };
-                terrain.set_visual_height_at_grid(grid_x, grid_z, blended);
+                let entry = candidates
+                    .entry((grid_x, grid_z))
+                    .or_insert((distance_squared, height_sample));
+                if distance_squared < entry.0 - 0.0001
+                    || ((distance_squared - entry.0).abs() <= 0.0001 && height_sample > entry.1)
+                {
+                    *entry = (distance_squared, height_sample);
+                }
             }
         }
+    }
+
+    fn profile_clearance_candidate_from_triangle(
+        triangle: [Vector3; 3],
+        point_xz: Vector2,
+        height_offset_m: f32,
+    ) -> Option<(f32, f32)> {
+        let sample_point_xz = Self::closest_point_on_triangle_xz(triangle, point_xz);
+        let (wa, wb, wc) = Self::triangle_barycentric_weights_xz(triangle, sample_point_xz)?;
+        let support_height_m = triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc;
+        let clearance_sample = (support_height_m - height_offset_m) / config::HEIGHT_SCALE;
+        Some((
+            point_xz.distance_squared_to(sample_point_xz),
+            clearance_sample,
+        ))
     }
 
     fn make_visual_polygon(mut points_world: Vec<Vector3>) -> Option<RoadSurfaceVisualPolygon> {
@@ -3695,15 +4012,11 @@ impl RoadSurfaceSystem {
         if signed_area < 0.0 {
             points_world.reverse();
         }
-        let Some((start_index, _)) = points_world
-            .iter()
-            .enumerate()
-            .min_by(|(_, a), (_, b)| {
-                a.x.total_cmp(&b.x)
-                    .then(a.z.total_cmp(&b.z))
-                    .then(a.y.total_cmp(&b.y))
-            })
-        else {
+        let Some((start_index, _)) = points_world.iter().enumerate().min_by(|(_, a), (_, b)| {
+            a.x.total_cmp(&b.x)
+                .then(a.z.total_cmp(&b.z))
+                .then(a.y.total_cmp(&b.y))
+        }) else {
             return None;
         };
         points_world.rotate_left(start_index);
@@ -3714,7 +4027,9 @@ impl RoadSurfaceSystem {
         })
     }
 
-    fn make_visual_strip_polygon(mut points_world: Vec<Vector3>) -> Option<RoadSurfaceVisualPolygon> {
+    fn make_visual_strip_polygon(
+        mut points_world: Vec<Vector3>,
+    ) -> Option<RoadSurfaceVisualPolygon> {
         points_world.dedup_by(|a, b| (*a - *b).length_squared() <= 0.0001);
         if points_world.len() >= 2
             && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
@@ -3767,7 +4082,11 @@ impl RoadSurfaceSystem {
                 let prev = remaining[(index + remaining.len() - 1) % remaining.len()];
                 let current = remaining[index];
                 let next = remaining[(index + 1) % remaining.len()];
-                let triangle = [points_world[prev], points_world[current], points_world[next]];
+                let triangle = [
+                    points_world[prev],
+                    points_world[current],
+                    points_world[next],
+                ];
                 let projected_cross = (triangle[1].x - triangle[0].x)
                     * (triangle[2].z - triangle[0].z)
                     - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
@@ -3861,6 +4180,78 @@ impl RoadSurfaceSystem {
             return None;
         }
         Some((w0, w1, w2))
+    }
+
+    fn point_is_inside_or_near_triangle_xz(
+        triangle: [Vector3; 3],
+        point: Vector2,
+        margin_m: f32,
+    ) -> bool {
+        if Self::triangle_barycentric_weights_xz(triangle, point).is_some() {
+            return true;
+        }
+        Self::distance_point_to_triangle_xz(triangle, point) <= margin_m
+    }
+
+    fn closest_point_on_triangle_xz(triangle: [Vector3; 3], point: Vector2) -> Vector2 {
+        if Self::triangle_barycentric_weights_xz(triangle, point).is_some() {
+            return point;
+        }
+
+        let triangle_points = [
+            Vector2::new(triangle[0].x, triangle[0].z),
+            Vector2::new(triangle[1].x, triangle[1].z),
+            Vector2::new(triangle[2].x, triangle[2].z),
+        ];
+        let mut best = triangle_points[0];
+        let mut best_distance_squared = point.distance_squared_to(best);
+
+        for &(start, end) in &[
+            (triangle_points[0], triangle_points[1]),
+            (triangle_points[1], triangle_points[2]),
+            (triangle_points[2], triangle_points[0]),
+        ] {
+            let candidate = Self::closest_point_on_segment_xz(point, start, end);
+            let distance_squared = point.distance_squared_to(candidate);
+            if distance_squared < best_distance_squared {
+                best = candidate;
+                best_distance_squared = distance_squared;
+            }
+        }
+
+        best
+    }
+
+    fn distance_point_to_triangle_xz(triangle: [Vector3; 3], point: Vector2) -> f32 {
+        Self::distance_point_to_segment_xz(
+            point,
+            Vector2::new(triangle[0].x, triangle[0].z),
+            Vector2::new(triangle[1].x, triangle[1].z),
+        )
+        .min(Self::distance_point_to_segment_xz(
+            point,
+            Vector2::new(triangle[1].x, triangle[1].z),
+            Vector2::new(triangle[2].x, triangle[2].z),
+        ))
+        .min(Self::distance_point_to_segment_xz(
+            point,
+            Vector2::new(triangle[2].x, triangle[2].z),
+            Vector2::new(triangle[0].x, triangle[0].z),
+        ))
+    }
+
+    fn distance_point_to_segment_xz(point: Vector2, start: Vector2, end: Vector2) -> f32 {
+        point.distance_to(Self::closest_point_on_segment_xz(point, start, end))
+    }
+
+    fn closest_point_on_segment_xz(point: Vector2, start: Vector2, end: Vector2) -> Vector2 {
+        let segment = end - start;
+        let length_squared = segment.length_squared();
+        if length_squared <= SAMPLE_EPSILON_M {
+            return start;
+        }
+        let t = ((point - start).dot(segment) / length_squared).clamp(0.0, 1.0);
+        start + segment * t
     }
 
     fn ray_triangle_intersection_t(
@@ -4435,8 +4826,8 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::{
-        EARTHWORK_MAX_MARGIN_M, EARTHWORK_PAVEMENT_DEPTH_M, PreviewRoadSurfaceResult,
-        RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+        EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult, RoadSurfaceEarthworkFaceKind,
+        RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
         RoadSurfaceVisualNodePieceKind,
     };
     use crate::simulation::network::TransitNetwork;
@@ -4611,6 +5002,7 @@ mod tests {
 
     fn measure_max_footprint_overflow(
         surface: &RoadSurfaceSystem,
+        graph: &RegionGraph,
         edge_idx: usize,
         terrain: &TerrainSystem,
     ) -> FootprintOverflowMetrics {
@@ -4632,8 +5024,12 @@ mod tests {
                 };
                 let sample_x = section.center_xz.x + section.lateral_xz.x * lateral_offset_m;
                 let sample_z = section.center_xz.y + section.lateral_xz.y * lateral_offset_m;
-                let visual_height_m = terrain.sample_visual_height_world(sample_x, sample_z)
-                    * crate::config::HEIGHT_SCALE;
+                let visual_height_m = surface
+                    .sample_paved_support_height(graph, terrain, sample_x, sample_z)
+                    .unwrap_or_else(|| {
+                        terrain.sample_visual_height_world(sample_x, sample_z)
+                            * crate::config::HEIGHT_SCALE
+                    });
                 let overflow_m = visual_height_m - road_height_m;
                 if overflow_m > best.max_overflow_m {
                     best = FootprintOverflowMetrics {
@@ -4652,7 +5048,7 @@ mod tests {
 
     fn build_coarse_grid_hillside_case(
         cell_size_m: f32,
-    ) -> (RoadSurfaceSystem, TerrainSystem, usize) {
+    ) -> (RoadSurfaceSystem, TerrainSystem, RegionGraph, usize) {
         let cells = ((800.0 / cell_size_m).round() as usize).max(2) + 1;
         let mut terrain = coarse_hillside_world_terrain(cells, cells, cell_size_m);
         let points = grounded_polyline_points_from_terrain(
@@ -4677,7 +5073,7 @@ mod tests {
 
         let mut surface = RoadSurfaceSystem::new(128.0);
         surface.rebuild_all_earthworks(&graph, &mut terrain);
-        (surface, terrain, edge_idx)
+        (surface, terrain, graph, edge_idx)
     }
 
     fn compile_committed_preview_reference(
@@ -4733,11 +5129,7 @@ mod tests {
                     .cloned()
             })
             .collect();
-        (
-            preview,
-            compiled_sections,
-            compiled_visual_node_pieces,
-        )
+        (preview, compiled_sections, compiled_visual_node_pieces)
     }
 
     #[test]
@@ -4806,6 +5198,7 @@ mod tests {
         section: &RoadSurfaceSection,
         lateral_offset_m: f32,
     ) -> Option<f32> {
+        let mut best_height_m: Option<f32> = None;
         for band in &section.bands {
             let start = band.lateral_start_m.min(band.lateral_end_m);
             let end = band.lateral_start_m.max(band.lateral_end_m);
@@ -4819,10 +5212,11 @@ mod tests {
             } else {
                 ((lateral_offset_m - band.lateral_start_m) / span).clamp(0.0, 1.0)
             };
-            return Some(band.height_start_m + (band.height_end_m - band.height_start_m) * t);
+            let height_m = band.height_start_m + (band.height_end_m - band.height_start_m) * t;
+            best_height_m = Some(best_height_m.map_or(height_m, |best| best.max(height_m)));
         }
 
-        None
+        best_height_m
     }
 
     fn outer_surface_lateral_bounds(section: &RoadSurfaceSection) -> Option<(f32, f32)> {
@@ -5128,32 +5522,38 @@ mod tests {
         assert!(!bend_piece.outer_boundary_loops.is_empty());
         assert!(!bend_piece.road_surface_polygons.is_empty());
         assert!(!bend_piece.sidewalk_surface_polygons.is_empty());
-        assert!(bend_piece
-            .outer_boundary_loops
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
-        assert!(bend_piece
-            .road_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
-        assert!(bend_piece
-            .sidewalk_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(
+            bend_piece
+                .outer_boundary_loops
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
+        assert!(
+            bend_piece
+                .road_surface_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
+        assert!(
+            bend_piece
+                .sidewalk_surface_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
         assert!(!bend_piece.earthwork_surface_polygons.is_empty());
         assert!(!bend_piece.earthwork_outer_boundary_loops.is_empty());
         assert!(!bend_piece.render_earthwork_faces.is_empty());
-        assert!(bend_piece
-            .earthwork_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
-        assert!(bend_piece
-            .render_earthwork_faces
-            .iter()
-            .all(|face| RoadSurfaceSystem::polygon_has_area_xz(&face.polygon.points_world)));
         assert!(
-            bend_piece.earthwork_surface_polygons.len()
-                > bend_piece.road_surface_polygons.len() + bend_piece.sidewalk_surface_polygons.len()
+            bend_piece
+                .earthwork_surface_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
+        assert!(
+            bend_piece
+                .render_earthwork_faces
+                .iter()
+                .all(|face| RoadSurfaceSystem::polygon_has_area_xz(&face.polygon.points_world))
         );
         assert_ne!(
             bend_piece.earthwork_outer_boundary_loops,
@@ -5180,25 +5580,39 @@ mod tests {
             .compiled_visual_node_pieces()
             .get(&terminal_center)
             .unwrap();
-        assert_eq!(terminal_piece.kind, RoadSurfaceVisualNodePieceKind::Terminal);
+        assert_eq!(
+            terminal_piece.kind,
+            RoadSurfaceVisualNodePieceKind::Terminal
+        );
         assert_eq!(terminal_piece.outer_boundary_loops.len(), 1);
         assert!(!terminal_piece.road_surface_polygons.is_empty());
         assert!(!terminal_piece.sidewalk_surface_polygons.is_empty());
-        assert!(terminal_piece
-            .road_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
-        assert!(terminal_piece
-            .sidewalk_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(
+            terminal_piece
+                .road_surface_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
+        assert!(
+            terminal_piece
+                .sidewalk_surface_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
         assert!(!terminal_piece.earthwork_surface_polygons.is_empty());
         assert!(!terminal_piece.earthwork_outer_boundary_loops.is_empty());
         assert!(!terminal_piece.render_earthwork_faces.is_empty());
         assert!(
-            terminal_piece.earthwork_surface_polygons.len()
-                > terminal_piece.road_surface_polygons.len()
-                    + terminal_piece.sidewalk_surface_polygons.len()
+            terminal_piece
+                .earthwork_surface_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
+        assert!(
+            terminal_piece
+                .render_earthwork_faces
+                .iter()
+                .all(|face| RoadSurfaceSystem::polygon_has_area_xz(&face.polygon.points_world))
         );
         assert_ne!(
             terminal_piece.earthwork_outer_boundary_loops,
@@ -5224,29 +5638,137 @@ mod tests {
 
         let mut surface = RoadSurfaceSystem::new(16.0);
         surface.compile_dirty(&graph, &terrain);
-        let span_piece = surface.compiled_visual_span_pieces().get(&edge_idx).unwrap();
+        let span_piece = surface
+            .compiled_visual_span_pieces()
+            .get(&edge_idx)
+            .unwrap();
         assert!(!span_piece.outer_boundary_loops.is_empty());
         assert!(!span_piece.road_surface_polygons.is_empty());
         assert!(!span_piece.sidewalk_surface_polygons.is_empty());
-        assert!(span_piece
-            .road_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
-        assert!(span_piece
-            .sidewalk_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)));
+        assert!(
+            span_piece
+                .road_surface_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
+        assert!(
+            span_piece
+                .sidewalk_surface_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
         assert!(!span_piece.earthwork_surface_polygons.is_empty());
         assert!(!span_piece.earthwork_outer_boundary_loops.is_empty());
         assert!(!span_piece.render_earthwork_faces.is_empty());
         assert!(
-            span_piece.earthwork_surface_polygons.len()
-                > span_piece.road_surface_polygons.len() + span_piece.sidewalk_surface_polygons.len()
+            span_piece
+                .earthwork_surface_polygons
+                .iter()
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
+        assert!(
+            span_piece
+                .render_earthwork_faces
+                .iter()
+                .all(|face| RoadSurfaceSystem::polygon_has_area_xz(&face.polygon.points_world))
         );
         assert_ne!(
             span_piece.earthwork_outer_boundary_loops,
             span_piece.outer_boundary_loops
         );
+    }
+
+    #[test]
+    fn span_earthwork_outer_loops_stay_outside_paved_footprint() {
+        let terrain = flat_terrain(97, 97);
+        let mut graph = RegionGraph::new();
+        let a = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
+        let b = graph.add_node(Vector3::new(0.0, 0.0, 24.0), NodeType::Junction);
+        let edge_idx = graph.add_edge(test_edge(
+            a,
+            b,
+            vec![Vector3::new(0.0, 0.0, -24.0), Vector3::new(0.0, 0.0, 24.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        let span_piece = surface
+            .compiled_visual_span_pieces()
+            .get(&edge_idx)
+            .expect("standard edge should compile a visual span piece");
+        let max_inner_abs_x = span_piece
+            .outer_boundary_loops
+            .iter()
+            .flat_map(|polygon| polygon.points_world.iter())
+            .map(|point| point.x.abs())
+            .fold(0.0, f32::max);
+        let min_outer_abs_x = span_piece
+            .earthwork_outer_boundary_loops
+            .iter()
+            .flat_map(|polygon| polygon.points_world.iter())
+            .map(|point| point.x.abs())
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            min_outer_abs_x >= max_inner_abs_x + 0.5,
+            "expected span earthwork tie-in to stay outside the paved footprint, got min_outer_abs_x={min_outer_abs_x:.3} max_inner_abs_x={max_inner_abs_x:.3}"
+        );
+    }
+
+    #[test]
+    fn incident_piece_mouth_sides_match_geometric_left_and_right() {
+        let terrain = flat_terrain(64, 64);
+        let mut graph = RegionGraph::new();
+        let west = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let east = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(test_edge(
+            west,
+            center,
+            vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.add_edge(test_edge(
+            center,
+            east,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        for incident in surface.sorted_incident_surface_edges(&graph, center) {
+            let mouth = surface.build_incident_piece_mouth(incident).unwrap();
+            let node_pos = graph.node(center).pos;
+            let left_outer = *mouth.left.boundary_points_outer_to_inner.first().unwrap();
+            let right_outer = *mouth.right.boundary_points_outer_to_inner.first().unwrap();
+            let left_vec = Vector2::new(left_outer.x - node_pos.x, left_outer.z - node_pos.z);
+            let right_vec = Vector2::new(right_outer.x - node_pos.x, right_outer.z - node_pos.z);
+            let left_cross =
+                incident.direction_xz.x * left_vec.y - incident.direction_xz.y * left_vec.x;
+            let right_cross =
+                incident.direction_xz.x * right_vec.y - incident.direction_xz.y * right_vec.x;
+            assert!(
+                left_cross > 0.0,
+                "expected left side to stay geometrically left of the outward throat direction, got left_cross={left_cross:.3} direction={:?}",
+                incident.direction_xz
+            );
+            assert!(
+                right_cross < 0.0,
+                "expected right side to stay geometrically right of the outward throat direction, got right_cross={right_cross:.3} direction={:?}",
+                incident.direction_xz
+            );
+        }
     }
 
     #[test]
@@ -5313,8 +5835,14 @@ mod tests {
         surface_a.compile_dirty(&graph, &terrain);
         surface_b.compile_dirty(&graph, &terrain);
 
-        let piece_a = surface_a.compiled_visual_node_pieces().get(&center).unwrap();
-        let piece_b = surface_b.compiled_visual_node_pieces().get(&center).unwrap();
+        let piece_a = surface_a
+            .compiled_visual_node_pieces()
+            .get(&center)
+            .unwrap();
+        let piece_b = surface_b
+            .compiled_visual_node_pieces()
+            .get(&center)
+            .unwrap();
         assert_eq!(piece_a.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
         assert_eq!(piece_a, piece_b);
         assert!(
@@ -5416,7 +5944,7 @@ mod tests {
     }
 
     #[test]
-    fn terrain_earthworks_match_compiled_roadbed_inside_paved_footprint() {
+    fn terrain_earthworks_integrate_paved_footprint_with_compiled_roadbed() {
         let mut terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 0.0);
         for z in 0..65 {
             for x in 0..65 {
@@ -5453,15 +5981,14 @@ mod tests {
             .min_by(|a, b| a.center_xz.y.abs().total_cmp(&b.center_xz.y.abs()))
             .unwrap();
         for lateral_offset in [-4.0_f32, 0.0, 4.0] {
-            let expected = section_height_at_lateral_offset(section, lateral_offset).unwrap()
-                - EARTHWORK_PAVEMENT_DEPTH_M;
+            let road_height = section_height_at_lateral_offset(section, lateral_offset).unwrap();
             let sample_x = section.center_xz.x + section.lateral_xz.x * lateral_offset;
             let sample_z = section.center_xz.y + section.lateral_xz.y * lateral_offset;
             let actual = terrain.sample_visual_height_world(sample_x, sample_z)
                 * crate::config::HEIGHT_SCALE;
             assert!(
-                (actual - expected).abs() <= 0.12,
-                "expected stamped terrain to follow compiled roadbed at lateral_offset={lateral_offset:.1}: actual={actual:.3} expected={expected:.3}"
+                (actual - road_height).abs() <= 0.05,
+                "expected stamped terrain to match the compiled paved surface at lateral_offset={lateral_offset:.1}: actual={actual:.3} road_height={road_height:.3}"
             );
         }
     }
@@ -5516,52 +6043,139 @@ mod tests {
             "expected grounded-road crossfall to stay within the design bound: actual_rate={actual_crossfall_rate:.4}"
         );
 
+        let mut sampled_profile = Vec::new();
         for lateral_offset in [-half_carriageway * 0.8, 0.0, half_carriageway * 0.8] {
             let road_height = section_height_at_lateral_offset(section, lateral_offset).unwrap();
             let sample_x = section.center_xz.x + section.lateral_xz.x * lateral_offset;
             let sample_z = section.center_xz.y + section.lateral_xz.y * lateral_offset;
             let visual_height = terrain.sample_visual_height_world(sample_x, sample_z)
                 * crate::config::HEIGHT_SCALE;
+            sampled_profile.push((lateral_offset, road_height, visual_height));
             assert!(
-                visual_height <= road_height - 0.01,
-                "expected earthworks to keep visual terrain below the bounded carriageway on a steep hillside: lateral_offset={lateral_offset:.2} visual_height={visual_height:.3} road_height={road_height:.3}"
+                visual_height <= road_height + 0.01,
+                "expected integrated terrain to stay at or below the bounded carriageway on a steep hillside: lateral_offset={lateral_offset:.2} visual_height={visual_height:.3} road_height={road_height:.3}"
+            );
+            assert!(
+                (road_height - visual_height).abs() <= 0.08,
+                "expected grounded-road integrated terrain under the footprint to follow the solved road surface instead of remaining a lowered support slab: lateral_offset={lateral_offset:.2} visual_height={visual_height:.3} road_height={road_height:.3}"
             );
         }
-    }
 
-    #[test]
-    fn coarse_10m_hillside_case_has_material_footprint_overlap() {
-        let (surface, terrain, edge_idx) = build_coarse_grid_hillside_case(10.0);
-        let metrics = measure_max_footprint_overflow(&surface, edge_idx, &terrain);
-
+        let left = sampled_profile.first().unwrap();
+        let right = sampled_profile.last().unwrap();
+        let road_profile_delta = right.1 - left.1;
+        let support_profile_delta = right.2 - left.2;
         assert!(
-            metrics.max_overflow_m >= 0.20,
-            "expected the current 10 m terrain grid characterization case to show material road-footprint overlap, got {metrics:?}"
+            (support_profile_delta - road_profile_delta).abs() <= 0.05,
+            "expected paved-footprint support to follow the solved road crossfall instead of a flat slab: road_profile_delta={road_profile_delta:.3} support_profile_delta={support_profile_delta:.3}"
         );
     }
 
     #[test]
-    fn coarse_5m_hillside_case_improves_on_10m_overlap() {
-        let (coarse_surface, coarse_terrain, coarse_edge_idx) =
+    fn flat_diagonal_10m_grid_keeps_paved_footprint_below_roadbed() {
+        let terrain = TerrainSystem::with_chunking(129, 129, 10.0, 8, 0.0);
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(-160.0, 0.0, -160.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(160.0, 0.0, 160.0), NodeType::Junction);
+        let edge_idx = graph.add_edge(test_edge(
+            start,
+            end,
+            vec![
+                Vector3::new(-160.0, 0.0, -160.0),
+                Vector3::new(160.0, 0.0, 160.0),
+            ],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut terrain = terrain;
+        let mut surface = RoadSurfaceSystem::new(128.0);
+        surface.rebuild_all_earthworks(&graph, &mut terrain);
+        let metrics = measure_max_footprint_overflow(&surface, &graph, edge_idx, &terrain);
+
+        assert!(
+            metrics.max_overflow_m <= 0.05,
+            "expected a flat 45 degree road on a 10 m grid to keep the paved footprint below the roadbed, got {metrics:?}"
+        );
+    }
+
+    #[test]
+    fn shallow_angle_10m_grid_keeps_paved_footprint_below_roadbed() {
+        let mut terrain = coarse_hillside_world_terrain(97, 97, 10.0);
+        let points = grounded_polyline_points_from_terrain(
+            &terrain,
+            Vector2::new(-180.0, 5.0),
+            Vector2::new(180.0, 1.0),
+            28,
+        );
+
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(points[0], NodeType::Junction);
+        let end = graph.add_node(*points.last().unwrap(), NodeType::Junction);
+        let edge_idx = graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(128.0);
+        surface.rebuild_all_earthworks(&graph, &mut terrain);
+        let metrics = measure_max_footprint_overflow(&surface, &graph, edge_idx, &terrain);
+
+        assert!(
+            metrics.max_overflow_m <= 0.05,
+            "expected a shallow-angle road on a 10 m grid to keep the paved footprint below the roadbed, got {metrics:?}"
+        );
+    }
+
+    #[test]
+    fn coarse_10m_hillside_case_keeps_paved_footprint_below_roadbed() {
+        let (surface, terrain, graph, edge_idx) = build_coarse_grid_hillside_case(10.0);
+        let metrics = measure_max_footprint_overflow(&surface, &graph, edge_idx, &terrain);
+
+        assert!(
+            metrics.max_overflow_m <= 0.05,
+            "expected the coarse 10 m hillside case to keep the paved footprint below the roadbed, got {metrics:?}"
+        );
+    }
+
+    #[test]
+    fn coarse_5m_hillside_case_stays_below_paved_roadbed_too() {
+        let (coarse_surface, coarse_terrain, coarse_graph, coarse_edge_idx) =
             build_coarse_grid_hillside_case(10.0);
-        let (fine_surface, fine_terrain, fine_edge_idx) = build_coarse_grid_hillside_case(5.0);
-        let coarse_metrics =
-            measure_max_footprint_overflow(&coarse_surface, coarse_edge_idx, &coarse_terrain);
-        let fine_metrics =
-            measure_max_footprint_overflow(&fine_surface, fine_edge_idx, &fine_terrain);
+        let (fine_surface, fine_terrain, fine_graph, fine_edge_idx) =
+            build_coarse_grid_hillside_case(5.0);
+        let coarse_metrics = measure_max_footprint_overflow(
+            &coarse_surface,
+            &coarse_graph,
+            coarse_edge_idx,
+            &coarse_terrain,
+        );
+        let fine_metrics = measure_max_footprint_overflow(
+            &fine_surface,
+            &fine_graph,
+            fine_edge_idx,
+            &fine_terrain,
+        );
 
         assert!(
-            coarse_metrics.max_overflow_m >= 0.20,
-            "expected the coarse reference case to remain meaningfully bad, got coarse={coarse_metrics:?} fine={fine_metrics:?}"
+            coarse_metrics.max_overflow_m <= 0.05,
+            "expected the coarse reference case to stay below the paved roadbed, got coarse={coarse_metrics:?} fine={fine_metrics:?}"
         );
         assert!(
-            fine_metrics.max_overflow_m + 0.05 < coarse_metrics.max_overflow_m,
-            "expected the same hillside case to improve on a 5 m grid, got coarse={coarse_metrics:?} fine={fine_metrics:?}"
+            fine_metrics.max_overflow_m <= 0.05,
+            "expected the same hillside case on a 5 m grid to stay below the paved roadbed too, got coarse={coarse_metrics:?} fine={fine_metrics:?}"
         );
     }
 
     #[test]
-    fn grounded_hillside_earthworks_cut_uphill_and_fill_downhill_outside_footprint() {
+    fn grounded_hillside_terrain_outside_paved_footprint_stays_near_source() {
         let mut terrain = TerrainSystem::with_chunking(129, 97, 1.0, 8, 0.0);
         for z in 0..97 {
             for x in 0..129 {
@@ -5613,13 +6227,13 @@ mod tests {
             terrain.sample_height_world(side_a_x, side_a_z) * crate::config::HEIGHT_SCALE;
         let side_b_source =
             terrain.sample_height_world(side_b_x, side_b_z) * crate::config::HEIGHT_SCALE;
-        let side_a_delta = side_a_actual - side_a_source;
-        let side_b_delta = side_b_actual - side_b_source;
-
         assert!(
-            (side_a_delta <= -0.15 && side_b_delta >= 0.15)
-                || (side_b_delta <= -0.15 && side_a_delta >= 0.15),
-            "expected one hillside margin side to cut and the other to fill, got side_a_delta={side_a_delta:.3} side_b_delta={side_b_delta:.3}"
+            (side_a_actual - side_a_source).abs() <= 0.12,
+            "expected terrain outside the paved footprint to remain near source on hillside side A, got actual={side_a_actual:.3} source={side_a_source:.3}"
+        );
+        assert!(
+            (side_b_actual - side_b_source).abs() <= 0.12,
+            "expected terrain outside the paved footprint to remain near source on hillside side B, got actual={side_b_actual:.3} source={side_b_source:.3}"
         );
 
         let far_side_a_lateral = left_outer - EARTHWORK_MAX_MARGIN_M - 6.0;
@@ -5807,7 +6421,45 @@ mod tests {
     }
 
     #[test]
-    fn visible_surface_height_hits_terminal_earthwork_before_terrain() {
+    fn paved_support_height_matches_grounded_visible_roadbed() {
+        let mut terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 0.0);
+        for z in 0..65 {
+            for x in 0..65 {
+                terrain.set_height(x, z, x as f32 * 0.01);
+            }
+        }
+
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(0.0, 0.0, -16.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(0.0, 0.0, 16.0), NodeType::Junction);
+        graph.add_edge(test_edge(
+            start,
+            end,
+            vec![Vector3::new(0.0, 0.0, -16.0), Vector3::new(0.0, 0.0, 16.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.rebuild_all_earthworks(&graph, &mut terrain);
+
+        let visible_height = surface
+            .sample_visible_surface_height(&graph, &terrain, 0.0, 0.0)
+            .expect("grounded road should own its paved footprint");
+        let support_height = surface
+            .sample_paved_support_height(&graph, &terrain, 0.0, 0.0)
+            .expect("grounded road should expose paved support clearance");
+
+        assert!(
+            (visible_height - support_height).abs() <= 0.05,
+            "expected grounded-road integrated support height to match the visible roadbed instead of staying one pavement depth below it: visible_height={visible_height:.3} support_height={support_height:.3}"
+        );
+    }
+
+    #[test]
+    fn visible_surface_height_skips_grounded_terminal_earthwork_margin() {
         let terrain = flat_terrain(97, 97);
         let mut graph = RegionGraph::new();
         let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -5836,13 +6488,13 @@ mod tests {
         assert!(
             surface
                 .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
-                .is_some(),
-            "terminal earthwork margin should be queryable before terrain at the midpoint between the piece boundary and the tie-in boundary"
+                .is_none(),
+            "grounded standard terminal earthwork margin should now be owned by integrated terrain instead of a separate visible earthwork carrier"
         );
     }
 
     #[test]
-    fn visible_surface_height_hits_span_earthwork_before_terrain() {
+    fn visible_surface_height_skips_grounded_span_earthwork_margin() {
         let terrain = flat_terrain(97, 97);
         let mut graph = RegionGraph::new();
         let start = graph.add_node(Vector3::new(0.0, 0.0, -24.0), NodeType::Junction);
@@ -5871,8 +6523,8 @@ mod tests {
         assert!(
             surface
                 .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
-                .is_some(),
-            "span earthwork margin should be queryable before terrain at the midpoint between the piece boundary and the tie-in boundary"
+                .is_none(),
+            "grounded standard span earthwork margin should now be owned by integrated terrain instead of a separate visible earthwork carrier"
         );
     }
 

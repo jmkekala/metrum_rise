@@ -207,6 +207,63 @@ The codebase must not maintain separate height-conditioning implementations for:
 - terrain flattening
 - road picking
 
+### 1A. Terrain Under The Owned Footprint Is Road Support, Not A Visible Carrier
+
+The terrain directly under a committed road-owned footprint is not allowed to behave as an
+independent visible surface.
+
+Deterministic rule:
+
+- the owned footprint is the full committed top-surface width of the piece:
+  - carriageway
+  - curb / shoulder
+  - sidewalk when present
+- for every world position `(x, z)` inside that footprint, grounded `Standard` roads replace
+  visual terrain with the authoritative solved road surface itself
+- that support surface follows the road's solved profile, not world-horizontal terrain:
+  - if the road has longitudinal grade, the support follows that grade
+  - if the road has crown or crossfall, the support follows that crossfall
+- inside the grounded-road footprint, that support surface replaces visual terrain locally instead
+  of being blended against whatever source terrain previously existed there
+- terrain under the owned footprint is therefore no longer an independent visible carrier; it must
+  not remain the final visible owner of the road center or sidewalk band
+- the terrain renderer must not emit terrain fragments below the owned footprint; height-matching
+  alone is not sufficient because coplanar or near-coplanar terrain can still render through the
+  road surface
+- the seam outside the owned footprint must be explicit:
+  - the terrain mesh is clipped / triangulated so its inner edge follows the road-owned outer
+    boundary, or
+  - road-owned tie-in geometry starts on the exact same outer-boundary vertices and extends to the
+    terrain tie-in boundary
+- road-footprint suppression is valid only where road-owned top or tie-in geometry exists; it must
+  not be used as a broad visual band-aid that leaves holes between road and terrain
+- terrain patches intersecting compiled road or visible earthwork ownership must not drop to a
+  coarser mesh LOD that can reintroduce overlap after the support stamp was already solved
+- when authored terrain is coarser than the required close-up road-support fidelity, road-locked
+  terrain render patches must subdivide to a denser visible mesh step so the rendered terrain
+  continues to follow the stamped support surface instead of cutting across it with coarse triangles
+- grounded `Standard` roads apply that footprint-replacement rule along the whole grounded footprint
+- `Bridge` edges do not create midspan terrain support; only abutment-owned grounded footprint
+  regions may stamp terrain support below the road
+- `Tunnel` edges do not create buried midspan terrain support; only visible portal-owned grounded
+  footprint regions may stamp terrain support below the road
+
+Forbidden outcomes:
+
+- terrain visibly rising through asphalt or sidewalk inside the owned footprint
+- terrain renderer LOD reintroducing visible overlap after the road stamp already replaced terrain
+  inside the owned footprint
+- terrain forming a canyon or trench under a grounded road because outer tie-in faces were stamped
+  into terrain as if they were the terrain carrier
+- terrain under a road being flattened as one global world-horizontal plane instead of following
+  the solved road profile
+
+For grounded `Standard` roads, asphalt, shoulder / curb, and sidewalk geometry are the visible
+ground inside the owned footprint. Explicit road-owned earthwork geometry remains part of the
+deterministic ownership model for terrain integration, structural cases, seam tie-ins, and future
+retaining variants, but ordinary grounded roads must not render that carrier as a separate visible
+mesh layer below asphalt or sidewalk.
+
 ### 2. Edge Surface Is Sampled As Ordered Sections
 
 Each non-deleted surface edge must compile into an ordered list of sections.
@@ -640,8 +697,10 @@ Current status:
   polished further
 - the useful conclusions from that prototype remain in force: fixed-roadbed ownership, chunk-local
   rebuilds, and explicit visible-surface precedence stay part of the target contract
-- the Phase 13 carrier rewrite is now live in code; the remaining work is refinement on top of
-  that shipped carrier, not another representation reset
+- Phase 13 is partially live in code: the piece/profile carrier and deterministic ownership data
+  are live, but grounded `Standard` roads are not complete until the visible seam from the outer
+  sidewalk / shoulder edge back to terrain is closed by road-owned tie-in geometry or exact clipped
+  terrain topology
 - the graph/visual split is now live in code:
   - committed spans now own explicit road / sidewalk polygons plus explicit earthwork polygons and
     outer earthwork boundaries
@@ -698,21 +757,30 @@ Current status:
   - node-piece earthwork stamping no longer regenerates tie-in faces from boundary loops at stamp
     time; `Terminal`, `Bend`, and `JunctionN` now compile explicit tie-in side polygons plus
     explicit tie-in outer loops during piece compile
-  - the visible road mesh now includes a dedicated earthwork layer fed directly from compiled span
-    and node earthwork ownership instead of stopping that carrier at chunking, terrain stamping,
-    and world-surface queries
-  - render no longer draws the full support carrier directly: spans and node pieces now compile a
-    separate render-only earthwork face set, so hidden support polygons stay available for
-    stamping / queries without leaking into the visible road mesh
+  - terrain visual stamping is now footprint-first, but it is not accepted as the final visible
+    seam carrier: grounded `Standard` roads may suppress terrain under asphalt / sidewalk only
+    after a visible tie-in from the outer sidewalk / shoulder edge to terrain, or exact clipped
+    terrain topology, exists
+  - paved-footprint support now follows the solved road profile per top-surface triangle instead of
+    stamping one flat minimum-height slab per piece
+  - compiled span and node pieces still own explicit earthwork geometry for deterministic terrain
+    integration, chunking, and structural cases, but grounded `Standard` roads must expose or
+    replace that carrier with a valid seam carrier before terrain-under-footprint masking is a
+    complete visual solution
+  - render no longer draws the full support carrier directly: spans and node pieces compile a
+    separate render-only earthwork face set, but suppressing that visible layer for grounded
+    `Standard` roads is only valid after another visible seam carrier closes the road-to-terrain
+    boundary
   - render-only earthwork faces are now classified deterministically as either `Slope` or
     `RetainingWall`, and the renderer routes those two face classes to different materials instead
     of painting every tie-in face as generic exposed earthwork
-  - visible-world height/raycast queries can now hit compiled span and node earthwork geometry
-    before falling through to terrain
-- the remaining Phase 13 work is no longer the carrier rewrite itself; the main remaining gap is
-  refinement work inside that live carrier: richer retaining / wall variants, better material
-  treatment, and carrying the same explicit piece-owned geometry model through those variants
-  without regressing the shared piece/profile ownership model
+  - visible-world height/raycast queries now hit compiled earthwork geometry only for intentionally
+    surfaced structural cases; grounded `Standard` roads fall through from top surface to
+    integrated terrain outside the owned footprint
+- the remaining Phase 13 work is not just material refinement: the next blocking slice is the
+  grounded-road seam carrier itself. Richer retaining / wall variants and better materials come
+  after the deterministic seam / tie-in closure works without relying on terrain masking to hide
+  missing geometry
 
 ## Legacy Retirement Map
 

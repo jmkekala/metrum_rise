@@ -306,6 +306,110 @@ impl SimulationNode {
         dict
     }
 
+    fn refined_terrain_patch_dict(
+        core: &crate::nodes::sim::core::SimCore,
+        patch_x: usize,
+        patch_z: usize,
+        render_step_m: f32,
+    ) -> VarDictionary {
+        let Some(base_patch) = core.heightmap.visual_patch_snapshot(patch_x, patch_z) else {
+            return VarDictionary::new();
+        };
+
+        let safe_render_step_m = render_step_m.max(f32::EPSILON);
+        let sample_width = if base_patch.world_size_x <= f32::EPSILON {
+            1
+        } else {
+            ((base_patch.world_size_x / safe_render_step_m).round() as usize).max(1) + 1
+        };
+        let sample_height = if base_patch.world_size_z <= f32::EPSILON {
+            1
+        } else {
+            ((base_patch.world_size_z / safe_render_step_m).round() as usize).max(1) + 1
+        };
+        let texture_width = sample_width + base_patch.inner_offset_x * 2;
+        let texture_height = sample_height + base_patch.inner_offset_z * 2;
+        let mut height_data = Vec::with_capacity(texture_width * texture_height);
+        let mut road_ownership_mask_data = Vec::with_capacity(texture_width * texture_height);
+        let mut has_road_ownership = false;
+
+        for local_z in 0..texture_height {
+            let clamped_inner_z = if local_z < base_patch.inner_offset_z {
+                0
+            } else if local_z >= base_patch.inner_offset_z + sample_height {
+                sample_height.saturating_sub(1)
+            } else {
+                local_z - base_patch.inner_offset_z
+            };
+            let sample_t_z = if sample_height <= 1 {
+                0.0
+            } else {
+                clamped_inner_z as f32 / sample_height.saturating_sub(1) as f32
+            };
+            let world_z = base_patch.world_origin_z + sample_t_z * base_patch.world_size_z;
+
+            for local_x in 0..texture_width {
+                let clamped_inner_x = if local_x < base_patch.inner_offset_x {
+                    0
+                } else if local_x >= base_patch.inner_offset_x + sample_width {
+                    sample_width.saturating_sub(1)
+                } else {
+                    local_x - base_patch.inner_offset_x
+                };
+                let sample_t_x = if sample_width <= 1 {
+                    0.0
+                } else {
+                    clamped_inner_x as f32 / sample_width.saturating_sub(1) as f32
+                };
+                let world_x = base_patch.world_origin_x + sample_t_x * base_patch.world_size_x;
+                let base_visual_height_m =
+                    core.heightmap.sample_visual_height_world(world_x, world_z)
+                        * crate::config::HEIGHT_SCALE;
+                let paved_support_height_m = core
+                    .transit_network
+                    .road_surface
+                    .sample_paved_support_height(
+                        &core.region_graph,
+                        &core.heightmap,
+                        world_x,
+                        world_z,
+                    );
+                let support_height_m = paved_support_height_m.unwrap_or(base_visual_height_m);
+                height_data.push(support_height_m / crate::config::HEIGHT_SCALE);
+                if paved_support_height_m.is_some() {
+                    road_ownership_mask_data.push(1.0);
+                    has_road_ownership = true;
+                } else {
+                    road_ownership_mask_data.push(0.0);
+                }
+            }
+        }
+
+        let refined_patch = crate::simulation::terrain::TerrainPatchSnapshot {
+            patch_x,
+            patch_z,
+            sample_width,
+            sample_height,
+            texture_width,
+            texture_height,
+            inner_offset_x: base_patch.inner_offset_x,
+            inner_offset_z: base_patch.inner_offset_z,
+            world_origin_x: base_patch.world_origin_x,
+            world_origin_z: base_patch.world_origin_z,
+            world_size_x: base_patch.world_size_x,
+            world_size_z: base_patch.world_size_z,
+            height_data,
+        };
+        let mut dict = Self::terrain_patch_dict(&refined_patch);
+        if has_road_ownership {
+            dict.set(
+                "road_ownership_mask_data",
+                PackedFloat32Array::from_iter(road_ownership_mask_data),
+            );
+        }
+        dict
+    }
+
     fn water_patch_dict(patch: &crate::simulation::water::WaterPatchSnapshot) -> VarDictionary {
         let mut dict = VarDictionary::new();
         dict.set("patch_x", i64::try_from(patch.patch_x).unwrap_or(0));
@@ -642,6 +746,24 @@ impl SimulationNode {
             return VarDictionary::new();
         };
         Self::terrain_patch_dict(&patch)
+    }
+
+    /// Returns one visible-terrain render patch resampled at a finer render step.
+    #[func]
+    pub fn get_refined_terrain_patch(
+        &self,
+        patch_x: i32,
+        patch_z: i32,
+        render_step_m: f32,
+    ) -> VarDictionary {
+        let Ok(patch_x) = usize::try_from(patch_x) else {
+            return VarDictionary::new();
+        };
+        let Ok(patch_z) = usize::try_from(patch_z) else {
+            return VarDictionary::new();
+        };
+        let core = self.lock_core();
+        Self::refined_terrain_patch_dict(&core, patch_x, patch_z, render_step_m)
     }
 
     /// Returns the terrain-border perimeter loop as world-space top positions.
@@ -1429,6 +1551,13 @@ impl SimulationNode {
             Some(mut core) => core.get_road_surface_debug_data_internal().to_variant(),
             None => Variant::nil(),
         }
+    }
+
+    /// Returns terrain render patches that must keep full mesh resolution where compiled road ownership is visible.
+    #[func]
+    pub fn get_road_locked_terrain_patches(&self) -> PackedInt32Array {
+        let mut core = self.lock_core();
+        core.get_road_locked_terrain_patches_internal()
     }
 
     /// Returns the closest network point (node/edge) within range.

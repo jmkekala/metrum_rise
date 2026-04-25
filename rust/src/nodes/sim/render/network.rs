@@ -156,6 +156,24 @@ impl SimCore {
         dict
     }
 
+    /// Returns terrain render-patch keys that must keep full mesh resolution over compiled road ownership.
+    pub fn get_road_locked_terrain_patches_internal(&mut self) -> PackedInt32Array {
+        self.transit_network
+            .road_surface
+            .compile_dirty(&self.region_graph, &self.heightmap);
+        let keys = self
+            .transit_network
+            .road_surface
+            .terrain_render_patch_keys_with_visible_road(&self.heightmap);
+
+        let mut packed = PackedInt32Array::new();
+        for (patch_x, patch_z) in keys {
+            packed.push(i32::try_from(patch_x).unwrap_or(i32::MAX));
+            packed.push(i32::try_from(patch_z).unwrap_or(i32::MAX));
+        }
+        packed
+    }
+
     /// Calculates the normalized T-coordinates of the connection between two edges.
     pub fn get_connection_rust(&self, edge_a: usize, edge_b: usize) -> (f32, f32) {
         let (p_a0, _) = self.get_edge_pos_and_tangent(edge_a, 0.0);

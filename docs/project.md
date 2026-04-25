@@ -76,9 +76,17 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   tools can visualize compiled sections / bands / piece boundaries / earthwork chunks through the
   debug overlay, and the old widened-ribbon renderer plus dense centerline flattening
   compatibility path were removed. Phase 9 and Phase 10 are now live as well: grounded roads
-  stamp a deterministic outer shoulder / cut / fill margin beyond the paved footprint, and the
-  compiled carriageway keeps a bounded design crossfall instead of rolling to match the full
-  hillside slope. `ROAD-01` is still open because the recent roads-first earthworks prototype was
+  now replace visual terrain with the owned top surface through the grounded footprint, and the compiled
+  carriageway keeps a bounded design crossfall instead of rolling to match the full hillside
+  slope. Terrain under the owned footprint is now specified as road-following support, not as an
+  independent visible surface or trench carrier, terrain render patches intersecting compiled road
+  ownership now stay at full mesh resolution and use a denser visible mesh step near roads so
+  terrain triangles cannot simplify back through the roadbed. Road-locked terrain patches now also
+  carry an explicit road-ownership mask, but that mask is only an overlap-removal tool: grounded
+  `Standard` roads are not visually complete until the seam from the outer sidewalk / shoulder
+  edge back to terrain is closed by road-owned tie-in geometry or exact clipped terrain topology.
+  `ROAD-01` is
+  still open because the recent roads-first earthworks prototype was
   taken far enough to prove the representation problem: the thin corridor-sheet plus
   terrain-stamp approach does not produce acceptable flat-ground or arbitrary-angle tie-ins.
   Phase 11 remains the deterministic `10 m` versus `5 m` characterization gate, Phase 12 is the
@@ -86,10 +94,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   earthwork mesh rewrite rather than more polishing of the corridor-sheet prototype. That rewrite
   now has one explicit target split: the logical graph stays as connectivity/routing authority,
   while the visible road system becomes a separate deterministic piece/profile carrier built from
-  `Span`, `Bend`, `Terminal`, and `JunctionN` pieces. The hard-cut carrier replacement is now live
-  in the road-surface runtime: renderer output, visible-surface queries, road-surface debug
+  `Span`, `Bend`, `Terminal`, and `JunctionN` pieces. The hard-cut carrier replacement is partially
+  live in the road-surface runtime: renderer output, visible-surface queries, road-surface debug
   overlays, and road-driven earthwork stamping all consume explicit visual pieces instead of a
-  node-patch carrier. `Terminal`, `Bend`, and `JunctionN` now compile explicit road / sidewalk
+  node-patch carrier, but the grounded-road seam carrier remains the blocking visual gap.
+  `Terminal`, `Bend`, and `JunctionN` now compile explicit road / sidewalk
   polygons from mouth profiles, width changes are no longer treated as a separate visual node
   piece, cached visual polygons now carry deterministic triangles for render/query/stamp reuse,
   span pieces now also own the earthwork chunk coverage and terrain-stamping carrier instead of
@@ -118,12 +127,13 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   outer loops directly from their own builders. Node earthwork stamping no longer regenerates
   tie-in faces from boundary loops at stamp time, span pieces now do the same, and combined
   visible-world queries can now hit compiled span and node earthwork geometry before falling
-  through to terrain. The render path now exposes that same compiled earthwork carrier as a
-  dedicated visible layer instead of stopping it at compile, chunking, stamping, and queries,
-  but render now consumes a cleaner render-only earthwork face set rather than the full support
-  carrier. Gentle tie-in faces stay on the earthwork material path, while steep faces now route
-  deterministically to the retaining / wall concrete path. The remaining work here is now
-  refinement and later variants, not another carrier rewrite.
+  through to terrain. The render path still compiles a cleaner render-only earthwork face set for
+  structural or intentionally exposed cases, but suppressing that visible layer for grounded
+  `Standard` roads is not accepted as complete until another visible seam carrier closes the
+  road-to-terrain boundary. Gentle tie-in faces stay on the earthwork material path only when they
+  are intentionally surfaced, while steep faces route deterministically to the retaining / wall
+  concrete path. The remaining blocking work is seam / tie-in closure, followed by retaining,
+  wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

@@ -63,6 +63,7 @@ const PATCH_MESH_LOD_REFRESH_INTERVAL_S := 0.20
 const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
+const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -80,6 +81,7 @@ var patches: Dictionary = {}
 var resident_patch_lookup: Dictionary = {}
 var patch_mesh_cache: Dictionary = {}
 var patch_prewarm_queue: Array[Vector2i] = []
+var road_locked_patch_lookup: Dictionary = {}
 var cached_overlay_mode: int = -1
 var border_loop_positions: PackedVector3Array = PackedVector3Array()
 var border_revision: int = 0
@@ -134,6 +136,7 @@ func rebuild_from_simulation_state() -> void:
 	_ensure_overlay_texture()
 	_ensure_empty_water_texture()
 	_ensure_border_visuals()
+	_refresh_road_locked_patch_lookup()
 	_sync_patch_residency(true)
 	_update_overlay_texture()
 	_apply_overlay_mode()
@@ -156,6 +159,7 @@ func _process(delta: float) -> void:
 	var border_elapsed_ms := 0.0
 	var water_sync_elapsed_ms := 0.0
 	if simulation_node.is_terrain_dirty():
+		_refresh_road_locked_patch_lookup()
 		var dirty_start_us := Time.get_ticks_usec()
 		var dirty_keys := _dirty_patch_keys(simulation_node.get_dirty_terrain_patches())
 		_terrain_debug_dirty_batches += 1
@@ -163,6 +167,7 @@ func _process(delta: float) -> void:
 		for key in dirty_keys:
 			if patches.has(key):
 				_upload_patch(key)
+				_refresh_one_patch_mesh_lod(key)
 		upload_elapsed_ms = float(Time.get_ticks_usec() - dirty_start_us) / 1000.0
 		var border_start_us := Time.get_ticks_usec()
 		_rebuild_border_skirt()
@@ -224,6 +229,7 @@ func refresh_water_patch_bindings() -> void:
 	_sync_water_patch_textures()
 
 func update_terrain_visuals() -> void:
+	_refresh_road_locked_patch_lookup()
 	var dirty_keys := _dirty_patch_keys(simulation_node.get_dirty_terrain_patches())
 	if dirty_keys.is_empty():
 		for key in get_resident_patch_keys():
@@ -378,7 +384,7 @@ func _terrain_patch_cull_far_m(camera: Camera3D) -> float:
 func _create_patch(key: Vector2i) -> void:
 	if patches.has(key):
 		return
-	var patch_data: Dictionary = simulation_node.get_terrain_patch(key.x, key.y)
+	var patch_data: Dictionary = _terrain_patch_data_for_key(key)
 	if patch_data.is_empty():
 		return
 
@@ -401,25 +407,35 @@ func _create_patch(key: Vector2i) -> void:
 		(patch_data["height_data"] as PackedFloat32Array).to_byte_array()
 	)
 	var height_texture: ImageTexture = ImageTexture.create_from_image(height_image)
+	var road_ownership_mask_enabled := _patch_has_road_ownership_mask(patch_data)
+	var road_ownership_mask_image: Image = null
+	var road_ownership_mask_texture: Texture2D = empty_water_texture
+	if road_ownership_mask_enabled:
+		road_ownership_mask_image = _road_ownership_mask_image_from_patch_data(patch_data)
+		road_ownership_mask_texture = ImageTexture.create_from_image(road_ownership_mask_image)
 
 	var mesh_cache_key := "%d:%d:%.3f:%.3f" % [sample_width, sample_height, world_size_x, world_size_z]
 	var patch_mesh: PlaneMesh
 	var patch_center_x := world_origin_x + world_size_x * 0.5
 	var patch_center_z := world_origin_z + world_size_z * 0.5
-	var initial_lod_step := _mesh_lod_step_for_patch_center(patch_center_x, patch_center_z)
+	var initial_lod_step := _mesh_lod_step_for_patch(key, patch_center_x, patch_center_z)
+	var sample_step_m := world_size_x / float(max(1, sample_width - 1))
+	var initial_subdivision_factor := _mesh_subdivision_factor_for_patch(key, sample_step_m)
 	mesh_cache_key = _patch_mesh_cache_key(
 		sample_width,
 		sample_height,
 		world_size_x,
 		world_size_z,
-		initial_lod_step
+		initial_lod_step,
+		initial_subdivision_factor
 	)
 	patch_mesh = _patch_mesh(
 		sample_width,
 		sample_height,
 		world_size_x,
 		world_size_z,
-		initial_lod_step
+		initial_lod_step,
+		initial_subdivision_factor
 	)
 
 	var patch_node: MeshInstance3D = MeshInstance3D.new()
@@ -439,6 +455,8 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("heightmap", height_texture)
 	material.set_shader_parameter("overlay_texture", overlay_texture)
 	material.set_shader_parameter("watermap", empty_water_texture)
+	material.set_shader_parameter("road_ownership_mask", road_ownership_mask_texture)
+	material.set_shader_parameter("road_ownership_mask_enabled", road_ownership_mask_enabled)
 	material.set_shader_parameter("overlay_mode", overlay_mode)
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
 	material.set_shader_parameter("world_size", terrain_world_size)
@@ -488,24 +506,34 @@ func _create_patch(key: Vector2i) -> void:
 		"material": material,
 		"height_image": height_image,
 		"height_texture": height_texture,
+		"road_ownership_mask_image": road_ownership_mask_image,
+		"road_ownership_mask_texture": road_ownership_mask_texture,
+		"road_ownership_mask_enabled": road_ownership_mask_enabled,
 		"water_texture": empty_water_texture,
 		"sample_width": sample_width,
 		"sample_height": sample_height,
+		"texture_width": texture_width,
+		"texture_height": texture_height,
 		"world_size_x": world_size_x,
 		"world_size_z": world_size_z,
+		"sample_step_m": sample_step_m,
 		"lod_step": initial_lod_step,
+		"subdivision_factor": initial_subdivision_factor,
 	}
 
 func _upload_patch(key: Vector2i) -> void:
 	if not patches.has(key):
 		return
-	var patch_data: Dictionary = simulation_node.get_terrain_patch(key.x, key.y)
+	var patch_data: Dictionary = _terrain_patch_data_for_key(key)
 	if patch_data.is_empty():
 		_remove_patch(key)
 		return
 	var patch: Dictionary = patches[key]
 	var texture_width := int(patch_data["texture_width"])
 	var texture_height := int(patch_data["texture_height"])
+	var old_texture_width := int(patch.get("texture_width", texture_width))
+	var old_texture_height := int(patch.get("texture_height", texture_height))
+	var material: ShaderMaterial = patch["material"]
 	var height_image: Image = patch["height_image"]
 	var height_texture: ImageTexture = patch["height_texture"]
 	height_image.set_data(
@@ -515,12 +543,56 @@ func _upload_patch(key: Vector2i) -> void:
 		Image.FORMAT_RF,
 		(patch_data["height_data"] as PackedFloat32Array).to_byte_array()
 	)
-	height_texture.update(height_image)
+	if old_texture_width == texture_width and old_texture_height == texture_height:
+		height_texture.update(height_image)
+	else:
+		height_texture = ImageTexture.create_from_image(height_image)
+		patch["height_texture"] = height_texture
+		material.set_shader_parameter("heightmap", height_texture)
+	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
+	material.set_shader_parameter(
+		"inner_sample_offset_texels",
+		Vector2(float(patch_data["inner_offset_x"]), float(patch_data["inner_offset_z"]))
+	)
+	material.set_shader_parameter(
+		"inner_sample_size_texels",
+		Vector2(int(patch_data["sample_width"]), int(patch_data["sample_height"]))
+	)
+
+	var road_ownership_mask_enabled := _patch_has_road_ownership_mask(patch_data)
+	var road_ownership_mask_texture: Texture2D = empty_water_texture
+	if road_ownership_mask_enabled:
+		var road_ownership_mask_image: Image = _road_ownership_mask_image_from_patch_data(patch_data)
+		var existing_mask_texture: ImageTexture = patch.get("road_ownership_mask_texture", null)
+		if (
+			existing_mask_texture != null
+			and bool(patch.get("road_ownership_mask_enabled", false))
+			and old_texture_width == texture_width
+			and old_texture_height == texture_height
+		):
+			existing_mask_texture.update(road_ownership_mask_image)
+			road_ownership_mask_texture = existing_mask_texture
+		else:
+			road_ownership_mask_texture = ImageTexture.create_from_image(road_ownership_mask_image)
+		patch["road_ownership_mask_image"] = road_ownership_mask_image
+	else:
+		patch["road_ownership_mask_image"] = null
+	patch["road_ownership_mask_texture"] = road_ownership_mask_texture
+	patch["road_ownership_mask_enabled"] = road_ownership_mask_enabled
+	material.set_shader_parameter("road_ownership_mask", road_ownership_mask_texture)
+	material.set_shader_parameter("road_ownership_mask_enabled", road_ownership_mask_enabled)
 	_terrain_debug_patch_uploads += 1
 
 	var patch_node: MeshInstance3D = patch["node"]
 	var world_size_x := float(patch_data["world_size_x"])
 	var world_size_z := float(patch_data["world_size_z"])
+	patch["sample_width"] = int(patch_data["sample_width"])
+	patch["sample_height"] = int(patch_data["sample_height"])
+	patch["texture_width"] = texture_width
+	patch["texture_height"] = texture_height
+	patch["world_size_x"] = world_size_x
+	patch["world_size_z"] = world_size_z
+	patch["sample_step_m"] = world_size_x / float(max(1, int(patch_data["sample_width"]) - 1))
 	patch_node.position = Vector3(
 		float(patch_data["world_origin_x"]) + world_size_x * 0.5,
 		0.0,
@@ -644,19 +716,51 @@ func _dirty_patch_keys(flat_pairs: PackedInt32Array) -> Array[Vector2i]:
 		keys.append(Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1]))
 	return keys
 
+func _terrain_patch_data_for_key(key: Vector2i) -> Dictionary:
+	if road_locked_patch_lookup.has(key):
+		return simulation_node.get_refined_terrain_patch(
+			key.x,
+			key.y,
+			ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M
+		)
+	return simulation_node.get_terrain_patch(key.x, key.y)
+
+func _patch_has_road_ownership_mask(patch_data: Dictionary) -> bool:
+	if not patch_data.has("road_ownership_mask_data"):
+		return false
+	var mask_data := patch_data["road_ownership_mask_data"] as PackedFloat32Array
+	var texture_width := int(patch_data["texture_width"])
+	var texture_height := int(patch_data["texture_height"])
+	return mask_data.size() == texture_width * texture_height
+
+func _road_ownership_mask_image_from_patch_data(patch_data: Dictionary) -> Image:
+	var texture_width := int(patch_data["texture_width"])
+	var texture_height := int(patch_data["texture_height"])
+	var image := Image.create(texture_width, texture_height, false, Image.FORMAT_RF)
+	image.set_data(
+		texture_width,
+		texture_height,
+		false,
+		Image.FORMAT_RF,
+		(patch_data["road_ownership_mask_data"] as PackedFloat32Array).to_byte_array()
+	)
+	return image
+
 func _patch_mesh(
 	sample_width: int,
 	sample_height: int,
 	world_size_x: float,
 	world_size_z: float,
-	lod_step: int
+	lod_step: int,
+	subdivision_factor: int
 ) -> PlaneMesh:
 	var mesh_cache_key := _patch_mesh_cache_key(
 		sample_width,
 		sample_height,
 		world_size_x,
 		world_size_z,
-		lod_step
+		lod_step,
+		subdivision_factor
 	)
 	var patch_mesh: PlaneMesh
 	if patch_mesh_cache.has(mesh_cache_key):
@@ -664,8 +768,16 @@ func _patch_mesh(
 	else:
 		patch_mesh = PlaneMesh.new()
 		patch_mesh.size = Vector2(world_size_x, world_size_z)
-		patch_mesh.subdivide_width = _mesh_subdivisions_for_sample_count(sample_width, lod_step)
-		patch_mesh.subdivide_depth = _mesh_subdivisions_for_sample_count(sample_height, lod_step)
+		patch_mesh.subdivide_width = _mesh_subdivisions_for_sample_count(
+			sample_width,
+			lod_step,
+			subdivision_factor
+		)
+		patch_mesh.subdivide_depth = _mesh_subdivisions_for_sample_count(
+			sample_height,
+			lod_step,
+			subdivision_factor
+		)
 		patch_mesh_cache[mesh_cache_key] = patch_mesh
 	return patch_mesh
 
@@ -674,25 +786,39 @@ func _patch_mesh_cache_key(
 	sample_height: int,
 	world_size_x: float,
 	world_size_z: float,
-	lod_step: int
+	lod_step: int,
+	subdivision_factor: int
 ) -> String:
-	return "%d:%d:%.3f:%.3f:%d" % [
+	return "%d:%d:%.3f:%.3f:%d:%d" % [
 		sample_width,
 		sample_height,
 		world_size_x,
 		world_size_z,
 		lod_step,
+		subdivision_factor,
 	]
 
-func _mesh_subdivisions_for_sample_count(sample_count: int, lod_step: int) -> int:
+func _mesh_subdivisions_for_sample_count(
+	sample_count: int,
+	lod_step: int,
+	subdivision_factor: int
+) -> int:
 	var interval_count: int = max(0, sample_count - 1)
+	var effective_interval_count: int = interval_count * max(1, subdivision_factor)
 	var lod_vertex_count: int = max(
 		2,
-		int(ceili(float(interval_count) / float(max(1, lod_step)))) + 1
+		int(ceili(float(effective_interval_count) / float(max(1, lod_step)))) + 1
 	)
 	return max(0, lod_vertex_count - 2)
 
-func _mesh_lod_step_for_patch_center(center_x: float, center_z: float) -> int:
+func _mesh_subdivision_factor_for_patch(key: Vector2i, sample_step_m: float) -> int:
+	if not road_locked_patch_lookup.has(key):
+		return 1
+	return max(1, int(ceili(sample_step_m / ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M)))
+
+func _mesh_lod_step_for_patch(key: Vector2i, center_x: float, center_z: float) -> int:
+	if road_locked_patch_lookup.has(key):
+		return 1
 	var camera := get_viewport().get_camera_3d()
 	if camera == null:
 		return 1
@@ -725,18 +851,32 @@ func _refresh_one_patch_mesh_lod(key: Vector2i) -> void:
 	if patch.is_empty():
 		return
 	var patch_node: MeshInstance3D = patch["node"]
-	var target_lod_step := _mesh_lod_step_for_patch_center(patch_node.position.x, patch_node.position.z)
+	var target_lod_step := _mesh_lod_step_for_patch(key, patch_node.position.x, patch_node.position.z)
+	var target_subdivision_factor := _mesh_subdivision_factor_for_patch(
+		key,
+		float(patch.get("sample_step_m", terrain_cell_m))
+	)
 	var current_lod_step := int(patch.get("lod_step", 1))
-	if current_lod_step == target_lod_step:
+	var current_subdivision_factor := int(patch.get("subdivision_factor", 1))
+	if current_lod_step == target_lod_step and current_subdivision_factor == target_subdivision_factor:
 		return
 	patch["lod_step"] = target_lod_step
+	patch["subdivision_factor"] = target_subdivision_factor
 	patch_node.mesh = _patch_mesh(
 		int(patch["sample_width"]),
 		int(patch["sample_height"]),
 		float(patch["world_size_x"]),
 		float(patch["world_size_z"]),
-		target_lod_step
+		target_lod_step,
+		target_subdivision_factor
 	)
+
+func _refresh_road_locked_patch_lookup() -> void:
+	road_locked_patch_lookup.clear()
+	var flat_pairs: PackedInt32Array = simulation_node.get_road_locked_terrain_patches()
+	var pair_count: int = flat_pairs.size() / 2
+	for index in range(pair_count):
+		road_locked_patch_lookup[Vector2i(flat_pairs[index * 2], flat_pairs[index * 2 + 1])] = true
 
 func _ensure_overlay_texture() -> void:
 	var dims: Vector2 = simulation_node.get_heightmap_size()

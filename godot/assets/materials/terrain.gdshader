@@ -3,6 +3,9 @@ shader_type spatial;
 uniform sampler2D heightmap;
 uniform sampler2D overlay_texture;
 uniform sampler2D watermap : repeat_disable, filter_linear;
+uniform sampler2D road_ownership_mask : repeat_disable, filter_linear;
+uniform bool road_ownership_mask_enabled = false;
+uniform float road_ownership_mask_cutoff = 0.95;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
 uniform vec2 world_size = vec2(256.0, 256.0);
@@ -224,6 +227,13 @@ void vertex() {
 }
 
 void fragment() {
+	if (
+		road_ownership_mask_enabled
+		&& texture(road_ownership_mask, var_centered_uv).r >= road_ownership_mask_cutoff
+	) {
+		discard;
+	}
+
 	float world_elevation = h * height_scale;
 	float macro_mask = macro_variation(var_world_pos.xz);
 	float local_relief = sample_local_relief(var_centered_uv);

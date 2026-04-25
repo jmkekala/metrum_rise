@@ -115,9 +115,72 @@ flattening.
 
 Required rule:
 
-- inside the footprint, the visible world surface must support the client-owned surface
+- inside the footprint, the visible world surface is the client-owned surface
+- inside the footprint, visual terrain is not a visible carrier:
+  - for grounded roads, asphalt, shoulder / curb, and sidewalk geometry are the visible ground
+  - terrain fragments under those road-owned bands must not be rendered
+  - the road-owned top surface follows the client-owned solved profile rather than a separate
+    world-horizontal terrain plane
+  - source terrain is not blended or drawn there; the client-owned support surface replaces visual
+    terrain locally inside the owned footprint
 - outside the footprint but inside the earthwork margin, the visible world surface transitions back
   toward source terrain using deterministic cut / fill rules
+- the seam between the road-owned top surface and surrounding terrain must be covered by a
+  deterministic tie-in carrier:
+  - either terrain chunks are clipped / triangulated so their inner boundary exactly follows the
+    road-owned outer boundary
+  - or the client emits local earthwork / tie-in geometry whose inner edge reuses the same
+    road-owned outer-boundary vertices and whose outer edge ties back to terrain
+- terrain suppression alone is not a seam solution; it may only hide terrain under geometry that
+  actually exists
+- for grounded clients, the runtime must not render a second visible support mesh under an ordinary
+  grounded footprint just to hide terrain overlap
+- explicit local earthwork geometry remains valid as an internal ownership / stamping carrier and
+  as a visible carrier for structural or explicitly exposed cases, but ordinary grounded roads must
+  not depend on a separate visible mesh below asphalt, shoulder, curb, or sidewalk
+
+Deterministic seam contract:
+
+- the seam is the shared boundary between the client-owned footprint and the far-field terrain
+- for roads, the footprint includes asphalt, shoulder / curb, and sidewalk bands; the seam starts at
+  the exact outer sidewalk edge, or at the exact outer shoulder edge when a profile has no sidewalk
+- every seam segment must be backed on both sides by visible carriers before terrain below the
+  footprint is suppressed:
+  1. the client-owned top surface covers the footprint side of the seam
+  2. client-owned tie-in geometry covers the outside of the seam, or terrain topology is clipped /
+     triangulated so its inner edge exactly matches the client-owned seam vertices
+- terrain masking, terrain alpha, terrain discard, or footprint suppression is not a seam carrier;
+  those tools are valid only after one of the visible carriers above already covers the boundary
+- until exact clipped terrain topology exists, grounded `Standard` roads must emit visible local
+  tie-in geometry from the outer sidewalk / shoulder edge to the sampled terrain tie-in boundary
+- the tie-in inner edge must reuse the same ordered vertices and heights as the road-owned outer
+  sidewalk / shoulder boundary; it must not resample, offset, snap, or simplify that edge
+- the tie-in outer edge must be sampled from the current visual terrain at deterministic world-space
+  spacing no larger than `2 m`
+- `Span` pieces emit independent left-side and right-side tie-ins, `Terminal` pieces emit cap
+  tie-ins, and `Bend` / `JunctionN` pieces emit sector tie-ins from their ordered mouth profiles
+- no `Bend` or `JunctionN` tie-in may be synthesized from one anonymous annulus, one global outer
+  loop, or a terrain-cell mask after the fact
+- a valid seam is closed with backface culling enabled and with terrain rendering disabled below the
+  road-owned footprint; the renderer must not reveal world background, holes, or source terrain
+  through the road / sidewalk / tie-in boundary
+
+For roads, that means:
+
+- grounded road footprint support is owned by the committed road top surface
+- bridges limit that support to abutment-owned grounded regions
+- tunnels limit that support to visible portal-owned grounded regions
+- grounded `Standard` roads replace the near-road visible terrain locally:
+  - asphalt and sidewalk render as the visible terrain replacement inside the road-owned footprint
+  - the terrain renderer emits no terrain under the road-owned footprint
+  - the seam to far-field terrain is covered by clipped terrain topology or by road-owned tie-in
+    geometry outside the footprint
+  - terrain suppression is allowed only after that seam carrier exists
+  - the runtime must not render a separate visible cut / fill support mesh below ordinary grounded
+    asphalt or sidewalk
+- structural or intentionally exposed cases such as bridge abutments, tunnel portals, or future
+  retaining variants may still render explicit earthwork / wall geometry where terrain alone is
+  not the intended visible carrier
 
 The system must not treat "sample terrain at the centerline and widen it later" as the shared
 earthworks model.
@@ -129,7 +192,7 @@ Terrain-only queries remain authoritative against source terrain.
 Visible world-surface queries must resolve in this order:
 
 1. client-owned top surface
-2. client-owned local earthwork geometry when it exists
+2. client-owned local earthwork geometry only when that geometry is intentionally surfaced
 3. visual terrain
 4. source terrain only for terrain-only APIs
 
@@ -336,6 +399,21 @@ Required first variant:
 - future building pads follow the same owner model, but with a perimeter tie-in ring instead of
   two longitudinal side runs
 
+Required seam acceptance checks:
+
+- a flat straight grounded road must show no source-terrain pixels, background pixels, or shadowed
+  voids between asphalt / sidewalk and terrain when terrain under the footprint is suppressed
+- a diagonal road against the terrain grid must meet the same rule; correctness must not depend on
+  alignment to terrain-cell axes
+- a sloped road must keep asphalt, shoulder / curb, and sidewalks as the visible top surface while
+  the tie-in carrier closes the side gap back to terrain
+- a `JunctionN` with any ordered arm count must build seam sectors from adjacent mouth profiles,
+  not from a special-case `3`-arm or `4`-arm template
+- disabling the terrain-under-footprint draw path must not expose holes; if it does, the seam
+  carrier is missing and the implementation is invalid
+- bridges remain a separate class: midspan bridge decks do not claim grounded terrain ownership
+  except at explicit abutment / portal support regions
+
 ### 4. The First Required Variant Is A Closed Slope / Closure Mesh
 
 The first required rewrite variant is still intentionally narrow, but it is no longer a thin
@@ -420,25 +498,35 @@ Required cache and query contract:
 
 ## Roads-First Rewrite Status
 
-The roads-first rewrite is no longer only a target representation in this document. The piece /
-profile carrier and the closed local road-owned earthwork carrier are now the live road runtime.
+The roads-first rewrite is partially live. The piece / profile carrier and deterministic road
+ownership data now exist in the live road runtime, but the grounded-road seam is not complete until
+visible tie-in geometry or exact clipped terrain topology closes the boundary from the outer
+sidewalk / shoulder edge back to terrain.
 
-For the roads-first rewrite, the following are now both deterministic and implemented:
+For the roads-first rewrite, the following are deterministic and implemented:
 
 - the current corridor-sheet prototype is retired as the target solution
 - the logical graph and the visible road carrier are split: graph owns connectivity, while the
   visible road system owns deterministic geometry pieces
 - the minimum required visual piece set is `Span`, `Bend`, `Terminal`, and `JunctionN`
-- roads use a closed local earthwork mesh near the footprint
-- the first live geometry variant is the closed slope / closure mesh
-- tie-in boundaries use dense local sampling at a maximum `2 m` longitudinal spacing
+- roads compile explicit top-surface ownership and earthwork ownership carriers near the footprint
+- tie-in boundaries are specified to use dense local sampling at a maximum `2 m` longitudinal
+  spacing
 - committed clients stay fixed under later terrain-authoring edits
-- local earthwork geometry uses chunk-local caches and one explicit visible-world query order
-- terrain suppression remains a bounded overlap rule, not the primary visual carrier for the
-  near-road tie-in
+- local road ownership uses chunk-local rebuild boundaries and one explicit visible-world query
+  order
 
-That means the remaining items below are later additions and refinements, not blockers for the
-live roads-first closed-mesh runtime.
+The following are still blockers for the live grounded-road result:
+
+- grounded `Standard` roads still need a visible seam carrier from the outer sidewalk / shoulder
+  edge to terrain, or true clipped terrain topology whose inner edge follows that same road-owned
+  boundary
+- terrain suppression / masking is only an overlap-removal tool until that seam carrier exists
+- the first accepted visible seam variant is still the closed slope / closure mesh; retaining /
+  wall variants are later replacements for cases where deterministic thresholds require them
+
+That means the remaining items below are later additions only after the seam carrier is implemented;
+they are not a substitute for closing the road-to-terrain boundary.
 
 ## Later Additions
 

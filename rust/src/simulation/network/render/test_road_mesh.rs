@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_slope_standard_road_emits_visible_earthwork_mesh() {
+    fn test_cross_slope_standard_road_uses_integrated_terrain_instead_of_visible_earthwork_mesh() {
         let renderer = RoadRenderer;
         let terrain = cross_slope_terrain(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -468,26 +468,14 @@ mod tests {
         let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
         validate_mesh(&mesh_data, 80.0);
 
-        let earthwork_triangles = triangles_from_vertices(&mesh_data.earthwork_vertices);
-        let earthwork_coverage = triangle_coverage_ratio(
-            &earthwork_triangles,
-            Vector2::new(5.5, -12.0),
-            Vector2::new(12.0, 12.0),
-            0.5,
-        );
-
         assert!(
-            !mesh_data.earthwork_vertices.is_empty(),
-            "expected explicit earthwork render layer for grounded cross-slope roads"
-        );
-        assert!(
-            earthwork_coverage >= 0.10,
-            "expected visible earthwork coverage outside the paved footprint, got {earthwork_coverage:.3}"
+            mesh_data.earthwork_vertices.is_empty(),
+            "grounded standard roads should integrate into terrain instead of emitting a separate visible earthwork mesh"
         );
     }
 
     #[test]
-    fn test_flat_standard_road_hides_support_earthwork_under_paved_center() {
+    fn test_flat_standard_road_emits_no_visible_earthwork_mesh() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -507,17 +495,9 @@ mod tests {
         let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
         validate_mesh(&mesh_data, 80.0);
 
-        let earthwork_triangles = triangles_from_vertices(&mesh_data.earthwork_vertices);
-        let center_coverage = triangle_coverage_ratio(
-            &earthwork_triangles,
-            Vector2::new(-12.0, -2.0),
-            Vector2::new(12.0, 2.0),
-            0.5,
-        );
-
         assert!(
-            center_coverage <= 0.02,
-            "expected render-only earthwork faces to stay out of the flat road center, got {center_coverage:.3}"
+            mesh_data.earthwork_vertices.is_empty(),
+            "flat grounded standard roads should not emit any separate visible earthwork mesh"
         );
     }
 
@@ -881,6 +861,81 @@ mod tests {
     }
 
     #[test]
+    fn test_four_way_sidewalk_corners_stay_in_their_quadrants() {
+        let north = [Vector3::new(0.0, 0.0, -20.0), Vector3::new(0.0, 0.0, 0.0)];
+        let south = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 20.0)];
+        let west = [Vector3::new(-20.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)];
+        let east = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&north, 1, 1), (&south, 1, 1), (&west, 1, 1), (&east, 1, 1)]);
+        validate_mesh(&mesh_data, 60.0);
+
+        for (label, min, max) in [
+            (
+                "north_west",
+                Vector2::new(-6.0, -6.0),
+                Vector2::new(-3.5, -3.5),
+            ),
+            (
+                "north_east",
+                Vector2::new(3.5, -6.0),
+                Vector2::new(6.0, -3.5),
+            ),
+            ("south_east", Vector2::new(3.5, 3.5), Vector2::new(6.0, 6.0)),
+            (
+                "south_west",
+                Vector2::new(-6.0, 3.5),
+                Vector2::new(-3.5, 6.0),
+            ),
+        ] {
+            let sidewalk =
+                visible_coverage_ratio(&mesh_data, min, max, 0.25, VisibleSurface::Sidewalk);
+            let road = visible_coverage_ratio(&mesh_data, min, max, 0.25, VisibleSurface::Road);
+            assert!(
+                sidewalk >= 0.35,
+                "{label}_sidewalk={sidewalk:.3} {label}_road={road:.3}"
+            );
+            assert!(
+                road <= 0.25,
+                "{label}_road={road:.3} {label}_sidewalk={sidewalk:.3}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_four_way_inner_quadrants_stay_carriageway_owned() {
+        let north = [Vector3::new(0.0, 0.0, -20.0), Vector3::new(0.0, 0.0, 0.0)];
+        let south = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 20.0)];
+        let west = [Vector3::new(-20.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)];
+        let east = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
+        let (_graph, mesh_data, _terrain) =
+            generate_editor_mesh(&[(&north, 1, 1), (&south, 1, 1), (&west, 1, 1), (&east, 1, 1)]);
+        validate_mesh(&mesh_data, 60.0);
+
+        for (label, min, max) in [
+            (
+                "north_west",
+                Vector2::new(-3.5, -3.5),
+                Vector2::new(-1.0, -1.0),
+            ),
+            (
+                "north_east",
+                Vector2::new(1.0, -3.5),
+                Vector2::new(3.5, -1.0),
+            ),
+            ("south_east", Vector2::new(1.0, 1.0), Vector2::new(3.5, 3.5)),
+            (
+                "south_west",
+                Vector2::new(-3.5, 1.0),
+                Vector2::new(-1.0, 3.5),
+            ),
+        ] {
+            let road = visible_coverage_ratio(&mesh_data, min, max, 0.25, VisibleSurface::Road);
+            assert!(road >= 0.55, "{label}_road={road:.3}");
+        }
+    }
+
+    #[test]
     fn test_editor_path_diagonal_branch_keeps_core_road_and_exterior_sidewalk() {
         let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
         let branch = [Vector3::new(-18.0, 0.0, 18.0), Vector3::new(0.0, 0.0, 0.0)];
@@ -1051,6 +1106,10 @@ mod tests {
 
         assert!(deck_road >= 0.95);
         assert!(deck_sidewalk >= 0.5);
+        assert!(
+            !mesh_data.earthwork_vertices.is_empty(),
+            "expected bridge abutments to keep explicit visible earthwork geometry"
+        );
         assert!(
             !mesh_data.concrete_vertices.is_empty(),
             "expected bridge structural concrete to remain rendered"

@@ -68,7 +68,7 @@ pub(super) fn emit_compiled_surface_mesh(
     terrain: &TerrainSystem,
     coverage: &CompiledSurfaceCoverage,
 ) {
-    emit_compiled_earthwork_mesh(mesh, road_surface, coverage);
+    emit_compiled_earthwork_mesh(mesh, graph, road_surface, terrain, coverage);
 
     let mut edge_indices: Vec<usize> = coverage.edge_indices.iter().copied().collect();
     edge_indices.sort_unstable();
@@ -115,7 +115,9 @@ pub(super) fn emit_compiled_surface_mesh(
 
 fn emit_compiled_earthwork_mesh(
     mesh: &mut NetworkMeshData,
+    graph: &RegionGraph,
     road_surface: &RoadSurfaceSystem,
+    terrain: &TerrainSystem,
     coverage: &CompiledSurfaceCoverage,
 ) {
     let mut edge_indices: Vec<usize> = coverage.edge_indices.iter().copied().collect();
@@ -124,6 +126,9 @@ fn emit_compiled_earthwork_mesh(
         let Some(piece) = road_surface.compiled_visual_span_pieces().get(&edge_idx) else {
             continue;
         };
+        if !road_surface.span_piece_uses_visible_earthwork(piece) {
+            continue;
+        }
         for face in &piece.render_earthwork_faces {
             match face.kind {
                 RoadSurfaceEarthworkFaceKind::Slope => {
@@ -152,6 +157,9 @@ fn emit_compiled_earthwork_mesh(
         let Some(piece) = road_surface.compiled_visual_node_pieces().get(&node_id) else {
             continue;
         };
+        if !road_surface.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
+            continue;
+        }
         for face in &piece.render_earthwork_faces {
             match face.kind {
                 RoadSurfaceEarthworkFaceKind::Slope => {

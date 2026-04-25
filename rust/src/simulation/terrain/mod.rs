@@ -153,6 +153,11 @@ impl TerrainSystem {
         self.interpolate_grid_height(&self.data, grid_x, grid_z)
     }
 
+    /// Returns the terrain sample spacing in metres.
+    pub(crate) fn cell_size_m(&self) -> f32 {
+        self.cell_size
+    }
+
     /// Calculates the surface normal at a fractional coordinate using gradient sampling.
     pub fn get_normal_interpolated(&self, x: f32, z: f32) -> Vector3 {
         let eps = 0.1;
@@ -569,11 +574,6 @@ impl TerrainSystem {
         self.source_data.replace_from_dense(dense)
     }
 
-    /// Returns the visual terrain sample stored at one integer grid coordinate.
-    pub(crate) fn visual_height_at_grid(&self, grid_x: usize, grid_z: usize) -> f32 {
-        self.data.get(grid_x, grid_z)
-    }
-
     /// Writes one integer-grid visual terrain sample without modifying the authored source terrain.
     pub(crate) fn set_visual_height_at_grid(&mut self, grid_x: usize, grid_z: usize, value: f32) {
         self.data.set(grid_x, grid_z, value);
@@ -625,6 +625,37 @@ impl TerrainSystem {
     /// Returns the current set of dirty terrain render patches.
     pub(crate) fn dirty_render_patches(&self) -> &HashSet<(usize, usize)> {
         &self.dirty_render_patches
+    }
+
+    /// Returns the render-patch keys whose sample bounds overlap the given world-space rectangle.
+    pub(crate) fn render_patch_keys_for_world_bounds(
+        &self,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> Vec<(usize, usize)> {
+        let Some((min_grid_x, max_grid_x, min_grid_z, max_grid_z)) =
+            self.grid_rect_for_world_bounds(min_x, min_z, max_x, max_z)
+        else {
+            return Vec::new();
+        };
+
+        let (min_patch_x, max_patch_x) = self.patch_range_for_sample_range(min_grid_x, max_grid_x);
+        let (min_patch_z, max_patch_z) = self.patch_range_for_sample_range(min_grid_z, max_grid_z);
+        let mut keys =
+            Vec::with_capacity((max_patch_x - min_patch_x + 1) * (max_patch_z - min_patch_z + 1));
+        for patch_z in min_patch_z..=max_patch_z {
+            for patch_x in min_patch_x..=max_patch_x {
+                keys.push((patch_x, patch_z));
+            }
+        }
+        keys
+    }
+
+    /// Returns the terrain grid dimensions in samples.
+    pub(crate) fn grid_dimensions(&self) -> (usize, usize) {
+        (self.width, self.height)
     }
 
     /// Clears the terrain render-patch dirtiness set.
@@ -1011,5 +1042,20 @@ mod tests {
             terrain.dirty_render_patches().iter().copied().collect();
         let expected = HashSet::from([(0, 0), (1, 0), (0, 1), (1, 1)]);
         assert_eq!(dirty, expected);
+    }
+
+    #[test]
+    fn world_bounds_on_patch_boundary_return_all_overlapping_render_patches() {
+        let terrain =
+            TerrainSystem::with_chunking(17, 17, 10.0, 4, 0.0).with_render_chunk_span(30.0);
+
+        let (world_x, world_z) = terrain.grid_to_world_coords(3, 3);
+        let keys: HashSet<(usize, usize)> = terrain
+            .render_patch_keys_for_world_bounds(world_x, world_z, world_x, world_z)
+            .into_iter()
+            .collect();
+
+        let expected = HashSet::from([(0, 0), (1, 0), (0, 1), (1, 1)]);
+        assert_eq!(keys, expected);
     }
 }
