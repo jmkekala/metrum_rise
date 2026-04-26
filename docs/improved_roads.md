@@ -89,15 +89,14 @@ Live behavior:
 - the live road-touched terrain patch bridge feeds piece-owned road loops into the CDT module,
   emits accepted terrain faces, rejects road-footprint faces, and reports CDT counters through
   `--debug road-geometry`
-- `Terminal`, `Bend`, and `JunctionN` visual node pieces now use Spade CDT as the final local
-  surface solidifier; sector-built road / sidewalk geometry is used as deterministic material
-  hints, not as the final hole-prone carrier
+- `Terminal`, `Bend`, and `JunctionN` visual node pieces now resolve asphalt and sidewalk
+  ownership through `i_overlay` before Spade CDT triangulation; sector-built geometry is only a
+  deterministic candidate source, not a final visual carrier or material classifier
 
-Accepted next ownership backend:
+Accepted ownership backend:
 
-- `i_overlay` is the planned Rust-side polygon boolean / ownership backend for road-piece region
-  cleanup
-- Spade remains the planned Rust-side CDT backend for triangulating already-owned regions
+- `i_overlay` is the Rust-side polygon boolean / ownership backend for road-piece region cleanup
+- Spade remains the Rust-side CDT backend for triangulating already-owned regions
 - `robust` is intentionally out of scope for now; the road runtime should not add a standalone
   predicate crate unless `i_overlay` plus Spade leaves one measured, specific predicate gap
 
@@ -761,11 +760,11 @@ Implement the hardcut in this order:
     faces, invalid constraints, and preserved seam-edge counts.
 11. Done: make live terrain CDT use `try_bulk_load_cdt` so malformed constraints are debug-counted
     instead of panicking the backend.
-12. Done: hard-cut `Terminal`, `Bend`, and `JunctionN` visual fills to a local Spade CDT
-    solidifier; the older sector strips remain only as semantic road / sidewalk material hints.
-13. Next: replace node-piece material hints with `i_overlay` boolean ownership for `Terminal`,
+12. Done: hard-cut `Terminal`, `Bend`, and `JunctionN` visual fills to local Spade CDT
+    triangulation fed by resolved road-piece regions.
+13. Done: replace node-piece material hints with `i_overlay` boolean ownership for `Terminal`,
     `Bend`, and `JunctionN`.
-14. Next: remove hint-only / nearest-material / centroid-vote node material fallbacks after
+14. Done: remove hint-only / nearest-material / centroid-vote node material fallbacks after
     boolean ownership emits disjoint asphalt and sidewalk regions.
 15. Later: adapt `Span` output to the same resolved-region contract once node pieces are validated.
 
@@ -776,21 +775,18 @@ Acceptance requires `cargo check`, the CDT contract tests, and Godot headless lo
 Road-piece CDT is now part of the accepted visual carrier for node pieces:
 
 - `Span`, `Bend`, `Terminal`, and `JunctionN` still own semantic road shape
-- `Terminal`, `Bend`, and `JunctionN` build one piece-owned outer footprint loop and feed it to a
-  local Spade CDT solidifier
-- road / sidewalk sectors from the incident mouth profiles are currently material hints only; the
-  accepted next hardcut is to turn them into `i_overlay` boolean regions before CDT so sidewalk
-  ownership cannot overlap asphalt in sharp corners
+- `Terminal`, `Bend`, and `JunctionN` generate deterministic asphalt and sidewalk candidate
+  polygons from incident mouth profiles, then resolve those candidates with `i_overlay`
 - asphalt owns carriageway first; sidewalk is computed as sidewalk-candidate area minus asphalt;
   terrain is computed as patch area minus the full road-owned footprint
 - CDT only triangulates already-decided polygons and material boundaries
 - CDT must not decide lane, sidewalk, crosswalk, mouth, or frontage semantics
-- invalid hint constraints may be skipped by Spade, but the node piece must still compile from the
-  outer footprint loop if the boundary itself is valid
+- invalid Spade constraints are counted as geometry bugs; the live node-piece path must not fall
+  back to nearest-material classification, centroid voting, render order, or legacy sector strips
 
 ### Road-Piece Boolean Ownership Rules
 
-The accepted next node-piece hardcut is `i_overlay` plus Spade:
+The current node-piece hardcut is `i_overlay` plus Spade:
 
 - `Terminal`, `Bend`, and `JunctionN` are compiled through one shared road-piece region builder
   where the node class only changes the number and shape of incident mouths
@@ -814,7 +810,7 @@ The accepted next node-piece hardcut is `i_overlay` plus Spade:
 
 ### Junction-First `i_overlay` Refactor
 
-The next implementation slice focuses on node pieces first because they are the historically broken
+The implemented hardcut focuses on node pieces first because they are the historically broken
 case. `Span` pieces keep their current corridor generation until the node-piece ownership pipeline is
 validated, then spans are adapted to emit the same resolved-region format.
 
@@ -909,11 +905,11 @@ Debug contract:
 
 Legacy removal target:
 
-- remove hint-only node material classification once boolean regions own material output
-- remove nearest-material and centroid-vote fallbacks from node-piece material ownership
-- remove sector strips as final visual carriers for `Terminal`, `Bend`, and `JunctionN`
-- remove any `JunctionN` code that synthesizes a center asphalt core after sector assembly
-- remove any `Bend` or `JunctionN` path that depends on second-pass outer-boundary extraction from
+- removed: hint-only node material classification once boolean regions own material output
+- removed: nearest-material and centroid-vote fallbacks from node-piece material ownership
+- removed: sector strips as final visual carriers for `Terminal`, `Bend`, and `JunctionN`
+- removed: any `JunctionN` code that synthesizes a center asphalt core after sector assembly
+- removed: any `Bend` or `JunctionN` path that depends on second-pass outer-boundary extraction from
   already-emitted render triangles
 - keep mouth/profile calculation, throat clipping, grade/crossfall sampling, chunk invalidation,
   and Spade CDT triangulation because those remain part of the target pipeline
