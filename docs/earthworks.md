@@ -171,12 +171,21 @@ Deterministic seam contract:
   are not allowed to be the only seam carrier because their grid edges rarely coincide with the
   road-owned outer sidewalk / shoulder edge
 - target CDT contract:
+  - road-piece polygon ownership is resolved with `i_overlay` before triangulation; Spade receives
+    already-owned asphalt, sidewalk, and terrain regions rather than overlapping material hints
   - road-touched terrain patches are generated with Spade's Rust-side
     `ConstrainedDelaunayTriangulation`
+  - `i_overlay` is the chosen Rust-side polygon boolean backend for road / terrain ownership
+    cleanup; it owns union, intersection, difference, hole handling, and overlap removal before
+    CDT input is built
   - Spade is the chosen CDT backend; `ghx_constrained_delaunay` is not part of this spec, is not a
     fallback, and may only be reconsidered through a new explicit benchmarked spec change
-  - the production path uses deterministic `bulk_load_cdt` inputs; Spade refinement helpers are
-    not used until they have a pinned deterministic contract for this project
+  - `robust` is not part of the accepted implementation path for now; exact-predicate needs should
+    first be handled by `i_overlay` and Spade, and any standalone predicate dependency requires a
+    narrow future spec change
+  - the production path uses deterministic `try_bulk_load_cdt` inputs; conflicting constraints are
+    counted and skipped rather than allowed to panic the simulation thread, and Spade refinement
+    helpers are not used until they have a pinned deterministic contract for this project
   - the terrain patch rectangle is the outer constrained contour
   - every grounded road-owned outer footprint loop inside or crossing the patch is inserted as a
     hard constrained contour
@@ -191,11 +200,12 @@ Deterministic seam contract:
     road-owned footprint are omitted from the visible terrain patch mesh
   - emitted terrain triangles must preserve the CDT constraint edges at the road seam and must not
     cross a road-owned footprint loop
-  - CDT failures are hard errors in debug output and must not fall back to cell subtraction,
-    seam carpets, closure strips, water, or shader masks
-  - the first production target for CDT is terrain-road integration; road-piece polygon fills for
-    `Terminal`, `Bend`, and `JunctionN` may reuse the same triangulation backend only after the
-    terrain seam path is validated
+  - CDT triangulation failures are hard errors in debug output and must not fall back to cell
+    subtraction, seam carpets, closure strips, water, or shader masks
+  - `Terminal`, `Bend`, and `JunctionN` visual node pieces use the same Spade CDT backend as their
+    final local surface solidifier; the accepted next hardcut is for those pieces to resolve
+    asphalt / sidewalk / outer-footprint ownership through `i_overlay` before Spade triangulation,
+    so sharp-angle sidewalks shrink or split instead of overlapping asphalt
 - clipped terrain topology must insert road-boundary vertices into the terrain mesh in Rust rather
   than approximating the seam from terrain-cell centers, a texture mask, or a Godot-side polygon
   clipping fallback
@@ -584,6 +594,9 @@ The following are current hardcut implementation rules:
   baked mesh or the normal rectangular terrain mesh
 - grounded `Standard` roads do not render an ordinary visible closure strip, seam carpet, or second
   support mesh; the CDT terrain patch mesh is the seam carrier
+- `Terminal`, `Bend`, and `JunctionN` node pieces now compile their final asphalt / sidewalk
+  triangles through local Spade CDT over the piece-owned footprint loop, so oblique junctions do
+  not depend on a pile of strip sectors staying perfectly watertight
 - visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
   water meshes receive the same road footprint clip polygons after a network edit and suppress
   touched water cells wholesale, so water is no longer allowed to render under grounded road-owned

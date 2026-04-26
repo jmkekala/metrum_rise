@@ -89,6 +89,17 @@ Live behavior:
 - the live road-touched terrain patch bridge feeds piece-owned road loops into the CDT module,
   emits accepted terrain faces, rejects road-footprint faces, and reports CDT counters through
   `--debug road-geometry`
+- `Terminal`, `Bend`, and `JunctionN` visual node pieces now use Spade CDT as the final local
+  surface solidifier; sector-built road / sidewalk geometry is used as deterministic material
+  hints, not as the final hole-prone carrier
+
+Accepted next ownership backend:
+
+- `i_overlay` is the planned Rust-side polygon boolean / ownership backend for road-piece region
+  cleanup
+- Spade remains the planned Rust-side CDT backend for triangulating already-owned regions
+- `robust` is intentionally out of scope for now; the road runtime should not add a standalone
+  predicate crate unless `i_overlay` plus Spade leaves one measured, specific predicate gap
 
 Not accepted as the final target:
 
@@ -591,16 +602,24 @@ Preferred cache structure:
 The next accepted representation is a Spade-backed terrain patch generator. It replaces the current
 road-touched terrain mesh builder; it does not sit beside it as a fallback.
 
-### Target Backend
+### Target Backends
 
 Required rules:
 
+- `i_overlay` is the production polygon ownership backend for boolean cleanup before triangulation
 - `spade::ConstrainedDelaunayTriangulation` is the only planned CDT backend for the production
   terrain-road seam
-- `bulk_load_cdt` is the only accepted insertion path for the first implementation
+- `i_overlay` owns polygon-region operations such as union, intersection, difference, holes,
+  self-overlap cleanup, and asphalt / sidewalk / terrain ownership subtraction
+- Spade owns constrained triangulation only; it must not be asked to infer material ownership from
+  overlapping hint polygons
+- `try_bulk_load_cdt` is the accepted insertion path for live code, so malformed or overlapping
+  constraints are counted and skipped instead of panicking the simulation thread
 - Spade refinement helpers are not used until this project has a pinned deterministic refinement
   contract
-- any future replacement of Spade requires a new explicit benchmarked spec change
+- `robust` is not a planned dependency in this path; if a future implementation needs a standalone
+  exact-predicate crate, that requires a narrow, measured spec update naming the missing predicate
+- any future replacement of `i_overlay` or Spade requires a new explicit benchmarked spec change
 
 ### Target Owner And API
 
@@ -619,7 +638,8 @@ The target API is one deterministic terrain-patch function:
   - accepted face count
   - rejected road-footprint face count
   - constraint count
-  - hard error details when constraints are invalid
+  - invalid / skipped constraint count
+  - hard error details when triangulation itself fails
 
 The API must not expose:
 
@@ -630,7 +650,24 @@ The API must not expose:
 
 ### CDT Input Rules
 
-The CDT input is canonical and deterministic:
+The CDT input is canonical and deterministic. Before CDT input is built, road and terrain ownership
+polygons are resolved with `i_overlay`:
+
+- asphalt polygons are unioned into one non-overlapping asphalt region per affected piece / patch
+- sidewalk candidate polygons are subtracted by asphalt before they can become visible sidewalk
+- terrain patch polygons are subtracted by the full road-owned footprint before terrain faces can
+  be emitted
+- overlap cleanup must happen in Rust before Spade sees constraints; CDT is not a replacement for
+  polygon boolean ownership
+- all boolean-operation inputs are quantized, ordered, and keyed by stable piece IDs before being
+  passed to `i_overlay`
+- all boolean-operation outputs are canonicalized before CDT:
+  - rings use the project epsilon and contain no duplicate consecutive vertices
+  - outer rings and holes use deterministic winding
+  - rings are sorted by stable owner, area, centroid, then vertex order
+  - degenerate rings below the minimum area threshold are rejected with debug counters
+
+After region ownership is resolved, CDT input obeys these rules:
 
 - the patch rectangle is inserted as the outer constrained boundary
 - every grounded road-owned outer footprint loop is clipped to the patch before triangulation
@@ -652,7 +689,7 @@ No camera position, render LOD choice, debug flag, or thread scheduling order ma
 
 ### CDT Output Rules
 
-After `bulk_load_cdt`, terrain faces are classified in Rust:
+After `try_bulk_load_cdt`, terrain faces are classified in Rust:
 
 - a face is accepted if its centroid is inside the patch domain and outside every road-owned
   footprint
@@ -664,6 +701,9 @@ After `bulk_load_cdt`, terrain faces are classified in Rust:
 - rejected faces are not emitted, not hidden by shader discard, and not replaced by water or zoning
   overlays
 - normals and UVs are derived from the emitted accepted triangles
+- conflicting constraints are reported through `terrain_cdt_invalid_constraints` and
+  `terrain_cdt_status=conflicted`; this is a geometry bug signal, but it must not panic Godot,
+  poison the simulation mutex, or re-enable an older clipping path
 
 CDT failures are hard failures in debug output. The implementation must not fall back to:
 
@@ -706,19 +746,55 @@ Implement the hardcut in this order:
 9. Done: remove the retired seam-strip / cell-triangle live path.
 10. Done: update `--debug road-geometry` output to report CDT constraints, accepted faces, rejected
     faces, invalid constraints, and preserved seam-edge counts.
+11. Done: make live terrain CDT use `try_bulk_load_cdt` so malformed constraints are debug-counted
+    instead of panicking the backend.
+12. Done: hard-cut `Terminal`, `Bend`, and `JunctionN` visual fills to a local Spade CDT
+    solidifier; the older sector strips remain only as semantic road / sidewalk material hints.
 
 Acceptance requires `cargo check`, the CDT contract tests, and Godot headless load to pass.
 
-### Later Extensions
+### Road-Piece CDT Rules
 
-Spade may later be reused for road-piece polygon fill triangulation, but that is not part of the
-terrain-patch hardcut.
-
-If road pieces use Spade later:
+Road-piece CDT is now part of the accepted visual carrier for node pieces:
 
 - `Span`, `Bend`, `Terminal`, and `JunctionN` still own semantic road shape
-- CDT only triangulates already-decided polygons
+- `Terminal`, `Bend`, and `JunctionN` build one piece-owned outer footprint loop and feed it to a
+  local Spade CDT solidifier
+- road / sidewalk sectors from the incident mouth profiles are currently material hints only; the
+  accepted next hardcut is to turn them into `i_overlay` boolean regions before CDT so sidewalk
+  ownership cannot overlap asphalt in sharp corners
+- asphalt owns carriageway first; sidewalk is computed as sidewalk-candidate area minus asphalt;
+  terrain is computed as patch area minus the full road-owned footprint
+- CDT only triangulates already-decided polygons and material boundaries
 - CDT must not decide lane, sidewalk, crosswalk, mouth, or frontage semantics
+- invalid hint constraints may be skipped by Spade, but the node piece must still compile from the
+  outer footprint loop if the boundary itself is valid
+
+### Road-Piece Boolean Ownership Rules
+
+The accepted next node-piece hardcut is `i_overlay` plus Spade:
+
+- `Terminal`, `Bend`, and `JunctionN` are compiled through one shared road-piece region builder
+  where the node class only changes the number and shape of incident mouths
+- the builder emits candidate polygons for asphalt, sidewalk / curb, crosswalk decals, and the
+  outer footprint
+- `i_overlay` resolves those candidates into disjoint ownership regions before any triangulation:
+  - asphalt is the highest-priority visible road region
+  - sidewalk / curb may shrink, taper, split, or disappear locally when a sharp angle leaves no
+    valid area, but it must never overlap asphalt
+  - crosswalks are decals anchored to asphalt / sidewalk edges and must not create topology holes
+  - terrain starts outside the outer footprint only
+- Spade triangulates each resolved region and preserves the constrained boundaries produced by
+  `i_overlay`
+- region ownership must be deterministic for arbitrary `n >= 1`, including terminals, 2-arm bends,
+  oblique T-junctions, 4-way junctions, and sharp-angle multi-arm junctions
+- Voronoi or angle-bisector logic may be used only as a deterministic candidate-line generator for
+  splitting sidewalk regions before boolean cleanup; it must not replace `i_overlay` ownership
+  subtraction
+- no legacy sector strip, hint-only classifier, nearest-material fallback, or render-order trick may
+  decide final asphalt / sidewalk ownership after this hardcut
+
+### Later Extensions
 
 Retaining walls, richer structural tie-in materials, and building-pad engineered-ground clients are
 later extensions of the shared earthworks system in [`earthworks.md`](earthworks.md). They do not

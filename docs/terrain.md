@@ -794,16 +794,24 @@ Deterministic transition rules:
     ordinary road seam carrier
   - terrain clipping must be derived from the compiled road-piece outer loop in Rust; asphalt /
     sidewalk render triangles are not reused as terrain ownership triangles
+  - road-piece and terrain-patch ownership cleanup uses `i_overlay` before triangulation; boolean
+    union / difference / hole handling must produce non-overlapping asphalt, sidewalk, and terrain
+    regions before Spade receives constraints
   - target road-touched patch generation uses Spade's Rust-side
-    `ConstrainedDelaunayTriangulation` with a deterministic `bulk_load_cdt` input made from the
+    `ConstrainedDelaunayTriangulation` with a deterministic `try_bulk_load_cdt` input made from the
     terrain patch rectangle, road-owned footprint constraint loops, and deterministic
     source-terrain sample points outside those footprints
+  - conflicting constraints are reported through CDT debug counters and skipped; they are treated
+    as geometry bugs to fix at the road-piece source, not as a reason to panic the backend or fall
+    back to legacy clipping
   - Spade CDT faces whose centroids are inside road-owned footprints are omitted; all emitted
     terrain triangles must preserve road seam constraint edges and must not cross road footprint
     loops
   - `ghx_constrained_delaunay` is not a terrain backend or fallback in this spec; Spade is the
     production hard-cut target because it gives the project a documented constrained triangulation
     API with exact geometric predicates
+  - `robust` is not part of this path for now; standalone exact-predicate code is not needed unless
+    a future measured gap remains after `i_overlay` boolean cleanup and Spade CDT
   - current road-touched patch emission uses the Spade CDT path directly; the old subtractive
     triangle cutter, visible seam strip, and conservative cell-triangle ownership rule are no
     longer live fallbacks

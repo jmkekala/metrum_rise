@@ -7,7 +7,8 @@
 //! roadbed cache.
 
 use godot::prelude::{Vector2, Vector3};
-use std::collections::{HashMap, HashSet};
+use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::graph::{Edge, RegionGraph};
@@ -43,6 +44,11 @@ const EARTHWORK_FILL_SLOPE_RATE: f32 = 0.5;
 const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
 const BRIDGE_ABUTMENT_LENGTH_M: f32 = 12.0;
 const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
+const NODE_CDT_SIDEWALK_BOUNDARY_BAND_M: f32 = 2.0;
+const NODE_CDT_SIDEWALK_HINT_DISTANCE_M: f32 = 1.25;
+const NODE_CDT_SIDEWALK_VERTEX_HINT_DISTANCE_M: f32 = 4.0;
+
+type SurfaceCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 
 /// Chunk key used by the road-surface and earthwork caches.
 pub type SurfaceChunkKey = (i32, i32);
@@ -1876,6 +1882,13 @@ impl RoadSurfaceSystem {
 
         let outer_boundary_loops =
             Self::build_terminal_outer_boundary_loops(&mouth, &extruded_points);
+        let (road_surface_polygons, sidewalk_surface_polygons) =
+            Self::solidify_node_surface_with_cdt(
+                &outer_boundary_loops,
+                &road_surface_polygons,
+                &sidewalk_surface_polygons,
+                false,
+            )?;
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
@@ -1917,6 +1930,13 @@ impl RoadSurfaceSystem {
             sidewalk_surface_polygons.extend(sector.sidewalk_surface_polygons.iter().cloned());
         }
         let outer_boundary_loops = Self::build_bend_outer_boundary_loops(node_pos, &sectors);
+        let (road_surface_polygons, sidewalk_surface_polygons) =
+            Self::solidify_node_surface_with_cdt(
+                &outer_boundary_loops,
+                &road_surface_polygons,
+                &sidewalk_surface_polygons,
+                false,
+            )?;
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
@@ -1959,6 +1979,13 @@ impl RoadSurfaceSystem {
         }
         let outer_boundary_loops =
             Self::build_junction_outer_boundary_loops(node_pos, &gap_sectors);
+        let (road_surface_polygons, sidewalk_surface_polygons) =
+            Self::solidify_node_surface_with_cdt(
+                &outer_boundary_loops,
+                &road_surface_polygons,
+                &sidewalk_surface_polygons,
+                incidents.len() >= 4,
+            )?;
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
@@ -2005,6 +2032,309 @@ impl RoadSurfaceSystem {
         }
         Self::sort_visual_polygons(&mut loops);
         loops
+    }
+
+    fn solidify_node_surface_with_cdt(
+        outer_boundary_loops: &[RoadSurfaceVisualPolygon],
+        road_hints: &[RoadSurfaceVisualPolygon],
+        sidewalk_hints: &[RoadSurfaceVisualPolygon],
+        outer_sidewalk_bias: bool,
+    ) -> Option<(Vec<RoadSurfaceVisualPolygon>, Vec<RoadSurfaceVisualPolygon>)> {
+        if outer_boundary_loops.is_empty() {
+            return None;
+        }
+
+        let mut road_surface_polygons = Vec::new();
+        let mut sidewalk_surface_polygons = Vec::new();
+        for boundary_loop in outer_boundary_loops {
+            let triangles = Self::triangulate_node_surface_cdt(
+                &boundary_loop.points_world,
+                road_hints,
+                sidewalk_hints,
+            )?;
+            for triangle in triangles {
+                let Some(polygon) = Self::make_visual_polygon(triangle.to_vec()) else {
+                    continue;
+                };
+                if Self::classify_node_surface_triangle(
+                    triangle,
+                    &boundary_loop.points_world,
+                    road_hints,
+                    sidewalk_hints,
+                    outer_sidewalk_bias,
+                ) == RoadSurfaceBandKind::Carriageway
+                {
+                    road_surface_polygons.push(polygon);
+                } else {
+                    sidewalk_surface_polygons.push(polygon);
+                }
+            }
+        }
+
+        if road_surface_polygons.is_empty() && sidewalk_surface_polygons.is_empty() {
+            return None;
+        }
+        Self::sort_visual_polygons(&mut road_surface_polygons);
+        Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
+        Some((road_surface_polygons, sidewalk_surface_polygons))
+    }
+
+    fn triangulate_node_surface_cdt(
+        boundary_points: &[Vector3],
+        road_hints: &[RoadSurfaceVisualPolygon],
+        sidewalk_hints: &[RoadSurfaceVisualPolygon],
+    ) -> Option<Vec<[Vector3; 3]>> {
+        if boundary_points.len() < 3 {
+            return None;
+        }
+
+        let mut vertices = Vec::new();
+        let mut vertex_lookup = BTreeMap::new();
+        let mut constraints = BTreeSet::new();
+        Self::push_surface_cdt_loop(
+            boundary_points,
+            &mut vertices,
+            &mut vertex_lookup,
+            &mut constraints,
+        );
+        for hint in road_hints.iter().chain(sidewalk_hints.iter()) {
+            if hint.points_world.iter().all(|point| {
+                Self::polygon_contains_point_xz(boundary_points, Vector2::new(point.x, point.z))
+            }) {
+                Self::push_surface_cdt_loop(
+                    &hint.points_world,
+                    &mut vertices,
+                    &mut vertex_lookup,
+                    &mut constraints,
+                );
+            }
+        }
+
+        let spade_vertices = vertices
+            .iter()
+            .map(|point| Point2::new(f64::from(point.x), f64::from(point.z)))
+            .collect::<Vec<_>>();
+        let cdt = SurfaceCdt::try_bulk_load_cdt(
+            spade_vertices,
+            constraints.into_iter().collect(),
+            |_| {},
+        )
+        .ok()?;
+
+        let mut triangles = Vec::new();
+        for face in cdt.inner_faces() {
+            let [a, b, c] = face.vertices();
+            let triangle = [
+                vertices[a.fix().index()],
+                vertices[b.fix().index()],
+                vertices[c.fix().index()],
+            ];
+            let centroid = Vector2::new(
+                (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
+                (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
+            );
+            if Self::triangle_has_area_xz(triangle)
+                && Self::polygon_contains_point_xz(boundary_points, centroid)
+            {
+                triangles.push(triangle);
+            }
+        }
+
+        (!triangles.is_empty()).then_some(triangles)
+    }
+
+    fn push_surface_cdt_loop(
+        points_world: &[Vector3],
+        vertices: &mut Vec<Vector3>,
+        vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
+        constraints: &mut BTreeSet<[usize; 2]>,
+    ) {
+        if points_world.len() < 2 {
+            return;
+        }
+        let indices = points_world
+            .iter()
+            .map(|point| Self::insert_surface_cdt_vertex(*point, vertices, vertex_lookup))
+            .collect::<Vec<_>>();
+        for index in 0..indices.len() {
+            let edge = Self::normalize_surface_edge_array(
+                indices[index],
+                indices[(index + 1) % indices.len()],
+            );
+            if edge[0] != edge[1] {
+                constraints.insert(edge);
+            }
+        }
+    }
+
+    fn insert_surface_cdt_vertex(
+        point: Vector3,
+        vertices: &mut Vec<Vector3>,
+        vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
+    ) -> usize {
+        let key = Self::surface_cdt_vertex_key(point);
+        if let Some(index) = vertex_lookup.get(&key) {
+            return *index;
+        }
+        let index = vertices.len();
+        vertices.push(point);
+        vertex_lookup.insert(key, index);
+        index
+    }
+
+    fn surface_cdt_vertex_key(point: Vector3) -> (i64, i64) {
+        (
+            (point.x / SAMPLE_EPSILON_M).round() as i64,
+            (point.z / SAMPLE_EPSILON_M).round() as i64,
+        )
+    }
+
+    fn normalize_surface_edge_array(a: usize, b: usize) -> [usize; 2] {
+        if a < b { [a, b] } else { [b, a] }
+    }
+
+    fn classify_node_surface_triangle(
+        triangle: [Vector3; 3],
+        boundary_points: &[Vector3],
+        road_hints: &[RoadSurfaceVisualPolygon],
+        sidewalk_hints: &[RoadSurfaceVisualPolygon],
+        outer_sidewalk_bias: bool,
+    ) -> RoadSurfaceBandKind {
+        let centroid = Vector2::new(
+            (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
+            (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
+        );
+        let samples = [
+            centroid,
+            centroid.lerp(Vector2::new(triangle[0].x, triangle[0].z), 0.5),
+            centroid.lerp(Vector2::new(triangle[1].x, triangle[1].z), 0.5),
+            centroid.lerp(Vector2::new(triangle[2].x, triangle[2].z), 0.5),
+        ];
+        let mut road_votes = 0usize;
+        let mut sidewalk_votes = 0usize;
+        for sample in samples {
+            match Self::classify_node_surface_sample(sample, road_hints, sidewalk_hints) {
+                Some(RoadSurfaceBandKind::Carriageway) => road_votes += 1,
+                Some(RoadSurfaceBandKind::Sidewalk) => sidewalk_votes += 1,
+                _ => {}
+            }
+        }
+        let sidewalk_distance = sidewalk_hints
+            .iter()
+            .map(|polygon| Self::point_to_polygon_distance_squared_xz(centroid, polygon))
+            .fold(f32::INFINITY, f32::min)
+            .sqrt();
+        if outer_sidewalk_bias
+            && !sidewalk_hints.is_empty()
+            && Self::point_is_in_outer_boundary_ring_xz(
+                centroid,
+                boundary_points,
+                NODE_CDT_SIDEWALK_BOUNDARY_BAND_M,
+            )
+        {
+            return RoadSurfaceBandKind::Sidewalk;
+        }
+        if outer_sidewalk_bias
+            && sidewalk_distance <= NODE_CDT_SIDEWALK_VERTEX_HINT_DISTANCE_M
+            && triangle.iter().any(|point| {
+                Self::point_is_in_outer_boundary_ring_xz(
+                    Vector2::new(point.x, point.z),
+                    boundary_points,
+                    NODE_CDT_SIDEWALK_BOUNDARY_BAND_M,
+                )
+            })
+        {
+            return RoadSurfaceBandKind::Sidewalk;
+        }
+        if sidewalk_votes > road_votes {
+            return RoadSurfaceBandKind::Sidewalk;
+        }
+        if road_votes > sidewalk_votes {
+            let boundary_distance =
+                Self::point_to_points_loop_distance_squared_xz(centroid, boundary_points).sqrt();
+            if sidewalk_distance <= NODE_CDT_SIDEWALK_HINT_DISTANCE_M
+                && boundary_distance <= NODE_CDT_SIDEWALK_BOUNDARY_BAND_M
+            {
+                return RoadSurfaceBandKind::Sidewalk;
+            }
+            return RoadSurfaceBandKind::Carriageway;
+        }
+
+        let road_distance = road_hints
+            .iter()
+            .map(|polygon| Self::point_to_polygon_distance_squared_xz(centroid, polygon))
+            .fold(f32::INFINITY, f32::min);
+        let sidewalk_distance = sidewalk_hints
+            .iter()
+            .map(|polygon| Self::point_to_polygon_distance_squared_xz(centroid, polygon))
+            .fold(f32::INFINITY, f32::min);
+        if road_distance.is_finite() && road_distance <= sidewalk_distance {
+            RoadSurfaceBandKind::Carriageway
+        } else {
+            RoadSurfaceBandKind::Sidewalk
+        }
+    }
+
+    fn point_is_in_outer_boundary_ring_xz(
+        point: Vector2,
+        boundary_points: &[Vector3],
+        ring_width_m: f32,
+    ) -> bool {
+        if boundary_points.len() < 3 {
+            return false;
+        }
+        let center = boundary_points.iter().fold(Vector2::ZERO, |sum, point| {
+            sum + Vector2::new(point.x, point.z)
+        }) / boundary_points.len() as f32;
+        let max_radius = boundary_points
+            .iter()
+            .map(|point| center.distance_to(Vector2::new(point.x, point.z)))
+            .fold(0.0, f32::max);
+        center.distance_to(point) >= max_radius - ring_width_m
+    }
+
+    fn point_to_points_loop_distance_squared_xz(point: Vector2, points_world: &[Vector3]) -> f32 {
+        if points_world.len() < 2 {
+            return f32::INFINITY;
+        }
+        points_world
+            .iter()
+            .enumerate()
+            .map(|(index, start)| {
+                let end = points_world[(index + 1) % points_world.len()];
+                Self::point_segment_distance_squared_xz(point, *start, end)
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    fn classify_node_surface_sample(
+        sample: Vector2,
+        road_hints: &[RoadSurfaceVisualPolygon],
+        sidewalk_hints: &[RoadSurfaceVisualPolygon],
+    ) -> Option<RoadSurfaceBandKind> {
+        let mut best_area = f32::INFINITY;
+        let mut best_kind = None;
+        for polygon in sidewalk_hints {
+            if !Self::polygon_contains_point_xz(&polygon.points_world, sample) {
+                continue;
+            }
+            let area = Self::signed_polygon_area_xz(&polygon.points_world).abs();
+            if area < best_area {
+                best_area = area;
+                best_kind = Some(RoadSurfaceBandKind::Sidewalk);
+            }
+        }
+        for polygon in road_hints {
+            if !Self::polygon_contains_point_xz(&polygon.points_world, sample) {
+                continue;
+            }
+            let area = Self::signed_polygon_area_xz(&polygon.points_world).abs();
+            if area < best_area {
+                best_area = area;
+                best_kind = Some(RoadSurfaceBandKind::Carriageway);
+            }
+        }
+        best_kind
     }
 
     fn build_closed_earthwork_geometry_from_boundary_loops(
@@ -4051,7 +4381,7 @@ impl RoadSurfaceSystem {
             return None;
         };
         points_world.rotate_left(start_index);
-        let triangles_world = Self::triangulate_simple_polygon_xz(&points_world)?;
+        let triangles_world = Self::triangulate_constrained_polygon_xz(&points_world)?;
         Some(RoadSurfaceVisualPolygon {
             points_world,
             triangles_world,
@@ -4093,7 +4423,7 @@ impl RoadSurfaceSystem {
         (!triangles.is_empty()).then_some(triangles)
     }
 
-    fn triangulate_simple_polygon_xz(points_world: &[Vector3]) -> Option<Vec<[Vector3; 3]>> {
+    fn triangulate_constrained_polygon_xz(points_world: &[Vector3]) -> Option<Vec<[Vector3; 3]>> {
         if points_world.len() < 3 {
             return None;
         }
@@ -4102,67 +4432,96 @@ impl RoadSurfaceSystem {
             return Self::triangle_has_area_xz(triangle).then_some(vec![triangle]);
         }
 
-        let mut remaining: Vec<usize> = (0..points_world.len()).collect();
-        let mut triangles = Vec::with_capacity(points_world.len() - 2);
-        let mut guard = 0usize;
-        let guard_limit = points_world.len() * points_world.len();
-
-        while remaining.len() > 3 && guard < guard_limit {
-            let mut clipped_ear = false;
-            for index in 0..remaining.len() {
-                let prev = remaining[(index + remaining.len() - 1) % remaining.len()];
-                let current = remaining[index];
-                let next = remaining[(index + 1) % remaining.len()];
-                let triangle = [
-                    points_world[prev],
-                    points_world[current],
-                    points_world[next],
-                ];
-                let projected_cross = (triangle[1].x - triangle[0].x)
-                    * (triangle[2].z - triangle[0].z)
-                    - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
-                if projected_cross <= 0.002 {
-                    continue;
-                }
-
-                let contains_other_vertex = remaining.iter().copied().any(|candidate| {
-                    if candidate == prev || candidate == current || candidate == next {
-                        return false;
-                    }
-                    Self::triangle_barycentric_weights_xz(
-                        triangle,
-                        Vector2::new(points_world[candidate].x, points_world[candidate].z),
-                    )
-                    .is_some()
-                });
-                if contains_other_vertex {
-                    continue;
-                }
-
-                triangles.push(triangle);
-                remaining.remove(index);
-                clipped_ear = true;
-                break;
-            }
-
-            if !clipped_ear {
-                return None;
-            }
-            guard += 1;
+        let vertices = points_world
+            .iter()
+            .map(|point| Point2::new(f64::from(point.x), f64::from(point.z)))
+            .collect::<Vec<_>>();
+        let constraints = (0..points_world.len())
+            .map(|index| [index, (index + 1) % points_world.len()])
+            .collect::<Vec<_>>();
+        let mut invalid_constraints = 0usize;
+        let cdt = SurfaceCdt::try_bulk_load_cdt(vertices, constraints, |_| {
+            invalid_constraints += 1;
+        })
+        .ok()?;
+        if invalid_constraints > 0 {
+            return None;
         }
 
-        if remaining.len() == 3 {
+        let mut triangles = Vec::new();
+        for face in cdt.inner_faces() {
+            let [a, b, c] = face.vertices();
             let triangle = [
-                points_world[remaining[0]],
-                points_world[remaining[1]],
-                points_world[remaining[2]],
+                points_world[a.fix().index()],
+                points_world[b.fix().index()],
+                points_world[c.fix().index()],
             ];
-            if Self::triangle_has_area_xz(triangle) {
+            let centroid = Vector2::new(
+                (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
+                (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
+            );
+            if Self::triangle_has_area_xz(triangle)
+                && Self::polygon_contains_point_xz(points_world, centroid)
+            {
                 triangles.push(triangle);
             }
         }
 
         (!triangles.is_empty()).then_some(triangles)
+    }
+
+    fn polygon_contains_point_xz(points_world: &[Vector3], point: Vector2) -> bool {
+        if points_world.len() < 3 {
+            return false;
+        }
+        let mut inside = false;
+        for index in 0..points_world.len() {
+            let start = points_world[index];
+            let end = points_world[(index + 1) % points_world.len()];
+            if Self::point_segment_distance_squared_xz(point, start, end) <= 0.0001 {
+                return true;
+            }
+            let start_z = start.z;
+            let end_z = end.z;
+            if (start_z > point.y) != (end_z > point.y) {
+                let edge_x_at_point_z =
+                    (end.x - start.x) * (point.y - start_z) / (end_z - start_z) + start.x;
+                if point.x < edge_x_at_point_z {
+                    inside = !inside;
+                }
+            }
+        }
+        inside
+    }
+
+    fn point_to_polygon_distance_squared_xz(
+        point: Vector2,
+        polygon: &RoadSurfaceVisualPolygon,
+    ) -> f32 {
+        if Self::polygon_contains_point_xz(&polygon.points_world, point) {
+            return 0.0;
+        }
+        polygon
+            .points_world
+            .iter()
+            .enumerate()
+            .map(|(index, start)| {
+                let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
+                Self::point_segment_distance_squared_xz(point, *start, end)
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    fn point_segment_distance_squared_xz(point: Vector2, start: Vector3, end: Vector3) -> f32 {
+        let start_xz = Vector2::new(start.x, start.z);
+        let end_xz = Vector2::new(end.x, end.z);
+        let segment = end_xz - start_xz;
+        let length_squared = segment.length_squared();
+        if length_squared <= SAMPLE_EPSILON_M {
+            return point.distance_squared_to(start_xz);
+        }
+        let t = ((point - start_xz).dot(segment) / length_squared).clamp(0.0, 1.0);
+        point.distance_squared_to(start_xz + segment * t)
     }
 
     fn signed_polygon_area_xz(points: &[Vector3]) -> f32 {
@@ -6087,6 +6446,75 @@ mod tests {
         assert!(
             !piece_a.earthwork_outer_boundary_loops.is_empty(),
             "expected explicit visual node pieces to expose deterministic earthwork boundaries"
+        );
+    }
+
+    #[test]
+    fn oblique_t_junction_compiles_solid_cdt_owned_surface() {
+        let mut graph = RegionGraph::new();
+        let left = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let right = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+        let oblique = graph.add_node(Vector3::new(12.0, 0.0, 20.784609), NodeType::Junction);
+        graph.add_edge(test_edge(
+            left,
+            center,
+            vec![Vector3::new(-24.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.add_edge(test_edge(
+            center,
+            right,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.add_edge(test_edge(
+            center,
+            oblique,
+            vec![
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(12.0, 0.0, 20.784609),
+            ],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.rebuild_adjacency_list();
+
+        let terrain = flat_terrain(96, 96);
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        let piece = surface
+            .compiled_visual_node_pieces()
+            .get(&center)
+            .expect("60-degree T junction must compile an explicit JunctionN piece");
+        assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+        assert!(!piece.outer_boundary_loops.is_empty());
+        assert!(!piece.road_surface_polygons.is_empty());
+        assert!(!piece.sidewalk_surface_polygons.is_empty());
+        assert!(
+            piece
+                .road_surface_polygons
+                .iter()
+                .chain(piece.sidewalk_surface_polygons.iter())
+                .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)),
+            "CDT-owned JunctionN triangles must be non-degenerate"
+        );
+        assert!(
+            piece
+                .road_surface_polygons
+                .iter()
+                .chain(piece.sidewalk_surface_polygons.iter())
+                .all(|polygon| polygon.triangles_world.len() == 1),
+            "node CDT solidifier emits explicit triangle-owned material polygons"
         );
     }
 

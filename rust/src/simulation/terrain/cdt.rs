@@ -129,6 +129,7 @@ pub(crate) struct TerrainCdtStats {
     pub(crate) accepted_faces: usize,
     pub(crate) rejected_road_faces: usize,
     pub(crate) preserved_road_constraint_edges: usize,
+    pub(crate) invalid_constraint_edges: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -150,8 +151,11 @@ pub(crate) fn build_road_touched_terrain_patch(
         .iter()
         .map(|vertex| vertex.point2())
         .collect::<Vec<_>>();
-    let cdt = SpadeCdt::bulk_load_cdt(spade_vertices, canonical.constraints.clone())
-        .map_err(|_| TerrainCdtError::TriangulationFailed)?;
+    let mut invalid_constraint_edges = 0usize;
+    let cdt = SpadeCdt::try_bulk_load_cdt(spade_vertices, canonical.constraints.clone(), |_| {
+        invalid_constraint_edges += 1
+    })
+    .map_err(|_| TerrainCdtError::TriangulationFailed)?;
 
     let mut triangles = Vec::new();
     let mut rejected_road_faces = 0usize;
@@ -189,6 +193,7 @@ pub(crate) fn build_road_touched_terrain_patch(
             accepted_faces: triangles.len(),
             rejected_road_faces,
             preserved_road_constraint_edges,
+            invalid_constraint_edges,
         },
         vertices: canonical.vertices,
         triangles,
@@ -595,6 +600,7 @@ mod tests {
 
         assert!(!mesh.triangles.is_empty());
         assert_eq!(mesh.stats.road_constraint_edges, 4);
+        assert_eq!(mesh.stats.invalid_constraint_edges, 0);
         assert_eq!(
             mesh.stats.preserved_road_constraint_edges,
             mesh.stats.road_constraint_edges
@@ -732,6 +738,7 @@ mod tests {
             .expect("Spade should deterministically triangulate multiple road loops");
 
         assert_eq!(first.stats.road_constraint_edges, 8);
+        assert_eq!(first.stats.invalid_constraint_edges, 0);
         assert_eq!(
             first.stats.preserved_road_constraint_edges,
             first.stats.road_constraint_edges
@@ -814,6 +821,39 @@ mod tests {
             canonical_triangle_set(&second.triangles)
         );
         assert_eq!(first.stats, second.stats);
+    }
+
+    #[test]
+    fn conflicting_road_constraints_are_reported_without_panicking() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
+        let road_a = road_loop_from_centerline(
+            TerrainCdtVertex::new(4.0, 0.0, 20.0),
+            TerrainCdtVertex::new(36.0, 0.0, 20.0),
+            5.0,
+        );
+        let road_b = road_loop_from_centerline(
+            TerrainCdtVertex::new(20.0, 0.0, 4.0),
+            TerrainCdtVertex::new(20.0, 0.0, 36.0),
+            5.0,
+        );
+
+        let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![
+                TerrainCdtRoadLoop::new(21, 0, road_a),
+                TerrainCdtRoadLoop::new(22, 0, road_b),
+            ],
+            piece_source_samples(),
+        ))
+        .expect("conflicting road loops must not panic the terrain bridge");
+
+        assert!(
+            mesh.stats.invalid_constraint_edges > 0,
+            "overlapping road loops must be reported as skipped CDT constraints"
+        );
+        for vertex in &mesh.vertices {
+            assert!(patch_contains(*vertex, patch));
+        }
     }
 
     fn diagonal_road_loop() -> Vec<TerrainCdtVertex> {
@@ -929,6 +969,7 @@ mod tests {
         assert!(clipped_road.len() >= 3);
         assert!(!mesh.triangles.is_empty());
         assert!(mesh.stats.rejected_road_faces > 0);
+        assert_eq!(mesh.stats.invalid_constraint_edges, 0);
         assert_eq!(
             mesh.stats.preserved_road_constraint_edges,
             mesh.stats.road_constraint_edges
@@ -958,6 +999,7 @@ mod tests {
         assert!(road.len() >= 3);
         assert!(!mesh.triangles.is_empty());
         assert_eq!(mesh.stats.road_constraint_edges, road.len());
+        assert_eq!(mesh.stats.invalid_constraint_edges, 0);
         assert!(mesh.stats.rejected_road_faces > 0);
         assert_eq!(
             mesh.stats.preserved_road_constraint_edges,

@@ -457,7 +457,12 @@ impl SimulationNode {
 
         match build_road_touched_terrain_patch(Self::terrain_cdt_input(patch, road_clip_polygons)) {
             Ok(mesh) => {
-                dict.set("terrain_cdt_status", GString::from("ok"));
+                let cdt_status = if mesh.stats.invalid_constraint_edges == 0 {
+                    "ok"
+                } else {
+                    "conflicted"
+                };
+                dict.set("terrain_cdt_status", GString::from(cdt_status));
                 dict.set(
                     "terrain_cdt_input_vertices",
                     i64::try_from(mesh.stats.input_vertices).unwrap_or(0),
@@ -482,7 +487,10 @@ impl SimulationNode {
                     "terrain_cdt_preserved_road_constraint_edges",
                     i64::try_from(mesh.stats.preserved_road_constraint_edges).unwrap_or(0),
                 );
-                dict.set("terrain_cdt_invalid_constraints", 0i64);
+                dict.set(
+                    "terrain_cdt_invalid_constraints",
+                    i64::try_from(mesh.stats.invalid_constraint_edges).unwrap_or(0),
+                );
                 Self::append_cdt_mesh_buffers(dict, patch, &mesh);
             }
             Err(err) => {
