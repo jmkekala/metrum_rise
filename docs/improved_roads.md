@@ -701,7 +701,7 @@ Implement the hardcut in this order:
 4. Done: add constrained patch-boundary clipping for road footprint loops.
 5. Done: add tests for roads crossing one patch edge, two patch edges, and a patch corner.
 6. Done: add tests for multiple footprint loops in one patch.
-7. Add tests for `Bend`, `Terminal`, and `JunctionN` footprint loops.
+7. Done: add tests for `Bend`, `Terminal`, and `JunctionN` footprint loops.
 8. Replace the live road-touched terrain patch builder with the CDT module.
 9. Remove the retired seam-strip / cell-triangle live path.
 10. Update `--debug road-geometry` output to report CDT constraints, accepted faces, rejected

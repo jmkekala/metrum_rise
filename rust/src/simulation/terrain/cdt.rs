@@ -751,6 +751,71 @@ mod tests {
         }
     }
 
+    #[test]
+    fn bend_footprint_loop_preserves_piece_owned_constraints() {
+        let patch = piece_test_patch();
+        let road = vec![
+            test_vertex(10.0, 10.0),
+            test_vertex(26.0, 10.0),
+            test_vertex(26.0, 20.0),
+            test_vertex(42.0, 20.0),
+            test_vertex(42.0, 34.0),
+            test_vertex(10.0, 34.0),
+        ];
+
+        let mesh = build_piece_patch(patch, 11, road.clone());
+
+        assert_valid_piece_footprint_mesh(&mesh, patch, &road);
+    }
+
+    #[test]
+    fn terminal_footprint_loop_preserves_piece_owned_constraints() {
+        let patch = piece_test_patch();
+        let road = vec![
+            test_vertex(22.0, 8.0),
+            test_vertex(38.0, 8.0),
+            test_vertex(38.0, 36.0),
+            test_vertex(44.0, 40.0),
+            test_vertex(38.0, 44.0),
+            test_vertex(22.0, 44.0),
+            test_vertex(16.0, 40.0),
+            test_vertex(22.0, 36.0),
+        ];
+
+        let mesh = build_piece_patch(patch, 12, road.clone());
+
+        assert_valid_piece_footprint_mesh(&mesh, patch, &road);
+    }
+
+    #[test]
+    fn junction_n_footprint_loop_preserves_piece_owned_constraints() {
+        let patch = piece_test_patch();
+        let road = vec![
+            test_vertex(24.0, 4.0),
+            test_vertex(36.0, 4.0),
+            test_vertex(36.0, 24.0),
+            test_vertex(56.0, 24.0),
+            test_vertex(56.0, 36.0),
+            test_vertex(36.0, 36.0),
+            test_vertex(36.0, 56.0),
+            test_vertex(24.0, 56.0),
+            test_vertex(24.0, 36.0),
+            test_vertex(4.0, 36.0),
+            test_vertex(4.0, 24.0),
+            test_vertex(24.0, 24.0),
+        ];
+
+        let first = build_piece_patch(patch, 13, road.clone());
+        let second = build_piece_patch(patch, 13, road.clone());
+
+        assert_valid_piece_footprint_mesh(&first, patch, &road);
+        assert_eq!(
+            canonical_triangle_set(&first.triangles),
+            canonical_triangle_set(&second.triangles)
+        );
+        assert_eq!(first.stats, second.stats);
+    }
+
     fn diagonal_road_loop() -> Vec<TerrainCdtVertex> {
         road_loop_from_centerline(
             TerrainCdtVertex::new(8.0, 0.0, 12.0),
@@ -798,6 +863,44 @@ mod tests {
         road
     }
 
+    fn piece_test_patch() -> TerrainCdtPatch {
+        TerrainCdtPatch::new(0.0, 0.0, 60.0, 60.0, [0.0; 4])
+    }
+
+    fn test_vertex(x: f64, z: f64) -> TerrainCdtVertex {
+        TerrainCdtVertex::new(x, 0.0, z)
+    }
+
+    fn build_piece_patch(
+        patch: TerrainCdtPatch,
+        stable_piece_id: u64,
+        road: Vec<TerrainCdtVertex>,
+    ) -> TerrainCdtMesh {
+        build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![TerrainCdtRoadLoop::new(stable_piece_id, 0, road)],
+            piece_source_samples(),
+        ))
+        .expect("Spade should triangulate a piece-owned road footprint")
+    }
+
+    fn piece_source_samples() -> Vec<TerrainCdtVertex> {
+        vec![
+            test_vertex(6.0, 6.0),
+            test_vertex(6.0, 20.0),
+            test_vertex(6.0, 40.0),
+            test_vertex(6.0, 54.0),
+            test_vertex(20.0, 6.0),
+            test_vertex(20.0, 54.0),
+            test_vertex(40.0, 6.0),
+            test_vertex(40.0, 54.0),
+            test_vertex(54.0, 6.0),
+            test_vertex(54.0, 20.0),
+            test_vertex(54.0, 40.0),
+            test_vertex(54.0, 54.0),
+        ]
+    }
+
     fn build_crossing_patch(patch: TerrainCdtPatch, road: Vec<TerrainCdtVertex>) -> TerrainCdtMesh {
         build_road_touched_terrain_patch(TerrainCdtInput::new(
             patch,
@@ -842,6 +945,36 @@ mod tests {
             assert!(
                 !point_in_polygon(center, &clipped_road),
                 "accepted terrain triangle leaked into the clipped road footprint"
+            );
+        }
+    }
+
+    fn assert_valid_piece_footprint_mesh(
+        mesh: &TerrainCdtMesh,
+        patch: TerrainCdtPatch,
+        road: &[TerrainCdtVertex],
+    ) {
+        let road = ensure_ccw(simplified_loop(road.to_vec()));
+        assert!(road.len() >= 3);
+        assert!(!mesh.triangles.is_empty());
+        assert_eq!(mesh.stats.road_constraint_edges, road.len());
+        assert!(mesh.stats.rejected_road_faces > 0);
+        assert_eq!(
+            mesh.stats.preserved_road_constraint_edges,
+            mesh.stats.road_constraint_edges
+        );
+        for vertex in &mesh.vertices {
+            assert!(patch_contains(*vertex, patch));
+        }
+        for triangle in &mesh.triangles {
+            let center = centroid([
+                mesh.vertices[triangle[0]],
+                mesh.vertices[triangle[1]],
+                mesh.vertices[triangle[2]],
+            ]);
+            assert!(
+                !point_in_polygon(center, &road),
+                "accepted terrain triangle leaked into a piece-owned road footprint"
             );
         }
     }
