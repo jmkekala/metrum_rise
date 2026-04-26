@@ -305,7 +305,6 @@ struct NodePieceCandidateGap {
 
 #[derive(Clone, Debug, PartialEq)]
 struct NodeNonRoadCandidatePolygon {
-    kind: RoadSurfaceBandKind,
     polygon: RoadSurfaceVisualPolygon,
 }
 
@@ -468,8 +467,7 @@ impl RoadSurfaceSystem {
             );
         }
 
-        Self::sort_visual_polygons(&mut polygons);
-        polygons
+        Self::union_terrain_clip_polygons(&polygons)
     }
 
     pub(crate) fn sample_visible_surface_height(
@@ -1263,15 +1261,19 @@ impl RoadSurfaceSystem {
         sorted_span_edges.dedup();
         for edge_idx in sorted_span_edges {
             if edge_idx >= graph.edge_count() {
+                self.mark_cached_visual_span_piece_chunks_dirty(edge_idx);
                 self.compiled_visual_span_pieces.remove(&edge_idx);
                 continue;
             }
             let edge = graph.edge(edge_idx);
             if !Self::is_surface_edge(edge) {
+                self.mark_cached_visual_span_piece_chunks_dirty(edge_idx);
                 self.compiled_visual_span_pieces.remove(&edge_idx);
                 continue;
             }
+            self.mark_cached_visual_span_piece_chunks_dirty(edge_idx);
             if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
+                self.mark_visual_span_piece_chunks_dirty(&span_piece);
                 self.compiled_visual_span_pieces
                     .insert(edge_idx, span_piece);
             } else {
@@ -1280,9 +1282,11 @@ impl RoadSurfaceSystem {
         }
 
         for &node_id in &sorted_nodes {
+            self.mark_cached_visual_node_piece_chunks_dirty(node_id);
             if self.node_has_surface_edges(graph, node_id) {
                 let visual_piece = self.compile_visual_node_piece(graph, terrain, node_id);
                 if let Some(visual_piece) = visual_piece {
+                    self.mark_visual_node_piece_chunks_dirty(&visual_piece);
                     self.compiled_visual_node_pieces
                         .insert(node_id, visual_piece);
                 } else {
@@ -1380,6 +1384,78 @@ impl RoadSurfaceSystem {
         self.mark_world_point_dirty(graph.node(valid).pos);
     }
 
+    fn mark_cached_visual_span_piece_chunks_dirty(&mut self, edge_idx: usize) {
+        let (surface_chunks, terrain_chunks) = match self.compiled_visual_span_pieces.get(&edge_idx)
+        {
+            Some(piece) => self.visual_span_piece_dirty_chunks(piece),
+            None => return,
+        };
+        self.dirty_surface_chunks.extend(surface_chunks);
+        self.dirty_terrain_chunks.extend(terrain_chunks);
+    }
+
+    fn mark_cached_visual_node_piece_chunks_dirty(&mut self, node_id: u32) {
+        let (surface_chunks, terrain_chunks) = match self.compiled_visual_node_pieces.get(&node_id)
+        {
+            Some(piece) => self.visual_node_piece_dirty_chunks(piece),
+            None => return,
+        };
+        self.dirty_surface_chunks.extend(surface_chunks);
+        self.dirty_terrain_chunks.extend(terrain_chunks);
+    }
+
+    fn mark_visual_span_piece_chunks_dirty(&mut self, piece: &RoadSurfaceVisualSpanPiece) {
+        let (surface_chunks, terrain_chunks) = self.visual_span_piece_dirty_chunks(piece);
+        self.dirty_surface_chunks.extend(surface_chunks);
+        self.dirty_terrain_chunks.extend(terrain_chunks);
+    }
+
+    fn mark_visual_node_piece_chunks_dirty(&mut self, piece: &RoadSurfaceVisualNodePiece) {
+        let (surface_chunks, terrain_chunks) = self.visual_node_piece_dirty_chunks(piece);
+        self.dirty_surface_chunks.extend(surface_chunks);
+        self.dirty_terrain_chunks.extend(terrain_chunks);
+    }
+
+    fn visual_span_piece_dirty_chunks(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+    ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
+        (
+            self.visual_span_piece_chunks(piece, ChunkCacheKind::Surface),
+            self.visual_span_piece_chunks(piece, ChunkCacheKind::Earthwork),
+        )
+    }
+
+    fn visual_node_piece_dirty_chunks(
+        &self,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
+        (
+            self.visual_node_piece_chunks(piece, ChunkCacheKind::Surface),
+            self.visual_node_piece_chunks(piece, ChunkCacheKind::Earthwork),
+        )
+    }
+
+    fn visual_span_piece_chunks(
+        &self,
+        piece: &RoadSurfaceVisualSpanPiece,
+        kind: ChunkCacheKind,
+    ) -> Vec<SurfaceChunkKey> {
+        self.visual_span_piece_bounds(piece, kind)
+            .map(|(min, max)| self.bounds_to_chunk_keys(min, max))
+            .unwrap_or_default()
+    }
+
+    fn visual_node_piece_chunks(
+        &self,
+        piece: &RoadSurfaceVisualNodePiece,
+        kind: ChunkCacheKind,
+    ) -> Vec<SurfaceChunkKey> {
+        self.visual_node_piece_bounds(piece, kind)
+            .map(|(min, max)| self.bounds_to_chunk_keys(min, max))
+            .unwrap_or_default()
+    }
+
     /// Marks a terrain edit dirty using the brush center and radius in world metres.
     ///
     /// This marks both touched terrain chunks and any nearby road edges / nodes whose compiled
@@ -1411,6 +1487,7 @@ impl RoadSurfaceSystem {
 
         for &edge_idx in &edge_ids {
             if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
+                self.mark_visual_span_piece_chunks_dirty(&span_piece);
                 self.compiled_visual_span_pieces
                     .insert(edge_idx, span_piece);
             } else {
@@ -1422,6 +1499,7 @@ impl RoadSurfaceSystem {
         for node_id in node_ids {
             let visual_piece = self.compile_visual_node_piece(graph, terrain, node_id);
             if let Some(visual_piece) = visual_piece {
+                self.mark_visual_node_piece_chunks_dirty(&visual_piece);
                 self.compiled_visual_node_pieces
                     .insert(node_id, visual_piece);
             } else {
@@ -1888,10 +1966,7 @@ impl RoadSurfaceSystem {
             if band.kind == RoadSurfaceBandKind::Carriageway {
                 road_surface_polygons.push(polygon);
             } else {
-                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon {
-                    kind: band.kind,
-                    polygon,
-                });
+                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
             }
         }
 
@@ -2040,59 +2115,6 @@ impl RoadSurfaceSystem {
         road_candidates: &[RoadSurfaceVisualPolygon],
         non_road_candidates: &[NodeNonRoadCandidatePolygon],
     ) -> Option<NodeSurfaceRegionResult> {
-        let road_contours = Self::overlay_contours_from_polygons(road_candidates);
-        let mut road_shapes = Self::overlay_union_contours(&road_contours)?;
-        let mut non_road_shapes = Vec::new();
-        let mut sidewalk_surface_polygons = Vec::new();
-        let mut non_road_kinds = Self::ordered_non_road_candidate_kinds(non_road_candidates);
-
-        for kind in non_road_kinds.drain(..) {
-            let kind_polygons: Vec<RoadSurfaceVisualPolygon> = non_road_candidates
-                .iter()
-                .filter(|candidate| candidate.kind == kind)
-                .map(|candidate| candidate.polygon.clone())
-                .collect();
-            let kind_contours = Self::overlay_contours_from_polygons(&kind_polygons);
-            let mut kind_shapes = Self::overlay_union_contours(&kind_contours).unwrap_or_default();
-            if !road_shapes.is_empty() && !kind_shapes.is_empty() {
-                kind_shapes = Self::overlay_binary_shapes(
-                    &kind_shapes,
-                    &road_shapes,
-                    OverlayRule::Difference,
-                )?;
-            }
-            if !non_road_shapes.is_empty() && !kind_shapes.is_empty() {
-                kind_shapes = Self::overlay_binary_shapes(
-                    &kind_shapes,
-                    &non_road_shapes,
-                    OverlayRule::Difference,
-                )?;
-            }
-            if kind_shapes.is_empty() {
-                continue;
-            }
-            let mut kind_surface_polygons =
-                Self::visual_polygons_from_overlay_shapes(&kind_shapes, &kind_polygons);
-            sidewalk_surface_polygons.append(&mut kind_surface_polygons);
-            non_road_shapes = if non_road_shapes.is_empty() {
-                kind_shapes
-            } else {
-                Self::overlay_binary_shapes(&non_road_shapes, &kind_shapes, OverlayRule::Union)?
-            };
-        }
-
-        let mut footprint_shapes = if road_shapes.is_empty() {
-            non_road_shapes.clone()
-        } else if non_road_shapes.is_empty() {
-            road_shapes.clone()
-        } else {
-            Self::overlay_binary_shapes(&road_shapes, &non_road_shapes, OverlayRule::Union)?
-        };
-
-        Self::sort_overlay_shapes(&mut road_shapes);
-        Self::sort_overlay_shapes(&mut non_road_shapes);
-        Self::sort_overlay_shapes(&mut footprint_shapes);
-
         let mut height_candidates = Vec::with_capacity(
             road_candidates
                 .len()
@@ -2105,8 +2127,28 @@ impl RoadSurfaceSystem {
                 .map(|candidate| candidate.polygon.clone()),
         );
 
+        let road_contours = Self::overlay_contours_from_polygons(road_candidates);
+        let mut road_shapes = Self::overlay_union_contours(&road_contours)?;
+
+        let footprint_contours = Self::overlay_contours_from_polygons(&height_candidates);
+        let mut footprint_shapes = Self::overlay_union_contours(&footprint_contours)?;
+
+        let mut non_road_shapes = if road_shapes.is_empty() {
+            footprint_shapes.clone()
+        } else if footprint_shapes.is_empty() {
+            Vec::new()
+        } else {
+            Self::overlay_binary_shapes(&footprint_shapes, &road_shapes, OverlayRule::Difference)?
+        };
+
+        Self::sort_overlay_shapes(&mut road_shapes);
+        Self::sort_overlay_shapes(&mut non_road_shapes);
+        Self::sort_overlay_shapes(&mut footprint_shapes);
+
         let mut road_surface_polygons =
             Self::visual_polygons_from_overlay_shapes(&road_shapes, road_candidates);
+        let mut sidewalk_surface_polygons =
+            Self::visual_polygons_from_overlay_shapes(&non_road_shapes, &height_candidates);
         let mut outer_boundary_loops = Self::outer_boundary_polygons_from_overlay_shapes(
             &footprint_shapes,
             &height_candidates,
@@ -2127,34 +2169,6 @@ impl RoadSurfaceSystem {
             road_surface_polygons,
             sidewalk_surface_polygons,
         })
-    }
-
-    fn ordered_non_road_candidate_kinds(
-        candidates: &[NodeNonRoadCandidatePolygon],
-    ) -> Vec<RoadSurfaceBandKind> {
-        let mut kinds = Vec::new();
-        for candidate in candidates {
-            if candidate.kind == RoadSurfaceBandKind::Carriageway || kinds.contains(&candidate.kind)
-            {
-                continue;
-            }
-            kinds.push(candidate.kind);
-        }
-        kinds.sort_by_key(|kind| Self::non_road_overlay_precedence(*kind));
-        kinds
-    }
-
-    fn non_road_overlay_precedence(kind: RoadSurfaceBandKind) -> u8 {
-        match kind {
-            RoadSurfaceBandKind::CurbOrShoulder => 0,
-            RoadSurfaceBandKind::Median => 1,
-            RoadSurfaceBandKind::Parking => 2,
-            RoadSurfaceBandKind::CycleTrack => 3,
-            RoadSurfaceBandKind::TramReservation => 4,
-            RoadSurfaceBandKind::Sidewalk => 5,
-            RoadSurfaceBandKind::Footpath => 6,
-            RoadSurfaceBandKind::Carriageway => 7,
-        }
     }
 
     fn overlay_contours_from_polygons(
@@ -2288,6 +2302,21 @@ impl RoadSurfaceSystem {
         }
         Self::sort_visual_polygons(&mut polygons);
         polygons
+    }
+
+    fn union_terrain_clip_polygons(
+        polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Vec<RoadSurfaceVisualPolygon> {
+        if polygons.is_empty() {
+            return Vec::new();
+        }
+
+        let contours = Self::overlay_contours_from_polygons(polygons);
+        let Some(mut shapes) = Self::overlay_union_contours(&contours) else {
+            return Vec::new();
+        };
+        Self::sort_overlay_shapes(&mut shapes);
+        Self::outer_boundary_polygons_from_overlay_shapes(&shapes, polygons)
     }
 
     fn outer_boundary_polygons_from_overlay_shapes(
@@ -3011,14 +3040,8 @@ impl RoadSurfaceSystem {
         if kind_a == RoadSurfaceBandKind::Carriageway || kind_b == RoadSurfaceBandKind::Carriageway
         {
             RoadSurfaceBandKind::Carriageway
-        } else if kind_a == kind_b {
-            kind_a
-        } else if Self::non_road_overlay_precedence(kind_a)
-            <= Self::non_road_overlay_precedence(kind_b)
-        {
-            kind_a
         } else {
-            kind_b
+            RoadSurfaceBandKind::Sidewalk
         }
     }
 
@@ -3106,7 +3129,7 @@ impl RoadSurfaceSystem {
         if kind == RoadSurfaceBandKind::Carriageway {
             road_candidate_polygons.push(polygon);
         } else {
-            non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { kind, polygon });
+            non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
         }
     }
 
@@ -5414,7 +5437,7 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::{
-        CURB_STEP_HEIGHT_M, EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult,
+        ChunkCacheKind, EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult,
         RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
         RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
     };
@@ -5424,6 +5447,10 @@ mod tests {
         EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
     };
     use crate::simulation::terrain::TerrainSystem;
+    use crate::simulation::terrain::cdt::{
+        TerrainCdtInput, TerrainCdtPatch, TerrainCdtRoadLoop, TerrainCdtVertex,
+        build_road_touched_terrain_patch,
+    };
     use godot::prelude::{Vector2, Vector3};
 
     fn test_edge(
@@ -5763,16 +5790,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    fn polygon_height_range_m(polygon: &RoadSurfaceVisualPolygon) -> f32 {
-        let mut min_y = f32::INFINITY;
-        let mut max_y = f32::NEG_INFINITY;
-        for point in &polygon.points_world {
-            min_y = min_y.min(point.y);
-            max_y = max_y.max(point.y);
-        }
-        max_y - min_y
     }
 
     fn polygon_area_m2(polygon: &RoadSurfaceVisualPolygon) -> f32 {
@@ -6415,10 +6432,71 @@ mod tests {
                 .map(|piece| piece.outer_boundary_loops.len())
                 .sum::<usize>();
         assert!(
-            clip_polygons.len() == expected_outer_boundary_loop_count,
-            "expected terrain clip cutters to come from piece-owned outer boundary loops, got {} cutters for {} outer loops",
+            clip_polygons.len() <= expected_outer_boundary_loop_count,
+            "expected terrain clip cutters to be the boolean-unioned piece footprint, got {} cutters for {} raw outer loops",
             clip_polygons.len(),
             expected_outer_boundary_loop_count
+        );
+    }
+
+    #[test]
+    fn terrain_clip_polygons_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
+        let terrain = flat_terrain(257, 257);
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        for angle_degrees in [0.0_f32, 23.0, 61.0, 137.0, 211.0, 304.0] {
+            let angle = angle_degrees.to_radians();
+            let endpoint = Vector3::new(angle.cos() * 64.0, 0.0, angle.sin() * 64.0);
+            let node = graph.add_node(endpoint, NodeType::Junction);
+            graph.add_edge(test_edge(
+                center,
+                node,
+                vec![Vector3::new(0.0, 0.0, 0.0), endpoint],
+                14.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        }
+        graph.rebuild_adjacency_list();
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        let clip_polygons =
+            surface.terrain_clip_polygons_for_world_bounds(&graph, -96.0, -96.0, 96.0, 96.0);
+        assert!(
+            !clip_polygons.is_empty(),
+            "expected arbitrary multiway node to produce terrain clip polygons"
+        );
+
+        let road_loops = clip_polygons
+            .iter()
+            .enumerate()
+            .map(|(index, polygon)| {
+                TerrainCdtRoadLoop::new(
+                    index as u64,
+                    0,
+                    polygon
+                        .points_world
+                        .iter()
+                        .map(|point| {
+                            TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z))
+                        })
+                        .collect(),
+                )
+            })
+            .collect();
+        let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            TerrainCdtPatch::new(-96.0, -96.0, 96.0, 96.0, [0.0; 4]),
+            road_loops,
+            Vec::new(),
+        ))
+        .expect("unioned terrain clip footprint must be accepted by the terrain CDT");
+
+        assert_eq!(
+            mesh.stats.invalid_constraint_edges, 0,
+            "terrain CDT must not see crossing constraints from arbitrary-angle piece loops"
         );
     }
 
@@ -6716,7 +6794,126 @@ mod tests {
     }
 
     #[test]
-    fn junction_node_keeps_curb_and_sidewalk_bands_separate() {
+    fn arbitrary_six_way_junction_keeps_visible_ownership_disjoint() {
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        for angle_degrees in [0.0_f32, 23.0, 61.0, 137.0, 211.0, 304.0] {
+            let angle = angle_degrees.to_radians();
+            let endpoint = Vector3::new(angle.cos() * 96.0, 0.0, angle.sin() * 96.0);
+            let node = graph.add_node(endpoint, NodeType::Junction);
+            graph.add_edge(test_edge(
+                center,
+                node,
+                vec![Vector3::new(0.0, 0.0, 0.0), endpoint],
+                7.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        }
+        graph.rebuild_intersection_clips();
+
+        let terrain = flat_terrain(192, 192);
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        let piece = surface
+            .compiled_visual_node_pieces()
+            .get(&center)
+            .expect("arbitrary six-way node must compile one JunctionN piece");
+        assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+        assert!(!piece.outer_boundary_loops.is_empty());
+        assert!(!piece.road_surface_polygons.is_empty());
+        assert!(!piece.sidewalk_surface_polygons.is_empty());
+
+        let footprint_area: f32 = piece.outer_boundary_loops.iter().map(polygon_area_m2).sum();
+        let asphalt_area: f32 = piece
+            .road_surface_polygons
+            .iter()
+            .map(polygon_area_m2)
+            .sum();
+        let non_road_area: f32 = piece
+            .sidewalk_surface_polygons
+            .iter()
+            .map(polygon_area_m2)
+            .sum();
+        assert!(
+            (footprint_area - asphalt_area - non_road_area).abs() <= 0.1,
+            "arbitrary JunctionN ownership must close the footprint without overlapping materials; footprint={footprint_area:.3} asphalt={asphalt_area:.3} non_road={non_road_area:.3}"
+        );
+        assert_material_triangle_centroids_do_not_overlap(piece);
+    }
+
+    #[test]
+    fn dirty_recompile_marks_chunks_for_expanded_arbitrary_node_piece() {
+        let terrain = flat_terrain(192, 192);
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        for angle_degrees in [35.0_f32, 158.0, 276.0] {
+            let angle = angle_degrees.to_radians();
+            let endpoint = Vector3::new(angle.cos() * 88.0, 0.0, angle.sin() * 88.0);
+            let node = graph.add_node(endpoint, NodeType::Junction);
+            graph.add_edge(test_edge(
+                center,
+                node,
+                vec![Vector3::new(0.0, 0.0, 0.0), endpoint],
+                7.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        }
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+
+        let mut surface = RoadSurfaceSystem::new(4.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        let angle = 318.0_f32.to_radians();
+        let endpoint = Vector3::new(angle.cos() * 88.0, 0.0, angle.sin() * 88.0);
+        let new_node = graph.add_node(endpoint, NodeType::Junction);
+        let new_edge = graph.add_edge(test_edge(
+            center,
+            new_node,
+            vec![Vector3::new(0.0, 0.0, 0.0), endpoint],
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+
+        surface.mark_node_dirty(&graph, center);
+        surface.mark_node_dirty(&graph, new_node);
+        for &edge_idx in graph.node_adjacency(center) {
+            surface.mark_edge_dirty(&graph, edge_idx);
+        }
+        surface.mark_edge_dirty(&graph, new_edge);
+        surface.compile_dirty(&graph, &terrain);
+
+        let piece = surface
+            .compiled_visual_node_pieces()
+            .get(&center)
+            .expect("expanded arbitrary junction must have a compiled node piece");
+        let (min, max) = surface
+            .visual_node_piece_bounds(piece, ChunkCacheKind::Surface)
+            .expect("expanded arbitrary junction must have surface bounds");
+
+        for chunk in surface.bounds_to_chunk_keys(min, max) {
+            let entry = surface
+                .surface_chunk_cache
+                .get(&chunk)
+                .unwrap_or_else(|| panic!("expected rebuilt surface chunk {chunk:?}"));
+            assert!(
+                entry.node_ids.contains(&center),
+                "surface chunk {chunk:?} must include the expanded junction node piece"
+            );
+        }
+    }
+
+    #[test]
+    fn junction_node_non_road_surface_is_footprint_minus_asphalt() {
         let mut graph = RegionGraph::new();
         let left = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
         let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -6756,26 +6953,27 @@ mod tests {
         surface.compile_dirty(&graph, &terrain);
 
         let piece = surface.compiled_visual_node_pieces().get(&center).unwrap();
-        let total_non_road_area: f32 = piece
-            .sidewalk_surface_polygons
+        let footprint_area: f32 = piece.outer_boundary_loops.iter().map(polygon_area_m2).sum();
+        let asphalt_area: f32 = piece
+            .road_surface_polygons
             .iter()
             .map(polygon_area_m2)
             .sum();
-        let curb_transition_area: f32 = piece
+        let non_road_area: f32 = piece
             .sidewalk_surface_polygons
             .iter()
-            .filter(|polygon| polygon_height_range_m(polygon) >= CURB_STEP_HEIGHT_M * 0.75)
             .map(polygon_area_m2)
             .sum();
 
         assert!(
-            total_non_road_area > 0.0,
+            non_road_area > 0.0,
             "JunctionN must emit non-road node surface polygons"
         );
         assert!(
-            curb_transition_area < total_non_road_area * 0.35,
-            "curb-height transitions must stay narrow instead of being merged into broad sidewalk slabs"
+            (footprint_area - asphalt_area - non_road_area).abs() <= 0.05,
+            "node non-road ownership must be exactly the resolved footprint minus asphalt; footprint={footprint_area:.3} asphalt={asphalt_area:.3} non_road={non_road_area:.3}"
         );
+        assert_material_triangle_centroids_do_not_overlap(piece);
     }
 
     #[test]

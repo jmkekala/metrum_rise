@@ -92,11 +92,23 @@ Live behavior:
 - `Terminal`, `Bend`, and `JunctionN` visual node pieces now resolve asphalt and non-road band
   ownership through `i_overlay` before Spade CDT triangulation; sector-built geometry is only a
   deterministic candidate source, not a final visual carrier or material classifier
-- node-piece non-road bands keep curb / shoulder and sidewalk regions separate through boolean
-  ownership, even when they share the final sidewalk render material
+- node-piece non-road output is the boolean difference between the resolved outer footprint and
+  asphalt, so arbitrary-angle `Bend` / `JunctionN` pieces cannot leave local strip holes or render
+  sidewalk over asphalt
 - edge-to-node throat clips are angle-aware over every incident edge pair, so span sidewalks cannot
   enter an acute `Bend` or `JunctionN` throat before `i_overlay` resolves final node-piece
   ownership
+- terrain clip input is the `i_overlay` union of all grounded `Standard` span and node footprints
+  intersecting the patch query, not the raw per-piece loops; overlapping piece loops must be
+  resolved before Spade sees terrain constraints
+
+Remaining cache ownership work:
+
+- incremental surface recompiles currently mark both the old and new compiled span / node piece
+  bounds dirty, but the target is the piece-owned chunk coverage hardcut below
+- chunk caches must never mix previous-topology node pieces with newly resolved `i_overlay`
+  geometry
+- ordinary dirty chunk rebuilds must stop relying on global scans of compiled node pieces
 
 Accepted ownership backend:
 
@@ -694,6 +706,88 @@ Preferred cache structure:
 - avoid inventing a second unrelated spatial ownership grid when one of the existing chunk systems
   can index the same work
 
+## Piece-Owned Chunk Coverage Hardcut
+
+Dirty road rebuilds must be driven by compiled visual pieces, not by graph centerline guesses.
+
+This is a hard-cut target for surface, query, and road-touched terrain invalidation. It replaces
+any runtime path that tries to decide dirty render chunks from only an edited edge centerline, an
+edited node point, or a scan across all compiled node pieces.
+
+Required ownership indices:
+
+- every compiled `Span` stores its deterministic surface chunk coverage set
+- every compiled `Terminal`, `Bend`, and `JunctionN` stores its deterministic surface chunk
+  coverage set
+- every grounded compiled piece that contributes road-touched terrain stores its deterministic
+  terrain patch / chunk coverage set
+- every surface chunk stores sorted contributing span IDs and node IDs
+- every road-touched terrain chunk stores sorted contributing grounded-road footprint owners
+- chunk coverage sets are canonicalized by stable chunk key and contain no duplicates
+
+Coverage calculation rules:
+
+- coverage is computed from compiled piece geometry, not from the logical graph alone
+- surface coverage uses the compiled visible carrier bounds for asphalt, curb / shoulder, sidewalk,
+  markings, and piece-local top-surface polygons
+- terrain coverage uses the road-owned grounded footprint loops that will be sent into the terrain
+  CDT path
+- coverage is computed after `i_overlay` ownership cleanup and before chunk cache publication
+- chunk keys are derived from the same road / terrain chunk grids already used by the renderer
+- bounds-to-chunk conversion must include both lower and upper edge contact deterministically, so a
+  piece whose boundary lies exactly on a chunk border has one canonical owner set
+- coverage must not depend on camera position, render LOD, debug flags, thread scheduling, or
+  previous cache contents
+
+Dirty rebuild algorithm:
+
+1. Convert the edit into dirty piece IDs: changed spans and every node piece whose incident span set
+   or incident mouth profile can change.
+2. Read old surface and terrain coverage for every dirty piece before recompiling it.
+3. Remove every dirty piece from the reverse chunk ownership indices for its old coverage.
+4. Recompile dirty pieces through the normal `Span`, `Terminal`, `Bend`, or `JunctionN` pipeline.
+5. Resolve ownership with `i_overlay` and triangulate accepted regions with Spade CDT where the
+   piece type requires CDT.
+6. Compute new surface and terrain coverage from the newly compiled piece geometry.
+7. Insert the dirty pieces into the reverse chunk ownership indices for the new coverage.
+8. Rebuild exactly `old_coverage union new_coverage` for surface chunks, terrain chunks, and
+   visible-world query caches.
+9. Publish the new compiled pieces and chunk cache entries only after the affected chunk entries
+   are internally consistent.
+
+Required complexity bound:
+
+- one local edit may touch only changed spans, incident node pieces, and `old_coverage union
+  new_coverage`
+- rebuilding a dirty surface chunk must use its sorted contributor lists; it must not scan every
+  compiled node piece in the world
+- rebuilding road-touched terrain chunks must use their sorted grounded-road footprint contributors;
+  it must not rebuild unrelated terrain patches
+- the steady-state cost is proportional to changed pieces plus contributors in touched chunks, not
+  total road-network size
+
+Determinism requirements:
+
+- contributor IDs inside a chunk are sorted by stable piece kind, stable owner ID, then local piece
+  order
+- removing a piece that no longer compiles removes its old chunk ownership before any new cache is
+  emitted
+- changing a node from `Terminal` to `Bend` to `JunctionN`, or back again, is treated as replacing
+  one node-owned visual piece with another under the same stable node ID
+- failed piece compilation must not leave a chunk cache containing a mix of old and partially
+  rebuilt topology
+- tests must cover node expansion and shrinkage, including an arbitrary-angle junction changing
+  from 3 incident roads to 4 or more incident roads
+
+Not accepted:
+
+- global scans over all compiled node pieces during ordinary dirty chunk rebuilds
+- dirtying only the edge centerline AABB for a span whose sidewalks, markings, or terrain footprint
+  extend beyond that centerline
+- dirtying only the node point for a `JunctionN` whose resolved footprint spans multiple chunks
+- retaining an old chunk entry until a later frame happens to notice the compiled piece changed
+- falling back to whole-network rebuilds to hide stale cache ownership
+
 ## Spade CDT Terrain-Patch Hardcut
 
 The next accepted representation is a Spade-backed terrain patch generator. It replaces the current
@@ -754,6 +848,11 @@ polygons are resolved with `i_overlay`:
 - sidewalk candidate polygons are subtracted by asphalt before they can become visible sidewalk
 - terrain patch polygons are subtracted by the full road-owned footprint before terrain faces can
   be emitted
+- the road-owned footprint given to one terrain patch is first unioned across all grounded
+  `Standard` span and node pieces that intersect the patch query, so shared throats and
+  arbitrary-angle multiway nodes cannot send crossing constraints into Spade
+- terrain CDT patch invalidation follows the piece-owned chunk coverage hardcut above; dirty edge
+  centerlines and node points are not enough for arbitrary-angle junctions
 - overlap cleanup must happen in Rust before Spade sees constraints; CDT is not a replacement for
   polygon boolean ownership
 - all boolean-operation inputs are quantized, ordered, and keyed by stable piece IDs before being
@@ -881,8 +980,10 @@ The current node-piece hardcut is `i_overlay` plus Spade:
   outer footprint
 - `i_overlay` resolves those candidates into disjoint ownership regions before any triangulation:
   - asphalt is the highest-priority visible road region
-  - sidewalk / curb may shrink, taper, split, or disappear locally when a sharp angle leaves no
-    valid area, but it must never overlap asphalt
+  - the node outer footprint is the union of every asphalt and non-road candidate
+  - final sidewalk / curb ownership is exactly `outer footprint - asphalt`
+  - sidewalk / curb may shrink, taper, split, or disappear locally when asphalt consumes the
+    available sharp-angle area, but it must never overlap asphalt
   - crosswalks are decals anchored to asphalt / sidewalk edges and must not create topology holes
   - terrain starts outside the outer footprint only
 - Spade triangulates each resolved region and preserves the constrained boundaries produced by
@@ -943,13 +1044,15 @@ Boolean ownership order:
 
 1. Quantize and canonicalize all candidate rings.
 2. `i_overlay` unions all asphalt candidates into one or more disjoint asphalt regions.
-3. `i_overlay` groups non-road candidates by band kind and unions each kind independently.
-4. `i_overlay` subtracts asphalt regions from every non-road kind, then subtracts earlier
-   non-road ownership from later non-road kinds using deterministic precedence.
-5. `i_overlay` unions asphalt plus final non-road regions into the road-owned outer
+3. `i_overlay` unions every asphalt and non-road candidate into the piece-local road-owned outer
    footprint.
+4. `i_overlay` subtracts asphalt from that outer footprint to produce the final non-road region.
+5. The final ownership set is `asphalt + non-road`; no local sidewalk / curb strip may create an
+   additional independent final owner.
 6. Degenerate output rings below the minimum area threshold are dropped and counted.
 7. The resulting disjoint material regions are triangulated with Spade CDT.
+8. Terrain patch input receives a second `i_overlay` union over all piece-local grounded
+   `Standard` footprints intersecting the patch query before terrain CDT constraints are built.
 
 Acute-angle rule:
 
