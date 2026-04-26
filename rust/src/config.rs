@@ -21,8 +21,11 @@ pub const INTERSECTION_TOLERANCE: f32 = 2.0;
 
 // Road Geometry and Rendering Constants
 
-/// Elevation (metres) of the road mesh above the terrain surface, used to prevent Z-fighting.
-pub const ROAD_H_OFFSET: f32 = 0.01;
+/// Fine render-only Z-bias (metres) for road-owned top surfaces.
+///
+/// This is not a physical curb, sidewalk, or roadbed height. Physical sidewalk elevation is owned
+/// by the compiled road profile (`CURB_STEP_HEIGHT_M`, sidewalk slope, and solved section heights).
+pub const ROAD_RENDER_Z_BIAS_M: f32 = 0.01;
 /// Width of a single traffic lane in metres. A standard 2-lane road is `2 × LANE_WIDTH` asphalt.
 pub const LANE_WIDTH: f32 = 3.5;
 /// Width of a single sidewalk in metres, applied on each side of the road.

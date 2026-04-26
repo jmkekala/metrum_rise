@@ -607,6 +607,27 @@ But the geometry contract changes:
   widened-strip renderer
 - `UV.y` must not be treated as a hidden "road edge" contract outside the compiler that owns it
 
+### 2A. Render Z-Bias Is Not Physical Sidewalk Height
+
+Road render layers may apply tiny render-only Z-bias values to avoid coplanar flicker.
+
+Required rule:
+
+- `ROAD_RENDER_Z_BIAS_M` and layer-specific render Z-bias constants are draw-order offsets only
+- render Z-bias must not be used to make sidewalks physically higher than asphalt
+- physical sidewalk elevation is owned by the compiled road profile:
+  - curb step height
+  - sidewalk slope
+  - solved section / node-piece heights
+- `Span`, `Bend`, `Terminal`, and `JunctionN` sidewalk triangles must therefore get their real
+  height from the same profile-height reconstruction path before any render Z-bias is applied
+- if a node-piece sidewalk appears lower than a span sidewalk, the fix belongs in node-piece height
+  reconstruction after `i_overlay`, not in a larger sidewalk render Z-bias
+
+Forbidden outcome:
+
+- increasing render Z-bias to hide a physical height mismatch between span and node sidewalks
+
 ### 3. Overdraw Remains Allowed As A Render Detail, Not As Ownership
 
 Render-layer ordering may still be used for final compositing, but it is no longer the primary

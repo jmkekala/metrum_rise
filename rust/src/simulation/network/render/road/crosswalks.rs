@@ -38,10 +38,10 @@ fn emit_zebra_stripes(mesh: &mut NetworkMeshData, lane: &crate::simulation::netw
             mesh,
             MeshLayer::Marking,
             [
-                v0 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0),
-                v1 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0),
-                v2 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0),
-                v3 + Vector3::new(0.0, MARKING_LAYER_Y, 0.0),
+                v0 + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0),
+                v1 + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0),
+                v2 + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0),
+                v3 + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0),
             ],
             [
                 Vector2::new(0.0, 0.0),

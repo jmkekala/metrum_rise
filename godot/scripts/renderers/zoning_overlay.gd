@@ -86,7 +86,7 @@ func _ready():
 	mat.set_shader_parameter("tool_active",      0.0)
 	self.material_override = mat
 
-	# y=0.005: above terrain (y=0) so zones are visible, below road meshes (y=ROAD_H_OFFSET=0.01)
+	# y=0.005: above terrain (y=0) so zones are visible, below road meshes (ROAD_RENDER_Z_BIAS_M=0.01)
 	# so opaque roads occlude the overlay via depth test.
 	position = Vector3(0.0, 0.005, 0.0)
 	visible = false

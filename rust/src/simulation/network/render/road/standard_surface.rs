@@ -1,6 +1,6 @@
 //! Compiled roadbed top-surface and lane-marking rendering.
 
-use crate::config::ROAD_H_OFFSET;
+use crate::config::ROAD_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::surface::{
     RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
@@ -12,15 +12,15 @@ use godot::prelude::{Color, Vector2, Vector3};
 use std::collections::HashSet;
 
 use super::{
-    MARKING_LAYER_Y, MARKING_WIDTH, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData, concrete_color,
-    earthwork_color, road_color, sidewalk_color,
+    MARKING_RENDER_Z_BIAS_M, MARKING_WIDTH, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData,
+    concrete_color, earthwork_color, road_color, sidewalk_color,
 };
 
 const BAND_EPSILON_M: f32 = 0.001;
 const BRIDGE_CONCRETE_THICKNESS_M: f32 = 0.35;
-const EARTHWORK_SURFACE_LIFT_M: f32 = ROAD_H_OFFSET * 0.25;
-const SIDEWALK_SURFACE_LIFT_M: f32 = ROAD_H_OFFSET;
-const ROAD_SURFACE_LIFT_M: f32 = ROAD_H_OFFSET + 0.02;
+const EARTHWORK_RENDER_Z_BIAS_M: f32 = ROAD_RENDER_Z_BIAS_M * 0.25;
+const SIDEWALK_RENDER_Z_BIAS_M: f32 = ROAD_RENDER_Z_BIAS_M;
+const ROAD_RENDER_SURFACE_Z_BIAS_M: f32 = ROAD_RENDER_Z_BIAS_M + 0.02;
 /// Surface classes replaced by the compiled roadbed renderer.
 pub(super) struct CompiledSurfaceCoverage {
     pub edge_indices: HashSet<usize>,
@@ -374,8 +374,8 @@ fn emit_marking_segment(
 
     let tangent = delta / length;
     let side = Vector2::new(-tangent.y, tangent.x);
-    let center_start = start + Vector3::new(0.0, MARKING_LAYER_Y, 0.0);
-    let center_end = end + Vector3::new(0.0, MARKING_LAYER_Y, 0.0);
+    let center_start = start + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0);
+    let center_end = end + Vector3::new(0.0, MARKING_RENDER_Z_BIAS_M, 0.0);
     let eo = side * half_width;
     let a_l = Vector3::new(center_start.x + eo.x, center_start.y, center_start.z + eo.y);
     let a_r = Vector3::new(center_start.x - eo.x, center_start.y, center_start.z - eo.y);
@@ -405,20 +405,20 @@ fn emit_surface_polygon(
         return;
     }
 
-    let surface_lift_m = surface_lift_for_layer(layer);
+    let render_z_bias_m = render_z_bias_for_layer(layer);
     for triangle in &polygon.triangles_world {
-        let lifted = [
-            lift_surface_point(triangle[0], surface_lift_m),
-            lift_surface_point(triangle[1], surface_lift_m),
-            lift_surface_point(triangle[2], surface_lift_m),
+        let biased = [
+            apply_render_z_bias(triangle[0], render_z_bias_m),
+            apply_render_z_bias(triangle[1], render_z_bias_m),
+            apply_render_z_bias(triangle[2], render_z_bias_m),
         ];
-        if triangle_is_too_small(lifted[0], lifted[1], lifted[2]) {
+        if triangle_is_too_small(biased[0], biased[1], biased[2]) {
             continue;
         }
         super::push_triangle(
             mesh,
             layer,
-            lifted,
+            biased,
             [
                 Vector2::ZERO,
                 Vector2::new(1.0, 0.0),
@@ -429,15 +429,15 @@ fn emit_surface_polygon(
     }
 }
 
-fn lift_surface_point(point: Vector3, lift_m: f32) -> Vector3 {
-    Vector3::new(point.x, point.y + lift_m, point.z)
+fn apply_render_z_bias(point: Vector3, render_z_bias_m: f32) -> Vector3 {
+    Vector3::new(point.x, point.y + render_z_bias_m, point.z)
 }
 
-fn surface_lift_for_layer(layer: MeshLayer) -> f32 {
+fn render_z_bias_for_layer(layer: MeshLayer) -> f32 {
     match layer {
-        MeshLayer::Earthwork => EARTHWORK_SURFACE_LIFT_M,
-        MeshLayer::Sidewalk => SIDEWALK_SURFACE_LIFT_M,
-        MeshLayer::Road => ROAD_SURFACE_LIFT_M,
+        MeshLayer::Earthwork => EARTHWORK_RENDER_Z_BIAS_M,
+        MeshLayer::Sidewalk => SIDEWALK_RENDER_Z_BIAS_M,
+        MeshLayer::Road => ROAD_RENDER_SURFACE_Z_BIAS_M,
         MeshLayer::Marking | MeshLayer::Concrete => 0.0,
     }
 }
