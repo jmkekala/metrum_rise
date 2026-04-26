@@ -85,6 +85,9 @@ Live behavior:
   patches
 - Rust returns baked terrain patch mesh payloads for those road-touched patches
 - terrain under the road-owned footprint is no longer intended to be a visible carrier
+- Spade is now a runtime dependency and the first isolated terrain CDT kernel lives in Rust under
+  `simulation::terrain::cdt`; it is tested for deterministic contained-road-footprint
+  triangulation but is not yet wired into the live terrain patch bridge
 
 Not accepted as the final target:
 
@@ -692,9 +695,9 @@ clip road holes itself.
 
 Implement the hardcut in this order:
 
-1. Move `spade` from `dev-dependencies` to runtime `dependencies`.
-2. Add a small Rust terrain CDT module with no Godot dependencies.
-3. Port the current Spade spike into module-local tests.
+1. Done: move `spade` from `dev-dependencies` to runtime `dependencies`.
+2. Done: add a small Rust terrain CDT module with no Godot dependencies.
+3. Done: port the current Spade spike into module-local tests.
 4. Add constrained patch-boundary clipping for road footprint loops.
 5. Add tests for roads crossing one patch edge, two patch edges, and a patch corner.
 6. Add tests for multiple footprint loops in one patch.

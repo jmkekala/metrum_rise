@@ -6,6 +6,7 @@
 //! topology from the road surface runtime instead.
 
 pub mod chunks;
+pub(crate) mod cdt;
 
 pub use chunks::{
     TerrainChunkAsset, TerrainChunkLoadError, TerrainChunkLodAsset, TerrainChunkLodManifest,

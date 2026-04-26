@@ -17,10 +17,10 @@ toml = "0.8"
 chrono = "0.4"
 rstar = "0.12"
 soa_derive = "0.14"
+spade = "2.15"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
-spade = "2.15"
 
 [profile.release]
 debug = 1
