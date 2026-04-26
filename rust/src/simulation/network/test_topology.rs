@@ -214,9 +214,24 @@ mod tests {
                     &mut allocator,
                 );
 
-                // Verify clips are mathematically bounded securely below the runaway thresholds
+                // Verify angle-aware clips stay finite and fit inside the physical edge.
                 for edge in graph.edges.iter() {
-                    assert!(edge.end_clip <= 8.01, "Burst! Found: {}", edge.end_clip);
+                    let length_m: f32 = edge
+                        .geometry
+                        .windows(2)
+                        .map(|window| window[0].distance_to(window[1]))
+                        .sum();
+                    assert!(edge.start_clip.is_finite());
+                    assert!(edge.end_clip.is_finite());
+                    assert!(edge.start_clip >= 0.0);
+                    assert!(edge.end_clip >= 0.0);
+                    assert!(
+                        edge.start_clip + edge.end_clip <= length_m.max(0.0),
+                        "clips exceed edge length: start={} end={} length={}",
+                        edge.start_clip,
+                        edge.end_clip,
+                        length_m
+                    );
                 }
             }
         }

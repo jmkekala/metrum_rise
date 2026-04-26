@@ -92,6 +92,9 @@ Live behavior:
 - `Terminal`, `Bend`, and `JunctionN` visual node pieces now resolve asphalt and sidewalk
   ownership through `i_overlay` before Spade CDT triangulation; sector-built geometry is only a
   deterministic candidate source, not a final visual carrier or material classifier
+- edge-to-node throat clips are angle-aware over every incident edge pair, so span sidewalks cannot
+  enter an acute `Bend` or `JunctionN` throat before `i_overlay` resolves final node-piece
+  ownership
 
 Accepted ownership backend:
 
@@ -442,11 +445,64 @@ centerline.
 For every incident surface edge at one piece boundary:
 
 - compute a throat section at the deterministic handoff distance
-- compute that handoff distance from the exact clip carried on the graph edge, and for acute
-  bends / junction sectors derive that clip from adjacent outer roadbed boundaries rather than
-  from a fixed half-width constant
+- compute that handoff distance from the exact clip carried on the graph edge
+- derive the clip from adjacent outer roadbed boundaries rather than from a fixed half-width
+  constant
 - derive one canonical mouth profile from that throat section
 - preserve the ordered semantic profile stack through that mouth
+
+### 10A. Angle-Aware Throat Clips Are The Span / Node Ownership Boundary
+
+Span corridors must stop before they can overlap acute node-owned geometry.
+
+Required rule:
+
+- the graph clip is not a visual patch and not a sidewalk fix; it is the deterministic ownership
+  handoff distance from an edge-owned `Span` to a node-owned `Bend` or `JunctionN`
+- for each node, collect every non-deleted incident surface road edge as an outward ray with a
+  full top-surface half-width:
+  - carriageway half-width
+  - plus curb / sidewalk width when pedestrians are allowed
+- for each incident edge `a`, compare it against every other incident edge `b` at that node
+- opposite pass-through pairs are ignored when their outward directions are nearly collinear and
+  opposite, because they describe one continuous corridor rather than an acute ownership conflict
+- every other pair contributes this required clip distance for edge `a`:
+
+```text
+required_clip_a_b = (half_width_b + half_width_a * abs(dot(a, b))) / abs(cross(a, b))
+```
+
+- the node clip for edge `a` is the maximum of:
+  - the normal width-based minimum clip
+  - every valid `required_clip_a_b` at that node
+- the formula applies to all angles, including near-zero angles:
+  - at `90 deg`, it behaves like the old ordinary junction throat
+  - at `15 deg`, the throat grows long enough that the inside sidewalk cannot enter asphalt
+  - near `0 deg`, the required clip tends toward infinity because two full-width corridors cannot
+    physically coexist side-by-side at the same node without a long merge region
+- if the required start and end clips cannot both fit inside the edge length, the clips are scaled
+  deterministically so the span collapses before it overlaps; the node pieces then own essentially
+  the whole contested edge segment
+- this rule applies equally to:
+  - degree-2 bends
+  - T-junctions
+  - 4-way junctions
+  - `N > 4` junctions
+  - reversed edge direction and different edit order
+
+`i_overlay` then resolves the node-owned candidate regions after this handoff:
+
+- asphalt is unioned first
+- sidewalk / curb candidates are subtracted by asphalt
+- sidewalk / curb regions may shrink, split, or disappear locally at acute angles
+- no final sidewalk triangle may overlap final asphalt
+
+Forbidden outcomes:
+
+- using one fixed `6 m` clip for every junction angle
+- letting span-owned sidewalk enter a node throat and expecting node-piece CDT to hide it later
+- using CDT as a material ownership solver
+- special casing only `15 deg`, `30 deg`, `60 deg`, or `90 deg`
 
 General connector rule:
 

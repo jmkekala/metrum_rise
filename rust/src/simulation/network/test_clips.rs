@@ -1,8 +1,34 @@
 #[cfg(test)]
 mod tests {
     use crate::simulation::network::graph::{Edge, RegionGraph};
-    use crate::simulation::network::types::{EdgeClass, NodeType, TransitFlags, TransitType};
+    use crate::simulation::network::types::{
+        EdgeClass, NodeType, TransitFlags, TransitType, VehicleFrontageAccess,
+    };
     use godot::prelude::Vector3;
+
+    fn road_edge(start_node: u32, end_node: u32, start: Vector3, end: Vector3, width: f32) -> Edge {
+        Edge {
+            start_node,
+            end_node,
+            primary_type: TransitType::Road,
+            allowed_types: TransitFlags::CAR | TransitFlags::FOOT,
+            width,
+            fwd_lanes: 1,
+            bkw_lanes: 1,
+            speed_limit: 50.0,
+            base_cost: 0.0,
+            physical_length: 0.0,
+            current_congestion: 0.0,
+            start_clip: 0.0,
+            end_clip: 0.0,
+            geometry: vec![start, end],
+            physical_geometry: vec![],
+            class: EdgeClass::Standard,
+            deleted: false,
+            no_building_spawn: false,
+            vehicle_frontage_access: VehicleFrontageAccess::BothSides,
+        }
+    }
 
     #[test]
     fn test_t_junction_clipping() {
@@ -97,5 +123,176 @@ mod tests {
         });
 
         g.rebuild_intersection_clips();
+
+        assert!(g.edges[0].end_clip > 0.0);
+        assert!(g.edges[1].start_clip > 0.0);
+        assert!(g.edges[2].end_clip > 0.0);
+    }
+
+    #[test]
+    fn test_acute_t_junction_uses_angle_aware_clips() {
+        let mut g = RegionGraph::new();
+        let center = g.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let left = g.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+        let right = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let branch = g.add_node(
+            Vector3::new(
+                30.0_f32.to_radians().cos() * 100.0,
+                0.0,
+                30.0_f32.to_radians().sin() * 100.0,
+            ),
+            NodeType::Junction,
+        );
+
+        g.add_edge(road_edge(
+            left,
+            center,
+            Vector3::new(-100.0, 0.0, 0.0),
+            Vector3::ZERO,
+            7.0,
+        ));
+        g.add_edge(road_edge(
+            center,
+            right,
+            Vector3::ZERO,
+            Vector3::new(100.0, 0.0, 0.0),
+            7.0,
+        ));
+        g.add_edge(road_edge(
+            branch,
+            center,
+            Vector3::new(
+                30.0_f32.to_radians().cos() * 100.0,
+                0.0,
+                30.0_f32.to_radians().sin() * 100.0,
+            ),
+            Vector3::ZERO,
+            7.0,
+        ));
+
+        g.rebuild_intersection_clips();
+
+        assert!(
+            g.edges[2].end_clip > 12.0,
+            "acute branch clip stayed fixed-width: {}",
+            g.edges[2].end_clip
+        );
+        assert!(g.edges[2].end_clip < 100.0);
+    }
+
+    #[test]
+    fn test_acute_bend_uses_same_clip_rule_as_junction() {
+        let mut g = RegionGraph::new();
+        let center = g.add_node(Vector3::ZERO, NodeType::Junction);
+        let east = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let branch = g.add_node(
+            Vector3::new(
+                30.0_f32.to_radians().cos() * 100.0,
+                0.0,
+                30.0_f32.to_radians().sin() * 100.0,
+            ),
+            NodeType::Junction,
+        );
+
+        g.add_edge(road_edge(
+            center,
+            east,
+            Vector3::ZERO,
+            Vector3::new(100.0, 0.0, 0.0),
+            7.0,
+        ));
+        g.add_edge(road_edge(
+            center,
+            branch,
+            Vector3::ZERO,
+            Vector3::new(
+                30.0_f32.to_radians().cos() * 100.0,
+                0.0,
+                30.0_f32.to_radians().sin() * 100.0,
+            ),
+            7.0,
+        ));
+
+        g.rebuild_intersection_clips();
+
+        assert!(
+            g.edges[0].start_clip > 12.0,
+            "acute bend clip stayed fixed-width: {}",
+            g.edges[0].start_clip
+        );
+        assert!(
+            g.edges[1].start_clip > 12.0,
+            "acute bend clip stayed fixed-width: {}",
+            g.edges[1].start_clip
+        );
+    }
+
+    #[test]
+    fn test_one_degree_conflict_collapses_span_before_overlap() {
+        let mut g = RegionGraph::new();
+        let center = g.add_node(Vector3::ZERO, NodeType::Junction);
+        let east = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let near_parallel = g.add_node(
+            Vector3::new(
+                1.0_f32.to_radians().cos() * 100.0,
+                0.0,
+                1.0_f32.to_radians().sin() * 100.0,
+            ),
+            NodeType::Junction,
+        );
+
+        g.add_edge(road_edge(
+            center,
+            east,
+            Vector3::ZERO,
+            Vector3::new(100.0, 0.0, 0.0),
+            7.0,
+        ));
+        g.add_edge(road_edge(
+            center,
+            near_parallel,
+            Vector3::ZERO,
+            Vector3::new(
+                1.0_f32.to_radians().cos() * 100.0,
+                0.0,
+                1.0_f32.to_radians().sin() * 100.0,
+            ),
+            7.0,
+        ));
+
+        g.rebuild_intersection_clips();
+
+        assert!(g.edges[0].start_clip > 90.0);
+        assert!(g.edges[1].start_clip > 90.0);
+        assert!(g.edges[0].start_clip < 100.0);
+        assert!(g.edges[1].start_clip < 100.0);
+    }
+
+    #[test]
+    fn test_pass_through_two_way_corridor_keeps_zero_clip() {
+        let mut g = RegionGraph::new();
+        let center = g.add_node(Vector3::ZERO, NodeType::Junction);
+        let east = g.add_node(Vector3::new(100.0, 0.0, 0.0), NodeType::Junction);
+        let west = g.add_node(Vector3::new(-100.0, 0.0, 0.0), NodeType::Junction);
+
+        g.add_edge(road_edge(
+            center,
+            east,
+            Vector3::ZERO,
+            Vector3::new(100.0, 0.0, 0.0),
+            7.0,
+        ));
+        g.add_edge(road_edge(
+            center,
+            west,
+            Vector3::ZERO,
+            Vector3::new(-100.0, 0.0, 0.0),
+            7.0,
+        ));
+
+        g.rebuild_intersection_clips();
+
+        assert_eq!(g.edges[0].start_clip, 0.0);
+        assert_eq!(g.edges[1].start_clip, 0.0);
     }
 }

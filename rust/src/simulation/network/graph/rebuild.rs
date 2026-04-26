@@ -2,7 +2,29 @@
 
 use super::super::types::*;
 use super::data::RegionGraph;
+use godot::prelude::Vector2;
 use std::collections::{HashMap, HashSet};
+
+const CLIP_PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
+const CLIP_MIN_SIN: f32 = 0.0001;
+const CLIP_LENGTH_RESERVE_M: f32 = 0.1;
+const CLIP_WIDTH_PADDING_FACTOR: f32 = 1.2;
+
+#[derive(Clone, Copy)]
+struct ClipIncident {
+    edge_idx: usize,
+    direction_xz: Vector2,
+    half_width_m: f32,
+}
+
+#[derive(Default)]
+struct ClipNodeStats {
+    connection_count: usize,
+    max_road_width_m: f32,
+    min_road_width_m: f32,
+    max_half_width_m: f32,
+    incidents: Vec<ClipIncident>,
+}
 
 impl RegionGraph {
     /// Rebuilds the adjacency list from the current set of non-deleted edges.
@@ -218,90 +240,21 @@ impl RegionGraph {
     /// This prevents road geometry from overlapping in the center of an intersection
     /// and ensures space for the junction mesh.
     pub fn rebuild_intersection_clips(&mut self) {
-        let mut connection_counts = HashMap::new();
-        for edge in &self.edges {
-            if edge.deleted || edge.primary_type != TransitType::Road {
-                continue;
-            }
-            *connection_counts
-                .entry(self.get_valid_node(edge.start_node))
-                .or_insert(0) += 1;
-            *connection_counts
-                .entry(self.get_valid_node(edge.end_node))
-                .or_insert(0) += 1;
-        }
-
-        // Calculate maximum road width and width difference for junction detection
-        let mut node_max_width = HashMap::new();
-        let mut node_min_width = HashMap::new();
-        for edge in &self.edges {
-            if edge.deleted || edge.primary_type != TransitType::Road {
-                continue;
-            }
-            let w = edge.width;
-
-            let s_node = self.get_valid_node(edge.start_node);
-            let s_max = node_max_width.entry(s_node).or_insert(0.0);
-            if w > *s_max {
-                *s_max = w;
-            }
-            let s_min = node_min_width.entry(s_node).or_insert(f32::MAX);
-            if w < *s_min {
-                *s_min = w;
-            }
-
-            let e_node = self.get_valid_node(edge.end_node);
-            let e_max = node_max_width.entry(e_node).or_insert(0.0);
-            if w > *e_max {
-                *e_max = w;
-            }
-            let e_min = node_min_width.entry(e_node).or_insert(f32::MAX);
-            if w < *e_min {
-                *e_min = w;
-            }
-        }
-
         let valid_node_ids: Vec<u32> = (0..self.nodes.len())
             .map(|i| self.get_valid_node(i as u32))
             .collect();
+        let clip_stats = self.build_clip_node_stats(&valid_node_ids, None);
+        let computed_clips = self.compute_intersection_clips(&valid_node_ids, &clip_stats, None);
 
-        for (_edge_id, edge) in self.edges.iter_mut().enumerate() {
+        for (edge_idx, edge) in self.edges.iter_mut().enumerate() {
             if edge.deleted || edge.primary_type != TransitType::Road {
                 continue;
             }
 
-            // Dynamic clipping: Ensure the junction covers at least the width of the road
-            let s_valid = valid_node_ids[edge.start_node as usize];
-            let e_valid = valid_node_ids[edge.end_node as usize];
-
-            let s_conn = *connection_counts.get(&s_valid).unwrap_or(&0);
-            let e_conn = *connection_counts.get(&e_valid).unwrap_or(&0);
-
-            let s_max_w = *node_max_width.get(&s_valid).unwrap_or(&0.0);
-            let s_min_w = *node_min_width.get(&s_valid).unwrap_or(&0.0);
-            let s_different = (s_max_w - s_min_w).abs() > 0.1;
-
-            let e_max_w = *node_max_width.get(&e_valid).unwrap_or(&0.0);
-            let e_min_w = *node_min_width.get(&e_valid).unwrap_or(&0.0);
-            let e_different = (e_max_w - e_min_w).abs() > 0.1;
-
-            let s_clip = (s_max_w * 0.5 + crate::config::SIDEWALK_WIDTH) * 1.2;
-            let e_clip = (e_max_w * 0.5 + crate::config::SIDEWALK_WIDTH) * 1.2;
-
-            let s_node_type = self.nodes[s_valid as usize].node_type;
-            let e_node_type = self.nodes[e_valid as usize].node_type;
-
-            edge.start_clip = if (s_conn >= 3 || s_different) && s_node_type == NodeType::Junction {
-                s_clip
-            } else {
-                0.0
-            };
-
-            edge.end_clip = if (e_conn >= 3 || e_different) && e_node_type == NodeType::Junction {
-                e_clip
-            } else {
-                0.0
-            };
+            if let Some((start_clip, end_clip)) = computed_clips[edge_idx] {
+                edge.start_clip = start_clip;
+                edge.end_clip = end_clip;
+            }
 
             // Keep physical_geometry in sync with geometry (which may have updated Y values
             // from terrain height re-interpolation). The renderer trims it via start_clip/end_clip.
@@ -334,33 +287,9 @@ impl RegionGraph {
             .map(|i| self.get_valid_node(i as u32))
             .collect();
 
-        // Pass 1 (read-only): scan every road edge once to build per-node stats,
-        // but only populate entries for nodes in the affected set.
-        let mut connection_counts: HashMap<u32, usize> = HashMap::new();
-        let mut node_max_width: HashMap<u32, f32> = HashMap::new();
-        let mut node_min_width: HashMap<u32, f32> = HashMap::new();
-
-        for edge in &self.edges {
-            if edge.deleted || edge.primary_type != TransitType::Road {
-                continue;
-            }
-            let s = valid_node_ids[edge.start_node as usize];
-            let e = valid_node_ids[edge.end_node as usize];
-            let w = edge.width;
-            for &node in &[s, e] {
-                if affected_nodes.contains(&node) {
-                    *connection_counts.entry(node).or_insert(0) += 1;
-                    let max_w = node_max_width.entry(node).or_insert(0.0_f32);
-                    if w > *max_w {
-                        *max_w = w;
-                    }
-                    let min_w = node_min_width.entry(node).or_insert(f32::MAX);
-                    if w < *min_w {
-                        *min_w = w;
-                    }
-                }
-            }
-        }
+        let clip_stats = self.build_clip_node_stats(&valid_node_ids, Some(affected_nodes));
+        let computed_clips =
+            self.compute_intersection_clips(&valid_node_ids, &clip_stats, Some(affected_nodes));
 
         // Pass 2 (mutable): resample only edges that touch an affected node.
         let mut reindex_ids: Vec<usize> = Vec::new();
@@ -375,32 +304,18 @@ impl RegionGraph {
                 continue;
             }
 
-            let s_conn = *connection_counts.get(&s).unwrap_or(&0);
-            let e_conn = *connection_counts.get(&e).unwrap_or(&0);
-
-            let s_max_w = *node_max_width.get(&s).unwrap_or(&0.0);
-            let s_min_w = *node_min_width.get(&s).unwrap_or(&0.0);
-            let e_max_w = *node_max_width.get(&e).unwrap_or(&0.0);
-            let e_min_w = *node_min_width.get(&e).unwrap_or(&0.0);
-            let s_different = (s_max_w - s_min_w).abs() > 0.1;
-            let e_different = (e_max_w - e_min_w).abs() > 0.1;
-
-            let s_node_type = self.nodes[s as usize].node_type;
-            let e_node_type = self.nodes[e as usize].node_type;
-
-            let s_clip = (s_max_w * 0.5 + crate::config::SIDEWALK_WIDTH) * 1.2;
-            let e_clip = (e_max_w * 0.5 + crate::config::SIDEWALK_WIDTH) * 1.2;
-
-            edge.start_clip = if (s_conn >= 3 || s_different) && s_node_type == NodeType::Junction {
-                s_clip
-            } else {
-                0.0
-            };
-            edge.end_clip = if (e_conn >= 3 || e_different) && e_node_type == NodeType::Junction {
-                e_clip
-            } else {
-                0.0
-            };
+            if let Some((start_clip, end_clip)) = computed_clips[edge_idx] {
+                edge.start_clip = if affected_nodes.contains(&s) {
+                    start_clip
+                } else {
+                    edge.start_clip
+                };
+                edge.end_clip = if affected_nodes.contains(&e) {
+                    end_clip
+                } else {
+                    edge.end_clip
+                };
+            }
 
             edge.physical_geometry = edge.geometry.clone();
 
@@ -413,5 +328,251 @@ impl RegionGraph {
             self.add_to_spatial_index(edge_idx);
         }
         // Adjacency is unchanged — no rebuild needed.
+    }
+
+    fn build_clip_node_stats(
+        &self,
+        valid_node_ids: &[u32],
+        affected_nodes: Option<&HashSet<u32>>,
+    ) -> HashMap<u32, ClipNodeStats> {
+        let mut stats: HashMap<u32, ClipNodeStats> = HashMap::new();
+
+        for (edge_idx, edge) in self.edges.iter().enumerate() {
+            if edge.deleted || edge.primary_type != TransitType::Road {
+                continue;
+            }
+
+            let endpoints = [
+                (
+                    valid_node_ids[edge.start_node as usize],
+                    Self::edge_endpoint_direction_xz(edge, true),
+                ),
+                (
+                    valid_node_ids[edge.end_node as usize],
+                    Self::edge_endpoint_direction_xz(edge, false),
+                ),
+            ];
+            let half_width_m = Self::roadbed_half_width_m(edge);
+
+            for (node_id, direction_xz) in endpoints {
+                if affected_nodes.is_some_and(|affected| !affected.contains(&node_id)) {
+                    continue;
+                }
+
+                let node_stats = stats.entry(node_id).or_insert_with(|| ClipNodeStats {
+                    min_road_width_m: f32::MAX,
+                    ..Default::default()
+                });
+                node_stats.connection_count += 1;
+                node_stats.max_road_width_m = node_stats.max_road_width_m.max(edge.width);
+                node_stats.min_road_width_m = node_stats.min_road_width_m.min(edge.width);
+                node_stats.max_half_width_m = node_stats.max_half_width_m.max(half_width_m);
+
+                if let Some(direction_xz) = direction_xz {
+                    node_stats.incidents.push(ClipIncident {
+                        edge_idx,
+                        direction_xz,
+                        half_width_m,
+                    });
+                }
+            }
+        }
+
+        for node_stats in stats.values_mut() {
+            node_stats.incidents.sort_by(|a, b| {
+                a.edge_idx
+                    .cmp(&b.edge_idx)
+                    .then(a.direction_xz.x.total_cmp(&b.direction_xz.x))
+                    .then(a.direction_xz.y.total_cmp(&b.direction_xz.y))
+            });
+        }
+
+        stats
+    }
+
+    fn compute_intersection_clips(
+        &self,
+        valid_node_ids: &[u32],
+        clip_stats: &HashMap<u32, ClipNodeStats>,
+        affected_nodes: Option<&HashSet<u32>>,
+    ) -> Vec<Option<(f32, f32)>> {
+        let mut computed = vec![None; self.edges.len()];
+
+        for (edge_idx, edge) in self.edges.iter().enumerate() {
+            if edge.deleted || edge.primary_type != TransitType::Road {
+                continue;
+            }
+
+            let start_node = valid_node_ids[edge.start_node as usize];
+            let end_node = valid_node_ids[edge.end_node as usize];
+            if affected_nodes.is_some_and(|affected| {
+                !affected.contains(&start_node) && !affected.contains(&end_node)
+            }) {
+                continue;
+            }
+
+            let length_m = Self::edge_geometry_length_m(edge);
+            let start_clip = if affected_nodes.is_none_or(|affected| affected.contains(&start_node))
+            {
+                self.clip_for_edge_at_node(edge_idx, start_node, length_m, clip_stats)
+            } else {
+                edge.start_clip
+            };
+            let end_clip = if affected_nodes.is_none_or(|affected| affected.contains(&end_node)) {
+                self.clip_for_edge_at_node(edge_idx, end_node, length_m, clip_stats)
+            } else {
+                edge.end_clip
+            };
+            computed[edge_idx] = Some(Self::fit_clips_to_edge_length(
+                start_clip, end_clip, length_m,
+            ));
+        }
+
+        computed
+    }
+
+    fn clip_for_edge_at_node(
+        &self,
+        edge_idx: usize,
+        node_id: u32,
+        edge_length_m: f32,
+        clip_stats: &HashMap<u32, ClipNodeStats>,
+    ) -> f32 {
+        let Some(stats) = clip_stats.get(&node_id) else {
+            return 0.0;
+        };
+        if self.nodes[node_id as usize].node_type != NodeType::Junction {
+            return 0.0;
+        }
+        if !Self::node_requires_clip(stats) {
+            return 0.0;
+        }
+
+        let mut clip_m = stats.max_half_width_m * CLIP_WIDTH_PADDING_FACTOR;
+        let Some(self_incident) = stats
+            .incidents
+            .iter()
+            .find(|incident| incident.edge_idx == edge_idx)
+            .copied()
+        else {
+            return clip_m.min(edge_length_m);
+        };
+
+        for other in &stats.incidents {
+            if other.edge_idx == edge_idx
+                || Self::directions_are_pass_through(self_incident.direction_xz, other.direction_xz)
+            {
+                continue;
+            }
+
+            let dot = self_incident
+                .direction_xz
+                .dot(other.direction_xz)
+                .clamp(-1.0, 1.0);
+            let cross = Self::cross_xz(self_incident.direction_xz, other.direction_xz).abs();
+            let required_m = if cross <= CLIP_MIN_SIN {
+                edge_length_m
+            } else {
+                (other.half_width_m + self_incident.half_width_m * dot.abs()) / cross
+            };
+            if required_m.is_finite() {
+                clip_m = clip_m.max(required_m);
+            } else {
+                clip_m = edge_length_m;
+            }
+        }
+
+        clip_m.clamp(0.0, edge_length_m.max(0.0))
+    }
+
+    fn node_requires_clip(stats: &ClipNodeStats) -> bool {
+        let widths_differ = (stats.max_road_width_m - stats.min_road_width_m).abs() > 0.1;
+        stats.connection_count >= 3 || widths_differ || Self::node_has_non_pass_through_pair(stats)
+    }
+
+    fn node_has_non_pass_through_pair(stats: &ClipNodeStats) -> bool {
+        for (index, a) in stats.incidents.iter().enumerate() {
+            for b in stats.incidents.iter().skip(index + 1) {
+                if !Self::directions_are_pass_through(a.direction_xz, b.direction_xz) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn directions_are_pass_through(a: Vector2, b: Vector2) -> bool {
+        a.dot(b) <= -CLIP_PASS_THROUGH_DOT_THRESHOLD
+    }
+
+    fn cross_xz(a: Vector2, b: Vector2) -> f32 {
+        a.x * b.y - a.y * b.x
+    }
+
+    fn roadbed_half_width_m(edge: &super::data::Edge) -> f32 {
+        if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
+            return edge.width.max(2.0) * 0.5;
+        }
+
+        let sidewalk_width = if edge.allowed_types & TransitFlags::FOOT != 0 {
+            crate::config::SIDEWALK_WIDTH
+        } else {
+            0.0
+        };
+        edge.width.max(crate::config::LANE_WIDTH) * 0.5 + sidewalk_width
+    }
+
+    fn edge_endpoint_direction_xz(edge: &super::data::Edge, at_start: bool) -> Option<Vector2> {
+        if edge.geometry.len() < 2 {
+            return None;
+        }
+
+        if at_start {
+            for window in edge.geometry.windows(2) {
+                let delta = window[1] - window[0];
+                let direction = Vector2::new(delta.x, delta.z);
+                if direction.length_squared() > 1e-8 {
+                    return Some(direction.normalized());
+                }
+            }
+        } else {
+            for window in edge.geometry.windows(2).rev() {
+                let delta = window[0] - window[1];
+                let direction = Vector2::new(delta.x, delta.z);
+                if direction.length_squared() > 1e-8 {
+                    return Some(direction.normalized());
+                }
+            }
+        }
+
+        None
+    }
+
+    fn edge_geometry_length_m(edge: &super::data::Edge) -> f32 {
+        edge.geometry
+            .windows(2)
+            .map(|window| window[0].distance_to(window[1]))
+            .sum()
+    }
+
+    fn fit_clips_to_edge_length(
+        start_clip_m: f32,
+        end_clip_m: f32,
+        edge_length_m: f32,
+    ) -> (f32, f32) {
+        if edge_length_m <= CLIP_LENGTH_RESERVE_M {
+            return (0.0, 0.0);
+        }
+
+        let max_sum = (edge_length_m - CLIP_LENGTH_RESERVE_M).max(0.0);
+        let start_clip_m = start_clip_m.clamp(0.0, edge_length_m);
+        let end_clip_m = end_clip_m.clamp(0.0, edge_length_m);
+        let sum = start_clip_m + end_clip_m;
+        if sum <= max_sum || sum <= f32::EPSILON {
+            return (start_clip_m, end_clip_m);
+        }
+
+        let scale = max_sum / sum;
+        (start_clip_m * scale, end_clip_m * scale)
     }
 }
