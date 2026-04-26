@@ -792,9 +792,9 @@ Deterministic transition rules:
     ordinary road seam carrier
   - terrain clipping must be derived from the compiled road-piece outer loop in Rust; asphalt /
     sidewalk render triangles are not reused as terrain ownership triangles
-  - current road-touched patch emission has removed the old subtractive triangle cutter and uses a
-    conservative cell-triangle ownership rule until the full constrained seam triangulator replaces
-    the remaining cell approximation
+  - current road-touched patch emission has removed the old subtractive triangle cutter and emits
+    terrain-owned seam triangles from the compiled road-piece outer loop before applying the
+    remaining conservative cell-triangle ownership rule
   - terrain render suppression for structural local earthwork geometry must remain bounded to true
     geometry overlap rather than acting as a substitute for missing tie-in faces; road-edge terrain
     topology must still be geometrically correct if terrain-side suppression is turned off

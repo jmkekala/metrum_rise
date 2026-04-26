@@ -159,13 +159,17 @@ Deterministic seam contract:
   edge into a visible strip
 - clipped terrain patches must receive exact road footprint clip polygons from the same `Span`,
   `Terminal`, `Bend`, and `JunctionN` pieces that render asphalt, shoulder / curb, and sidewalk
-- Rust must triangulate those footprint loops for terrain clipping from the loop boundary itself;
-  terrain clipping must not reuse asphalt / sidewalk render triangles, because those triangles are
-  not the ownership contract and can over-cut concave road footprints
-- current runtime safety cut: road-touched terrain patches no longer subtract footprint triangles
-  from terrain cells; until the constrained triangulation builder is complete, terrain cell
-  triangles are omitted only when their vertices are fully owned by the road footprint, which
-  prefers conservative under-road overlap over visible world-background holes
+- Rust must triangulate from those footprint loops and must insert deterministic seam triangles
+  that use the loop as a hard inner constraint; terrain clipping must not reuse asphalt / sidewalk
+  render triangles, because those triangles are not the ownership contract and can over-cut concave
+  road footprints
+- the road-touched patch mesh must emit terrain-owned seam faces from each road-owned outer-loop
+  segment to source terrain outside the footprint before any terrain below the footprint is omitted
+- the seam faces are part of the terrain patch mesh, use terrain material, and are not a second
+  road support mesh, visual carpet, or closure strip owned by the road renderer
+- terrain cell triangles may still provide far-field terrain outside the road footprint, but they
+  are not allowed to be the only seam carrier because their grid edges rarely coincide with the
+  road-owned outer sidewalk / shoulder edge
 - clipped terrain topology must insert road-boundary vertices into the terrain mesh in Rust rather
   than approximating the seam from terrain-cell centers, a texture mask, or a Godot-side polygon
   clipping fallback

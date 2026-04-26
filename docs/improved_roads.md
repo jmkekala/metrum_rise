@@ -773,10 +773,10 @@ Current status:
     diagnostics only; asphalt / sidewalk render triangles are not reused as terrain ownership
     triangles
   - the old subtract-road-triangles-from-terrain-cells emitter has been removed from the live path
-  - current stitched terrain patch emission is bounded to road-locked terrain patches, bins local
-    footprint loops per patch cell, and conservatively omits only terrain cell triangles whose
-    vertices are fully owned by a road footprint; full constrained seam triangulation remains the
-    next required hard cut
+  - stitched terrain patch emission is bounded to road-locked terrain patches, emits terrain-owned
+    seam triangles from each piece-owned outer loop segment to nearby source terrain, bins local
+    footprint loops per patch cell, and omits terrain cell triangles whose vertices are fully owned
+    by a road footprint
   - visible water patches now consume the same road footprint clip polygons and rebuild only
     road-touched water patch meshes after a road edit; touched water cells are suppressed wholesale
     instead of being triangulated into transparent fragments, so water cannot remain as a hidden

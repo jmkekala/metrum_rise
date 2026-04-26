@@ -102,6 +102,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, RwLock};
 
 const TERRAIN_STITCH_EPSILON_M: f32 = 0.001;
+const TERRAIN_STITCH_SEAM_WIDTH_M: f32 = 2.0;
 
 #[derive(GodotClass)]
 #[class(base=Node3D)]
@@ -477,6 +478,17 @@ impl SimulationNode {
         let mut normals = Vec::new();
         let mut uvs = Vec::new();
 
+        Self::emit_constrained_terrain_seams(
+            core,
+            patch,
+            road_clip_polygons,
+            center_x,
+            center_z,
+            &mut vertices,
+            &mut normals,
+            &mut uvs,
+        );
+
         for z_index in 0..z_interval_count {
             let z0 = z_index as f32 / z_interval_count as f32;
             let z1 = (z_index + 1) as f32 / z_interval_count as f32;
@@ -838,6 +850,105 @@ impl SimulationNode {
                 )
             })
         })
+    }
+
+    fn emit_constrained_terrain_seams(
+        core: &SimCore,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
+        center_x: f32,
+        center_z: f32,
+        vertices: &mut Vec<Vector3>,
+        normals: &mut Vec<Vector3>,
+        uvs: &mut Vec<Vector2>,
+    ) {
+        let patch_min_x = patch.world_origin_x - TERRAIN_STITCH_SEAM_WIDTH_M;
+        let patch_max_x = patch.world_origin_x + patch.world_size_x + TERRAIN_STITCH_SEAM_WIDTH_M;
+        let patch_min_z = patch.world_origin_z - TERRAIN_STITCH_SEAM_WIDTH_M;
+        let patch_max_z = patch.world_origin_z + patch.world_size_z + TERRAIN_STITCH_SEAM_WIDTH_M;
+
+        for polygon in road_clip_polygons {
+            let points = Self::terrain_simplified_polygon_points(&polygon.points_world);
+            if points.len() < 3 || !Self::terrain_polygon_has_area(&points) {
+                continue;
+            }
+            let orientation = Self::terrain_signed_area_xz(&points).signum();
+            if orientation.abs() <= f32::EPSILON {
+                continue;
+            }
+
+            for index in 0..points.len() {
+                let inner_a = points[index];
+                let inner_b = points[(index + 1) % points.len()];
+                let dx = inner_b.x - inner_a.x;
+                let dz = inner_b.z - inner_a.z;
+                let length = (dx * dx + dz * dz).sqrt();
+                if length <= TERRAIN_STITCH_EPSILON_M {
+                    continue;
+                }
+
+                let outward_x = orientation * dz / length;
+                let outward_z = -orientation * dx / length;
+                let outer_a = Self::terrain_stitch_point(
+                    core,
+                    inner_a.x + outward_x * TERRAIN_STITCH_SEAM_WIDTH_M,
+                    inner_a.z + outward_z * TERRAIN_STITCH_SEAM_WIDTH_M,
+                );
+                let outer_b = Self::terrain_stitch_point(
+                    core,
+                    inner_b.x + outward_x * TERRAIN_STITCH_SEAM_WIDTH_M,
+                    inner_b.z + outward_z * TERRAIN_STITCH_SEAM_WIDTH_M,
+                );
+                if !Self::terrain_quad_overlaps_patch(
+                    [inner_a, inner_b, outer_b, outer_a],
+                    patch_min_x,
+                    patch_min_z,
+                    patch_max_x,
+                    patch_max_z,
+                ) {
+                    continue;
+                }
+
+                Self::emit_stitched_terrain_triangle(
+                    [inner_a, outer_b, inner_b],
+                    patch,
+                    center_x,
+                    center_z,
+                    vertices,
+                    normals,
+                    uvs,
+                );
+                Self::emit_stitched_terrain_triangle(
+                    [inner_a, outer_a, outer_b],
+                    patch,
+                    center_x,
+                    center_z,
+                    vertices,
+                    normals,
+                    uvs,
+                );
+            }
+        }
+    }
+
+    fn terrain_quad_overlaps_patch(
+        quad: [Vector3; 4],
+        patch_min_x: f32,
+        patch_min_z: f32,
+        patch_max_x: f32,
+        patch_max_z: f32,
+    ) -> bool {
+        let mut min_x = quad[0].x;
+        let mut max_x = quad[0].x;
+        let mut min_z = quad[0].z;
+        let mut max_z = quad[0].z;
+        for point in quad {
+            min_x = min_x.min(point.x);
+            max_x = max_x.max(point.x);
+            min_z = min_z.min(point.z);
+            max_z = max_z.max(point.z);
+        }
+        min_x <= patch_max_x && max_x >= patch_min_x && min_z <= patch_max_z && max_z >= patch_min_z
     }
 
     fn terrain_mesh_bin_index(
