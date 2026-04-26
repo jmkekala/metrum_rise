@@ -77,7 +77,7 @@ The roadbed rewrite has already made the important ownership split:
 - Godot uploads cached buffers and must not rebuild road or terrain topology from graph guesses
 - visible-world queries prefer road-owned top surfaces before terrain
 
-The current road-touched terrain path is still provisional.
+The road-touched terrain path has moved to the Spade CDT hardcut.
 
 Live behavior:
 
@@ -85,9 +85,10 @@ Live behavior:
   patches
 - Rust returns baked terrain patch mesh payloads for those road-touched patches
 - terrain under the road-owned footprint is no longer intended to be a visible carrier
-- Spade is now a runtime dependency and the first isolated terrain CDT kernel lives in Rust under
-  `simulation::terrain::cdt`; it is tested for deterministic contained-road-footprint
-  triangulation but is not yet wired into the live terrain patch bridge
+- Spade is now the runtime terrain-patch CDT backend under `simulation::terrain::cdt`
+- the live road-touched terrain patch bridge feeds piece-owned road loops into the CDT module,
+  emits accepted terrain faces, rejects road-footprint faces, and reports CDT counters through
+  `--debug road-geometry`
 
 Not accepted as the final target:
 
@@ -97,8 +98,7 @@ Not accepted as the final target:
 - any shader mask, water plane, zoning overlay, or background-color coincidence that hides missing
   topology
 
-The next hard-cut target is therefore explicit: road-touched terrain patches must be rebuilt with
-Spade-backed constrained triangulation, not with the current seam-strip / cell-triangle hybrid.
+The old seam-strip / cell-triangle hybrid is retired from the live road-touched terrain path.
 
 ## Roadbed Contract
 
@@ -702,9 +702,9 @@ Implement the hardcut in this order:
 5. Done: add tests for roads crossing one patch edge, two patch edges, and a patch corner.
 6. Done: add tests for multiple footprint loops in one patch.
 7. Done: add tests for `Bend`, `Terminal`, and `JunctionN` footprint loops.
-8. Replace the live road-touched terrain patch builder with the CDT module.
-9. Remove the retired seam-strip / cell-triangle live path.
-10. Update `--debug road-geometry` output to report CDT constraints, accepted faces, rejected
+8. Done: replace the live road-touched terrain patch builder with the CDT module.
+9. Done: remove the retired seam-strip / cell-triangle live path.
+10. Done: update `--debug road-geometry` output to report CDT constraints, accepted faces, rejected
     faces, invalid constraints, and preserved seam-edge counts.
 
 Acceptance requires `cargo check`, the CDT contract tests, and Godot headless load to pass.

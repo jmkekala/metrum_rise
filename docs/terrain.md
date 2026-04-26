@@ -235,15 +235,18 @@ Current deterministic editor rule:
 
 - terrain authoring edits source terrain first
 - after the source edit, touched engineered-ground clients rebuild derived terrain outputs; ordinary
-  grounded roads regenerate stitched patch meshes while structural clients may restamp visual terrain
+  grounded roads regenerate CDT terrain patch meshes while structural clients may restamp visual
+  terrain
 - terrain brushes do not directly sculpt roadbeds, flat pads, or future local earthwork geometry
 
 Remaining limitation:
 
-- the current road-touched terrain patch builder is still a provisional stitched-mesh path, not the
-  accepted final seam representation
+- road-touched terrain patches now use the accepted Spade CDT seam representation, but live visual
+  validation on varied authored maps is still required before the terrain / road integration can be
+  treated as fully shipped
 - terrain density alone is no longer the target fix for road / terrain gaps
-- the accepted target is the Spade CDT patch builder described in [`improved_roads.md`](improved_roads.md):
+- the live road-touched seam path is the Spade CDT patch builder described in
+  [`improved_roads.md`](improved_roads.md):
   road footprint loops become hard constraints, terrain faces inside those loops are omitted, and
   road seam constraint edges are preserved exactly
 - current grounded-road terrain editing must keep placed `Standard` road geometry fixed and rebuild
@@ -801,9 +804,9 @@ Deterministic transition rules:
   - `ghx_constrained_delaunay` is not a terrain backend or fallback in this spec; Spade is the
     production hard-cut target because it gives the project a documented constrained triangulation
     API with exact geometric predicates
-  - current road-touched patch emission has removed the old subtractive triangle cutter and emits
-    terrain-owned seam triangles from the compiled road-piece outer loop before applying the
-    remaining conservative cell-triangle ownership rule
+  - current road-touched patch emission uses the Spade CDT path directly; the old subtractive
+    triangle cutter, visible seam strip, and conservative cell-triangle ownership rule are no
+    longer live fallbacks
   - terrain render suppression for structural local earthwork geometry must remain bounded to true
     geometry overlap rather than acting as a substitute for missing tie-in faces; road-edge terrain
     topology must still be geometrically correct if terrain-side suppression is turned off
@@ -820,7 +823,7 @@ Authoritative rule:
 
 - imported terrain writes authoritative source terrain only
 - visual terrain is always derived from source terrain plus later structural road or water
-  derivations; ordinary grounded road seams are generated as stitched patch meshes
+  derivations; ordinary grounded road seams are generated as CDT patch meshes
 
 Current implemented slice:
 

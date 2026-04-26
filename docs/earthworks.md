@@ -572,9 +572,9 @@ For the roads-first rewrite, the following are deterministic and implemented:
   order
 - road-touched terrain patches are currently generated in Rust as baked terrain `ArrayMesh`
   payloads whose boundary vertices reuse the road / sidewalk seam height
-- the accepted next target is the Spade CDT terrain-patch hardcut in
-  [`improved_roads.md`](improved_roads.md), which replaces the provisional seam-strip /
-  cell-triangle hybrid rather than polishing it further
+- the Spade CDT terrain-patch hardcut in [`improved_roads.md`](improved_roads.md) is now the live
+  road-touched terrain patch path; the provisional seam-strip / cell-triangle hybrid has been
+  removed rather than polished further
 
 The following are current hardcut implementation rules:
 
@@ -583,7 +583,7 @@ The following are current hardcut implementation rules:
 - the Godot terrain renderer no longer performs terrain-road polygon clipping; it only uploads the
   baked mesh or the normal rectangular terrain mesh
 - grounded `Standard` roads do not render an ordinary visible closure strip, seam carpet, or second
-  support mesh; the stitched terrain patch mesh is the seam carrier
+  support mesh; the CDT terrain patch mesh is the seam carrier
 - visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
   water meshes receive the same road footprint clip polygons after a network edit and suppress
   touched water cells wholesale, so water is no longer allowed to render under grounded road-owned

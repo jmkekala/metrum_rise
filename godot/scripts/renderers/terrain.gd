@@ -698,10 +698,18 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		)
 		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
 		var baked_vertex_count: int = _road_geometry_baked_vertex_count(patch_data)
-		var clip_triangle_count: int = int(patch_data.get("terrain_clip_triangles", 0))
-		var rejected_clip_triangle_count: int = int(patch_data.get("terrain_clip_triangles_rejected", 0))
+		var cdt_status: String = str(patch_data.get("terrain_cdt_status", "none"))
+		var cdt_error: String = str(patch_data.get("terrain_cdt_error", "none"))
+		var cdt_input_vertices: int = int(patch_data.get("terrain_cdt_input_vertices", 0))
+		var cdt_constraint_edges: int = int(patch_data.get("terrain_cdt_constraint_edges", 0))
+		var cdt_road_constraint_edges: int = int(patch_data.get("terrain_cdt_road_constraint_edges", 0))
+		var cdt_preserved_road_constraint_edges: int = int(patch_data.get("terrain_cdt_preserved_road_constraint_edges", 0))
+		var cdt_invalid_constraints: int = int(patch_data.get("terrain_cdt_invalid_constraints", 0))
+		var cdt_accepted_faces: int = int(patch_data.get("terrain_cdt_accepted_faces", 0))
+		var cdt_rejected_road_faces: int = int(patch_data.get("terrain_cdt_rejected_road_faces", 0))
+		var cdt_emitted_faces: int = int(patch_data.get("terrain_cdt_emitted_faces", 0))
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d clip_tris=%d rejected_clip_tris=%d"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d cdt_status=%s cdt_error=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d"
 			% [
 				key.x,
 				key.y,
@@ -725,8 +733,16 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				float(clip_stats.get("max_bbox_x", 0.0)),
 				float(clip_stats.get("max_bbox_z", 0.0)),
 				baked_vertex_count,
-				clip_triangle_count,
-				rejected_clip_triangle_count,
+				cdt_status,
+				cdt_error,
+				cdt_input_vertices,
+				cdt_constraint_edges,
+				cdt_road_constraint_edges,
+				cdt_preserved_road_constraint_edges,
+				cdt_invalid_constraints,
+				cdt_accepted_faces,
+				cdt_rejected_road_faces,
+				cdt_emitted_faces,
 			]
 		)
 	return lines
@@ -759,6 +775,8 @@ func _terrain_patch_mesh_from_data(
 	lod_step: int,
 	subdivision_factor: int
 ) -> Mesh:
+	if _patch_uses_cdt_terrain_mesh(patch_data):
+		return _baked_terrain_patch_mesh(patch_data)
 	if _patch_has_baked_terrain_mesh(patch_data):
 		return _baked_terrain_patch_mesh(patch_data)
 	return _patch_mesh(
@@ -769,6 +787,9 @@ func _terrain_patch_mesh_from_data(
 		lod_step,
 		subdivision_factor
 	)
+
+func _patch_uses_cdt_terrain_mesh(patch_data: Dictionary) -> bool:
+	return patch_data.has("terrain_cdt_status")
 
 func _patch_has_baked_terrain_mesh(patch_data: Dictionary) -> bool:
 	if not patch_data.has("terrain_mesh_vertices"):
