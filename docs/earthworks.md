@@ -159,6 +159,13 @@ Deterministic seam contract:
   edge into a visible strip
 - clipped terrain patches must receive exact road footprint clip polygons from the same `Span`,
   `Terminal`, `Bend`, and `JunctionN` pieces that render asphalt, shoulder / curb, and sidewalk
+- Rust must triangulate those footprint loops for terrain clipping from the loop boundary itself;
+  terrain clipping must not reuse asphalt / sidewalk render triangles, because those triangles are
+  not the ownership contract and can over-cut concave road footprints
+- current runtime safety cut: road-touched terrain patches no longer subtract footprint triangles
+  from terrain cells; until the constrained triangulation builder is complete, terrain cell
+  triangles are omitted only when their vertices are fully owned by the road footprint, which
+  prefers conservative under-road overlap over visible world-background holes
 - clipped terrain topology must insert road-boundary vertices into the terrain mesh in Rust rather
   than approximating the seam from terrain-cell centers, a texture mask, or a Godot-side polygon
   clipping fallback
@@ -169,7 +176,7 @@ Deterministic seam contract:
   source terrain through the road / sidewalk / tie-in boundary
 - water is not a valid fallback carrier under the road footprint; water render patches that overlap
   grounded road-owned asphalt, shoulder / curb, or sidewalk must receive the same footprint clip
-  polygons and omit water topology inside that owned footprint
+  polygons and omit any touched water cells instead of triangulating partial transparent fragments
 
 For roads, that means:
 
@@ -415,9 +422,9 @@ Required seam acceptance checks:
   not from a special-case `3`-arm or `4`-arm template
 - clipped terrain topology must leave an actual road-shaped hole under the full asphalt, shoulder /
   curb, and sidewalk footprint; there must be no terrain mesh there for z-fighting to occur
-- clipped water topology must leave the same road-shaped hole where visible water overlaps a grounded
-  road-owned footprint; road placement over water must not leave a hidden lake plane between the road
-  mesh and its owned support surface
+- clipped water topology must leave a conservative road-shaped hole where visible water overlaps a
+  grounded road-owned footprint; road placement over water must not leave a hidden lake plane or
+  transparent fragment wedges between the road mesh and its owned support surface
 - bridges remain a separate class: midspan bridge decks do not claim grounded terrain ownership
   except at explicit abutment / portal support regions
 
@@ -429,7 +436,11 @@ terrain topology in Rust, not as a visible seal drawn by the road renderer.
 Required first variant:
 
 - the first shipped rewrite variant must clip terrain patches directly to the road-owned footprint
-  boundary for grounded `Standard` roads
+  boundary for grounded `Standard` roads; the clip carrier is the compiled piece-owned
+  `outer_boundary_loops`, not the internal asphalt / sidewalk band polygons
+- any internal triangles derived from those outer loops are implementation detail only and must be
+  rejected if their sampled interior leaves the source loop; terrain must never be cut by a
+  triangulation wedge that extends outside the road-owned footprint
 - the terrain patch payload must include baked mesh vertices, normals, and UVs when the patch
   intersects a grounded road-owned footprint
 - Godot must upload that baked `ArrayMesh` directly and must not run `Geometry2D` terrain clipping,
@@ -540,8 +551,9 @@ The following are current hardcut implementation rules:
 - grounded `Standard` roads do not render an ordinary visible closure strip, seam carpet, or second
   support mesh; the stitched terrain patch mesh is the seam carrier
 - visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
-  water meshes receive the same road footprint clip polygons after a network edit, so water is no
-  longer allowed to render under grounded road-owned asphalt, shoulder / curb, or sidewalk
+  water meshes receive the same road footprint clip polygons after a network edit and suppress
+  touched water cells wholesale, so water is no longer allowed to render under grounded road-owned
+  asphalt, shoulder / curb, or sidewalk
 - the remaining blocker is validation and hardening of the clipped patch topology against flat,
   diagonal, sloped, water-overlap, bend, terminal, and `JunctionN` cases
 - terrain suppression / masking is not accepted as the live seam solution; road-shaped terrain holes

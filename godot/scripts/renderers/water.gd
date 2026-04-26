@@ -790,7 +790,6 @@ func _emit_clipped_water_cell(
 		)
 
 	var cell_bounds := _polygon_bounds(cell)
-	var intersecting_clips: Array = []
 	for clip in clip_polygons:
 		var clip_points: PackedVector2Array = clip["points"]
 		var clip_bounds: Rect2 = clip["bounds"]
@@ -799,44 +798,18 @@ func _emit_clipped_water_cell(
 		if _cell_fully_inside_polygon(cell, clip_points):
 			return 0
 		if _polygon_intersects_cell(clip_points, clip_bounds, cell, cell_bounds):
-			intersecting_clips.append(clip_points)
-
-	if intersecting_clips.is_empty():
-		return _emit_unclipped_water_cell(
-			surface_tool,
-			cell,
-			center_x,
-			center_z,
-			world_origin_x,
-			world_origin_z,
-			world_size_x,
-			world_size_z
-		)
-
-	var pieces: Array = [cell]
-	for clip_points_variant in intersecting_clips:
-		var clip_points: PackedVector2Array = clip_points_variant
-		var next_pieces: Array = []
-		for piece in pieces:
-			var clipped_pieces: Array[PackedVector2Array] = Geometry2D.clip_polygons(piece, clip_points)
-			for clipped_piece in clipped_pieces:
-				if clipped_piece.size() >= 3 and _polygon_within_bounds(clipped_piece, cell_bounds):
-					next_pieces.append(clipped_piece)
-		pieces = next_pieces
-		if pieces.is_empty():
 			return 0
 
-	var emitted_vertices := 0
-	for piece in pieces:
-		var indices: PackedInt32Array = Geometry2D.triangulate_polygon(piece)
-		for index in range(0, indices.size(), 3):
-			_add_clipped_water_vertex(surface_tool, piece[indices[index + 2]], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-			emitted_vertices += 1
-			_add_clipped_water_vertex(surface_tool, piece[indices[index + 1]], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-			emitted_vertices += 1
-			_add_clipped_water_vertex(surface_tool, piece[indices[index]], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-			emitted_vertices += 1
-	return emitted_vertices
+	return _emit_unclipped_water_cell(
+		surface_tool,
+		cell,
+		center_x,
+		center_z,
+		world_origin_x,
+		world_origin_z,
+		world_size_x,
+		world_size_z
+	)
 
 func _emit_unclipped_water_cell(
 	surface_tool: SurfaceTool,
@@ -934,12 +907,6 @@ func _point_on_polygon_boundary(point: Vector2, polygon: PackedVector2Array) -> 
 		if _point_on_segment(point, polygon[index], polygon[(index + 1) % polygon.size()]):
 			return true
 	return false
-
-func _polygon_within_bounds(polygon: PackedVector2Array, bounds: Rect2) -> bool:
-	for point in polygon:
-		if not _point_in_bounds(point, bounds):
-			return false
-	return true
 
 func _point_in_bounds(point: Vector2, bounds: Rect2) -> bool:
 	const EPSILON := 0.01

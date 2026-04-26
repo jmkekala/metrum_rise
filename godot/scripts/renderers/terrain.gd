@@ -698,8 +698,10 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		)
 		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
 		var baked_vertex_count: int = _road_geometry_baked_vertex_count(patch_data)
+		var clip_triangle_count: int = int(patch_data.get("terrain_clip_triangles", 0))
+		var rejected_clip_triangle_count: int = int(patch_data.get("terrain_clip_triangles_rejected", 0))
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d clip_tris=%d rejected_clip_tris=%d"
 			% [
 				key.x,
 				key.y,
@@ -723,6 +725,8 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				float(clip_stats.get("max_bbox_x", 0.0)),
 				float(clip_stats.get("max_bbox_z", 0.0)),
 				baked_vertex_count,
+				clip_triangle_count,
+				rejected_clip_triangle_count,
 			]
 		)
 	return lines

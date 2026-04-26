@@ -141,7 +141,7 @@ pub struct RoadSurfaceVisualNodePiece {
     pub node_id: u32,
     /// Piece classification for rendering and debug.
     pub kind: RoadSurfaceVisualNodePieceKind,
-    /// Outer piece-owned boundaries used for debug and surface chunk bounds.
+    /// Outer piece-owned boundaries used for debug, surface chunk bounds, and terrain clipping.
     pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit asphalt-owned polygons for the node piece.
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
@@ -157,7 +157,7 @@ pub struct RoadSurfaceVisualNodePiece {
 pub struct RoadSurfaceVisualSpanPiece {
     /// Owning edge id.
     pub edge_idx: usize,
-    /// Outer piece-owned boundaries used for debug and surface chunk bounds.
+    /// Outer piece-owned boundaries used for debug, surface chunk bounds, and terrain clipping.
     pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit asphalt-owned polygons for the span piece.
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
@@ -427,15 +427,7 @@ impl RoadSurfaceSystem {
                 continue;
             }
             Self::collect_terrain_clip_polygons_from_piece(
-                &piece.road_surface_polygons,
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-                &mut polygons,
-            );
-            Self::collect_terrain_clip_polygons_from_piece(
-                &piece.sidewalk_surface_polygons,
+                &piece.outer_boundary_loops,
                 min_x,
                 min_z,
                 max_x,
@@ -449,15 +441,7 @@ impl RoadSurfaceSystem {
                 continue;
             }
             Self::collect_terrain_clip_polygons_from_piece(
-                &piece.road_surface_polygons,
-                min_x,
-                min_z,
-                max_x,
-                max_z,
-                &mut polygons,
-            );
-            Self::collect_terrain_clip_polygons_from_piece(
-                &piece.sidewalk_surface_polygons,
+                &piece.outer_boundary_loops,
                 min_x,
                 min_z,
                 max_x,
@@ -5852,25 +5836,23 @@ mod tests {
             clip_polygons
                 .iter()
                 .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)),
-            "expected every terrain clip cutter to be a valid paved surface polygon"
+            "expected every terrain clip cutter to be a valid road footprint polygon"
         );
-        let expected_surface_polygon_count: usize = surface
+        let expected_outer_boundary_loop_count: usize = surface
             .compiled_visual_span_pieces()
             .values()
-            .map(|piece| piece.road_surface_polygons.len() + piece.sidewalk_surface_polygons.len())
+            .map(|piece| piece.outer_boundary_loops.len())
             .sum::<usize>()
             + surface
                 .compiled_visual_node_pieces()
                 .values()
-                .map(|piece| {
-                    piece.road_surface_polygons.len() + piece.sidewalk_surface_polygons.len()
-                })
+                .map(|piece| piece.outer_boundary_loops.len())
                 .sum::<usize>();
         assert!(
-            clip_polygons.len() == expected_surface_polygon_count,
-            "expected terrain clip cutters to come from local road/sidewalk surface polygons, got {} cutters for {} visible surface polygons",
+            clip_polygons.len() == expected_outer_boundary_loop_count,
+            "expected terrain clip cutters to come from piece-owned outer boundary loops, got {} cutters for {} outer loops",
             clip_polygons.len(),
-            expected_surface_polygon_count
+            expected_outer_boundary_loop_count
         );
     }
 

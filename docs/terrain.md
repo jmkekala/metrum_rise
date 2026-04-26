@@ -372,8 +372,9 @@ Current deterministic rules:
 - road-touched terrain patches switch from cached rectangular `PlaneMesh` topology to
   Rust-generated baked local `ArrayMesh` topology
 - visible water patches always build depth-owned local `ArrayMesh` topology; dry cells emit no water
-  mesh instead of relying on shader discard, and road-touched water patches additionally clip that
-  depth-owned topology against the road footprint after a network edit
+  mesh instead of relying on shader discard, and road-touched water patches suppress every water
+  cell touched by the road footprint after a network edit instead of emitting partial transparent
+  clip fragments
 - the old whole-map terrain / water Godot render APIs were removed from the steady terrain / water
   bridge
 - dense terrain or water materialization may still exist at save/load, undo, or other explicit
@@ -786,8 +787,14 @@ Deterministic transition rules:
   - chunk-local invalidation and rebuild boundaries
   - the split terrain / water render-upload path
   - Rust-generated stitched terrain topology anywhere grounded `Standard` road top surfaces own the
-    visible surface; shader discard, alpha masking, or Godot-side polygon clipping must not be the
+    visible surface; the clip boundary is the compiled road-piece outer loop, and shader discard,
+    alpha masking, internal road-band clipping, or Godot-side polygon clipping must not be the
     ordinary road seam carrier
+  - terrain clipping must be derived from the compiled road-piece outer loop in Rust; asphalt /
+    sidewalk render triangles are not reused as terrain ownership triangles
+  - current road-touched patch emission has removed the old subtractive triangle cutter and uses a
+    conservative cell-triangle ownership rule until the full constrained seam triangulator replaces
+    the remaining cell approximation
   - terrain render suppression for structural local earthwork geometry must remain bounded to true
     geometry overlap rather than acting as a substitute for missing tie-in faces; road-edge terrain
     topology must still be geometrically correct if terrain-side suppression is turned off

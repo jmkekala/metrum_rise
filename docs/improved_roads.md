@@ -767,14 +767,20 @@ Current status:
     terrain under asphalt / sidewalk by generating stitched terrain topology to the road-owned outer
     sidewalk / shoulder edge
   - road-touched terrain patches now receive a Rust-generated baked `ArrayMesh` from the
-    piece-owned road footprint clip polygons instead of relying on one rectangular `PlaneMesh`, a
-    Godot-side polygon clipper, or fragment discard
-  - stitched terrain patch emission is bounded to road-locked terrain patches, bins local road
-    triangles per patch cell, omits cells owned by the road footprint, and emits boundary vertices
-    at the road / sidewalk seam height
+    piece-owned outer boundary loops instead of relying on one rectangular `PlaneMesh`, internal
+    asphalt / sidewalk band polygons, a Godot-side polygon clipper, or fragment discard
+  - terrain clip triangles are Rust-ear-clipped from those outer boundary loops for validation /
+    diagnostics only; asphalt / sidewalk render triangles are not reused as terrain ownership
+    triangles
+  - the old subtract-road-triangles-from-terrain-cells emitter has been removed from the live path
+  - current stitched terrain patch emission is bounded to road-locked terrain patches, bins local
+    footprint loops per patch cell, and conservatively omits only terrain cell triangles whose
+    vertices are fully owned by a road footprint; full constrained seam triangulation remains the
+    next required hard cut
   - visible water patches now consume the same road footprint clip polygons and rebuild only
-    road-touched water patch meshes after a road edit, so water cannot remain as a hidden visual
-    carrier under grounded asphalt, shoulder / curb, or sidewalk
+    road-touched water patch meshes after a road edit; touched water cells are suppressed wholesale
+    instead of being triangulated into transparent fragments, so water cannot remain as a hidden
+    visual carrier under grounded asphalt, shoulder / curb, or sidewalk
   - paved-footprint support queries now follow the solved road profile per top-surface triangle
     instead of stamping one flat minimum-height slab per piece
   - compiled span and node pieces still own explicit earthwork geometry for deterministic terrain

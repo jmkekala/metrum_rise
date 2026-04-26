@@ -103,15 +103,6 @@ use std::sync::{Arc, Mutex, RwLock};
 
 const TERRAIN_STITCH_EPSILON_M: f32 = 0.001;
 
-#[derive(Clone, Copy)]
-struct TerrainClipTriangle {
-    points: [Vector3; 3],
-    min_x: f32,
-    min_z: f32,
-    max_x: f32,
-    max_z: f32,
-}
-
 #[derive(GodotClass)]
 #[class(base=Node3D)]
 /// The central simulation node exposed to Godot.
@@ -459,22 +450,20 @@ impl SimulationNode {
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
     ) {
-        let mut clip_triangles = Self::terrain_clip_triangles(road_clip_polygons);
-        if clip_triangles.is_empty() {
+        let clip_triangles = Self::terrain_clip_triangles(road_clip_polygons);
+        dict.set(
+            "terrain_clip_triangles",
+            i64::try_from(clip_triangles.len()).unwrap_or(0),
+        );
+        dict.set("terrain_clip_triangles_rejected", 0i64);
+        if road_clip_polygons.is_empty() {
             return;
         }
-        clip_triangles.sort_by(|a, b| {
-            a.min_x
-                .total_cmp(&b.min_x)
-                .then(a.min_z.total_cmp(&b.min_z))
-                .then(a.max_x.total_cmp(&b.max_x))
-                .then(a.max_z.total_cmp(&b.max_z))
-        });
 
         let x_interval_count = patch.sample_width.saturating_sub(1).max(1);
         let z_interval_count = patch.sample_height.saturating_sub(1).max(1);
-        let bins = Self::terrain_clip_bins(
-            &clip_triangles,
+        let polygon_bins = Self::terrain_clip_polygon_bins(
+            road_clip_polygons,
             patch.world_origin_x,
             patch.world_origin_z,
             patch.world_size_x,
@@ -506,14 +495,16 @@ impl SimulationNode {
                     Self::terrain_stitch_point(core, world_x0, world_z1),
                 ];
                 let bin_index = z_index * x_interval_count + x_index;
-                let pieces = Self::terrain_cell_minus_road_footprint(
-                    cell,
-                    &bins[bin_index],
-                    &clip_triangles,
-                );
-                for piece in pieces {
-                    Self::emit_stitched_terrain_piece(
-                        &piece,
+                for triangle in [[cell[0], cell[1], cell[2]], [cell[0], cell[2], cell[3]]] {
+                    if Self::terrain_triangle_is_fully_owned_by_road(
+                        triangle,
+                        &polygon_bins[bin_index],
+                        road_clip_polygons,
+                    ) {
+                        continue;
+                    }
+                    Self::emit_stitched_terrain_triangle(
+                        triangle,
                         patch,
                         center_x,
                         center_z,
@@ -542,49 +533,238 @@ impl SimulationNode {
 
     fn terrain_clip_triangles(
         road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
-    ) -> Vec<TerrainClipTriangle> {
+    ) -> Vec<[Vector3; 3]> {
         let mut clip_triangles = Vec::new();
         for polygon in road_clip_polygons {
-            for triangle in &polygon.triangles_world {
-                let Some(points) = Self::terrain_clip_triangle_points(*triangle) else {
+            for points in Self::terrain_ear_clip_polygon(&polygon.points_world) {
+                if !Self::terrain_clip_triangle_stays_inside_polygon(points, &polygon.points_world)
+                {
                     continue;
-                };
-                let mut min_x = points[0].x;
-                let mut max_x = points[0].x;
-                let mut min_z = points[0].z;
-                let mut max_z = points[0].z;
-                for point in points {
-                    min_x = min_x.min(point.x);
-                    max_x = max_x.max(point.x);
-                    min_z = min_z.min(point.z);
-                    max_z = max_z.max(point.z);
                 }
-                clip_triangles.push(TerrainClipTriangle {
-                    points,
-                    min_x,
-                    min_z,
-                    max_x,
-                    max_z,
-                });
+                clip_triangles.push(points);
             }
         }
         clip_triangles
     }
 
-    fn terrain_clip_triangle_points(triangle: [Vector3; 3]) -> Option<[Vector3; 3]> {
-        let area = Self::terrain_signed_area_xz(&triangle);
-        if area.abs() <= TERRAIN_STITCH_EPSILON_M * TERRAIN_STITCH_EPSILON_M {
-            return None;
+    fn terrain_ear_clip_polygon(polygon: &[Vector3]) -> Vec<[Vector3; 3]> {
+        let mut points = Self::terrain_simplified_polygon_points(polygon);
+        if points.len() < 3 || !Self::terrain_polygon_has_area(&points) {
+            return Vec::new();
         }
-        if area > 0.0 {
-            Some(triangle)
-        } else {
-            Some([triangle[0], triangle[2], triangle[1]])
+        if Self::terrain_signed_area_xz(&points) < 0.0 {
+            points.reverse();
         }
+
+        let mut indices = (0..points.len()).collect::<Vec<_>>();
+        let mut triangles = Vec::with_capacity(points.len().saturating_sub(2));
+        let mut guard = 0usize;
+        while indices.len() > 3 && guard < points.len() * points.len() {
+            guard += 1;
+            let mut ear_index = None;
+            for local_index in 0..indices.len() {
+                let previous_index = indices[(local_index + indices.len() - 1) % indices.len()];
+                let current_index = indices[local_index];
+                let next_index = indices[(local_index + 1) % indices.len()];
+                let triangle = [
+                    points[previous_index],
+                    points[current_index],
+                    points[next_index],
+                ];
+                if Self::terrain_signed_area_xz(&triangle) <= TERRAIN_STITCH_EPSILON_M {
+                    continue;
+                }
+                let contains_other_point = indices.iter().any(|&candidate_index| {
+                    candidate_index != previous_index
+                        && candidate_index != current_index
+                        && candidate_index != next_index
+                        && Self::terrain_point_in_triangle_xz(points[candidate_index], triangle)
+                });
+                if contains_other_point {
+                    continue;
+                }
+                ear_index = Some((local_index, triangle));
+                break;
+            }
+
+            let Some((local_index, triangle)) = ear_index else {
+                return Vec::new();
+            };
+            triangles.push(triangle);
+            indices.remove(local_index);
+        }
+
+        if indices.len() == 3 {
+            let triangle = [points[indices[0]], points[indices[1]], points[indices[2]]];
+            if Self::terrain_signed_area_xz(&triangle) > TERRAIN_STITCH_EPSILON_M {
+                triangles.push(triangle);
+            }
+        }
+        triangles
     }
 
-    fn terrain_clip_bins(
-        clip_triangles: &[TerrainClipTriangle],
+    fn terrain_simplified_polygon_points(polygon: &[Vector3]) -> Vec<Vector3> {
+        let deduplicated = Self::terrain_deduplicate_polygon_points(polygon.to_vec());
+        if deduplicated.len() < 3 {
+            return deduplicated;
+        }
+
+        let mut simplified = Vec::with_capacity(deduplicated.len());
+        for index in 0..deduplicated.len() {
+            let previous = deduplicated[(index + deduplicated.len() - 1) % deduplicated.len()];
+            let current = deduplicated[index];
+            let next = deduplicated[(index + 1) % deduplicated.len()];
+            let ab_x = current.x - previous.x;
+            let ab_z = current.z - previous.z;
+            let bc_x = next.x - current.x;
+            let bc_z = next.z - current.z;
+            if Self::terrain_cross_xz(ab_x, ab_z, bc_x, bc_z).abs()
+                <= TERRAIN_STITCH_EPSILON_M * TERRAIN_STITCH_EPSILON_M
+            {
+                continue;
+            }
+            simplified.push(current);
+        }
+        simplified
+    }
+
+    fn terrain_point_in_triangle_xz(point: Vector3, triangle: [Vector3; 3]) -> bool {
+        let a = triangle[0];
+        let b = triangle[1];
+        let c = triangle[2];
+        let ab = Self::terrain_cross_xz(b.x - a.x, b.z - a.z, point.x - a.x, point.z - a.z);
+        let bc = Self::terrain_cross_xz(c.x - b.x, c.z - b.z, point.x - b.x, point.z - b.z);
+        let ca = Self::terrain_cross_xz(a.x - c.x, a.z - c.z, point.x - c.x, point.z - c.z);
+        ab >= -TERRAIN_STITCH_EPSILON_M
+            && bc >= -TERRAIN_STITCH_EPSILON_M
+            && ca >= -TERRAIN_STITCH_EPSILON_M
+    }
+
+    fn terrain_clip_triangle_stays_inside_polygon(
+        triangle: [Vector3; 3],
+        polygon: &[Vector3],
+    ) -> bool {
+        if polygon.len() < 3 {
+            return false;
+        }
+
+        let centroid = Vector2::new(
+            (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
+            (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
+        );
+        if !Self::terrain_point_in_polygon_or_boundary_xz(centroid, polygon) {
+            return false;
+        }
+
+        for edge_index in 0..3 {
+            let edge_a = triangle[edge_index];
+            let edge_b = triangle[(edge_index + 1) % 3];
+            for t in [0.25, 0.5, 0.75] {
+                let sample = Vector2::new(
+                    edge_a.x + (edge_b.x - edge_a.x) * t,
+                    edge_a.z + (edge_b.z - edge_a.z) * t,
+                );
+                if !Self::terrain_point_in_polygon_or_boundary_xz(sample, polygon) {
+                    return false;
+                }
+            }
+
+            for polygon_index in 0..polygon.len() {
+                let polygon_a = polygon[polygon_index];
+                let polygon_b = polygon[(polygon_index + 1) % polygon.len()];
+                if Self::terrain_segments_properly_intersect_xz(
+                    edge_a, edge_b, polygon_a, polygon_b,
+                ) {
+                    return false;
+                }
+            }
+        }
+
+        true
+    }
+
+    fn terrain_point_in_polygon_or_boundary_xz(point: Vector2, polygon: &[Vector3]) -> bool {
+        for index in 0..polygon.len() {
+            let a = polygon[index];
+            let b = polygon[(index + 1) % polygon.len()];
+            if Self::terrain_point_segment_distance_sq_xz(point, a, b)
+                <= TERRAIN_STITCH_EPSILON_M * TERRAIN_STITCH_EPSILON_M * 16.0
+            {
+                return true;
+            }
+        }
+
+        let mut inside = false;
+        for index in 0..polygon.len() {
+            let a = polygon[index];
+            let b = polygon[(index + 1) % polygon.len()];
+            let crosses_ray = (a.z > point.y) != (b.z > point.y);
+            if !crosses_ray {
+                continue;
+            }
+            let z_delta = b.z - a.z;
+            if z_delta.abs() <= TERRAIN_STITCH_EPSILON_M {
+                continue;
+            }
+            let intersect_x = a.x + (point.y - a.z) * (b.x - a.x) / z_delta;
+            if intersect_x >= point.x - TERRAIN_STITCH_EPSILON_M {
+                inside = !inside;
+            }
+        }
+        inside
+    }
+
+    fn terrain_point_segment_distance_sq_xz(
+        point: Vector2,
+        segment_a: Vector3,
+        segment_b: Vector3,
+    ) -> f32 {
+        let ab_x = segment_b.x - segment_a.x;
+        let ab_z = segment_b.z - segment_a.z;
+        let length_sq = ab_x * ab_x + ab_z * ab_z;
+        if length_sq <= TERRAIN_STITCH_EPSILON_M * TERRAIN_STITCH_EPSILON_M {
+            let dx = point.x - segment_a.x;
+            let dz = point.y - segment_a.z;
+            return dx * dx + dz * dz;
+        }
+        let t = (((point.x - segment_a.x) * ab_x + (point.y - segment_a.z) * ab_z) / length_sq)
+            .clamp(0.0, 1.0);
+        let closest_x = segment_a.x + ab_x * t;
+        let closest_z = segment_a.z + ab_z * t;
+        let dx = point.x - closest_x;
+        let dz = point.y - closest_z;
+        dx * dx + dz * dz
+    }
+
+    fn terrain_segments_properly_intersect_xz(
+        a0: Vector3,
+        a1: Vector3,
+        b0: Vector3,
+        b1: Vector3,
+    ) -> bool {
+        if Self::terrain_points_near_xz(a0, b0)
+            || Self::terrain_points_near_xz(a0, b1)
+            || Self::terrain_points_near_xz(a1, b0)
+            || Self::terrain_points_near_xz(a1, b1)
+        {
+            return false;
+        }
+
+        let o1 = Self::terrain_cross_xz(a1.x - a0.x, a1.z - a0.z, b0.x - a0.x, b0.z - a0.z);
+        let o2 = Self::terrain_cross_xz(a1.x - a0.x, a1.z - a0.z, b1.x - a0.x, b1.z - a0.z);
+        let o3 = Self::terrain_cross_xz(b1.x - b0.x, b1.z - b0.z, a0.x - b0.x, a0.z - b0.z);
+        let o4 = Self::terrain_cross_xz(b1.x - b0.x, b1.z - b0.z, a1.x - b0.x, a1.z - b0.z);
+        o1 * o2 < -TERRAIN_STITCH_EPSILON_M && o3 * o4 < -TERRAIN_STITCH_EPSILON_M
+    }
+
+    fn terrain_points_near_xz(a: Vector3, b: Vector3) -> bool {
+        let dx = a.x - b.x;
+        let dz = a.z - b.z;
+        dx * dx + dz * dz <= TERRAIN_STITCH_EPSILON_M * TERRAIN_STITCH_EPSILON_M * 16.0
+    }
+
+    fn terrain_clip_polygon_bins(
+        road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
         world_origin_x: f32,
         world_origin_z: f32,
         world_size_x: f32,
@@ -593,27 +773,40 @@ impl SimulationNode {
         z_interval_count: usize,
     ) -> Vec<Vec<usize>> {
         let mut bins = vec![Vec::new(); x_interval_count * z_interval_count];
-        for (triangle_index, triangle) in clip_triangles.iter().enumerate() {
+        for (polygon_index, polygon) in road_clip_polygons.iter().enumerate() {
+            if polygon.points_world.len() < 3 {
+                continue;
+            }
+            let mut min_x = polygon.points_world[0].x;
+            let mut max_x = polygon.points_world[0].x;
+            let mut min_z = polygon.points_world[0].z;
+            let mut max_z = polygon.points_world[0].z;
+            for point in &polygon.points_world {
+                min_x = min_x.min(point.x);
+                max_x = max_x.max(point.x);
+                min_z = min_z.min(point.z);
+                max_z = max_z.max(point.z);
+            }
             let min_x = Self::terrain_mesh_bin_index(
-                triangle.min_x - TERRAIN_STITCH_EPSILON_M,
+                min_x - TERRAIN_STITCH_EPSILON_M,
                 world_origin_x,
                 world_size_x,
                 x_interval_count,
             );
             let max_x = Self::terrain_mesh_bin_index(
-                triangle.max_x + TERRAIN_STITCH_EPSILON_M,
+                max_x + TERRAIN_STITCH_EPSILON_M,
                 world_origin_x,
                 world_size_x,
                 x_interval_count,
             );
             let min_z = Self::terrain_mesh_bin_index(
-                triangle.min_z - TERRAIN_STITCH_EPSILON_M,
+                min_z - TERRAIN_STITCH_EPSILON_M,
                 world_origin_z,
                 world_size_z,
                 z_interval_count,
             );
             let max_z = Self::terrain_mesh_bin_index(
-                triangle.max_z + TERRAIN_STITCH_EPSILON_M,
+                max_z + TERRAIN_STITCH_EPSILON_M,
                 world_origin_z,
                 world_size_z,
                 z_interval_count,
@@ -621,11 +814,30 @@ impl SimulationNode {
 
             for z_index in min_z..=max_z {
                 for x_index in min_x..=max_x {
-                    bins[z_index * x_interval_count + x_index].push(triangle_index);
+                    bins[z_index * x_interval_count + x_index].push(polygon_index);
                 }
             }
         }
         bins
+    }
+
+    fn terrain_triangle_is_fully_owned_by_road(
+        triangle: [Vector3; 3],
+        polygon_indices: &[usize],
+        road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
+    ) -> bool {
+        polygon_indices.iter().any(|&polygon_index| {
+            let polygon = &road_clip_polygons[polygon_index].points_world;
+            if polygon.len() < 3 {
+                return false;
+            }
+            triangle.iter().all(|point| {
+                Self::terrain_point_in_polygon_or_boundary_xz(
+                    Vector2::new(point.x, point.z),
+                    polygon,
+                )
+            })
+        })
     }
 
     fn terrain_mesh_bin_index(
@@ -639,164 +851,6 @@ impl SimulationNode {
         }
         let t = ((world_coord - world_origin) / world_size).clamp(0.0, 0.999_999);
         (t * interval_count as f32).floor() as usize
-    }
-
-    fn terrain_cell_minus_road_footprint(
-        cell: Vec<Vector3>,
-        clip_indices: &[usize],
-        clip_triangles: &[TerrainClipTriangle],
-    ) -> Vec<Vec<Vector3>> {
-        let mut pieces = vec![cell];
-        for &clip_index in clip_indices {
-            let clip = &clip_triangles[clip_index];
-            let mut next_pieces = Vec::new();
-            for piece in pieces {
-                if !Self::terrain_piece_intersects_clip_bounds(&piece, clip) {
-                    next_pieces.push(piece);
-                    continue;
-                }
-                next_pieces.extend(Self::terrain_subtract_convex_clip(&piece, clip));
-            }
-            pieces = next_pieces;
-            if pieces.is_empty() {
-                break;
-            }
-        }
-        pieces
-    }
-
-    fn terrain_piece_intersects_clip_bounds(piece: &[Vector3], clip: &TerrainClipTriangle) -> bool {
-        let mut min_x = piece[0].x;
-        let mut max_x = piece[0].x;
-        let mut min_z = piece[0].z;
-        let mut max_z = piece[0].z;
-        for point in piece {
-            min_x = min_x.min(point.x);
-            max_x = max_x.max(point.x);
-            min_z = min_z.min(point.z);
-            max_z = max_z.max(point.z);
-        }
-        min_x <= clip.max_x + TERRAIN_STITCH_EPSILON_M
-            && max_x >= clip.min_x - TERRAIN_STITCH_EPSILON_M
-            && min_z <= clip.max_z + TERRAIN_STITCH_EPSILON_M
-            && max_z >= clip.min_z - TERRAIN_STITCH_EPSILON_M
-    }
-
-    fn terrain_subtract_convex_clip(
-        piece: &[Vector3],
-        clip: &TerrainClipTriangle,
-    ) -> Vec<Vec<Vector3>> {
-        let mut pending = vec![piece.to_vec()];
-        let mut outside_pieces = Vec::new();
-        for edge_index in 0..3 {
-            let edge_a = clip.points[edge_index];
-            let edge_b = clip.points[(edge_index + 1) % 3];
-            let mut next_pending = Vec::new();
-            for candidate in pending {
-                let outside =
-                    Self::terrain_clip_polygon_by_half_plane(&candidate, edge_a, edge_b, false);
-                if Self::terrain_polygon_has_area(&outside) {
-                    outside_pieces.push(outside);
-                }
-
-                let inside =
-                    Self::terrain_clip_polygon_by_half_plane(&candidate, edge_a, edge_b, true);
-                if Self::terrain_polygon_has_area(&inside) {
-                    next_pending.push(inside);
-                }
-            }
-            pending = next_pending;
-            if pending.is_empty() {
-                break;
-            }
-        }
-        outside_pieces
-    }
-
-    fn terrain_clip_polygon_by_half_plane(
-        polygon: &[Vector3],
-        edge_a: Vector3,
-        edge_b: Vector3,
-        keep_inside: bool,
-    ) -> Vec<Vector3> {
-        if polygon.is_empty() {
-            return Vec::new();
-        }
-        let mut output = Vec::with_capacity(polygon.len() + 1);
-        let mut previous = polygon[polygon.len() - 1];
-        let mut previous_kept =
-            Self::terrain_half_plane_keeps(previous, edge_a, edge_b, keep_inside);
-        for &current in polygon {
-            let current_kept = Self::terrain_half_plane_keeps(current, edge_a, edge_b, keep_inside);
-            if current_kept {
-                if !previous_kept {
-                    output.push(Self::terrain_clip_intersection(
-                        previous, current, edge_a, edge_b,
-                    ));
-                }
-                output.push(current);
-            } else if previous_kept {
-                output.push(Self::terrain_clip_intersection(
-                    previous, current, edge_a, edge_b,
-                ));
-            }
-            previous = current;
-            previous_kept = current_kept;
-        }
-        Self::terrain_deduplicate_polygon_points(output)
-    }
-
-    fn terrain_half_plane_keeps(
-        point: Vector3,
-        edge_a: Vector3,
-        edge_b: Vector3,
-        keep_inside: bool,
-    ) -> bool {
-        let side = Self::terrain_cross_xz(
-            edge_b.x - edge_a.x,
-            edge_b.z - edge_a.z,
-            point.x - edge_a.x,
-            point.z - edge_a.z,
-        );
-        if keep_inside {
-            side >= -TERRAIN_STITCH_EPSILON_M
-        } else {
-            side <= TERRAIN_STITCH_EPSILON_M
-        }
-    }
-
-    fn terrain_clip_intersection(
-        segment_a: Vector3,
-        segment_b: Vector3,
-        clip_a: Vector3,
-        clip_b: Vector3,
-    ) -> Vector3 {
-        let segment_x = segment_b.x - segment_a.x;
-        let segment_z = segment_b.z - segment_a.z;
-        let clip_x = clip_b.x - clip_a.x;
-        let clip_z = clip_b.z - clip_a.z;
-        let denom = Self::terrain_cross_xz(segment_x, segment_z, clip_x, clip_z);
-        let t = if denom.abs() <= TERRAIN_STITCH_EPSILON_M {
-            0.0
-        } else {
-            Self::terrain_cross_xz(
-                clip_a.x - segment_a.x,
-                clip_a.z - segment_a.z,
-                clip_x,
-                clip_z,
-            ) / denom
-        }
-        .clamp(0.0, 1.0);
-        let x = segment_a.x + segment_x * t;
-        let z = segment_a.z + segment_z * t;
-        let edge_len_sq = clip_x * clip_x + clip_z * clip_z;
-        let u = if edge_len_sq <= TERRAIN_STITCH_EPSILON_M {
-            0.0
-        } else {
-            (((x - clip_a.x) * clip_x + (z - clip_a.z) * clip_z) / edge_len_sq).clamp(0.0, 1.0)
-        };
-        let y = clip_a.y + (clip_b.y - clip_a.y) * u;
-        Vector3::new(x, y, z)
     }
 
     fn terrain_deduplicate_polygon_points(points: Vec<Vector3>) -> Vec<Vector3> {
@@ -816,37 +870,6 @@ impl SimulationNode {
             deduplicated.pop();
         }
         deduplicated
-    }
-
-    fn emit_stitched_terrain_piece(
-        piece: &[Vector3],
-        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-        center_x: f32,
-        center_z: f32,
-        vertices: &mut Vec<Vector3>,
-        normals: &mut Vec<Vector3>,
-        uvs: &mut Vec<Vector2>,
-    ) {
-        if !Self::terrain_polygon_has_area(piece) {
-            return;
-        }
-        let area = Self::terrain_signed_area_xz(piece);
-        for index in 1..piece.len() - 1 {
-            let (a, b, c) = if area > 0.0 {
-                (piece[0], piece[index + 1], piece[index])
-            } else {
-                (piece[0], piece[index], piece[index + 1])
-            };
-            Self::emit_stitched_terrain_triangle(
-                [a, b, c],
-                patch,
-                center_x,
-                center_z,
-                vertices,
-                normals,
-                uvs,
-            );
-        }
     }
 
     fn emit_stitched_terrain_triangle(
@@ -3062,6 +3085,51 @@ impl INode3D for SimulationNode {
             if self.benchmark_tick_count >= 3000 {
                 godot_print!("[bench] DONE — 3000 frames complete. See benchmark_results.csv.");
                 self.base_mut().get_tree().unwrap().quit();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::RoadSurfaceVisualPolygon;
+
+    fn point(x: f32, z: f32) -> Vector3 {
+        Vector3::new(x, 0.0, z)
+    }
+
+    #[test]
+    fn terrain_clip_triangles_triangulate_concave_outer_loop_instead_of_reusing_surface_triangles()
+    {
+        let polygon = RoadSurfaceVisualPolygon {
+            points_world: vec![
+                point(0.0, 0.0),
+                point(4.0, 0.0),
+                point(4.0, 4.0),
+                point(3.0, 4.0),
+                point(3.0, 1.0),
+                point(1.0, 1.0),
+                point(1.0, 4.0),
+                point(0.0, 4.0),
+            ],
+            triangles_world: vec![
+                [point(0.0, 0.0), point(4.0, 0.0), point(1.0, 1.0)],
+                [point(0.0, 0.0), point(4.0, 0.0), point(4.0, 4.0)],
+            ],
+        };
+
+        let triangles = SimulationNode::terrain_clip_triangles(&[polygon]);
+
+        assert_eq!(triangles.len(), 6);
+        for triangle in triangles {
+            for point in triangle {
+                assert!(
+                    point.z <= 1.0 + TERRAIN_STITCH_EPSILON_M
+                        || point.x <= 1.0 + TERRAIN_STITCH_EPSILON_M
+                        || point.x >= 3.0 - TERRAIN_STITCH_EPSILON_M,
+                    "ear-clipped terrain triangle leaked into the concave void"
+                );
             }
         }
     }
