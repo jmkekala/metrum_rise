@@ -47,7 +47,8 @@ Terminology:
 - `throat`: the edge-local boundary where an edge corridor hands off into a visual piece
 - `legacy node patch`: the retired loop-based junction / terminal carrier that previously tried to
   connect incident edge corridors
-- `earthworks`: the derived cut / fill imprint that the roadbed applies to visual terrain
+- `earthworks`: explicit structural cut / fill geometry or visual terrain adjustment for road
+  classes that intentionally expose bridge, tunnel, retaining, or portal support
 - `surface chunk`: one cached local render / query unit for the roadbed
 
 ## Problem Statement
@@ -70,10 +71,10 @@ reintroducing local patches to the retired renderer.
 
 Phases 1-10 now establish the shipped roadbed replacement:
 
-- preview, committed surface rendering, world-surface queries, and terrain earthworks consume one
-  compiled roadbed cache
-- grounded `Standard` roads stamp both the paved footprint and a deterministic outer shoulder /
-  cut / fill transition margin into visual terrain
+- preview, committed surface rendering, world-surface queries, stitched terrain patches, and
+  structural terrain earthworks consume one compiled roadbed cache
+- grounded `Standard` roads do not stamp the paved footprint or ordinary outer margin into visual
+  terrain; road-touched terrain patches are generated as Rust-owned stitched meshes
 - grounded `Standard` roads keep a bounded design crossfall instead of rolling the carriageway to
   match the full hillside cross-slope, and the remaining mismatch is absorbed by terrain
   earthworks
@@ -197,8 +198,8 @@ The shipped roadbed runtime is a 2.5-D roadbed model shared by all road-surface 
 For one world position `(x, z)` inside a surface road footprint:
 
 - there is exactly one authoritative roadbed height query owned by the road system
-- render mesh vertices, preview mesh vertices, lane-marking anchors, and terrain earthwork stamps
-  all derive from that same roadbed
+- render mesh vertices, preview mesh vertices, lane-marking anchors, stitched terrain seams, and
+  structural earthwork stamps all derive from that same roadbed
 
 The codebase must not maintain separate height-conditioning implementations for:
 
@@ -231,20 +232,21 @@ Deterministic rule:
   alone is not sufficient because coplanar or near-coplanar terrain can still render through the
   road surface
 - the seam outside the owned footprint must be explicit:
-  - the terrain mesh is clipped / triangulated so its inner edge follows the road-owned outer
+  - Rust generates the road-touched terrain mesh so its inner edge follows the road-owned outer
     boundary
-  - a narrow road-owned terrain-colored closure strip closes the visible boundary from that outer
-    edge to nearby terrain; structural / retaining variants may replace wider engineered faces with
-    explicit engineered materials
+  - terrain vertices created on that inner edge reuse the road-owned edge height; no ordinary
+    closure strip, seam carpet, or shader mask is allowed for grounded `Standard` roads
+  - structural / retaining variants may still render explicit engineered materials where the
+    deterministic road class calls for exposed structure
 - road-footprint suppression must be produced by omitted terrain topology, not by a shader mask or
   broad visual band-aid that leaves holes between road and terrain
 - terrain patches intersecting the compiled road-owned footprint must not drop to a coarser mesh
-  LOD that can reintroduce overlap after the support stamp was already solved
+  LOD that can reintroduce overlap after the road seam was already solved
 - road-locked terrain patch selection must not use the wider earthwork envelope; otherwise one
   raised or lowered road can force unrelated far-field terrain into the clipped mesh path
 - when authored terrain is coarser than the required close-up road-support fidelity, road-locked
-  terrain render patches must subdivide to a denser visible mesh step so the rendered terrain
-  continues to follow the stamped support surface instead of cutting across it with coarse triangles
+  terrain render patches must use a denser baked mesh step so the rendered terrain follows the
+  road-owned seam instead of cutting across it with coarse triangles
 - grounded `Standard` roads apply that footprint-replacement rule along the whole grounded footprint
 - `Bridge` edges do not create midspan terrain support; only abutment-owned grounded footprint
   regions may stamp terrain support below the road
@@ -254,8 +256,8 @@ Deterministic rule:
 Forbidden outcomes:
 
 - terrain visibly rising through asphalt or sidewalk inside the owned footprint
-- terrain renderer LOD reintroducing visible overlap after the road stamp already replaced terrain
-  inside the owned footprint
+- terrain renderer LOD reintroducing visible overlap after the stitched road hole already removed
+  terrain inside the owned footprint
 - terrain forming a canyon or trench under a grounded road because outer tie-in faces were stamped
   into terrain as if they were the terrain carrier
 - terrain under a road being flattened as one global world-horizontal plane instead of following
@@ -265,9 +267,9 @@ For grounded `Standard` roads, asphalt, shoulder / curb, and sidewalk geometry a
 ground inside the owned footprint. Explicit road-owned earthwork geometry remains part of the
 deterministic ownership model for terrain integration, structural cases, seam tie-ins, and future
 retaining variants, but ordinary grounded roads must not render that carrier as a separate visible
-mesh layer below asphalt or sidewalk. Ordinary grounded roads must instead cut the terrain mesh to
-the road-owned footprint and render only a narrow local terrain-colored closure strip outside that
-footprint so the road / terrain border has no open side holes.
+mesh layer below asphalt or sidewalk. Ordinary grounded roads must instead receive a Rust-generated
+terrain patch mesh whose hole boundary exactly matches the road-owned footprint edge, so the road /
+terrain border has no terrain below it and no visible strip beside it.
 
 ### 2. Edge Surface Is Sampled As Ordered Sections
 
@@ -744,49 +746,49 @@ Current status:
     instead of being reconstructed in a second pass from the ordered mouth list
   - `Bend` and `JunctionN` no longer share one connector-strip polygon builder; each piece class
     now owns its own connector-strip sampling path
-  - renderer output, visible-surface queries, debug overlays, and road-driven earthwork stamping
-    now consume explicit visual pieces instead of a node-patch carrier
-  - terrain earthwork chunk coverage and stamping no longer walk compiled edge sections after
-    piece compilation; they consume span-owned earthwork polygons and span-owned outer earthwork
-    boundaries
-  - span-piece earthwork stamping no longer regenerates tie-in faces from boundary loops at stamp
-    time; spans now compile explicit tie-in side polygons plus explicit tie-in outer loops during
-    piece compile
+  - renderer output, visible-surface queries, debug overlays, stitched terrain patches, and
+    structural earthwork stamping now consume explicit visual pieces instead of a node-patch carrier
+  - terrain earthwork chunk coverage and structural stamping no longer walk compiled edge sections
+    after piece compilation; they consume span-owned earthwork polygons and span-owned outer
+    earthwork boundaries
+  - span-piece structural earthwork stamping no longer regenerates tie-in faces from boundary loops
+    at stamp time; spans now compile explicit tie-in side polygons plus explicit tie-in outer loops
+    during piece compile
   - node pieces now also compile explicit earthwork polygons and earthwork outer boundaries, so
-    node earthwork chunking, bounds, and terrain stamping no longer borrow the visible polygon
-    carrier at runtime
+    node earthwork chunking, bounds, and structural terrain stamping no longer borrow the visible
+    polygon carrier at runtime
   - `Terminal`, `Bend`, and `JunctionN` now pass explicit earthwork polygons and explicit
     earthwork outer loops directly from their own builders instead of relying on a shared
     node-piece assembler to infer earthwork ownership from visible geometry
-  - node-piece earthwork stamping no longer regenerates tie-in faces from boundary loops at stamp
-    time; `Terminal`, `Bend`, and `JunctionN` now compile explicit tie-in side polygons plus
-    explicit tie-in outer loops during piece compile
-  - terrain visual stamping is now footprint-first, but it is not accepted as the final visible
-    seam carrier: grounded `Standard` roads must suppress terrain under asphalt / sidewalk by
-    clipping terrain topology to the road-owned outer sidewalk / shoulder edge
-  - road-touched terrain patches now build a clipped `ArrayMesh` from the piece-owned road
-    footprint clip polygons instead of relying on one rectangular `PlaneMesh` plus fragment discard
-  - clipped terrain patch emission now bypasses exact polygon clipping for cells that are clearly
-    untouched by the road footprint, and drops cells that are fully road-owned before they reach the
-    expensive boundary clipper
+  - node-piece structural earthwork stamping no longer regenerates tie-in faces from boundary loops
+    at stamp time; `Terminal`, `Bend`, and `JunctionN` now compile explicit tie-in side polygons
+    plus explicit tie-in outer loops during piece compile
+  - ordinary grounded-road visual terrain stamping is removed: grounded `Standard` roads suppress
+    terrain under asphalt / sidewalk by generating stitched terrain topology to the road-owned outer
+    sidewalk / shoulder edge
+  - road-touched terrain patches now receive a Rust-generated baked `ArrayMesh` from the
+    piece-owned road footprint clip polygons instead of relying on one rectangular `PlaneMesh`, a
+    Godot-side polygon clipper, or fragment discard
+  - stitched terrain patch emission is bounded to road-locked terrain patches, bins local road
+    triangles per patch cell, omits cells owned by the road footprint, and emits boundary vertices
+    at the road / sidewalk seam height
   - visible water patches now consume the same road footprint clip polygons and rebuild only
     road-touched water patch meshes after a road edit, so water cannot remain as a hidden visual
     carrier under grounded asphalt, shoulder / curb, or sidewalk
-  - paved-footprint support now follows the solved road profile per top-surface triangle instead of
-    stamping one flat minimum-height slab per piece
+  - paved-footprint support queries now follow the solved road profile per top-surface triangle
+    instead of stamping one flat minimum-height slab per piece
   - compiled span and node pieces still own explicit earthwork geometry for deterministic terrain
-    integration, chunking, seam closure, and structural cases, and grounded `Standard` roads now
-    combine clipped terrain topology with a narrow terrain-colored closure strip
+    integration, chunking, and structural cases, but grounded `Standard` roads now rely on the
+    Rust-generated stitched terrain patch mesh for the ordinary road / terrain seam
   - render no longer draws a support mesh below asphalt or sidewalk: spans and node pieces compile a
     separate render-only tie-in face set for structural cases, while grounded `Standard` roads
-    render only a 0.35 m closure strip outside the road-owned footprint to close the road / terrain
-    edge
+    render no ordinary closure strip outside the road-owned footprint
   - render-only earthwork faces are now classified deterministically as either `Slope` or
     `RetainingWall`, and the renderer routes those two face classes to different materials instead
     of painting every tie-in face as generic exposed earthwork
   - visible-world height/raycast queries still hit compiled earthwork geometry only for
-    intentionally surfaced structural cases; the ordinary grounded closure strip is render-only and
-    deliberately too narrow to become a gameplay/query surface
+    intentionally surfaced structural cases; ordinary grounded road seams are terrain-patch
+    topology, not a gameplay/query road-owned strip
 - the remaining Phase 13 work is not just material refinement: the next blocking slice is clipped
   terrain and water topology validation and hardening across flat, diagonal, sloped,
   water-overlap, bend, terminal, and `JunctionN` cases. Richer retaining / wall variants and better

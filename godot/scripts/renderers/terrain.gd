@@ -413,6 +413,7 @@ func _create_patch(key: Vector2i) -> void:
 	var initial_lod_step := _mesh_lod_step_for_patch(key, patch_center_x, patch_center_z)
 	var sample_step_m := world_size_x / float(max(1, sample_width - 1))
 	var initial_subdivision_factor := _mesh_subdivision_factor_for_patch(key, sample_step_m)
+	var height_is_baked: bool = _patch_has_baked_terrain_mesh(patch_data)
 	patch_mesh = _terrain_patch_mesh_from_data(patch_data, initial_lod_step, initial_subdivision_factor)
 
 	var patch_node: MeshInstance3D = MeshInstance3D.new()
@@ -434,6 +435,7 @@ func _create_patch(key: Vector2i) -> void:
 	material.set_shader_parameter("watermap", empty_water_texture)
 	material.set_shader_parameter("overlay_mode", overlay_mode)
 	material.set_shader_parameter("height_scale", HEIGHT_SCALE)
+	material.set_shader_parameter("height_is_baked", height_is_baked)
 	material.set_shader_parameter("world_size", terrain_world_size)
 	material.set_shader_parameter("heightmap_texture_size", Vector2(texture_width, texture_height))
 	material.set_shader_parameter("inner_sample_offset_texels", Vector2(inner_offset_x, inner_offset_z))
@@ -491,6 +493,7 @@ func _create_patch(key: Vector2i) -> void:
 		"sample_step_m": sample_step_m,
 		"lod_step": initial_lod_step,
 		"subdivision_factor": initial_subdivision_factor,
+		"height_is_baked": height_is_baked,
 	}
 
 func _upload_patch(key: Vector2i) -> void:
@@ -530,6 +533,8 @@ func _upload_patch(key: Vector2i) -> void:
 		"inner_sample_size_texels",
 		Vector2(int(patch_data["sample_width"]), int(patch_data["sample_height"]))
 	)
+	var height_is_baked: bool = _patch_has_baked_terrain_mesh(patch_data)
+	material.set_shader_parameter("height_is_baked", height_is_baked)
 
 	_terrain_debug_patch_uploads += 1
 
@@ -543,6 +548,7 @@ func _upload_patch(key: Vector2i) -> void:
 	patch["world_size_x"] = world_size_x
 	patch["world_size_z"] = world_size_z
 	patch["sample_step_m"] = world_size_x / float(max(1, int(patch_data["sample_width"]) - 1))
+	patch["height_is_baked"] = height_is_baked
 	patch_node.mesh = _terrain_patch_mesh_from_data(
 		patch_data,
 		int(patch.get("lod_step", 1)),
@@ -691,8 +697,9 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 			patch_data["height_data"] as PackedFloat32Array
 		)
 		var clip_stats: Dictionary = _road_geometry_clip_stats(patch_data)
+		var baked_vertex_count: int = _road_geometry_baked_vertex_count(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f)"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d"
 			% [
 				key.x,
 				key.y,
@@ -715,6 +722,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				_road_geometry_bounds_label(clip_stats),
 				float(clip_stats.get("max_bbox_x", 0.0)),
 				float(clip_stats.get("max_bbox_z", 0.0)),
+				baked_vertex_count,
 			]
 		)
 	return lines
@@ -747,8 +755,8 @@ func _terrain_patch_mesh_from_data(
 	lod_step: int,
 	subdivision_factor: int
 ) -> Mesh:
-	if _patch_has_road_clip_polygons(patch_data):
-		return _clipped_patch_mesh(patch_data, lod_step, subdivision_factor)
+	if _patch_has_baked_terrain_mesh(patch_data):
+		return _baked_terrain_patch_mesh(patch_data)
 	return _patch_mesh(
 		int(patch_data["sample_width"]),
 		int(patch_data["sample_height"]),
@@ -757,6 +765,29 @@ func _terrain_patch_mesh_from_data(
 		lod_step,
 		subdivision_factor
 	)
+
+func _patch_has_baked_terrain_mesh(patch_data: Dictionary) -> bool:
+	if not patch_data.has("terrain_mesh_vertices"):
+		return false
+	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
+	return vertices.size() >= 3
+
+func _baked_terrain_patch_mesh(patch_data: Dictionary) -> ArrayMesh:
+	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
+	var normals: PackedVector3Array = patch_data["terrain_mesh_normals"] as PackedVector3Array
+	var uvs: PackedVector2Array = patch_data["terrain_mesh_uvs"] as PackedVector2Array
+	var mesh: ArrayMesh = ArrayMesh.new()
+	if vertices.size() < 3:
+		return mesh
+	var arrays: Array = []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	if normals.size() == vertices.size():
+		arrays[Mesh.ARRAY_NORMAL] = normals
+	if uvs.size() == vertices.size():
+		arrays[Mesh.ARRAY_TEX_UV] = uvs
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return mesh
 
 func _road_clip_polygons_from_patch_data(patch_data: Dictionary) -> Array:
 	var counts := patch_data["road_clip_polygon_counts"] as PackedInt32Array
@@ -775,256 +806,6 @@ func _road_clip_polygons_from_patch_data(patch_data: Dictionary) -> Array:
 		cursor += count
 	return polygons
 
-func _clip_polygon_bins(
-	clip_polygons: Array,
-	world_origin_x: float,
-	world_origin_z: float,
-	world_size_x: float,
-	world_size_z: float,
-	x_interval_count: int,
-	z_interval_count: int
-) -> Dictionary:
-	var bins: Dictionary = {}
-	var safe_world_size_x: float = maxf(world_size_x, 0.001)
-	var safe_world_size_z: float = maxf(world_size_z, 0.001)
-	for clip in clip_polygons:
-		var clip_bounds: Rect2 = clip["bounds"]
-		var min_x_index: int = clampi(
-			int(floor((clip_bounds.position.x - world_origin_x) / safe_world_size_x * float(x_interval_count))),
-			0,
-			x_interval_count - 1
-		)
-		var max_x_index: int = clampi(
-			int(floor((clip_bounds.position.x + clip_bounds.size.x - world_origin_x) / safe_world_size_x * float(x_interval_count))),
-			0,
-			x_interval_count - 1
-		)
-		var min_z_index: int = clampi(
-			int(floor((clip_bounds.position.y - world_origin_z) / safe_world_size_z * float(z_interval_count))),
-			0,
-			z_interval_count - 1
-		)
-		var max_z_index: int = clampi(
-			int(floor((clip_bounds.position.y + clip_bounds.size.y - world_origin_z) / safe_world_size_z * float(z_interval_count))),
-			0,
-			z_interval_count - 1
-		)
-		for z_index in range(min_z_index, max_z_index + 1):
-			for x_index in range(min_x_index, max_x_index + 1):
-				var bin_index: int = z_index * x_interval_count + x_index
-				if not bins.has(bin_index):
-					bins[bin_index] = []
-				var bin: Array = bins[bin_index]
-				bin.append(clip)
-	return bins
-
-func _clipped_patch_mesh(patch_data: Dictionary, lod_step: int, subdivision_factor: int) -> ArrayMesh:
-	var sample_width := int(patch_data["sample_width"])
-	var sample_height := int(patch_data["sample_height"])
-	var world_size_x := float(patch_data["world_size_x"])
-	var world_size_z := float(patch_data["world_size_z"])
-	var world_origin_x := float(patch_data["world_origin_x"])
-	var world_origin_z := float(patch_data["world_origin_z"])
-	var center_x := world_origin_x + world_size_x * 0.5
-	var center_z := world_origin_z + world_size_z * 0.5
-	var x_vertex_count: int = _mesh_subdivisions_for_sample_count(
-		sample_width,
-		lod_step,
-		subdivision_factor
-	) + 2
-	var z_vertex_count: int = _mesh_subdivisions_for_sample_count(
-		sample_height,
-		lod_step,
-		subdivision_factor
-	) + 2
-	var x_interval_count: int = maxi(1, x_vertex_count - 1)
-	var z_interval_count: int = maxi(1, z_vertex_count - 1)
-	var clip_polygons: Array = _road_clip_polygons_from_patch_data(patch_data)
-	var clip_bins: Dictionary = _clip_polygon_bins(
-		clip_polygons,
-		world_origin_x,
-		world_origin_z,
-		world_size_x,
-		world_size_z,
-		x_interval_count,
-		z_interval_count
-	)
-	var surface_tool := SurfaceTool.new()
-	surface_tool.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var emitted_vertices: int = 0
-
-	for z_index in range(z_interval_count):
-		var z0 := float(z_index) / float(z_interval_count)
-		var z1 := float(z_index + 1) / float(z_interval_count)
-		var world_z0 := world_origin_z + z0 * world_size_z
-		var world_z1 := world_origin_z + z1 * world_size_z
-		for x_index in range(x_interval_count):
-			var x0 := float(x_index) / float(x_interval_count)
-			var x1 := float(x_index + 1) / float(x_interval_count)
-			var world_x0 := world_origin_x + x0 * world_size_x
-			var world_x1 := world_origin_x + x1 * world_size_x
-			var cell := PackedVector2Array([
-				Vector2(world_x0, world_z0),
-				Vector2(world_x1, world_z0),
-				Vector2(world_x1, world_z1),
-				Vector2(world_x0, world_z1),
-			])
-			var bin_index: int = z_index * x_interval_count + x_index
-			var cell_clip_polygons: Array = clip_bins.get(bin_index, [])
-			emitted_vertices += _emit_clipped_terrain_cell(
-				surface_tool,
-				cell,
-				cell_clip_polygons,
-				center_x,
-				center_z,
-				world_origin_x,
-				world_origin_z,
-				world_size_x,
-				world_size_z
-			)
-
-	if emitted_vertices == 0:
-		return ArrayMesh.new()
-	return surface_tool.commit()
-
-func _emit_clipped_terrain_cell(
-	surface_tool: SurfaceTool,
-	cell: PackedVector2Array,
-	clip_polygons: Array,
-	center_x: float,
-	center_z: float,
-	world_origin_x: float,
-	world_origin_z: float,
-	world_size_x: float,
-	world_size_z: float
-) -> int:
-	if clip_polygons.is_empty():
-		return _emit_unclipped_terrain_cell(
-			surface_tool,
-			cell,
-			center_x,
-			center_z,
-			world_origin_x,
-			world_origin_z,
-			world_size_x,
-			world_size_z
-		)
-
-	var cell_bounds := _polygon_bounds(cell)
-	var intersecting_clips: Array = []
-	for clip in clip_polygons:
-		var clip_points: PackedVector2Array = clip["points"]
-		var clip_bounds: Rect2 = clip["bounds"]
-		if not _bounds_intersect(cell_bounds, clip_bounds):
-			continue
-		if _cell_fully_inside_polygon(cell, clip_points):
-			return 0
-		if _polygon_intersects_cell(clip_points, clip_bounds, cell, cell_bounds):
-			intersecting_clips.append(clip_points)
-
-	if intersecting_clips.is_empty():
-		return _emit_unclipped_terrain_cell(
-			surface_tool,
-			cell,
-			center_x,
-			center_z,
-			world_origin_x,
-			world_origin_z,
-			world_size_x,
-			world_size_z
-		)
-
-	var pieces: Array = [cell]
-	for clip_points_variant in intersecting_clips:
-		var clip_points: PackedVector2Array = clip_points_variant
-		var next_pieces: Array = []
-		for piece in pieces:
-			var clipped_pieces: Array[PackedVector2Array] = Geometry2D.clip_polygons(piece, clip_points)
-			for clipped_piece in clipped_pieces:
-				if clipped_piece.size() >= 3 and _polygon_within_bounds(clipped_piece, cell_bounds):
-					next_pieces.append(clipped_piece)
-		pieces = next_pieces
-		if pieces.is_empty():
-			return 0
-
-	var emitted_vertices := 0
-	for piece_variant in pieces:
-		var piece: PackedVector2Array = piece_variant
-		var indices: PackedInt32Array = Geometry2D.triangulate_polygon(piece)
-		for index in range(0, indices.size(), 3):
-			# Geometry2D works in X/Y. Flip winding when placing those coordinates on X/Z so
-			# the resulting terrain faces upward in Godot's Y-up world.
-			_add_clipped_terrain_vertex(
-				surface_tool,
-				piece[indices[index + 2]],
-				center_x,
-				center_z,
-				world_origin_x,
-				world_origin_z,
-				world_size_x,
-				world_size_z
-			)
-			emitted_vertices += 1
-			_add_clipped_terrain_vertex(
-				surface_tool,
-				piece[indices[index + 1]],
-				center_x,
-				center_z,
-				world_origin_x,
-				world_origin_z,
-				world_size_x,
-				world_size_z
-			)
-			emitted_vertices += 1
-			_add_clipped_terrain_vertex(
-				surface_tool,
-				piece[indices[index]],
-				center_x,
-				center_z,
-				world_origin_x,
-				world_origin_z,
-				world_size_x,
-				world_size_z
-			)
-			emitted_vertices += 1
-	return emitted_vertices
-
-func _emit_unclipped_terrain_cell(
-	surface_tool: SurfaceTool,
-	cell: PackedVector2Array,
-	center_x: float,
-	center_z: float,
-	world_origin_x: float,
-	world_origin_z: float,
-	world_size_x: float,
-	world_size_z: float
-) -> int:
-	_add_clipped_terrain_vertex(surface_tool, cell[0], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_terrain_vertex(surface_tool, cell[2], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_terrain_vertex(surface_tool, cell[1], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_terrain_vertex(surface_tool, cell[0], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_terrain_vertex(surface_tool, cell[3], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	_add_clipped_terrain_vertex(surface_tool, cell[2], center_x, center_z, world_origin_x, world_origin_z, world_size_x, world_size_z)
-	return 6
-
-func _add_clipped_terrain_vertex(
-	surface_tool: SurfaceTool,
-	world_xz: Vector2,
-	center_x: float,
-	center_z: float,
-	world_origin_x: float,
-	world_origin_z: float,
-	world_size_x: float,
-	world_size_z: float
-) -> void:
-	var uv := Vector2(
-		clampf((world_xz.x - world_origin_x) / maxf(world_size_x, 0.001), 0.0, 1.0),
-		clampf((world_xz.y - world_origin_z) / maxf(world_size_z, 0.001), 0.0, 1.0)
-	)
-	surface_tool.set_normal(Vector3.UP)
-	surface_tool.set_uv(uv)
-	surface_tool.add_vertex(Vector3(world_xz.x - center_x, 0.0, world_xz.y - center_z))
-
 func _polygon_bounds(polygon: PackedVector2Array) -> Rect2:
 	if polygon.size() == 0:
 		return Rect2()
@@ -1038,92 +819,6 @@ func _polygon_bounds(polygon: PackedVector2Array) -> Rect2:
 		min_y = minf(min_y, point.y)
 		max_y = maxf(max_y, point.y)
 	return Rect2(Vector2(min_x, min_y), Vector2(max_x - min_x, max_y - min_y))
-
-func _bounds_intersect(a: Rect2, b: Rect2) -> bool:
-	return (
-		a.position.x <= b.position.x + b.size.x
-		and a.position.x + a.size.x >= b.position.x
-		and a.position.y <= b.position.y + b.size.y
-		and a.position.y + a.size.y >= b.position.y
-	)
-
-func _polygon_intersects_cell(
-	polygon: PackedVector2Array,
-	polygon_bounds: Rect2,
-	cell: PackedVector2Array,
-	cell_bounds: Rect2
-) -> bool:
-	if not _bounds_intersect(cell_bounds, polygon_bounds):
-		return false
-	for cell_point in cell:
-		if Geometry2D.is_point_in_polygon(cell_point, polygon):
-			return true
-	for polygon_point in polygon:
-		if _point_in_bounds(polygon_point, cell_bounds):
-			return true
-	for polygon_index in range(polygon.size()):
-		var polygon_a := polygon[polygon_index]
-		var polygon_b := polygon[(polygon_index + 1) % polygon.size()]
-		for cell_index in range(cell.size()):
-			var cell_a := cell[cell_index]
-			var cell_b := cell[(cell_index + 1) % cell.size()]
-			if _segments_intersect(polygon_a, polygon_b, cell_a, cell_b):
-					return true
-	return false
-
-func _cell_fully_inside_polygon(cell: PackedVector2Array, polygon: PackedVector2Array) -> bool:
-	for point in cell:
-		if Geometry2D.is_point_in_polygon(point, polygon):
-			continue
-		if _point_on_polygon_boundary(point, polygon):
-			continue
-		return false
-	return true
-
-func _point_on_polygon_boundary(point: Vector2, polygon: PackedVector2Array) -> bool:
-	for index in range(polygon.size()):
-		if _point_on_segment(point, polygon[index], polygon[(index + 1) % polygon.size()]):
-			return true
-	return false
-
-func _polygon_within_bounds(polygon: PackedVector2Array, bounds: Rect2) -> bool:
-	for point in polygon:
-		if not _point_in_bounds(point, bounds):
-			return false
-	return true
-
-func _point_in_bounds(point: Vector2, bounds: Rect2) -> bool:
-	const EPSILON := 0.01
-	return (
-		point.x >= bounds.position.x - EPSILON
-		and point.x <= bounds.position.x + bounds.size.x + EPSILON
-		and point.y >= bounds.position.y - EPSILON
-		and point.y <= bounds.position.y + bounds.size.y + EPSILON
-	)
-
-func _segments_intersect(a: Vector2, b: Vector2, c: Vector2, d: Vector2) -> bool:
-	var ab := b - a
-	var cd := d - c
-	var denom := _cross_2d(ab, cd)
-	var ca := c - a
-	if absf(denom) <= 0.00001:
-		return _point_on_segment(c, a, b) or _point_on_segment(d, a, b) or _point_on_segment(a, c, d) or _point_on_segment(b, c, d)
-	var t := _cross_2d(ca, cd) / denom
-	var u := _cross_2d(ca, ab) / denom
-	return t >= -0.00001 and t <= 1.00001 and u >= -0.00001 and u <= 1.00001
-
-func _point_on_segment(point: Vector2, a: Vector2, b: Vector2) -> bool:
-	var ab := b - a
-	var ap := point - a
-	if absf(_cross_2d(ab, ap)) > 0.00001:
-		return false
-	var dot := ap.dot(ab)
-	if dot < -0.00001:
-		return false
-	return dot <= ab.length_squared() + 0.00001
-
-func _cross_2d(a: Vector2, b: Vector2) -> float:
-	return a.x * b.y - a.y * b.x
 
 func _patch_mesh(
 	sample_width: int,
@@ -1507,6 +1202,12 @@ func _road_geometry_clip_stats(patch_data: Dictionary) -> Dictionary:
 	stats["max_bbox_x"] = max_bbox_x
 	stats["max_bbox_z"] = max_bbox_z
 	return stats
+
+func _road_geometry_baked_vertex_count(patch_data: Dictionary) -> int:
+	if not _patch_has_baked_terrain_mesh(patch_data):
+		return 0
+	var vertices: PackedVector3Array = patch_data["terrain_mesh_vertices"] as PackedVector3Array
+	return vertices.size()
 
 func _road_geometry_polygon_area(points: PackedVector2Array) -> float:
 	if points.size() < 3:

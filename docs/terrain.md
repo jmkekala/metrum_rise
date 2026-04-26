@@ -218,22 +218,24 @@ Current deterministic sequence:
 Current runtime client state:
 
 - roads are the first live engineered-ground client
-- grounded roads stamp compiled support surfaces plus outer cut / fill margins into visual terrain
+- grounded roads no longer stamp ordinary `Standard` footprints or margins into visual terrain;
+  road-touched terrain patches receive stitched mesh topology from Rust
 - grounded road-owned asphalt, shoulder / curb, and sidewalk footprints also provide exact clip
   polygons to terrain and water render patches so neither terrain nor water remains a visible carrier
   under the committed road footprint
-- grounded roads render a narrow deterministic closure strip from the clipped footprint edge to
-  nearby terrain so the terrain renderer never has to expose an unbacked cut edge
+- grounded roads use Rust-generated stitched terrain patch topology from the clipped footprint edge
+  to nearby terrain, so ordinary `Standard` roads do not need a visible closure strip
 - terrain-only queries still read source terrain, while visible-world queries use the client-owned
-  surface first, structural local earthwork geometry second, and visual terrain third; the ordinary
-  grounded closure strip is render-only
+  surface first, structural local earthwork geometry second, and visual terrain third; ordinary
+  grounded seams are terrain topology, not a separate road-owned query surface
 - future flat building pads and other engineered-ground clients should extend the same shared model
   from [`earthworks.md`](earthworks.md) instead of inventing a separate terrain-flattening path
 
 Current deterministic editor rule:
 
 - terrain authoring edits source terrain first
-- after the source edit, touched engineered-ground clients rebuild and restamp visual terrain
+- after the source edit, touched engineered-ground clients rebuild derived terrain outputs; ordinary
+  grounded roads regenerate stitched patch meshes while structural clients may restamp visual terrain
 - terrain brushes do not directly sculpt roadbeds, flat pads, or future local earthwork geometry
 
 Remaining limitation:
@@ -245,8 +247,8 @@ Remaining limitation:
   terrain-density changes can be chosen from measured overlap data rather than assumed to be the
   answer
 - current grounded-road terrain editing still resynchronizes placed `Standard` road geometry to the
-  edited source terrain before restamping visual terrain; the target contract is to keep placed
-  engineered-ground client surfaces fixed and reshape visual terrain around them instead
+  edited source terrain before rebuilding derived terrain outputs; the target contract is to keep
+  placed engineered-ground client surfaces fixed and reshape visual terrain around them instead
 
 Authoritative rule:
 
@@ -367,8 +369,8 @@ Current deterministic rules:
 - terrain and water now keep patch identity stable while choosing a deterministic mesh-detail tier
   per resident patch from camera distance, so zoomed-out views do not pay near-field vertex
   density for every resident patch
-- road-touched terrain patches may switch from cached rectangular `PlaneMesh` topology to clipped
-  local `ArrayMesh` topology
+- road-touched terrain patches switch from cached rectangular `PlaneMesh` topology to
+  Rust-generated baked local `ArrayMesh` topology
 - visible water patches always build depth-owned local `ArrayMesh` topology; dry cells emit no water
   mesh instead of relying on shader discard, and road-touched water patches additionally clip that
   depth-owned topology against the road footprint after a network edit
@@ -516,8 +518,8 @@ Current deterministic rules:
 - terrain brush picking uses `intersect_terrain()` and therefore targets authored source terrain,
   not the visible engineered surface
 - `Raise`, `Lower`, `Level`, `Smooth`, and `Slope` write authoritative source terrain only
-- completing a terrain brush stroke rebuilds touched engineered-ground clients and restamps visual
-  terrain from the updated source terrain
+- completing a terrain brush stroke rebuilds touched engineered-ground clients and derived terrain
+  outputs from the updated source terrain
 - terrain brushes must not directly deform road top surfaces, future flat foundation pads, or
   future local earthwork meshes
 - selecting `Raise`, `Lower`, `Level`, `Smooth`, or `Slope` opens a terrain brush submenu on the bottom toolbar
@@ -783,11 +785,12 @@ Deterministic transition rules:
   - a derived far-field terrain surface outside engineered-ground tie-in boundaries
   - chunk-local invalidation and rebuild boundaries
   - the split terrain / water render-upload path
-  - clipped terrain topology anywhere grounded `Standard` road top surfaces own the visible
-    surface; shader discard or alpha masking must not be the ordinary road seam carrier
+  - Rust-generated stitched terrain topology anywhere grounded `Standard` road top surfaces own the
+    visible surface; shader discard, alpha masking, or Godot-side polygon clipping must not be the
+    ordinary road seam carrier
   - terrain render suppression for structural local earthwork geometry must remain bounded to true
-    geometry overlap rather than acting as a substitute for missing tie-in faces; road-edge closure
-    must still be geometrically correct if terrain-side suppression is turned off
+    geometry overlap rather than acting as a substitute for missing tie-in faces; road-edge terrain
+    topology must still be geometrically correct if terrain-side suppression is turned off
   - visible-world query precedence over client-owned top surfaces and closed local earthwork
     geometry
 - post-placement terrain edits should rebuild earthworks around already placed client surfaces
@@ -800,7 +803,8 @@ The chunk-local render path is now the live large-world terrain / water runtime 
 Authoritative rule:
 
 - imported terrain writes authoritative source terrain only
-- visual terrain is always derived from source terrain plus later road or water derivations
+- visual terrain is always derived from source terrain plus later structural road or water
+  derivations; ordinary grounded road seams are generated as stitched patch meshes
 
 Current implemented slice:
 

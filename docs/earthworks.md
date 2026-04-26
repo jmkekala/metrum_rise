@@ -88,8 +88,9 @@ That is not sufficient to cleanly represent all of these at once near the same f
 - support surface
 - downhill fill / support
 
-Current terrain stamping may still be used as a compatibility or far-field step, but the shared
-target must allow engineered-ground clients to own local side geometry near their footprints.
+Structural terrain stamping may still be used for explicit bridge / tunnel / retaining cases, but
+ordinary grounded roads must solve the road / terrain boundary through road-owned top surfaces plus
+Rust-generated stitched terrain topology.
 
 ### 4. Placed Client Surfaces Stay Fixed Under Later Terrain Edits
 
@@ -127,16 +128,17 @@ Required rule:
   toward source terrain using deterministic cut / fill rules
 - the seam between the road-owned top surface and surrounding terrain must be covered by a
   deterministic tie-in carrier:
-  - terrain chunks are clipped / triangulated so they do not render below the road-owned footprint
-  - the renderer emits a narrow local closure strip whose inner edge reuses the same road-owned
-    outer-boundary vertices and whose outer edge samples visual terrain just outside the footprint
+  - Rust generates the road-touched terrain patch topology as an explicit local mesh
+  - that mesh omits terrain below the road-owned footprint and inserts road-boundary vertices at
+    the exact road / sidewalk outer edge
+  - vertices created on that boundary reuse the road-owned edge heights, not resampled terrain
+    heights, so the terrain and road share the same seam coordinates
 - terrain suppression alone is not a seam solution; it may only hide terrain under geometry that
   actually exists
 - for grounded clients, the runtime must not render a second visible support mesh under an ordinary
   grounded footprint just to hide terrain overlap
-- explicit local tie-in geometry for ordinary grounded roads must be a narrow seam closure outside
-  the asphalt, shoulder, curb, or sidewalk footprint; it is not a full earthwork-margin carpet and
-  not a second support mesh below those bands
+- ordinary grounded roads must not render a visible closure strip, carpet, or second support mesh;
+  the terrain patch mesh itself is the only ordinary seam carrier outside the road-owned footprint
 
 Deterministic seam contract:
 
@@ -150,15 +152,16 @@ Deterministic seam contract:
      seam vertices
 - terrain masking, terrain alpha, terrain discard, or footprint suppression is not a seam carrier;
   those tools are valid only after one of the visible carriers above already covers the boundary
-- grounded `Standard` roads use a two-part seam carrier: exact clipped terrain topology removes
-  terrain from the road-owned footprint, and deterministic narrow closure faces close only the
-  exposed outer sidewalk / shoulder edge back to nearby terrain
-- the clipped terrain inner edge must reuse the same ordered vertices and heights as the road-owned
-  outer sidewalk / shoulder boundary; it must not resample, offset, snap, or simplify that edge
+- grounded `Standard` roads use one seam carrier: Rust-generated terrain patch topology clipped to
+  the road-owned footprint
+- the clipped terrain inner edge must reuse the same coordinates and heights as the road-owned
+  outer sidewalk / shoulder boundary; it must not resample, offset, snap, simplify, or widen that
+  edge into a visible strip
 - clipped terrain patches must receive exact road footprint clip polygons from the same `Span`,
   `Terminal`, `Bend`, and `JunctionN` pieces that render asphalt, shoulder / curb, and sidewalk
-- clipped terrain topology must insert road-boundary vertices into the terrain mesh rather than
-  approximating the seam only from terrain-cell centers or a texture mask
+- clipped terrain topology must insert road-boundary vertices into the terrain mesh in Rust rather
+  than approximating the seam from terrain-cell centers, a texture mask, or a Godot-side polygon
+  clipping fallback
 - no `Bend` or `JunctionN` clip boundary may be synthesized from one anonymous annulus, one global
   outer loop, or a terrain-cell mask after the fact
 - a valid seam is closed independent of triangle winding or backface-culling behavior; clipped
@@ -175,12 +178,12 @@ For roads, that means:
 - tunnels limit that support to visible portal-owned grounded regions
 - grounded `Standard` roads replace the near-road visible terrain locally:
   - asphalt and sidewalk render as the visible terrain replacement inside the road-owned footprint
-  - the terrain renderer emits no terrain under the road-owned footprint
-  - the seam to far-field terrain is covered by a narrow deterministic closure strip whose inner
-    boundary is the road-owned outer sidewalk / shoulder edge
+  - the Rust terrain patch mesh emits no terrain under the road-owned footprint
+  - the seam to far-field terrain is formed by terrain triangles whose inner boundary is the
+    road-owned outer sidewalk / shoulder edge
   - terrain suppression is allowed only as a consequence of the clipped terrain topology
-  - the runtime must not render a separate visible cut / fill support mesh below ordinary grounded
-    asphalt or sidewalk; visible closure faces live immediately outside that footprint
+  - the runtime must not render a separate visible cut / fill support mesh or ordinary closure strip
+    below or beside grounded asphalt or sidewalk
 - structural or intentionally exposed cases such as bridge abutments, tunnel portals, or future
   retaining variants may still render explicit earthwork / wall geometry where terrain alone is
   not the intended visible carrier
@@ -208,7 +211,8 @@ A local client edit must invalidate only the touched local region.
 
 Required rule:
 
-- only touched terrain chunks are reset and restamped
+- only touched derived terrain regions are rebuilt; structural visual-terrain stamps remain
+  chunk-local, and ordinary grounded-road seams rebuild only their road-touched terrain patches
 - only touched engineered-ground caches are rebuilt
 - unchanged world regions keep their existing visual terrain and cached meshes
 
@@ -242,7 +246,8 @@ The current runtime ships roads as the first engineered-ground client.
 That means:
 
 - `RoadSurfaceSystem` owns the roadbed support surface
-- grounded `Standard` roads stamp a deterministic footprint plus outer earthwork margin
+- grounded `Standard` roads do not stamp their footprint or ordinary outer margin into visual
+  terrain; road-touched terrain patches are stitched to the road-owned outer edge
 - bridge earthworks remain abutment-only
 - tunnel earthworks remain portal-only
 
@@ -264,22 +269,17 @@ So the current earthworks problem is no longer "the renderer makes any denser or
 engineered-ground work pay a whole-world cost." The remaining problem is what the current terrain
 representation can express near engineered-ground footprints.
 
-### 3. Terrain Density Is Still A Limitation
+### 3. Terrain Density Is A Blend-Quality Input, Not The Seam Carrier
 
-The current runtime still relies on the visual terrain heightfield to carry too much of the local
-cut / fill shape near roads.
-
-Phase 11 characterization exists because authored `10 m` terrain can still smear visible terrain
-back over a grounded road corridor even when the roadbed and earthwork ownership rules are
-otherwise correct.
+The current runtime no longer relies on the visual terrain heightfield to carry the ordinary
+grounded-road seam. Road-touched terrain patches are stitched in Rust, and terrain density now
+affects far-field blend quality and patch cost rather than correctness under the road footprint.
 
 The current deterministic characterization now proves:
 
-- the `10 m` grid still shows measurable footprint overlap in the shared hillside case
-- `5 m` materially improves that same case
-- `5 m` does not by itself eliminate the overlap problem
-- density therefore helps blend quality, but it is not allowed to become the sole engineered-ground
-  fix
+- the `10 m` grid can still show coarse far-field blend facets around a road
+- `5 m` or finer terrain may improve that blend quality
+- density is not allowed to become the engineered-ground seam fix
 - any future baseline move from `10 m` to `5 m` or finer terrain must follow the chunk-local
   terrain / water render-boundary split owned by [`terrain.md`](terrain.md), not the current
   whole-map dense renderer upload path
@@ -294,18 +294,19 @@ Current compatibility gap:
 
 - later terrain edits still resynchronize placed `Standard` road geometry against edited source
   terrain
-- visual terrain is then restamped from that moved roadbed, so the road can shift instead of the
-  terrain alone reshaping around it
+- structural visual terrain is then rebuilt from that moved roadbed, so the road can shift instead
+  of the terrain alone reshaping around it
 - future building pads and foundations are not live yet, so their fixed-surface semantics are
   still a shared-target rule rather than a shipped behavior
 
 ### 5. Current Terrain Runtime Is A Compatible Base, Not The Final Visual Carrier
 
-The current terrain runtime is sufficient for first-stage engineered ground:
+The current terrain runtime is sufficient for the road-first stitched terrain cut:
 
 - it keeps separate authoritative `source terrain` and derived `visual terrain`
 - it supports chunk-local reset and restamp of touched visual regions
-- it already accepts client-derived footprint and outer-margin earthwork inputs
+- it accepts road-touched patch mesh ownership from Rust for ordinary grounded roads and still
+  accepts structural earthwork inputs for explicit bridge / tunnel / retaining cases
 
 But it is not sufficient as the final near-footprint visual carrier because the current visual
 terrain remains a single-height field.
@@ -315,8 +316,8 @@ Current deterministic conclusion:
 - a terrain-runtime rewrite is allowed if needed, but it is not by itself an earthworks solution
 - do not expect the current visual terrain heightfield, even at a denser cell size, to represent
   all near-footprint cut / fill detail by itself
-- the next solution must move near-footprint ownership into client-owned local earthwork geometry
-  instead of trying to keep terrain stamping as the primary visible carrier
+- ordinary grounded-road near-footprint ownership is now the client-owned top surface plus stitched
+  terrain patch topology; structural cases may still use client-owned local earthwork geometry
 
 ## Geometry Decision
 
@@ -420,15 +421,21 @@ Required seam acceptance checks:
 - bridges remain a separate class: midspan bridge decks do not claim grounded terrain ownership
   except at explicit abutment / portal support regions
 
-### 4. The First Required Variant Is A Closed Slope / Closure Mesh
+### 4. The First Required Variant Is Rust-Stitched Terrain Topology
 
-The first required rewrite variant is still intentionally narrow, but it is no longer a thin
-visible strip.
+The first required rewrite variant is intentionally hard-cut: grounded road seams are generated as
+terrain topology in Rust, not as a visible seal drawn by the road renderer.
 
 Required first variant:
 
 - the first shipped rewrite variant must clip terrain patches directly to the road-owned footprint
   boundary for grounded `Standard` roads
+- the terrain patch payload must include baked mesh vertices, normals, and UVs when the patch
+  intersects a grounded road-owned footprint
+- Godot must upload that baked `ArrayMesh` directly and must not run `Geometry2D` terrain clipping,
+  shader discard, alpha masking, or an ordinary road-side closure-strip fallback
+- boundary vertices generated by the terrain patch mesh must take their height from the intersected
+  road / sidewalk edge and all non-boundary terrain vertices must sample visual terrain
 - road-locked terrain patch selection is bounded to the road-owned footprint, not to the wider
   earthwork envelope; earthwork margins must not force whole-map clipped-terrain rebuilds
 - cut versus fill for structural variants is determined from the support-surface anchors relative
@@ -439,9 +446,9 @@ Required first variant:
   road-owned seam boundary
 - terrain suppression is allowed only as topology omission from the clipped terrain mesh; fragment
   discard, alpha masking, or post-shader hiding is not an accepted grounded-road solution
-- future retaining or wall variants may replace the first slope / closure mesh when deterministic
-  thresholds say the simple slope solution is no longer acceptable, but that is a later extension
-  of the same ownership model rather than a separate geometry system
+- future retaining or wall variants may replace structural local earthwork faces when deterministic
+  thresholds say terrain topology alone is not the intended visual treatment, but ordinary grounded
+  roads still use the stitched terrain topology as their seam carrier
 
 ### 5. Terrain Runtime Rewrites Are Allowed, But The Ownership Contract Is Not Optional
 
@@ -469,8 +476,8 @@ Required runtime contract:
   committed
 - committing the client freezes that support surface for later terrain-authoring edits
 - terrain-authoring edits write source terrain only
-- after the source-terrain edit, the runtime rebuilds only the touched local earthwork meshes and
-  derived visual terrain around the already committed support surface
+- after the source-terrain edit, the runtime rebuilds only the touched local earthwork meshes,
+  stitched terrain patches, and derived visual terrain around the already committed support surface
 - explicit client-edit operations remain the only path that may move, regrade, or replace the
   committed support surface
 - if a later terrain edit would make the surrounding cut / fill extreme, the runtime still keeps
@@ -500,14 +507,14 @@ Required cache and query contract:
   roads; shader discard or alpha masking must not be used to hide missing clipped topology
 - world-surface picking and visible-surface queries must not require a whole-world scan across every
   engineered-ground client
-- rebuilding local earthwork geometry must not force whole-world terrain restamps or
-  whole-world render uploads
+- rebuilding local earthwork geometry or stitched terrain patches must not force whole-world terrain
+  restamps or whole-world render uploads
 
 ## Roads-First Rewrite Status
 
-The roads-first rewrite is partially live. The piece / profile carrier and deterministic road
-ownership data now exist in the live road runtime, but the grounded-road seam is not complete until
-road-touched terrain patches are clipped / triangulated to the outer sidewalk / shoulder edge.
+The roads-first rewrite is live for ordinary grounded-road terrain ownership. The piece / profile
+carrier owns the road footprint, and Rust now generates the road-touched terrain patch topology that
+cuts the terrain to the outer sidewalk / shoulder edge.
 
 For the roads-first rewrite, the following are deterministic and implemented:
 
@@ -521,16 +528,17 @@ For the roads-first rewrite, the following are deterministic and implemented:
 - committed clients stay fixed under later terrain-authoring edits
 - local road ownership uses chunk-local rebuild boundaries and one explicit visible-world query
   order
+- road-touched terrain patches are generated in Rust as baked terrain `ArrayMesh` payloads whose
+  boundary vertices reuse the road / sidewalk seam height
 
-The following are still blockers for the live grounded-road result:
+The following are current hardcut implementation rules:
 
-- grounded `Standard` roads now send road footprint clip polygons into road-touched terrain patches
-  and the terrain shader-mask discard path has been removed
-- the terrain renderer now short-circuits clipped patch emission for untouched cells and fully
-  road-owned cells, so only seam-crossing cells pay the exact polygon-clipping cost
-- grounded `Standard` roads now also render a narrow terrain-colored closure strip from the
-  road-owned outer sidewalk / shoulder edge to nearby visual terrain, closing the exposed boundary
-  that clipped terrain alone cannot cover without painting the whole earthwork margin
+- grounded `Standard` roads send road footprint clip polygons into road-touched terrain patches
+  and those patches return baked mesh vertices / normals / UVs generated by Rust
+- the Godot terrain renderer no longer performs terrain-road polygon clipping; it only uploads the
+  baked mesh or the normal rectangular terrain mesh
+- grounded `Standard` roads do not render an ordinary visible closure strip, seam carpet, or second
+  support mesh; the stitched terrain patch mesh is the seam carrier
 - visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
   water meshes receive the same road footprint clip polygons after a network edit, so water is no
   longer allowed to render under grounded road-owned asphalt, shoulder / curb, or sidewalk

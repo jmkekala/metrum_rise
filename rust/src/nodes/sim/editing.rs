@@ -1005,8 +1005,9 @@ mod tests {
             no_building_spawn: false,
             vehicle_frontage_access: VehicleFrontageAccess::BothSides,
         });
+        core.region_graph.rebuild_all_indices();
 
-        core.sculpt_terrain_internal(Vector2::new(4.0, 0.0), 5.0, 0.5);
+        core.sculpt_terrain_stroke_step_internal(Vector2::new(4.0, 0.0), 5.0, 0.5);
 
         assert!(
             core.transit_network

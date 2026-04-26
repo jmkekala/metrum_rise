@@ -1,8 +1,9 @@
 //! Heightmap terrain system used for road grade, raycasting, and rendering.
 //!
 //! Two height arrays are maintained: `source_data` (user-sculpted, never modified by roads)
-//! and `data` (final map with road beds stamped in). Road snapping and cost calculations
-//! always read from `source_data` to avoid feedback loops.
+//! and `data` (derived visual terrain outside client-owned surfaces). Ordinary grounded roads do
+//! not stamp their footprint into either array; road-touched render patches receive stitched mesh
+//! topology from the road surface runtime instead.
 
 pub mod chunks;
 
@@ -63,7 +64,7 @@ pub struct TerrainSystem {
     chunk_span_m: f32,
     /// Number of terrain intervals owned by one render patch along one axis.
     render_patch_interval_cells: usize,
-    /// Final/visual heightmap (metres). Road-bed depressions are baked into this buffer.
+    /// Derived visual heightmap outside client-owned surfaces.
     data: SparseChunkGrid<f32>,
     /// Source heightmap as sculpted by the player, without road modifications.
     /// Used for road grade calculation and slope cost — never written by road placement.

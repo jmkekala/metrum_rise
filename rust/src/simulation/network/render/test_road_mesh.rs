@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cross_slope_standard_road_emits_visible_closure_strip() {
+    fn test_cross_slope_standard_road_uses_stitched_terrain_instead_of_visible_earthwork_mesh() {
         let renderer = RoadRenderer;
         let terrain = cross_slope_terrain(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -469,13 +469,13 @@ mod tests {
         validate_mesh(&mesh_data, 80.0);
 
         assert!(
-            !mesh_data.earthwork_vertices.is_empty(),
-            "grounded standard roads should emit a narrow terrain-colored closure strip so clipped terrain cannot expose open seams"
+            mesh_data.earthwork_vertices.is_empty(),
+            "grounded standard roads must not emit a visible closure strip; Rust-generated stitched terrain owns the road/terrain boundary"
         );
     }
 
     #[test]
-    fn test_flat_standard_road_emits_visible_closure_strip() {
+    fn test_flat_standard_road_emits_no_visible_earthwork_mesh() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -496,8 +496,8 @@ mod tests {
         validate_mesh(&mesh_data, 80.0);
 
         assert!(
-            !mesh_data.earthwork_vertices.is_empty(),
-            "flat grounded standard roads still need a narrow closure strip because the road footprint is clipped out of terrain topology"
+            mesh_data.earthwork_vertices.is_empty(),
+            "flat grounded standard roads must not render ordinary earthwork or closure geometry"
         );
     }
 

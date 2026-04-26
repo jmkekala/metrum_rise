@@ -6,6 +6,7 @@ uniform sampler2D overlay_texture;
 uniform sampler2D watermap : repeat_disable, filter_linear;
 uniform int overlay_mode = 0;
 uniform float height_scale = 10.0;
+uniform bool height_is_baked = false;
 uniform vec2 world_size = vec2(256.0, 256.0);
 uniform vec2 heightmap_texture_size = vec2(256.0, 256.0);
 uniform vec2 inner_sample_offset_texels = vec2(1.0, 1.0);
@@ -223,7 +224,11 @@ void vertex() {
 		/ max(heightmap_texture_size, vec2(1.0));
 	var_centered_uv = centered_uv;
 	h = texture(heightmap, centered_uv).r;
-	VERTEX.y += h * height_scale;
+	if (height_is_baked) {
+		h = VERTEX.y / max(height_scale, 0.001);
+	} else {
+		VERTEX.y += h * height_scale;
+	}
 	var_world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
 }
 

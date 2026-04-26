@@ -101,6 +101,17 @@ use crate::debug_log;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, RwLock};
 
+const TERRAIN_STITCH_EPSILON_M: f32 = 0.001;
+
+#[derive(Clone, Copy)]
+struct TerrainClipTriangle {
+    points: [Vector3; 3],
+    min_x: f32,
+    min_z: f32,
+    max_x: f32,
+    max_z: f32,
+}
+
 #[derive(GodotClass)]
 #[class(base=Node3D)]
 /// The central simulation node exposed to Godot.
@@ -361,20 +372,7 @@ impl SimulationNode {
                     clamped_inner_x as f32 / sample_width.saturating_sub(1) as f32
                 };
                 let world_x = base_patch.world_origin_x + sample_t_x * base_patch.world_size_x;
-                let base_visual_height_m =
-                    core.heightmap.sample_visual_height_world(world_x, world_z)
-                        * crate::config::HEIGHT_SCALE;
-                let paved_support_height_m = core
-                    .transit_network
-                    .road_surface
-                    .sample_paved_support_height(
-                        &core.region_graph,
-                        &core.heightmap,
-                        world_x,
-                        world_z,
-                    );
-                let support_height_m = paved_support_height_m.unwrap_or(base_visual_height_m);
-                height_data.push(support_height_m / crate::config::HEIGHT_SCALE);
+                height_data.push(core.heightmap.sample_visual_height_world(world_x, world_z));
             }
         }
 
@@ -394,14 +392,15 @@ impl SimulationNode {
             height_data,
         };
         let mut dict = Self::terrain_patch_dict(&refined_patch);
-        Self::append_road_clip_polygons_for_bounds(
-            &mut dict,
+        let road_clip_polygons = Self::road_clip_polygons_for_bounds(
             core,
             base_patch.world_origin_x,
             base_patch.world_origin_z,
             base_patch.world_origin_x + base_patch.world_size_x,
             base_patch.world_origin_z + base_patch.world_size_z,
         );
+        Self::append_road_clip_polygons(&mut dict, &road_clip_polygons);
+        Self::append_stitched_terrain_mesh(&mut dict, core, &refined_patch, &road_clip_polygons);
         dict
     }
 
@@ -413,10 +412,27 @@ impl SimulationNode {
         max_x: f32,
         max_z: f32,
     ) {
-        let road_clip_polygons = core
-            .transit_network
+        let road_clip_polygons =
+            Self::road_clip_polygons_for_bounds(core, min_x, min_z, max_x, max_z);
+        Self::append_road_clip_polygons(dict, &road_clip_polygons);
+    }
+
+    fn road_clip_polygons_for_bounds(
+        core: &SimCore,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> Vec<crate::simulation::network::surface::RoadSurfaceVisualPolygon> {
+        core.transit_network
             .road_surface
-            .terrain_clip_polygons_for_world_bounds(&core.region_graph, min_x, min_z, max_x, max_z);
+            .terrain_clip_polygons_for_world_bounds(&core.region_graph, min_x, min_z, max_x, max_z)
+    }
+
+    fn append_road_clip_polygons(
+        dict: &mut VarDictionary,
+        road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
+    ) {
         if road_clip_polygons.is_empty() {
             return;
         }
@@ -425,7 +441,7 @@ impl SimulationNode {
         let mut polygon_points = Vec::new();
         for polygon in road_clip_polygons {
             polygon_counts.push(i32::try_from(polygon.points_world.len()).unwrap_or(0));
-            polygon_points.extend(polygon.points_world);
+            polygon_points.extend(polygon.points_world.iter().copied());
         }
         dict.set(
             "road_clip_polygon_counts",
@@ -435,6 +451,461 @@ impl SimulationNode {
             "road_clip_polygon_points",
             PackedVector3Array::from_iter(polygon_points),
         );
+    }
+
+    fn append_stitched_terrain_mesh(
+        dict: &mut VarDictionary,
+        core: &SimCore,
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
+    ) {
+        let mut clip_triangles = Self::terrain_clip_triangles(road_clip_polygons);
+        if clip_triangles.is_empty() {
+            return;
+        }
+        clip_triangles.sort_by(|a, b| {
+            a.min_x
+                .total_cmp(&b.min_x)
+                .then(a.min_z.total_cmp(&b.min_z))
+                .then(a.max_x.total_cmp(&b.max_x))
+                .then(a.max_z.total_cmp(&b.max_z))
+        });
+
+        let x_interval_count = patch.sample_width.saturating_sub(1).max(1);
+        let z_interval_count = patch.sample_height.saturating_sub(1).max(1);
+        let bins = Self::terrain_clip_bins(
+            &clip_triangles,
+            patch.world_origin_x,
+            patch.world_origin_z,
+            patch.world_size_x,
+            patch.world_size_z,
+            x_interval_count,
+            z_interval_count,
+        );
+        let center_x = patch.world_origin_x + patch.world_size_x * 0.5;
+        let center_z = patch.world_origin_z + patch.world_size_z * 0.5;
+        let mut vertices = Vec::new();
+        let mut normals = Vec::new();
+        let mut uvs = Vec::new();
+
+        for z_index in 0..z_interval_count {
+            let z0 = z_index as f32 / z_interval_count as f32;
+            let z1 = (z_index + 1) as f32 / z_interval_count as f32;
+            let world_z0 = patch.world_origin_z + z0 * patch.world_size_z;
+            let world_z1 = patch.world_origin_z + z1 * patch.world_size_z;
+
+            for x_index in 0..x_interval_count {
+                let x0 = x_index as f32 / x_interval_count as f32;
+                let x1 = (x_index + 1) as f32 / x_interval_count as f32;
+                let world_x0 = patch.world_origin_x + x0 * patch.world_size_x;
+                let world_x1 = patch.world_origin_x + x1 * patch.world_size_x;
+                let cell = vec![
+                    Self::terrain_stitch_point(core, world_x0, world_z0),
+                    Self::terrain_stitch_point(core, world_x1, world_z0),
+                    Self::terrain_stitch_point(core, world_x1, world_z1),
+                    Self::terrain_stitch_point(core, world_x0, world_z1),
+                ];
+                let bin_index = z_index * x_interval_count + x_index;
+                let pieces = Self::terrain_cell_minus_road_footprint(
+                    cell,
+                    &bins[bin_index],
+                    &clip_triangles,
+                );
+                for piece in pieces {
+                    Self::emit_stitched_terrain_piece(
+                        &piece,
+                        patch,
+                        center_x,
+                        center_z,
+                        &mut vertices,
+                        &mut normals,
+                        &mut uvs,
+                    );
+                }
+            }
+        }
+
+        if vertices.is_empty() {
+            return;
+        }
+
+        dict.set(
+            "terrain_mesh_vertices",
+            PackedVector3Array::from_iter(vertices),
+        );
+        dict.set(
+            "terrain_mesh_normals",
+            PackedVector3Array::from_iter(normals),
+        );
+        dict.set("terrain_mesh_uvs", PackedVector2Array::from_iter(uvs));
+    }
+
+    fn terrain_clip_triangles(
+        road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
+    ) -> Vec<TerrainClipTriangle> {
+        let mut clip_triangles = Vec::new();
+        for polygon in road_clip_polygons {
+            for triangle in &polygon.triangles_world {
+                let Some(points) = Self::terrain_clip_triangle_points(*triangle) else {
+                    continue;
+                };
+                let mut min_x = points[0].x;
+                let mut max_x = points[0].x;
+                let mut min_z = points[0].z;
+                let mut max_z = points[0].z;
+                for point in points {
+                    min_x = min_x.min(point.x);
+                    max_x = max_x.max(point.x);
+                    min_z = min_z.min(point.z);
+                    max_z = max_z.max(point.z);
+                }
+                clip_triangles.push(TerrainClipTriangle {
+                    points,
+                    min_x,
+                    min_z,
+                    max_x,
+                    max_z,
+                });
+            }
+        }
+        clip_triangles
+    }
+
+    fn terrain_clip_triangle_points(triangle: [Vector3; 3]) -> Option<[Vector3; 3]> {
+        let area = Self::terrain_signed_area_xz(&triangle);
+        if area.abs() <= TERRAIN_STITCH_EPSILON_M * TERRAIN_STITCH_EPSILON_M {
+            return None;
+        }
+        if area > 0.0 {
+            Some(triangle)
+        } else {
+            Some([triangle[0], triangle[2], triangle[1]])
+        }
+    }
+
+    fn terrain_clip_bins(
+        clip_triangles: &[TerrainClipTriangle],
+        world_origin_x: f32,
+        world_origin_z: f32,
+        world_size_x: f32,
+        world_size_z: f32,
+        x_interval_count: usize,
+        z_interval_count: usize,
+    ) -> Vec<Vec<usize>> {
+        let mut bins = vec![Vec::new(); x_interval_count * z_interval_count];
+        for (triangle_index, triangle) in clip_triangles.iter().enumerate() {
+            let min_x = Self::terrain_mesh_bin_index(
+                triangle.min_x - TERRAIN_STITCH_EPSILON_M,
+                world_origin_x,
+                world_size_x,
+                x_interval_count,
+            );
+            let max_x = Self::terrain_mesh_bin_index(
+                triangle.max_x + TERRAIN_STITCH_EPSILON_M,
+                world_origin_x,
+                world_size_x,
+                x_interval_count,
+            );
+            let min_z = Self::terrain_mesh_bin_index(
+                triangle.min_z - TERRAIN_STITCH_EPSILON_M,
+                world_origin_z,
+                world_size_z,
+                z_interval_count,
+            );
+            let max_z = Self::terrain_mesh_bin_index(
+                triangle.max_z + TERRAIN_STITCH_EPSILON_M,
+                world_origin_z,
+                world_size_z,
+                z_interval_count,
+            );
+
+            for z_index in min_z..=max_z {
+                for x_index in min_x..=max_x {
+                    bins[z_index * x_interval_count + x_index].push(triangle_index);
+                }
+            }
+        }
+        bins
+    }
+
+    fn terrain_mesh_bin_index(
+        world_coord: f32,
+        world_origin: f32,
+        world_size: f32,
+        interval_count: usize,
+    ) -> usize {
+        if interval_count <= 1 || world_size <= f32::EPSILON {
+            return 0;
+        }
+        let t = ((world_coord - world_origin) / world_size).clamp(0.0, 0.999_999);
+        (t * interval_count as f32).floor() as usize
+    }
+
+    fn terrain_cell_minus_road_footprint(
+        cell: Vec<Vector3>,
+        clip_indices: &[usize],
+        clip_triangles: &[TerrainClipTriangle],
+    ) -> Vec<Vec<Vector3>> {
+        let mut pieces = vec![cell];
+        for &clip_index in clip_indices {
+            let clip = &clip_triangles[clip_index];
+            let mut next_pieces = Vec::new();
+            for piece in pieces {
+                if !Self::terrain_piece_intersects_clip_bounds(&piece, clip) {
+                    next_pieces.push(piece);
+                    continue;
+                }
+                next_pieces.extend(Self::terrain_subtract_convex_clip(&piece, clip));
+            }
+            pieces = next_pieces;
+            if pieces.is_empty() {
+                break;
+            }
+        }
+        pieces
+    }
+
+    fn terrain_piece_intersects_clip_bounds(piece: &[Vector3], clip: &TerrainClipTriangle) -> bool {
+        let mut min_x = piece[0].x;
+        let mut max_x = piece[0].x;
+        let mut min_z = piece[0].z;
+        let mut max_z = piece[0].z;
+        for point in piece {
+            min_x = min_x.min(point.x);
+            max_x = max_x.max(point.x);
+            min_z = min_z.min(point.z);
+            max_z = max_z.max(point.z);
+        }
+        min_x <= clip.max_x + TERRAIN_STITCH_EPSILON_M
+            && max_x >= clip.min_x - TERRAIN_STITCH_EPSILON_M
+            && min_z <= clip.max_z + TERRAIN_STITCH_EPSILON_M
+            && max_z >= clip.min_z - TERRAIN_STITCH_EPSILON_M
+    }
+
+    fn terrain_subtract_convex_clip(
+        piece: &[Vector3],
+        clip: &TerrainClipTriangle,
+    ) -> Vec<Vec<Vector3>> {
+        let mut pending = vec![piece.to_vec()];
+        let mut outside_pieces = Vec::new();
+        for edge_index in 0..3 {
+            let edge_a = clip.points[edge_index];
+            let edge_b = clip.points[(edge_index + 1) % 3];
+            let mut next_pending = Vec::new();
+            for candidate in pending {
+                let outside =
+                    Self::terrain_clip_polygon_by_half_plane(&candidate, edge_a, edge_b, false);
+                if Self::terrain_polygon_has_area(&outside) {
+                    outside_pieces.push(outside);
+                }
+
+                let inside =
+                    Self::terrain_clip_polygon_by_half_plane(&candidate, edge_a, edge_b, true);
+                if Self::terrain_polygon_has_area(&inside) {
+                    next_pending.push(inside);
+                }
+            }
+            pending = next_pending;
+            if pending.is_empty() {
+                break;
+            }
+        }
+        outside_pieces
+    }
+
+    fn terrain_clip_polygon_by_half_plane(
+        polygon: &[Vector3],
+        edge_a: Vector3,
+        edge_b: Vector3,
+        keep_inside: bool,
+    ) -> Vec<Vector3> {
+        if polygon.is_empty() {
+            return Vec::new();
+        }
+        let mut output = Vec::with_capacity(polygon.len() + 1);
+        let mut previous = polygon[polygon.len() - 1];
+        let mut previous_kept =
+            Self::terrain_half_plane_keeps(previous, edge_a, edge_b, keep_inside);
+        for &current in polygon {
+            let current_kept = Self::terrain_half_plane_keeps(current, edge_a, edge_b, keep_inside);
+            if current_kept {
+                if !previous_kept {
+                    output.push(Self::terrain_clip_intersection(
+                        previous, current, edge_a, edge_b,
+                    ));
+                }
+                output.push(current);
+            } else if previous_kept {
+                output.push(Self::terrain_clip_intersection(
+                    previous, current, edge_a, edge_b,
+                ));
+            }
+            previous = current;
+            previous_kept = current_kept;
+        }
+        Self::terrain_deduplicate_polygon_points(output)
+    }
+
+    fn terrain_half_plane_keeps(
+        point: Vector3,
+        edge_a: Vector3,
+        edge_b: Vector3,
+        keep_inside: bool,
+    ) -> bool {
+        let side = Self::terrain_cross_xz(
+            edge_b.x - edge_a.x,
+            edge_b.z - edge_a.z,
+            point.x - edge_a.x,
+            point.z - edge_a.z,
+        );
+        if keep_inside {
+            side >= -TERRAIN_STITCH_EPSILON_M
+        } else {
+            side <= TERRAIN_STITCH_EPSILON_M
+        }
+    }
+
+    fn terrain_clip_intersection(
+        segment_a: Vector3,
+        segment_b: Vector3,
+        clip_a: Vector3,
+        clip_b: Vector3,
+    ) -> Vector3 {
+        let segment_x = segment_b.x - segment_a.x;
+        let segment_z = segment_b.z - segment_a.z;
+        let clip_x = clip_b.x - clip_a.x;
+        let clip_z = clip_b.z - clip_a.z;
+        let denom = Self::terrain_cross_xz(segment_x, segment_z, clip_x, clip_z);
+        let t = if denom.abs() <= TERRAIN_STITCH_EPSILON_M {
+            0.0
+        } else {
+            Self::terrain_cross_xz(
+                clip_a.x - segment_a.x,
+                clip_a.z - segment_a.z,
+                clip_x,
+                clip_z,
+            ) / denom
+        }
+        .clamp(0.0, 1.0);
+        let x = segment_a.x + segment_x * t;
+        let z = segment_a.z + segment_z * t;
+        let edge_len_sq = clip_x * clip_x + clip_z * clip_z;
+        let u = if edge_len_sq <= TERRAIN_STITCH_EPSILON_M {
+            0.0
+        } else {
+            (((x - clip_a.x) * clip_x + (z - clip_a.z) * clip_z) / edge_len_sq).clamp(0.0, 1.0)
+        };
+        let y = clip_a.y + (clip_b.y - clip_a.y) * u;
+        Vector3::new(x, y, z)
+    }
+
+    fn terrain_deduplicate_polygon_points(points: Vec<Vector3>) -> Vec<Vector3> {
+        let mut deduplicated = Vec::with_capacity(points.len());
+        for point in points {
+            if deduplicated
+                .last()
+                .is_some_and(|last: &Vector3| last.distance_squared_to(point) <= 0.000_001)
+            {
+                continue;
+            }
+            deduplicated.push(point);
+        }
+        if deduplicated.len() > 1
+            && deduplicated[0].distance_squared_to(*deduplicated.last().unwrap()) <= 0.000_001
+        {
+            deduplicated.pop();
+        }
+        deduplicated
+    }
+
+    fn emit_stitched_terrain_piece(
+        piece: &[Vector3],
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        center_x: f32,
+        center_z: f32,
+        vertices: &mut Vec<Vector3>,
+        normals: &mut Vec<Vector3>,
+        uvs: &mut Vec<Vector2>,
+    ) {
+        if !Self::terrain_polygon_has_area(piece) {
+            return;
+        }
+        let area = Self::terrain_signed_area_xz(piece);
+        for index in 1..piece.len() - 1 {
+            let (a, b, c) = if area > 0.0 {
+                (piece[0], piece[index + 1], piece[index])
+            } else {
+                (piece[0], piece[index], piece[index + 1])
+            };
+            Self::emit_stitched_terrain_triangle(
+                [a, b, c],
+                patch,
+                center_x,
+                center_z,
+                vertices,
+                normals,
+                uvs,
+            );
+        }
+    }
+
+    fn emit_stitched_terrain_triangle(
+        triangle: [Vector3; 3],
+        patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+        center_x: f32,
+        center_z: f32,
+        vertices: &mut Vec<Vector3>,
+        normals: &mut Vec<Vector3>,
+        uvs: &mut Vec<Vector2>,
+    ) {
+        let raw_normal = (triangle[1] - triangle[0]).cross(triangle[2] - triangle[0]);
+        if raw_normal.length_squared() <= 0.000_001 {
+            return;
+        }
+        let normal = raw_normal.normalized();
+        for point in triangle {
+            vertices.push(Vector3::new(
+                point.x - center_x,
+                point.y,
+                point.z - center_z,
+            ));
+            normals.push(normal);
+            uvs.push(Vector2::new(
+                ((point.x - patch.world_origin_x) / patch.world_size_x.max(0.001)).clamp(0.0, 1.0),
+                ((point.z - patch.world_origin_z) / patch.world_size_z.max(0.001)).clamp(0.0, 1.0),
+            ));
+        }
+    }
+
+    fn terrain_stitch_point(core: &SimCore, world_x: f32, world_z: f32) -> Vector3 {
+        Vector3::new(
+            world_x,
+            core.heightmap.sample_visual_height_world(world_x, world_z) * config::HEIGHT_SCALE,
+            world_z,
+        )
+    }
+
+    fn terrain_polygon_has_area(points: &[Vector3]) -> bool {
+        points.len() >= 3
+            && Self::terrain_signed_area_xz(points).abs()
+                > TERRAIN_STITCH_EPSILON_M * TERRAIN_STITCH_EPSILON_M
+    }
+
+    fn terrain_signed_area_xz(points: &[Vector3]) -> f32 {
+        if points.len() < 3 {
+            return 0.0;
+        }
+        let mut twice_area = 0.0;
+        for index in 0..points.len() {
+            let current = points[index];
+            let next = points[(index + 1) % points.len()];
+            twice_area += current.x * next.z - next.x * current.z;
+        }
+        twice_area * 0.5
+    }
+
+    fn terrain_cross_xz(ax: f32, az: f32, bx: f32, bz: f32) -> f32 {
+        ax * bz - az * bx
     }
 
     fn water_patch_dict(patch: &crate::simulation::water::WaterPatchSnapshot) -> VarDictionary {

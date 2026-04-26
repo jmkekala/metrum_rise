@@ -559,6 +559,7 @@ impl RoadSurfaceSystem {
         best_height_m
     }
 
+    #[cfg(test)]
     pub(crate) fn sample_paved_support_height(
         &self,
         graph: &RegionGraph,
@@ -3433,6 +3434,7 @@ impl RoadSurfaceSystem {
         }
     }
 
+    #[cfg(test)]
     fn visit_span_piece_clearance_triangles<F>(
         &self,
         piece: &RoadSurfaceVisualSpanPiece,
@@ -3641,16 +3643,11 @@ impl RoadSurfaceSystem {
         chunk: SurfaceChunkKey,
         terrain: &mut TerrainSystem,
     ) {
-        let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
-        if piece.edge_class == EdgeClass::Standard {
-            self.stamp_piece_surface_geometry_for_chunk(
-                &piece.earthwork_surface_polygons,
-                chunk,
-                terrain,
-                0.0,
-            );
+        if !self.span_piece_uses_visible_earthwork(piece) {
+            return;
         }
 
+        let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
         self.stamp_piece_top_surface_clearance_for_chunk(
             &piece.clearance_road_surface_polygons,
             &piece.clearance_sidewalk_surface_polygons,
@@ -3671,17 +3668,11 @@ impl RoadSurfaceSystem {
         if !self.node_piece_uses_earthworks(graph, node_id, terrain) {
             return;
         }
-
-        let height_offset_m = self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
         if !self.node_piece_uses_visible_earthwork(graph, node_id, terrain) {
-            self.stamp_piece_surface_geometry_for_chunk(
-                &piece.earthwork_surface_polygons,
-                chunk,
-                terrain,
-                0.0,
-            );
+            return;
         }
 
+        let height_offset_m = self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
         self.stamp_piece_top_surface_clearance_for_chunk(
             &piece.road_surface_polygons,
             &piece.sidewalk_surface_polygons,
@@ -6198,7 +6189,7 @@ mod tests {
     }
 
     #[test]
-    fn terrain_earthworks_integrate_paved_footprint_with_compiled_roadbed() {
+    fn standard_road_footprint_uses_stitched_mesh_instead_of_visual_terrain_stamp() {
         let mut terrain = TerrainSystem::with_chunking(65, 65, 1.0, 8, 0.0);
         for z in 0..65 {
             for x in 0..65 {
@@ -6238,11 +6229,20 @@ mod tests {
             let road_height = section_height_at_lateral_offset(section, lateral_offset).unwrap();
             let sample_x = section.center_xz.x + section.lateral_xz.x * lateral_offset;
             let sample_z = section.center_xz.y + section.lateral_xz.y * lateral_offset;
-            let actual = terrain.sample_visual_height_world(sample_x, sample_z)
+            let source_height =
+                terrain.sample_height_world(sample_x, sample_z) * crate::config::HEIGHT_SCALE;
+            let visual_height = terrain.sample_visual_height_world(sample_x, sample_z)
                 * crate::config::HEIGHT_SCALE;
+            let support_height = surface
+                .sample_paved_support_height(&graph, &terrain, sample_x, sample_z)
+                .expect("standard paved footprint should expose a solved support surface");
             assert!(
-                (actual - road_height).abs() <= 0.05,
-                "expected stamped terrain to match the compiled paved surface at lateral_offset={lateral_offset:.1}: actual={actual:.3} road_height={road_height:.3}"
+                (visual_height - source_height).abs() <= 0.05,
+                "ordinary standard roads must not stamp visual terrain at lateral_offset={lateral_offset:.1}: visual={visual_height:.3} source={source_height:.3}"
+            );
+            assert!(
+                (support_height - road_height).abs() <= 0.05,
+                "expected solved paved support to match the compiled road surface at lateral_offset={lateral_offset:.1}: support={support_height:.3} road_height={road_height:.3}"
             );
         }
     }
@@ -6302,16 +6302,21 @@ mod tests {
             let road_height = section_height_at_lateral_offset(section, lateral_offset).unwrap();
             let sample_x = section.center_xz.x + section.lateral_xz.x * lateral_offset;
             let sample_z = section.center_xz.y + section.lateral_xz.y * lateral_offset;
+            let source_height =
+                terrain.sample_height_world(sample_x, sample_z) * crate::config::HEIGHT_SCALE;
             let visual_height = terrain.sample_visual_height_world(sample_x, sample_z)
                 * crate::config::HEIGHT_SCALE;
-            sampled_profile.push((lateral_offset, road_height, visual_height));
+            let visible_surface_height = surface
+                .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
+                .expect("standard road footprint should be owned by the road surface");
+            sampled_profile.push((lateral_offset, road_height, visible_surface_height));
             assert!(
-                visual_height <= road_height + 0.01,
-                "expected integrated terrain to stay at or below the bounded carriageway on a steep hillside: lateral_offset={lateral_offset:.2} visual_height={visual_height:.3} road_height={road_height:.3}"
+                (visual_height - source_height).abs() <= 0.05,
+                "ordinary standard roads must not stamp visual terrain on a steep hillside: lateral_offset={lateral_offset:.2} visual_height={visual_height:.3} source_height={source_height:.3}"
             );
             assert!(
-                (road_height - visual_height).abs() <= 0.08,
-                "expected grounded-road integrated terrain under the footprint to follow the solved road surface instead of remaining a lowered support slab: lateral_offset={lateral_offset:.2} visual_height={visual_height:.3} road_height={road_height:.3}"
+                (road_height - visible_surface_height).abs() <= 0.08,
+                "expected grounded-road visible surface to follow the solved road surface: lateral_offset={lateral_offset:.2} visible_surface_height={visible_surface_height:.3} road_height={road_height:.3}"
             );
         }
 
@@ -6321,7 +6326,7 @@ mod tests {
         let support_profile_delta = right.2 - left.2;
         assert!(
             (support_profile_delta - road_profile_delta).abs() <= 0.05,
-            "expected paved-footprint support to follow the solved road crossfall instead of a flat slab: road_profile_delta={road_profile_delta:.3} support_profile_delta={support_profile_delta:.3}"
+            "expected visible road footprint to follow the solved road crossfall instead of a flat slab: road_profile_delta={road_profile_delta:.3} support_profile_delta={support_profile_delta:.3}"
         );
     }
 
@@ -6743,7 +6748,7 @@ mod tests {
             surface
                 .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
                 .is_none(),
-            "grounded standard terminal earthwork margin stays outside visible-surface queries; the renderer owns only a narrow visual seam closure"
+            "grounded standard terminal earthwork margin stays outside visible-surface queries; Rust-generated terrain topology owns the ordinary seam"
         );
     }
 
@@ -6778,7 +6783,7 @@ mod tests {
             surface
                 .sample_visible_surface_height(&graph, &terrain, sample_x, sample_z)
                 .is_none(),
-            "grounded standard span earthwork margin stays outside visible-surface queries; the renderer owns only a narrow visual seam closure"
+            "grounded standard span earthwork margin stays outside visible-surface queries; Rust-generated terrain topology owns the ordinary seam"
         );
     }
 
