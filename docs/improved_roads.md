@@ -698,9 +698,9 @@ Implement the hardcut in this order:
 1. Done: move `spade` from `dev-dependencies` to runtime `dependencies`.
 2. Done: add a small Rust terrain CDT module with no Godot dependencies.
 3. Done: port the current Spade spike into module-local tests.
-4. Add constrained patch-boundary clipping for road footprint loops.
-5. Add tests for roads crossing one patch edge, two patch edges, and a patch corner.
-6. Add tests for multiple footprint loops in one patch.
+4. Done: add constrained patch-boundary clipping for road footprint loops.
+5. Done: add tests for roads crossing one patch edge, two patch edges, and a patch corner.
+6. Done: add tests for multiple footprint loops in one patch.
 7. Add tests for `Bend`, `Terminal`, and `JunctionN` footprint loops.
 8. Replace the live road-touched terrain patch builder with the CDT module.
 9. Remove the retired seam-strip / cell-triangle live path.

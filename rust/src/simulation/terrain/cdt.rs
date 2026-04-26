@@ -134,7 +134,6 @@ pub(crate) struct TerrainCdtStats {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TerrainCdtError {
     InvalidPatch,
-    InvalidRoadLoop,
     TriangulationFailed,
 }
 
@@ -213,29 +212,37 @@ fn canonicalize_input(
     let mut road_loops = Vec::new();
 
     let patch_corners = input.patch.corners_cw();
-    let patch_indices = patch_corners
-        .iter()
-        .map(|&vertex| insert_vertex(vertex, &mut vertices, &mut vertex_lookup))
-        .collect::<Vec<_>>();
-    push_loop_constraints(&patch_indices, &mut constraint_set, None);
+    for &vertex in &patch_corners {
+        insert_vertex(vertex, &mut vertices, &mut vertex_lookup);
+    }
 
     input
         .road_loops
         .sort_by_key(|road_loop| (road_loop.stable_piece_id, road_loop.local_loop_index));
     for road_loop in input.road_loops {
-        let points = simplified_loop(road_loop.vertices);
-        if points.len() < 3 || signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
-            return Err(TerrainCdtError::InvalidRoadLoop);
+        let original_points = simplified_loop(road_loop.vertices);
+        if original_points.len() < 3
+            || signed_area(&original_points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M
+        {
+            continue;
+        }
+        let points = simplified_loop(clip_loop_to_patch(original_points, input.patch));
+        if points.len() < 3 {
+            continue;
+        }
+        if signed_area(&points).abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
+            continue;
         }
         let points = ensure_ccw(points);
         let loop_indices = points
             .iter()
             .map(|&vertex| insert_vertex(vertex, &mut vertices, &mut vertex_lookup))
             .collect::<Vec<_>>();
-        push_loop_constraints(
+        push_road_loop_constraints(
             &loop_indices,
-            &mut constraint_set,
-            Some(&mut road_constraint_edges),
+            &vertices,
+            input.patch,
+            &mut road_constraint_edges,
         );
         road_loops.push(points);
     }
@@ -248,6 +255,9 @@ fn canonicalize_input(
         )
     });
     for sample in input.source_samples {
+        if !patch_contains(sample, input.patch) {
+            continue;
+        }
         if road_loops
             .iter()
             .any(|road_loop| point_in_polygon(sample, road_loop))
@@ -255,6 +265,11 @@ fn canonicalize_input(
             continue;
         }
         insert_vertex(sample, &mut vertices, &mut vertex_lookup);
+    }
+
+    push_patch_boundary_constraints(input.patch, &vertices, &mut constraint_set);
+    for edge in &road_constraint_edges {
+        insert_constraint(*edge, &mut constraint_set);
     }
 
     Ok(CanonicalTerrainCdtInput {
@@ -280,21 +295,93 @@ fn insert_vertex(
     index
 }
 
-fn push_loop_constraints(
+fn push_road_loop_constraints(
     indices: &[usize],
-    constraint_set: &mut BTreeSet<[usize; 2]>,
-    mut road_constraint_edges: Option<&mut Vec<[usize; 2]>>,
+    vertices: &[TerrainCdtVertex],
+    patch: TerrainCdtPatch,
+    road_constraint_edges: &mut Vec<[usize; 2]>,
 ) {
     for index in 0..indices.len() {
-        let edge = [indices[index], indices[(index + 1) % indices.len()]];
+        let edge = normalize_edge_array(indices[index], indices[(index + 1) % indices.len()]);
         if edge[0] == edge[1] {
             continue;
         }
-        constraint_set.insert(edge);
-        if let Some(edges) = road_constraint_edges.as_deref_mut() {
-            edges.push(edge);
+        if !edge_lies_on_patch_boundary(vertices[edge[0]], vertices[edge[1]], patch) {
+            road_constraint_edges.push(edge);
         }
     }
+}
+
+fn push_patch_boundary_constraints(
+    patch: TerrainCdtPatch,
+    vertices: &[TerrainCdtVertex],
+    constraint_set: &mut BTreeSet<[usize; 2]>,
+) {
+    let mut left = Vec::new();
+    let mut top = Vec::new();
+    let mut right = Vec::new();
+    let mut bottom = Vec::new();
+
+    for (index, vertex) in vertices.iter().copied().enumerate() {
+        if same_coord(vertex.x, patch.min_x)
+            && vertex.z >= patch.min_z - CDT_EPSILON_M
+            && vertex.z <= patch.max_z + CDT_EPSILON_M
+        {
+            left.push((quantized_coord(vertex.z), index));
+        }
+        if same_coord(vertex.z, patch.max_z)
+            && vertex.x >= patch.min_x - CDT_EPSILON_M
+            && vertex.x <= patch.max_x + CDT_EPSILON_M
+        {
+            top.push((quantized_coord(vertex.x), index));
+        }
+        if same_coord(vertex.x, patch.max_x)
+            && vertex.z >= patch.min_z - CDT_EPSILON_M
+            && vertex.z <= patch.max_z + CDT_EPSILON_M
+        {
+            right.push((-quantized_coord(vertex.z), index));
+        }
+        if same_coord(vertex.z, patch.min_z)
+            && vertex.x >= patch.min_x - CDT_EPSILON_M
+            && vertex.x <= patch.max_x + CDT_EPSILON_M
+        {
+            bottom.push((-quantized_coord(vertex.x), index));
+        }
+    }
+
+    push_sorted_boundary_side(&mut left, constraint_set);
+    push_sorted_boundary_side(&mut top, constraint_set);
+    push_sorted_boundary_side(&mut right, constraint_set);
+    push_sorted_boundary_side(&mut bottom, constraint_set);
+}
+
+fn push_sorted_boundary_side(
+    side: &mut Vec<(i64, usize)>,
+    constraint_set: &mut BTreeSet<[usize; 2]>,
+) {
+    side.sort_unstable();
+    side.dedup_by_key(|(_, index)| *index);
+    for pair in side.windows(2) {
+        insert_constraint([pair[0].1, pair[1].1], constraint_set);
+    }
+}
+
+fn insert_constraint(edge: [usize; 2], constraint_set: &mut BTreeSet<[usize; 2]>) {
+    let edge = normalize_edge_array(edge[0], edge[1]);
+    if edge[0] != edge[1] {
+        constraint_set.insert(edge);
+    }
+}
+
+fn edge_lies_on_patch_boundary(
+    a: TerrainCdtVertex,
+    b: TerrainCdtVertex,
+    patch: TerrainCdtPatch,
+) -> bool {
+    (same_coord(a.x, patch.min_x) && same_coord(b.x, patch.min_x))
+        || (same_coord(a.x, patch.max_x) && same_coord(b.x, patch.max_x))
+        || (same_coord(a.z, patch.min_z) && same_coord(b.z, patch.min_z))
+        || (same_coord(a.z, patch.max_z) && same_coord(b.z, patch.max_z))
 }
 
 fn simplified_loop(points: Vec<TerrainCdtVertex>) -> Vec<TerrainCdtVertex> {
@@ -308,12 +395,108 @@ fn simplified_loop(points: Vec<TerrainCdtVertex>) -> Vec<TerrainCdtVertex> {
         }
         deduplicated.push(point);
     }
-    if deduplicated.len() > 1
-        && same_xz(deduplicated[0], *deduplicated.last().unwrap())
-    {
+    if deduplicated.len() > 1 && same_xz(deduplicated[0], *deduplicated.last().unwrap()) {
         deduplicated.pop();
     }
     deduplicated
+}
+
+fn clip_loop_to_patch(
+    points: Vec<TerrainCdtVertex>,
+    patch: TerrainCdtPatch,
+) -> Vec<TerrainCdtVertex> {
+    let points = clip_loop_to_boundary(
+        points,
+        |point| point.x >= patch.min_x - CDT_EPSILON_M,
+        |a, b| intersect_at_x(a, b, patch.min_x),
+    );
+    let points = clip_loop_to_boundary(
+        points,
+        |point| point.x <= patch.max_x + CDT_EPSILON_M,
+        |a, b| intersect_at_x(a, b, patch.max_x),
+    );
+    let points = clip_loop_to_boundary(
+        points,
+        |point| point.z >= patch.min_z - CDT_EPSILON_M,
+        |a, b| intersect_at_z(a, b, patch.min_z),
+    );
+    let points = clip_loop_to_boundary(
+        points,
+        |point| point.z <= patch.max_z + CDT_EPSILON_M,
+        |a, b| intersect_at_z(a, b, patch.max_z),
+    );
+    points
+        .into_iter()
+        .map(|point| clamp_to_patch(point, patch))
+        .collect()
+}
+
+fn clip_loop_to_boundary(
+    points: Vec<TerrainCdtVertex>,
+    inside: impl Fn(TerrainCdtVertex) -> bool,
+    intersection: impl Fn(TerrainCdtVertex, TerrainCdtVertex) -> TerrainCdtVertex,
+) -> Vec<TerrainCdtVertex> {
+    if points.is_empty() {
+        return points;
+    }
+
+    let mut clipped = Vec::new();
+    let mut previous = *points.last().unwrap();
+    let mut previous_inside = inside(previous);
+    for current in points {
+        let current_inside = inside(current);
+        if current_inside {
+            if !previous_inside {
+                clipped.push(intersection(previous, current));
+            }
+            clipped.push(current);
+        } else if previous_inside {
+            clipped.push(intersection(previous, current));
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    clipped
+}
+
+fn intersect_at_x(a: TerrainCdtVertex, b: TerrainCdtVertex, x: f64) -> TerrainCdtVertex {
+    let denominator = b.x - a.x;
+    if denominator.abs() <= CDT_EPSILON_M {
+        return TerrainCdtVertex::new(x, a.height_m, a.z);
+    }
+    interpolate_vertex(a, b, (x - a.x) / denominator)
+}
+
+fn intersect_at_z(a: TerrainCdtVertex, b: TerrainCdtVertex, z: f64) -> TerrainCdtVertex {
+    let denominator = b.z - a.z;
+    if denominator.abs() <= CDT_EPSILON_M {
+        return TerrainCdtVertex::new(a.x, a.height_m, z);
+    }
+    interpolate_vertex(a, b, (z - a.z) / denominator)
+}
+
+fn interpolate_vertex(a: TerrainCdtVertex, b: TerrainCdtVertex, t: f64) -> TerrainCdtVertex {
+    let t = t.clamp(0.0, 1.0);
+    TerrainCdtVertex::new(
+        a.x + (b.x - a.x) * t,
+        (f64::from(a.height_m) + f64::from(b.height_m - a.height_m) * t) as f32,
+        a.z + (b.z - a.z) * t,
+    )
+}
+
+fn clamp_to_patch(vertex: TerrainCdtVertex, patch: TerrainCdtPatch) -> TerrainCdtVertex {
+    TerrainCdtVertex::new(
+        vertex.x.clamp(patch.min_x, patch.max_x),
+        vertex.height_m,
+        vertex.z.clamp(patch.min_z, patch.max_z),
+    )
+}
+
+fn patch_contains(vertex: TerrainCdtVertex, patch: TerrainCdtPatch) -> bool {
+    vertex.x >= patch.min_x - CDT_EPSILON_M
+        && vertex.x <= patch.max_x + CDT_EPSILON_M
+        && vertex.z >= patch.min_z - CDT_EPSILON_M
+        && vertex.z <= patch.max_z + CDT_EPSILON_M
 }
 
 fn ensure_ccw(mut points: Vec<TerrainCdtVertex>) -> Vec<TerrainCdtVertex> {
@@ -324,8 +507,11 @@ fn ensure_ccw(mut points: Vec<TerrainCdtVertex>) -> Vec<TerrainCdtVertex> {
 }
 
 fn same_xz(a: TerrainCdtVertex, b: TerrainCdtVertex) -> bool {
-    quantized_coord(a.x) == quantized_coord(b.x)
-        && quantized_coord(a.z) == quantized_coord(b.z)
+    quantized_coord(a.x) == quantized_coord(b.x) && quantized_coord(a.z) == quantized_coord(b.z)
+}
+
+fn same_coord(a: f64, b: f64) -> bool {
+    quantized_coord(a) == quantized_coord(b)
 }
 
 fn quantized_coord(value: f64) -> i64 {
@@ -378,6 +564,10 @@ fn emitted_triangle_edges(triangles: &[[usize; 3]]) -> HashSet<(usize, usize)> {
 
 fn normalize_edge(a: usize, b: usize) -> (usize, usize) {
     if a < b { (a, b) } else { (b, a) }
+}
+
+fn normalize_edge_array(a: usize, b: usize) -> [usize; 2] {
+    if a < b { [a, b] } else { [b, a] }
 }
 
 #[cfg(test)]
@@ -448,24 +638,212 @@ mod tests {
         assert_eq!(first.stats, second.stats);
     }
 
+    #[test]
+    fn road_loop_crossing_one_patch_edge_is_clipped_to_shared_boundary_vertices() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
+        let road = road_loop_from_centerline(
+            TerrainCdtVertex::new(-10.0, 0.0, 20.0),
+            TerrainCdtVertex::new(20.0, 0.0, 20.0),
+            6.0,
+        );
+
+        let mesh = build_crossing_patch(patch, road.clone());
+        assert_valid_clipped_mesh(&mesh, patch, &road);
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|vertex| same_coord(vertex.x, patch.min_x))
+        );
+    }
+
+    #[test]
+    fn road_loop_crossing_two_patch_edges_splits_both_patch_boundary_constraints() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
+        let road = road_loop_from_centerline(
+            TerrainCdtVertex::new(-10.0, 0.0, 20.0),
+            TerrainCdtVertex::new(50.0, 0.0, 20.0),
+            6.0,
+        );
+
+        let mesh = build_crossing_patch(patch, road.clone());
+        assert_valid_clipped_mesh(&mesh, patch, &road);
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|vertex| same_coord(vertex.x, patch.min_x))
+        );
+        assert!(
+            mesh.vertices
+                .iter()
+                .any(|vertex| same_coord(vertex.x, patch.max_x))
+        );
+    }
+
+    #[test]
+    fn road_loop_crossing_patch_corner_uses_corner_as_constraint_endpoint() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
+        let road = road_loop_from_centerline(
+            TerrainCdtVertex::new(-10.0, 0.0, -10.0),
+            TerrainCdtVertex::new(20.0, 0.0, 20.0),
+            6.0,
+        );
+
+        let mesh = build_crossing_patch(patch, road.clone());
+        assert_valid_clipped_mesh(&mesh, patch, &road);
+        assert!(
+            mesh.vertices.iter().any(
+                |vertex| same_coord(vertex.x, patch.min_x) && same_coord(vertex.z, patch.min_z)
+            )
+        );
+    }
+
+    #[test]
+    fn multiple_road_loops_in_one_patch_preserve_all_seam_constraints_deterministically() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
+        let road_a = road_loop_from_centerline(
+            TerrainCdtVertex::new(8.0, 0.0, 10.0),
+            TerrainCdtVertex::new(18.0, 0.0, 18.0),
+            4.0,
+        );
+        let road_b = road_loop_from_centerline(
+            TerrainCdtVertex::new(22.0, 0.0, 28.0),
+            TerrainCdtVertex::new(34.0, 0.0, 28.0),
+            4.0,
+        );
+        let input = TerrainCdtInput::new(
+            patch,
+            vec![
+                TerrainCdtRoadLoop::new(99, 0, road_b.clone()),
+                TerrainCdtRoadLoop::new(7, 0, road_a.clone()),
+            ],
+            vec![
+                TerrainCdtVertex::new(5.0, 0.0, 5.0),
+                TerrainCdtVertex::new(5.0, 0.0, 35.0),
+                TerrainCdtVertex::new(20.0, 0.0, 5.0),
+                TerrainCdtVertex::new(20.0, 0.0, 35.0),
+                TerrainCdtVertex::new(35.0, 0.0, 5.0),
+                TerrainCdtVertex::new(35.0, 0.0, 35.0),
+            ],
+        );
+
+        let first = build_road_touched_terrain_patch(input.clone())
+            .expect("Spade should triangulate multiple road loops");
+        let second = build_road_touched_terrain_patch(input)
+            .expect("Spade should deterministically triangulate multiple road loops");
+
+        assert_eq!(first.stats.road_constraint_edges, 8);
+        assert_eq!(
+            first.stats.preserved_road_constraint_edges,
+            first.stats.road_constraint_edges
+        );
+        assert_eq!(
+            canonical_triangle_set(&first.triangles),
+            canonical_triangle_set(&second.triangles)
+        );
+        for triangle in &first.triangles {
+            let center = centroid([
+                first.vertices[triangle[0]],
+                first.vertices[triangle[1]],
+                first.vertices[triangle[2]],
+            ]);
+            assert!(!point_in_polygon(center, &road_a));
+            assert!(!point_in_polygon(center, &road_b));
+        }
+    }
+
     fn diagonal_road_loop() -> Vec<TerrainCdtVertex> {
-        let start = TerrainCdtVertex::new(8.0, 0.0, 12.0);
-        let end = TerrainCdtVertex::new(32.0, 0.0, 28.0);
+        road_loop_from_centerline(
+            TerrainCdtVertex::new(8.0, 0.0, 12.0),
+            TerrainCdtVertex::new(32.0, 0.0, 28.0),
+            6.0,
+        )
+    }
+
+    fn road_loop_from_centerline(
+        start: TerrainCdtVertex,
+        end: TerrainCdtVertex,
+        width: f64,
+    ) -> Vec<TerrainCdtVertex> {
         let dx = end.x - start.x;
         let dz = end.z - start.z;
         let length = (dx * dx + dz * dz).sqrt();
         let normal_x = -dz / length;
         let normal_z = dx / length;
+        let half_width = width * 0.5;
         let mut road = vec![
-            TerrainCdtVertex::new(start.x + normal_x * 3.0, 0.0, start.z + normal_z * 3.0),
-            TerrainCdtVertex::new(end.x + normal_x * 3.0, 0.0, end.z + normal_z * 3.0),
-            TerrainCdtVertex::new(end.x - normal_x * 3.0, 0.0, end.z - normal_z * 3.0),
-            TerrainCdtVertex::new(start.x - normal_x * 3.0, 0.0, start.z - normal_z * 3.0),
+            TerrainCdtVertex::new(
+                start.x + normal_x * half_width,
+                0.0,
+                start.z + normal_z * half_width,
+            ),
+            TerrainCdtVertex::new(
+                end.x + normal_x * half_width,
+                0.0,
+                end.z + normal_z * half_width,
+            ),
+            TerrainCdtVertex::new(
+                end.x - normal_x * half_width,
+                0.0,
+                end.z - normal_z * half_width,
+            ),
+            TerrainCdtVertex::new(
+                start.x - normal_x * half_width,
+                0.0,
+                start.z - normal_z * half_width,
+            ),
         ];
         if signed_area(&road) < 0.0 {
             road.reverse();
         }
         road
+    }
+
+    fn build_crossing_patch(patch: TerrainCdtPatch, road: Vec<TerrainCdtVertex>) -> TerrainCdtMesh {
+        build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![TerrainCdtRoadLoop::new(7, 0, road)],
+            vec![
+                TerrainCdtVertex::new(5.0, 0.0, 5.0),
+                TerrainCdtVertex::new(5.0, 0.0, 35.0),
+                TerrainCdtVertex::new(20.0, 0.0, 5.0),
+                TerrainCdtVertex::new(20.0, 0.0, 35.0),
+                TerrainCdtVertex::new(35.0, 0.0, 5.0),
+                TerrainCdtVertex::new(35.0, 0.0, 35.0),
+            ],
+        ))
+        .expect("Spade should triangulate a clipped road footprint")
+    }
+
+    fn assert_valid_clipped_mesh(
+        mesh: &TerrainCdtMesh,
+        patch: TerrainCdtPatch,
+        original_road: &[TerrainCdtVertex],
+    ) {
+        let clipped_road = ensure_ccw(simplified_loop(clip_loop_to_patch(
+            original_road.to_vec(),
+            patch,
+        )));
+        assert!(clipped_road.len() >= 3);
+        assert!(!mesh.triangles.is_empty());
+        assert!(mesh.stats.rejected_road_faces > 0);
+        assert_eq!(
+            mesh.stats.preserved_road_constraint_edges,
+            mesh.stats.road_constraint_edges
+        );
+        for vertex in &mesh.vertices {
+            assert!(patch_contains(*vertex, patch));
+        }
+        for triangle in &mesh.triangles {
+            let center = centroid([
+                mesh.vertices[triangle[0]],
+                mesh.vertices[triangle[1]],
+                mesh.vertices[triangle[2]],
+            ]);
+            assert!(
+                !point_in_polygon(center, &clipped_road),
+                "accepted terrain triangle leaked into the clipped road footprint"
+            );
+        }
     }
 
     fn canonical_triangle_set(triangles: &[[usize; 3]]) -> Vec<[usize; 3]> {

@@ -5,8 +5,8 @@
 //! not stamp their footprint into either array; road-touched render patches receive stitched mesh
 //! topology from the road surface runtime instead.
 
-pub mod chunks;
 pub(crate) mod cdt;
+pub mod chunks;
 
 pub use chunks::{
     TerrainChunkAsset, TerrainChunkLoadError, TerrainChunkLodAsset, TerrainChunkLodManifest,
