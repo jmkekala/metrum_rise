@@ -399,10 +399,15 @@ Required rule:
   polygon carrier
 - the `Bend` piece owns both carriageway and sidewalk continuation through the corner, so the
   runtime must not leave that continuation to overlapping edge strips or to terrain-side fill
-- the `Bend` piece must not synthesize a shared junction-style asphalt core polygon; it connects
-  its two mouths directly through piece-owned sector geometry
-- the `Bend` piece outer boundary loops must come directly from those compiled bend sectors rather
-  than from a later generic polygon-boundary extraction pass
+- the `Bend` piece emits candidate asphalt, sidewalk / curb, and outer-footprint polygons from its
+  two incident mouths
+- `i_overlay` resolves those candidate polygons into disjoint ownership regions before any bend
+  triangles are emitted
+- Spade triangulates the resolved bend regions and preserves their constrained boundaries
+- a sharp bend may shrink, split, or locally remove sidewalk area where there is no valid room, but
+  sidewalk must never overlap carriageway asphalt
+- the `Bend` outer footprint is the boolean-union result of the resolved road-owned regions, not a
+  second-pass extraction from already-emitted triangles
 
 ### 9. `Terminal` And `JunctionN` Own Their Geometry Explicitly
 
@@ -410,24 +415,27 @@ Required rule:
 
 Required rule:
 
-- `Terminal` owns its cap / closure geometry directly from the incident piece profile
-- `Terminal` outer boundary loops must come directly from that compiled cap geometry rather than
-  from a later generic polygon-boundary extraction pass
-- `JunctionN` owns one carriageway center plus explicit perimeter sidewalk sectors between adjacent
-  mouths
-- `JunctionN` must not be built from one generic angle-sorted cloud of throat endpoints
+- `Terminal` owns its cap / closure as a one-mouth road-piece region problem
+- `JunctionN` owns its surface as an `n >= 3` road-piece region problem
+- `Terminal`, `Bend`, and `JunctionN` must use the same region pipeline:
+  - compile mouth-derived candidate polygons
+  - resolve ownership with `i_overlay`
+  - triangulate resolved regions with Spade CDT
+  - export the resolved outer footprint to terrain seam generation
+- `JunctionN` must not be built from one generic angle-sorted cloud of throat endpoints as final
+  geometry
 - `JunctionN` must not be rendered as one global sidewalk annulus between one outer loop and one
   inner loop
-- `JunctionN` must not synthesize one generic center asphalt polygon from all mouth inner points;
-  the carriageway core is assembled from explicit adjacent-mouth wedges around the node
-- `JunctionN` must not run a second-pass center/core polygon builder after sector compilation; the
-  explicit adjacent-gap sectors are themselves the live carriageway carrier
-- `JunctionN` must not reuse the `Bend` side-sector builder as its final geometry carrier; it
-  owns a dedicated adjacent-gap sector builder for multi-arm node geometry
+- `JunctionN` must not let adjacent-mouth sector strips decide final visible ownership after CDT
+- `JunctionN` must not rely on nearest-material classification, render order, or centroid voting to
+  decide whether a triangle is asphalt or sidewalk
+- `JunctionN` may use sorted adjacent mouths only to generate deterministic candidate polygons and
+  candidate split lines before boolean ownership resolution
 - no sidewalk triangles may own the carriageway center
+- no sidewalk triangle may overlap any asphalt triangle, including acute-angle corners
 - no carriageway seam may appear between an incident `Span` throat and the node-owned continuation
 
-### 10. Mouths And Adjacent Sectors Are The General Connector Model
+### 10. Mouths And Boolean Regions Are The General Connector Model
 
 The shipped roadbed runtime does not treat sidewalks as a symmetric visual halo around the road
 centerline.
@@ -443,13 +451,18 @@ For every incident surface edge at one piece boundary:
 
 General connector rule:
 
-- `Bend` connects exactly two mouth profiles directly
-- `JunctionN` sorts mouths by centerline angle around the node with a stable tie-breaker, then
-  builds one adjacent-mouth sector for each consecutive pair
-- each adjacent sector is assembled band-by-band from paired mouth boundaries
+- `Terminal` receives exactly one mouth profile
+- `Bend` receives exactly two mouth profiles
+- `JunctionN` receives three or more mouth profiles
+- `JunctionN` sorts mouths by centerline angle around the node with a stable tie-breaker only to
+  build canonical adjacent-mouth candidate regions
+- each candidate region is assembled band-by-band from paired mouth boundaries, then passed to
+  `i_overlay`; candidate regions are not final render geometry
 - connector sampling must use a fixed deterministic step no larger than `1 m`
 - the runtime must not generate the full node from a single generic fill polygon and hope later
   triangulation recovers the intended ownership
+- the runtime must not keep overlapping road / sidewalk candidate polygons after the boolean
+  ownership stage
 
 Sidewalk ownership remains explicit per side:
 
@@ -750,6 +763,11 @@ Implement the hardcut in this order:
     instead of panicking the backend.
 12. Done: hard-cut `Terminal`, `Bend`, and `JunctionN` visual fills to a local Spade CDT
     solidifier; the older sector strips remain only as semantic road / sidewalk material hints.
+13. Next: replace node-piece material hints with `i_overlay` boolean ownership for `Terminal`,
+    `Bend`, and `JunctionN`.
+14. Next: remove hint-only / nearest-material / centroid-vote node material fallbacks after
+    boolean ownership emits disjoint asphalt and sidewalk regions.
+15. Later: adapt `Span` output to the same resolved-region contract once node pieces are validated.
 
 Acceptance requires `cargo check`, the CDT contract tests, and Godot headless load to pass.
 
@@ -793,6 +811,126 @@ The accepted next node-piece hardcut is `i_overlay` plus Spade:
   subtraction
 - no legacy sector strip, hint-only classifier, nearest-material fallback, or render-order trick may
   decide final asphalt / sidewalk ownership after this hardcut
+
+### Junction-First `i_overlay` Refactor
+
+The next implementation slice focuses on node pieces first because they are the historically broken
+case. `Span` pieces keep their current corridor generation until the node-piece ownership pipeline is
+validated, then spans are adapted to emit the same resolved-region format.
+
+Scope:
+
+- first target: `Terminal`, `Bend`, and `JunctionN`
+- deferred target: `Span` integration into the same region-output contract
+- out of scope for this slice: lane-routing policy, pedestrian legality, building frontage rules,
+  and retaining-wall variants
+
+Required node-piece input:
+
+- stable piece ID
+- node class: `Terminal`, `Bend`, or `JunctionN`
+- node world position
+- incident mouths sorted by deterministic class rule:
+  - terminal: the only mouth
+  - bend: the two mouths ordered by edge ID after geometric normalization
+  - junction: counter-clockwise centerline angle, then edge ID, then side index
+- for each mouth:
+  - centerline direction away from the node
+  - throat position and throat width profile
+  - asphalt left / right edge points
+  - curb / shoulder left / right edge points
+  - outer sidewalk / shoulder left / right edge points
+  - road class and profile flags
+- project epsilon and minimum-area thresholds
+
+Candidate-region generation:
+
+- asphalt candidates are built from mouth carriageway edges plus deterministic adjacent-mouth
+  connector lines
+- sidewalk candidates are built per side from curb / shoulder edges to the outer sidewalk / shoulder
+  edge
+- outer-footprint candidates are built from the full road-owned top-surface boundary
+- candidate lines may use angle bisectors or local Voronoi-style split lines only to propose
+  deterministic boundaries between adjacent sidewalk candidates
+- candidate generation must not emit final render triangles
+- candidate generation must not discard an acute-angle sidewalk because it looks visually awkward;
+  only boolean ownership and minimum-area cleanup may remove it
+
+Boolean ownership order:
+
+1. Quantize and canonicalize all candidate rings.
+2. `i_overlay` unions all asphalt candidates into one or more disjoint asphalt regions.
+3. `i_overlay` unions all sidewalk / curb candidates into sidewalk candidate regions.
+4. `i_overlay` subtracts asphalt regions from sidewalk candidates.
+5. `i_overlay` unions asphalt plus final sidewalk / curb regions into the road-owned outer
+   footprint.
+6. Degenerate output rings below the minimum area threshold are dropped and counted.
+7. The resulting disjoint material regions are triangulated with Spade CDT.
+
+Acute-angle rule:
+
+- asphalt has priority over every sidewalk / curb candidate
+- sidewalk / curb regions may shrink, split into multiple islands, or collapse to nothing at acute
+  angles
+- a collapsed sidewalk is valid only when the remaining boolean area is below the documented
+  minimum area threshold
+- no final sidewalk / curb triangle may overlap final asphalt
+- no final sidewalk / curb triangle may cross the asphalt boundary to reach another sidewalk island
+- no final asphalt triangle may be omitted merely to preserve sidewalk continuity
+- all acute-angle behavior must be symmetric under reversed road direction and stable mouth order
+
+Output contract:
+
+- the region builder returns disjoint material regions, not render strips:
+  - asphalt regions
+  - sidewalk / curb regions
+  - optional decal anchor regions
+  - one road-owned outer footprint
+- every output region includes canonical rings, holes, area, material, and source piece ID
+- Spade CDT emits triangles only from resolved regions
+- the renderer consumes Spade triangles grouped by material
+- terrain patch generation consumes the same resolved outer footprint, not a re-extracted render
+  boundary
+- visible-world surface queries consume the same resolved triangles as the renderer
+
+Debug contract:
+
+- `--debug road-geometry` must report, per node piece:
+  - node class
+  - incident mouth count
+  - candidate asphalt / sidewalk / footprint ring counts
+  - `i_overlay` output region counts by material
+  - dropped degenerate ring count
+  - final Spade constraint count
+  - skipped / invalid Spade constraint count
+  - final triangle count by material
+- debug output must make acute-angle collapses visible as explicit dropped or split sidewalk
+  regions, not as silent missing geometry
+
+Legacy removal target:
+
+- remove hint-only node material classification once boolean regions own material output
+- remove nearest-material and centroid-vote fallbacks from node-piece material ownership
+- remove sector strips as final visual carriers for `Terminal`, `Bend`, and `JunctionN`
+- remove any `JunctionN` code that synthesizes a center asphalt core after sector assembly
+- remove any `Bend` or `JunctionN` path that depends on second-pass outer-boundary extraction from
+  already-emitted render triangles
+- keep mouth/profile calculation, throat clipping, grade/crossfall sampling, chunk invalidation,
+  and Spade CDT triangulation because those remain part of the target pipeline
+
+Acceptance tests for the junction-first hardcut:
+
+- terminal with sidewalks emits asphalt, sidewalk / curb, and one outer footprint without overlap
+- 2-arm bend at 30, 60, 90, 120, and 150 degrees emits no sidewalk-over-asphalt overlap
+- triangle network emits three independent bends with closed outer footprints
+- T-junction at 30, 60, 90, 120, and 150 degrees emits no sidewalk-over-asphalt overlap
+- 4-way junction with exact 90-degree angles emits symmetric asphalt and sidewalk ownership
+- 4-way junction with one acute arm emits split or collapsed sidewalks only where boolean area
+  requires it
+- `N > 4` junction emits deterministic ownership for stable mouth ordering
+- reversed edge direction and equivalent edit order produce the same canonical regions
+- terrain seam footprint equals the node-piece resolved outer footprint exactly
+- `--debug road-geometry` reports the same region counts for repeated builds of the same save
 
 ### Later Extensions
 
@@ -838,12 +976,16 @@ Must cover:
 - arbitrary-angle bend with sidewalks
 - obtuse bend with sidewalks
 - shallow-angle bend with sidewalks
+- acute 2-arm bend with sidewalks where sidewalk may split or collapse but must not overlap asphalt
 - triangle network composed of three independent bends
 - pass-through split with no center bubble
 - width transition on a nearly straight corridor
 - T-junction center owned by carriageway
+- acute T-junction where sidewalk may split or collapse but must not overlap asphalt
 - 4-way junction center owned by carriageway
+- 4-way junction with one acute arm and deterministic sidewalk ownership
 - `N > 4` multi-arm node center owned by carriageway
+- `N > 4` multi-arm node with acute neighboring arms and no sidewalk-over-asphalt overlap
 - car-only road with no sidewalk bands
 - footpath joining only one sidewalk side
 - bridge span above terrain without terrain flatten under the span
