@@ -613,7 +613,13 @@ Road render layers may apply tiny render-only Z-bias values to avoid coplanar fl
 
 Required rule:
 
-- `ROAD_RENDER_Z_BIAS_M` and layer-specific render Z-bias constants are draw-order offsets only
+- `ROAD_TOP_SURFACE_RENDER_Z_BIAS_M` and layer-specific render Z-bias constants are draw-order
+  offsets only
+- road-owned top surfaces should normally use `0.0 m` render Z-bias because terrain under the
+  footprint is topologically clipped and adjacent road / sidewalk / terrain edges must stay
+  watertight in render space
+- decals such as lane markings and crosswalk stripes may use `ROAD_DECAL_RENDER_Z_BIAS_M` because
+  they intentionally sit on top of already-owned road surfaces
 - render Z-bias must not be used to make sidewalks physically higher than asphalt
 - physical sidewalk elevation is owned by the compiled road profile:
   - curb step height

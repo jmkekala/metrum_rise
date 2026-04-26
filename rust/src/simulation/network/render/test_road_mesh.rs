@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn test_compiled_surface_is_lifted_above_visual_terrain() {
+    fn test_compiled_top_surfaces_render_at_solved_physical_height() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
         let lane_system = crate::simulation::network::lanes::LaneSystem::new();
@@ -539,13 +539,10 @@ mod tests {
             })
             .fold(f32::INFINITY, f32::min);
 
+        assert!(road_clearance.abs() <= 0.001);
         assert!(
-            road_clearance >= 0.025,
-            "expected compiled road surface to render above terrain, got clearance={road_clearance:.4}"
-        );
-        assert!(
-            sidewalk_clearance >= 0.005,
-            "expected compiled sidewalk surface to render above terrain, got clearance={sidewalk_clearance:.4}"
+            sidewalk_clearance.abs() <= 0.001,
+            "expected compiled sidewalk/curb surface to use solved physical height, got clearance={sidewalk_clearance:.4}"
         );
     }
 

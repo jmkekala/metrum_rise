@@ -1,6 +1,6 @@
 //! Compiled roadbed top-surface and lane-marking rendering.
 
-use crate::config::ROAD_RENDER_Z_BIAS_M;
+use crate::config::ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::network::surface::{
     RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
@@ -18,9 +18,9 @@ use super::{
 
 const BAND_EPSILON_M: f32 = 0.001;
 const BRIDGE_CONCRETE_THICKNESS_M: f32 = 0.35;
-const EARTHWORK_RENDER_Z_BIAS_M: f32 = ROAD_RENDER_Z_BIAS_M * 0.25;
-const SIDEWALK_RENDER_Z_BIAS_M: f32 = ROAD_RENDER_Z_BIAS_M;
-const ROAD_RENDER_SURFACE_Z_BIAS_M: f32 = ROAD_RENDER_Z_BIAS_M + 0.02;
+const EARTHWORK_RENDER_Z_BIAS_M: f32 = ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
+const SIDEWALK_RENDER_Z_BIAS_M: f32 = ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
+const ROAD_RENDER_SURFACE_Z_BIAS_M: f32 = ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
 /// Surface classes replaced by the compiled roadbed renderer.
 pub(super) struct CompiledSurfaceCoverage {
     pub edge_indices: HashSet<usize>,

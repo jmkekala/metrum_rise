@@ -1,6 +1,6 @@
 //! Compiled roadbed renderer coordinator.
 
-use crate::config::ROAD_RENDER_Z_BIAS_M;
+use crate::config::ROAD_DECAL_RENDER_Z_BIAS_M;
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::surface::RoadSurfaceSystem;
 use godot::prelude::*;
@@ -13,7 +13,7 @@ pub mod crosswalks;
 pub mod standard_surface;
 
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.01;
-pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_RENDER_Z_BIAS_M + 0.04;
+pub(super) const MARKING_RENDER_Z_BIAS_M: f32 = ROAD_DECAL_RENDER_Z_BIAS_M;
 pub(super) const MARKING_WIDTH: f32 = 0.16;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
