@@ -69,11 +69,8 @@ void fragment() {
 		albedo = mix(albedo, vec3(0.85, 0.84, 0.82), 0.5);
 		albedo *= mix(1.0, 0.6, grout);
 		
-		// Subtle curb line at the road edge (UV.y = 0.0 for left, 1.0 for right - wait)
-		// No, I fixed road.rs so UV.y 0.0 IS always the road edge!
-		float fw_y = fwidth(UV.y);
-		float curb = smoothstep(0.05 + fw_y, 0.05, UV.y);
-		albedo = mix(albedo, vec3(0.0), curb * 0.3); // Darken the curb gap
+		// Curb/sidewalk boundaries are real geometry now. Do not derive a curb gap from mesh UVs:
+		// node-piece CDT triangles use arbitrary UVs, which would paint dark bars through junctions.
 	}
 	
 	// Darker grey-white for better integration

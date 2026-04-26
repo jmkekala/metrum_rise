@@ -89,9 +89,11 @@ Live behavior:
 - the live road-touched terrain patch bridge feeds piece-owned road loops into the CDT module,
   emits accepted terrain faces, rejects road-footprint faces, and reports CDT counters through
   `--debug road-geometry`
-- `Terminal`, `Bend`, and `JunctionN` visual node pieces now resolve asphalt and sidewalk
+- `Terminal`, `Bend`, and `JunctionN` visual node pieces now resolve asphalt and non-road band
   ownership through `i_overlay` before Spade CDT triangulation; sector-built geometry is only a
   deterministic candidate source, not a final visual carrier or material classifier
+- node-piece non-road bands keep curb / shoulder and sidewalk regions separate through boolean
+  ownership, even when they share the final sidewalk render material
 - edge-to-node throat clips are angle-aware over every incident edge pair, so span sidewalks cannot
   enter an acute `Bend` or `JunctionN` throat before `i_overlay` resolves final node-piece
   ownership
@@ -858,10 +860,12 @@ Acceptance requires `cargo check`, the CDT contract tests, and Godot headless lo
 Road-piece CDT is now part of the accepted visual carrier for node pieces:
 
 - `Span`, `Bend`, `Terminal`, and `JunctionN` still own semantic road shape
-- `Terminal`, `Bend`, and `JunctionN` generate deterministic asphalt and sidewalk candidate
+- `Terminal`, `Bend`, and `JunctionN` generate deterministic asphalt and non-road band candidate
   polygons from incident mouth profiles, then resolve those candidates with `i_overlay`
-- asphalt owns carriageway first; sidewalk is computed as sidewalk-candidate area minus asphalt;
-  terrain is computed as patch area minus the full road-owned footprint
+- asphalt owns carriageway first; non-road bands are resolved by band kind after asphalt
+  subtraction, so curb / shoulder and sidewalk geometry keep their physical boundaries even when
+  they render through the same sidewalk material
+- terrain is computed as patch area minus the full road-owned footprint
 - CDT only triangulates already-decided polygons and material boundaries
 - CDT must not decide lane, sidewalk, crosswalk, mouth, or frontage semantics
 - invalid Spade constraints are counted as geometry bugs; the live node-piece path must not fall
@@ -939,9 +943,10 @@ Boolean ownership order:
 
 1. Quantize and canonicalize all candidate rings.
 2. `i_overlay` unions all asphalt candidates into one or more disjoint asphalt regions.
-3. `i_overlay` unions all sidewalk / curb candidates into sidewalk candidate regions.
-4. `i_overlay` subtracts asphalt regions from sidewalk candidates.
-5. `i_overlay` unions asphalt plus final sidewalk / curb regions into the road-owned outer
+3. `i_overlay` groups non-road candidates by band kind and unions each kind independently.
+4. `i_overlay` subtracts asphalt regions from every non-road kind, then subtracts earlier
+   non-road ownership from later non-road kinds using deterministic precedence.
+5. `i_overlay` unions asphalt plus final non-road regions into the road-owned outer
    footprint.
 6. Degenerate output rings below the minimum area threshold are dropped and counted.
 7. The resulting disjoint material regions are triangulated with Spade CDT.
