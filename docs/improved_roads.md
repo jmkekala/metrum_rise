@@ -67,52 +67,35 @@ expose road failures immediately:
 The roadbed runtime must continue to solve those problems at the ownership level, not by
 reintroducing local patches to the retired renderer.
 
-## Current Runtime Summary
+## Current Status
 
-Phases 1-10 now establish the shipped roadbed replacement:
+The roadbed rewrite has already made the important ownership split:
 
-- preview, committed surface rendering, world-surface queries, stitched terrain patches, and
-  structural terrain earthworks consume one compiled roadbed cache
-- grounded `Standard` roads do not stamp the paved footprint or ordinary outer margin into visual
-  terrain; road-touched terrain patches are generated as Rust-owned stitched meshes
-- grounded `Standard` roads keep a bounded design crossfall instead of rolling the carriageway to
-  match the full hillside cross-slope, and the remaining mismatch is absorbed by terrain
-  earthworks
-- the old widened-ribbon top-surface renderer and centerline-only flattening path are retired
+- the logical graph owns connectivity, IDs, lane semantics, and authored plan curves
+- the visual road carrier owns deterministic `Span`, `Bend`, `Terminal`, and `JunctionN` pieces
+- road pieces own explicit top-surface footprints for asphalt, curb / shoulder, and sidewalk
+- Godot uploads cached buffers and must not rebuild road or terrain topology from graph guesses
+- visible-world queries prefer road-owned top surfaces before terrain
 
-This closes the rough-terrain ownership gap that previously let nearby terrain visually crowd or
-overlap the road edge after phases 1-8. Remaining visual limitations on very rough terrain now come
-primarily from terrain-cell resolution rather than from missing earthwork ownership or a
-terrain-following carriageway profile.
+The current road-touched terrain path is still provisional.
 
-## Current Runtime Gap
+Live behavior:
 
-The core roadbed ownership and bounded grounded-road crossfall are now live, but authored `10 m`
-terrain worlds can still visually smear terrain back across the road corridor on moderate hills.
+- grounded `Standard` roads send piece-owned footprint clip polygons into road-touched terrain
+  patches
+- Rust returns baked terrain patch mesh payloads for those road-touched patches
+- terrain under the road-owned footprint is no longer intended to be a visible carrier
 
-That remaining gap is no longer caused by:
+Not accepted as the final target:
 
-- centerline-only road ownership
-- a terrain-following carriageway crossfall solve
-- missing outer cut / fill earthwork margins
+- seam-strip emission from road outer-loop segments to nearby terrain
+- conservative terrain-cell omission based on fully-owned cell triangles
+- terrain density experiments as the main answer to road / terrain gaps
+- any shader mask, water plane, zoning overlay, or background-color coincidence that hides missing
+  topology
 
-But one important ownership gap still remains in the current runtime:
-
-- later terrain authoring still resynchronizes placed grounded `Standard` roads to edited source
-  terrain instead of treating the placed roadbed as fixed and reshaping terrain / earthworks
-  around it
-
-The earlier terrain-side render-boundary blocker is already removed by [`TERRAIN-01`](roadmap.md),
-so this is now primarily a coarse-grid terrain representation problem plus the still-open fixed-road
-ownership gap above. Phase 11 exists to quantify that gap on the shipped `10 m` terrain grid,
-compare it against a candidate `5 m` grid on the same world-space scenarios, and measure that on
-the split terrain path owned by [`terrain.md`](terrain.md) before any default density move is
-attempted.
-
-The next representation step is now fixed in [`earthworks.md`](earthworks.md): if denser terrain is
-still not sufficient, roads move to a closed road-owned local earthwork mesh near the roadbed
-footprint instead of asking visual terrain to remain the final visible owner of the cut / fill
-shape.
+The next hard-cut target is therefore explicit: road-touched terrain patches must be rebuilt with
+Spade-backed constrained triangulation, not with the current seam-strip / cell-triangle hybrid.
 
 ## Roadbed Contract
 
@@ -600,310 +583,169 @@ Preferred cache structure:
 - avoid inventing a second unrelated spatial ownership grid when one of the existing chunk systems
   can index the same work
 
-## Remaining Work
+## Spade CDT Terrain-Patch Hardcut
 
-Phases 1-10 of [`ROAD-01`](roadmap.md) are shipped. They are intentionally not repeated here as
-rollout history; this document now focuses on the live roadbed contract plus the remaining active
-follow-up work.
+The next accepted representation is a Spade-backed terrain patch generator. It replaces the current
+road-touched terrain mesh builder; it does not sit beside it as a fallback.
 
-### Phase 11 - Coarse-Grid Fidelity Decision Gate
+### Target Backend
 
-Phase 11 exists because the roadbed runtime is now coherent, but authored `10 m` worlds can still
-visually smear terrain back across a grounded road corridor on moderate hills.
+Required rules:
 
-Required Phase 11 work:
+- `spade::ConstrainedDelaunayTriangulation` is the only planned CDT backend for the production
+  terrain-road seam
+- `bulk_load_cdt` is the only accepted insertion path for the first implementation
+- Spade refinement helpers are not used until this project has a pinned deterministic refinement
+  contract
+- any future replacement of Spade requires a new explicit benchmarked spec change
 
-- keep deterministic characterization tests for the same grounded hillside-road case on both the
-  shipped `10 m` terrain grid and a candidate `5 m` grid
-- measure visible terrain overlap back onto the compiled roadbed footprint instead of relying on
-  screenshots or manual editor inspection
-- keep the world-space road path, terrain function, and grading contract identical between the
-  `10 m` and `5 m` variants so the comparison isolates terrain-cell density
-- treat those tests as terrain-side evidence, not as permission to extend the current whole-map
-  dense terrain renderer upload path
-- use the characterization as a decision gate:
-  - if `5 m` materially reduces overlap, it remains a viable path
-  - if `5 m` still leaves unacceptable overlap, the next fix must be a different representation
-    such as road-owned closed local earthwork geometry rather than more heightfield density alone
+### Target Owner And API
 
-Phase 11 is a measurement and decision phase, not a claim that denser terrain alone is already the
-solution. Any default density move now depends on the chunk-local terrain / water render split
-defined in [`terrain.md`](terrain.md).
+The CDT implementation belongs in Rust simulation code, not in Godot and not in the giant Godot
+bridge layer.
 
-### Phase 12 - Keep Placed Roadbeds Fixed Under Later Terrain Edits
+The target API is one deterministic terrain-patch function:
 
-Placed-road ownership must stay explicit after the road is committed.
+- input:
+  - terrain patch world rectangle
+  - source-terrain sample vertices for that patch
+  - piece-owned road footprint loops intersecting that patch
+  - road seam heights carried by those footprint-loop vertices
+- output:
+  - baked terrain vertices / normals / UVs for the patch
+  - accepted face count
+  - rejected road-footprint face count
+  - constraint count
+  - hard error details when constraints are invalid
 
-Required Phase 12 work:
+The API must not expose:
 
-- terrain-authoring edits must no longer resynchronize placed grounded `Standard` roads to edited
-  source terrain as a side effect
-- once a road is committed, later terrain edits must write source terrain first and then rebuild
-  visual terrain, local earthwork geometry, and earthworks around that fixed roadbed instead
-- explicit road-edit operations remain the only way to move or regrade the committed road surface
-- placement-time grounding may still choose the initial roadbed, but that placement solve must not
-  remain a live dependency of later terrain brushes
-- the same fixed-roadbed rule must stay consistent across committed render mesh, world-surface
-  queries, local earthwork geometry caches, and terrain earthworks
-- if a later terrain edit would create an extreme surrounding cut / fill case, the road still stays
-  fixed; later earthwork geometry variants may change representation, but terrain brushes must not
-  silently move the committed roadbed
+- road graph internals
+- Godot mesh types
+- shader-mask assumptions
+- water or zoning overlay state
 
-Phase 12 is separate from Phase 11 because it changes ownership semantics first; denser terrain or
-local earthwork geometry still remain possible follow-ups after that rule is in place.
+### CDT Input Rules
 
-### Phase 13 - Closed Road-Owned Earthwork Mesh Rewrite
+The CDT input is canonical and deterministic:
 
-The next representation fix is now deterministic, and it replaces the current corridor-sheet
-prototype instead of polishing it further.
+- the patch rectangle is inserted as the outer constrained boundary
+- every grounded road-owned outer footprint loop is clipped to the patch before triangulation
+- footprint segments crossing the patch boundary are split at the boundary intersection point
+- all constraint segments are deduplicated after quantization to the project epsilon
+- constraint segments may meet at shared endpoints only; they must not cross through each other
+- source-terrain sample points are inserted only if they are outside all road-owned footprints
+- road seam vertices are inserted exactly from the compiled road piece and use road-owned seam
+  height
+- source-terrain vertices use source / visual terrain height according to the terrain patch
+  contract in [`terrain.md`](terrain.md)
+- input vertex and constraint order must be canonical:
+  - patch corners first
+  - road loops sorted by stable piece ID and local loop index
+  - loop vertices in the compiled piece order after clipping / splitting
+  - source-terrain sample vertices sorted by patch-local grid coordinate
 
-Required Phase 13 work:
+No camera position, render LOD choice, debug flag, or thread scheduling order may affect CDT input.
 
-- grounded roads must own closed local earthwork geometry on both sides of the committed roadbed
+### CDT Output Rules
+
+After `bulk_load_cdt`, terrain faces are classified in Rust:
+
+- a face is accepted if its centroid is inside the patch domain and outside every road-owned
   footprint
-- each road edge span must derive left and right outer tie-in polylines from terrain sampled at a
-  maximum `2 m` longitudinal spacing in world space
-- each side mesh must begin at the road-owned top-surface boundary and end at the sampled tie-in
-  boundary for that same side
-- the visible tie-in boundary must not be inferred only from the authored terrain cell grid or only
-  from the current compiled road section spacing
-- the first shipped rewrite variant must include deterministic slope faces plus closure /
-  underside geometry wherever otherwise-visible voids would appear
-- flat-ground cases must collapse toward a minimal shoulder / verge join instead of emitting a wide
-  apron or visible side sheet
-- terminal road ends must emit deterministic cap geometry from the road-owned top surface to the
-  tie-in boundary
-- the visual road carrier must split from the logical graph:
-  - the graph remains connectivity and routing authority
-  - the visual carrier becomes explicit geometry pieces
-- the minimum required visual piece set is `Span`, `Bend`, `Terminal`, and `JunctionN`
-- two-edge non-pass-through nodes must be built as `Bend` pieces, not by a generic junction fill
-- multi-arm nodes must be built as `JunctionN` pieces with one carriageway-owned center plus
-  explicit adjacent-mouth sidewalk sectors
-- future node-piece perimeter tie-ins must follow the same ownership model so edge ownership and
-  node ownership still meet cleanly at the throat boundary
-- local earthwork geometry must be partitioned into touched terrain-chunk-aligned caches instead of
-  one monolithic world mesh
-- road visible-surface queries must resolve as road top surface first, then road-owned local
-  earthwork geometry, then visual terrain
-- terrain suppression may only hide true overlap beneath client-owned geometry; it must not act as
-  a substitute for missing tie-in faces, and road-edge visibility must remain correct without a
-  terrain texture-mask carrier
-- retaining or wall variants are later geometry extensions, not a separate earthworks system
+- a face is rejected if its centroid is inside any road-owned footprint
+- accepted faces must preserve road seam constraint edges as terrain boundary edges
+- accepted faces must not cross a road-owned footprint loop
+- accepted faces must not expose world background between the road top surface and the terrain
+  patch
+- rejected faces are not emitted, not hidden by shader discard, and not replaced by water or zoning
+  overlays
+- normals and UVs are derived from the emitted accepted triangles
 
-Phase 13 is now explicitly a rewrite of the failed corridor-sheet representation, not an extension
-of it.
+CDT failures are hard failures in debug output. The implementation must not fall back to:
 
-The still-open building-pad client work and later retaining / wall variants tracked in
-[`earthworks.md`](earthworks.md) are later additions to the same subsystem, not blockers for the
-first roads-first closed-mesh rewrite.
+- seam strips
+- conservative cell-triangle omission
+- old subtractive terrain clipping
+- ordinary earthwork closure strips
+- water planes
+- terrain shader masks
+- Godot-side polygon clipping
 
-Current status:
+### Code Replacement Target
 
-- the earlier corridor-sheet prototype is not accepted as the Phase 13 endpoint and should not be
-  polished further
-- the useful conclusions from that prototype remain in force: fixed-roadbed ownership, chunk-local
-  rebuilds, and explicit visible-surface precedence stay part of the target contract
-- Phase 13 is partially live in code: the piece/profile carrier and deterministic ownership data
-  are live, and road-touched terrain patches now receive exact road footprint clip polygons instead
-  of using the terrain shader's road mask discard path
-- the graph/visual split is now live in code:
-  - committed spans now own explicit road / sidewalk polygons plus explicit earthwork polygons and
-    outer earthwork boundaries
-  - committed spans now compile their outer boundary loops directly from section ranges instead of
-    extracting them back out of emitted polygons
-  - committed terminals compile explicit cap polygons from the mouth profile
-  - committed two-way bends now compile through a dedicated `Bend` builder instead of sharing one
-    generic connected-node path with `JunctionN`
-  - committed two-way bends compile explicit band-by-band bend polygons from paired mouth profiles
-  - multi-arm nodes now compile through a dedicated `JunctionN` builder fed by ordered incident
-    mouths and adjacent gap sectors rather than by the old generic connected-node path
-  - multi-arm nodes compile explicit `JunctionN` road polygons plus sidewalk sector polygons
-  - adjacent mouth-side sectors no longer fall back to one emergency quad when side profiles do
-    not have matching band counts; they use one deterministic merged depth-break connector solve
-  - node incident ordering and bend / junction classification no longer recover throat directions
-    from compiled edge sections; they read deterministic inward directions from compiled span
-    mouth profiles
-  - width changes are no longer treated as a separate visual node-piece class; ordinary spans own
-    that handoff directly
-  - compiled visual polygons now cache deterministic triangles so rendering, surface queries, and
-    earthwork stamping no longer re-fan concave node sectors differently at each call site
-  - `JunctionN` adjacent-mouth sectors now use the ordered-mouth ownership rule directly: for each
-    adjacent CCW gap, the sector is built from `current.left` and `next.right` instead of from a
-    heuristic gap-facing side selector
-  - adjacent mouth-side sectors now insert fixed-step connector samples at `<= 1 m` in addition to
-    profile breakpoints, and `Bend` no longer borrows the generic junction-style center asphalt
-    polygon
-  - `Terminal` outer boundary loops are now compiled directly from explicit cap geometry instead of
-    being reconstructed from emitted polygons afterward
-  - `Bend` outer boundary loops are now compiled directly from explicit bend sectors instead of
-    being reconstructed from emitted polygons afterward
-  - footpath mouths now compile directly inside the incident piece-mouth path instead of through a
-    separate fallback helper
-  - `JunctionN` no longer borrows one global angle-sorted center asphalt polygon; its center
-    carriageway is assembled from adjacent-mouth wedges around the node
-  - `JunctionN` outer boundary loops are now compiled directly from explicit adjacent-gap sectors
-    instead of being reconstructed in a second pass from the ordered mouth list
-  - `Bend` and `JunctionN` no longer share one connector-strip polygon builder; each piece class
-    now owns its own connector-strip sampling path
-  - renderer output, visible-surface queries, debug overlays, stitched terrain patches, and
-    structural earthwork stamping now consume explicit visual pieces instead of a node-patch carrier
-  - terrain earthwork chunk coverage and structural stamping no longer walk compiled edge sections
-    after piece compilation; they consume span-owned earthwork polygons and span-owned outer
-    earthwork boundaries
-  - span-piece structural earthwork stamping no longer regenerates tie-in faces from boundary loops
-    at stamp time; spans now compile explicit tie-in side polygons plus explicit tie-in outer loops
-    during piece compile
-  - node pieces now also compile explicit earthwork polygons and earthwork outer boundaries, so
-    node earthwork chunking, bounds, and structural terrain stamping no longer borrow the visible
-    polygon carrier at runtime
-  - `Terminal`, `Bend`, and `JunctionN` now pass explicit earthwork polygons and explicit
-    earthwork outer loops directly from their own builders instead of relying on a shared
-    node-piece assembler to infer earthwork ownership from visible geometry
-  - node-piece structural earthwork stamping no longer regenerates tie-in faces from boundary loops
-    at stamp time; `Terminal`, `Bend`, and `JunctionN` now compile explicit tie-in side polygons
-    plus explicit tie-in outer loops during piece compile
-  - ordinary grounded-road visual terrain stamping is removed: grounded `Standard` roads suppress
-    terrain under asphalt / sidewalk by generating stitched terrain topology to the road-owned outer
-    sidewalk / shoulder edge
-  - road-touched terrain patches now receive a Rust-generated baked `ArrayMesh` from the
-    piece-owned outer boundary loops instead of relying on one rectangular `PlaneMesh`, internal
-    asphalt / sidewalk band polygons, a Godot-side polygon clipper, or fragment discard
-  - terrain clip triangles are Rust-ear-clipped from those outer boundary loops for validation /
-    diagnostics only; asphalt / sidewalk render triangles are not reused as terrain ownership
-    triangles
-  - the old subtract-road-triangles-from-terrain-cells emitter has been removed from the live path
-  - stitched terrain patch emission is bounded to road-locked terrain patches, emits terrain-owned
-    seam triangles from each piece-owned outer loop segment to nearby source terrain, bins local
-    footprint loops per patch cell, and omits terrain cell triangles whose vertices are fully owned
-    by a road footprint
-  - visible water patches now consume the same road footprint clip polygons and rebuild only
-    road-touched water patch meshes after a road edit; touched water cells are suppressed wholesale
-    instead of being triangulated into transparent fragments, so water cannot remain as a hidden
-    visual carrier under grounded asphalt, shoulder / curb, or sidewalk
-  - paved-footprint support queries now follow the solved road profile per top-surface triangle
-    instead of stamping one flat minimum-height slab per piece
-  - compiled span and node pieces still own explicit earthwork geometry for deterministic terrain
-    integration, chunking, and structural cases, but grounded `Standard` roads now rely on the
-    Rust-generated stitched terrain patch mesh for the ordinary road / terrain seam
-  - render no longer draws a support mesh below asphalt or sidewalk: spans and node pieces compile a
-    separate render-only tie-in face set for structural cases, while grounded `Standard` roads
-    render no ordinary closure strip outside the road-owned footprint
-  - render-only earthwork faces are now classified deterministically as either `Slope` or
-    `RetainingWall`, and the renderer routes those two face classes to different materials instead
-    of painting every tie-in face as generic exposed earthwork
-  - visible-world height/raycast queries still hit compiled earthwork geometry only for
-    intentionally surfaced structural cases; ordinary grounded road seams are terrain-patch
-    topology, not a gameplay/query road-owned strip
-- the remaining Phase 13 work is not just material refinement: the next blocking slice is clipped
-  terrain and water topology validation and hardening across flat, diagonal, sloped,
-  water-overlap, bend, terminal, and `JunctionN` cases. Richer retaining / wall variants and better
-  materials come after the deterministic seam works without relying on shader masking to hide
-  missing geometry
+The Spade hardcut replaces the current road-touched terrain builder in
+`rust/src/nodes/simulation_node.rs`.
 
-## Legacy Retirement Map
+The removed live-path concepts are:
 
-The piece/profile rewrite does not retire the entire roadbed runtime. It retires the parts of the
-previous carrier that synthesized visible road ownership from generic node patches and loop
-triangulation.
+- `emit_constrained_terrain_seams`
+- terrain-cell binning used only for conservative road ownership omission
+- fully-owned-cell triangle suppression as the ordinary road seam mechanism
+- ear-clipped road footprint diagnostics as a substitute for constrained triangulation
 
-The following current code remains architecturally useful and should be extended rather than
-thrown away:
+The Godot terrain renderer remains a thin upload bridge. It continues to choose between a normal
+rectangular terrain patch mesh and a Rust-baked road-touched terrain patch mesh, but it must not
+clip road holes itself.
 
-- logical graph ownership in `rust/src/simulation/network/mod.rs` and `graph/`
-- solved edge grades, section sampling, and lateral band definitions in
-  `rust/src/simulation/network/surface/mod.rs`
-- chunk-local surface and earthwork cache boundaries in
-  `rust/src/simulation/network/surface/mod.rs`
-- Godot-side refresh timing and mesh-upload orchestration in
-  `godot/scripts/renderers/network_renderer.gd`
+### Implementation Sequence
 
-The following code is legacy under the new target and is already removed or explicitly retired.
+Implement the hardcut in this order:
 
-### Rust Legacy Carrier To Retire
+1. Move `spade` from `dev-dependencies` to runtime `dependencies`.
+2. Add a small Rust terrain CDT module with no Godot dependencies.
+3. Port the current Spade spike into module-local tests.
+4. Add constrained patch-boundary clipping for road footprint loops.
+5. Add tests for roads crossing one patch edge, two patch edges, and a patch corner.
+6. Add tests for multiple footprint loops in one patch.
+7. Add tests for `Bend`, `Terminal`, and `JunctionN` footprint loops.
+8. Replace the live road-touched terrain patch builder with the CDT module.
+9. Remove the retired seam-strip / cell-triangle live path.
+10. Update `--debug road-geometry` output to report CDT constraints, accepted faces, rejected
+    faces, invalid constraints, and preserved seam-edge counts.
 
-- `RoadSurfaceNodePatchClass` and `RoadSurfaceNodePatch` in
-  `rust/src/simulation/network/surface/mod.rs`
-  - this is still the old node-patch carrier
-  - it collapses arbitrary non-pass-through two-edge cases into a generic `Junction` path instead
-    of a real `Bend` piece
-- `RoadSurfaceNodeBoundaryPoint` and `RoadSurfaceNodeBoundaryLoop` in
-  `rust/src/simulation/network/surface/mod.rs`
-  - these exist only to support the current loop-synthesis carrier
-- `compile_node_patch`, `classify_node_patch`, `build_node_patch_boundary_loops`,
-  `build_throat_boundary_points`, `build_terminal_boundary_loop`, and `finalize_boundary_loop` in
-  `rust/src/simulation/network/surface/mod.rs`
-  - these are the current generic node-fill builders that the rewrite is replacing
-- any generic node-piece outer-boundary extraction path that tries to infer `Terminal`, `Bend`, or
-  `JunctionN` ownership from already-emitted polygons
-  - all live node-piece classes now compile explicit outer boundary loops directly from their own
-    piece geometry
-- any shared node-piece earthwork inference path that tries to clone visible polygons or visible
-  outer loops into node earthwork ownership
-  - all live node-piece classes now compile and pass explicit earthwork polygons and explicit
-    earthwork outer loops directly from their own builders
-- any shared connector-strip polygon builder used as the live geometry carrier for both `Bend` and
-  `JunctionN`
-  - those piece classes now own separate connector-strip builders even though they still share
-    lower-level geometry utilities like point sampling
-- the separate `build_footpath_piece_mouth(...)` fallback helper
-  - footpath mouths now compile directly inside the main incident-mouth builder
-- node-patch earthwork helpers in `rust/src/simulation/network/surface/mod.rs`
-  - `node_patch_overlaps_chunk`
-  - `visit_visible_node_triangles`
-  - `stamp_node_patch_earthwork_margins_for_chunk`
-  - `stamp_node_patch_earthworks_for_chunk`
-  - `node_patch_bounds`
-  - any other helper whose job is specifically to turn a node patch loop into render or earthwork
-    ownership
-- section-window edge earthwork stamping helpers in `rust/src/simulation/network/surface/mod.rs`
-  - `stamp_edge_earthworks_for_chunk`
-  - `stamp_standard_edge_earthwork_margins_for_chunk`
-  - `stamp_edge_earthwork_margin_side`
-  - once compiled span pieces exist, earthwork chunk coverage and terrain stamping must not fall
-    back to raw edge-section windows as the steady-state authority
-- tests that lock in loop-based node-patch behavior in
-  `rust/src/simulation/network/surface/mod.rs`
-  - for example `throat_boundary_loops_are_angle_sorted_and_stable`
-  - these must be replaced by black-box piece/profile tests once the new carrier lands
+Acceptance requires `cargo check`, the CDT contract tests, and Godot headless load to pass.
 
-### Rust Renderer Paths To Retire
+### Later Extensions
 
-- loop-fan node rendering in `rust/src/simulation/network/render/road/standard_surface.rs`
-  - this renderer path is now retired
-  - `emit_compiled_surface_mesh(...)` now consumes explicit road polygons and sidewalk polygons
-    from the visual carrier
-- any renderer path that assumes node ownership comes from one outer loop plus one carriageway loop
-  rather than from explicit `Span` / `Bend` / `Terminal` / `JunctionN` piece geometry
+Spade may later be reused for road-piece polygon fill triangulation, but that is not part of the
+terrain-patch hardcut.
 
-### Rust Debug / Bridge Paths To Retire Or Rename
+If road pieces use Spade later:
 
-- `piece_boundary_lines` in `rust/src/nodes/sim/render/network.rs`
-  - this is the piece-oriented replacement debug channel
-  - it must not regress back to exposing raw node patches as the visual authority
-- any future geometry dumps that still serialize `compiled_node_patches`, `boundary_loops`, or
-  `carriageway_boundary_loops` as if those were the final visual authority
+- `Span`, `Bend`, `Terminal`, and `JunctionN` still own semantic road shape
+- CDT only triangulates already-decided polygons
+- CDT must not decide lane, sidewalk, crosswalk, mouth, or frontage semantics
 
-### Godot-Side Legacy Bridges To Retire Or Rename
+Retaining walls, richer structural tie-in materials, and building-pad engineered-ground clients are
+later extensions of the shared earthworks system in [`earthworks.md`](earthworks.md). They do not
+block the Spade terrain-patch hardcut.
 
-- `piece_boundary_lines` debug overlay consumption in
-  `godot/scripts/tools/network_tool.gd`
-  - this is the first hard-cut replacement for the old `node_patch_lines` bridge
-  - the overlay must keep visualizing explicit road pieces rather than regressing to node-patch
-    terminology
-- any editor/debug terminology that still tells the user the visual road authority is a node patch
-  or a generic junction fill
+## Legacy Retirement Rules
 
-### Explicit Non-Legacy Boundaries
+The hardcut does not retire the whole roadbed runtime. It retires the remaining terrain-seam and
+generic-ownership patterns that conflict with the piece/profile model.
 
-The following are not legacy by themselves and should not be thrown away just because they are old:
+Still valid and must be extended:
 
-- edge section sampling
-- lateral band definitions
+- logical graph ownership in `rust/src/simulation/network/mod.rs` and graph modules
+- solved edge grades, section sampling, and lateral band definitions
+- explicit `Span`, `Bend`, `Terminal`, and `JunctionN` visual pieces
 - chunk-local dirtying and rebuild boundaries
-- preview/commit parity as a rule
-- the graph as simulation authority
+- preview / commit parity
 - Godot mesh upload as a thin presentation bridge
+
+Retired patterns that must not return:
+
+- centerline-only road lifting or terrain flattening
+- generic node patches as final visual authority
+- annulus-style sidewalk ownership around one global node center
+- second-pass outer-boundary extraction from already-emitted polygons as the ownership source
+- generic junction fill polygons as the source of bend or multi-arm node semantics
+- road-touched terrain generated from seam strips plus conservative terrain-cell omission
+- Godot-side road-hole polygon clipping
+- shader, water, zoning, or background-color masking as a road / terrain seam carrier
+- a runtime fallback from Spade CDT failure into any older terrain clipping path
 
 ## Test Contract
 
@@ -933,8 +775,16 @@ Must cover:
 - deterministic cut / fill transition outside the paved footprint inside the earthwork margin
 - grounded hillside roads keep a bounded carriageway crossfall instead of following the full raw
   terrain cross-slope
-- deterministic characterization of the same grounded hillside road at `10 m` and `5 m` terrain
-  resolution, including explicit measured overlap comparison
+- Spade CDT terrain patch with a straight diagonal road footprint fully inside one patch
+- Spade CDT terrain patch with a road footprint crossing one patch edge
+- Spade CDT terrain patch with a road footprint crossing two patch edges
+- Spade CDT terrain patch with a road footprint crossing a patch corner
+- Spade CDT terrain patch with multiple road footprint loops in the same patch
+- Spade CDT terrain patch with `Bend`, `Terminal`, and `JunctionN` footprint loops
+- Spade CDT accepted faces preserve every road seam constraint edge
+- Spade CDT rejected faces cover road-owned footprints without emitting terrain inside them
+- road-touched terrain debug counters report constraints, accepted faces, rejected faces, and hard
+  constraint failures
 - deterministic rebuild: same input graph produces the same section data and mesh indices
 - local invalidation: editing one edge does not force unrelated chunks to rebuild
 

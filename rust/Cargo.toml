@@ -20,6 +20,7 @@ soa_derive = "0.14"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+spade = "2.15"
 
 [profile.release]
 debug = 1

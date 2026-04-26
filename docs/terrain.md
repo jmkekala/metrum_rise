@@ -240,15 +240,15 @@ Current deterministic editor rule:
 
 Remaining limitation:
 
-- steep and rough terrain still reflects the current terrain-cell resolution, so the corridor can
-  remain visually coarse even though the earthwork ownership and grounded-road crossfall rules are
-  now correct
-- Phase 11 now tracks deterministic `10 m` versus `5 m` hillside-road characterization tests so
-  terrain-density changes can be chosen from measured overlap data rather than assumed to be the
-  answer
-- current grounded-road terrain editing still resynchronizes placed `Standard` road geometry to the
-  edited source terrain before rebuilding derived terrain outputs; the target contract is to keep
-  placed engineered-ground client surfaces fixed and reshape visual terrain around them instead
+- the current road-touched terrain patch builder is still a provisional stitched-mesh path, not the
+  accepted final seam representation
+- terrain density alone is no longer the target fix for road / terrain gaps
+- the accepted target is the Spade CDT patch builder described in [`improved_roads.md`](improved_roads.md):
+  road footprint loops become hard constraints, terrain faces inside those loops are omitted, and
+  road seam constraint edges are preserved exactly
+- current grounded-road terrain editing must keep placed `Standard` road geometry fixed and rebuild
+  derived terrain outputs around the committed roadbed instead of silently resynchronizing the road
+  to later source-terrain edits
 
 Authoritative rule:
 
@@ -773,9 +773,8 @@ Deterministic density gate:
   - water upload cost
   - terrain brush cost
   - earthwork restamp cost
-- if `5 m` still leaves unacceptable engineered-ground overlap after those measurements, the next
-  fix must be a different representation such as client-owned closed local earthwork / tie-in
-  geometry rather than more heightfield density alone
+- the accepted road / terrain seam fix is not a density move; it is the Spade CDT terrain-patch
+  hardcut in [`improved_roads.md`](improved_roads.md)
 
 Deterministic transition rules:
 
@@ -792,6 +791,16 @@ Deterministic transition rules:
     ordinary road seam carrier
   - terrain clipping must be derived from the compiled road-piece outer loop in Rust; asphalt /
     sidewalk render triangles are not reused as terrain ownership triangles
+  - target road-touched patch generation uses Spade's Rust-side
+    `ConstrainedDelaunayTriangulation` with a deterministic `bulk_load_cdt` input made from the
+    terrain patch rectangle, road-owned footprint constraint loops, and deterministic
+    source-terrain sample points outside those footprints
+  - Spade CDT faces whose centroids are inside road-owned footprints are omitted; all emitted
+    terrain triangles must preserve road seam constraint edges and must not cross road footprint
+    loops
+  - `ghx_constrained_delaunay` is not a terrain backend or fallback in this spec; Spade is the
+    production hard-cut target because it gives the project a documented constrained triangulation
+    API with exact geometric predicates
   - current road-touched patch emission has removed the old subtractive triangle cutter and emits
     terrain-owned seam triangles from the compiled road-piece outer loop before applying the
     remaining conservative cell-triangle ownership rule

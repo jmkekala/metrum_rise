@@ -170,6 +170,32 @@ Deterministic seam contract:
 - terrain cell triangles may still provide far-field terrain outside the road footprint, but they
   are not allowed to be the only seam carrier because their grid edges rarely coincide with the
   road-owned outer sidewalk / shoulder edge
+- target CDT contract:
+  - road-touched terrain patches are generated with Spade's Rust-side
+    `ConstrainedDelaunayTriangulation`
+  - Spade is the chosen CDT backend; `ghx_constrained_delaunay` is not part of this spec, is not a
+    fallback, and may only be reconsidered through a new explicit benchmarked spec change
+  - the production path uses deterministic `bulk_load_cdt` inputs; Spade refinement helpers are
+    not used until they have a pinned deterministic contract for this project
+  - the terrain patch rectangle is the outer constrained contour
+  - every grounded road-owned outer footprint loop inside or crossing the patch is inserted as a
+    hard constrained contour
+  - road footprint constraints that cross patch edges are pre-split before CDT input; constraint
+    segments must only meet at shared endpoints and must not cross through each other
+  - road-piece seam vertices and constraint edges must appear exactly in the generated terrain
+    mesh; no post-process snapping, widening, shader discard, or Godot-side clipping may create
+    the seam
+  - source-terrain sample points may be inserted as Steiner / interior points only outside road
+    footprints, and their insertion order must be canonical and deterministic
+  - Spade CDT faces are classified after triangulation; faces whose centroids lie inside a
+    road-owned footprint are omitted from the visible terrain patch mesh
+  - emitted terrain triangles must preserve the CDT constraint edges at the road seam and must not
+    cross a road-owned footprint loop
+  - CDT failures are hard errors in debug output and must not fall back to cell subtraction,
+    seam carpets, closure strips, water, or shader masks
+  - the first production target for CDT is terrain-road integration; road-piece polygon fills for
+    `Terminal`, `Bend`, and `JunctionN` may reuse the same triangulation backend only after the
+    terrain seam path is validated
 - clipped terrain topology must insert road-boundary vertices into the terrain mesh in Rust rather
   than approximating the seam from terrain-cell centers, a texture mask, or a Godot-side polygon
   clipping fallback
@@ -295,7 +321,8 @@ The current deterministic characterization now proves:
   terrain / water render-boundary split owned by [`terrain.md`](terrain.md), not the current
   whole-map dense renderer upload path
 
-So terrain density is part of the answer, but not the whole answer.
+So terrain density may improve far-field blend quality, but the accepted seam representation is the
+Spade CDT terrain-patch hardcut in [`improved_roads.md`](improved_roads.md).
 
 ### 4. Current Runtime Compatibility Gap On Post-Placement Terrain Edits
 
@@ -543,8 +570,11 @@ For the roads-first rewrite, the following are deterministic and implemented:
 - committed clients stay fixed under later terrain-authoring edits
 - local road ownership uses chunk-local rebuild boundaries and one explicit visible-world query
   order
-- road-touched terrain patches are generated in Rust as baked terrain `ArrayMesh` payloads whose
-  boundary vertices reuse the road / sidewalk seam height
+- road-touched terrain patches are currently generated in Rust as baked terrain `ArrayMesh`
+  payloads whose boundary vertices reuse the road / sidewalk seam height
+- the accepted next target is the Spade CDT terrain-patch hardcut in
+  [`improved_roads.md`](improved_roads.md), which replaces the provisional seam-strip /
+  cell-triangle hybrid rather than polishing it further
 
 The following are current hardcut implementation rules:
 
@@ -642,8 +672,8 @@ Deterministic conclusion:
 - any future density move must be justified by deterministic characterization tests against the
   same world-space engineered-ground cases on that split render path
 
-If denser terrain still leaves unacceptable overlap, the next fix must be a different
-representation rather than more density alone.
+The selected non-density seam representation is the Spade CDT terrain-patch hardcut in
+[`improved_roads.md`](improved_roads.md); density changes remain a later quality / cost decision.
 
 ### 4. Transition Path Preserves Ownership Even If The Terrain Runtime Changes
 
