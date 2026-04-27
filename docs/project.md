@@ -137,8 +137,19 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   `Standard` roads is not accepted as complete until terrain patches are clipped to the
   road-owned seam. Gentle tie-in faces stay on the earthwork material path only when they are
   intentionally surfaced, while steep faces route deterministically to the retaining / wall
-  concrete path. The remaining blocking work is clipped terrain topology validation and hardening,
-  followed by retaining, wall, and material variants.
+  concrete path. Dirty surface and road-touched terrain chunk rebuilds now use piece-owned chunk
+  coverage indices, so changed `Span`, `Terminal`, `Bend`, and `JunctionN` pieces rebuild
+  `old_coverage union new_coverage` instead of relying on edge-centerline chunk guesses or global
+  node-piece scans. Visual node handoffs are now bounded by the local roadbed profile instead of
+  inheriting unbounded angle-aware graph clips, so acute arbitrary-arm junctions resolve material
+  conflicts through `i_overlay` without expanding the visible junction footprint indefinitely.
+  Recent arbitrary `4+`-arm junction cases still prove that the paired adjacent-mouth strip
+  candidate model can emit incomplete node footprints or sidewalk-over-asphalt candidates before
+  boolean cleanup. The next `ROAD-01` hardcut is therefore a candidate-model refactor: bounded
+  full-roadbed corridor unions define node footprints, bounded carriageway corridor unions define
+  asphalt, and sidewalk / curb ownership is derived only as `footprint - asphalt`. The remaining
+  blocking work is that corridor-union node hardcut plus clipped terrain topology validation and
+  hardening, followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

@@ -31,6 +31,7 @@ const MAX_STANDARD_DESIGN_CROSSFALL_RATE: f32 = 0.03;
 const STANDARD_CROSSFALL_DEADZONE_RATE: f32 = 0.005;
 const SIDEWALK_SLOPE_RATE: f32 = 0.02;
 const SAMPLE_EPSILON_M: f32 = 0.001;
+const SURFACE_MIN_TRIANGLE_ALTITUDE_M: f32 = 0.05;
 const NODE_CONNECTOR_SAMPLE_STEP_M: f32 = 1.0;
 const ROAD_POINT_SIMPLIFY_DISTANCE_M: f32 = 0.5;
 const TAUBIN_SMOOTHING_ITERS: usize = 50;
@@ -39,6 +40,7 @@ const TAUBIN_MU: f32 = -0.53;
 const PREVIEW_MAX_GRADE: f32 = 0.41;
 const PREVIEW_CLEARANCE_M: f32 = 1.0;
 const PREVIEW_MESH_LIFT_M: f32 = 0.05;
+const VISUAL_NODE_HANDOFF_PADDING_M: f32 = 1.0;
 const EARTHWORK_PAVEMENT_DEPTH_M: f32 = 0.04;
 const EARTHWORK_MIN_MARGIN_M: f32 = 4.0;
 const EARTHWORK_MAX_MARGIN_M: f32 = 18.0;
@@ -326,8 +328,18 @@ pub struct RoadSurfaceSystem {
     compiled_sections: HashMap<usize, Vec<RoadSurfaceSection>>,
     compiled_visual_span_pieces: HashMap<usize, RoadSurfaceVisualSpanPiece>,
     compiled_visual_node_pieces: HashMap<u32, RoadSurfaceVisualNodePiece>,
+    surface_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
+    surface_node_chunks: HashMap<u32, Vec<SurfaceChunkKey>>,
+    earthwork_span_chunks: HashMap<usize, Vec<SurfaceChunkKey>>,
+    earthwork_node_chunks: HashMap<u32, Vec<SurfaceChunkKey>>,
+    surface_chunk_spans: HashMap<SurfaceChunkKey, BTreeSet<usize>>,
+    surface_chunk_nodes: HashMap<SurfaceChunkKey, BTreeSet<u32>>,
+    earthwork_chunk_spans: HashMap<SurfaceChunkKey, BTreeSet<usize>>,
+    earthwork_chunk_nodes: HashMap<SurfaceChunkKey, BTreeSet<u32>>,
     surface_chunk_cache: HashMap<SurfaceChunkKey, RoadSurfaceChunkCacheEntry>,
     earthwork_chunk_cache: HashMap<SurfaceChunkKey, RoadEarthworkChunkCacheEntry>,
+    last_rebuilt_surface_chunks: Vec<SurfaceChunkKey>,
+    last_rebuilt_terrain_chunks: Vec<SurfaceChunkKey>,
 }
 
 impl RoadSurfaceSystem {
@@ -343,8 +355,18 @@ impl RoadSurfaceSystem {
             compiled_sections: HashMap::new(),
             compiled_visual_span_pieces: HashMap::new(),
             compiled_visual_node_pieces: HashMap::new(),
+            surface_span_chunks: HashMap::new(),
+            surface_node_chunks: HashMap::new(),
+            earthwork_span_chunks: HashMap::new(),
+            earthwork_node_chunks: HashMap::new(),
+            surface_chunk_spans: HashMap::new(),
+            surface_chunk_nodes: HashMap::new(),
+            earthwork_chunk_spans: HashMap::new(),
+            earthwork_chunk_nodes: HashMap::new(),
             surface_chunk_cache: HashMap::new(),
             earthwork_chunk_cache: HashMap::new(),
+            last_rebuilt_surface_chunks: Vec::new(),
+            last_rebuilt_terrain_chunks: Vec::new(),
         }
     }
 
@@ -1173,8 +1195,11 @@ impl RoadSurfaceSystem {
         self.compiled_sections.clear();
         self.compiled_visual_span_pieces.clear();
         self.compiled_visual_node_pieces.clear();
+        self.clear_piece_chunk_coverage();
         self.surface_chunk_cache.clear();
         self.earthwork_chunk_cache.clear();
+        self.last_rebuilt_surface_chunks.clear();
+        self.last_rebuilt_terrain_chunks.clear();
         self.compiled_once = false;
     }
 
@@ -1227,22 +1252,6 @@ impl RoadSurfaceSystem {
             node_ids.insert(graph.get_valid_node(edge.end_node));
         }
 
-        for edge_idx in edge_ids {
-            if edge_idx >= graph.edge_count() {
-                self.compiled_sections.remove(&edge_idx);
-                continue;
-            }
-            let edge = graph.edge(edge_idx);
-            if !Self::is_surface_edge(edge) {
-                self.compiled_sections.remove(&edge_idx);
-                continue;
-            }
-            self.compiled_sections.insert(
-                edge_idx,
-                self.compile_edge_sections(graph, terrain, edge_idx),
-            );
-        }
-
         let mut sorted_nodes: Vec<u32> = node_ids.into_iter().collect();
         sorted_nodes.sort_unstable();
         sorted_nodes.dedup();
@@ -1259,21 +1268,34 @@ impl RoadSurfaceSystem {
         let mut sorted_span_edges: Vec<usize> = span_edge_ids.into_iter().collect();
         sorted_span_edges.sort_unstable();
         sorted_span_edges.dedup();
-        for edge_idx in sorted_span_edges {
+        for &edge_idx in &sorted_span_edges {
             if edge_idx >= graph.edge_count() {
-                self.mark_cached_visual_span_piece_chunks_dirty(edge_idx);
+                self.compiled_sections.remove(&edge_idx);
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            if !Self::is_surface_edge(edge) {
+                self.compiled_sections.remove(&edge_idx);
+                continue;
+            }
+            self.compiled_sections.insert(
+                edge_idx,
+                self.compile_edge_sections(graph, terrain, edge_idx),
+            );
+        }
+        for edge_idx in sorted_span_edges {
+            self.remove_span_piece_coverage(edge_idx);
+            if edge_idx >= graph.edge_count() {
                 self.compiled_visual_span_pieces.remove(&edge_idx);
                 continue;
             }
             let edge = graph.edge(edge_idx);
             if !Self::is_surface_edge(edge) {
-                self.mark_cached_visual_span_piece_chunks_dirty(edge_idx);
                 self.compiled_visual_span_pieces.remove(&edge_idx);
                 continue;
             }
-            self.mark_cached_visual_span_piece_chunks_dirty(edge_idx);
             if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
-                self.mark_visual_span_piece_chunks_dirty(&span_piece);
+                self.insert_span_piece_coverage(&span_piece);
                 self.compiled_visual_span_pieces
                     .insert(edge_idx, span_piece);
             } else {
@@ -1282,11 +1304,11 @@ impl RoadSurfaceSystem {
         }
 
         for &node_id in &sorted_nodes {
-            self.mark_cached_visual_node_piece_chunks_dirty(node_id);
+            self.remove_node_piece_coverage(node_id);
             if self.node_has_surface_edges(graph, node_id) {
                 let visual_piece = self.compile_visual_node_piece(graph, terrain, node_id);
                 if let Some(visual_piece) = visual_piece {
-                    self.mark_visual_node_piece_chunks_dirty(&visual_piece);
+                    self.insert_node_piece_coverage(&visual_piece);
                     self.compiled_visual_node_pieces
                         .insert(node_id, visual_piece);
                 } else {
@@ -1299,8 +1321,10 @@ impl RoadSurfaceSystem {
 
         let dirty_surface_chunks = self.sorted_chunk_keys(&self.dirty_surface_chunks);
         let dirty_terrain_chunks = self.sorted_chunk_keys(&self.dirty_terrain_chunks);
-        self.rebuild_surface_chunk_cache(graph, &dirty_surface_chunks);
-        self.rebuild_earthwork_chunk_cache(graph, &dirty_terrain_chunks);
+        self.rebuild_surface_chunk_cache(&dirty_surface_chunks);
+        self.rebuild_earthwork_chunk_cache(&dirty_terrain_chunks);
+        self.last_rebuilt_surface_chunks = dirty_surface_chunks;
+        self.last_rebuilt_terrain_chunks = dirty_terrain_chunks;
         self.compiled_once = true;
         self.clear_dirty_tracking();
     }
@@ -1311,17 +1335,17 @@ impl RoadSurfaceSystem {
         graph: &RegionGraph,
         terrain: &mut TerrainSystem,
     ) -> Vec<SurfaceChunkKey> {
-        let dirty_chunks = if self.compiled_once {
-            self.sorted_chunk_keys(&self.dirty_terrain_chunks)
-        } else {
-            Vec::new()
-        };
+        let had_dirty_work = !self.compiled_once
+            || !self.dirty_edges.is_empty()
+            || !self.dirty_nodes.is_empty()
+            || !self.dirty_surface_chunks.is_empty()
+            || !self.dirty_terrain_chunks.is_empty();
         self.compile_dirty(graph, terrain);
 
-        let chunks = if self.compiled_once && dirty_chunks.is_empty() {
-            self.collect_all_chunks(graph, ChunkCacheKind::Earthwork)
+        let chunks = if had_dirty_work {
+            self.last_rebuilt_terrain_chunks.clone()
         } else {
-            dirty_chunks
+            self.collect_all_chunks(ChunkCacheKind::Earthwork)
         };
         self.apply_earthwork_chunks(graph, terrain, &chunks);
         chunks
@@ -1335,7 +1359,7 @@ impl RoadSurfaceSystem {
     ) -> Vec<SurfaceChunkKey> {
         terrain.reset_visuals_from_source();
         self.compile_dirty(graph, terrain);
-        let chunks = self.collect_all_chunks(graph, ChunkCacheKind::Earthwork);
+        let chunks = self.collect_all_chunks(ChunkCacheKind::Earthwork);
         self.apply_earthwork_chunks(graph, terrain, &chunks);
         chunks
     }
@@ -1360,80 +1384,170 @@ impl RoadSurfaceSystem {
         }
     }
 
-    /// Marks one edge dirty and tags all overlapping surface and terrain chunks.
+    /// Marks one edge dirty; chunk invalidation is derived from compiled piece coverage.
     pub fn mark_edge_dirty(&mut self, graph: &RegionGraph, edge_idx: usize) {
-        if edge_idx >= graph.edge_count() || graph.edge(edge_idx).deleted {
+        if edge_idx >= graph.edge_count() {
             return;
         }
         self.dirty_edges.insert(edge_idx);
-        for chunk in self.edge_chunks(graph.edge(edge_idx), ChunkCacheKind::Surface) {
-            self.dirty_surface_chunks.insert(chunk);
-        }
-        for chunk in self.edge_chunks(graph.edge(edge_idx), ChunkCacheKind::Earthwork) {
-            self.dirty_terrain_chunks.insert(chunk);
-        }
     }
 
-    /// Marks one node dirty and tags the chunk containing its current world position.
+    /// Marks one node dirty; chunk invalidation is derived from compiled piece coverage.
     pub fn mark_node_dirty(&mut self, graph: &RegionGraph, node_id: u32) {
         if node_id as usize >= graph.node_count() {
             return;
         }
         let valid = graph.get_valid_node(node_id);
         self.dirty_nodes.insert(valid);
-        self.mark_world_point_dirty(graph.node(valid).pos);
     }
 
-    fn mark_cached_visual_span_piece_chunks_dirty(&mut self, edge_idx: usize) {
-        let (surface_chunks, terrain_chunks) = match self.compiled_visual_span_pieces.get(&edge_idx)
-        {
-            Some(piece) => self.visual_span_piece_dirty_chunks(piece),
-            None => return,
-        };
-        self.dirty_surface_chunks.extend(surface_chunks);
-        self.dirty_terrain_chunks.extend(terrain_chunks);
+    fn clear_piece_chunk_coverage(&mut self) {
+        self.surface_span_chunks.clear();
+        self.surface_node_chunks.clear();
+        self.earthwork_span_chunks.clear();
+        self.earthwork_node_chunks.clear();
+        self.surface_chunk_spans.clear();
+        self.surface_chunk_nodes.clear();
+        self.earthwork_chunk_spans.clear();
+        self.earthwork_chunk_nodes.clear();
     }
 
-    fn mark_cached_visual_node_piece_chunks_dirty(&mut self, node_id: u32) {
-        let (surface_chunks, terrain_chunks) = match self.compiled_visual_node_pieces.get(&node_id)
-        {
-            Some(piece) => self.visual_node_piece_dirty_chunks(piece),
-            None => return,
-        };
-        self.dirty_surface_chunks.extend(surface_chunks);
-        self.dirty_terrain_chunks.extend(terrain_chunks);
+    fn remove_span_piece_coverage(
+        &mut self,
+        edge_idx: usize,
+    ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
+        let surface_chunks = self
+            .surface_span_chunks
+            .remove(&edge_idx)
+            .unwrap_or_default();
+        let terrain_chunks = self
+            .earthwork_span_chunks
+            .remove(&edge_idx)
+            .unwrap_or_default();
+        Self::remove_owner_chunk_coverage(&mut self.surface_chunk_spans, edge_idx, &surface_chunks);
+        Self::remove_owner_chunk_coverage(
+            &mut self.earthwork_chunk_spans,
+            edge_idx,
+            &terrain_chunks,
+        );
+        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
+        (surface_chunks, terrain_chunks)
     }
 
-    fn mark_visual_span_piece_chunks_dirty(&mut self, piece: &RoadSurfaceVisualSpanPiece) {
-        let (surface_chunks, terrain_chunks) = self.visual_span_piece_dirty_chunks(piece);
-        self.dirty_surface_chunks.extend(surface_chunks);
-        self.dirty_terrain_chunks.extend(terrain_chunks);
+    fn remove_node_piece_coverage(
+        &mut self,
+        node_id: u32,
+    ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
+        let surface_chunks = self
+            .surface_node_chunks
+            .remove(&node_id)
+            .unwrap_or_default();
+        let terrain_chunks = self
+            .earthwork_node_chunks
+            .remove(&node_id)
+            .unwrap_or_default();
+        Self::remove_owner_chunk_coverage(&mut self.surface_chunk_nodes, node_id, &surface_chunks);
+        Self::remove_owner_chunk_coverage(
+            &mut self.earthwork_chunk_nodes,
+            node_id,
+            &terrain_chunks,
+        );
+        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
+        (surface_chunks, terrain_chunks)
     }
 
-    fn mark_visual_node_piece_chunks_dirty(&mut self, piece: &RoadSurfaceVisualNodePiece) {
-        let (surface_chunks, terrain_chunks) = self.visual_node_piece_dirty_chunks(piece);
-        self.dirty_surface_chunks.extend(surface_chunks);
-        self.dirty_terrain_chunks.extend(terrain_chunks);
-    }
-
-    fn visual_span_piece_dirty_chunks(
-        &self,
+    fn insert_span_piece_coverage(
+        &mut self,
         piece: &RoadSurfaceVisualSpanPiece,
     ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
-        (
+        let surface_chunks = Self::canonical_chunk_vec(
             self.visual_span_piece_chunks(piece, ChunkCacheKind::Surface),
+        );
+        let terrain_chunks = Self::canonical_chunk_vec(
             self.visual_span_piece_chunks(piece, ChunkCacheKind::Earthwork),
-        )
+        );
+        self.surface_span_chunks
+            .insert(piece.edge_idx, surface_chunks.clone());
+        self.earthwork_span_chunks
+            .insert(piece.edge_idx, terrain_chunks.clone());
+        Self::insert_owner_chunk_coverage(
+            &mut self.surface_chunk_spans,
+            piece.edge_idx,
+            &surface_chunks,
+        );
+        Self::insert_owner_chunk_coverage(
+            &mut self.earthwork_chunk_spans,
+            piece.edge_idx,
+            &terrain_chunks,
+        );
+        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
+        (surface_chunks, terrain_chunks)
     }
 
-    fn visual_node_piece_dirty_chunks(
-        &self,
+    fn insert_node_piece_coverage(
+        &mut self,
         piece: &RoadSurfaceVisualNodePiece,
     ) -> (Vec<SurfaceChunkKey>, Vec<SurfaceChunkKey>) {
-        (
+        let surface_chunks = Self::canonical_chunk_vec(
             self.visual_node_piece_chunks(piece, ChunkCacheKind::Surface),
+        );
+        let terrain_chunks = Self::canonical_chunk_vec(
             self.visual_node_piece_chunks(piece, ChunkCacheKind::Earthwork),
-        )
+        );
+        self.surface_node_chunks
+            .insert(piece.node_id, surface_chunks.clone());
+        self.earthwork_node_chunks
+            .insert(piece.node_id, terrain_chunks.clone());
+        Self::insert_owner_chunk_coverage(
+            &mut self.surface_chunk_nodes,
+            piece.node_id,
+            &surface_chunks,
+        );
+        Self::insert_owner_chunk_coverage(
+            &mut self.earthwork_chunk_nodes,
+            piece.node_id,
+            &terrain_chunks,
+        );
+        self.extend_dirty_piece_chunks(&surface_chunks, &terrain_chunks);
+        (surface_chunks, terrain_chunks)
+    }
+
+    fn extend_dirty_piece_chunks(
+        &mut self,
+        surface_chunks: &[SurfaceChunkKey],
+        terrain_chunks: &[SurfaceChunkKey],
+    ) {
+        self.dirty_surface_chunks
+            .extend(surface_chunks.iter().copied());
+        self.dirty_terrain_chunks
+            .extend(terrain_chunks.iter().copied());
+    }
+
+    fn insert_owner_chunk_coverage<T: Copy + Ord>(
+        chunk_owners: &mut HashMap<SurfaceChunkKey, BTreeSet<T>>,
+        owner: T,
+        chunks: &[SurfaceChunkKey],
+    ) {
+        for &chunk in chunks {
+            chunk_owners.entry(chunk).or_default().insert(owner);
+        }
+    }
+
+    fn remove_owner_chunk_coverage<T: Copy + Ord>(
+        chunk_owners: &mut HashMap<SurfaceChunkKey, BTreeSet<T>>,
+        owner: T,
+        chunks: &[SurfaceChunkKey],
+    ) {
+        for &chunk in chunks {
+            let Some(owners) = chunk_owners.get_mut(&chunk) else {
+                continue;
+            };
+            owners.remove(&owner);
+            let remove_chunk = owners.is_empty();
+            if remove_chunk {
+                chunk_owners.remove(&chunk);
+            }
+        }
     }
 
     fn visual_span_piece_chunks(
@@ -1476,6 +1590,9 @@ impl RoadSurfaceSystem {
 
     fn compile_all(&mut self, graph: &RegionGraph, terrain: &TerrainSystem) {
         self.prune_stale_cache_entries(graph);
+        self.clear_piece_chunk_coverage();
+        self.surface_chunk_cache.clear();
+        self.earthwork_chunk_cache.clear();
 
         let edge_ids = self.all_surface_edge_ids(graph);
         for &edge_idx in &edge_ids {
@@ -1487,7 +1604,7 @@ impl RoadSurfaceSystem {
 
         for &edge_idx in &edge_ids {
             if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
-                self.mark_visual_span_piece_chunks_dirty(&span_piece);
+                self.insert_span_piece_coverage(&span_piece);
                 self.compiled_visual_span_pieces
                     .insert(edge_idx, span_piece);
             } else {
@@ -1499,7 +1616,7 @@ impl RoadSurfaceSystem {
         for node_id in node_ids {
             let visual_piece = self.compile_visual_node_piece(graph, terrain, node_id);
             if let Some(visual_piece) = visual_piece {
-                self.mark_visual_node_piece_chunks_dirty(&visual_piece);
+                self.insert_node_piece_coverage(&visual_piece);
                 self.compiled_visual_node_pieces
                     .insert(node_id, visual_piece);
             } else {
@@ -1507,10 +1624,12 @@ impl RoadSurfaceSystem {
             }
         }
 
-        let all_surface_chunks = self.collect_all_chunks(graph, ChunkCacheKind::Surface);
-        let all_earthwork_chunks = self.collect_all_chunks(graph, ChunkCacheKind::Earthwork);
-        self.rebuild_surface_chunk_cache(graph, &all_surface_chunks);
-        self.rebuild_earthwork_chunk_cache(graph, &all_earthwork_chunks);
+        let all_surface_chunks = self.collect_all_chunks(ChunkCacheKind::Surface);
+        let all_earthwork_chunks = self.collect_all_chunks(ChunkCacheKind::Earthwork);
+        self.rebuild_surface_chunk_cache(&all_surface_chunks);
+        self.rebuild_earthwork_chunk_cache(&all_earthwork_chunks);
+        self.last_rebuilt_surface_chunks = all_surface_chunks;
+        self.last_rebuilt_terrain_chunks = all_earthwork_chunks;
         self.compiled_once = true;
         self.clear_dirty_tracking();
     }
@@ -2208,7 +2327,7 @@ impl RoadSurfaceSystem {
         if contours.is_empty() {
             return Some(Vec::new());
         }
-        let shapes = contours.simplify_shape(FillRule::NonZero);
+        let shapes = contours.simplify_shape(FillRule::Positive);
         Some(Self::filter_overlay_shapes_by_area(shapes))
     }
 
@@ -2224,7 +2343,7 @@ impl RoadSurfaceSystem {
             return Some(subject.clone());
         }
         let shapes = subject
-            .overlay_with_fixed_scale(clip, rule, FillRule::NonZero, NODE_OVERLAY_SCALE)
+            .overlay_with_fixed_scale(clip, rule, FillRule::Positive, NODE_OVERLAY_SCALE)
             .ok()?;
         Some(Self::filter_overlay_shapes_by_area(shapes))
     }
@@ -3037,7 +3156,7 @@ impl RoadSurfaceSystem {
     ) -> RoadSurfaceBandKind {
         let kind_a = Self::surface_kind_at_depth(side_a, t);
         let kind_b = Self::surface_kind_at_depth(side_b, t);
-        if kind_a == RoadSurfaceBandKind::Carriageway || kind_b == RoadSurfaceBandKind::Carriageway
+        if kind_a == RoadSurfaceBandKind::Carriageway && kind_b == RoadSurfaceBandKind::Carriageway
         {
             RoadSurfaceBandKind::Carriageway
         } else {
@@ -3561,8 +3680,8 @@ impl RoadSurfaceSystem {
         }
 
         let mut samples = vec![0.0, total_length];
-        let start_throat = edge.start_clip.clamp(0.0, total_length);
-        let end_throat = (total_length - edge.end_clip).clamp(0.0, total_length);
+        let start_throat = Self::visual_start_handoff_m(edge, total_length);
+        let end_throat = Self::visual_end_handoff_s_m(edge, total_length);
         samples.push(start_throat);
         samples.push(end_throat);
 
@@ -3584,6 +3703,40 @@ impl RoadSurfaceSystem {
         samples.sort_by(f32::total_cmp);
         samples.dedup_by(|a, b| (*a - *b).abs() <= SAMPLE_EPSILON_M);
         samples
+    }
+
+    fn visual_roadbed_half_width_m(edge: &Edge) -> f32 {
+        if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
+            return edge.width.max(2.0) * 0.5;
+        }
+
+        let sidewalk_total = if edge.allowed_types & TransitFlags::FOOT != 0 {
+            config::SIDEWALK_WIDTH
+        } else {
+            0.0
+        };
+        edge.width.max(config::LANE_WIDTH) * 0.5 + sidewalk_total
+    }
+
+    fn visual_node_handoff_limit_m(edge: &Edge) -> f32 {
+        Self::visual_roadbed_half_width_m(edge) + VISUAL_NODE_HANDOFF_PADDING_M
+    }
+
+    fn visual_start_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
+        edge.start_clip
+            .min(Self::visual_node_handoff_limit_m(edge))
+            .clamp(0.0, total_length_m)
+    }
+
+    fn visual_end_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
+        edge.end_clip
+            .min(Self::visual_node_handoff_limit_m(edge))
+            .clamp(0.0, total_length_m)
+    }
+
+    fn visual_end_handoff_s_m(edge: &Edge, total_length_m: f32) -> f32 {
+        (total_length_m - Self::visual_end_handoff_m(edge, total_length_m))
+            .clamp(0.0, total_length_m)
     }
 
     fn section_step_for_class(&self, class: EdgeClass) -> f32 {
@@ -3767,10 +3920,10 @@ impl RoadSurfaceSystem {
         true
     }
 
-    fn rebuild_surface_chunk_cache(&mut self, graph: &RegionGraph, chunks: &[SurfaceChunkKey]) {
+    fn rebuild_surface_chunk_cache(&mut self, chunks: &[SurfaceChunkKey]) {
         for &chunk in chunks {
-            let (edge_indices, node_ids) =
-                self.chunk_contributors(graph, chunk, ChunkCacheKind::Surface);
+            let edge_indices = Self::sorted_owner_set(self.surface_chunk_spans.get(&chunk));
+            let node_ids = Self::sorted_owner_set(self.surface_chunk_nodes.get(&chunk));
             if edge_indices.is_empty() && node_ids.is_empty() {
                 self.surface_chunk_cache.remove(&chunk);
                 continue;
@@ -3786,10 +3939,10 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn rebuild_earthwork_chunk_cache(&mut self, graph: &RegionGraph, chunks: &[SurfaceChunkKey]) {
+    fn rebuild_earthwork_chunk_cache(&mut self, chunks: &[SurfaceChunkKey]) {
         for &chunk in chunks {
-            let (edge_indices, node_ids) =
-                self.chunk_contributors(graph, chunk, ChunkCacheKind::Earthwork);
+            let edge_indices = Self::sorted_owner_set(self.earthwork_chunk_spans.get(&chunk));
+            let node_ids = Self::sorted_owner_set(self.earthwork_chunk_nodes.get(&chunk));
             if edge_indices.is_empty() && node_ids.is_empty() {
                 self.earthwork_chunk_cache.remove(&chunk);
                 continue;
@@ -3805,80 +3958,11 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn chunk_contributors(
-        &self,
-        graph: &RegionGraph,
-        chunk: SurfaceChunkKey,
-        kind: ChunkCacheKind,
-    ) -> (Vec<usize>, Vec<u32>) {
-        let (query_min, query_max) = self.chunk_query_bounds(chunk, kind);
-        let mut edge_indices: Vec<usize> = graph
-            .get_edges_near_aabb(query_min, query_max)
-            .into_iter()
-            .filter(|edge_idx| {
-                let Some(piece) = self.compiled_visual_span_pieces.get(edge_idx) else {
-                    return false;
-                };
-                self.visual_span_piece_overlaps_chunk(*edge_idx, piece, chunk, kind)
-            })
-            .collect();
-        edge_indices.sort_unstable();
-        edge_indices.dedup();
-
-        let mut node_ids: Vec<u32> = match kind {
-            ChunkCacheKind::Surface | ChunkCacheKind::Earthwork => self
-                .compiled_visual_node_pieces
-                .iter()
-                .filter_map(|(&node_id, piece)| {
-                    self.visual_node_piece_overlaps_chunk(node_id, piece, chunk, kind)
-                        .then_some(node_id)
-                })
-                .collect(),
-        };
-        node_ids.sort_unstable();
-        node_ids.dedup();
-
-        (edge_indices, node_ids)
-    }
-
-    fn visual_node_piece_overlaps_chunk(
-        &self,
-        node_id: u32,
-        piece: &RoadSurfaceVisualNodePiece,
-        chunk: SurfaceChunkKey,
-        kind: ChunkCacheKind,
-    ) -> bool {
-        let Some((min, max)) = self.visual_node_piece_bounds(piece, kind) else {
-            return false;
-        };
-
-        let min_chunk = self.chunk_coords_for_world(min.x, min.z);
-        let max_chunk = self.chunk_coords_for_world(max.x, max.z);
-        chunk.0 >= min_chunk.0
-            && chunk.0 <= max_chunk.0
-            && chunk.1 >= min_chunk.1
-            && chunk.1 <= max_chunk.1
-            && piece.node_id == node_id
-    }
-
-    fn visual_span_piece_overlaps_chunk(
-        &self,
-        edge_idx: usize,
-        piece: &RoadSurfaceVisualSpanPiece,
-        chunk: SurfaceChunkKey,
-        kind: ChunkCacheKind,
-    ) -> bool {
-        let Some((min, max)) = self.visual_span_piece_bounds(piece, kind) else {
-            return false;
-        };
-
-        let min_chunk = self.chunk_coords_for_world(min.x, min.z);
-        let max_chunk = self.chunk_coords_for_world(max.x, max.z);
-        chunk.0 >= min_chunk.0
-            && chunk.0 <= max_chunk.0
-            && chunk.1 >= min_chunk.1
-            && chunk.1 <= max_chunk.1
-            && piece.edge_idx == edge_idx
+    fn sorted_owner_set<T: Copy + Ord>(owners: Option<&BTreeSet<T>>) -> Vec<T> {
+        match owners {
+            Some(owners) => owners.iter().copied().collect(),
+            None => Vec::new(),
+        }
     }
 
     fn collect_query_contributors(
@@ -4026,7 +4110,7 @@ impl RoadSurfaceSystem {
             start_kind,
             Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN)
         ) {
-            edge.start_clip.clamp(0.0, total_length)
+            Self::visual_start_handoff_m(edge, total_length)
         } else {
             0.0
         };
@@ -4034,7 +4118,7 @@ impl RoadSurfaceSystem {
             end_kind,
             Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN)
         ) {
-            (total_length - edge.end_clip).clamp(0.0, total_length)
+            Self::visual_end_handoff_s_m(edge, total_length)
         } else {
             total_length
         };
@@ -4051,35 +4135,6 @@ impl RoadSurfaceSystem {
             .rposition(|section| section.s_m - SAMPLE_EPSILON_M <= end_handoff)
             .unwrap_or(sections.len().saturating_sub(1));
         (end_index > start_index).then_some((start_index, end_index))
-    }
-
-    fn edge_earthwork_extent_m(&self, edge: &Edge) -> f32 {
-        self.outer_roadbed_half_width_m(edge)
-            + if edge.class == EdgeClass::Standard {
-                EARTHWORK_MAX_MARGIN_M
-            } else {
-                0.0
-            }
-    }
-
-    fn outer_roadbed_half_width_m(&self, edge: &Edge) -> f32 {
-        if edge.primary_type == TransitType::Foot || (edge.allowed_types & TransitFlags::CAR) == 0 {
-            return edge.width.max(2.0) * 0.5;
-        }
-
-        let half_carriageway = edge.width.max(config::LANE_WIDTH) * 0.5;
-        let sidewalk_total = if edge.allowed_types & TransitFlags::FOOT != 0 {
-            config::SIDEWALK_WIDTH
-        } else {
-            0.0
-        };
-        let curb_width = if sidewalk_total > 0.0 {
-            CURB_BAND_WIDTH_M.min(sidewalk_total)
-        } else {
-            0.0
-        };
-        let sidewalk_width = (sidewalk_total - curb_width).max(0.0);
-        half_carriageway + curb_width + sidewalk_width
     }
 
     fn earthwork_transition_point(
@@ -4251,8 +4306,8 @@ impl RoadSurfaceSystem {
         }
 
         let total_length = sections.last()?.s_m.max(0.0);
-        let start_handoff = edge.start_clip.clamp(0.0, total_length);
-        let end_handoff = (total_length - edge.end_clip).clamp(0.0, total_length);
+        let start_handoff = Self::visual_start_handoff_m(edge, total_length);
+        let end_handoff = Self::visual_end_handoff_s_m(edge, total_length);
         if end_handoff - start_handoff <= SAMPLE_EPSILON_M {
             return None;
         }
@@ -4555,6 +4610,9 @@ impl RoadSurfaceSystem {
         {
             points_world.pop();
         }
+        if Self::polygon_has_strict_edge_crossing_xz(&points_world) {
+            return None;
+        }
         let signed_area = Self::signed_polygon_area_xz(&points_world);
         if signed_area.abs() <= 0.002 {
             return None;
@@ -4588,6 +4646,9 @@ impl RoadSurfaceSystem {
             points_world.pop();
         }
         if points_world.len() < 3 {
+            return None;
+        }
+        if Self::polygon_has_strict_edge_crossing_xz(&points_world) {
             return None;
         }
         let triangles_world = Self::triangulate_fan_polygon_xz(&points_world)?;
@@ -4708,6 +4769,48 @@ impl RoadSurfaceSystem {
         signed_area * 0.5
     }
 
+    fn polygon_has_strict_edge_crossing_xz(points: &[Vector3]) -> bool {
+        if points.len() < 4 {
+            return false;
+        }
+
+        for edge_a in 0..points.len() {
+            let edge_a_next = (edge_a + 1) % points.len();
+            for edge_b in edge_a + 1..points.len() {
+                let edge_b_next = (edge_b + 1) % points.len();
+                if edge_a == edge_b
+                    || edge_a == edge_b_next
+                    || edge_a_next == edge_b
+                    || edge_a_next == edge_b_next
+                {
+                    continue;
+                }
+                if Self::segments_strictly_intersect_xz(
+                    points[edge_a],
+                    points[edge_a_next],
+                    points[edge_b],
+                    points[edge_b_next],
+                ) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+
+    fn segments_strictly_intersect_xz(a: Vector3, b: Vector3, c: Vector3, d: Vector3) -> bool {
+        let ab_c = Self::cross_points_xz(a, b, c);
+        let ab_d = Self::cross_points_xz(a, b, d);
+        let cd_a = Self::cross_points_xz(c, d, a);
+        let cd_b = Self::cross_points_xz(c, d, b);
+        ab_c * ab_d < -SAMPLE_EPSILON_M && cd_a * cd_b < -SAMPLE_EPSILON_M
+    }
+
+    fn cross_points_xz(a: Vector3, b: Vector3, c: Vector3) -> f32 {
+        (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)
+    }
+
     #[cfg(test)]
     fn polygon_has_area_xz(points: &[Vector3]) -> bool {
         Self::signed_polygon_area_xz(points).abs() > 0.002
@@ -4716,7 +4819,13 @@ impl RoadSurfaceSystem {
     fn triangle_has_area_xz(triangle: [Vector3; 3]) -> bool {
         let projected_cross = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
             - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
+        let edge_ab = Vector2::new(triangle[1].x - triangle[0].x, triangle[1].z - triangle[0].z);
+        let edge_bc = Vector2::new(triangle[2].x - triangle[1].x, triangle[2].z - triangle[1].z);
+        let edge_ca = Vector2::new(triangle[0].x - triangle[2].x, triangle[0].z - triangle[2].z);
+        let max_edge_m = edge_ab.length().max(edge_bc.length()).max(edge_ca.length());
         projected_cross.abs() > 0.002
+            && projected_cross.abs() / max_edge_m.max(SAMPLE_EPSILON_M)
+                >= SURFACE_MIN_TRIANGLE_ALTITUDE_M
     }
 
     fn triangle_barycentric_weights_xz(
@@ -4880,21 +4989,15 @@ impl RoadSurfaceSystem {
             .map(Vec::as_slice)
             .unwrap_or(&[]);
         let surface_chunks = self
-            .compiled_visual_span_pieces
+            .surface_span_chunks
             .get(&edge_idx)
-            .and_then(|piece| {
-                self.visual_span_piece_bounds(piece, ChunkCacheKind::Surface)
-                    .map(|(min, max)| self.bounds_to_chunk_keys(min, max))
-            })
-            .unwrap_or_else(|| self.edge_chunks(edge, ChunkCacheKind::Surface));
+            .cloned()
+            .unwrap_or_default();
         let earthwork_chunks = self
-            .compiled_visual_span_pieces
+            .earthwork_span_chunks
             .get(&edge_idx)
-            .and_then(|piece| {
-                self.visual_span_piece_bounds(piece, ChunkCacheKind::Earthwork)
-                    .map(|(min, max)| self.bounds_to_chunk_keys(min, max))
-            })
-            .unwrap_or_else(|| self.edge_chunks(edge, ChunkCacheKind::Earthwork));
+            .cloned()
+            .unwrap_or_default();
 
         let _ = writeln!(dump, "    {{");
         let _ = writeln!(dump, "      \"edge_idx\": {edge_idx},");
@@ -5074,6 +5177,35 @@ impl RoadSurfaceSystem {
     }
 
     fn prune_stale_cache_entries(&mut self, graph: &RegionGraph) {
+        let stale_span_ids: Vec<usize> = self
+            .surface_span_chunks
+            .keys()
+            .chain(self.earthwork_span_chunks.keys())
+            .chain(self.compiled_visual_span_pieces.keys())
+            .copied()
+            .filter(|edge_idx| {
+                *edge_idx >= graph.edge_count() || !Self::is_surface_edge(graph.edge(*edge_idx))
+            })
+            .collect();
+        for edge_idx in stale_span_ids {
+            self.remove_span_piece_coverage(edge_idx);
+            self.compiled_visual_span_pieces.remove(&edge_idx);
+            self.compiled_sections.remove(&edge_idx);
+        }
+
+        let stale_node_ids: Vec<u32> = self
+            .surface_node_chunks
+            .keys()
+            .chain(self.earthwork_node_chunks.keys())
+            .chain(self.compiled_visual_node_pieces.keys())
+            .copied()
+            .filter(|node_id| (*node_id as usize) >= graph.node_count())
+            .collect();
+        for node_id in stale_node_ids {
+            self.remove_node_piece_coverage(node_id);
+            self.compiled_visual_node_pieces.remove(&node_id);
+        }
+
         self.compiled_sections.retain(|edge_idx, _| {
             *edge_idx < graph.edge_count() && Self::is_surface_edge(graph.edge(*edge_idx))
         });
@@ -5111,92 +5243,19 @@ impl RoadSurfaceSystem {
         node_ids
     }
 
-    fn collect_all_chunks(
-        &self,
-        _graph: &RegionGraph,
-        kind: ChunkCacheKind,
-    ) -> Vec<SurfaceChunkKey> {
+    fn collect_all_chunks(&self, kind: ChunkCacheKind) -> Vec<SurfaceChunkKey> {
         let mut chunks = HashSet::new();
-        for piece in self.compiled_visual_span_pieces.values() {
-            let Some((min, max)) = self.visual_span_piece_bounds(piece, kind) else {
-                continue;
-            };
-            let min_chunk = self.chunk_coords_for_world(min.x, min.z);
-            let max_chunk = self.chunk_coords_for_world(max.x, max.z);
-            for cx in min_chunk.0..=max_chunk.0 {
-                for cz in min_chunk.1..=max_chunk.1 {
-                    chunks.insert((cx, cz));
-                }
-            }
-        }
         match kind {
-            ChunkCacheKind::Surface | ChunkCacheKind::Earthwork => {
-                for piece in self.compiled_visual_node_pieces.values() {
-                    let Some((min, max)) = self.visual_node_piece_bounds(piece, kind) else {
-                        continue;
-                    };
-                    let min_chunk = self.chunk_coords_for_world(min.x, min.z);
-                    let max_chunk = self.chunk_coords_for_world(max.x, max.z);
-                    for cx in min_chunk.0..=max_chunk.0 {
-                        for cz in min_chunk.1..=max_chunk.1 {
-                            chunks.insert((cx, cz));
-                        }
-                    }
-                }
+            ChunkCacheKind::Surface => {
+                chunks.extend(self.surface_chunk_spans.keys().copied());
+                chunks.extend(self.surface_chunk_nodes.keys().copied());
+            }
+            ChunkCacheKind::Earthwork => {
+                chunks.extend(self.earthwork_chunk_spans.keys().copied());
+                chunks.extend(self.earthwork_chunk_nodes.keys().copied());
             }
         }
         self.sorted_chunk_keys(&chunks)
-    }
-
-    fn chunk_query_bounds(
-        &self,
-        chunk: SurfaceChunkKey,
-        kind: ChunkCacheKind,
-    ) -> (Vector3, Vector3) {
-        let (min, max) = self.chunk_bounds(chunk);
-        if kind == ChunkCacheKind::Surface {
-            return (min, max);
-        }
-
-        let padding = EARTHWORK_MAX_MARGIN_M
-            + config::SIDEWALK_WIDTH
-            + CURB_BAND_WIDTH_M
-            + config::LANE_WIDTH * 2.0;
-        (
-            Vector3::new(min.x - padding, 0.0, min.z - padding),
-            Vector3::new(max.x + padding, 0.0, max.z + padding),
-        )
-    }
-
-    fn edge_bounds(&self, edge: &Edge, kind: ChunkCacheKind) -> Option<(Vector3, Vector3)> {
-        let points = self.edge_points(edge);
-        if points.is_empty() {
-            return None;
-        }
-
-        let mut min_x = f32::MAX;
-        let mut max_x = f32::MIN;
-        let mut min_z = f32::MAX;
-        let mut max_z = f32::MIN;
-        for point in points {
-            min_x = min_x.min(point.x);
-            max_x = max_x.max(point.x);
-            min_z = min_z.min(point.z);
-            max_z = max_z.max(point.z);
-        }
-
-        if kind == ChunkCacheKind::Earthwork {
-            let padding = self.edge_earthwork_extent_m(edge);
-            min_x -= padding;
-            max_x += padding;
-            min_z -= padding;
-            max_z += padding;
-        }
-
-        Some((
-            Vector3::new(min_x, 0.0, min_z),
-            Vector3::new(max_x, 0.0, max_z),
-        ))
     }
 
     fn visual_node_piece_bounds(
@@ -5323,6 +5382,12 @@ impl RoadSurfaceSystem {
         chunks
     }
 
+    fn canonical_chunk_vec(mut chunks: Vec<SurfaceChunkKey>) -> Vec<SurfaceChunkKey> {
+        chunks.sort_unstable();
+        chunks.dedup();
+        chunks
+    }
+
     fn node_has_surface_edges(&self, graph: &RegionGraph, node_id: u32) -> bool {
         (node_id as usize) < graph.node_adjacency_count()
             && graph.node_adjacency(node_id).iter().any(|&edge_idx| {
@@ -5421,25 +5486,15 @@ impl RoadSurfaceSystem {
         }
         chunks
     }
-
-    fn edge_chunks(&self, edge: &Edge, kind: ChunkCacheKind) -> Vec<SurfaceChunkKey> {
-        if !Self::is_surface_edge(edge) {
-            return Vec::new();
-        }
-        let Some((min, max)) = self.edge_bounds(edge, kind) else {
-            return Vec::new();
-        };
-
-        self.bounds_to_chunk_keys(min, max)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         ChunkCacheKind, EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult,
-        RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
+        RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M,
         RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
+        SurfaceChunkKey,
     };
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -5766,7 +5821,7 @@ mod tests {
                                 sidewalk_centroid,
                             )
                             .is_none(),
-                            "sidewalk triangle centroid must not be owned by asphalt after overlay difference"
+                            "sidewalk triangle centroid must not be owned by asphalt after overlay difference; centroid={sidewalk_centroid:?} sidewalk_triangle={sidewalk_triangle:?} road_triangle={road_triangle:?}"
                         );
                     }
                 }
@@ -5891,7 +5946,7 @@ mod tests {
     }
 
     #[test]
-    fn mark_edge_dirty_tracks_edge_and_overlapping_chunks() {
+    fn mark_edge_dirty_tracks_edge_without_centerline_chunk_guess() {
         let mut graph = RegionGraph::new();
         let n0 = graph.add_node(Vector3::new(5.0, 0.0, 0.0), NodeType::Junction);
         let n1 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
@@ -5909,16 +5964,8 @@ mod tests {
         surface.mark_edge_dirty(&graph, edge_idx);
 
         assert!(surface.dirty_edges().contains(&edge_idx));
-        assert_eq!(surface.dirty_surface_chunks().len(), 3);
-        assert!(surface.dirty_surface_chunks().contains(&(0, 0)));
-        assert!(surface.dirty_surface_chunks().contains(&(1, 0)));
-        assert!(surface.dirty_surface_chunks().contains(&(2, 0)));
-        assert!(surface.dirty_terrain_chunks().len() > surface.dirty_surface_chunks().len());
-        assert!(
-            surface
-                .dirty_terrain_chunks()
-                .is_superset(surface.dirty_surface_chunks())
-        );
+        assert!(surface.dirty_surface_chunks().is_empty());
+        assert!(surface.dirty_terrain_chunks().is_empty());
     }
 
     #[test]
@@ -5958,12 +6005,10 @@ mod tests {
         assert!(!surface.dirty_nodes().contains(&far_b));
         assert!(surface.dirty_surface_chunks().contains(&(-1, -1)));
         assert!(surface.dirty_surface_chunks().contains(&(0, 0)));
-        assert!(
-            surface
-                .dirty_terrain_chunks()
-                .is_superset(surface.dirty_surface_chunks())
+        assert_eq!(
+            surface.dirty_surface_chunks(),
+            surface.dirty_terrain_chunks()
         );
-        assert!(surface.dirty_terrain_chunks().contains(&(0, 1)));
     }
 
     #[test]
@@ -6845,6 +6890,132 @@ mod tests {
     }
 
     #[test]
+    fn arbitrary_five_way_junction_keeps_visual_footprint_local() {
+        let mut graph = RegionGraph::new();
+        let center_pos = Vector3::new(2.668, 0.0, 10.799);
+        let center = graph.add_node(center_pos, NodeType::Junction);
+        for endpoint in [
+            Vector3::new(-58.540, 0.0, 6.220),
+            Vector3::new(115.507, 0.0, 19.240),
+            Vector3::new(96.186, 0.0, 60.070),
+            Vector3::new(35.647, 0.0, -130.899),
+            Vector3::new(-27.212, 0.0, 50.632),
+        ] {
+            let node = graph.add_node(endpoint, NodeType::Junction);
+            graph.add_edge(test_edge(
+                center,
+                node,
+                vec![center_pos, endpoint],
+                7.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        }
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+
+        let terrain = flat_terrain(256, 256);
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        let piece = surface
+            .compiled_visual_node_pieces()
+            .get(&center)
+            .expect("arbitrary five-way node must compile one bounded JunctionN piece");
+        assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+
+        let max_expected_radius = graph
+            .node_adjacency(center)
+            .iter()
+            .map(|&edge_idx| {
+                let edge = graph.edge(edge_idx);
+                RoadSurfaceSystem::visual_node_handoff_limit_m(edge)
+                    + RoadSurfaceSystem::visual_roadbed_half_width_m(edge)
+                    + 0.25
+            })
+            .fold(0.0_f32, f32::max);
+        for point in piece
+            .outer_boundary_loops
+            .iter()
+            .flat_map(|polygon| polygon.points_world.iter())
+        {
+            let radius = Vector2::new(point.x - center_pos.x, point.z - center_pos.z).length();
+            assert!(
+                radius <= max_expected_radius,
+                "visual JunctionN footprint must stay local to the bounded handoff; point={point:?} radius={radius:.3} max={max_expected_radius:.3}"
+            );
+        }
+        assert_material_triangle_centroids_do_not_overlap(piece);
+    }
+
+    #[test]
+    fn dirty_node_recompile_refreshes_incident_span_sections_for_new_junction() {
+        let mut graph = RegionGraph::new();
+        let left = graph.add_node(Vector3::new(-24.0, 0.0, 0.0), NodeType::Junction);
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let right = graph.add_node(Vector3::new(24.0, 0.0, 0.0), NodeType::Junction);
+        let left_edge = graph.add_edge(test_edge(
+            left,
+            center,
+            vec![Vector3::new(-24.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.add_edge(test_edge(
+            center,
+            right,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)],
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+
+        let terrain = flat_terrain(96, 96);
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+
+        let up = graph.add_node(Vector3::new(0.0, 0.0, 24.0), NodeType::Junction);
+        let up_edge = graph.add_edge(test_edge(
+            center,
+            up,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 24.0)],
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+
+        surface.mark_node_dirty(&graph, center);
+        surface.mark_node_dirty(&graph, up);
+        surface.mark_edge_dirty(&graph, up_edge);
+        surface.compile_dirty(&graph, &terrain);
+
+        let edge = graph.edge(left_edge);
+        let total_length: f32 = edge
+            .geometry
+            .windows(2)
+            .map(|pair| pair[0].distance_to(pair[1]))
+            .sum();
+        let expected_handoff_s = RoadSurfaceSystem::visual_end_handoff_s_m(edge, total_length);
+        let sections = surface.compiled_sections().get(&left_edge).unwrap();
+        assert!(
+            sections
+                .iter()
+                .any(|section| (section.s_m - expected_handoff_s).abs() <= SAMPLE_EPSILON_M),
+            "dirty node recompilation must refresh incident span sections at the new visual handoff; expected_s={expected_handoff_s:.3} sections={:?}",
+            sections.iter().map(|section| section.s_m).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn dirty_recompile_marks_chunks_for_expanded_arbitrary_node_piece() {
         let terrain = flat_terrain(192, 192);
         let mut graph = RegionGraph::new();
@@ -6909,6 +7080,86 @@ mod tests {
                 entry.node_ids.contains(&center),
                 "surface chunk {chunk:?} must include the expanded junction node piece"
             );
+        }
+    }
+
+    #[test]
+    fn dirty_recompile_removes_node_from_old_chunks_after_topology_shrink() {
+        let terrain = flat_terrain(192, 192);
+        let mut graph = RegionGraph::new();
+        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let west = graph.add_node(Vector3::new(-64.0, 0.0, 0.0), NodeType::Junction);
+        let east = graph.add_node(Vector3::new(64.0, 0.0, 0.0), NodeType::Junction);
+        let north = graph.add_node(Vector3::new(0.0, 0.0, 64.0), NodeType::Junction);
+        graph.add_edge(test_edge(
+            west,
+            center,
+            vec![Vector3::new(-64.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.add_edge(test_edge(
+            center,
+            east,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(64.0, 0.0, 0.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        let removed_edge = graph.add_edge(test_edge(
+            center,
+            north,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 64.0)],
+            10.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+
+        let mut surface = RoadSurfaceSystem::new(2.0);
+        surface.compile_dirty(&graph, &terrain);
+        let old_node_chunks = surface
+            .surface_node_chunks
+            .get(&center)
+            .expect("three-way node must own chunks before shrink")
+            .clone();
+        assert!(
+            old_node_chunks.len() > 1,
+            "test requires node coverage wide enough to prove stale chunk removal"
+        );
+
+        graph.edges[removed_edge].deleted = true;
+        graph.rebuild_adjacency_list();
+        graph.rebuild_intersection_clips();
+        surface.mark_edge_dirty(&graph, removed_edge);
+        surface.mark_node_dirty(&graph, center);
+        surface.compile_dirty(&graph, &terrain);
+
+        let new_node_chunks = surface
+            .surface_node_chunks
+            .get(&center)
+            .cloned()
+            .unwrap_or_default();
+        let removed_chunks: Vec<SurfaceChunkKey> = old_node_chunks
+            .into_iter()
+            .filter(|chunk| !new_node_chunks.contains(chunk))
+            .collect();
+        assert!(
+            !removed_chunks.is_empty(),
+            "topology shrink must remove at least one old node-owned chunk"
+        );
+        for chunk in removed_chunks {
+            if let Some(entry) = surface.surface_chunk_cache.get(&chunk) {
+                assert!(
+                    !entry.node_ids.contains(&center),
+                    "stale node contributor remained in removed chunk {chunk:?}"
+                );
+            }
         }
     }
 
@@ -7485,7 +7736,8 @@ mod tests {
     }
 
     #[test]
-    fn mark_edge_dirty_expands_terrain_chunks_for_outer_earthwork_margin() {
+    fn compile_dirty_derives_edge_chunks_from_compiled_piece_coverage() {
+        let terrain = flat_terrain(64, 64);
         let mut graph = RegionGraph::new();
         let n0 = graph.add_node(Vector3::new(5.0, 0.0, 0.0), NodeType::Junction);
         let n1 = graph.add_node(Vector3::new(25.0, 0.0, 0.0), NodeType::Junction);
@@ -7500,12 +7752,38 @@ mod tests {
         ));
 
         let mut surface = RoadSurfaceSystem::new(10.0);
-        surface.mark_edge_dirty(&graph, edge_idx);
+        surface.compile_dirty(&graph, &terrain);
 
-        assert!(surface.dirty_surface_chunks().contains(&(0, 0)));
-        assert!(!surface.dirty_surface_chunks().contains(&(0, 1)));
-        assert!(surface.dirty_terrain_chunks().contains(&(0, 1)));
-        assert!(surface.dirty_terrain_chunks().contains(&(0, -1)));
+        let surface_chunks = surface
+            .surface_span_chunks
+            .get(&edge_idx)
+            .expect("compiled span must own surface chunks")
+            .clone();
+        let terrain_chunks = surface
+            .earthwork_span_chunks
+            .get(&edge_idx)
+            .expect("compiled span must own terrain chunks")
+            .clone();
+        assert!(!surface_chunks.is_empty());
+        assert!(terrain_chunks.len() >= surface_chunks.len());
+
+        surface.mark_edge_dirty(&graph, edge_idx);
+        surface.compile_dirty(&graph, &terrain);
+
+        for chunk in surface_chunks {
+            let entry = surface
+                .surface_chunk_cache
+                .get(&chunk)
+                .unwrap_or_else(|| panic!("surface chunk {chunk:?} must be rebuilt"));
+            assert!(entry.edge_indices.contains(&edge_idx));
+        }
+        for chunk in terrain_chunks {
+            let entry = surface
+                .earthwork_chunk_cache
+                .get(&chunk)
+                .unwrap_or_else(|| panic!("terrain chunk {chunk:?} must be rebuilt"));
+            assert!(entry.edge_indices.contains(&edge_idx));
+        }
     }
 
     #[test]
