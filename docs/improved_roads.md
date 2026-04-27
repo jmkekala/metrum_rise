@@ -93,12 +93,13 @@ Live behavior:
   ownership through `i_overlay` before Spade CDT triangulation, but the current candidate source
   still contains paired adjacent-mouth strip construction that can emit incomplete or malformed
   candidates at arbitrary multi-arm angles
-- the next hardcut is to replace those paired strips with a corridor-union candidate model:
-  full-roadbed corridors define the node footprint, carriageway corridors define asphalt, and
-  sidewalk / curb ownership is always `footprint - asphalt`
-- visual edge-to-node handoff is bounded by the actual roadbed profile width plus a fixed local
-  padding; old angle-aware graph clips may remain routing / lane metadata, but they must not
-  inflate visual `Bend` or `JunctionN` footprints
+- the next hardcut is to replace those paired strips with a conflict-first corridor model:
+  carriageway corridors define asphalt ownership first, full-roadbed corridors define the owned
+  walking / shoulder footprint, and sidewalk / curb ownership is always the resolved
+  `footprint - asphalt` remainder
+- visual edge-to-node handoff must extend far enough to cover every deterministic material conflict
+  between incident road arms; shallow-angle roads therefore create a longer shared ownership region
+  instead of allowing independent sidewalk strips to cross asphalt before they reach the graph node
 - terrain clip input is the `i_overlay` union of all grounded `Standard` span and node footprints
   intersecting the patch query, not the raw per-piece loops; overlapping piece loops must be
   resolved before Spade sees terrain constraints
@@ -123,6 +124,8 @@ Not accepted as the final target:
   topology
 - paired adjacent-mouth strip candidates as the authoritative node footprint or sidewalk source
 - additional sliver cleanup as the primary answer to malformed node candidates
+- convex hull, concave hull, or corner-rounding output as the authoritative sidewalk ownership
+  source before asphalt / footprint ownership has already been resolved
 
 The old seam-strip / cell-triangle hybrid is retired from the live road-touched terrain path.
 
@@ -414,9 +417,10 @@ Required rule:
   polygon carrier
 - the `Bend` piece owns both carriageway and sidewalk continuation through the corner, so the
   runtime must not leave that continuation to overlapping edge strips or to terrain-side fill
-- the `Bend` piece uses the same corridor-union candidate model as every other node piece:
-  bounded full-roadbed corridors define the bend footprint, bounded carriageway corridors define
-  bend asphalt, and the remaining footprint becomes sidewalk / curb after boolean subtraction
+- the `Bend` piece uses the same conflict-first corridor candidate model as every other node
+  piece: conflict-bounded full-roadbed corridors define the bend footprint, conflict-bounded
+  carriageway corridors define bend asphalt, and the remaining footprint becomes sidewalk / curb
+  after boolean subtraction
 - `i_overlay` resolves those candidates into disjoint ownership regions before any bend triangles
   are emitted
 - Spade triangulates the resolved bend regions and preserves their constrained boundaries
@@ -434,7 +438,7 @@ Required rule:
 - `Terminal` owns its cap / closure as a one-mouth road-piece region problem
 - `JunctionN` owns its surface as an `n >= 3` road-piece region problem
 - `Terminal`, `Bend`, and `JunctionN` must use the same region pipeline:
-  - compile bounded mouth-derived corridor candidates
+  - compile conflict-bounded mouth-derived corridor candidates
   - resolve ownership with `i_overlay`
   - triangulate resolved regions with Spade CDT
   - export the resolved outer footprint to terrain seam generation
@@ -452,77 +456,113 @@ Required rule:
 - no sidewalk triangle may overlap any asphalt triangle, including acute-angle corners
 - no carriageway seam may appear between an incident `Span` throat and the node-owned continuation
 
-### 10. Mouths And Boolean Regions Are The General Connector Model
+### 10. Correct Sidewalk Ownership Is A Boolean Remainder
 
 The shipped roadbed runtime does not treat sidewalks as a symmetric visual halo around the road
-centerline.
+centerline, and it does not treat sidewalks as independent strips that are later hidden under
+asphalt.
 
-For every incident surface edge at one piece boundary:
-
-- compute a throat section at the deterministic handoff distance
-- compute that visual handoff distance from the edge's own roadbed half-width plus the fixed
-  visual handoff padding
-- clamp the visual handoff by the graph clip when the graph clip is smaller, but never let a large
-  angle-aware graph clip enlarge the visual node footprint
-- derive one canonical mouth profile from that throat section
-- preserve the ordered semantic profile stack through that mouth
-
-### 10A. Bounded Visual Handoffs Are The Span / Node Ownership Boundary
-
-Span corridors must hand off to node-owned geometry locally. Acute-angle material conflict is solved
-by `i_overlay`, not by pushing the handoff farther away until full-width sidewalks no longer touch.
-
-Required rule:
-
-- the visual handoff for an incident edge is:
+For every `Terminal`, `Bend`, and `JunctionN`, correctness is defined by this ownership order:
 
 ```text
-visual_handoff_m = min(graph_clip_m, roadbed_half_width_m + visual_handoff_padding_m)
+node_asphalt   = union(carriageway_corridors) intersect node_footprint
+node_sidewalk  = node_footprint - node_asphalt
+terrain        = terrain_patch - node_footprint
 ```
 
-- `roadbed_half_width_m` is derived from the edge profile:
-  - footpaths use half their authored width
-  - road edges use carriageway half-width plus curb / sidewalk width when pedestrians are allowed
-- `visual_handoff_padding_m` is one deterministic local profile padding value, not an angle case
-  table
-- graph clips are allowed to be smaller than the bounded visual handoff, but larger graph clips are
-  routing / lane metadata only and must not enlarge visible `Bend` or `JunctionN` pieces
-- near-zero-angle roads may cause sidewalk / curb regions to shrink, split, or disappear after
-  boolean ownership; the solution is local material ownership collapse, not an infinitely long
-  visual merge throat
-- this rule applies equally to:
-  - degree-2 bends
-  - T-junctions
-  - 4-way junctions
-  - `N > 4` junctions
-  - reversed edge direction and different edit order
+`node_sidewalk` means the non-road walking / curb / shoulder surface that currently renders through
+the sidewalk material. It is the only visible sidewalk source inside the node-owned conflict region.
 
-`i_overlay` then resolves the node-owned candidate regions after this handoff:
+Required rules:
 
-- asphalt is unioned first
-- sidewalk / curb candidates are subtracted by asphalt
-- sidewalk / curb regions may shrink, split, or disappear locally at acute angles
-- no final sidewalk triangle may overlap final asphalt
-- node-piece triangulation rejects deterministic sub-profile sliver triangles after boolean cleanup;
-  sliver rejection is a cleanup of CDT output, not a replacement for boolean ownership
+- asphalt owns first; sidewalks never reserve space that asphalt later has to dodge
+- sidewalks may shrink, split into islands, or collapse to nothing when asphalt leaves no legal
+  area
+- a missing sidewalk is valid only when the resolved `node_sidewalk` area is below the documented
+  minimum area threshold
+- no final sidewalk / curb / shoulder triangle may overlap final asphalt at any angle
+- no final sidewalk / curb / shoulder triangle may cross an asphalt boundary to connect two
+  sidewalk islands
+- no final asphalt triangle may be omitted merely to preserve sidewalk continuity
+- terrain is clipped by the same final `node_footprint`, not by a separate hull or render outline
+
+This rule applies to every node class:
+
+- `Terminal` is a one-mouth ownership problem plus a deterministic cap policy
+- `Bend` is a two-mouth ownership problem
+- `JunctionN` is an `n >= 3` ownership problem
+
+The node class changes only the number of incident mouths and cap policy. It does not change the
+material ownership algorithm.
+
+### 10A. Conflict Regions Replace Fixed Local Sidewalk Strips
+
+The span / node boundary is not allowed to be chosen only from a fixed local radius when incident
+road arms geometrically overlap before they reach the graph node.
+
+For every incident mouth:
+
+- derive one canonical side-aware mouth profile from the solved edge section
+- compute `roadbed_half_width_m` from the full visible footprint side, including sidewalk or
+  shoulder when present
+- compute `carriageway_half_width_m` from the asphalt band only
+- compute the local minimum handoff:
+
+```text
+local_handoff_m = roadbed_half_width_m + visual_handoff_padding_m
+```
+
+- compute pairwise conflict distances against every other incident mouth using the centerline angle
+  `theta` around the node:
+
+```text
+roadbed_vs_roadbed_m = (roadbed_half_width_a + roadbed_half_width_b) / sin(theta)
+roadbed_vs_asphalt_m = (roadbed_half_width_a + carriageway_half_width_b) / sin(theta)
+asphalt_vs_roadbed_m = (carriageway_half_width_a + roadbed_half_width_b) / sin(theta)
+```
+
+- ignore pairwise distances only when `theta` is deterministically classified as pass-through for
+  the same continuous edge corridor
+- if `sin(theta)` is below the documented angular epsilon and the mouths are not pass-through, the
+  independent-road geometry is unsolvable as separate visible corridors; the edit must be rejected,
+  merged, or normalized instead of dividing by an unstable value or emitting overlapping sidewalks
+- clamp every computed distance by the available edge segment before the next visual owner
+- choose the mouth handoff as the maximum of the local minimum and every valid pairwise material
+  conflict distance for that mouth
+
+The pairwise formula is not an aesthetic miter. It is a conflict detector: if two shallow-angle arms
+would cause a sidewalk or shoulder strip to cross another arm's asphalt before the local node, the
+shared node-owned region must start there.
+
+Required outcomes:
+
+- shallow-angle roads create a longer shared ownership region when their roadbeds genuinely
+  overlap before the graph node
+- that growth follows the overlapping arms and must not become one unjustified central bubble
+- if the required conflict region exceeds the available segment length, the edit cannot emit
+  independent legal road surfaces; the runtime must reject, merge, or normalize the geometry rather
+  than produce sidewalk-over-asphalt
+- graph clips may still provide routing / lane metadata, but visual ownership is driven by material
+  conflict distances and solved mouth profiles
+- the same graph built in a different edit order must produce the same canonical conflict regions
 
 Forbidden outcomes:
 
-- using an angle-aware miter / graph clip as the final visual node size
-- using one fixed visual clip that ignores the edge roadbed profile width
-- leaving span-owned material inside the node footprint without `i_overlay` ownership cleanup
+- independent span-owned sidewalk strips continuing into a region where they overlap node asphalt
+- one fixed node radius that ignores shallow-angle pre-node conflicts
+- one central fill polygon that leaves outer road-arm sidewalks unowned
+- using a convex hull, concave hull, or rounded outline to decide material ownership
 - using CDT as a material ownership solver
-- special casing only `15 deg`, `30 deg`, `60 deg`, or `90 deg`
+- special casing only `1 deg`, `15 deg`, `30 deg`, `60 deg`, `90 deg`, or any other named angle
 
 General connector rule:
 
-- `Terminal` receives exactly one mouth profile
-- `Bend` receives exactly two mouth profiles
-- `JunctionN` receives three or more mouth profiles
-- every mouth emits bounded corridor candidates in node-local space:
-  - a full-roadbed corridor from the mouth outer-left / outer-right boundaries toward the node
-  - a carriageway corridor from the mouth asphalt-left / asphalt-right boundaries toward the node
-  - optional profile sub-corridors for later curb / sidewalk material subdivision
+- every mouth emits conflict-bounded corridor candidates in node-local space:
+  - a full-roadbed corridor from the mouth outer-left / outer-right boundaries through the conflict
+    region
+  - a carriageway corridor from the mouth asphalt-left / asphalt-right boundaries through the
+    conflict region
+  - optional profile sub-corridors for later curb / sidewalk material detail
 - `JunctionN` sorts mouths by centerline angle around the node with a stable tie-breaker only for
   deterministic ordering, debug output, and side-aware marking anchors
 - adjacent-mouth side strips are retired as candidate geometry; they are not allowed to define the
@@ -533,13 +573,14 @@ General connector rule:
 - the runtime must not keep overlapping road / sidewalk candidate polygons after the boolean
   ownership stage
 
-Sidewalk ownership remains explicit per side:
+Sidewalk ownership remains explicit per side before boolean resolution:
 
-- left and right sidewalk bands are separate authored / derived bands
+- left and right sidewalk bands are separate authored / derived bands at the mouth
 - footpath connections attach to one side or the other, not to an abstract road-center sidewalk
+- after boolean resolution, those side labels may map to split or collapsed regions
 - crosswalk and frontage-side semantics must stay aligned with [`entrance_and_exit.md`](entrance_and_exit.md)
-- pedestrian crosswalk mouths must use the same deterministic bounded visual handoff / mouth
-  positions as the visible road surface; they must not invent a separate shallower node boundary
+- pedestrian crosswalk mouths must use the same deterministic conflict-bounded mouth positions as
+  the visible road surface; they must not invent a separate shallower node boundary
 
 This document does not define the pedestrian-routing rules, but it does require the road surface
 representation to preserve side-aware geometry so those rules can use it later.
@@ -971,12 +1012,13 @@ Road-piece CDT is now part of the accepted visual carrier for node pieces:
 - invalid Spade constraints are counted as geometry bugs; the live node-piece path must not fall
   back to nearest-material classification, centroid voting, render order, or paired strip sectors
 
-### Corridor-Union Node Candidate Hardcut
+### Conflict-First Node Candidate Hardcut
 
 The next node-piece hardcut replaces the paired adjacent-mouth strip candidate model. The old strip
 model can still produce malformed local wedges: one missing asphalt wedge lets sidewalk own the
 junction center, and one missing footprint wedge lets terrain or background appear inside the
-junction. More cleanup after strip generation is not accepted as the final fix.
+junction. More cleanup after strip generation is not accepted as the final fix, and neither is a
+smaller central core that ignores overlapping road arms outside the core.
 
 Scope:
 
@@ -1017,8 +1059,11 @@ Required node-piece input:
 - for each mouth:
   - outward centerline direction from the node
   - inward direction toward the node
-  - bounded visual handoff distance
-  - throat section sampled at the bounded handoff
+  - local handoff distance
+  - conflict handoff distance
+  - throat section sampled at the final conflict handoff
+  - roadbed half-width
+  - carriageway half-width
   - full-roadbed left / right outer boundary points
   - carriageway left / right boundary points
   - optional curb / sidewalk profile boundary points for later material subdivision
@@ -1029,19 +1074,22 @@ Required node-piece input:
 Candidate generation:
 
 1. Convert each mouth into node-local XZ coordinates with stable quantization.
-2. For every mouth, build one full-roadbed corridor polygon from the full mouth segment toward the
-   node. The corridor depth is bounded by the mouth's visual handoff and local roadbed width; it
-   must not use large angle-aware graph clips.
-3. For every mouth, build one carriageway corridor polygon from the mouth carriageway segment
-   toward the node with the same bounded depth rule.
-4. For `Terminal`, add a deterministic cap candidate at the dead-end side of the single mouth.
-5. Add a deterministic asphalt kernel at the node center only when needed to close sub-centimeter
+2. For every mouth pair, compute the deterministic material-conflict distance described in
+   section 10A. This distance is part of visible ownership, not only routing metadata.
+3. For every mouth, build one full-roadbed corridor polygon from the full mouth segment through the
+   final conflict handoff region. This polygon defines where road-owned walking / shoulder surface
+   can exist, but it does not decide that the area will remain sidewalk.
+4. For every mouth, build one carriageway corridor polygon from the mouth carriageway segment
+   through the same conflict handoff region. This polygon defines asphalt ownership before any
+   sidewalk region is accepted.
+5. For `Terminal`, add a deterministic cap candidate at the dead-end side of the single mouth.
+6. Add a deterministic asphalt kernel at the node center only when needed to close sub-centimeter
    numeric gaps between carriageway corridors. The kernel radius is bounded by the smallest
    incident carriageway half-width and must be clipped to `node_footprint`; it must not create a
    roundabout-sized node surface.
-6. Optional curb / sidewalk subdivision candidates may be produced for material detail, but they
+7. Optional curb / sidewalk subdivision candidates may be produced for material detail, but they
    are clipped by `node_non_road` and cannot enlarge the footprint or override asphalt ownership.
-7. Crosswalk candidates are anchors only. They are generated after asphalt / sidewalk ownership is
+8. Crosswalk candidates are anchors only. They are generated after asphalt / sidewalk ownership is
    resolved and must not create topology holes.
 
 Forbidden candidate generation:
@@ -1051,6 +1099,8 @@ Forbidden candidate generation:
 - a global annulus between one outer loop and one inner loop
 - a global angle-sorted polygon that pretends to know final asphalt / sidewalk ownership before
   boolean cleanup
+- a center-core polygon that fixes the node center while leaving pre-node arm overlaps to
+  independent span strips
 - per-angle branches for `15 deg`, `30 deg`, `60 deg`, `90 deg`, or any other named angle
 - discarding acute-angle sidewalk candidates before boolean ownership merely because they look
   awkward
@@ -1133,10 +1183,10 @@ Legacy removal target:
   already-emitted render triangles
 - remove any remaining hint-only, nearest-material, centroid-vote, render-order, or CDT-material
   fallback from node-piece material ownership
-- keep mouth/profile calculation, bounded visual handoffs, grade/crossfall sampling, chunk
+- keep mouth/profile calculation, conflict handoffs, grade/crossfall sampling, chunk
   invalidation, `i_overlay`, and Spade CDT triangulation because those remain the target pipeline
 
-Acceptance tests for the corridor-union node hardcut:
+Acceptance tests for the conflict-first node hardcut:
 
 - terminal with sidewalks emits asphalt, non-road, and one footprint without overlap
 - 2-arm bend at 1, 15, 30, 60, 90, 120, and 150 degrees emits no sidewalk-over-asphalt overlap and
@@ -1147,7 +1197,8 @@ Acceptance tests for the corridor-union node hardcut:
 - 4-way junction with one acute arm emits split or collapsed non-road only where boolean area
   requires it
 - `N > 4` junction emits deterministic ownership for stable mouth ordering
-- `N > 4` junction with arbitrary non-cardinal angles does not grow a massive node footprint
+- `N > 4` junction with arbitrary non-cardinal angles grows only where pairwise material-conflict
+  distances require ownership, with no unjustified center bubble
 - reversed edge direction and equivalent edit order produce the same canonical regions
 - terrain seam footprint equals the node-piece resolved outer footprint exactly
 - crosswalk anchors stay inside resolved asphalt and never create holes
@@ -1158,6 +1209,19 @@ Acceptance tests for the corridor-union node hardcut:
 Retaining walls, richer structural tie-in materials, and building-pad engineered-ground clients are
 later extensions of the shared earthworks system in [`earthworks.md`](earthworks.md). They do not
 block the Spade terrain-patch hardcut.
+
+Rounded sidewalks and smoother junction corners are later visual-quality work. They must operate
+only on already-resolved legal regions:
+
+- corner fillets, smoothing, or concave-hull simplification may reshape the outer sidewalk boundary
+  only after `node_asphalt`, `node_sidewalk`, and `node_footprint` are disjoint and valid
+- rounding must preserve every asphalt / sidewalk boundary produced by boolean ownership unless it
+  reruns the same ownership solve and proves the rounded result is still legal
+- no smoothing pass may reconnect sidewalk islands across asphalt
+- no smoothing pass may enlarge `node_sidewalk` into `node_asphalt`
+- convex hulls are not accepted as a sidewalk model because they create unjustified plazas
+- concave hulls are allowed only as a later boundary-beautification helper, never as the source of
+  material ownership
 
 ## Legacy Retirement Rules
 
@@ -1210,7 +1274,8 @@ Must cover:
 - 4-way junction with one acute arm and deterministic sidewalk ownership
 - `N > 4` multi-arm node center owned by carriageway
 - `N > 4` multi-arm node with acute neighboring arms and no sidewalk-over-asphalt overlap
-- `N > 4` multi-arm node with arbitrary angles and no massive visual footprint growth
+- `N > 4` multi-arm node with arbitrary angles and no unjustified center-bubble growth beyond
+  pairwise material-conflict ownership
 - `N > 4` multi-arm node with no terrain/background hole inside the resolved footprint
 - car-only road with no sidewalk bands
 - footpath joining only one sidewalk side
