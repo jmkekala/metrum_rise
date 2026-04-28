@@ -40,6 +40,7 @@ const PREVIEW_MAX_GRADE: f32 = 0.41;
 const PREVIEW_CLEARANCE_M: f32 = 1.0;
 const PREVIEW_MESH_LIFT_M: f32 = 0.05;
 const VISUAL_NODE_HANDOFF_PADDING_M: f32 = 1.0;
+const BEND_JOIN_ARC_SAMPLE_STEP_M: f32 = 0.75;
 const EARTHWORK_PAVEMENT_DEPTH_M: f32 = 0.04;
 const EARTHWORK_MIN_MARGIN_M: f32 = 4.0;
 const EARTHWORK_MAX_MARGIN_M: f32 = 18.0;
@@ -2810,6 +2811,10 @@ impl RoadSurfaceSystem {
         node_pos: Vector3,
         mouths: &[OrderedIncidentPieceMouth],
     ) -> Option<NodeCorridorCandidates> {
+        if mouths.len() == 2 {
+            return Self::build_bend_corridor_candidates(node_pos, mouths);
+        }
+
         let mut road_candidate_polygons = Vec::new();
         let mut non_road_candidate_polygons = Vec::new();
 
@@ -2845,6 +2850,77 @@ impl RoadSurfaceSystem {
         )
     }
 
+    fn build_bend_corridor_candidates(
+        node_pos: Vector3,
+        mouths: &[OrderedIncidentPieceMouth],
+    ) -> Option<NodeCorridorCandidates> {
+        let Some((start_index, end_index)) = Self::bend_join_mouth_order(mouths) else {
+            return None;
+        };
+        let start_mouth = &mouths[start_index];
+        let end_mouth = &mouths[end_index];
+        let mut road_candidate_polygons = Vec::new();
+        let mut non_road_candidate_polygons = Vec::new();
+
+        // Keep each bend corridor/join as a simple overlay candidate; merging them into one loop
+        // can make the two throat caps cross at the node on tight bends.
+        for mouth in [start_mouth, end_mouth] {
+            if let Some((outer_a, outer_b)) = Self::mouth_full_roadbed_segment(&mouth.profile) {
+                if let Some(polygon) = Self::build_mouth_corridor_polygon(
+                    node_pos,
+                    mouth.direction_xz,
+                    outer_a,
+                    outer_b,
+                )
+                {
+                    non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
+                }
+            }
+
+            if let Some((carriageway_a, carriageway_b)) =
+                Self::mouth_carriageway_segment(&mouth.profile)
+            {
+                if let Some(polygon) = Self::build_mouth_corridor_polygon(
+                    node_pos,
+                    mouth.direction_xz,
+                    carriageway_a,
+                    carriageway_b,
+                ) {
+                    road_candidate_polygons.push(polygon);
+                }
+            }
+        }
+
+        for left_side in [true, false] {
+            if let Some(polygon) = Self::build_bend_local_side_join_polygon(
+                node_pos,
+                start_mouth,
+                end_mouth,
+                Self::mouth_full_roadbed_segment,
+                left_side,
+            ) {
+                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
+            }
+
+            if let Some(polygon) = Self::build_bend_local_side_join_polygon(
+                node_pos,
+                start_mouth,
+                end_mouth,
+                Self::mouth_carriageway_segment,
+                left_side,
+            ) {
+                road_candidate_polygons.push(polygon);
+            }
+        }
+
+        (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
+            NodeCorridorCandidates {
+                road_candidate_polygons,
+                non_road_candidate_polygons,
+            },
+        )
+    }
+
     fn mouth_full_roadbed_segment(profile: &IncidentMouthProfile) -> Option<(Vector3, Vector3)> {
         Some((
             *profile.boundary_points_world.first()?,
@@ -2867,6 +2943,191 @@ impl RoadSurfaceSystem {
             *profile.boundary_points_world.get(first_carriageway)?,
             *profile.boundary_points_world.get(last_carriageway + 1)?,
         ))
+    }
+
+    fn bend_join_mouth_order(mouths: &[OrderedIncidentPieceMouth]) -> Option<(usize, usize)> {
+        if mouths.len() != 2 {
+            return None;
+        }
+        let angle_a = mouths[0].direction_angle_ccw;
+        let angle_b = mouths[1].direction_angle_ccw;
+        let diff_ab = (angle_b - angle_a).rem_euclid(std::f32::consts::TAU);
+        if diff_ab <= SAMPLE_EPSILON_M {
+            return None;
+        }
+        if diff_ab <= std::f32::consts::PI {
+            Some((0, 1))
+        } else {
+            Some((1, 0))
+        }
+    }
+
+    fn build_bend_local_side_join_polygon(
+        node_pos: Vector3,
+        start_mouth: &OrderedIncidentPieceMouth,
+        end_mouth: &OrderedIncidentPieceMouth,
+        segment_fn: fn(&IncidentMouthProfile) -> Option<(Vector3, Vector3)>,
+        left_side: bool,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        let (start_a, start_b) = segment_fn(&start_mouth.profile)?;
+        let (end_a, end_b) = segment_fn(&end_mouth.profile)?;
+        let start_travel = -start_mouth.direction_xz;
+        let end_travel = end_mouth.direction_xz;
+        if start_travel.length_squared() <= SAMPLE_EPSILON_M
+            || end_travel.length_squared() <= SAMPLE_EPSILON_M
+        {
+            return None;
+        }
+        let start_travel = start_travel.normalized();
+        let end_travel = end_travel.normalized();
+        let turn = Self::cross_xz(start_travel, end_travel);
+        if turn.abs() <= SAMPLE_EPSILON_M {
+            return None;
+        }
+
+        let (start_left, start_right) =
+            Self::segment_left_right_for_travel(start_travel, start_a, start_b)?;
+        let (end_left, end_right) =
+            Self::segment_left_right_for_travel(end_travel, end_a, end_b)?;
+        let start_center = Self::midpoint_world(start_left, start_right);
+        let end_center = Self::midpoint_world(end_left, end_right);
+        let (start_side, end_side) = if left_side {
+            (start_left, end_left)
+        } else {
+            (start_right, end_right)
+        };
+        let start_node =
+            Self::bend_node_side_point(node_pos, start_travel, start_center, start_side, left_side);
+        let end_node =
+            Self::bend_node_side_point(node_pos, end_travel, end_center, end_side, left_side);
+        let ccw = Self::bend_short_arc_is_ccw(node_pos, start_node, end_node)?;
+        let center_height = (start_node.y + end_node.y) * 0.5;
+        let mut points_world = vec![
+            Vector3::new(node_pos.x, center_height, node_pos.z),
+            start_node,
+        ];
+        Self::append_bend_arc_points(&mut points_world, node_pos, start_node, end_node, ccw);
+        Self::make_visual_polygon(points_world)
+    }
+
+    fn bend_short_arc_is_ccw(node_pos: Vector3, from: Vector3, to: Vector3) -> Option<bool> {
+        let from_vector = Vector2::new(from.x - node_pos.x, from.z - node_pos.z);
+        let to_vector = Vector2::new(to.x - node_pos.x, to.z - node_pos.z);
+        if from_vector.length_squared() <= SAMPLE_EPSILON_M
+            || to_vector.length_squared() <= SAMPLE_EPSILON_M
+        {
+            return None;
+        }
+        let from_angle = Self::normalized_angle_ccw(from_vector);
+        let to_angle = Self::normalized_angle_ccw(to_vector);
+        let ccw_span = (to_angle - from_angle).rem_euclid(std::f32::consts::TAU);
+        Some(ccw_span <= std::f32::consts::PI)
+    }
+
+    fn segment_left_right_for_travel(
+        travel_xz: Vector2,
+        a: Vector3,
+        b: Vector3,
+    ) -> Option<(Vector3, Vector3)> {
+        if travel_xz.length_squared() <= SAMPLE_EPSILON_M {
+            return None;
+        }
+        let center = Vector2::new((a.x + b.x) * 0.5, (a.z + b.z) * 0.5);
+        let cross_a = Self::cross_xz(travel_xz, Vector2::new(a.x, a.z) - center);
+        let cross_b = Self::cross_xz(travel_xz, Vector2::new(b.x, b.z) - center);
+        if cross_a >= cross_b {
+            Some((a, b))
+        } else {
+            Some((b, a))
+        }
+    }
+
+    fn bend_node_side_point(
+        node_pos: Vector3,
+        travel_xz: Vector2,
+        segment_center: Vector3,
+        side_point: Vector3,
+        left_side: bool,
+    ) -> Vector3 {
+        let left_normal = Self::left_normal_xz(travel_xz);
+        let side_normal = if left_side { left_normal } else { -left_normal };
+        let side_width = Vector2::new(
+            side_point.x - segment_center.x,
+            side_point.z - segment_center.z,
+        )
+        .length();
+        Vector3::new(
+            node_pos.x + side_normal.x * side_width,
+            side_point.y,
+            node_pos.z + side_normal.y * side_width,
+        )
+    }
+
+    fn append_bend_arc_points(
+        points_world: &mut Vec<Vector3>,
+        node_pos: Vector3,
+        from: Vector3,
+        to: Vector3,
+        ccw: bool,
+    ) {
+        let from_vector = Vector2::new(from.x - node_pos.x, from.z - node_pos.z);
+        let to_vector = Vector2::new(to.x - node_pos.x, to.z - node_pos.z);
+        let from_radius = from_vector.length();
+        let to_radius = to_vector.length();
+        if from_radius <= SAMPLE_EPSILON_M || to_radius <= SAMPLE_EPSILON_M {
+            return;
+        }
+        if points_world.last().is_none_or(|point| {
+            (*point - from).length_squared() > SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+        }) {
+            points_world.push(from);
+        }
+        let from_angle = Self::normalized_angle_ccw(from_vector);
+        let to_angle = Self::normalized_angle_ccw(to_vector);
+        let angle_span = if ccw {
+            (to_angle - from_angle).rem_euclid(std::f32::consts::TAU)
+        } else {
+            (from_angle - to_angle).rem_euclid(std::f32::consts::TAU)
+        };
+        if angle_span <= SAMPLE_EPSILON_M || angle_span > std::f32::consts::PI {
+            points_world.push(to);
+            return;
+        }
+        let max_radius = from_radius.max(to_radius);
+        let segment_count = ((angle_span * max_radius) / BEND_JOIN_ARC_SAMPLE_STEP_M)
+            .ceil()
+            .clamp(2.0, 96.0) as usize;
+        for index in 1..=segment_count {
+            let t = index as f32 / segment_count as f32;
+            if index == segment_count {
+                points_world.push(to);
+                continue;
+            }
+            let angle = if ccw {
+                from_angle + angle_span * t
+            } else {
+                from_angle - angle_span * t
+            };
+            let radius = from_radius + (to_radius - from_radius) * t;
+            let height = from.y + (to.y - from.y) * t;
+            points_world.push(Vector3::new(
+                node_pos.x + angle.cos() * radius,
+                height,
+                node_pos.z + angle.sin() * radius,
+            ));
+        }
+    }
+
+    fn midpoint_world(a: Vector3, b: Vector3) -> Vector3 {
+        Vector3::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5)
+    }
+
+    fn left_normal_xz(direction_xz: Vector2) -> Vector2 {
+        Vector2::new(-direction_xz.y, direction_xz.x)
+    }
+
+    fn cross_xz(a: Vector2, b: Vector2) -> f32 {
+        a.x * b.y - a.y * b.x
     }
 
     fn build_mouth_corridor_polygon(
@@ -5419,6 +5680,14 @@ mod tests {
         )
     }
 
+    fn point_inside_visual_polygons(polygons: &[RoadSurfaceVisualPolygon], point: Vector2) -> bool {
+        polygons.iter().any(|polygon| {
+            polygon.triangles_world.iter().any(|&triangle| {
+                RoadSurfaceSystem::triangle_barycentric_weights_xz(triangle, point).is_some()
+            })
+        })
+    }
+
     fn assert_material_triangle_centroids_do_not_overlap(piece: &RoadSurfaceVisualNodePiece) {
         for sidewalk_polygon in &piece.sidewalk_surface_polygons {
             for &sidewalk_triangle in &sidewalk_polygon.triangles_world {
@@ -5842,6 +6111,7 @@ mod tests {
             TransitType::Road,
             TransitFlags::CAR | TransitFlags::FOOT,
         ));
+        bend_graph.rebuild_intersection_clips();
         let mut bend_surface = RoadSurfaceSystem::new(16.0);
         bend_surface.compile_dirty(&bend_graph, &terrain);
         let bend_piece = bend_surface
@@ -5869,6 +6139,24 @@ mod tests {
                 .sidewalk_surface_polygons
                 .iter()
                 .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
+        assert!(
+            point_inside_visual_polygons(&bend_piece.outer_boundary_loops, Vector2::new(3.0, 3.0)),
+            "bend footprint must close the local round join between the two incident roadbeds"
+        );
+        assert!(
+            point_inside_visual_polygons(
+                &bend_piece.road_surface_polygons,
+                Vector2::new(2.25, 2.25)
+            ),
+            "bend asphalt must close its own local join instead of leaving a road-surface gap"
+        );
+        assert!(
+            bend_piece
+                .outer_boundary_loops
+                .iter()
+                .any(|polygon| polygon.points_world.len() >= 12),
+            "bend footprint should retain deterministic arc vertices instead of collapsing to only straight corridor corners"
         );
         assert!(!bend_piece.earthwork_surface_polygons.is_empty());
         assert!(!bend_piece.earthwork_outer_boundary_loops.is_empty());

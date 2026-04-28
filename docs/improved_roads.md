@@ -492,6 +492,35 @@ This rule applies to every node class:
 The node class changes only the number of incident mouths and cap policy. It does not change the
 material ownership algorithm.
 
+#### Bend Corridor And Side-Join Fill
+
+A two-mouth `Bend` is an explicit two-arm ownership problem. It is not a single center sector,
+single self-crossing stroke, hull, or bubble. The bend owns deterministic candidates built from the
+actual clipped throat boundary segments, plus local side joins around the graph node:
+
+- order the two mouths by the smaller angular turn from start mouth to end mouth
+- build one full-roadbed mouth corridor from each throat segment to its node-side segment
+- build one carriageway mouth corridor from each carriageway throat segment to its node-side
+  segment
+- classify each throat segment into left and right endpoints relative to its local travel
+  direction; start travel is throat-to-node, end travel is node-to-throat
+- build one local left-side join between the two left node-side offsets
+- build one local right-side join between the two right node-side offsets
+- side joins are sampled as the shorter local arc around the graph node using only the real side
+  offset radius and interpolated heights; they must not use the throat distance as radius
+- final bend asphalt is the `i_overlay` union of carriageway corridors and carriageway side joins
+- final bend sidewalk / curb / shoulder is `full_roadbed_candidates - carriageway_candidates`
+- no single bend candidate may contain crossing throat caps; if two cap segments would cross, they
+  must remain separate overlay candidates
+- a bend with sidewalks must not expose terrain or world background between the two incident
+  roadbeds
+- the bend must not generate any sidewalk triangle on top of asphalt, even when the angle is acute
+  or obtuse
+
+This is intentionally narrower than using a hull. The bend does not decide arbitrary `JunctionN`
+ownership; it only closes the local two-arm turn with the same material ordering as the rest of the
+road surface system.
+
 ### 10A. Conflict Regions Replace Fixed Local Sidewalk Strips
 
 The span / node boundary is not allowed to be chosen only from a fixed local radius when incident
