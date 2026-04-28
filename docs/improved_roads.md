@@ -492,6 +492,27 @@ This rule applies to every node class:
 The node class changes only the number of incident mouths and cap policy. It does not change the
 material ownership algorithm.
 
+#### Node Band Height Ownership
+
+Node surfaces must preserve the same physical band heights as span surfaces. A node must not derive
+sidewalk / curb height from one full-roadbed polygon, because that flattens the curb step and makes
+node sidewalks render lower than span sidewalks.
+
+- every incident mouth contributes deterministic footprint / ownership candidates and separate
+  height candidates
+- final non-road overlay contours must reinsert solved band-boundary guide points that lie on their
+  boundary; otherwise overlay simplification can erase the curb-top ridge at the mouth
+- `Carriageway` candidates are asphalt-owned footprint and height candidates
+- full-roadbed candidates are non-road ownership candidates before asphalt subtraction; they are
+  not sidewalk / curb / shoulder height sources
+- `Sidewalk`, `CurbOrShoulder`, and `Footpath` band candidates are non-road height candidates
+- final asphalt height is sampled only from asphalt-owned band candidates
+- final sidewalk / curb / shoulder height is sampled only from non-road-owned band candidates
+- outer footprint height may still sample from the combined candidate set because it is a terrain
+  clipping/debug boundary, not a rendered material seam
+- no rendered node sidewalk may fall back to asphalt height or full-roadbed interpolation at the
+  road/sidewalk boundary
+
 #### Bend Corridor And Side-Join Fill
 
 A two-mouth `Bend` is an explicit two-arm ownership problem. It is not a single center sector,
@@ -499,17 +520,20 @@ single self-crossing stroke, hull, or bubble. The bend owns deterministic candid
 actual clipped throat boundary segments, plus local side joins around the graph node:
 
 - order the two mouths by the smaller angular turn from start mouth to end mouth
-- build one full-roadbed mouth corridor from each throat segment to its node-side segment
+- build one full-roadbed mouth corridor from each throat segment to its node-side segment as the
+  non-road ownership carrier
 - build one carriageway mouth corridor from each carriageway throat segment to its node-side
-  segment
+  segment as the asphalt ownership carrier
+- build non-road height candidates from the solved curb / shoulder / sidewalk / footpath bands
 - classify each throat segment into left and right endpoints relative to its local travel
   direction; start travel is throat-to-node, end travel is node-to-throat
-- build one local left-side join between the two left node-side offsets
-- build one local right-side join between the two right node-side offsets
+- build local full-roadbed side joins and local carriageway side joins for ownership
+- build local non-road band joins for height sampling
 - side joins are sampled as the shorter local arc around the graph node using only the real side
   offset radius and interpolated heights; they must not use the throat distance as radius
 - final bend asphalt is the `i_overlay` union of carriageway corridors and carriageway side joins
-- final bend sidewalk / curb / shoulder is `full_roadbed_candidates - carriageway_candidates`
+- final bend sidewalk / curb / shoulder shape is `full_roadbed_candidates - carriageway_candidates`
+  and its height is sampled from non-road band candidates
 - no single bend candidate may contain crossing throat caps; if two cap segments would cross, they
   must remain separate overlay candidates
 - a bend with sidewalks must not expose terrain or world background between the two incident

@@ -290,6 +290,7 @@ struct OrderedIncidentPieceMouth {
 struct NodeCorridorCandidates {
     road_candidate_polygons: Vec<RoadSurfaceVisualPolygon>,
     non_road_candidate_polygons: Vec<NodeNonRoadCandidatePolygon>,
+    non_road_height_candidate_polygons: Vec<RoadSurfaceVisualPolygon>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2048,6 +2049,7 @@ impl RoadSurfaceSystem {
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
             &node_candidates.road_candidate_polygons,
             &node_candidates.non_road_candidate_polygons,
+            &node_candidates.non_road_height_candidate_polygons,
         )?;
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
@@ -2086,6 +2088,7 @@ impl RoadSurfaceSystem {
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
             &node_candidates.road_candidate_polygons,
             &node_candidates.non_road_candidate_polygons,
+            &node_candidates.non_road_height_candidate_polygons,
         )?;
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
@@ -2124,6 +2127,7 @@ impl RoadSurfaceSystem {
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
             &node_candidates.road_candidate_polygons,
             &node_candidates.non_road_candidate_polygons,
+            &node_candidates.non_road_height_candidate_polygons,
         )?;
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
@@ -2172,6 +2176,7 @@ impl RoadSurfaceSystem {
     fn resolve_node_surface_regions_with_overlay(
         road_candidates: &[RoadSurfaceVisualPolygon],
         non_road_candidates: &[NodeNonRoadCandidatePolygon],
+        non_road_height_candidates: &[RoadSurfaceVisualPolygon],
     ) -> Option<NodeSurfaceRegionResult> {
         let mut height_candidates = Vec::with_capacity(
             road_candidates
@@ -2198,6 +2203,12 @@ impl RoadSurfaceSystem {
         } else {
             Self::overlay_binary_shapes(&footprint_shapes, &road_shapes, OverlayRule::Difference)?
         };
+        let non_road_guide_points =
+            Self::overlay_points_from_polygons(non_road_height_candidates);
+        Self::insert_overlay_guide_points_into_shapes(
+            &mut non_road_shapes,
+            &non_road_guide_points,
+        );
 
         Self::sort_overlay_shapes(&mut road_shapes);
         Self::sort_overlay_shapes(&mut non_road_shapes);
@@ -2205,8 +2216,10 @@ impl RoadSurfaceSystem {
 
         let mut road_surface_polygons =
             Self::visual_polygons_from_overlay_shapes(&road_shapes, road_candidates);
-        let mut sidewalk_surface_polygons =
-            Self::visual_polygons_from_overlay_shapes(&non_road_shapes, &height_candidates);
+        let mut sidewalk_surface_polygons = Self::visual_polygons_from_overlay_shapes(
+            &non_road_shapes,
+            non_road_height_candidates,
+        );
         let mut outer_boundary_loops = Self::outer_boundary_polygons_from_overlay_shapes(
             &footprint_shapes,
             &height_candidates,
@@ -2242,13 +2255,23 @@ impl RoadSurfaceSystem {
         contours
     }
 
+    fn overlay_points_from_polygons(
+        polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Vec<NodeOverlayPoint> {
+        let mut points = polygons
+            .iter()
+            .flat_map(|polygon| polygon.points_world.iter())
+            .map(|point| Self::overlay_point_from_world_point(*point))
+            .collect::<Vec<_>>();
+        points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+        points.dedup();
+        points
+    }
+
     fn overlay_contour_from_world_points(points_world: &[Vector3]) -> NodeOverlayContour {
         let mut contour = Vec::with_capacity(points_world.len());
         for point in points_world {
-            let overlay_point = [
-                (point.x * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
-                (point.z * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
-            ];
+            let overlay_point = Self::overlay_point_from_world_point(*point);
             if contour
                 .last()
                 .is_none_or(|last: &NodeOverlayPoint| *last != overlay_point)
@@ -2260,6 +2283,79 @@ impl RoadSurfaceSystem {
             contour.pop();
         }
         contour
+    }
+
+    fn overlay_point_from_world_point(point: Vector3) -> NodeOverlayPoint {
+        [
+            (point.x * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
+            (point.z * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
+        ]
+    }
+
+    fn insert_overlay_guide_points_into_shapes(
+        shapes: &mut NodeOverlayShapes,
+        guide_points: &[NodeOverlayPoint],
+    ) {
+        if guide_points.is_empty() {
+            return;
+        }
+        for shape in shapes {
+            for contour in shape {
+                *contour = Self::insert_overlay_guide_points_into_contour(contour, guide_points);
+            }
+        }
+    }
+
+    fn insert_overlay_guide_points_into_contour(
+        contour: &[NodeOverlayPoint],
+        guide_points: &[NodeOverlayPoint],
+    ) -> NodeOverlayContour {
+        if contour.len() < 2 {
+            return contour.to_vec();
+        }
+
+        let mut enriched = Vec::with_capacity(contour.len());
+        let tolerance_m = 2.0 / NODE_OVERLAY_SCALE;
+        for index in 0..contour.len() {
+            let current = contour[index];
+            let next = contour[(index + 1) % contour.len()];
+            enriched.push(current);
+
+            let segment_x = next[0] - current[0];
+            let segment_z = next[1] - current[1];
+            let length_squared = segment_x * segment_x + segment_z * segment_z;
+            if length_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+                continue;
+            }
+
+            let mut edge_points = Vec::new();
+            for point in guide_points {
+                if *point == current || *point == next {
+                    continue;
+                }
+                let rel_x = point[0] - current[0];
+                let rel_z = point[1] - current[1];
+                let t = (rel_x * segment_x + rel_z * segment_z) / length_squared;
+                if t <= 0.0 || t >= 1.0 {
+                    continue;
+                }
+                let cross = rel_x * segment_z - rel_z * segment_x;
+                let distance = cross.abs() / length_squared.sqrt();
+                if distance <= tolerance_m {
+                    edge_points.push((t, *point));
+                }
+            }
+            edge_points.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, point) in edge_points {
+                if enriched.last().is_none_or(|last| *last != point) {
+                    enriched.push(point);
+                }
+            }
+        }
+        if enriched.len() >= 2 && enriched.first() == enriched.last() {
+            enriched.pop();
+        }
+        enriched
     }
 
     fn overlay_union_contours(contours: &[NodeOverlayContour]) -> Option<NodeOverlayShapes> {
@@ -2817,6 +2913,7 @@ impl RoadSurfaceSystem {
 
         let mut road_candidate_polygons = Vec::new();
         let mut non_road_candidate_polygons = Vec::new();
+        let mut non_road_height_candidate_polygons = Vec::new();
 
         for mouth in mouths {
             let Some((outer_a, outer_b)) = Self::mouth_full_roadbed_segment(&mouth.profile) else {
@@ -2840,12 +2937,19 @@ impl RoadSurfaceSystem {
                     road_candidate_polygons.push(polygon);
                 }
             }
+
+            Self::append_mouth_non_road_height_candidates(
+                node_pos,
+                mouth,
+                &mut non_road_height_candidate_polygons,
+            );
         }
 
         (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
             NodeCorridorCandidates {
                 road_candidate_polygons,
                 non_road_candidate_polygons,
+                non_road_height_candidate_polygons,
             },
         )
     }
@@ -2861,6 +2965,7 @@ impl RoadSurfaceSystem {
         let end_mouth = &mouths[end_index];
         let mut road_candidate_polygons = Vec::new();
         let mut non_road_candidate_polygons = Vec::new();
+        let mut non_road_height_candidate_polygons = Vec::new();
 
         // Keep each bend corridor/join as a simple overlay candidate; merging them into one loop
         // can make the two throat caps cross at the node on tight bends.
@@ -2871,8 +2976,7 @@ impl RoadSurfaceSystem {
                     mouth.direction_xz,
                     outer_a,
                     outer_b,
-                )
-                {
+                ) {
                     non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
                 }
             }
@@ -2889,6 +2993,12 @@ impl RoadSurfaceSystem {
                     road_candidate_polygons.push(polygon);
                 }
             }
+
+            Self::append_mouth_non_road_height_candidates(
+                node_pos,
+                mouth,
+                &mut non_road_height_candidate_polygons,
+            );
         }
 
         for left_side in [true, false] {
@@ -2913,12 +3023,52 @@ impl RoadSurfaceSystem {
             }
         }
 
+        for (start_band, end_band) in start_mouth.profile.bands.iter().zip(&end_mouth.profile.bands)
+        {
+            if start_band.kind != end_band.kind
+                || start_band.kind == RoadSurfaceBandKind::Carriageway
+            {
+                continue;
+            }
+            if let Some(polygon) = Self::build_bend_local_band_join_polygon(
+                node_pos,
+                start_mouth,
+                end_mouth,
+                start_band,
+                end_band,
+            ) {
+                non_road_height_candidate_polygons.push(polygon);
+            }
+        }
+
         (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
             NodeCorridorCandidates {
                 road_candidate_polygons,
                 non_road_candidate_polygons,
+                non_road_height_candidate_polygons,
             },
         )
+    }
+
+    fn append_mouth_non_road_height_candidates(
+        node_pos: Vector3,
+        mouth: &OrderedIncidentPieceMouth,
+        non_road_height_candidate_polygons: &mut Vec<RoadSurfaceVisualPolygon>,
+    ) {
+        for band in &mouth.profile.bands {
+            if band.kind == RoadSurfaceBandKind::Carriageway {
+                continue;
+            }
+            let Some(polygon) = Self::build_mouth_corridor_polygon(
+                node_pos,
+                mouth.direction_xz,
+                band.start_point_world,
+                band.end_point_world,
+            ) else {
+                continue;
+            };
+            non_road_height_candidate_polygons.push(polygon);
+        }
     }
 
     fn mouth_full_roadbed_segment(profile: &IncidentMouthProfile) -> Option<(Vector3, Vector3)> {
@@ -3007,6 +3157,85 @@ impl RoadSurfaceSystem {
             start_node,
         ];
         Self::append_bend_arc_points(&mut points_world, node_pos, start_node, end_node, ccw);
+        Self::make_visual_polygon(points_world)
+    }
+
+    fn build_bend_local_band_join_polygon(
+        node_pos: Vector3,
+        start_mouth: &OrderedIncidentPieceMouth,
+        end_mouth: &OrderedIncidentPieceMouth,
+        start_band: &IncidentMouthBand,
+        end_band: &IncidentMouthBand,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        let start_a = start_band.start_point_world;
+        let start_b = start_band.end_point_world;
+        let end_a = end_band.start_point_world;
+        let end_b = end_band.end_point_world;
+        Self::build_bend_local_segment_join_polygon(
+            node_pos,
+            start_mouth.direction_xz,
+            end_mouth.direction_xz,
+            start_a,
+            start_b,
+            end_a,
+            end_b,
+        )
+    }
+
+    fn build_bend_local_segment_join_polygon(
+        node_pos: Vector3,
+        start_direction_xz: Vector2,
+        end_direction_xz: Vector2,
+        start_a: Vector3,
+        start_b: Vector3,
+        end_a: Vector3,
+        end_b: Vector3,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        let start_travel = -start_direction_xz;
+        let end_travel = end_direction_xz;
+        if start_travel.length_squared() <= SAMPLE_EPSILON_M
+            || end_travel.length_squared() <= SAMPLE_EPSILON_M
+        {
+            return None;
+        }
+        let start_travel = start_travel.normalized();
+        let end_travel = end_travel.normalized();
+        let turn = Self::cross_xz(start_travel, end_travel);
+        if turn.abs() <= SAMPLE_EPSILON_M {
+            return None;
+        }
+
+        let (start_left, start_right) =
+            Self::segment_left_right_for_travel(start_travel, start_a, start_b)?;
+        let (end_left, end_right) =
+            Self::segment_left_right_for_travel(end_travel, end_a, end_b)?;
+        let start_center = Self::midpoint_world(start_left, start_right);
+        let end_center = Self::midpoint_world(end_left, end_right);
+        let start_left_node =
+            Self::bend_node_side_point(node_pos, start_travel, start_center, start_left, true);
+        let start_right_node =
+            Self::bend_node_side_point(node_pos, start_travel, start_center, start_right, false);
+        let end_left_node =
+            Self::bend_node_side_point(node_pos, end_travel, end_center, end_left, true);
+        let end_right_node =
+            Self::bend_node_side_point(node_pos, end_travel, end_center, end_right, false);
+        let ccw = Self::bend_short_arc_is_ccw(node_pos, start_left_node, end_left_node)?;
+        let mut points_world = vec![start_left_node];
+        Self::append_bend_arc_points(
+            &mut points_world,
+            node_pos,
+            start_left_node,
+            end_left_node,
+            ccw,
+        );
+        points_world.push(end_right_node);
+        Self::append_bend_arc_points(
+            &mut points_world,
+            node_pos,
+            end_right_node,
+            start_right_node,
+            !ccw,
+        );
         Self::make_visual_polygon(points_world)
     }
 
@@ -5362,7 +5591,7 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkCacheKind, EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult,
+        ChunkCacheKind, CURB_STEP_HEIGHT_M, EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult,
         RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
         RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
         SAMPLE_EPSILON_M, SurfaceChunkKey,
@@ -7083,6 +7312,17 @@ mod tests {
         assert!(
             non_road_area > 0.0,
             "JunctionN must emit non-road node surface polygons"
+        );
+        let max_non_road_height = piece
+            .sidewalk_surface_polygons
+            .iter()
+            .flat_map(|polygon| polygon.triangles_world.iter())
+            .flat_map(|triangle| triangle.iter())
+            .map(|point| point.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            max_non_road_height >= CURB_STEP_HEIGHT_M - 0.001,
+            "node non-road surfaces must sample curb/sidewalk band heights instead of flattened full-roadbed height; max_non_road_height={max_non_road_height:.3}"
         );
         assert!(
             (footprint_area - asphalt_area - non_road_area).abs() <= 0.05,
