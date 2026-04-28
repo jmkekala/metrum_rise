@@ -89,17 +89,14 @@ Live behavior:
 - the live road-touched terrain patch bridge feeds piece-owned road loops into the CDT module,
   emits accepted terrain faces, rejects road-footprint faces, and reports CDT counters through
   `--debug road-geometry`
-- `Terminal`, `Bend`, and `JunctionN` visual node pieces resolve asphalt and non-road band
-  ownership through `i_overlay` before Spade CDT triangulation, but the current candidate source
-  still contains paired adjacent-mouth strip construction that can emit incomplete or malformed
-  candidates at arbitrary multi-arm angles
-- the next hardcut is to replace those paired strips with a conflict-first corridor model:
-  carriageway corridors define asphalt ownership first, full-roadbed corridors define the owned
-  walking / shoulder footprint, and sidewalk / curb ownership is always the resolved
+- `Terminal`, `Bend`, and `JunctionN` visual node pieces now use conflict-bounded full-roadbed and
+  carriageway corridor candidates, resolve asphalt and non-road band ownership through `i_overlay`,
+  and triangulate the resolved regions with Spade CDT
+- node-piece sidewalks / curbs are not independent strips anymore; they are the resolved
   `footprint - asphalt` remainder
-- visual edge-to-node handoff must extend far enough to cover every deterministic material conflict
-  between incident road arms; shallow-angle roads therefore create a longer shared ownership region
-  instead of allowing independent sidewalk strips to cross asphalt before they reach the graph node
+- visual edge-to-node handoff extends far enough to cover deterministic material conflicts between
+  incident road arms; shallow-angle roads therefore create a longer shared ownership region instead
+  of allowing independent sidewalk strips to cross asphalt before they reach the graph node
 - terrain clip input is the `i_overlay` union of all grounded `Standard` span and node footprints
   intersecting the patch query, not the raw per-piece loops; overlapping piece loops must be
   resolved before Spade sees terrain constraints
@@ -991,7 +988,9 @@ Implement the hardcut in this order:
     `Bend`, and `JunctionN`.
 14. Done: remove hint-only / nearest-material / centroid-vote node material fallbacks after
     boolean ownership emits disjoint asphalt and sidewalk regions.
-15. Later: adapt `Span` output to the same resolved-region contract once node pieces are validated.
+15. Done: replace paired adjacent-mouth node candidate strips with conflict-bounded full-roadbed
+    and carriageway corridor candidates for `Terminal`, `Bend`, and `JunctionN`.
+16. Later: adapt `Span` output to the same resolved-region contract once node pieces are validated.
 
 Acceptance requires `cargo check`, the CDT contract tests, and Godot headless load to pass.
 
@@ -1014,11 +1013,11 @@ Road-piece CDT is now part of the accepted visual carrier for node pieces:
 
 ### Conflict-First Node Candidate Hardcut
 
-The next node-piece hardcut replaces the paired adjacent-mouth strip candidate model. The old strip
-model can still produce malformed local wedges: one missing asphalt wedge lets sidewalk own the
-junction center, and one missing footprint wedge lets terrain or background appear inside the
-junction. More cleanup after strip generation is not accepted as the final fix, and neither is a
-smaller central core that ignores overlapping road arms outside the core.
+The node-piece hardcut replaces the paired adjacent-mouth strip candidate model. The old strip model
+can produce malformed local wedges: one missing asphalt wedge lets sidewalk own the junction
+center, and one missing footprint wedge lets terrain or background appear inside the junction. More
+cleanup after strip generation is not accepted as the final fix, and neither is a smaller central
+core that ignores overlapping road arms outside the core.
 
 Scope:
 
@@ -1177,12 +1176,12 @@ Debug contract:
 
 Legacy removal target:
 
-- remove paired adjacent-mouth connector strips as final carriers and as primary candidates
-- remove node asphalt wedges that are assembled gap-by-gap around the center
-- remove any `Bend` or `JunctionN` path that depends on second-pass outer-boundary extraction from
+- paired adjacent-mouth connector strips are not final carriers or primary candidates
+- node asphalt wedges must not be assembled gap-by-gap around the center
+- no `Bend` or `JunctionN` path may depend on second-pass outer-boundary extraction from
   already-emitted render triangles
-- remove any remaining hint-only, nearest-material, centroid-vote, render-order, or CDT-material
-  fallback from node-piece material ownership
+- hint-only, nearest-material, centroid-vote, render-order, and CDT-material fallbacks are not
+  allowed in node-piece material ownership
 - keep mouth/profile calculation, conflict handoffs, grade/crossfall sampling, chunk
   invalidation, `i_overlay`, and Spade CDT triangulation because those remain the target pipeline
 

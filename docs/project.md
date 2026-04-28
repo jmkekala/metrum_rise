@@ -143,13 +143,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   node-piece scans. Visual node handoffs now need a conflict-first ownership hardcut: local
   profile width is the minimum handoff, but shallow-angle arms must extend shared visual ownership
   as far as their roadbed / asphalt materials would otherwise overlap.
-  Recent arbitrary `4+`-arm junction cases still prove that the paired adjacent-mouth strip
-  candidate model can emit incomplete node footprints or sidewalk-over-asphalt candidates before
-  boolean cleanup. The next `ROAD-01` hardcut is therefore a candidate-model refactor:
-  conflict-bounded full-roadbed corridor unions define node footprints, conflict-bounded
+  The paired adjacent-mouth strip candidate model has been hard-cut out of node-piece ownership.
+  Conflict-bounded full-roadbed corridor unions now define node footprints, conflict-bounded
   carriageway corridor unions define asphalt, and sidewalk / curb ownership is derived only as
-  `footprint - asphalt`. The remaining blocking work is that conflict-first node hardcut plus
-  clipped terrain topology validation and hardening, followed by retaining, wall, and material
+  `footprint - asphalt`. The remaining blocking work is in-game validation of that conflict-first
+  node model plus clipped terrain topology hardening, followed by retaining, wall, and material
   variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in

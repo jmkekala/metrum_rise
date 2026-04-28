@@ -32,7 +32,6 @@ const STANDARD_CROSSFALL_DEADZONE_RATE: f32 = 0.005;
 const SIDEWALK_SLOPE_RATE: f32 = 0.02;
 const SAMPLE_EPSILON_M: f32 = 0.001;
 const SURFACE_MIN_TRIANGLE_ALTITUDE_M: f32 = 0.05;
-const NODE_CONNECTOR_SAMPLE_STEP_M: f32 = 1.0;
 const ROAD_POINT_SIMPLIFY_DISTANCE_M: f32 = 0.5;
 const TAUBIN_SMOOTHING_ITERS: usize = 50;
 const TAUBIN_LAMBDA: f32 = 0.5;
@@ -278,29 +277,16 @@ struct IncidentMouthProfile {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct IncidentPieceSide {
-    boundary_points_outer_to_inner: Vec<Vector3>,
-    band_kinds_outer_to_inner: Vec<RoadSurfaceBandKind>,
-    inner_point_world: Vector3,
-    inner_surface_kind: RoadSurfaceBandKind,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct IncidentPieceMouth {
-    left: IncidentPieceSide,
-    right: IncidentPieceSide,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 struct OrderedIncidentPieceMouth {
-    mouth: IncidentPieceMouth,
+    profile: IncidentMouthProfile,
     direction_angle_ccw: f32,
+    direction_xz: Vector2,
     edge_idx: usize,
     side: IncidentEdgeSide,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct NodePieceCandidateGap {
+struct NodeCorridorCandidates {
     road_candidate_polygons: Vec<RoadSurfaceVisualPolygon>,
     non_road_candidate_polygons: Vec<NodeNonRoadCandidatePolygon>,
 }
@@ -2055,43 +2041,12 @@ impl RoadSurfaceSystem {
         node_id: u32,
         incident: IncidentSurfaceEdge,
     ) -> Option<RoadSurfaceVisualNodePiece> {
-        let mouth = self.build_incident_mouth_profile(incident)?;
-        if mouth.boundary_points_world.len() < 2 {
-            return None;
-        }
-
         let node_pos = graph.node(node_id).pos;
-        let cap_depth = mouth
-            .boundary_points_world
-            .iter()
-            .map(|point| Vector2::new(point.x - node_pos.x, point.z - node_pos.z).length())
-            .fold(0.5, f32::max);
-        let cap_offset = -incident.direction_xz.normalized() * cap_depth;
-        let extruded_points: Vec<Vector3> = mouth
-            .boundary_points_world
-            .iter()
-            .map(|point| Vector3::new(point.x + cap_offset.x, point.y, point.z + cap_offset.y))
-            .collect();
-
-        let mut road_surface_polygons = Vec::new();
-        let mut non_road_candidate_polygons = Vec::new();
-        for (index, band) in mouth.bands.iter().enumerate() {
-            let polygon = Self::make_visual_polygon(vec![
-                band.start_point_world,
-                extruded_points[index],
-                extruded_points[index + 1],
-                band.end_point_world,
-            ])?;
-            if band.kind == RoadSurfaceBandKind::Carriageway {
-                road_surface_polygons.push(polygon);
-            } else {
-                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
-            }
-        }
-
+        let mouths = self.build_ordered_piece_mouths(&[incident])?;
+        let node_candidates = Self::build_node_corridor_candidates(node_pos, &mouths)?;
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
-            &road_surface_polygons,
-            &non_road_candidate_polygons,
+            &node_candidates.road_candidate_polygons,
+            &node_candidates.non_road_candidate_polygons,
         )?;
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
@@ -2126,19 +2081,10 @@ impl RoadSurfaceSystem {
         }
         let node_pos = graph.node(node_id).pos;
         let mouths = self.build_ordered_piece_mouths(incidents)?;
-        let gaps = Self::collect_bend_candidate_gaps(node_pos, &mouths);
-        if gaps.is_empty() {
-            return None;
-        }
-        let mut road_candidate_polygons = Vec::new();
-        let mut non_road_candidate_polygons = Vec::new();
-        for gap in &gaps {
-            road_candidate_polygons.extend(gap.road_candidate_polygons.iter().cloned());
-            non_road_candidate_polygons.extend(gap.non_road_candidate_polygons.iter().cloned());
-        }
+        let node_candidates = Self::build_node_corridor_candidates(node_pos, &mouths)?;
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
-            &road_candidate_polygons,
-            &non_road_candidate_polygons,
+            &node_candidates.road_candidate_polygons,
+            &node_candidates.non_road_candidate_polygons,
         )?;
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
@@ -2173,19 +2119,10 @@ impl RoadSurfaceSystem {
         }
         let node_pos = graph.node(node_id).pos;
         let mouths = self.build_ordered_piece_mouths(incidents)?;
-        let gaps = Self::collect_junction_candidate_gaps(node_pos, &mouths);
-        if gaps.is_empty() {
-            return None;
-        }
-        let mut road_candidate_polygons = Vec::new();
-        let mut non_road_candidate_polygons = Vec::new();
-        for gap in &gaps {
-            road_candidate_polygons.extend(gap.road_candidate_polygons.iter().cloned());
-            non_road_candidate_polygons.extend(gap.non_road_candidate_polygons.iter().cloned());
-        }
+        let node_candidates = Self::build_node_corridor_candidates(node_pos, &mouths)?;
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
-            &road_candidate_polygons,
-            &non_road_candidate_polygons,
+            &node_candidates.road_candidate_polygons,
+            &node_candidates.non_road_candidate_polygons,
         )?;
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
@@ -2215,8 +2152,9 @@ impl RoadSurfaceSystem {
         let mut mouths = Vec::with_capacity(incidents.len());
         for &incident in incidents {
             mouths.push(OrderedIncidentPieceMouth {
-                mouth: self.build_incident_piece_mouth(incident)?,
+                profile: self.build_incident_mouth_profile(incident)?,
                 direction_angle_ccw: Self::normalized_angle_ccw(incident.direction_xz),
+                direction_xz: incident.direction_xz,
                 edge_idx: incident.edge_idx,
                 side: incident.side,
             });
@@ -2852,193 +2790,6 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn build_incident_piece_mouth(
-        &self,
-        incident: IncidentSurfaceEdge,
-    ) -> Option<IncidentPieceMouth> {
-        let mouth = self.build_incident_mouth_profile(incident)?;
-        let carriageway_indices: Vec<usize> = mouth
-            .bands
-            .iter()
-            .enumerate()
-            .filter_map(|(index, band)| {
-                (band.kind == RoadSurfaceBandKind::Carriageway).then_some(index)
-            })
-            .collect();
-
-        if let (Some(&first_carriageway), Some(&last_carriageway)) =
-            (carriageway_indices.first(), carriageway_indices.last())
-        {
-            // `boundary_points_world` is ordered from geometric right outer edge to geometric left
-            // outer edge relative to the outward throat direction, so the first slice is the
-            // right-side profile and the final slice is the left-side profile. Each side profile
-            // carries one carriageway half inward to the shared centerline so boolean ownership
-            // receives full asphalt candidates through the node interior.
-            let right = IncidentPieceSide {
-                boundary_points_outer_to_inner: mouth.boundary_points_world
-                    [0..=first_carriageway + 1]
-                    .to_vec(),
-                band_kinds_outer_to_inner: mouth.bands[0..=first_carriageway]
-                    .iter()
-                    .map(|band| band.kind)
-                    .collect(),
-                inner_point_world: mouth.boundary_points_world[first_carriageway + 1],
-                inner_surface_kind: RoadSurfaceBandKind::Carriageway,
-            };
-            let left = IncidentPieceSide {
-                boundary_points_outer_to_inner: mouth.boundary_points_world[last_carriageway..]
-                    .iter()
-                    .rev()
-                    .copied()
-                    .collect(),
-                band_kinds_outer_to_inner: mouth.bands[last_carriageway..]
-                    .iter()
-                    .rev()
-                    .map(|band| band.kind)
-                    .collect(),
-                inner_point_world: mouth.boundary_points_world[last_carriageway],
-                inner_surface_kind: RoadSurfaceBandKind::Carriageway,
-            };
-            Some(IncidentPieceMouth { left, right })
-        } else {
-            let first_point = *mouth.boundary_points_world.first()?;
-            let last_point = *mouth.boundary_points_world.last()?;
-            let center_point = first_point.lerp(last_point, 0.5);
-            let foot_kind = mouth
-                .bands
-                .first()
-                .map(|band| band.kind)
-                .unwrap_or(RoadSurfaceBandKind::Footpath);
-            let right = IncidentPieceSide {
-                boundary_points_outer_to_inner: vec![first_point, center_point],
-                band_kinds_outer_to_inner: vec![foot_kind],
-                inner_point_world: center_point,
-                inner_surface_kind: foot_kind,
-            };
-            let left = IncidentPieceSide {
-                boundary_points_outer_to_inner: vec![last_point, center_point],
-                band_kinds_outer_to_inner: vec![foot_kind],
-                inner_point_world: center_point,
-                inner_surface_kind: foot_kind,
-            };
-            Some(IncidentPieceMouth { left, right })
-        }
-    }
-
-    fn build_bend_connector_polygons(
-        side_a: &IncidentPieceSide,
-        side_b: &IncidentPieceSide,
-    ) -> Vec<(RoadSurfaceBandKind, RoadSurfaceVisualPolygon)> {
-        let mut polygons = Vec::new();
-        let normalized_breaks = Self::bend_connector_sample_breaks(side_a, side_b);
-        for interval in normalized_breaks.windows(2) {
-            let t0 = interval[0];
-            let t1 = interval[1];
-            if t1 - t0 <= 0.0001 {
-                continue;
-            }
-            let Some(a0) = Self::sample_side_point(side_a, t0) else {
-                continue;
-            };
-            let Some(a1) = Self::sample_side_point(side_a, t1) else {
-                continue;
-            };
-            let Some(b0) = Self::sample_side_point(side_b, t0) else {
-                continue;
-            };
-            let Some(b1) = Self::sample_side_point(side_b, t1) else {
-                continue;
-            };
-            let kind = Self::candidate_surface_kind(side_a, side_b, (t0 + t1) * 0.5);
-            let Some(polygon) = Self::make_visual_polygon(vec![a0, b0, b1, a1]) else {
-                continue;
-            };
-            polygons.push((kind, polygon));
-        }
-        polygons
-    }
-
-    fn build_junction_gap_connector_polygons(
-        side_a: &IncidentPieceSide,
-        side_b: &IncidentPieceSide,
-    ) -> Vec<(RoadSurfaceBandKind, RoadSurfaceVisualPolygon)> {
-        let mut polygons = Vec::new();
-        let normalized_breaks = Self::junction_gap_connector_sample_breaks(side_a, side_b);
-        for interval in normalized_breaks.windows(2) {
-            let t0 = interval[0];
-            let t1 = interval[1];
-            if t1 - t0 <= 0.0001 {
-                continue;
-            }
-            let Some(a0) = Self::sample_side_point(side_a, t0) else {
-                continue;
-            };
-            let Some(a1) = Self::sample_side_point(side_a, t1) else {
-                continue;
-            };
-            let Some(b0) = Self::sample_side_point(side_b, t0) else {
-                continue;
-            };
-            let Some(b1) = Self::sample_side_point(side_b, t1) else {
-                continue;
-            };
-            let kind = Self::candidate_surface_kind(side_a, side_b, (t0 + t1) * 0.5);
-            let Some(polygon) = Self::make_visual_polygon(vec![a0, b0, b1, a1]) else {
-                continue;
-            };
-            polygons.push((kind, polygon));
-        }
-        polygons
-    }
-
-    fn bend_connector_sample_breaks(
-        side_a: &IncidentPieceSide,
-        side_b: &IncidentPieceSide,
-    ) -> Vec<f32> {
-        let mut breaks = Self::merged_side_breaks(side_a, side_b);
-        let max_length = Self::side_total_length(side_a).max(Self::side_total_length(side_b));
-        if max_length > SAMPLE_EPSILON_M {
-            let mut distance = NODE_CONNECTOR_SAMPLE_STEP_M;
-            while distance < max_length - SAMPLE_EPSILON_M {
-                breaks.push((distance / max_length).clamp(0.0, 1.0));
-                distance += NODE_CONNECTOR_SAMPLE_STEP_M;
-            }
-        }
-        breaks.sort_by(|a, b| a.total_cmp(b));
-        breaks.dedup_by(|a, b| (*a - *b).abs() <= 0.0001);
-        if breaks.first().copied().unwrap_or(1.0) > 0.0 {
-            breaks.insert(0, 0.0);
-        }
-        if breaks.last().copied().unwrap_or(0.0) < 1.0 {
-            breaks.push(1.0);
-        }
-        breaks
-    }
-
-    fn junction_gap_connector_sample_breaks(
-        side_a: &IncidentPieceSide,
-        side_b: &IncidentPieceSide,
-    ) -> Vec<f32> {
-        let mut breaks = Self::merged_side_breaks(side_a, side_b);
-        let max_length = Self::side_total_length(side_a).max(Self::side_total_length(side_b));
-        if max_length > SAMPLE_EPSILON_M {
-            let mut distance = NODE_CONNECTOR_SAMPLE_STEP_M;
-            while distance < max_length - SAMPLE_EPSILON_M {
-                breaks.push((distance / max_length).clamp(0.0, 1.0));
-                distance += NODE_CONNECTOR_SAMPLE_STEP_M;
-            }
-        }
-        breaks.sort_by(|a, b| a.total_cmp(b));
-        breaks.dedup_by(|a, b| (*a - *b).abs() <= 0.0001);
-        if breaks.first().copied().unwrap_or(1.0) > 0.0 {
-            breaks.insert(0, 0.0);
-        }
-        if breaks.last().copied().unwrap_or(0.0) < 1.0 {
-            breaks.push(1.0);
-        }
-        breaks
-    }
-
     fn section_outer_boundary_pair(section: &RoadSurfaceSection) -> Option<(Vector3, Vector3)> {
         let first_band = section.bands.first()?;
         let last_band = section.bands.last()?;
@@ -3055,235 +2806,98 @@ impl RoadSurfaceSystem {
         Some((left_point, right_point))
     }
 
-    fn merged_side_breaks(side_a: &IncidentPieceSide, side_b: &IncidentPieceSide) -> Vec<f32> {
-        let mut breaks = Self::side_depth_breaks(side_a);
-        breaks.extend(Self::side_depth_breaks(side_b));
-        breaks.sort_by(|a, b| a.total_cmp(b));
-        breaks.dedup_by(|a, b| (*a - *b).abs() <= 0.0001);
-        if breaks.first().copied().unwrap_or(1.0) > 0.0 {
-            breaks.insert(0, 0.0);
-        }
-        if breaks.last().copied().unwrap_or(0.0) < 1.0 {
-            breaks.push(1.0);
-        }
-        breaks
-    }
-
-    fn side_total_length(side: &IncidentPieceSide) -> f32 {
-        *Self::side_cumulative_lengths(side).last().unwrap_or(&0.0)
-    }
-
-    fn side_depth_breaks(side: &IncidentPieceSide) -> Vec<f32> {
-        let cumulative = Self::side_cumulative_lengths(side);
-        let total_length = *cumulative.last().unwrap_or(&0.0);
-        if total_length <= SAMPLE_EPSILON_M {
-            return vec![0.0, 1.0];
-        }
-
-        cumulative
-            .into_iter()
-            .map(|distance| (distance / total_length).clamp(0.0, 1.0))
-            .collect()
-    }
-
-    fn side_cumulative_lengths(side: &IncidentPieceSide) -> Vec<f32> {
-        let mut cumulative = Vec::with_capacity(side.boundary_points_outer_to_inner.len());
-        let mut running = 0.0;
-        cumulative.push(0.0);
-        for pair in side.boundary_points_outer_to_inner.windows(2) {
-            running += pair[0].distance_to(pair[1]);
-            cumulative.push(running);
-        }
-        cumulative
-    }
-
-    fn sample_side_point(side: &IncidentPieceSide, t: f32) -> Option<Vector3> {
-        let cumulative = Self::side_cumulative_lengths(side);
-        let total_length = *cumulative.last()?;
-        let clamped_t = t.clamp(0.0, 1.0);
-        if total_length <= SAMPLE_EPSILON_M {
-            return side.boundary_points_outer_to_inner.first().copied();
-        }
-
-        let target = clamped_t * total_length;
-        for (index, pair) in side.boundary_points_outer_to_inner.windows(2).enumerate() {
-            let start_distance = cumulative[index];
-            let end_distance = cumulative[index + 1];
-            let segment_length = end_distance - start_distance;
-            if segment_length <= SAMPLE_EPSILON_M {
-                continue;
-            }
-            if target <= end_distance + SAMPLE_EPSILON_M || index + 2 == cumulative.len() {
-                let factor = ((target - start_distance) / segment_length).clamp(0.0, 1.0);
-                return Some(pair[0].lerp(pair[1], factor));
-            }
-        }
-
-        side.boundary_points_outer_to_inner.last().copied()
-    }
-
-    fn surface_kind_at_depth(side: &IncidentPieceSide, t: f32) -> RoadSurfaceBandKind {
-        let cumulative = Self::side_cumulative_lengths(side);
-        let total_length = *cumulative.last().unwrap_or(&0.0);
-        if total_length <= SAMPLE_EPSILON_M {
-            return side
-                .band_kinds_outer_to_inner
-                .first()
-                .copied()
-                .unwrap_or(side.inner_surface_kind);
-        }
-
-        let target = t.clamp(0.0, 1.0) * total_length;
-        for index in 0..side.band_kinds_outer_to_inner.len() {
-            if index + 1 >= cumulative.len() {
-                break;
-            }
-            if target <= cumulative[index + 1] + SAMPLE_EPSILON_M {
-                return side.band_kinds_outer_to_inner[index];
-            }
-        }
-
-        side.band_kinds_outer_to_inner
-            .last()
-            .copied()
-            .unwrap_or(side.inner_surface_kind)
-    }
-
-    fn candidate_surface_kind(
-        side_a: &IncidentPieceSide,
-        side_b: &IncidentPieceSide,
-        t: f32,
-    ) -> RoadSurfaceBandKind {
-        let kind_a = Self::surface_kind_at_depth(side_a, t);
-        let kind_b = Self::surface_kind_at_depth(side_b, t);
-        if kind_a == RoadSurfaceBandKind::Carriageway && kind_b == RoadSurfaceBandKind::Carriageway
-        {
-            RoadSurfaceBandKind::Carriageway
-        } else {
-            RoadSurfaceBandKind::Sidewalk
-        }
-    }
-
-    fn build_junction_candidate_gap(
+    fn build_node_corridor_candidates(
         node_pos: Vector3,
-        current: &OrderedIncidentPieceMouth,
-        next: &OrderedIncidentPieceMouth,
-    ) -> Option<NodePieceCandidateGap> {
-        let (current_side, next_side) = Self::select_adjacent_gap_sides(current, next)?;
-
+        mouths: &[OrderedIncidentPieceMouth],
+    ) -> Option<NodeCorridorCandidates> {
         let mut road_candidate_polygons = Vec::new();
         let mut non_road_candidate_polygons = Vec::new();
-        if current_side.inner_surface_kind == RoadSurfaceBandKind::Carriageway
-            && next_side.inner_surface_kind == RoadSurfaceBandKind::Carriageway
-        {
-            if let Some(polygon) = Self::make_visual_polygon(vec![
-                node_pos,
-                current_side.inner_point_world,
-                next_side.inner_point_world,
-            ]) {
-                road_candidate_polygons.push(polygon);
-            }
-        }
 
-        for (band_kind, polygon) in
-            Self::build_junction_gap_connector_polygons(current_side, next_side)
-        {
-            Self::push_node_surface_candidate_polygon(
-                band_kind,
-                polygon,
-                &mut road_candidate_polygons,
-                &mut non_road_candidate_polygons,
-            );
+        for mouth in mouths {
+            let Some((outer_a, outer_b)) = Self::mouth_full_roadbed_segment(&mouth.profile) else {
+                continue;
+            };
+            if let Some(polygon) =
+                Self::build_mouth_corridor_polygon(node_pos, mouth.direction_xz, outer_a, outer_b)
+            {
+                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
+            }
+
+            if let Some((carriageway_a, carriageway_b)) =
+                Self::mouth_carriageway_segment(&mouth.profile)
+            {
+                if let Some(polygon) = Self::build_mouth_corridor_polygon(
+                    node_pos,
+                    mouth.direction_xz,
+                    carriageway_a,
+                    carriageway_b,
+                ) {
+                    road_candidate_polygons.push(polygon);
+                }
+            }
         }
 
         (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
-            NodePieceCandidateGap {
+            NodeCorridorCandidates {
                 road_candidate_polygons,
                 non_road_candidate_polygons,
             },
         )
     }
 
-    fn build_bend_candidate_gap(
-        node_pos: Vector3,
-        current: &OrderedIncidentPieceMouth,
-        next: &OrderedIncidentPieceMouth,
-    ) -> Option<NodePieceCandidateGap> {
-        let (current_side, next_side) = Self::select_adjacent_gap_sides(current, next)?;
-        let mut road_candidate_polygons = Vec::new();
-        let mut non_road_candidate_polygons = Vec::new();
-        if current_side.inner_surface_kind == RoadSurfaceBandKind::Carriageway
-            && next_side.inner_surface_kind == RoadSurfaceBandKind::Carriageway
-        {
-            if let Some(polygon) = Self::make_visual_polygon(vec![
-                node_pos,
-                current_side.inner_point_world,
-                next_side.inner_point_world,
-            ]) {
-                road_candidate_polygons.push(polygon);
-            }
-        }
-        for (band_kind, polygon) in Self::build_bend_connector_polygons(current_side, next_side) {
-            Self::push_node_surface_candidate_polygon(
-                band_kind,
-                polygon,
-                &mut road_candidate_polygons,
-                &mut non_road_candidate_polygons,
-            );
-        }
-        (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
-            NodePieceCandidateGap {
-                road_candidate_polygons,
-                non_road_candidate_polygons,
-            },
-        )
+    fn mouth_full_roadbed_segment(profile: &IncidentMouthProfile) -> Option<(Vector3, Vector3)> {
+        Some((
+            *profile.boundary_points_world.first()?,
+            *profile.boundary_points_world.last()?,
+        ))
     }
 
-    fn push_node_surface_candidate_polygon(
-        kind: RoadSurfaceBandKind,
-        polygon: RoadSurfaceVisualPolygon,
-        road_candidate_polygons: &mut Vec<RoadSurfaceVisualPolygon>,
-        non_road_candidate_polygons: &mut Vec<NodeNonRoadCandidatePolygon>,
-    ) {
-        if kind == RoadSurfaceBandKind::Carriageway {
-            road_candidate_polygons.push(polygon);
-        } else {
-            non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
-        }
+    fn mouth_carriageway_segment(profile: &IncidentMouthProfile) -> Option<(Vector3, Vector3)> {
+        let mut carriageway_indices =
+            profile
+                .bands
+                .iter()
+                .enumerate()
+                .filter_map(|(index, band)| {
+                    (band.kind == RoadSurfaceBandKind::Carriageway).then_some(index)
+                });
+        let first_carriageway = carriageway_indices.next()?;
+        let last_carriageway = carriageway_indices.last().unwrap_or(first_carriageway);
+        Some((
+            *profile.boundary_points_world.get(first_carriageway)?,
+            *profile.boundary_points_world.get(last_carriageway + 1)?,
+        ))
     }
 
-    fn collect_bend_candidate_gaps(
+    fn build_mouth_corridor_polygon(
         node_pos: Vector3,
-        mouths: &[OrderedIncidentPieceMouth],
-    ) -> Vec<NodePieceCandidateGap> {
-        let mut gaps = Vec::new();
-        for index in 0..mouths.len() {
-            let next_index = (index + 1) % mouths.len();
-            let Some(gap) =
-                Self::build_bend_candidate_gap(node_pos, &mouths[index], &mouths[next_index])
-            else {
-                continue;
-            };
-            gaps.push(gap);
+        direction_xz: Vector2,
+        segment_a: Vector3,
+        segment_b: Vector3,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        if direction_xz.length_squared() <= SAMPLE_EPSILON_M {
+            return None;
         }
-        gaps
-    }
+        let direction_xz = direction_xz.normalized();
+        let node_xz = Vector2::new(node_pos.x, node_pos.z);
+        let segment_center_xz = Vector2::new(
+            (segment_a.x + segment_b.x) * 0.5,
+            (segment_a.z + segment_b.z) * 0.5,
+        );
+        let mut depth_m = (segment_center_xz - node_xz).dot(direction_xz).max(0.0);
+        if depth_m <= SAMPLE_EPSILON_M {
+            depth_m = Vector2::new(segment_a.x - node_pos.x, segment_a.z - node_pos.z)
+                .length()
+                .max(Vector2::new(segment_b.x - node_pos.x, segment_b.z - node_pos.z).length());
+        }
+        if depth_m <= SAMPLE_EPSILON_M {
+            return None;
+        }
 
-    fn collect_junction_candidate_gaps(
-        node_pos: Vector3,
-        mouths: &[OrderedIncidentPieceMouth],
-    ) -> Vec<NodePieceCandidateGap> {
-        let mut gaps = Vec::new();
-        for index in 0..mouths.len() {
-            let next_index = (index + 1) % mouths.len();
-            let Some(gap) =
-                Self::build_junction_candidate_gap(node_pos, &mouths[index], &mouths[next_index])
-            else {
-                continue;
-            };
-            gaps.push(gap);
-        }
-        gaps
+        let backtrack = Vector3::new(direction_xz.x * depth_m, 0.0, direction_xz.y * depth_m);
+        let node_a = segment_a - backtrack;
+        let node_b = segment_b - backtrack;
+        Self::make_visual_polygon(vec![segment_a, segment_b, node_b, node_a])
     }
 
     fn normalized_angle_ccw(direction_xz: Vector2) -> f32 {
@@ -3293,18 +2907,6 @@ impl RoadSurfaceSystem {
         } else {
             angle
         }
-    }
-
-    fn select_adjacent_gap_sides<'a>(
-        current: &'a OrderedIncidentPieceMouth,
-        next: &'a OrderedIncidentPieceMouth,
-    ) -> Option<(&'a IncidentPieceSide, &'a IncidentPieceSide)> {
-        let gap_span = if next.direction_angle_ccw < current.direction_angle_ccw {
-            next.direction_angle_ccw + std::f32::consts::TAU - current.direction_angle_ccw
-        } else {
-            next.direction_angle_ccw - current.direction_angle_ccw
-        };
-        (gap_span > 0.0001).then_some((&current.mouth.left, &next.mouth.right))
     }
 
     fn assemble_explicit_node_piece(
@@ -3723,15 +3325,23 @@ impl RoadSurfaceSystem {
     }
 
     fn visual_start_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
-        edge.start_clip
-            .min(Self::visual_node_handoff_limit_m(edge))
-            .clamp(0.0, total_length_m)
+        if edge.start_clip <= SAMPLE_EPSILON_M {
+            0.0
+        } else {
+            edge.start_clip
+                .max(Self::visual_node_handoff_limit_m(edge))
+                .clamp(0.0, total_length_m)
+        }
     }
 
     fn visual_end_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
-        edge.end_clip
-            .min(Self::visual_node_handoff_limit_m(edge))
-            .clamp(0.0, total_length_m)
+        if edge.end_clip <= SAMPLE_EPSILON_M {
+            0.0
+        } else {
+            edge.end_clip
+                .max(Self::visual_node_handoff_limit_m(edge))
+                .clamp(0.0, total_length_m)
+        }
     }
 
     fn visual_end_handoff_s_m(edge: &Edge, total_length_m: f32) -> f32 {
@@ -5492,9 +5102,9 @@ impl RoadSurfaceSystem {
 mod tests {
     use super::{
         ChunkCacheKind, EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult,
-        RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M,
+        RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
         RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-        SurfaceChunkKey,
+        SAMPLE_EPSILON_M, SurfaceChunkKey,
     };
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -5849,6 +5459,17 @@ mod tests {
 
     fn polygon_area_m2(polygon: &RoadSurfaceVisualPolygon) -> f32 {
         RoadSurfaceSystem::signed_polygon_area_xz(&polygon.points_world).abs()
+    }
+
+    fn polygon_triangle_area_m2(polygon: &RoadSurfaceVisualPolygon) -> f32 {
+        polygon
+            .triangles_world
+            .iter()
+            .map(|triangle| {
+                RoadSurfaceSystem::signed_polygon_area_xz(&[triangle[0], triangle[1], triangle[2]])
+                    .abs()
+            })
+            .sum()
     }
 
     #[test]
@@ -6635,59 +6256,6 @@ mod tests {
     }
 
     #[test]
-    fn incident_piece_mouth_sides_match_geometric_left_and_right() {
-        let terrain = flat_terrain(64, 64);
-        let mut graph = RegionGraph::new();
-        let west = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
-        let center = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
-        let east = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
-        graph.add_edge(test_edge(
-            west,
-            center,
-            vec![Vector3::new(-20.0, 0.0, 0.0), Vector3::new(0.0, 0.0, 0.0)],
-            10.0,
-            EdgeClass::Standard,
-            TransitType::Road,
-            TransitFlags::CAR | TransitFlags::FOOT,
-        ));
-        graph.add_edge(test_edge(
-            center,
-            east,
-            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
-            10.0,
-            EdgeClass::Standard,
-            TransitType::Road,
-            TransitFlags::CAR | TransitFlags::FOOT,
-        ));
-
-        let mut surface = RoadSurfaceSystem::new(16.0);
-        surface.compile_dirty(&graph, &terrain);
-
-        for incident in surface.sorted_incident_surface_edges(&graph, center) {
-            let mouth = surface.build_incident_piece_mouth(incident).unwrap();
-            let node_pos = graph.node(center).pos;
-            let left_outer = *mouth.left.boundary_points_outer_to_inner.first().unwrap();
-            let right_outer = *mouth.right.boundary_points_outer_to_inner.first().unwrap();
-            let left_vec = Vector2::new(left_outer.x - node_pos.x, left_outer.z - node_pos.z);
-            let right_vec = Vector2::new(right_outer.x - node_pos.x, right_outer.z - node_pos.z);
-            let left_cross =
-                incident.direction_xz.x * left_vec.y - incident.direction_xz.y * left_vec.x;
-            let right_cross =
-                incident.direction_xz.x * right_vec.y - incident.direction_xz.y * right_vec.x;
-            assert!(
-                left_cross > 0.0,
-                "expected left side to stay geometrically left of the outward throat direction, got left_cross={left_cross:.3} direction={:?}",
-                incident.direction_xz
-            );
-            assert!(
-                right_cross < 0.0,
-                "expected right side to stay geometrically right of the outward throat direction, got right_cross={right_cross:.3} direction={:?}",
-                incident.direction_xz
-            );
-        }
-    }
-
-    #[test]
     fn earthwork_face_classification_distinguishes_slopes_from_walls() {
         assert_eq!(
             RoadSurfaceSystem::classify_earthwork_face_kind(
@@ -6875,12 +6443,12 @@ mod tests {
         let asphalt_area: f32 = piece
             .road_surface_polygons
             .iter()
-            .map(polygon_area_m2)
+            .map(polygon_triangle_area_m2)
             .sum();
         let non_road_area: f32 = piece
             .sidewalk_surface_polygons
             .iter()
-            .map(polygon_area_m2)
+            .map(polygon_triangle_area_m2)
             .sum();
         assert!(
             (footprint_area - asphalt_area - non_road_area).abs() <= 0.1,
@@ -6890,7 +6458,7 @@ mod tests {
     }
 
     #[test]
-    fn arbitrary_five_way_junction_keeps_visual_footprint_local() {
+    fn arbitrary_five_way_junction_uses_conflict_bounded_footprint() {
         let mut graph = RegionGraph::new();
         let center_pos = Vector3::new(2.668, 0.0, 10.799);
         let center = graph.add_node(center_pos, NodeType::Junction);
@@ -6922,7 +6490,7 @@ mod tests {
         let piece = surface
             .compiled_visual_node_pieces()
             .get(&center)
-            .expect("arbitrary five-way node must compile one bounded JunctionN piece");
+            .expect("arbitrary five-way node must compile one conflict-bounded JunctionN piece");
         assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
 
         let max_expected_radius = graph
@@ -6930,7 +6498,12 @@ mod tests {
             .iter()
             .map(|&edge_idx| {
                 let edge = graph.edge(edge_idx);
-                RoadSurfaceSystem::visual_node_handoff_limit_m(edge)
+                let clip = if graph.get_valid_node(edge.start_node) == center {
+                    edge.start_clip
+                } else {
+                    edge.end_clip
+                };
+                clip.max(RoadSurfaceSystem::visual_node_handoff_limit_m(edge))
                     + RoadSurfaceSystem::visual_roadbed_half_width_m(edge)
                     + 0.25
             })
@@ -6943,7 +6516,7 @@ mod tests {
             let radius = Vector2::new(point.x - center_pos.x, point.z - center_pos.z).length();
             assert!(
                 radius <= max_expected_radius,
-                "visual JunctionN footprint must stay local to the bounded handoff; point={point:?} radius={radius:.3} max={max_expected_radius:.3}"
+                "visual JunctionN footprint must stay inside the conflict-bounded handoff; point={point:?} radius={radius:.3} max={max_expected_radius:.3}"
             );
         }
         assert_material_triangle_centroids_do_not_overlap(piece);
@@ -7011,7 +6584,10 @@ mod tests {
                 .iter()
                 .any(|section| (section.s_m - expected_handoff_s).abs() <= SAMPLE_EPSILON_M),
             "dirty node recompilation must refresh incident span sections at the new visual handoff; expected_s={expected_handoff_s:.3} sections={:?}",
-            sections.iter().map(|section| section.s_m).collect::<Vec<_>>()
+            sections
+                .iter()
+                .map(|section| section.s_m)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -7208,12 +6784,12 @@ mod tests {
         let asphalt_area: f32 = piece
             .road_surface_polygons
             .iter()
-            .map(polygon_area_m2)
+            .map(polygon_triangle_area_m2)
             .sum();
         let non_road_area: f32 = piece
             .sidewalk_surface_polygons
             .iter()
-            .map(polygon_area_m2)
+            .map(polygon_triangle_area_m2)
             .sum();
 
         assert!(
