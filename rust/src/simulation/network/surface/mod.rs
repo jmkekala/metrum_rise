@@ -29,7 +29,6 @@ const CURB_BAND_WIDTH_M: f32 = 0.15;
 const CURB_STEP_HEIGHT_M: f32 = 0.12;
 const MAX_STANDARD_DESIGN_CROSSFALL_RATE: f32 = 0.03;
 const STANDARD_CROSSFALL_DEADZONE_RATE: f32 = 0.005;
-const SIDEWALK_SLOPE_RATE: f32 = 0.02;
 const SAMPLE_EPSILON_M: f32 = 0.001;
 const SURFACE_MIN_TRIANGLE_ALTITUDE_M: f32 = 0.05;
 const ROAD_POINT_SIMPLIFY_DISTANCE_M: f32 = 0.5;
@@ -3663,18 +3662,13 @@ impl RoadSurfaceSystem {
             } else {
                 0.0
             };
-        let left_sidewalk_outer_height =
-            left_curb_top_height - sidewalk_width * SIDEWALK_SLOPE_RATE;
-        let right_sidewalk_outer_height =
-            right_curb_top_height - sidewalk_width * SIDEWALK_SLOPE_RATE;
-
         let mut bands = Vec::new();
         if sidewalk_width > 0.0 {
             bands.push(RoadSurfaceBand {
                 kind: RoadSurfaceBandKind::Sidewalk,
                 lateral_start_m: -(half_carriageway + curb_width + sidewalk_width),
                 lateral_end_m: -(half_carriageway + curb_width),
-                height_start_m: left_sidewalk_outer_height,
+                height_start_m: left_curb_top_height,
                 height_end_m: left_curb_top_height,
             });
         }
@@ -3714,7 +3708,7 @@ impl RoadSurfaceSystem {
                 lateral_start_m: half_carriageway + curb_width,
                 lateral_end_m: half_carriageway + curb_width + sidewalk_width,
                 height_start_m: right_curb_top_height,
-                height_end_m: right_sidewalk_outer_height,
+                height_end_m: right_curb_top_height,
             });
         }
 

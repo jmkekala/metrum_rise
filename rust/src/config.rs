@@ -24,7 +24,7 @@ pub const INTERSECTION_TOLERANCE: f32 = 2.0;
 /// Render-only Z-bias (metres) for road-owned top surfaces.
 ///
 /// This is not a physical curb, sidewalk, or roadbed height. Physical sidewalk elevation is owned
-/// by the compiled road profile (`CURB_STEP_HEIGHT_M`, sidewalk slope, and solved section heights).
+/// by the compiled road profile (`CURB_STEP_HEIGHT_M` and solved section heights).
 ///
 /// Road top surfaces intentionally render at their solved physical height. Terrain under the road
 /// footprint is clipped topologically, so lifting road/sidewalk top surfaces would create visible

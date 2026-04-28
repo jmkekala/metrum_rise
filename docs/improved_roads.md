@@ -121,6 +121,8 @@ Not accepted as the final target:
   topology
 - paired adjacent-mouth strip candidates as the authoritative node footprint or sidewalk source
 - additional sliver cleanup as the primary answer to malformed node candidates
+- nearest-polygon, nearest-segment, terrain, asphalt, or full-roadbed fallback as a rendered node
+  sidewalk / curb / shoulder height source
 - convex hull, concave hull, or corner-rounding output as the authoritative sidewalk ownership
   source before asphalt / footprint ownership has already been resolved
 
@@ -361,10 +363,11 @@ That function must support at least:
 - crowned carriageway
 - fixed one-sided crossfall
 - curb step between carriageway and sidewalk
-- outward sidewalk slope
+- flat sidewalk plateau at the solved curb-top height
 
-The exact authored defaults may be simple at first, but the representation must not hard-code
-"single flat ribbon" as the only possible shape.
+The exact authored defaults may be simple at first, but the representation must not collapse the
+curb step into a single flat ribbon. Sidewalks are intentionally flat in the current city-building
+profile; the road may still have a bounded carriageway crossfall.
 
 ### 6. Visual Presentation Is A Separate Piece/Profile Carrier
 
@@ -512,6 +515,98 @@ node sidewalks render lower than span sidewalks.
   clipping/debug boundary, not a rendered material seam
 - no rendered node sidewalk may fall back to asphalt height or full-roadbed interpolation at the
   road/sidewalk boundary
+
+#### Band-Owned Node Height Field Refactor
+
+This is the deterministic replacement for nearest-polygon, nearest-segment, or full-roadbed node
+height sampling. `i_overlay` and Spade own the two-dimensional shape; solved road bands own all
+rendered heights.
+
+The refactor applies to every node piece:
+
+- `Terminal`
+- `Bend`
+- `JunctionN`
+
+The node class may change cap policy and the number of incident mouths. It must not change the
+height ownership algorithm.
+
+Inputs:
+
+- the stable sorted incident-mouth list used by the node ownership solver
+- each incident edge's solved section bands at the mouth / throat handoff
+- final material ownership polygons after asphalt and non-road regions are resolved
+- profile rails emitted from solved band boundaries, including asphalt edges, curb / shoulder
+  boundaries, sidewalk inner edges, sidewalk outer edges, and footpath boundaries
+
+Output:
+
+- one height value for every rendered node top-surface vertex
+- one material / band domain classification for every rendered node top-surface triangle
+- no rendered node top-surface vertex whose height came from terrain, full-roadbed interpolation,
+  or a nearest unrelated candidate
+
+Algorithm:
+
+1. Build profile rails from solved section bands before triangulation.
+2. Clip profile rails to the final node material regions with the same ownership backend as the
+   rendered shape.
+3. Insert surviving profile rails as CDT constraints or deterministic guide vertices so the
+   triangulation cannot erase curb-top, sidewalk-inner, sidewalk-outer, or footpath boundaries.
+4. Build band-height domains from clipped solved bands, not from the full roadbed footprint.
+5. Classify every rendered vertex by the final material region first, then by the clipped band
+   height domain inside that material.
+6. Compute height from local band coordinates:
+
+```text
+height = longitudinal_grade_at_s + lateral_band_profile_at_t
+```
+
+7. Use the same solved span band profile for node vertices as for ordinary span vertices. The
+   current sidewalk profile is a flat plateau at solved curb-top height, so node sidewalks must keep
+   that plateau instead of sagging toward terrain or asphalt.
+8. Copy exact seam heights for vertices that lie on the span / node handoff rails. The same world
+   XZ seam point must produce the same Y from both the span and node builders.
+9. If multiple band domains can own a vertex, choose deterministically by:
+
+```text
+material ownership -> band priority inside that material -> distance to owning rail -> incident
+mouth angular order -> edge id -> side -> band index
+```
+
+10. If no valid band domain owns a rendered top-surface vertex, node compilation must emit a
+    `--debug road-geometry` error and reject that triangle. It must not fall back to terrain,
+    asphalt, full-roadbed, or zero height.
+
+Height rules:
+
+- `Carriageway` vertices use only carriageway band domains.
+- `CurbOrShoulder` vertices use only curb / shoulder band domains.
+- `Sidewalk` vertices use only sidewalk band domains.
+- `Footpath` vertices use only footpath band domains.
+- terrain clip / earthwork boundary vertices may use footprint heights, but those vertices are not
+  rendered road material vertices.
+- constants such as curb step height or shoulder slope may exist only in the section/profile
+  solver; node builders consume solved profile output instead of duplicating those values.
+
+Acceptance:
+
+- a flat span connected to any `Terminal`, `Bend`, or `JunctionN` keeps identical seam heights for
+  asphalt, curb / shoulder, sidewalk, and footpath rails
+- node sidewalks must remain at the solved flat sidewalk profile height; they must not sag toward
+  terrain height or asphalt height
+- along a continuous sidewalk rail, height may change only because of longitudinal road grade or
+  the solved band profile; it must not oscillate because the nearest height candidate changed
+- acute-angle and arbitrary `n`-way nodes must still obey material ownership first: sidewalks never
+  cross final asphalt to preserve height continuity
+- the debug log must include rejected node id, piece kind, material, band kind, vertex position,
+  candidate count, and selected / missing owner when a node vertex cannot be assigned deterministically
+
+Non-goals:
+
+- this refactor does not add rounded corners, Spade refinement, or beautification
+- this refactor does not change logical graph connectivity, route weights, or lane semantics
+- this refactor does not introduce a temporary shader, terrain mask, or render-only height patch
 
 #### Bend Corridor And Side-Join Fill
 
@@ -728,7 +823,6 @@ Required rule:
 - render Z-bias must not be used to make sidewalks physically higher than asphalt
 - physical sidewalk elevation is owned by the compiled road profile:
   - curb step height
-  - sidewalk slope
   - solved section / node-piece heights
 - `Span`, `Bend`, `Terminal`, and `JunctionN` sidewalk triangles must therefore get their real
   height from the same profile-height reconstruction path before any render Z-bias is applied
