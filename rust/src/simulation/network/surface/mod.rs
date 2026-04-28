@@ -289,12 +289,26 @@ struct OrderedIncidentPieceMouth {
 struct NodeCorridorCandidates {
     road_candidate_polygons: Vec<RoadSurfaceVisualPolygon>,
     non_road_candidate_polygons: Vec<NodeNonRoadCandidatePolygon>,
-    non_road_height_candidate_polygons: Vec<RoadSurfaceVisualPolygon>,
+    non_road_height_domains: Vec<NodeBandHeightDomain>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct NodeNonRoadCandidatePolygon {
     polygon: RoadSurfaceVisualPolygon,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct NodeBandHeightDomain {
+    kind: RoadSurfaceBandKind,
+    polygon: RoadSurfaceVisualPolygon,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NodeBandHeightSample {
+    priority: u8,
+    domain_index: usize,
+    distance_squared: f32,
+    height_m: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2046,9 +2060,11 @@ impl RoadSurfaceSystem {
         let mouths = self.build_ordered_piece_mouths(&[incident])?;
         let node_candidates = Self::build_node_corridor_candidates(node_pos, &mouths)?;
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
+            node_id,
+            RoadSurfaceVisualNodePieceKind::Terminal,
             &node_candidates.road_candidate_polygons,
             &node_candidates.non_road_candidate_polygons,
-            &node_candidates.non_road_height_candidate_polygons,
+            &node_candidates.non_road_height_domains,
         )?;
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
@@ -2085,9 +2101,11 @@ impl RoadSurfaceSystem {
         let mouths = self.build_ordered_piece_mouths(incidents)?;
         let node_candidates = Self::build_node_corridor_candidates(node_pos, &mouths)?;
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
+            node_id,
+            RoadSurfaceVisualNodePieceKind::Bend,
             &node_candidates.road_candidate_polygons,
             &node_candidates.non_road_candidate_polygons,
-            &node_candidates.non_road_height_candidate_polygons,
+            &node_candidates.non_road_height_domains,
         )?;
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
@@ -2124,9 +2142,11 @@ impl RoadSurfaceSystem {
         let mouths = self.build_ordered_piece_mouths(incidents)?;
         let node_candidates = Self::build_node_corridor_candidates(node_pos, &mouths)?;
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
+            node_id,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
             &node_candidates.road_candidate_polygons,
             &node_candidates.non_road_candidate_polygons,
-            &node_candidates.non_road_height_candidate_polygons,
+            &node_candidates.non_road_height_domains,
         )?;
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
@@ -2173,9 +2193,11 @@ impl RoadSurfaceSystem {
     }
 
     fn resolve_node_surface_regions_with_overlay(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
         road_candidates: &[RoadSurfaceVisualPolygon],
         non_road_candidates: &[NodeNonRoadCandidatePolygon],
-        non_road_height_candidates: &[RoadSurfaceVisualPolygon],
+        non_road_height_domains: &[NodeBandHeightDomain],
     ) -> Option<NodeSurfaceRegionResult> {
         let mut height_candidates = Vec::with_capacity(
             road_candidates
@@ -2188,6 +2210,14 @@ impl RoadSurfaceSystem {
                 .iter()
                 .map(|candidate| candidate.polygon.clone()),
         );
+        let road_height_domains = road_candidates
+            .iter()
+            .cloned()
+            .map(|polygon| NodeBandHeightDomain {
+                kind: RoadSurfaceBandKind::Carriageway,
+                polygon,
+            })
+            .collect::<Vec<_>>();
 
         let road_contours = Self::overlay_contours_from_polygons(road_candidates);
         let mut road_shapes = Self::overlay_union_contours(&road_contours)?;
@@ -2203,22 +2233,28 @@ impl RoadSurfaceSystem {
             Self::overlay_binary_shapes(&footprint_shapes, &road_shapes, OverlayRule::Difference)?
         };
         let non_road_guide_points =
-            Self::overlay_points_from_polygons(non_road_height_candidates);
-        Self::insert_overlay_guide_points_into_shapes(
-            &mut non_road_shapes,
-            &non_road_guide_points,
-        );
+            Self::overlay_points_from_band_height_domains(non_road_height_domains);
+        Self::insert_overlay_guide_points_into_shapes(&mut non_road_shapes, &non_road_guide_points);
 
         Self::sort_overlay_shapes(&mut road_shapes);
         Self::sort_overlay_shapes(&mut non_road_shapes);
         Self::sort_overlay_shapes(&mut footprint_shapes);
 
-        let mut road_surface_polygons =
-            Self::visual_polygons_from_overlay_shapes(&road_shapes, road_candidates);
-        let mut sidewalk_surface_polygons = Self::visual_polygons_from_overlay_shapes(
-            &non_road_shapes,
-            non_road_height_candidates,
+        let mut road_surface_polygons = Self::visual_polygons_from_overlay_shapes_with_band_heights(
+            node_id,
+            piece_kind,
+            "carriageway",
+            &road_shapes,
+            &road_height_domains,
         );
+        let mut sidewalk_surface_polygons =
+            Self::visual_polygons_from_overlay_shapes_with_band_heights(
+                node_id,
+                piece_kind,
+                "non_road",
+                &non_road_shapes,
+                non_road_height_domains,
+            );
         let mut outer_boundary_loops = Self::outer_boundary_polygons_from_overlay_shapes(
             &footprint_shapes,
             &height_candidates,
@@ -2254,12 +2290,12 @@ impl RoadSurfaceSystem {
         contours
     }
 
-    fn overlay_points_from_polygons(
-        polygons: &[RoadSurfaceVisualPolygon],
+    fn overlay_points_from_band_height_domains(
+        domains: &[NodeBandHeightDomain],
     ) -> Vec<NodeOverlayPoint> {
-        let mut points = polygons
+        let mut points = domains
             .iter()
-            .flat_map(|polygon| polygon.points_world.iter())
+            .flat_map(|domain| domain.polygon.points_world.iter())
             .map(|point| Self::overlay_point_from_world_point(*point))
             .collect::<Vec<_>>();
         points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
@@ -2440,15 +2476,23 @@ impl RoadSurfaceSystem {
         signed_area * 0.5
     }
 
-    fn visual_polygons_from_overlay_shapes(
+    fn visual_polygons_from_overlay_shapes_with_band_heights(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        material_name: &'static str,
         shapes: &[NodeOverlayShape],
-        height_candidates: &[RoadSurfaceVisualPolygon],
+        height_domains: &[NodeBandHeightDomain],
     ) -> Vec<RoadSurfaceVisualPolygon> {
         let mut polygons = Vec::new();
         for shape in shapes {
-            let Some(polygon) =
-                Self::visual_polygon_from_overlay_shape(shape, height_candidates, true)
-            else {
+            let Some(polygon) = Self::visual_polygon_from_overlay_shape_with_band_heights(
+                node_id,
+                piece_kind,
+                material_name,
+                shape,
+                height_domains,
+                true,
+            ) else {
                 continue;
             };
             polygons.push(polygon);
@@ -2478,9 +2522,11 @@ impl RoadSurfaceSystem {
     ) -> Vec<RoadSurfaceVisualPolygon> {
         let mut polygons = Vec::new();
         for shape in shapes {
-            let Some(polygon) =
-                Self::visual_polygon_from_overlay_shape(shape, height_candidates, false)
-            else {
+            let Some(polygon) = Self::visual_polygon_from_overlay_shape_with_footprint_heights(
+                shape,
+                height_candidates,
+                false,
+            ) else {
                 continue;
             };
             polygons.push(polygon);
@@ -2489,14 +2535,22 @@ impl RoadSurfaceSystem {
         polygons
     }
 
-    fn visual_polygon_from_overlay_shape(
+    fn visual_polygon_from_overlay_shape_with_band_heights(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        material_name: &'static str,
         shape: &NodeOverlayShape,
-        height_candidates: &[RoadSurfaceVisualPolygon],
+        height_domains: &[NodeBandHeightDomain],
         preserve_holes: bool,
     ) -> Option<RoadSurfaceVisualPolygon> {
         let outer_contour = shape.first()?;
-        let mut outer_points =
-            Self::world_points_from_overlay_contour(outer_contour, height_candidates)?;
+        let mut outer_points = Self::world_points_from_overlay_contour_with_band_heights(
+            node_id,
+            piece_kind,
+            material_name,
+            outer_contour,
+            height_domains,
+        )?;
         if Self::signed_polygon_area_xz(&outer_points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
             return None;
         }
@@ -2507,8 +2561,13 @@ impl RoadSurfaceSystem {
         let mut hole_points = Vec::new();
         if preserve_holes {
             for contour in shape.iter().skip(1) {
-                let mut points =
-                    Self::world_points_from_overlay_contour(contour, height_candidates)?;
+                let mut points = Self::world_points_from_overlay_contour_with_band_heights(
+                    node_id,
+                    piece_kind,
+                    material_name,
+                    contour,
+                    height_domains,
+                )?;
                 if Self::signed_polygon_area_xz(&points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
                     continue;
                 }
@@ -2530,7 +2589,80 @@ impl RoadSurfaceSystem {
         })
     }
 
-    fn world_points_from_overlay_contour(
+    fn visual_polygon_from_overlay_shape_with_footprint_heights(
+        shape: &NodeOverlayShape,
+        height_candidates: &[RoadSurfaceVisualPolygon],
+        preserve_holes: bool,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        let outer_contour = shape.first()?;
+        let mut outer_points = Self::world_points_from_overlay_contour_with_footprint_heights(
+            outer_contour,
+            height_candidates,
+        )?;
+        if Self::signed_polygon_area_xz(&outer_points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+            return None;
+        }
+        if Self::signed_polygon_area_xz(&outer_points) < 0.0 {
+            outer_points.reverse();
+        }
+
+        let mut hole_points = Vec::new();
+        if preserve_holes {
+            for contour in shape.iter().skip(1) {
+                let mut points = Self::world_points_from_overlay_contour_with_footprint_heights(
+                    contour,
+                    height_candidates,
+                )?;
+                if Self::signed_polygon_area_xz(&points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+                    continue;
+                }
+                if Self::signed_polygon_area_xz(&points) > 0.0 {
+                    points.reverse();
+                }
+                hole_points.push(points);
+            }
+        }
+
+        Self::canonicalize_world_loop(&mut outer_points)?;
+        for hole in &mut hole_points {
+            Self::canonicalize_world_loop(hole)?;
+        }
+        let triangles_world = Self::triangulate_constrained_shape_xz(&outer_points, &hole_points)?;
+        Some(RoadSurfaceVisualPolygon {
+            points_world: outer_points,
+            triangles_world,
+        })
+    }
+
+    fn world_points_from_overlay_contour_with_band_heights(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        material_name: &'static str,
+        contour: &NodeOverlayContour,
+        height_domains: &[NodeBandHeightDomain],
+    ) -> Option<Vec<Vector3>> {
+        let mut points_world = Vec::with_capacity(contour.len());
+        for point in contour {
+            let xz = Vector2::new(point[0], point[1]);
+            let Some(y) = Self::sample_node_band_height_from_domains(xz, height_domains) else {
+                crate::debug_log!(
+                    "road",
+                    "node_band_height_missing node={} piece={:?} material={} x={:.3} z={:.3} domain_count={}",
+                    node_id,
+                    piece_kind,
+                    material_name,
+                    xz.x,
+                    xz.y,
+                    height_domains.len()
+                );
+                return None;
+            };
+            points_world.push(Vector3::new(point[0], y, point[1]));
+        }
+        Some(points_world)
+    }
+
+    fn world_points_from_overlay_contour_with_footprint_heights(
         contour: &NodeOverlayContour,
         height_candidates: &[RoadSurfaceVisualPolygon],
     ) -> Option<Vec<Vector3>> {
@@ -2538,7 +2670,8 @@ impl RoadSurfaceSystem {
             .iter()
             .map(|point| {
                 let xz = Vector2::new(point[0], point[1]);
-                let y = Self::sample_overlay_point_height_from_candidates(xz, height_candidates)?;
+                let y =
+                    Self::sample_overlay_footprint_height_from_candidates(xz, height_candidates)?;
                 Some(Vector3::new(point[0], y, point[1]))
             })
             .collect()
@@ -2564,7 +2697,98 @@ impl RoadSurfaceSystem {
         Some(())
     }
 
-    fn sample_overlay_point_height_from_candidates(
+    fn sample_node_band_height_from_domains(
+        point_xz: Vector2,
+        domains: &[NodeBandHeightDomain],
+    ) -> Option<f32> {
+        let mut best = None;
+        for (domain_index, domain) in domains.iter().enumerate() {
+            let priority = Self::node_band_height_priority(domain.kind);
+            for triangle in &domain.polygon.triangles_world {
+                let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(*triangle, point_xz)
+                else {
+                    continue;
+                };
+                Self::retain_best_node_band_height_sample(
+                    &mut best,
+                    NodeBandHeightSample {
+                        priority,
+                        domain_index,
+                        distance_squared: 0.0,
+                        height_m: triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc,
+                    },
+                );
+            }
+        }
+        if let Some(sample) = best {
+            return Some(sample.height_m);
+        }
+
+        for (domain_index, domain) in domains.iter().enumerate() {
+            if domain.polygon.points_world.len() < 2 {
+                continue;
+            }
+            let priority = Self::node_band_height_priority(domain.kind);
+            for index in 0..domain.polygon.points_world.len() {
+                let start = domain.polygon.points_world[index];
+                let end =
+                    domain.polygon.points_world[(index + 1) % domain.polygon.points_world.len()];
+                let start_xz = Vector2::new(start.x, start.z);
+                let end_xz = Vector2::new(end.x, end.z);
+                let segment = end_xz - start_xz;
+                let length_squared = segment.length_squared();
+                let t = if length_squared <= SAMPLE_EPSILON_M {
+                    0.0
+                } else {
+                    ((point_xz - start_xz).dot(segment) / length_squared).clamp(0.0, 1.0)
+                };
+                let closest = start_xz + segment * t;
+                let distance_squared = point_xz.distance_squared_to(closest);
+                Self::retain_best_node_band_height_sample(
+                    &mut best,
+                    NodeBandHeightSample {
+                        priority,
+                        domain_index,
+                        distance_squared,
+                        height_m: start.y + (end.y - start.y) * t,
+                    },
+                );
+            }
+        }
+
+        best.map(|sample| sample.height_m)
+    }
+
+    fn retain_best_node_band_height_sample(
+        best: &mut Option<NodeBandHeightSample>,
+        candidate: NodeBandHeightSample,
+    ) {
+        let replace = best.is_none_or(|current| {
+            candidate
+                .distance_squared
+                .total_cmp(&current.distance_squared)
+                .then(candidate.priority.cmp(&current.priority))
+                .then(candidate.domain_index.cmp(&current.domain_index))
+                .is_lt()
+        });
+        if replace {
+            *best = Some(candidate);
+        }
+    }
+
+    fn node_band_height_priority(kind: RoadSurfaceBandKind) -> u8 {
+        match kind {
+            RoadSurfaceBandKind::Carriageway | RoadSurfaceBandKind::CurbOrShoulder => 0,
+            RoadSurfaceBandKind::Sidewalk => 1,
+            RoadSurfaceBandKind::Footpath => 2,
+            RoadSurfaceBandKind::Median => 3,
+            RoadSurfaceBandKind::Parking => 4,
+            RoadSurfaceBandKind::CycleTrack => 5,
+            RoadSurfaceBandKind::TramReservation => 6,
+        }
+    }
+
+    fn sample_overlay_footprint_height_from_candidates(
         point_xz: Vector2,
         candidates: &[RoadSurfaceVisualPolygon],
     ) -> Option<f32> {
@@ -2912,7 +3136,7 @@ impl RoadSurfaceSystem {
 
         let mut road_candidate_polygons = Vec::new();
         let mut non_road_candidate_polygons = Vec::new();
-        let mut non_road_height_candidate_polygons = Vec::new();
+        let mut non_road_height_domains = Vec::new();
 
         for mouth in mouths {
             let Some((outer_a, outer_b)) = Self::mouth_full_roadbed_segment(&mouth.profile) else {
@@ -2940,15 +3164,20 @@ impl RoadSurfaceSystem {
             Self::append_mouth_non_road_height_candidates(
                 node_pos,
                 mouth,
-                &mut non_road_height_candidate_polygons,
+                &mut non_road_height_domains,
             );
         }
+        Self::append_adjacent_non_road_height_join_domains(
+            node_pos,
+            mouths,
+            &mut non_road_height_domains,
+        );
 
         (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
             NodeCorridorCandidates {
                 road_candidate_polygons,
                 non_road_candidate_polygons,
-                non_road_height_candidate_polygons,
+                non_road_height_domains,
             },
         )
     }
@@ -2964,7 +3193,7 @@ impl RoadSurfaceSystem {
         let end_mouth = &mouths[end_index];
         let mut road_candidate_polygons = Vec::new();
         let mut non_road_candidate_polygons = Vec::new();
-        let mut non_road_height_candidate_polygons = Vec::new();
+        let mut non_road_height_domains = Vec::new();
 
         // Keep each bend corridor/join as a simple overlay candidate; merging them into one loop
         // can make the two throat caps cross at the node on tight bends.
@@ -2996,7 +3225,7 @@ impl RoadSurfaceSystem {
             Self::append_mouth_non_road_height_candidates(
                 node_pos,
                 mouth,
-                &mut non_road_height_candidate_polygons,
+                &mut non_road_height_domains,
             );
         }
 
@@ -3022,7 +3251,11 @@ impl RoadSurfaceSystem {
             }
         }
 
-        for (start_band, end_band) in start_mouth.profile.bands.iter().zip(&end_mouth.profile.bands)
+        for (start_band, end_band) in start_mouth
+            .profile
+            .bands
+            .iter()
+            .zip(&end_mouth.profile.bands)
         {
             if start_band.kind != end_band.kind
                 || start_band.kind == RoadSurfaceBandKind::Carriageway
@@ -3036,7 +3269,10 @@ impl RoadSurfaceSystem {
                 start_band,
                 end_band,
             ) {
-                non_road_height_candidate_polygons.push(polygon);
+                non_road_height_domains.push(NodeBandHeightDomain {
+                    kind: start_band.kind,
+                    polygon,
+                });
             }
         }
 
@@ -3044,7 +3280,7 @@ impl RoadSurfaceSystem {
             NodeCorridorCandidates {
                 road_candidate_polygons,
                 non_road_candidate_polygons,
-                non_road_height_candidate_polygons,
+                non_road_height_domains,
             },
         )
     }
@@ -3052,7 +3288,7 @@ impl RoadSurfaceSystem {
     fn append_mouth_non_road_height_candidates(
         node_pos: Vector3,
         mouth: &OrderedIncidentPieceMouth,
-        non_road_height_candidate_polygons: &mut Vec<RoadSurfaceVisualPolygon>,
+        non_road_height_domains: &mut Vec<NodeBandHeightDomain>,
     ) {
         for band in &mouth.profile.bands {
             if band.kind == RoadSurfaceBandKind::Carriageway {
@@ -3066,7 +3302,49 @@ impl RoadSurfaceSystem {
             ) else {
                 continue;
             };
-            non_road_height_candidate_polygons.push(polygon);
+            non_road_height_domains.push(NodeBandHeightDomain {
+                kind: band.kind,
+                polygon,
+            });
+        }
+    }
+
+    fn append_adjacent_non_road_height_join_domains(
+        node_pos: Vector3,
+        mouths: &[OrderedIncidentPieceMouth],
+        non_road_height_domains: &mut Vec<NodeBandHeightDomain>,
+    ) {
+        if mouths.len() < 2 {
+            return;
+        }
+
+        for index in 0..mouths.len() {
+            let start_mouth = &mouths[index];
+            let end_mouth = &mouths[(index + 1) % mouths.len()];
+            for (start_band, end_band) in start_mouth
+                .profile
+                .bands
+                .iter()
+                .zip(&end_mouth.profile.bands)
+            {
+                if start_band.kind != end_band.kind
+                    || start_band.kind == RoadSurfaceBandKind::Carriageway
+                {
+                    continue;
+                }
+                if let Some(polygon) = Self::build_bend_local_band_join_polygon(
+                    node_pos,
+                    start_mouth,
+                    end_mouth,
+                    start_band,
+                    end_band,
+                ) {
+                    non_road_height_domains.push(NodeBandHeightDomain {
+                        kind: start_band.kind,
+                        polygon,
+                    });
+                }
+            }
         }
     }
 
@@ -3136,8 +3414,7 @@ impl RoadSurfaceSystem {
 
         let (start_left, start_right) =
             Self::segment_left_right_for_travel(start_travel, start_a, start_b)?;
-        let (end_left, end_right) =
-            Self::segment_left_right_for_travel(end_travel, end_a, end_b)?;
+        let (end_left, end_right) = Self::segment_left_right_for_travel(end_travel, end_a, end_b)?;
         let start_center = Self::midpoint_world(start_left, start_right);
         let end_center = Self::midpoint_world(end_left, end_right);
         let (start_side, end_side) = if left_side {
@@ -3206,8 +3483,7 @@ impl RoadSurfaceSystem {
 
         let (start_left, start_right) =
             Self::segment_left_right_for_travel(start_travel, start_a, start_b)?;
-        let (end_left, end_right) =
-            Self::segment_left_right_for_travel(end_travel, end_a, end_b)?;
+        let (end_left, end_right) = Self::segment_left_right_for_travel(end_travel, end_a, end_b)?;
         let start_center = Self::midpoint_world(start_left, start_right);
         let end_center = Self::midpoint_world(end_left, end_right);
         let start_left_node =
@@ -5585,7 +5861,7 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkCacheKind, CURB_STEP_HEIGHT_M, EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult,
+        CURB_STEP_HEIGHT_M, ChunkCacheKind, EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult,
         RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
         RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
         SAMPLE_EPSILON_M, SurfaceChunkKey,

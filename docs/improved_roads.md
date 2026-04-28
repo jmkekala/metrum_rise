@@ -567,16 +567,19 @@ height = longitudinal_grade_at_s + lateral_band_profile_at_t
    that plateau instead of sagging toward terrain or asphalt.
 8. Copy exact seam heights for vertices that lie on the span / node handoff rails. The same world
    XZ seam point must produce the same Y from both the span and node builders.
-9. If multiple band domains can own a vertex, choose deterministically by:
+9. If a vertex lies inside one or more band domains, choose deterministically by:
 
 ```text
-material ownership -> band priority inside that material -> distance to owning rail -> incident
+material ownership -> distance to owning rail -> band priority inside that material -> incident
 mouth angular order -> edge id -> side -> band index
 ```
 
-10. If no valid band domain owns a rendered top-surface vertex, node compilation must emit a
-    `--debug road-geometry` error and reject that triangle. It must not fall back to terrain,
-    asphalt, full-roadbed, or zero height.
+10. If a vertex sits between already-owned same-material band domains, extend the nearest
+    same-material band domain deterministically using the same tie-break. This is a band-owned
+    height-field extension, not a fallback to unrelated candidates.
+11. If no valid same-material band domain can provide a rendered top-surface vertex height, node
+    compilation must emit a `--debug road-geometry` error and reject that triangle. It must not
+    fall back to terrain, asphalt, full-roadbed, or zero height.
 
 Height rules:
 
