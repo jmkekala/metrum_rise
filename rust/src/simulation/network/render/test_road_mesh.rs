@@ -100,14 +100,16 @@ mod tests {
                 }
                 let d1 = v1 - v0;
                 let d2 = v2 - v0;
-                let cross = d1.x * d2.z - d1.z * d2.x;
+                let projected_cross = d1.x * d2.z - d1.z * d2.x;
+                if projected_cross.abs() >= 0.001 {
+                    assert!(
+                        projected_cross >= -0.001,
+                        "{label} tri {tri_idx}: back-facing winding detected (cross={projected_cross:.4})"
+                    );
+                }
+                let area = d1.cross(d2).length() * 0.5;
                 assert!(
-                    cross >= -0.001,
-                    "{label} tri {tri_idx}: back-facing winding detected (cross={cross:.4})"
-                );
-                let area = cross.abs() * 0.5;
-                assert!(
-                    area >= 0.001,
+                    area >= 1.0e-6,
                     "{label} tri {tri_idx}: degenerate triangle (area={area:.6})"
                 );
             }
@@ -312,7 +314,7 @@ mod tests {
     }
 
     #[test]
-    fn test_editor_path_straight_road_keeps_terminal_caps() {
+    fn test_editor_path_straight_road_keeps_terminal_end_bands() {
         let road = [Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
         let (_graph, mesh_data, _terrain) = generate_editor_mesh(&[(&road, 1, 1)]);
         validate_mesh(&mesh_data, 40.0);
@@ -345,9 +347,39 @@ mod tests {
             0.25,
             VisibleSurface::Sidewalk,
         );
+        let left_terminal_end_band_sidewalk = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-21.5, -3.3),
+            Vector2::new(-20.25, 3.3),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+        let right_terminal_end_band_sidewalk = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(20.25, -3.3),
+            Vector2::new(21.5, 3.3),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+        let left_terminal_slab_leak = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(-22.25, -3.3),
+            Vector2::new(-21.75, 3.3),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
+        let right_terminal_slab_leak = visible_coverage_ratio(
+            &mesh_data,
+            Vector2::new(21.75, -3.3),
+            Vector2::new(22.25, 3.3),
+            0.25,
+            VisibleSurface::Sidewalk,
+        );
 
         assert!(left_asphalt >= 0.8 && right_asphalt >= 0.8);
         assert!(left_sidewalk >= 0.45 && right_sidewalk >= 0.45);
+        assert!(left_terminal_end_band_sidewalk >= 0.8 && right_terminal_end_band_sidewalk >= 0.8);
+        assert!(left_terminal_slab_leak <= 0.05 && right_terminal_slab_leak <= 0.05);
     }
 
     #[test]

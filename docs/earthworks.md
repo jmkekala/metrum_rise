@@ -417,7 +417,8 @@ Required road geometry contract:
 - that local geometry must include:
   1. the road-owned top-surface boundary condition
   2. left and right tie-in faces from the footprint to the tie-in boundary
-  3. terminal cap geometry at dead ends
+  3. terminal top-surface sidewalk / curb end-band geometry at dead ends, using the same
+     side-aware bands as the incident road profile
   4. closure / underside geometry anywhere the side faces would otherwise expose a visible void
 - terrain owns only the far-field ground outside the deterministic tie-in boundary
 - flat-ground cases must collapse toward a visually minimal shoulder / verge join instead of

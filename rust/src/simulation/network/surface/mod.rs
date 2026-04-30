@@ -318,6 +318,16 @@ struct NodeBandHeightSample {
     height_m: f32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerminalEndBandLayer {
+    left_inner_point_world: Vector3,
+    left_outer_point_world: Vector3,
+    right_inner_point_world: Vector3,
+    right_outer_point_world: Vector3,
+    inner_offset_m: f32,
+    outer_offset_m: f32,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct NodeSurfaceRegionResult {
     outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
@@ -2074,17 +2084,13 @@ impl RoadSurfaceSystem {
         let mouths = self.build_ordered_piece_mouths(&[incident])?;
         let mouth = mouths.first()?;
         let endpoint_profile = self.build_incident_endpoint_profile(incident)?;
-        let node_candidates = Self::build_terminal_corridor_candidates(mouth, &endpoint_profile)?;
-        let node_regions = Self::resolve_node_surface_regions_with_overlay(
-            node_id,
-            RoadSurfaceVisualNodePieceKind::Terminal,
-            &node_candidates.road_candidate_polygons,
-            &node_candidates.non_road_candidate_polygons,
-            &node_candidates.non_road_height_domains,
-        )?;
-        let outer_boundary_loops = node_regions.outer_boundary_loops;
-        let road_surface_polygons = node_regions.road_surface_polygons;
-        let sidewalk_surface_polygons = node_regions.sidewalk_surface_polygons;
+        let (road_surface_polygons, sidewalk_surface_polygons) =
+            Self::build_terminal_band_surface_polygons(&mouth.profile, &endpoint_profile)?;
+        let mut footprint_polygons =
+            Vec::with_capacity(road_surface_polygons.len() + sidewalk_surface_polygons.len());
+        footprint_polygons.extend(road_surface_polygons.iter().cloned());
+        footprint_polygons.extend(sidewalk_surface_polygons.iter().cloned());
+        let outer_boundary_loops = Self::union_terrain_clip_polygons(&footprint_polygons);
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
@@ -3821,49 +3827,15 @@ impl RoadSurfaceSystem {
         Some((left_point, right_point))
     }
 
-    fn build_terminal_corridor_candidates(
-        mouth: &OrderedIncidentPieceMouth,
+    fn build_terminal_band_surface_polygons(
+        mouth_profile: &IncidentMouthProfile,
         endpoint_profile: &IncidentMouthProfile,
-    ) -> Option<NodeCorridorCandidates> {
-        let mut road_candidate_polygons = Vec::new();
-        let mut non_road_candidate_polygons = Vec::new();
-        let mut non_road_height_domains = Vec::new();
+    ) -> Option<(Vec<RoadSurfaceVisualPolygon>, Vec<RoadSurfaceVisualPolygon>)> {
+        let mut road_surface_polygons = Vec::new();
+        let mut sidewalk_surface_polygons = Vec::new();
 
-        if let (Some((mouth_outer_a, mouth_outer_b)), Some((endpoint_outer_a, endpoint_outer_b))) = (
-            Self::mouth_full_roadbed_segment(&mouth.profile),
-            Self::mouth_full_roadbed_segment(endpoint_profile),
-        ) {
-            if let Some(polygon) = Self::make_visual_polygon(vec![
-                mouth_outer_a,
-                mouth_outer_b,
-                endpoint_outer_b,
-                endpoint_outer_a,
-            ]) {
-                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
-            }
-        }
-
-        if let (
-            Some((mouth_carriageway_a, mouth_carriageway_b)),
-            Some((endpoint_carriageway_a, endpoint_carriageway_b)),
-        ) = (
-            Self::mouth_carriageway_segment(&mouth.profile),
-            Self::mouth_carriageway_segment(endpoint_profile),
-        ) {
-            if let Some(polygon) = Self::make_visual_polygon(vec![
-                mouth_carriageway_a,
-                mouth_carriageway_b,
-                endpoint_carriageway_b,
-                endpoint_carriageway_a,
-            ]) {
-                road_candidate_polygons.push(polygon);
-            }
-        }
-
-        for (mouth_band, endpoint_band) in mouth.profile.bands.iter().zip(&endpoint_profile.bands) {
-            if mouth_band.kind != endpoint_band.kind
-                || mouth_band.kind == RoadSurfaceBandKind::Carriageway
-            {
+        for (mouth_band, endpoint_band) in mouth_profile.bands.iter().zip(&endpoint_profile.bands) {
+            if mouth_band.kind != endpoint_band.kind {
                 continue;
             }
             let Some(polygon) = Self::make_visual_polygon(vec![
@@ -3874,18 +3846,137 @@ impl RoadSurfaceSystem {
             ]) else {
                 continue;
             };
-            non_road_height_domains.push(NodeBandHeightDomain {
-                kind: mouth_band.kind,
-                polygon,
-            });
+            if mouth_band.kind == RoadSurfaceBandKind::Carriageway {
+                road_surface_polygons.push(polygon);
+            } else {
+                sidewalk_surface_polygons.push(polygon);
+            }
         }
 
-        (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
-            NodeCorridorCandidates {
-                road_candidate_polygons,
-                non_road_candidate_polygons,
-                non_road_height_domains,
-            },
+        Self::append_terminal_end_band_polygons(endpoint_profile, &mut sidewalk_surface_polygons);
+        Self::sort_visual_polygons(&mut road_surface_polygons);
+        Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
+        (!road_surface_polygons.is_empty() || !sidewalk_surface_polygons.is_empty())
+            .then_some((road_surface_polygons, sidewalk_surface_polygons))
+    }
+
+    fn append_terminal_end_band_polygons(
+        endpoint_profile: &IncidentMouthProfile,
+        sidewalk_surface_polygons: &mut Vec<RoadSurfaceVisualPolygon>,
+    ) {
+        let Some(outward_direction_xz) = Self::terminal_outward_direction_xz(endpoint_profile)
+        else {
+            return;
+        };
+        for layer in Self::terminal_end_band_layers(endpoint_profile) {
+            let inner_left = Self::offset_world_point_xz(
+                layer.left_inner_point_world,
+                outward_direction_xz,
+                layer.inner_offset_m,
+            );
+            let inner_right = Self::offset_world_point_xz(
+                layer.right_inner_point_world,
+                outward_direction_xz,
+                layer.inner_offset_m,
+            );
+            let outer_right = Self::offset_world_point_xz(
+                layer.right_outer_point_world,
+                outward_direction_xz,
+                layer.outer_offset_m,
+            );
+            let outer_left = Self::offset_world_point_xz(
+                layer.left_outer_point_world,
+                outward_direction_xz,
+                layer.outer_offset_m,
+            );
+
+            for points in [
+                vec![inner_left, inner_right, outer_right, outer_left],
+                vec![
+                    layer.left_outer_point_world,
+                    layer.left_inner_point_world,
+                    inner_left,
+                    outer_left,
+                ],
+                vec![
+                    layer.right_inner_point_world,
+                    layer.right_outer_point_world,
+                    outer_right,
+                    inner_right,
+                ],
+            ] {
+                let Some(polygon) = Self::make_visual_polygon(points) else {
+                    continue;
+                };
+                sidewalk_surface_polygons.push(polygon);
+            }
+        }
+    }
+
+    fn terminal_end_band_layers(
+        endpoint_profile: &IncidentMouthProfile,
+    ) -> Vec<TerminalEndBandLayer> {
+        let mut carriageway_indices =
+            endpoint_profile
+                .bands
+                .iter()
+                .enumerate()
+                .filter_map(|(index, band)| {
+                    (band.kind == RoadSurfaceBandKind::Carriageway).then_some(index)
+                });
+        let Some(first_carriageway) = carriageway_indices.next() else {
+            return Vec::new();
+        };
+        let last_carriageway = carriageway_indices.last().unwrap_or(first_carriageway);
+        let left_bands = &endpoint_profile.bands[..first_carriageway];
+        let right_bands = &endpoint_profile.bands[last_carriageway + 1..];
+        let mut layers = Vec::new();
+        let mut inner_offset_m = 0.0;
+        for (left_band, right_band) in left_bands.iter().rev().zip(right_bands.iter()) {
+            if left_band.kind != right_band.kind
+                || left_band.kind == RoadSurfaceBandKind::Carriageway
+            {
+                break;
+            }
+            let left_inner = left_band.end_point_world;
+            let left_outer = left_band.start_point_world;
+            let right_inner = right_band.start_point_world;
+            let right_outer = right_band.end_point_world;
+            let band_depth_m = (Self::distance_xz(left_inner, left_outer)
+                + Self::distance_xz(right_inner, right_outer))
+                * 0.5;
+            if band_depth_m <= SAMPLE_EPSILON_M {
+                continue;
+            }
+            let outer_offset_m = inner_offset_m + band_depth_m;
+            layers.push(TerminalEndBandLayer {
+                left_inner_point_world: left_inner,
+                left_outer_point_world: left_outer,
+                right_inner_point_world: right_inner,
+                right_outer_point_world: right_outer,
+                inner_offset_m,
+                outer_offset_m,
+            });
+            inner_offset_m = outer_offset_m;
+        }
+        layers
+    }
+
+    fn terminal_outward_direction_xz(profile: &IncidentMouthProfile) -> Option<Vector2> {
+        let outward_direction_xz = -profile.inward_direction_xz;
+        (outward_direction_xz.length_squared() > SAMPLE_EPSILON_M * SAMPLE_EPSILON_M)
+            .then_some(outward_direction_xz.normalized())
+    }
+
+    fn distance_xz(a: Vector3, b: Vector3) -> f32 {
+        Vector2::new(b.x - a.x, b.z - a.z).length()
+    }
+
+    fn offset_world_point_xz(point: Vector3, direction_xz: Vector2, distance_m: f32) -> Vector3 {
+        Vector3::new(
+            point.x + direction_xz.x * distance_m,
+            point.y,
+            point.z + direction_xz.y * distance_m,
         )
     }
 
@@ -7596,7 +7687,7 @@ mod tests {
             terminal_graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
         let terminal_end =
             terminal_graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
-        terminal_graph.add_edge(test_edge(
+        let terminal_edge_idx = terminal_graph.add_edge(test_edge(
             terminal_center,
             terminal_end,
             vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
@@ -7629,6 +7720,59 @@ mod tests {
                 .sidewalk_surface_polygons
                 .iter()
                 .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+        );
+        assert!(
+            point_inside_visual_polygons(
+                &terminal_piece.outer_boundary_loops,
+                Vector2::new(-1.0, 0.0)
+            ),
+            "terminal end band must extend the owned footprint beyond the graph endpoint"
+        );
+        assert!(
+            !point_inside_visual_polygons(
+                &terminal_piece.road_surface_polygons,
+                Vector2::new(-1.0, 0.0)
+            ),
+            "terminal end band center must not extend asphalt beyond the graph endpoint"
+        );
+        assert!(
+            point_inside_visual_polygons(
+                &terminal_piece.sidewalk_surface_polygons,
+                Vector2::new(-1.0, 0.0)
+            ),
+            "terminal end band center must be sidewalk-owned, not terrain-owned"
+        );
+        assert!(
+            !point_inside_visual_polygons(
+                &terminal_piece.outer_boundary_loops,
+                Vector2::new(-2.0, 0.0)
+            ),
+            "terminal end band must not expand into a slab beyond the solved non-road depth"
+        );
+        assert!(
+            point_inside_visual_polygons(
+                &terminal_piece.sidewalk_surface_polygons,
+                Vector2::new(-1.0, 4.25)
+            ),
+            "terminal end band side corners must be sidewalk-owned"
+        );
+        assert!(
+            point_inside_visual_polygons(
+                &terminal_piece.sidewalk_surface_polygons,
+                Vector2::new(-0.5, 0.0)
+            ),
+            "terminal end band must include a non-road curb transition across the asphalt end"
+        );
+        let terminal_span_piece = terminal_surface
+            .compiled_visual_span_pieces()
+            .get(&terminal_edge_idx)
+            .unwrap();
+        assert!(
+            !point_inside_visual_polygons(
+                &terminal_span_piece.road_surface_polygons,
+                Vector2::new(-1.0, 0.0)
+            ),
+            "terminal end band must not be duplicated by the span"
         );
         assert!(!terminal_piece.earthwork_surface_polygons.is_empty());
         assert!(!terminal_piece.earthwork_outer_boundary_loops.is_empty());

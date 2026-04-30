@@ -456,8 +456,8 @@ fn section_boundary_world_point(
 }
 
 fn triangle_is_too_small(a: Vector3, b: Vector3, c: Vector3) -> bool {
-    let projected_cross = ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs();
-    projected_cross <= MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2
+    let double_area_squared = (b - a).cross(c - a).length_squared();
+    double_area_squared <= MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2 * MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2
 }
 
 #[cfg(test)]
@@ -484,6 +484,18 @@ mod tests {
         let c = Vector3::new(2.0, 0.0, 0.0);
 
         assert!(triangle_is_too_small(a, b, c));
+    }
+
+    #[test]
+    fn renderer_keeps_valid_vertical_earthwork_triangles() {
+        let a = Vector3::new(0.0, 0.12, 0.0);
+        let b = Vector3::new(1.0, 0.12, 0.0);
+        let c = Vector3::new(1.0, 0.0, 0.0);
+
+        assert!(
+            !triangle_is_too_small(a, b, c),
+            "retaining and wall faces are vertical and must survive render culling"
+        );
     }
 }
 

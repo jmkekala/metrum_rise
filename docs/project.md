@@ -118,10 +118,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   loops now also compile directly from section ranges instead of being extracted from emitted
   polygons. The `Bend` path no longer borrows the generic junction-style center asphalt core
   either: two-way corners now use direct sampled mouth-to-mouth sector geometry with fixed
-  `<= 1 m` connector steps, `Terminal` outer boundary loops now come directly from explicit cap
-  geometry instead of generic polygon extraction, bend outer boundary loops now come directly from
-  compiled bend sectors instead of a generic polygon extraction pass, and footpath mouths now
-  compile directly in the incident-mouth builder instead of through a separate fallback helper.
+  `<= 1 m` connector steps, `Terminal` outer boundary loops now come directly from explicit
+  sidewalk / curb end-band geometry instead of generic polygon extraction, bend outer boundary
+  loops now come directly from compiled bend sectors instead of a generic polygon extraction pass,
+  and footpath mouths now compile directly in the incident-mouth builder instead of through a
+  separate fallback helper.
   `Bend` and `JunctionN` no longer share one connector-strip polygon builder either. `JunctionN`
   also no longer relies on one global angle-sorted center asphalt polygon; its carriageway core is
   now assembled from adjacent-mouth wedges around the node, its outer boundary loops now come
@@ -146,9 +147,11 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   The paired adjacent-mouth strip candidate model has been hard-cut out of node-piece ownership.
   Conflict-bounded full-roadbed corridor unions now define node footprints, conflict-bounded
   carriageway corridor unions define asphalt, and sidewalk / curb ownership is derived only as
-  `footprint - asphalt`. The remaining blocking work is in-game validation of that conflict-first
-  node model plus clipped terrain topology hardening, followed by retaining, wall, and material
-  variants.
+  `footprint - asphalt`. The terminal spec now requires an explicit U-shaped sidewalk / curb
+  end-band built from the same side-aware profile rails as the incident road, with carriageway
+  ownership stopping at the graph endpoint and no grounded-road render-only closure workaround.
+  The remaining blocking work is in-game validation of that conflict-first node model plus clipped
+  terrain topology hardening, followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in

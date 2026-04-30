@@ -89,10 +89,13 @@ Live behavior:
 - the live road-touched terrain patch bridge feeds piece-owned road loops into the CDT module,
   emits accepted terrain faces, rejects road-footprint faces, and reports CDT counters through
   `--debug road-geometry`
-- `Terminal`, `Bend`, and `JunctionN` visual node pieces now use conflict-bounded full-roadbed and
-  carriageway corridor candidates, resolve asphalt and non-road band ownership through `i_overlay`,
-  and triangulate the resolved regions with Spade CDT
-- node-piece sidewalks / curbs are not independent strips anymore; they are the resolved
+- `Bend` and `JunctionN` visual node pieces now use conflict-bounded full-roadbed and carriageway
+  corridor candidates, resolve asphalt and non-road band ownership through `i_overlay`, and
+  triangulate the resolved regions with Spade CDT
+- `Terminal` visual node pieces now use explicit side-aware band topology: carriageway stops at
+  the graph endpoint, side sidewalk / curb bands continue to the endpoint, and a U-shaped end band
+  wraps across the road end
+- bend / junction sidewalks and curbs are not independent strips anymore; they are the resolved
   `footprint - asphalt` remainder
 - visual edge-to-node handoff extends far enough to cover deterministic material conflicts between
   incident road arms; shallow-angle roads therefore create a longer shared ownership region instead
@@ -429,19 +432,22 @@ Required rule:
 - the `Bend` outer footprint is the boolean-union result of the resolved road-owned regions, not a
   second-pass extraction from already-emitted triangles
 
-### 9. `Terminal` And `JunctionN` Own Their Geometry Explicitly
+### 9. `Terminal`, `Bend`, And `JunctionN` Own Their Geometry Explicitly
 
-`Terminal` and `JunctionN` must remain explicit visual pieces with deterministic ownership.
+`Terminal`, `Bend`, and `JunctionN` must remain explicit visual pieces with deterministic
+ownership.
 
 Required rule:
 
-- `Terminal` owns its cap / closure as a one-mouth road-piece region problem
+- `Terminal` owns its dead-end closure as explicit band topology from one incident mouth
 - `JunctionN` owns its surface as an `n >= 3` road-piece region problem
-- `Terminal`, `Bend`, and `JunctionN` must use the same region pipeline:
+- `Bend` and `JunctionN` must use the shared region pipeline:
   - compile conflict-bounded mouth-derived corridor candidates
   - resolve ownership with `i_overlay`
   - triangulate resolved regions with Spade CDT
   - export the resolved outer footprint to terrain seam generation
+- `Terminal` must export the union of its explicit carriageway, side non-road, and end-band
+  top-surface polygons to terrain seam generation
 - `JunctionN` must not be built from one generic angle-sorted cloud of throat endpoints as final
   geometry
 - `JunctionN` must not be rendered as one global sidewalk annulus between one outer loop and one
@@ -456,13 +462,13 @@ Required rule:
 - no sidewalk triangle may overlap any asphalt triangle, including acute-angle corners
 - no carriageway seam may appear between an incident `Span` throat and the node-owned continuation
 
-### 10. Correct Sidewalk Ownership Is A Boolean Remainder
+### 10. Correct Non-Road Ownership Is Material-First
 
 The shipped roadbed runtime does not treat sidewalks as a symmetric visual halo around the road
 centerline, and it does not treat sidewalks as independent strips that are later hidden under
 asphalt.
 
-For every `Terminal`, `Bend`, and `JunctionN`, correctness is defined by this ownership order:
+For `Bend` and `JunctionN`, correctness is defined by this ownership order:
 
 ```text
 node_asphalt   = union(carriageway_corridors) intersect node_footprint
@@ -471,29 +477,46 @@ terrain        = terrain_patch - node_footprint
 ```
 
 `node_sidewalk` means the non-road walking / curb / shoulder surface that currently renders through
-the sidewalk material. It is the only visible sidewalk source inside the node-owned conflict region.
+the sidewalk material. For bend and junction pieces, it is the only visible sidewalk source inside
+the node-owned conflict region.
+
+For `Terminal`, correctness is defined by explicit band topology instead of a rendered generic
+remainder:
+
+```text
+terminal_asphalt  = carriageway bands from handoff to graph endpoint
+terminal_sidewalk = side non-road bands to endpoint + U-shaped non-road end band
+terrain           = terrain_patch - union(terminal top-surface polygons)
+```
 
 Required rules:
 
-- asphalt owns first; sidewalks never reserve space that asphalt later has to dodge
-- sidewalks may shrink, split into islands, or collapse to nothing when asphalt leaves no legal
-  area
-- a missing sidewalk is valid only when the resolved `node_sidewalk` area is below the documented
-  minimum area threshold
+- asphalt owns first; non-road surfaces never reserve space that asphalt later has to dodge
+- for `Bend` and `JunctionN`, sidewalks may shrink, split into islands, or collapse to nothing when
+  asphalt leaves no legal area
+- for `Terminal`, side and end non-road bands are emitted from solved endpoint bands and must not
+  expand into asphalt or into a full-roadbed slab
+- for `Bend` and `JunctionN`, a missing sidewalk is valid only when the resolved `node_sidewalk`
+  area is below the documented minimum area threshold
+- for `Terminal`, a missing sidewalk end band is valid only when the solved endpoint profile has no
+  sidewalk / curb bands on either side
 - no final sidewalk / curb / shoulder triangle may overlap final asphalt at any angle
 - no final sidewalk / curb / shoulder triangle may cross an asphalt boundary to connect two
   sidewalk islands
 - no final asphalt triangle may be omitted merely to preserve sidewalk continuity
-- terrain is clipped by the same final `node_footprint`, not by a separate hull or render outline
+- terrain is clipped by the same final road-owned top-surface footprint, not by a separate hull or
+  render outline. For `Bend` and `JunctionN` this is `node_footprint`; for `Terminal` this is the
+  union of the explicit asphalt, side non-road, and end-band polygons.
 
-This rule applies to every node class:
+This material-priority rule applies to every node class, but `Terminal` realizes it through
+explicit band topology rather than a generic rendered remainder:
 
-- `Terminal` is a one-mouth ownership problem plus a deterministic cap policy
+- `Terminal` is a one-mouth ownership problem plus a deterministic end-band policy
 - `Bend` is a two-mouth ownership problem
 - `JunctionN` is an `n >= 3` ownership problem
 
-The node class changes only the number of incident mouths and cap policy. It does not change the
-material ownership algorithm.
+The node class changes the number of incident mouths and the terminal end-band policy. It does not
+change asphalt-first ownership.
 
 #### Node Band Height Ownership
 
@@ -528,8 +551,8 @@ The refactor applies to every node piece:
 - `Bend`
 - `JunctionN`
 
-The node class may change cap policy and the number of incident mouths. It must not change the
-height ownership algorithm.
+The node class may change terminal end-band policy and the number of incident mouths. It must not
+change the height ownership algorithm.
 
 Inputs:
 
@@ -549,10 +572,12 @@ Output:
 Algorithm:
 
 1. Build profile rails from solved section bands before triangulation.
-2. Clip profile rails to the final node material regions with the same ownership backend as the
+2. Clip profile rails to the final node material regions with the same ownership path as the
    rendered shape.
-3. Insert surviving profile rails as CDT constraints or deterministic guide vertices so the
-   triangulation cannot erase curb-top, sidewalk-inner, sidewalk-outer, or footpath boundaries.
+3. For `Bend` and `JunctionN`, insert surviving profile rails as CDT constraints or deterministic
+   guide vertices so the triangulation cannot erase curb-top, sidewalk-inner, sidewalk-outer, or
+   footpath boundaries. For `Terminal`, the explicit band polygons must already carry those rail
+   vertices.
 4. Build band-height domains from clipped solved bands, not from the full roadbed footprint.
 5. Classify every rendered vertex by the final material region first, then by the clipped band
    height domain inside that material.
@@ -569,15 +594,17 @@ height = longitudinal_grade_at_s + lateral_band_profile_at_t
    XZ seam point must produce the same Y from both the span and node builders.
 9. `Terminal`, `Bend`, and `JunctionN` are exclusive visible node owners for grounded standard
    road surfaces. The adjacent span must stop at the node handoff rail and must not also render
-   asphalt, curb / shoulder, or sidewalk inside the node-owned cap / throat. This applies even when
-   a standard-road terminal has no graph clip distance: the terminal still owns a deterministic cap
-   depth derived from the roadbed half-width plus visual handoff padding. Bridge decks and tunnel
+   asphalt, curb / shoulder, or sidewalk inside the node-owned throat or terminal end band. This
+   applies even when a standard-road terminal has no graph clip distance: the terminal still owns a
+   deterministic end-band depth derived from the solved non-road bands. Bridge decks and tunnel
    portals keep their class-specific endpoint visibility rules.
-10. Emit node non-road top surfaces as separate overlay / CDT regions per physical band kind.
-   Sidewalk surfaces are triangulated only from `Sidewalk` domains, curb / shoulder surfaces only
-   from `CurbOrShoulder` domains, and footpath surfaces only from `Footpath` domains. A generic
-   `footprint - asphalt` polygon is not a valid rendered non-road carrier because it lets CDT draw
-   long triangles between curb-height and sidewalk-height vertices.
+10. Emit non-road top surfaces per physical band kind. For `Bend` and `JunctionN`, this means
+   separate overlay / CDT regions per band kind. For `Terminal`, this means explicit side-band and
+   end-band polygons per solved endpoint band. Sidewalk surfaces are triangulated only from
+   `Sidewalk` domains, curb / shoulder surfaces only from `CurbOrShoulder` domains, and footpath
+   surfaces only from `Footpath` domains. A generic `footprint - asphalt` polygon is not a valid
+   rendered non-road carrier because it lets CDT draw long triangles between curb-height and
+   sidewalk-height vertices.
 11. If a vertex lies inside one or more domains for that material, choose deterministically by:
 
 ```text
@@ -588,21 +615,23 @@ mouth angular order -> edge id -> side -> band index
 12. If a vertex sits between already-owned same-material band domains, extend the nearest
     same-material band domain deterministically using the same tie-break. This is a band-owned
     height-field extension, not a fallback to unrelated candidates.
-13. The rendered node non-road footprint must still close exactly to `footprint - asphalt`. Any
-    overlay residual left after exact band-domain clipping is classified per residual island.
-    A residual becomes `CurbOrShoulder` only when it shares asphalt boundary and its effective
-    width is narrow enough to be a road-edge closure. Broader residuals remain `Sidewalk` when a
-    sidewalk domain exists. This prevents outside bend sidewalks from collapsing to curb height
-    while still allowing tiny asphalt-adjacent slivers to close deterministically.
+13. For `Bend` and `JunctionN`, the rendered node non-road footprint must still close exactly to
+    `footprint - asphalt`. Any overlay residual left after exact band-domain clipping is classified
+    per residual island. A residual becomes `CurbOrShoulder` only when it shares asphalt boundary
+    and its effective width is narrow enough to be a road-edge closure. Broader residuals remain
+    `Sidewalk` when a sidewalk domain exists. This prevents outside bend sidewalks from collapsing
+    to curb height while still allowing tiny asphalt-adjacent slivers to close deterministically.
+    `Terminal` uses explicit side-band and end-band polygons instead of this residual path.
 14. If no valid same-material band domain can provide a rendered top-surface vertex height, node
     compilation must emit a `--debug road-geometry` error and reject that triangle. It must not
     fall back to terrain, asphalt, full-roadbed, or zero height.
 15. Asphalt-adjacent node seams are solved by physical `CurbOrShoulder` top-surface strips, not by
-    vertical patch faces. Every resolved overlay boundary where asphalt touches a walkable non-road
-    region must either be same-height, or must have a deterministic curb / shoulder transition strip
-    on the non-road side of the boundary.
-16. Node curb / shoulder transition strips are generated from the resolved overlay boundary before
-    non-road band ownership is emitted:
+    vertical patch faces. For `Bend` and `JunctionN`, every resolved overlay boundary where asphalt
+    touches a walkable non-road region must either be same-height, or must have a deterministic curb
+    / shoulder transition strip on the non-road side of the boundary. For `Terminal`, the
+    corresponding curb / shoulder ownership comes from the explicit side-band and end-band stack.
+16. For `Bend` and `JunctionN`, node curb / shoulder transition strips are generated from the
+    resolved overlay boundary before non-road band ownership is emitted:
     - the inner strip edge reuses the final asphalt boundary XZ and solved asphalt height
     - the outer strip edge is offset into the resolved non-road region by the solved curb / shoulder
       width, clipped back to `footprint - asphalt`, and uses the nearest solved walkable-band height
@@ -611,13 +640,13 @@ mouth angular order -> edge id -> side -> band index
       differently
     - adjacent transition strips must be stitched at shared asphalt-boundary vertices with
       deterministic curb / shoulder joint triangles before overlay union. Independent per-segment
-      quads are not allowed because their offset normals leave bend and terminal wedges open.
+      quads are not allowed because their offset normals leave bend and junction wedges open.
       Joint triangles are allowed to fill the convex closure between adjacent strip offsets even
       when that tiny wedge is outside the original per-strip non-road contours, but their centroids
       must never be inside asphalt.
     - overlay and render filtering may only discard sub-grid degenerate geometry. Millimetre-scale
       closure slivers produced by the deterministic overlay grid are valid geometry and must remain
-      renderable, otherwise bend and terminal seams reopen as camera-visible pinholes.
+      renderable, otherwise bend and junction seams reopen as camera-visible pinholes.
     - the visual polygon builder and CDT triangle filter must use the same millimetre-grid
       area tolerance as overlay ownership and may only reject near-collinear triangles below the
       centimetre-scale altitude floor. A separate coarse area or 5 cm altitude filter is not allowed
@@ -637,6 +666,10 @@ Height rules:
 - `Sidewalk` vertices use only sidewalk band domains.
 - `Footpath` vertices use only footpath band domains.
 - vertical patch faces are not used between asphalt and sidewalk / curb materials
+- exposed `Terminal` ends close as top-surface sidewalk / curb geometry: the side sidewalk bands
+  continue to the graph endpoint, then the same non-road band depth wraps across the road end. The
+  terminal end must not become a wide plaza slab and must not rely on render-only closure faces to
+  hide missing top surface.
 - terrain clip / earthwork boundary vertices may use footprint heights, but those vertices are not
   rendered road material vertices.
 - constants such as curb step height or shoulder slope may exist only in the section/profile
@@ -648,6 +681,8 @@ Acceptance:
   asphalt, curb / shoulder, sidewalk, and footpath rails
 - node sidewalks must remain at the solved flat sidewalk profile height; they must not sag toward
   terrain height or asphalt height
+- a dead-end road terminal must close the exposed sidewalk / curb end faces with no background
+  visible between the sidewalk top and asphalt base
 - along a continuous sidewalk rail, height may change only because of longitudinal road grade or
   the solved band profile; it must not oscillate because the nearest height candidate changed
 - acute-angle and arbitrary `n`-way nodes must still obey material ownership first: sidewalks never
@@ -660,6 +695,67 @@ Non-goals:
 - this refactor does not add rounded corners, Spade refinement, or beautification
 - this refactor does not change logical graph connectivity, route weights, or lane semantics
 - this refactor does not introduce a temporary shader, terrain mask, or render-only height patch
+
+#### Terminal Sidewalk End-Band Contract
+
+`Terminal` is not a miniature junction plaza. For grounded `Standard` roads with sidewalk / curb
+bands, the visible terminal end is the same side-aware band stack used by the incident span, folded
+around the stopped carriageway.
+
+Required terminal inputs:
+
+- the incident span mouth profile at the node handoff
+- the solved endpoint profile at the graph endpoint
+- the ordered physical bands from the endpoint profile
+- the outward dead-end direction opposite the incident edge's inward direction
+- the existing overlay / CDT tolerances used by node pieces
+
+Deterministic terminal topology:
+
+1. The incident carriageway surface continues from the handoff to the graph endpoint and stops
+   there.
+2. The left non-road bands continue from the handoff to the graph endpoint using the left endpoint
+   band rails.
+3. The right non-road bands continue from the handoff to the graph endpoint using the right endpoint
+   band rails.
+4. For each non-road band kind that exists on both sides of the endpoint profile, emit one end-band
+   strip across the exposed road end:
+   - the inner rail is the endpoint-side rail nearest the carriageway / previous inner band
+   - the outer rail is offset outward by that band's solved physical depth
+   - the strip spans laterally from the left band rail to the right band rail
+   - the strip reuses the same solved band heights as the side bands
+5. Adjacent end-band strips share exact vertices on their common rail. The final sidewalk / curb
+   end must therefore be one continuous topological band from left side, around the end, to right
+   side.
+6. The end-band corner joins are deterministic quadrilateral or triangular closures between the
+   side-band rails and the end-band rails. They may be split for CDT constraints, but they must
+   reuse the same rail vertices and band heights.
+7. Terrain clipping receives the union of the final terminal top-surface polygons only:
+   carriageway-to-endpoint, side non-road bands, and end non-road bands.
+
+Forbidden terminal outputs:
+
+- a full-roadbed-depth or half-roadbed-depth sidewalk slab beyond the endpoint
+- a generic `footprint - asphalt` polygon as the rendered terminal sidewalk when it erases physical
+  curb / sidewalk band boundaries
+- render-only wall, skirt, closure, end-cover, or background-colored polygons for grounded `Standard`
+  terminal closure
+- vertical terminal closure faces inside the ordinary grounded-road surface mesh
+- terrain, earthwork, or water polygons drawn under the terminal top surface
+- independent terminal end polygons whose vertices do not match the side sidewalk / curb rails
+
+Terminal acceptance:
+
+- in top view, the sidewalk / curb forms a U-shaped band with the same width on the left side, road
+  end, and right side
+- the terminal end band has no visible seam, gap, or z-fighting where it meets either side sidewalk
+- the terminal end-band depth equals the sum of solved non-road bands on one side of the road, not
+  the roadbed half-width and not a fixed visual padding value
+- asphalt never extends beyond the graph endpoint on ordinary dead ends
+- no visible terminal triangle is below the terrain surface or hidden by the road-touched terrain
+  mesh
+- car-only terminals with no sidewalk / curb bands emit no sidewalk end band and still keep a valid
+  asphalt terminal surface
 
 #### Bend Corridor And Side-Join Fill
 
@@ -1182,14 +1278,15 @@ Implement the hardcut in this order:
     faces, invalid constraints, and preserved seam-edge counts.
 11. Done: make live terrain CDT use `try_bulk_load_cdt` so malformed constraints are debug-counted
     instead of panicking the backend.
-12. Done: hard-cut `Terminal`, `Bend`, and `JunctionN` visual fills to local Spade CDT
-    triangulation fed by resolved road-piece regions.
-13. Done: replace node-piece material hints with `i_overlay` boolean ownership for `Terminal`,
-    `Bend`, and `JunctionN`.
+12. Done: hard-cut `Bend` and `JunctionN` visual fills to local Spade CDT triangulation fed by
+    resolved road-piece regions; `Terminal` now uses explicit band-owned end topology.
+13. Done: replace node-piece material hints with `i_overlay` boolean ownership for `Bend` and
+    `JunctionN`, while keeping `Terminal` on explicit side-band / end-band ownership.
 14. Done: remove hint-only / nearest-material / centroid-vote node material fallbacks after
     boolean ownership emits disjoint asphalt and sidewalk regions.
 15. Done: replace paired adjacent-mouth node candidate strips with conflict-bounded full-roadbed
-    and carriageway corridor candidates for `Terminal`, `Bend`, and `JunctionN`.
+    and carriageway corridor candidates for `Bend` and `JunctionN`, and explicit endpoint band
+    topology for `Terminal`.
 16. Later: adapt `Span` output to the same resolved-region contract once node pieces are validated.
 
 Acceptance requires `cargo check`, the CDT contract tests, and Godot headless load to pass.
@@ -1199,12 +1296,13 @@ Acceptance requires `cargo check`, the CDT contract tests, and Godot headless lo
 Road-piece CDT is now part of the accepted visual carrier for node pieces:
 
 - `Span`, `Bend`, `Terminal`, and `JunctionN` still own semantic road shape
-- `Terminal`, `Bend`, and `JunctionN` must generate deterministic full-roadbed and carriageway
-  corridor candidates from incident mouth profiles, then resolve those candidates with
-  `i_overlay`
-- asphalt owns carriageway first; non-road bands are derived from `node_footprint - node_asphalt`,
-  so curb / shoulder and sidewalk geometry can never become an independent owner over asphalt even
-  when they render through the same sidewalk material
+- `Bend` and `JunctionN` must generate deterministic full-roadbed and carriageway corridor
+  candidates from incident mouth profiles, then resolve those candidates with `i_overlay`
+- `Terminal` must generate deterministic carriageway, side non-road, and end-band top-surface
+  polygons directly from the incident mouth and endpoint band profiles
+- asphalt owns carriageway first; for `Bend` and `JunctionN`, non-road bands are derived from
+  `node_footprint - node_asphalt`; for `Terminal`, non-road ownership is the explicit side and end
+  band topology. In all cases, curb / shoulder and sidewalk geometry must not own asphalt.
 - terrain is computed as patch area minus the full road-owned footprint
 - CDT only triangulates already-decided polygons and material boundaries
 - CDT must not decide lane, sidewalk, crosswalk, mouth, or frontage semantics
@@ -1223,14 +1321,14 @@ Scope:
 
 - first target: `Terminal`, `Bend`, and `JunctionN`
 - `Bend` is not a separate geometry family; it is the same node-region builder with two mouths
-- `Terminal` is the same node-region builder with one mouth plus a deterministic cap closure
+- `Terminal` is a one-mouth explicit band builder with a deterministic sidewalk / curb end band
 - `JunctionN` is the same node-region builder with `n >= 3` mouths
 - deferred target: adapting `Span` output to the same resolved-region data structure after node
   pieces are stable
 - out of scope for this hardcut: lane-routing policy, pedestrian legality, building frontage rules,
   retaining-wall variants, and cosmetic sidewalk texture changes
 
-The hardcut has two authoritative candidate classes:
+For `Bend` and `JunctionN`, the hardcut has two authoritative candidate classes:
 
 - full-roadbed corridor candidates define the road-owned node footprint
 - carriageway corridor candidates define the asphalt region
@@ -1243,8 +1341,9 @@ node_asphalt   = union(carriageway_corridors) intersect node_footprint
 node_non_road  = node_footprint - node_asphalt
 ```
 
-`node_non_road` is the only source for curb / shoulder / sidewalk render ownership inside node
-pieces. There is no independent sidewalk strip owner after this hardcut.
+For `Bend` and `JunctionN`, `node_non_road` is the only source for curb / shoulder / sidewalk
+render ownership inside node pieces. `Terminal` uses explicit side-band and end-band topology from
+the solved endpoint bands, so it does not render a generic `node_non_road` remainder.
 
 Required node-piece input:
 
@@ -1275,19 +1374,25 @@ Candidate generation:
 1. Convert each mouth into node-local XZ coordinates with stable quantization.
 2. For every mouth pair, compute the deterministic material-conflict distance described in
    section 10A. This distance is part of visible ownership, not only routing metadata.
-3. For every mouth, build one full-roadbed corridor polygon from the full mouth segment through the
-   final conflict handoff region. This polygon defines where road-owned walking / shoulder surface
-   can exist, but it does not decide that the area will remain sidewalk.
-4. For every mouth, build one carriageway corridor polygon from the mouth carriageway segment
-   through the same conflict handoff region. This polygon defines asphalt ownership before any
-   sidewalk region is accepted.
-5. For `Terminal`, add a deterministic cap candidate at the dead-end side of the single mouth.
-6. Add a deterministic asphalt kernel at the node center only when needed to close sub-centimeter
-   numeric gaps between carriageway corridors. The kernel radius is bounded by the smallest
-   incident carriageway half-width and must be clipped to `node_footprint`; it must not create a
-   roundabout-sized node surface.
-7. Optional curb / sidewalk subdivision candidates may be produced for material detail, but they
-   are clipped by `node_non_road` and cannot enlarge the footprint or override asphalt ownership.
+3. For each `Bend` / `JunctionN` mouth, build one full-roadbed corridor polygon from the full mouth
+   segment through the final conflict handoff region. This polygon defines where road-owned walking
+   / shoulder surface can exist, but it does not decide that the area will remain sidewalk.
+4. For each `Bend` / `JunctionN` mouth, build one carriageway corridor polygon from the mouth
+   carriageway segment through the same conflict handoff region. This polygon defines asphalt
+   ownership before any sidewalk region is accepted.
+5. For `Terminal`, do not derive the visible end from one generic non-road end polygon. Emit
+   explicit side-band and end-band topology from the solved endpoint bands. The incident
+   carriageway ends at the graph endpoint; the end band beyond it is sidewalk / curb ownership
+   with depth equal to the solved non-road band stack on one side of the road. This terminal band
+   topology participates in terrain clipping as top surface only; it is not a render-only wall,
+   closure, terrain clip expansion, or wide slab derived from the full roadbed half-width.
+6. For `Bend` and `JunctionN`, add a deterministic asphalt kernel at the node center only when
+   needed to close sub-centimeter numeric gaps between carriageway corridors. The kernel radius is
+   bounded by the smallest incident carriageway half-width and must be clipped to `node_footprint`;
+   it must not create a roundabout-sized node surface.
+7. For `Bend` and `JunctionN`, optional curb / sidewalk subdivision candidates may be produced for
+   material detail, but they are clipped by `node_non_road` and cannot enlarge the footprint or
+   override asphalt ownership.
 8. Crosswalk candidates are anchors only. They are generated after asphalt / sidewalk ownership is
    resolved and must not create topology holes.
 
@@ -1305,7 +1410,7 @@ Forbidden candidate generation:
   awkward
 - using CDT to decide material ownership
 
-Boolean ownership order:
+Boolean ownership order for `Bend` and `JunctionN`:
 
 1. Quantize and canonicalize every corridor candidate ring.
 2. `i_overlay` unions all full-roadbed corridors into `node_footprint`.
@@ -1316,7 +1421,10 @@ Boolean ownership order:
 5. `i_overlay` subtracts `node_asphalt` from `node_footprint` to produce final `node_non_road`.
 6. Degenerate output rings below the documented minimum area threshold are dropped and counted.
 7. Final asphalt and non-road regions are triangulated with Spade CDT.
-8. Terrain patch input receives an `i_overlay` union over all grounded `Standard` piece footprints
+8. `Terminal` skips this boolean ownership order for visible non-road geometry and instead exports
+   the explicit terminal top-surface footprint from its asphalt, side non-road, and end-band
+   polygons.
+9. Terrain patch input receives an `i_overlay` union over all grounded `Standard` piece footprints
    intersecting the patch query before terrain CDT constraints are built.
 
 Acute-angle rule:
@@ -1387,7 +1495,8 @@ Legacy removal target:
 
 Acceptance tests for the conflict-first node hardcut:
 
-- terminal with sidewalks emits asphalt, non-road, and one footprint without overlap
+- terminal with sidewalks emits asphalt to the graph endpoint, a U-shaped non-road end band, and
+  one footprint without overlap or slab overrun
 - 2-arm bend at 1, 15, 30, 60, 90, 120, and 150 degrees emits no sidewalk-over-asphalt overlap and
   no terrain/background hole inside the node footprint
 - triangle network emits three independent bends with closed outer footprints
