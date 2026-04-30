@@ -567,35 +567,41 @@ height = longitudinal_grade_at_s + lateral_band_profile_at_t
    that plateau instead of sagging toward terrain or asphalt.
 8. Copy exact seam heights for vertices that lie on the span / node handoff rails. The same world
    XZ seam point must produce the same Y from both the span and node builders.
-9. Emit node non-road top surfaces as separate overlay / CDT regions per physical band kind.
+9. `Terminal`, `Bend`, and `JunctionN` are exclusive visible node owners for grounded standard
+   road surfaces. The adjacent span must stop at the node handoff rail and must not also render
+   asphalt, curb / shoulder, or sidewalk inside the node-owned cap / throat. This applies even when
+   a standard-road terminal has no graph clip distance: the terminal still owns a deterministic cap
+   depth derived from the roadbed half-width plus visual handoff padding. Bridge decks and tunnel
+   portals keep their class-specific endpoint visibility rules.
+10. Emit node non-road top surfaces as separate overlay / CDT regions per physical band kind.
    Sidewalk surfaces are triangulated only from `Sidewalk` domains, curb / shoulder surfaces only
    from `CurbOrShoulder` domains, and footpath surfaces only from `Footpath` domains. A generic
    `footprint - asphalt` polygon is not a valid rendered non-road carrier because it lets CDT draw
    long triangles between curb-height and sidewalk-height vertices.
-10. If a vertex lies inside one or more domains for that material, choose deterministically by:
+11. If a vertex lies inside one or more domains for that material, choose deterministically by:
 
 ```text
 material ownership -> distance to owning rail -> band priority inside that material -> incident
 mouth angular order -> edge id -> side -> band index
 ```
 
-11. If a vertex sits between already-owned same-material band domains, extend the nearest
+12. If a vertex sits between already-owned same-material band domains, extend the nearest
     same-material band domain deterministically using the same tie-break. This is a band-owned
     height-field extension, not a fallback to unrelated candidates.
-12. The rendered node non-road footprint must still close exactly to `footprint - asphalt`. Any
+13. The rendered node non-road footprint must still close exactly to `footprint - asphalt`. Any
     overlay residual left after exact band-domain clipping is classified per residual island.
     A residual becomes `CurbOrShoulder` only when it shares asphalt boundary and its effective
     width is narrow enough to be a road-edge closure. Broader residuals remain `Sidewalk` when a
     sidewalk domain exists. This prevents outside bend sidewalks from collapsing to curb height
     while still allowing tiny asphalt-adjacent slivers to close deterministically.
-13. If no valid same-material band domain can provide a rendered top-surface vertex height, node
+14. If no valid same-material band domain can provide a rendered top-surface vertex height, node
     compilation must emit a `--debug road-geometry` error and reject that triangle. It must not
     fall back to terrain, asphalt, full-roadbed, or zero height.
-14. Asphalt-adjacent node seams are solved by physical `CurbOrShoulder` top-surface strips, not by
+15. Asphalt-adjacent node seams are solved by physical `CurbOrShoulder` top-surface strips, not by
     vertical patch faces. Every resolved overlay boundary where asphalt touches a walkable non-road
     region must either be same-height, or must have a deterministic curb / shoulder transition strip
     on the non-road side of the boundary.
-15. Node curb / shoulder transition strips are generated from the resolved overlay boundary before
+16. Node curb / shoulder transition strips are generated from the resolved overlay boundary before
     non-road band ownership is emitted:
     - the inner strip edge reuses the final asphalt boundary XZ and solved asphalt height
     - the outer strip edge is offset into the resolved non-road region by the solved curb / shoulder

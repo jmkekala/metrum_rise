@@ -41,6 +41,7 @@ const PREVIEW_MAX_GRADE: f32 = 0.41;
 const PREVIEW_CLEARANCE_M: f32 = 1.0;
 const PREVIEW_MESH_LIFT_M: f32 = 0.05;
 const VISUAL_NODE_HANDOFF_PADDING_M: f32 = 1.0;
+const VISUAL_MIN_SPAN_LENGTH_M: f32 = 0.5;
 const BEND_JOIN_ARC_SAMPLE_STEP_M: f32 = 0.75;
 const EARTHWORK_PAVEMENT_DEPTH_M: f32 = 0.04;
 const EARTHWORK_MIN_MARGIN_M: f32 = 4.0;
@@ -1715,7 +1716,16 @@ impl RoadSurfaceSystem {
         }
 
         let cumulative = self.build_cumulative_distances(points);
-        let sample_distances = self.build_section_sample_distances(edge, &cumulative);
+        let start_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.start_node),
+        );
+        let end_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.end_node),
+        );
+        let sample_distances =
+            self.build_section_sample_distances(edge, &cumulative, start_kind, end_kind);
         sample_distances
             .into_iter()
             .map(|s_m| {
@@ -1804,7 +1814,7 @@ impl RoadSurfaceSystem {
         let incidents = self.sorted_incident_surface_edges(graph, valid);
         match self.classify_visual_node_kind(&incidents) {
             CompiledNodeKind::Terminal => incidents.first().and_then(|incident| {
-                self.build_terminal_visual_node_piece(graph, terrain, valid, *incident)
+                self.build_terminal_visual_node_piece(terrain, valid, *incident)
             }),
             CompiledNodeKind::PassThrough => None,
             CompiledNodeKind::Bend => {
@@ -2057,14 +2067,14 @@ impl RoadSurfaceSystem {
 
     fn build_terminal_visual_node_piece(
         &self,
-        graph: &RegionGraph,
         terrain: &TerrainSystem,
         node_id: u32,
         incident: IncidentSurfaceEdge,
     ) -> Option<RoadSurfaceVisualNodePiece> {
-        let node_pos = graph.node(node_id).pos;
         let mouths = self.build_ordered_piece_mouths(&[incident])?;
-        let node_candidates = Self::build_node_corridor_candidates(node_pos, &mouths)?;
+        let mouth = mouths.first()?;
+        let endpoint_profile = self.build_incident_endpoint_profile(incident)?;
+        let node_candidates = Self::build_terminal_corridor_candidates(mouth, &endpoint_profile)?;
         let node_regions = Self::resolve_node_surface_regions_with_overlay(
             node_id,
             RoadSurfaceVisualNodePieceKind::Terminal,
@@ -3783,6 +3793,18 @@ impl RoadSurfaceSystem {
         }
     }
 
+    fn build_incident_endpoint_profile(
+        &self,
+        incident: IncidentSurfaceEdge,
+    ) -> Option<IncidentMouthProfile> {
+        let sections = self.compiled_sections.get(&incident.edge_idx)?;
+        let section = match incident.side {
+            IncidentEdgeSide::Start => sections.first()?,
+            IncidentEdgeSide::End => sections.last()?,
+        };
+        Self::build_mouth_profile_from_section(section, incident.side)
+    }
+
     fn section_outer_boundary_pair(section: &RoadSurfaceSection) -> Option<(Vector3, Vector3)> {
         let first_band = section.bands.first()?;
         let last_band = section.bands.last()?;
@@ -3797,6 +3819,74 @@ impl RoadSurfaceSystem {
             last_band.height_end_m,
         );
         Some((left_point, right_point))
+    }
+
+    fn build_terminal_corridor_candidates(
+        mouth: &OrderedIncidentPieceMouth,
+        endpoint_profile: &IncidentMouthProfile,
+    ) -> Option<NodeCorridorCandidates> {
+        let mut road_candidate_polygons = Vec::new();
+        let mut non_road_candidate_polygons = Vec::new();
+        let mut non_road_height_domains = Vec::new();
+
+        if let (Some((mouth_outer_a, mouth_outer_b)), Some((endpoint_outer_a, endpoint_outer_b))) = (
+            Self::mouth_full_roadbed_segment(&mouth.profile),
+            Self::mouth_full_roadbed_segment(endpoint_profile),
+        ) {
+            if let Some(polygon) = Self::make_visual_polygon(vec![
+                mouth_outer_a,
+                mouth_outer_b,
+                endpoint_outer_b,
+                endpoint_outer_a,
+            ]) {
+                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
+            }
+        }
+
+        if let (
+            Some((mouth_carriageway_a, mouth_carriageway_b)),
+            Some((endpoint_carriageway_a, endpoint_carriageway_b)),
+        ) = (
+            Self::mouth_carriageway_segment(&mouth.profile),
+            Self::mouth_carriageway_segment(endpoint_profile),
+        ) {
+            if let Some(polygon) = Self::make_visual_polygon(vec![
+                mouth_carriageway_a,
+                mouth_carriageway_b,
+                endpoint_carriageway_b,
+                endpoint_carriageway_a,
+            ]) {
+                road_candidate_polygons.push(polygon);
+            }
+        }
+
+        for (mouth_band, endpoint_band) in mouth.profile.bands.iter().zip(&endpoint_profile.bands) {
+            if mouth_band.kind != endpoint_band.kind
+                || mouth_band.kind == RoadSurfaceBandKind::Carriageway
+            {
+                continue;
+            }
+            let Some(polygon) = Self::make_visual_polygon(vec![
+                mouth_band.start_point_world,
+                mouth_band.end_point_world,
+                endpoint_band.end_point_world,
+                endpoint_band.start_point_world,
+            ]) else {
+                continue;
+            };
+            non_road_height_domains.push(NodeBandHeightDomain {
+                kind: mouth_band.kind,
+                polygon,
+            });
+        }
+
+        (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
+            NodeCorridorCandidates {
+                road_candidate_polygons,
+                non_road_candidate_polygons,
+                non_road_height_domains,
+            },
+        )
     }
 
     fn build_node_corridor_candidates(
@@ -4490,13 +4580,101 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn classify_surface_node_kind(
+    fn classify_surface_node_kind_from_graph_geometry(
         &self,
         graph: &RegionGraph,
         node_id: u32,
     ) -> Option<CompiledNodeKind> {
-        let incidents = self.sorted_incident_surface_edges(graph, node_id);
+        let incidents = self.sorted_incident_surface_edges_from_graph_geometry(graph, node_id);
         (!incidents.is_empty()).then(|| self.classify_visual_node_kind(&incidents))
+    }
+
+    fn sorted_incident_surface_edges_from_graph_geometry(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+    ) -> Vec<IncidentSurfaceEdge> {
+        let mut incidents = self.collect_incident_surface_edges_from_graph_geometry(graph, node_id);
+        incidents.sort_by(|a, b| {
+            Self::normalized_angle_ccw(a.direction_xz)
+                .total_cmp(&Self::normalized_angle_ccw(b.direction_xz))
+                .then(a.edge_idx.cmp(&b.edge_idx))
+                .then(a.side.cmp(&b.side))
+        });
+        incidents
+    }
+
+    fn collect_incident_surface_edges_from_graph_geometry(
+        &self,
+        graph: &RegionGraph,
+        node_id: u32,
+    ) -> Vec<IncidentSurfaceEdge> {
+        if node_id as usize >= graph.node_adjacency_count() {
+            return Vec::new();
+        }
+
+        let mut incidents = Vec::new();
+        for &edge_idx in graph.node_adjacency(node_id) {
+            if edge_idx >= graph.edge_count() {
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            if !Self::is_surface_edge(edge) {
+                continue;
+            }
+
+            let side = if graph.get_valid_node(edge.start_node) == node_id {
+                Some(IncidentEdgeSide::Start)
+            } else if graph.get_valid_node(edge.end_node) == node_id {
+                Some(IncidentEdgeSide::End)
+            } else {
+                None
+            };
+            let Some(side) = side else {
+                continue;
+            };
+            let Some(direction_xz) = self.incident_direction_from_edge_geometry(edge, side) else {
+                continue;
+            };
+            incidents.push(IncidentSurfaceEdge {
+                edge_idx,
+                side,
+                direction_xz,
+            });
+        }
+
+        incidents.sort_by(|a, b| a.edge_idx.cmp(&b.edge_idx).then(a.side.cmp(&b.side)));
+        incidents
+    }
+
+    fn incident_direction_from_edge_geometry(
+        &self,
+        edge: &Edge,
+        side: IncidentEdgeSide,
+    ) -> Option<Vector2> {
+        let points = self.edge_points(edge);
+        if points.len() < 2 {
+            return None;
+        }
+
+        match side {
+            IncidentEdgeSide::Start => {
+                let endpoint = points[0];
+                points.iter().skip(1).find_map(|point| {
+                    let direction = Vector2::new(point.x - endpoint.x, point.z - endpoint.z);
+                    (direction.length_squared() > SAMPLE_EPSILON_M * SAMPLE_EPSILON_M)
+                        .then(|| direction.normalized())
+                })
+            }
+            IncidentEdgeSide::End => {
+                let endpoint = *points.last()?;
+                points.iter().rev().skip(1).find_map(|point| {
+                    let direction = Vector2::new(point.x - endpoint.x, point.z - endpoint.z);
+                    (direction.length_squared() > SAMPLE_EPSILON_M * SAMPLE_EPSILON_M)
+                        .then(|| direction.normalized())
+                })
+            }
+        }
     }
 
     fn sorted_incident_surface_edges(
@@ -4716,7 +4894,13 @@ impl RoadSurfaceSystem {
         center.y
     }
 
-    fn build_section_sample_distances(&self, edge: &Edge, cumulative: &[f32]) -> Vec<f32> {
+    fn build_section_sample_distances(
+        &self,
+        edge: &Edge,
+        cumulative: &[f32],
+        start_kind: Option<CompiledNodeKind>,
+        end_kind: Option<CompiledNodeKind>,
+    ) -> Vec<f32> {
         let Some(&total_length) = cumulative.last() else {
             return vec![0.0];
         };
@@ -4725,10 +4909,12 @@ impl RoadSurfaceSystem {
         }
 
         let mut samples = vec![0.0, total_length];
-        let start_throat = Self::visual_start_handoff_m(edge, total_length);
-        let end_throat = Self::visual_end_handoff_s_m(edge, total_length);
-        samples.push(start_throat);
-        samples.push(end_throat);
+        if let Some((start_throat, end_throat)) =
+            Self::visual_surface_handoff_range_m(edge, total_length, start_kind, end_kind)
+        {
+            samples.push(start_throat);
+            samples.push(end_throat);
+        }
 
         for &distance in cumulative {
             samples.push(distance);
@@ -4765,6 +4951,58 @@ impl RoadSurfaceSystem {
 
     fn visual_node_handoff_limit_m(edge: &Edge) -> f32 {
         Self::visual_roadbed_half_width_m(edge) + VISUAL_NODE_HANDOFF_PADDING_M
+    }
+
+    fn visual_terminal_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
+        Self::visual_node_handoff_limit_m(edge).clamp(0.0, total_length_m)
+    }
+
+    fn visual_node_handoff_distance_m(
+        edge: &Edge,
+        total_length_m: f32,
+        kind: Option<CompiledNodeKind>,
+        at_start: bool,
+    ) -> f32 {
+        match kind {
+            Some(CompiledNodeKind::Terminal) if edge.class == EdgeClass::Standard => {
+                Self::visual_terminal_handoff_m(edge, total_length_m)
+            }
+            Some(CompiledNodeKind::Terminal) => 0.0,
+            Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN) if at_start => {
+                Self::visual_start_handoff_m(edge, total_length_m)
+            }
+            Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN) => {
+                Self::visual_end_handoff_m(edge, total_length_m)
+            }
+            _ => 0.0,
+        }
+    }
+
+    fn visual_surface_handoff_range_m(
+        edge: &Edge,
+        total_length_m: f32,
+        start_kind: Option<CompiledNodeKind>,
+        end_kind: Option<CompiledNodeKind>,
+    ) -> Option<(f32, f32)> {
+        if total_length_m <= SAMPLE_EPSILON_M {
+            return None;
+        }
+
+        let mut start_handoff =
+            Self::visual_node_handoff_distance_m(edge, total_length_m, start_kind, true);
+        let mut end_handoff =
+            Self::visual_node_handoff_distance_m(edge, total_length_m, end_kind, false);
+        let max_handoff_total = (total_length_m - VISUAL_MIN_SPAN_LENGTH_M).max(0.0);
+        let handoff_total = start_handoff + end_handoff;
+        if handoff_total > max_handoff_total && handoff_total > SAMPLE_EPSILON_M {
+            let scale = max_handoff_total / handoff_total;
+            start_handoff *= scale;
+            end_handoff *= scale;
+        }
+
+        let start_s = start_handoff.clamp(0.0, total_length_m);
+        let end_s = (total_length_m - end_handoff).clamp(0.0, total_length_m);
+        (end_s - start_s > SAMPLE_EPSILON_M).then_some((start_s, end_s))
     }
 
     fn visual_start_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
@@ -5156,28 +5394,19 @@ impl RoadSurfaceSystem {
 
         let edge = graph.edge(edge_idx);
         let total_length = sections.last()?.s_m.max(0.0);
-        let start_kind =
-            self.classify_surface_node_kind(graph, graph.get_valid_node(edge.start_node));
-        let end_kind = self.classify_surface_node_kind(graph, graph.get_valid_node(edge.end_node));
-        let start_handoff = if matches!(
-            start_kind,
-            Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN)
-        ) {
-            Self::visual_start_handoff_m(edge, total_length)
-        } else {
-            0.0
-        };
-        let end_handoff = if matches!(
-            end_kind,
-            Some(CompiledNodeKind::Bend | CompiledNodeKind::JunctionN)
-        ) {
-            Self::visual_end_handoff_s_m(edge, total_length)
-        } else {
-            total_length
-        };
-        if end_handoff - start_handoff <= SAMPLE_EPSILON_M {
+        let start_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.start_node),
+        );
+        let end_kind = self.classify_surface_node_kind_from_graph_geometry(
+            graph,
+            graph.get_valid_node(edge.end_node),
+        );
+        let Some((start_handoff, end_handoff)) =
+            Self::visual_surface_handoff_range_m(edge, total_length, start_kind, end_kind)
+        else {
             return None;
-        }
+        };
 
         let start_index = sections
             .iter()
@@ -7110,7 +7339,7 @@ mod tests {
         let sections_b = surface_b.compiled_sections().get(&edge_idx).unwrap();
         assert_eq!(sections_a, sections_b);
         let s_values: Vec<f32> = sections_a.iter().map(|section| section.s_m).collect();
-        assert_eq!(s_values, vec![0.0, 8.0, 16.0, 20.0]);
+        assert_eq!(s_values, vec![0.0, 6.0, 8.0, 14.0, 16.0, 20.0]);
     }
 
     #[test]
@@ -7420,6 +7649,53 @@ mod tests {
             terminal_piece.earthwork_outer_boundary_loops,
             terminal_piece.outer_boundary_loops
         );
+    }
+
+    #[test]
+    fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
+        let terrain = flat_terrain(64, 64);
+        let mut graph = RegionGraph::new();
+        let start = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+        let end = graph.add_node(Vector3::new(40.0, 0.0, 5.0), NodeType::Junction);
+        let edge_idx = graph.add_edge(test_edge(
+            start,
+            end,
+            vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 5.0)],
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+
+        let mut surface = RoadSurfaceSystem::new(16.0);
+        surface.compile_dirty(&graph, &terrain);
+        let terminal_piece = surface
+            .compiled_visual_node_pieces()
+            .get(&start)
+            .expect("start node should compile a terminal piece");
+        let span_piece = surface
+            .compiled_visual_span_pieces()
+            .get(&edge_idx)
+            .expect("terminal road should keep a visible span after terminal handoff");
+
+        let travel = Vector2::new(40.0, 5.0).normalized();
+        let lateral = RoadSurfaceSystem::left_normal_xz(travel);
+        let center = Vector2::new(0.0, 0.0);
+        for side in [-1.0, 1.0] {
+            let curb_mid = center + lateral * side * 3.575;
+            assert!(
+                point_inside_visual_polygons(&terminal_piece.sidewalk_surface_polygons, curb_mid),
+                "angled terminal curb strip must be owned by sidewalk/curb surface on side {side}; point={curb_mid:?}"
+            );
+            assert!(
+                !point_inside_visual_polygons(&terminal_piece.road_surface_polygons, curb_mid),
+                "terminal curb strip must not be owned by asphalt on side {side}; point={curb_mid:?}"
+            );
+            assert!(
+                !point_inside_visual_polygons(&span_piece.sidewalk_surface_polygons, curb_mid),
+                "terminal curb strip must not be duplicated by the span on side {side}; point={curb_mid:?}"
+            );
+        }
     }
 
     #[test]
