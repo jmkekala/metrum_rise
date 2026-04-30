@@ -29,3 +29,7 @@ debug = 1
 [[bench]]
 name = "agent_benchmark"
 harness = false
+
+[[bench]]
+name = "surface_benchmark"
+harness = false

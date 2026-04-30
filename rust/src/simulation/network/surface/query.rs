@@ -475,8 +475,8 @@ impl RoadSurfaceSystem {
         min_chunk: SurfaceChunkKey,
         max_chunk: SurfaceChunkKey,
     ) -> (Vec<usize>, Vec<u32>) {
-        let mut edge_indices = HashSet::new();
-        let mut node_ids = HashSet::new();
+        let mut edge_indices = Vec::new();
+        let mut node_ids = Vec::new();
         for cx in (min_chunk.0 - 1)..=(max_chunk.0 + 1) {
             for cz in (min_chunk.1 - 1)..=(max_chunk.1 + 1) {
                 let chunk = (cx, cz);
@@ -491,10 +491,10 @@ impl RoadSurfaceSystem {
             }
         }
 
-        let mut edge_indices: Vec<usize> = edge_indices.into_iter().collect();
         edge_indices.sort_unstable();
-        let mut node_ids: Vec<u32> = node_ids.into_iter().collect();
+        edge_indices.dedup();
         node_ids.sort_unstable();
+        node_ids.dedup();
         (edge_indices, node_ids)
     }
 

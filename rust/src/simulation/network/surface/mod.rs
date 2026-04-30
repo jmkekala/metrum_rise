@@ -5,6 +5,7 @@
 //! shared public contracts and deterministic rebuild flow in one place.
 
 use godot::prelude::{Vector2, Vector3};
+use rayon::prelude::*;
 use spade::{ConstrainedDelaunayTriangulation, Point2};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -27,6 +28,8 @@ const SAMPLE_EPSILON_M: f32 = 0.001;
 const WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2: f32 = 1.0e-8;
 // Shared overlay/geometry area floor: one 1 mm quantized square keeps closure slivers visible.
 const NODE_OVERLAY_MIN_AREA_M2: f32 = 1.0e-6;
+// Avoid Rayon setup overhead for the small edge/node sets common in single-edit rebuilds.
+const PARALLEL_SURFACE_COMPILE_MIN_ITEMS: usize = 16;
 
 type SurfaceCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 type NodeOverlayPoint = [f32; 2];
@@ -460,22 +463,30 @@ impl RoadSurfaceSystem {
         let mut sorted_span_edges: Vec<usize> = span_edge_ids.into_iter().collect();
         sorted_span_edges.sort_unstable();
         sorted_span_edges.dedup();
-        for &edge_idx in &sorted_span_edges {
-            if edge_idx >= graph.edge_count() {
+        let section_results: Vec<(usize, Option<Vec<RoadSurfaceSection>>)> =
+            Self::collect_surface_compile_work(&sorted_span_edges, |edge_idx| {
+                if edge_idx >= graph.edge_count() {
+                    return (edge_idx, None);
+                }
+                let edge = graph.edge(edge_idx);
+                if !Self::is_surface_edge(edge) {
+                    return (edge_idx, None);
+                }
+                (
+                    edge_idx,
+                    Some(self.compile_edge_sections(graph, terrain, edge_idx)),
+                )
+            });
+        for (edge_idx, sections) in section_results {
+            if let Some(sections) = sections {
+                self.compiled_sections.insert(edge_idx, sections);
+            } else {
                 self.compiled_sections.remove(&edge_idx);
-                continue;
             }
-            let edge = graph.edge(edge_idx);
-            if !Self::is_surface_edge(edge) {
-                self.compiled_sections.remove(&edge_idx);
-                continue;
-            }
-            self.compiled_sections.insert(
-                edge_idx,
-                self.compile_edge_sections(graph, terrain, edge_idx),
-            );
         }
-        for edge_idx in sorted_span_edges {
+
+        let mut span_candidates = Vec::new();
+        for &edge_idx in &sorted_span_edges {
             self.remove_span_piece_coverage(edge_idx);
             if edge_idx >= graph.edge_count() {
                 self.compiled_visual_span_pieces.remove(&edge_idx);
@@ -486,7 +497,17 @@ impl RoadSurfaceSystem {
                 self.compiled_visual_span_pieces.remove(&edge_idx);
                 continue;
             }
-            if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
+            span_candidates.push(edge_idx);
+        }
+        let span_results: Vec<(usize, Option<RoadSurfaceVisualSpanPiece>)> =
+            Self::collect_surface_compile_work(&span_candidates, |edge_idx| {
+                (
+                    edge_idx,
+                    self.compile_visual_span_piece(graph, terrain, edge_idx),
+                )
+            });
+        for (edge_idx, span_piece) in span_results {
+            if let Some(span_piece) = span_piece {
                 self.insert_span_piece_coverage(&span_piece);
                 self.compiled_visual_span_pieces
                     .insert(edge_idx, span_piece);
@@ -495,17 +516,27 @@ impl RoadSurfaceSystem {
             }
         }
 
+        let mut node_candidates = Vec::new();
         for &node_id in &sorted_nodes {
             self.remove_node_piece_coverage(node_id);
             if self.node_has_surface_edges(graph, node_id) {
-                let visual_piece = self.compile_visual_node_piece(graph, terrain, node_id);
-                if let Some(visual_piece) = visual_piece {
-                    self.insert_node_piece_coverage(&visual_piece);
-                    self.compiled_visual_node_pieces
-                        .insert(node_id, visual_piece);
-                } else {
-                    self.compiled_visual_node_pieces.remove(&node_id);
-                }
+                node_candidates.push(node_id);
+            } else {
+                self.compiled_visual_node_pieces.remove(&node_id);
+            }
+        }
+        let node_results: Vec<(u32, Option<RoadSurfaceVisualNodePiece>)> =
+            Self::collect_surface_compile_work(&node_candidates, |node_id| {
+                (
+                    node_id,
+                    self.compile_visual_node_piece(graph, terrain, node_id),
+                )
+            });
+        for (node_id, visual_piece) in node_results {
+            if let Some(visual_piece) = visual_piece {
+                self.insert_node_piece_coverage(&visual_piece);
+                self.compiled_visual_node_pieces
+                    .insert(node_id, visual_piece);
             } else {
                 self.compiled_visual_node_pieces.remove(&node_id);
             }
@@ -528,15 +559,26 @@ impl RoadSurfaceSystem {
         self.earthwork_chunk_cache.clear();
 
         let edge_ids = self.all_surface_edge_ids(graph);
-        for &edge_idx in &edge_ids {
-            self.compiled_sections.insert(
-                edge_idx,
-                self.compile_edge_sections(graph, terrain, edge_idx),
-            );
+        let section_results: Vec<(usize, Vec<RoadSurfaceSection>)> =
+            Self::collect_surface_compile_work(&edge_ids, |edge_idx| {
+                (
+                    edge_idx,
+                    self.compile_edge_sections(graph, terrain, edge_idx),
+                )
+            });
+        for (edge_idx, sections) in section_results {
+            self.compiled_sections.insert(edge_idx, sections);
         }
 
-        for &edge_idx in &edge_ids {
-            if let Some(span_piece) = self.compile_visual_span_piece(graph, terrain, edge_idx) {
+        let span_results: Vec<(usize, Option<RoadSurfaceVisualSpanPiece>)> =
+            Self::collect_surface_compile_work(&edge_ids, |edge_idx| {
+                (
+                    edge_idx,
+                    self.compile_visual_span_piece(graph, terrain, edge_idx),
+                )
+            });
+        for (edge_idx, span_piece) in span_results {
+            if let Some(span_piece) = span_piece {
                 self.insert_span_piece_coverage(&span_piece);
                 self.compiled_visual_span_pieces
                     .insert(edge_idx, span_piece);
@@ -546,8 +588,14 @@ impl RoadSurfaceSystem {
         }
 
         let node_ids = self.all_surface_node_ids(graph);
-        for node_id in node_ids {
-            let visual_piece = self.compile_visual_node_piece(graph, terrain, node_id);
+        let node_results: Vec<(u32, Option<RoadSurfaceVisualNodePiece>)> =
+            Self::collect_surface_compile_work(&node_ids, |node_id| {
+                (
+                    node_id,
+                    self.compile_visual_node_piece(graph, terrain, node_id),
+                )
+            });
+        for (node_id, visual_piece) in node_results {
             if let Some(visual_piece) = visual_piece {
                 self.insert_node_piece_coverage(&visual_piece);
                 self.compiled_visual_node_pieces
@@ -565,6 +613,21 @@ impl RoadSurfaceSystem {
         self.last_rebuilt_terrain_chunks = all_earthwork_chunks;
         self.compiled_once = true;
         self.clear_dirty_tracking();
+    }
+
+    fn collect_surface_compile_work<I, O, F>(items: &[I], work: F) -> Vec<O>
+    where
+        I: Copy + Send + Sync,
+        O: Send,
+        F: Fn(I) -> O + Sync,
+    {
+        // Slice parallel iterators are indexed; collecting into Vec preserves input order, so
+        // the serial commit phase remains deterministic without re-sorting by id.
+        if items.len() >= PARALLEL_SURFACE_COMPILE_MIN_ITEMS {
+            items.par_iter().copied().map(&work).collect()
+        } else {
+            items.iter().copied().map(&work).collect()
+        }
     }
 
     fn section_index_range_for_s_bounds(
