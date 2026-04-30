@@ -1913,6 +1913,72 @@ fn boundary_curb_outer_height_prefers_local_curb_step_on_overlapping_sidewalk_do
 }
 
 #[test]
+fn non_road_visual_domains_preserve_same_kind_height_seams() {
+    let low_y = 10.0;
+    let high_y = 20.0;
+    let target_non_road_shapes = vec![vec![vec![[0.0, 0.0], [4.0, 0.0], [4.0, 1.0], [0.0, 1.0]]]];
+    let road_shapes = Vec::new();
+    let low_sidewalk = NodeBandHeightDomain {
+        kind: RoadSurfaceBandKind::Sidewalk,
+        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(0.0, low_y, 0.0),
+            Vector3::new(3.0, low_y, 0.0),
+            Vector3::new(3.0, low_y, 1.0),
+            Vector3::new(0.0, low_y, 1.0),
+        ])
+        .unwrap(),
+    };
+    let high_sidewalk = NodeBandHeightDomain {
+        kind: RoadSurfaceBandKind::Sidewalk,
+        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(1.0, high_y, 0.0),
+            Vector3::new(4.0, high_y, 0.0),
+            Vector3::new(4.0, high_y, 1.0),
+            Vector3::new(1.0, high_y, 1.0),
+        ])
+        .unwrap(),
+    };
+
+    let polygons = RoadSurfaceSystem::visual_non_road_band_polygons_from_height_domains(
+        7,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &target_non_road_shapes,
+        &road_shapes,
+        &[low_sidewalk, high_sidewalk],
+    )
+    .unwrap();
+
+    assert!(
+        polygons.len() >= 2,
+        "overlapping same-kind domains must remain separate enough to keep their height seam"
+    );
+    let mut saw_low = false;
+    let mut saw_high = false;
+    for polygon in polygons {
+        let min_y = polygon
+            .points_world
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::INFINITY, f32::min);
+        let max_y = polygon
+            .points_world
+            .iter()
+            .map(|point| point.y)
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            max_y - min_y <= 0.001,
+            "one visual polygon must not bridge two source sidewalk height planes; min_y={min_y:.3} max_y={max_y:.3}"
+        );
+        saw_low |= (min_y - low_y).abs() <= 0.001;
+        saw_high |= (max_y - high_y).abs() <= 0.001;
+    }
+    assert!(
+        saw_low && saw_high,
+        "both source height domains must contribute after deterministic ownership splitting"
+    );
+}
+
+#[test]
 fn node_overlay_preserves_skinny_closure_shapes() {
     let shapes = RoadSurfaceSystem::overlay_union_contours(&[vec![
         [0.0, 0.0],

@@ -560,7 +560,7 @@ impl RoadSurfaceSystem {
         best.map(|sample| sample.height_m)
     }
 
-    fn visual_non_road_band_polygons_from_height_domains(
+    pub(super) fn visual_non_road_band_polygons_from_height_domains(
         node_id: u32,
         piece_kind: RoadSurfaceVisualNodePieceKind,
         target_non_road_shapes: &NodeOverlayShapes,
@@ -608,14 +608,82 @@ impl RoadSurfaceSystem {
             }
             Self::sort_overlay_shapes(&mut band_shapes);
 
-            let mut band_polygons = Self::visual_polygons_from_overlay_shapes_with_band_heights(
-                node_id,
-                piece_kind,
-                "non_road_band",
-                &band_shapes,
-                &kind_domains,
-            );
-            polygons.append(&mut band_polygons);
+            if kind == RoadSurfaceBandKind::CurbOrShoulder {
+                let mut band_polygons = Self::visual_polygons_from_overlay_shapes_with_band_heights(
+                    node_id,
+                    piece_kind,
+                    "non_road_band",
+                    &band_shapes,
+                    &kind_domains,
+                );
+                polygons.append(&mut band_polygons);
+                claimed_shapes = Self::overlay_union_shape_sets(&claimed_shapes, &band_shapes)?;
+                continue;
+            }
+
+            let mut kind_claimed_shapes = Vec::new();
+            for domain in &kind_domains {
+                // Same-material domains may carry different height planes on sloped junctions;
+                // claiming them one at a time preserves that deterministic seam for CDT.
+                let contour = Self::overlay_contour_from_world_points(&domain.polygon.points_world);
+                if Self::overlay_contour_area(&contour).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+                    continue;
+                }
+
+                let mut domain_shapes = Self::overlay_union_contours(&[contour])?;
+                domain_shapes = Self::overlay_binary_shapes(
+                    &domain_shapes,
+                    &band_shapes,
+                    OverlayRule::Intersect,
+                )?;
+                if !kind_claimed_shapes.is_empty() {
+                    domain_shapes = Self::overlay_binary_shapes(
+                        &domain_shapes,
+                        &kind_claimed_shapes,
+                        OverlayRule::Difference,
+                    )?;
+                }
+                Self::sort_overlay_shapes(&mut domain_shapes);
+                if domain_shapes.is_empty() {
+                    continue;
+                }
+
+                let mut domain_polygons =
+                    Self::visual_polygons_from_overlay_shapes_with_band_heights(
+                        node_id,
+                        piece_kind,
+                        "non_road_band",
+                        &domain_shapes,
+                        std::slice::from_ref(domain),
+                    );
+                polygons.append(&mut domain_polygons);
+                kind_claimed_shapes =
+                    Self::overlay_union_shape_sets(&kind_claimed_shapes, &domain_shapes)?;
+            }
+
+            let kind_residual_shapes = if band_shapes.is_empty() {
+                Vec::new()
+            } else if kind_claimed_shapes.is_empty() {
+                band_shapes.clone()
+            } else {
+                Self::overlay_binary_shapes(
+                    &band_shapes,
+                    &kind_claimed_shapes,
+                    OverlayRule::Difference,
+                )?
+            };
+            if !kind_residual_shapes.is_empty() {
+                let mut residual_polygons =
+                    Self::visual_polygons_from_overlay_shapes_with_band_heights(
+                        node_id,
+                        piece_kind,
+                        "non_road_band_residual",
+                        &kind_residual_shapes,
+                        &kind_domains,
+                    );
+                polygons.append(&mut residual_polygons);
+            }
+
             claimed_shapes = Self::overlay_union_shape_sets(&claimed_shapes, &band_shapes)?;
         }
 
