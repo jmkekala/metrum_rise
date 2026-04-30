@@ -1,13 +1,15 @@
 //! Explicit visual span-piece compilation and span mouth profile construction.
 
 use super::{
-    BAND_WIDTH_MATCH_EPSILON_M, IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile,
-    RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece,
+    IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, RoadSurfaceBandKind,
+    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::Vector3;
+
+// Avoid strip construction between adjacent bands whose widths have collapsed together.
+const BAND_WIDTH_MATCH_EPSILON_M: f32 = 0.05;
 
 impl RoadSurfaceSystem {
     pub(super) fn compile_visual_span_piece(

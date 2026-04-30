@@ -1,9 +1,9 @@
 //! Runtime visible-surface queries and terrain clip extraction for compiled road surfaces.
 
+use super::earthwork::EARTHWORK_PAVEMENT_DEPTH_M;
 use super::{
-    ChunkCacheKind, EARTHWORK_PAVEMENT_DEPTH_M, RoadSurfaceSection, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
-    SAMPLE_EPSILON_M, SurfaceChunkKey,
+    ChunkCacheKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SurfaceChunkKey,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
@@ -624,16 +624,9 @@ impl RoadSurfaceSystem {
             return None;
         };
 
-        let start_index = sections
-            .iter()
-            .position(|section| section.s_m + SAMPLE_EPSILON_M >= start_handoff)
-            .unwrap_or(0);
-        let end_index = sections
-            .iter()
-            .rposition(|section| section.s_m - SAMPLE_EPSILON_M <= end_handoff)
-            .unwrap_or(sections.len().saturating_sub(1));
-        (end_index > start_index).then_some((start_index, end_index))
+        Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
     }
+
     fn collect_terrain_clip_polygons_from_piece(
         source: &[RoadSurfaceVisualPolygon],
         min_x: f32,

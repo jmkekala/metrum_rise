@@ -1,13 +1,8 @@
 //! Edge input conditioning, preview compilation, and sampled cross-section generation.
 
 use super::{
-    BRIDGE_SECTION_STEP_M, CURB_BAND_WIDTH_M, CURB_STEP_HEIGHT_M, CompiledNodeKind,
-    MAX_STANDARD_DESIGN_CROSSFALL_RATE, PREVIEW_CLEARANCE_M, PREVIEW_MAX_GRADE,
-    PREVIEW_MESH_LIFT_M, PreviewRoadSurfaceResult, ROAD_POINT_SIMPLIFY_DISTANCE_M, RoadSurfaceBand,
-    RoadSurfaceBandKind, RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M,
-    STANDARD_CROSSFALL_DEADZONE_RATE, STANDARD_SECTION_STEP_M, TAUBIN_LAMBDA, TAUBIN_MU,
-    TAUBIN_SMOOTHING_ITERS, TUNNEL_SECTION_STEP_M, VISUAL_MIN_SPAN_LENGTH_M,
-    VISUAL_NODE_HANDOFF_PADDING_M,
+    CompiledNodeKind, PreviewRoadSurfaceResult, RoadSurfaceBand, RoadSurfaceBandKind,
+    RoadSurfaceSection, RoadSurfaceSystem, SAMPLE_EPSILON_M,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -16,6 +11,30 @@ use crate::simulation::network::types::{
 };
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
+
+// Longitudinal section sampling cadence by road-edge class.
+const STANDARD_SECTION_STEP_M: f32 = 8.0;
+const BRIDGE_SECTION_STEP_M: f32 = 12.0;
+const TUNNEL_SECTION_STEP_M: f32 = 10.0;
+
+// Road input conditioning and preview validation thresholds.
+const ROAD_POINT_SIMPLIFY_DISTANCE_M: f32 = 0.5;
+const TAUBIN_SMOOTHING_ITERS: usize = 50;
+const TAUBIN_LAMBDA: f32 = 0.5;
+const TAUBIN_MU: f32 = -0.53;
+const PREVIEW_MAX_GRADE: f32 = 0.41;
+const PREVIEW_CLEARANCE_M: f32 = 1.0;
+const PREVIEW_MESH_LIFT_M: f32 = 0.05;
+
+// Standard roadbed lateral shaping and crossfall limits.
+pub(super) const CURB_BAND_WIDTH_M: f32 = 0.15;
+pub(super) const CURB_STEP_HEIGHT_M: f32 = 0.12;
+pub(super) const MAX_STANDARD_DESIGN_CROSSFALL_RATE: f32 = 0.03;
+const STANDARD_CROSSFALL_DEADZONE_RATE: f32 = 0.005;
+
+// Visual span/node ownership handoff guards.
+const VISUAL_NODE_HANDOFF_PADDING_M: f32 = 1.0;
+const VISUAL_MIN_SPAN_LENGTH_M: f32 = 0.5;
 
 impl RoadSurfaceSystem {
     /// Grounds standard-road input to terrain and classifies bridge / tunnel previews using the

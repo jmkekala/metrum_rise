@@ -22,41 +22,10 @@ mod overlay;
 mod query;
 mod span;
 
-const STANDARD_SECTION_STEP_M: f32 = 8.0;
-const BRIDGE_SECTION_STEP_M: f32 = 12.0;
-const TUNNEL_SECTION_STEP_M: f32 = 10.0;
-const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
-const BAND_WIDTH_MATCH_EPSILON_M: f32 = 0.05;
-const CURB_BAND_WIDTH_M: f32 = 0.15;
-const CURB_STEP_HEIGHT_M: f32 = 0.12;
-const MAX_STANDARD_DESIGN_CROSSFALL_RATE: f32 = 0.03;
-const STANDARD_CROSSFALL_DEADZONE_RATE: f32 = 0.005;
+// Shared geometric tolerances used across surface compilation, overlay solving, and queries.
 const SAMPLE_EPSILON_M: f32 = 0.001;
 const WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2: f32 = 1.0e-8;
-const SURFACE_MIN_TRIANGLE_DOUBLE_AREA_M2: f32 = 1.0e-8;
-const SURFACE_MIN_TRIANGLE_ALTITUDE_M: f32 = 0.01;
-const ROAD_POINT_SIMPLIFY_DISTANCE_M: f32 = 0.5;
-const TAUBIN_SMOOTHING_ITERS: usize = 50;
-const TAUBIN_LAMBDA: f32 = 0.5;
-const TAUBIN_MU: f32 = -0.53;
-const PREVIEW_MAX_GRADE: f32 = 0.41;
-const PREVIEW_CLEARANCE_M: f32 = 1.0;
-const PREVIEW_MESH_LIFT_M: f32 = 0.05;
-const VISUAL_NODE_HANDOFF_PADDING_M: f32 = 1.0;
-const VISUAL_MIN_SPAN_LENGTH_M: f32 = 0.5;
-const BEND_JOIN_ARC_SAMPLE_STEP_M: f32 = 0.75;
-const EARTHWORK_PAVEMENT_DEPTH_M: f32 = 0.04;
-const EARTHWORK_MIN_MARGIN_M: f32 = 4.0;
-const EARTHWORK_MAX_MARGIN_M: f32 = 18.0;
-const EARTHWORK_MARGIN_SAMPLE_STEP_M: f32 = 1.0;
-const EARTHWORK_CUT_SLOPE_RATE: f32 = 0.5;
-const EARTHWORK_FILL_SLOPE_RATE: f32 = 0.5;
-const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
-const BRIDGE_ABUTMENT_LENGTH_M: f32 = 12.0;
-const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
-const NODE_OVERLAY_SCALE: f32 = 1000.0;
-// Overlay coordinates are quantized to 1 mm. Only discard areas below one
-// quantized square; visible curb/sidewalk closure slivers must survive.
+// Shared overlay/geometry area floor: one 1 mm quantized square keeps closure slivers visible.
 const NODE_OVERLAY_MIN_AREA_M2: f32 = 1.0e-6;
 
 type SurfaceCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
@@ -596,6 +565,26 @@ impl RoadSurfaceSystem {
         self.last_rebuilt_terrain_chunks = all_earthwork_chunks;
         self.compiled_once = true;
         self.clear_dirty_tracking();
+    }
+
+    fn section_index_range_for_s_bounds(
+        sections: &[RoadSurfaceSection],
+        start_s_m: f32,
+        end_s_m: f32,
+    ) -> Option<(usize, usize)> {
+        if sections.len() < 2 || end_s_m - start_s_m <= SAMPLE_EPSILON_M {
+            return None;
+        }
+
+        let start_index = sections
+            .iter()
+            .position(|section| section.s_m + SAMPLE_EPSILON_M >= start_s_m)
+            .unwrap_or(0);
+        let end_index = sections
+            .iter()
+            .rposition(|section| section.s_m - SAMPLE_EPSILON_M <= end_s_m)
+            .unwrap_or(sections.len().saturating_sub(1));
+        (end_index > start_index).then_some((start_index, end_index))
     }
 
     fn sort_visual_polygons(polygons: &mut [RoadSurfaceVisualPolygon]) {

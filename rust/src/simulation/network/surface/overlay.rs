@@ -1,12 +1,12 @@
 //! Overlay boolean geometry and node-region reconstruction for road surfaces.
 
+use super::edge::CURB_BAND_WIDTH_M;
 use super::{
-    CURB_BAND_WIDTH_M, NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_SCALE, NodeBandHeightDomain,
-    NodeBandHeightSample, NodeNonRoadCandidatePolygon, NodeOverlayContour, NodeOverlayEdgeKey,
-    NodeOverlayPoint, NodeOverlayPointKey, NodeOverlayShape, NodeOverlayShapes,
-    NodeSurfaceRegionResult, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceCdt,
-    WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
+    NODE_OVERLAY_MIN_AREA_M2, NodeBandHeightDomain, NodeBandHeightSample,
+    NodeNonRoadCandidatePolygon, NodeOverlayContour, NodeOverlayEdgeKey, NodeOverlayPoint,
+    NodeOverlayPointKey, NodeOverlayShape, NodeOverlayShapes, NodeSurfaceRegionResult,
+    RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
+    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceCdt, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
 };
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::fill_rule::FillRule;
@@ -15,6 +15,9 @@ use i_overlay::float::scale::FixedScaleFloatOverlay;
 use i_overlay::float::simplify::SimplifyShape;
 use spade::{Point2, Triangulation};
 use std::collections::{BTreeMap, BTreeSet};
+
+// Overlay boolean operations quantize coordinates to millimetres for deterministic keys.
+const NODE_OVERLAY_SCALE: f32 = 1000.0;
 
 impl RoadSurfaceSystem {
     pub(super) fn resolve_node_surface_regions_with_overlay(

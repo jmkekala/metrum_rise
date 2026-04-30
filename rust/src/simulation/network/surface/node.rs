@@ -1,16 +1,19 @@
 //! Explicit visual node-piece construction and incident-edge classification.
 
 use super::{
-    BEND_JOIN_ARC_SAMPLE_STEP_M, CompiledNodeKind, IncidentEdgeSide, IncidentMouthBand,
-    IncidentMouthProfile, IncidentSurfaceEdge, NodeBandHeightDomain, NodeCorridorCandidates,
-    NodeNonRoadCandidatePolygon, OrderedIncidentPieceMouth, PASS_THROUGH_DOT_THRESHOLD,
-    RoadSurfaceBandKind, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M, TerminalEndBandLayer,
+    CompiledNodeKind, IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile,
+    IncidentSurfaceEdge, NodeBandHeightDomain, NodeCorridorCandidates, NodeNonRoadCandidatePolygon,
+    OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkRenderFace,
+    RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
+    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, TerminalEndBandLayer,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
+
+// Node-piece classification and bend-join arc sampling thresholds.
+const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
+const BEND_JOIN_ARC_SAMPLE_STEP_M: f32 = 0.75;
 
 impl RoadSurfaceSystem {
     pub(super) fn compile_visual_node_piece(

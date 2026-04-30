@@ -1,10 +1,12 @@
 //! Unit tests for the road-surface compiler and ownership caches.
 
+use super::earthwork::EARTHWORK_MAX_MARGIN_M;
+use super::edge::{CURB_STEP_HEIGHT_M, MAX_STANDARD_DESIGN_CROSSFALL_RATE};
 use super::{
-    CURB_STEP_HEIGHT_M, ChunkCacheKind, EARTHWORK_MAX_MARGIN_M, NodeBandHeightDomain,
-    PreviewRoadSurfaceResult, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
-    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    ChunkCacheKind, NodeBandHeightDomain, PreviewRoadSurfaceResult, RoadSurfaceBandKind,
+    RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
+    SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -2132,7 +2134,7 @@ fn grounded_standard_crossfall_is_bounded_and_footprint_stays_below_carriageway(
         (right_height - left_height) / (half_carriageway * 2.0).max(super::SAMPLE_EPSILON_M);
 
     assert!(
-        actual_crossfall_rate.abs() <= super::MAX_STANDARD_DESIGN_CROSSFALL_RATE + 0.001,
+        actual_crossfall_rate.abs() <= MAX_STANDARD_DESIGN_CROSSFALL_RATE + 0.001,
         "expected grounded-road crossfall to stay within the design bound: actual_rate={actual_crossfall_rate:.4}"
     );
 

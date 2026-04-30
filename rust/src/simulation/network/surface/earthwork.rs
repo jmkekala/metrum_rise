@@ -1,12 +1,9 @@
 //! Road-owned earthwork generation, terrain stamping, and structural visibility rules.
 
 use super::{
-    BRIDGE_ABUTMENT_LENGTH_M, ChunkCacheKind, EARTHWORK_CUT_SLOPE_RATE, EARTHWORK_FILL_SLOPE_RATE,
-    EARTHWORK_MARGIN_SAMPLE_STEP_M, EARTHWORK_MAX_MARGIN_M, EARTHWORK_MIN_MARGIN_M,
-    EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceEarthworkRenderFace, RoadSurfaceSection, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
-    SAMPLE_EPSILON_M, SurfaceChunkKey, TUNNEL_PORTAL_STAMP_DEPTH_M,
+    ChunkCacheKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceEarthworkRenderFace,
+    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
+    RoadSurfaceVisualSpanPiece, SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -14,6 +11,23 @@ use crate::simulation::network::types::{EdgeClass, TransitType};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use std::collections::HashMap;
+
+// Vertical roadbed offset applied when terrain earthworks need pavement clearance.
+pub(super) const EARTHWORK_PAVEMENT_DEPTH_M: f32 = 0.04;
+
+// Lateral terrain probing envelope and sampling cadence for slopes.
+const EARTHWORK_MIN_MARGIN_M: f32 = 4.0;
+pub(super) const EARTHWORK_MAX_MARGIN_M: f32 = 18.0;
+const EARTHWORK_MARGIN_SAMPLE_STEP_M: f32 = 1.0;
+
+// Earthwork slope rates and retaining-wall classification threshold.
+const EARTHWORK_CUT_SLOPE_RATE: f32 = 0.5;
+const EARTHWORK_FILL_SLOPE_RATE: f32 = 0.5;
+const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
+
+// Structural end caps that constrain bridge abutments and tunnel portal stamps.
+const BRIDGE_ABUTMENT_LENGTH_M: f32 = 12.0;
+const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
 
 impl RoadSurfaceSystem {
     /// Rebuilds terrain earthworks only for the currently dirty road-surface chunks.
@@ -463,19 +477,7 @@ impl RoadSurfaceSystem {
         let total_length = sections.last()?.s_m.max(0.0);
         let start_handoff = Self::visual_start_handoff_m(edge, total_length);
         let end_handoff = Self::visual_end_handoff_s_m(edge, total_length);
-        if end_handoff - start_handoff <= SAMPLE_EPSILON_M {
-            return None;
-        }
-
-        let start_index = sections
-            .iter()
-            .position(|section| section.s_m + SAMPLE_EPSILON_M >= start_handoff)
-            .unwrap_or(0);
-        let end_index = sections
-            .iter()
-            .rposition(|section| section.s_m - SAMPLE_EPSILON_M <= end_handoff)
-            .unwrap_or(sections.len().saturating_sub(1));
-        (end_index > start_index).then_some((start_index, end_index))
+        Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
     }
 
     fn endpoint_limited_section_ranges(
