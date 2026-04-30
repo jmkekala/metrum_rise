@@ -21,6 +21,7 @@ const BRIDGE_CONCRETE_THICKNESS_M: f32 = 0.35;
 const EARTHWORK_RENDER_Z_BIAS_M: f32 = ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
 const SIDEWALK_RENDER_Z_BIAS_M: f32 = ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
 const ROAD_RENDER_SURFACE_Z_BIAS_M: f32 = ROAD_TOP_SURFACE_RENDER_Z_BIAS_M;
+const MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2: f32 = 1.0e-8;
 /// Surface classes replaced by the compiled roadbed renderer.
 pub(super) struct CompiledSurfaceCoverage {
     pub edge_indices: HashSet<usize>,
@@ -456,7 +457,34 @@ fn section_boundary_world_point(
 
 fn triangle_is_too_small(a: Vector3, b: Vector3, c: Vector3) -> bool {
     let projected_cross = ((b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x)).abs();
-    projected_cross <= 0.002
+    projected_cross <= MIN_RENDER_TRIANGLE_DOUBLE_AREA_M2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::triangle_is_too_small;
+    use godot::prelude::Vector3;
+
+    #[test]
+    fn renderer_keeps_valid_skinny_surface_triangles() {
+        let a = Vector3::new(0.0, 0.0, 0.0);
+        let b = Vector3::new(2.0, 0.0, 0.0);
+        let c = Vector3::new(2.0, 0.0, 0.0005);
+
+        assert!(
+            !triangle_is_too_small(a, b, c),
+            "compiled road surfaces must not drop valid millimetre-scale closure triangles"
+        );
+    }
+
+    #[test]
+    fn renderer_drops_degenerate_surface_triangles() {
+        let a = Vector3::new(0.0, 0.0, 0.0);
+        let b = Vector3::new(1.0, 0.0, 0.0);
+        let c = Vector3::new(2.0, 0.0, 0.0);
+
+        assert!(triangle_is_too_small(a, b, c));
+    }
 }
 
 fn emit_surface_quad(

@@ -48,6 +48,8 @@ pub struct CameraNode {
     /// Whether this camera should stay above the terrain surface.
     #[export]
     terrain_clearance_enabled: bool,
+    /// Debug inspection mode: disables terrain clearance and permits orbiting below the pivot.
+    debug_under_terrain_enabled: bool,
     /// Minimum focus-point clearance above terrain in metres.
     #[export]
     terrain_pivot_clearance_m: f32,
@@ -89,6 +91,7 @@ impl ICamera3D for CameraNode {
             drag_pan_scale: 0.0025,
             drag_pan_min_step: 0.5,
             terrain_clearance_enabled: false,
+            debug_under_terrain_enabled: false,
             terrain_pivot_clearance_m: 0.25,
             terrain_camera_clearance_m: 1.5,
             pivot: Vector3::new(0.0, 0.0, 0.0),
@@ -158,7 +161,7 @@ impl CameraNode {
             let delta_v = mouse_delta * self.sensitivity;
             self.yaw -= delta_v.x;
             self.pitch -= delta_v.y;
-            self.pitch = self.pitch.clamp(-1.5, -0.1);
+            self.pitch = Self::clamp_pitch(self.pitch, self.debug_under_terrain_enabled);
             self.update_camera_transform();
         }
     }
@@ -234,6 +237,14 @@ impl CameraNode {
         self.update_camera_transform();
     }
 
+    /// Enables debug inspection below terrain by disabling terrain-follow clamping and relaxing pitch.
+    #[func]
+    pub fn set_debug_under_terrain_enabled(&mut self, enabled: bool) {
+        self.debug_under_terrain_enabled = enabled;
+        self.pitch = Self::clamp_pitch(self.pitch, enabled);
+        self.update_camera_transform();
+    }
+
     fn resolve_simulation_node_if_needed(&mut self) {
         if self.simulation_node.is_some() {
             return;
@@ -245,7 +256,7 @@ impl CameraNode {
     }
 
     fn terrain_height_at(&mut self, world_x: f32, world_z: f32) -> Option<f32> {
-        if !self.terrain_clearance_enabled {
+        if !self.terrain_clearance_enabled || self.debug_under_terrain_enabled {
             return None;
         }
         self.resolve_simulation_node_if_needed();
@@ -269,6 +280,14 @@ impl CameraNode {
                 terrain_anchored_pivot_y.max(surface_y + camera_clearance_m - offset_y)
             })
             .unwrap_or(terrain_anchored_pivot_y)
+    }
+
+    fn clamp_pitch(pitch: f32, debug_under_terrain_enabled: bool) -> f32 {
+        if debug_under_terrain_enabled {
+            pitch.clamp(-1.5, 1.5)
+        } else {
+            pitch.clamp(-1.5, -0.1)
+        }
     }
 
     fn update_camera_transform(&mut self) {
@@ -310,5 +329,11 @@ mod tests {
 
         let anchored = CameraNode::terrain_follow_pivot_y(-20.0, 100.0, Some(70.0), 0.25, 1.5);
         assert!((anchored - 100.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn debug_under_terrain_mode_allows_camera_below_pivot_pitch() {
+        assert!((CameraNode::clamp_pitch(0.75, true) - 0.75).abs() < 0.001);
+        assert!((CameraNode::clamp_pitch(0.75, false) + 0.1).abs() < 0.001);
     }
 }

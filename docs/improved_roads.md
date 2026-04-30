@@ -603,6 +603,15 @@ mouth angular order -> edge id -> side -> band index
     - overlap detection must split boundaries at every road or non-road endpoint; exact endpoint
       equality is not required because overlay outputs may legally segment the same boundary
       differently
+    - adjacent transition strips must be stitched at shared asphalt-boundary vertices with
+      deterministic curb / shoulder joint triangles before overlay union. Independent per-segment
+      quads are not allowed because their offset normals leave bend and terminal wedges open.
+      Joint triangles are allowed to fill the convex closure between adjacent strip offsets even
+      when that tiny wedge is outside the original per-strip non-road contours, but their centroids
+      must never be inside asphalt.
+    - overlay and render filtering may only discard sub-grid degenerate geometry. Millimetre-scale
+      closure slivers produced by the deterministic overlay grid are valid geometry and must remain
+      renderable, otherwise bend and terminal seams reopen as camera-visible pinholes.
     - `CurbOrShoulder` claims these asphalt-adjacent transition strips before broad `Sidewalk`
       domains claim the remaining walkable surface
     - a shared overlay subsegment with no valid asphalt or walkable height owner is a debug error,

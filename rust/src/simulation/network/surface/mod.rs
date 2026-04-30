@@ -50,7 +50,9 @@ const EARTHWORK_RETAINING_WALL_SLOPE_THRESHOLD: f32 = 1.25;
 const BRIDGE_ABUTMENT_LENGTH_M: f32 = 12.0;
 const TUNNEL_PORTAL_STAMP_DEPTH_M: f32 = 1.0;
 const NODE_OVERLAY_SCALE: f32 = 1000.0;
-const NODE_OVERLAY_MIN_AREA_M2: f32 = 0.002;
+// Overlay coordinates are quantized to 1 mm. Only discard areas below one
+// quantized square; visible curb/sidewalk closure slivers must survive.
+const NODE_OVERLAY_MIN_AREA_M2: f32 = 1.0e-6;
 
 type SurfaceCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 type NodeOverlayPoint = [f32; 2];
@@ -2527,6 +2529,8 @@ impl RoadSurfaceSystem {
         }
 
         let mut domains = Vec::new();
+        let mut joint_samples: BTreeMap<NodeOverlayPointKey, Vec<(Vector2, f32, Vector2, f32)>> =
+            BTreeMap::new();
         for (start, end) in shared_segments {
             let start_xz = Vector2::new(start[0], start[1]);
             let end_xz = Vector2::new(end[0], end[1]);
@@ -2572,8 +2576,91 @@ impl RoadSurfaceSystem {
                 kind: RoadSurfaceBandKind::CurbOrShoulder,
                 polygon,
             });
+            Self::push_boundary_curb_joint_sample(
+                &mut joint_samples,
+                start_xz,
+                inner_start_y,
+                outer_start_xz,
+                outer_start_y,
+            );
+            Self::push_boundary_curb_joint_sample(
+                &mut joint_samples,
+                end_xz,
+                inner_end_y,
+                outer_end_xz,
+                outer_end_y,
+            );
         }
+        Self::append_boundary_curb_joint_domains(&mut domains, joint_samples, road_shapes);
         domains
+    }
+
+    fn push_boundary_curb_joint_sample(
+        samples_by_point: &mut BTreeMap<NodeOverlayPointKey, Vec<(Vector2, f32, Vector2, f32)>>,
+        inner_xz: Vector2,
+        inner_y: f32,
+        outer_xz: Vector2,
+        outer_y: f32,
+    ) {
+        let key = Self::overlay_point_key([inner_xz.x, inner_xz.y]);
+        let samples = samples_by_point.entry(key).or_default();
+        if samples.iter().any(|(_, _, existing_outer_xz, _)| {
+            existing_outer_xz.distance_squared_to(outer_xz) <= 0.0001
+        }) {
+            return;
+        }
+        samples.push((inner_xz, inner_y, outer_xz, outer_y));
+    }
+
+    fn append_boundary_curb_joint_domains(
+        domains: &mut Vec<NodeBandHeightDomain>,
+        joint_samples: BTreeMap<NodeOverlayPointKey, Vec<(Vector2, f32, Vector2, f32)>>,
+        road_shapes: &NodeOverlayShapes,
+    ) {
+        for samples in joint_samples.into_values() {
+            if samples.len() < 2 {
+                continue;
+            }
+            let (inner_xz, inner_y, _, _) = samples[0];
+            let mut outer_samples = samples
+                .iter()
+                .map(|(_, _, outer_xz, outer_y)| (*outer_xz, *outer_y))
+                .collect::<Vec<_>>();
+            outer_samples.sort_by(|(a, _), (b, _)| {
+                (a.y - inner_xz.y)
+                    .atan2(a.x - inner_xz.x)
+                    .total_cmp(&(b.y - inner_xz.y).atan2(b.x - inner_xz.x))
+                    .then(a.x.total_cmp(&b.x))
+                    .then(a.y.total_cmp(&b.y))
+            });
+            let pair_count = if outer_samples.len() == 2 {
+                1
+            } else {
+                outer_samples.len()
+            };
+            for index in 0..pair_count {
+                let (outer_a_xz, outer_a_y) = outer_samples[index];
+                let (outer_b_xz, outer_b_y) = outer_samples[(index + 1) % outer_samples.len()];
+                if outer_a_xz.distance_squared_to(outer_b_xz) <= 0.0001 {
+                    continue;
+                }
+                let centroid = (inner_xz + outer_a_xz + outer_b_xz) / 3.0;
+                if Self::overlay_shapes_contain_point(road_shapes, centroid) {
+                    continue;
+                }
+                let Some(polygon) = Self::make_visual_polygon(vec![
+                    Vector3::new(inner_xz.x, inner_y, inner_xz.y),
+                    Vector3::new(outer_a_xz.x, outer_a_y, outer_a_xz.y),
+                    Vector3::new(outer_b_xz.x, outer_b_y, outer_b_xz.y),
+                ]) else {
+                    continue;
+                };
+                domains.push(NodeBandHeightDomain {
+                    kind: RoadSurfaceBandKind::CurbOrShoulder,
+                    polygon,
+                });
+            }
+        }
     }
 
     fn non_road_normal_for_shared_overlay_segment(
@@ -6452,10 +6539,11 @@ impl RoadSurfaceSystem {
 #[cfg(test)]
 mod tests {
     use super::{
-        CURB_STEP_HEIGHT_M, ChunkCacheKind, EARTHWORK_MAX_MARGIN_M, PreviewRoadSurfaceResult,
-        RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
-        RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-        SAMPLE_EPSILON_M, SurfaceChunkKey,
+        CURB_STEP_HEIGHT_M, ChunkCacheKind, EARTHWORK_MAX_MARGIN_M, NodeBandHeightDomain,
+        PreviewRoadSurfaceResult, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
+        RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+        RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+        SurfaceChunkKey,
     };
     use crate::simulation::network::TransitNetwork;
     use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -8215,6 +8303,83 @@ mod tests {
                 ([2.0, 0.0], [3.0, 0.0]),
             ],
             "boundary curb strips must not require identical road/non-road overlay endpoint segmentation"
+        );
+    }
+
+    #[test]
+    fn node_overlay_preserves_skinny_closure_shapes() {
+        let shapes = RoadSurfaceSystem::overlay_union_contours(&[vec![
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 0.0005],
+            [0.0, 0.0005],
+        ]])
+        .unwrap();
+
+        assert_eq!(
+            shapes.len(),
+            1,
+            "millimetre-scale deterministic closure slivers must not be filtered before rendering"
+        );
+    }
+
+    #[test]
+    fn boundary_curb_domains_stitch_adjacent_segment_joints() {
+        let road_shapes = vec![vec![vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]]];
+        let non_road_shapes = vec![
+            vec![vec![[0.0, 2.0], [2.0, 2.0], [2.0, 3.0], [0.0, 3.0]]],
+            vec![vec![[-1.0, 0.0], [0.0, 0.0], [0.0, 2.0], [-1.0, 2.0]]],
+        ];
+        let road_domain = NodeBandHeightDomain {
+            kind: RoadSurfaceBandKind::Carriageway,
+            polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(2.0, 0.0, 0.0),
+                Vector3::new(2.0, 0.0, 2.0),
+                Vector3::new(0.0, 0.0, 2.0),
+            ])
+            .unwrap(),
+        };
+        let sidewalk_top = NodeBandHeightDomain {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+                Vector3::new(0.0, CURB_STEP_HEIGHT_M, 2.0),
+                Vector3::new(2.0, CURB_STEP_HEIGHT_M, 2.0),
+                Vector3::new(2.0, CURB_STEP_HEIGHT_M, 3.0),
+                Vector3::new(0.0, CURB_STEP_HEIGHT_M, 3.0),
+            ])
+            .unwrap(),
+        };
+        let sidewalk_left = NodeBandHeightDomain {
+            kind: RoadSurfaceBandKind::Sidewalk,
+            polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+                Vector3::new(-1.0, CURB_STEP_HEIGHT_M, 0.0),
+                Vector3::new(0.0, CURB_STEP_HEIGHT_M, 0.0),
+                Vector3::new(0.0, CURB_STEP_HEIGHT_M, 2.0),
+                Vector3::new(-1.0, CURB_STEP_HEIGHT_M, 2.0),
+            ])
+            .unwrap(),
+        };
+
+        let domains = RoadSurfaceSystem::boundary_curb_transition_domains(
+            &road_shapes,
+            &non_road_shapes,
+            &[road_domain],
+            &[sidewalk_top, sidewalk_left],
+        );
+
+        assert!(
+            domains.len() >= 3,
+            "two adjacent boundary strips must add at least one joint-fill domain"
+        );
+        assert!(
+            domains.iter().any(|domain| {
+                domain.polygon.triangles_world.iter().any(|triangle| {
+                    let centroid = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+                    centroid.x < -0.01 && centroid.z > 2.01
+                })
+            }),
+            "the shared road corner must own a curb joint outside both independent segment strips"
         );
     }
 

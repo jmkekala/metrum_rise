@@ -64,12 +64,19 @@ func _ready():
 
 func _configure_world_camera_policy() -> void:
 	var camera = get_parent().find_child("CameraNode", true, false)
+	var debug_under_terrain: bool = _debug_camera_can_go_under_terrain()
 	if camera and camera.has_method("set_terrain_clearance_policy"):
 		camera.set_terrain_clearance_policy(
-			true,
+			not debug_under_terrain,
 			WORLD_CAMERA_PIVOT_CLEARANCE_M,
 			WORLD_CAMERA_CLEARANCE_M
 		)
+	if camera and camera.has_method("set_debug_under_terrain_enabled"):
+		camera.set_debug_under_terrain_enabled(debug_under_terrain)
+
+func _debug_camera_can_go_under_terrain() -> bool:
+	var debug_value: String = OS.get_environment("METRUM_DEBUG").strip_edges()
+	return not debug_value.is_empty() and debug_value != "0"
 
 func _process(delta):
 	_handle_camera_controls(delta)

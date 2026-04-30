@@ -32,12 +32,19 @@ func _ready() -> void:
 		_cam.set_clip_policy(MIN_DISTANCE, MIN_FAR_M, FAR_MARGIN_M)
 	if _cam.has_method("set_focus_padding"):
 		_cam.set_focus_padding(FOCUS_PADDING_MULT)
+	var debug_under_terrain: bool = _debug_camera_can_go_under_terrain()
 	if _cam.has_method("set_terrain_clearance_policy"):
 		_cam.set_terrain_clearance_policy(
-			true,
+			not debug_under_terrain,
 			TERRAIN_PIVOT_CLEARANCE_M,
 			TERRAIN_CAMERA_CLEARANCE_M
 		)
+	if _cam.has_method("set_debug_under_terrain_enabled"):
+		_cam.set_debug_under_terrain_enabled(debug_under_terrain)
+
+func _debug_camera_can_go_under_terrain() -> bool:
+	var debug_value: String = OS.get_environment("METRUM_DEBUG").strip_edges()
+	return not debug_value.is_empty() and debug_value != "0"
 
 func _process(delta: float) -> void:
 	if not _cam:
