@@ -30,7 +30,9 @@ const CURB_STEP_HEIGHT_M: f32 = 0.12;
 const MAX_STANDARD_DESIGN_CROSSFALL_RATE: f32 = 0.03;
 const STANDARD_CROSSFALL_DEADZONE_RATE: f32 = 0.005;
 const SAMPLE_EPSILON_M: f32 = 0.001;
-const SURFACE_MIN_TRIANGLE_ALTITUDE_M: f32 = 0.05;
+const WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2: f32 = 1.0e-8;
+const SURFACE_MIN_TRIANGLE_DOUBLE_AREA_M2: f32 = 1.0e-8;
+const SURFACE_MIN_TRIANGLE_ALTITUDE_M: f32 = 0.01;
 const ROAD_POINT_SIMPLIFY_DISTANCE_M: f32 = 0.5;
 const TAUBIN_SMOOTHING_ITERS: usize = 50;
 const TAUBIN_LAMBDA: f32 = 0.5;
@@ -2605,7 +2607,7 @@ impl RoadSurfaceSystem {
         let key = Self::overlay_point_key([inner_xz.x, inner_xz.y]);
         let samples = samples_by_point.entry(key).or_default();
         if samples.iter().any(|(_, _, existing_outer_xz, _)| {
-            existing_outer_xz.distance_squared_to(outer_xz) <= 0.0001
+            existing_outer_xz.distance_squared_to(outer_xz) <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
         }) {
             return;
         }
@@ -2641,7 +2643,9 @@ impl RoadSurfaceSystem {
             for index in 0..pair_count {
                 let (outer_a_xz, outer_a_y) = outer_samples[index];
                 let (outer_b_xz, outer_b_y) = outer_samples[(index + 1) % outer_samples.len()];
-                if outer_a_xz.distance_squared_to(outer_b_xz) <= 0.0001 {
+                if outer_a_xz.distance_squared_to(outer_b_xz)
+                    <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+                {
                     continue;
                 }
                 let centroid = (inner_xz + outer_a_xz + outer_b_xz) / 3.0;
@@ -3327,10 +3331,11 @@ impl RoadSurfaceSystem {
     }
 
     fn canonicalize_world_loop(points_world: &mut Vec<Vector3>) -> Option<()> {
-        points_world.dedup_by(|a, b| (*a - *b).length_squared() <= 0.0001);
+        points_world
+            .dedup_by(|a, b| (*a - *b).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2);
         if points_world.len() >= 2
             && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
-                <= 0.0001
+                <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
         {
             points_world.pop();
         }
@@ -5560,9 +5565,7 @@ impl RoadSurfaceSystem {
         height_offset_m: f32,
         candidates: &mut HashMap<(usize, usize), (f32, f32)>,
     ) {
-        let projected_cross = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
-            - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
-        if projected_cross.abs() <= 0.002 {
+        if !Self::triangle_has_area_xz(triangle) {
             return;
         }
 
@@ -5651,10 +5654,11 @@ impl RoadSurfaceSystem {
     }
 
     fn make_visual_polygon(mut points_world: Vec<Vector3>) -> Option<RoadSurfaceVisualPolygon> {
-        points_world.dedup_by(|a, b| (*a - *b).length_squared() <= 0.0001);
+        points_world
+            .dedup_by(|a, b| (*a - *b).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2);
         if points_world.len() >= 2
             && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
-                <= 0.0001
+                <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
         {
             points_world.pop();
         }
@@ -5662,7 +5666,7 @@ impl RoadSurfaceSystem {
             return None;
         }
         let signed_area = Self::signed_polygon_area_xz(&points_world);
-        if signed_area.abs() <= 0.002 {
+        if signed_area.abs() <= NODE_OVERLAY_MIN_AREA_M2 {
             return None;
         }
         if signed_area < 0.0 {
@@ -5686,10 +5690,11 @@ impl RoadSurfaceSystem {
     fn make_visual_strip_polygon(
         mut points_world: Vec<Vector3>,
     ) -> Option<RoadSurfaceVisualPolygon> {
-        points_world.dedup_by(|a, b| (*a - *b).length_squared() <= 0.0001);
+        points_world
+            .dedup_by(|a, b| (*a - *b).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2);
         if points_world.len() >= 2
             && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
-                <= 0.0001
+                <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
         {
             points_world.pop();
         }
@@ -5861,19 +5866,20 @@ impl RoadSurfaceSystem {
 
     #[cfg(test)]
     fn polygon_has_area_xz(points: &[Vector3]) -> bool {
-        Self::signed_polygon_area_xz(points).abs() > 0.002
+        Self::signed_polygon_area_xz(points).abs() > NODE_OVERLAY_MIN_AREA_M2
     }
 
     fn triangle_has_area_xz(triangle: [Vector3; 3]) -> bool {
         let projected_cross = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
             - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
+        if projected_cross.abs() <= SURFACE_MIN_TRIANGLE_DOUBLE_AREA_M2 {
+            return false;
+        }
         let edge_ab = Vector2::new(triangle[1].x - triangle[0].x, triangle[1].z - triangle[0].z);
         let edge_bc = Vector2::new(triangle[2].x - triangle[1].x, triangle[2].z - triangle[1].z);
         let edge_ca = Vector2::new(triangle[0].x - triangle[2].x, triangle[0].z - triangle[2].z);
         let max_edge_m = edge_ab.length().max(edge_bc.length()).max(edge_ca.length());
-        projected_cross.abs() > 0.002
-            && projected_cross.abs() / max_edge_m.max(SAMPLE_EPSILON_M)
-                >= SURFACE_MIN_TRIANGLE_ALTITUDE_M
+        projected_cross.abs() / max_edge_m.max(SAMPLE_EPSILON_M) >= SURFACE_MIN_TRIANGLE_ALTITUDE_M
     }
 
     fn triangle_barycentric_weights_xz(
@@ -8320,6 +8326,21 @@ mod tests {
             shapes.len(),
             1,
             "millimetre-scale deterministic closure slivers must not be filtered before rendering"
+        );
+    }
+
+    #[test]
+    fn visual_polygon_builder_preserves_skinny_closure_geometry() {
+        let polygon = RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(0.15, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, 0.02),
+        ])
+        .expect("centimetre-scale curb closure polygons must survive the visual polygon builder");
+
+        assert!(
+            !polygon.triangles_world.is_empty(),
+            "curb closure polygons must keep renderable CDT triangles"
         );
     }
 

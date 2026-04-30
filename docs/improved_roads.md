@@ -612,6 +612,11 @@ mouth angular order -> edge id -> side -> band index
     - overlay and render filtering may only discard sub-grid degenerate geometry. Millimetre-scale
       closure slivers produced by the deterministic overlay grid are valid geometry and must remain
       renderable, otherwise bend and terminal seams reopen as camera-visible pinholes.
+    - the visual polygon builder and CDT triangle filter must use the same millimetre-grid
+      area tolerance as overlay ownership and may only reject near-collinear triangles below the
+      centimetre-scale altitude floor. A separate coarse area or 5 cm altitude filter is not allowed
+      in the middle of the pipeline because it deletes the radial curb / sidewalk closure triangles
+      on sampled bends after ownership has already been solved.
     - `CurbOrShoulder` claims these asphalt-adjacent transition strips before broad `Sidewalk`
       domains claim the remaining walkable surface
     - a shared overlay subsegment with no valid asphalt or walkable height owner is a debug error,
