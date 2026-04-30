@@ -1858,6 +1858,61 @@ fn boundary_curb_overlap_detection_splits_mismatched_overlay_edges() {
 }
 
 #[test]
+fn boundary_curb_outer_height_prefers_local_curb_step_on_overlapping_sidewalk_domains() {
+    let road_y = 10.0;
+    let wrong_neighbor_y = 25.0;
+    let road_shapes = vec![vec![vec![[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]]]];
+    let non_road_shapes = vec![vec![vec![[0.0, 1.0], [2.0, 1.0], [2.0, 2.0], [0.0, 2.0]]]];
+    let road_domain = NodeBandHeightDomain {
+        kind: RoadSurfaceBandKind::Carriageway,
+        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(0.0, road_y, 0.0),
+            Vector3::new(2.0, road_y, 0.0),
+            Vector3::new(2.0, road_y, 1.0),
+            Vector3::new(0.0, road_y, 1.0),
+        ])
+        .unwrap(),
+    };
+    let wrong_neighbor_sidewalk = NodeBandHeightDomain {
+        kind: RoadSurfaceBandKind::Sidewalk,
+        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(0.0, wrong_neighbor_y, 1.0),
+            Vector3::new(2.0, wrong_neighbor_y, 1.0),
+            Vector3::new(2.0, wrong_neighbor_y, 2.0),
+            Vector3::new(0.0, wrong_neighbor_y, 2.0),
+        ])
+        .unwrap(),
+    };
+    let local_sidewalk = NodeBandHeightDomain {
+        kind: RoadSurfaceBandKind::Sidewalk,
+        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(0.0, road_y + CURB_STEP_HEIGHT_M, 1.0),
+            Vector3::new(2.0, road_y + CURB_STEP_HEIGHT_M, 1.0),
+            Vector3::new(2.0, road_y + CURB_STEP_HEIGHT_M, 2.0),
+            Vector3::new(0.0, road_y + CURB_STEP_HEIGHT_M, 2.0),
+        ])
+        .unwrap(),
+    };
+
+    let domains = RoadSurfaceSystem::boundary_curb_transition_domains(
+        &road_shapes,
+        &non_road_shapes,
+        &[road_domain],
+        &[wrong_neighbor_sidewalk, local_sidewalk],
+    );
+
+    let max_curb_y = domains
+        .iter()
+        .flat_map(|domain| domain.polygon.points_world.iter())
+        .map(|point| point.y)
+        .fold(f32::NEG_INFINITY, f32::max);
+    assert!(
+        max_curb_y <= road_y + CURB_STEP_HEIGHT_M + 0.001,
+        "overlapping elevated sidewalk domains must not pull curb strip corners to a neighboring approach height; max_curb_y={max_curb_y:.3}"
+    );
+}
+
+#[test]
 fn node_overlay_preserves_skinny_closure_shapes() {
     let shapes = RoadSurfaceSystem::overlay_union_contours(&[vec![
         [0.0, 0.0],
@@ -1886,6 +1941,41 @@ fn visual_polygon_builder_preserves_skinny_closure_geometry() {
     assert!(
         !polygon.triangles_world.is_empty(),
         "curb closure polygons must keep renderable CDT triangles"
+    );
+}
+
+#[test]
+fn node_band_height_uses_curb_transition_at_road_boundary() {
+    let sidewalk_domain = NodeBandHeightDomain {
+        kind: RoadSurfaceBandKind::Sidewalk,
+        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 0.0),
+            Vector3::new(2.0, CURB_STEP_HEIGHT_M, 0.0),
+            Vector3::new(2.0, CURB_STEP_HEIGHT_M, 2.0),
+            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 2.0),
+        ])
+        .unwrap(),
+    };
+    let curb_domain = NodeBandHeightDomain {
+        kind: RoadSurfaceBandKind::CurbOrShoulder,
+        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            Vector3::new(2.0, CURB_STEP_HEIGHT_M, 1.0),
+            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 1.0),
+        ])
+        .unwrap(),
+    };
+
+    let height_m = RoadSurfaceSystem::sample_node_band_height_from_domains(
+        Vector2::new(1.0, 0.0),
+        &[sidewalk_domain, curb_domain],
+    )
+    .unwrap();
+
+    assert!(
+        height_m.abs() <= 0.001,
+        "shared road/non-road boundary vertices must stay at road height so curb skirts do not cap upward; height_m={height_m:.3}"
     );
 }
 

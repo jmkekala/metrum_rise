@@ -1,6 +1,6 @@
 //! Overlay boolean geometry and node-region reconstruction for road surfaces.
 
-use super::edge::CURB_BAND_WIDTH_M;
+use super::edge::{CURB_BAND_WIDTH_M, CURB_STEP_HEIGHT_M};
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeBandHeightDomain, NodeBandHeightSample,
     NodeNonRoadCandidatePolygon, NodeOverlayContour, NodeOverlayEdgeKey, NodeOverlayPoint,
@@ -18,6 +18,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Overlay boolean operations quantize coordinates to millimetres for deterministic keys.
 const NODE_OVERLAY_SCALE: f32 = 1000.0;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct NodeTargetHeightSample {
+    height_delta_m: f32,
+    priority: u8,
+    distance_squared: f32,
+    domain_index: usize,
+    height_m: f32,
+}
 
 impl RoadSurfaceSystem {
     pub(super) fn resolve_node_surface_regions_with_overlay(
@@ -380,14 +389,18 @@ impl RoadSurfaceSystem {
             else {
                 continue;
             };
-            let Some(outer_start_y) =
-                Self::sample_node_walkable_boundary_height(outer_start_xz, non_road_height_domains)
-            else {
+            let Some(outer_start_y) = Self::sample_node_walkable_boundary_height(
+                outer_start_xz,
+                non_road_height_domains,
+                inner_start_y + CURB_STEP_HEIGHT_M,
+            ) else {
                 continue;
             };
-            let Some(outer_end_y) =
-                Self::sample_node_walkable_boundary_height(outer_end_xz, non_road_height_domains)
-            else {
+            let Some(outer_end_y) = Self::sample_node_walkable_boundary_height(
+                outer_end_xz,
+                non_road_height_domains,
+                inner_end_y + CURB_STEP_HEIGHT_M,
+            ) else {
                 continue;
             };
             let Some(polygon) = Self::make_visual_polygon(vec![
@@ -524,23 +537,27 @@ impl RoadSurfaceSystem {
     fn sample_node_walkable_boundary_height(
         point_xz: Vector2,
         domains: &[NodeBandHeightDomain],
+        target_height_m: f32,
     ) -> Option<f32> {
-        for kind in [
-            RoadSurfaceBandKind::Sidewalk,
-            RoadSurfaceBandKind::Footpath,
-            RoadSurfaceBandKind::CycleTrack,
-            RoadSurfaceBandKind::Median,
-            RoadSurfaceBandKind::Parking,
-            RoadSurfaceBandKind::TramReservation,
-            RoadSurfaceBandKind::CurbOrShoulder,
-        ] {
-            if let Some(height_m) =
-                Self::sample_node_band_height_from_domains_for_kind(point_xz, domains, kind)
-            {
-                return Some(height_m);
-            }
-        }
-        None
+        let mut best = None;
+        Self::visit_node_band_height_samples(
+            point_xz,
+            domains,
+            Self::is_walkable_boundary_height_kind,
+            |domain_index, kind, distance_squared, height_m| {
+                Self::retain_best_target_height_sample(
+                    &mut best,
+                    NodeTargetHeightSample {
+                        height_delta_m: (height_m - target_height_m).abs(),
+                        priority: Self::walkable_boundary_height_priority(kind),
+                        distance_squared,
+                        domain_index,
+                        height_m,
+                    },
+                );
+            },
+        );
+        best.map(|sample| sample.height_m)
     }
 
     fn visual_non_road_band_polygons_from_height_domains(
@@ -1175,7 +1192,7 @@ impl RoadSurfaceSystem {
         Some(())
     }
 
-    fn sample_node_band_height_from_domains(
+    pub(super) fn sample_node_band_height_from_domains(
         point_xz: Vector2,
         domains: &[NodeBandHeightDomain],
     ) -> Option<f32> {
@@ -1188,39 +1205,59 @@ impl RoadSurfaceSystem {
         accepts_kind: impl Fn(RoadSurfaceBandKind) -> bool,
     ) -> Option<f32> {
         let mut best = None;
+        Self::visit_node_band_height_samples(
+            point_xz,
+            domains,
+            accepts_kind,
+            |domain_index, kind, distance_squared, height_m| {
+                Self::retain_best_node_band_height_sample(
+                    &mut best,
+                    NodeBandHeightSample {
+                        priority: Self::node_band_height_priority(kind),
+                        domain_index,
+                        distance_squared,
+                        height_m,
+                    },
+                );
+            },
+        );
+
+        best.map(|sample| sample.height_m)
+    }
+
+    fn visit_node_band_height_samples(
+        point_xz: Vector2,
+        domains: &[NodeBandHeightDomain],
+        accepts_kind: impl Fn(RoadSurfaceBandKind) -> bool,
+        mut visit: impl FnMut(usize, RoadSurfaceBandKind, f32, f32),
+    ) {
+        let mut found_containing_triangle = false;
         for (domain_index, domain) in domains.iter().enumerate() {
             if !accepts_kind(domain.kind) {
                 continue;
             }
-            let priority = Self::node_band_height_priority(domain.kind);
             for triangle in &domain.polygon.triangles_world {
                 let Some((wa, wb, wc)) = Self::triangle_barycentric_weights_xz(*triangle, point_xz)
                 else {
                     continue;
                 };
-                Self::retain_best_node_band_height_sample(
-                    &mut best,
-                    NodeBandHeightSample {
-                        priority,
-                        domain_index,
-                        distance_squared: 0.0,
-                        height_m: triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc,
-                    },
+                found_containing_triangle = true;
+                visit(
+                    domain_index,
+                    domain.kind,
+                    0.0,
+                    triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc,
                 );
             }
         }
-        if let Some(sample) = best {
-            return Some(sample.height_m);
+        if found_containing_triangle {
+            return;
         }
 
         for (domain_index, domain) in domains.iter().enumerate() {
-            if !accepts_kind(domain.kind) {
+            if !accepts_kind(domain.kind) || domain.polygon.points_world.len() < 2 {
                 continue;
             }
-            if domain.polygon.points_world.len() < 2 {
-                continue;
-            }
-            let priority = Self::node_band_height_priority(domain.kind);
             for index in 0..domain.polygon.points_world.len() {
                 let start = domain.polygon.points_world[index];
                 let end =
@@ -1235,20 +1272,14 @@ impl RoadSurfaceSystem {
                     ((point_xz - start_xz).dot(segment) / length_squared).clamp(0.0, 1.0)
                 };
                 let closest = start_xz + segment * t;
-                let distance_squared = point_xz.distance_squared_to(closest);
-                Self::retain_best_node_band_height_sample(
-                    &mut best,
-                    NodeBandHeightSample {
-                        priority,
-                        domain_index,
-                        distance_squared,
-                        height_m: start.y + (end.y - start.y) * t,
-                    },
+                visit(
+                    domain_index,
+                    domain.kind,
+                    point_xz.distance_squared_to(closest),
+                    start.y + (end.y - start.y) * t,
                 );
             }
         }
-
-        best.map(|sample| sample.height_m)
     }
 
     fn retain_best_node_band_height_sample(
@@ -1272,12 +1303,58 @@ impl RoadSurfaceSystem {
         }
     }
 
+    fn retain_best_target_height_sample(
+        best: &mut Option<NodeTargetHeightSample>,
+        candidate: NodeTargetHeightSample,
+    ) {
+        let replace = best.is_none_or(|current| {
+            candidate
+                .height_delta_m
+                .total_cmp(&current.height_delta_m)
+                .then(candidate.priority.cmp(&current.priority))
+                .then_with(|| {
+                    candidate
+                        .distance_squared
+                        .total_cmp(&current.distance_squared)
+                })
+                .then(candidate.domain_index.cmp(&current.domain_index))
+                .is_lt()
+        });
+        if replace {
+            *best = Some(candidate);
+        }
+    }
+
+    fn is_walkable_boundary_height_kind(kind: RoadSurfaceBandKind) -> bool {
+        matches!(
+            kind,
+            RoadSurfaceBandKind::Sidewalk
+                | RoadSurfaceBandKind::Footpath
+                | RoadSurfaceBandKind::CycleTrack
+                | RoadSurfaceBandKind::Median
+                | RoadSurfaceBandKind::Parking
+                | RoadSurfaceBandKind::TramReservation
+                | RoadSurfaceBandKind::CurbOrShoulder
+        )
+    }
+
+    fn walkable_boundary_height_priority(kind: RoadSurfaceBandKind) -> u8 {
+        match kind {
+            RoadSurfaceBandKind::Sidewalk => 0,
+            RoadSurfaceBandKind::Footpath => 1,
+            RoadSurfaceBandKind::CycleTrack => 2,
+            RoadSurfaceBandKind::Median => 3,
+            RoadSurfaceBandKind::Parking => 4,
+            RoadSurfaceBandKind::TramReservation => 5,
+            RoadSurfaceBandKind::CurbOrShoulder => 6,
+            RoadSurfaceBandKind::Carriageway => 7,
+        }
+    }
+
     fn node_band_height_priority(kind: RoadSurfaceBandKind) -> u8 {
         match kind {
-            RoadSurfaceBandKind::Carriageway
-            | RoadSurfaceBandKind::Sidewalk
-            | RoadSurfaceBandKind::Footpath => 0,
-            RoadSurfaceBandKind::CurbOrShoulder => 1,
+            RoadSurfaceBandKind::Carriageway | RoadSurfaceBandKind::CurbOrShoulder => 0,
+            RoadSurfaceBandKind::Sidewalk | RoadSurfaceBandKind::Footpath => 1,
             RoadSurfaceBandKind::Median => 3,
             RoadSurfaceBandKind::Parking => 4,
             RoadSurfaceBandKind::CycleTrack => 5,
@@ -1442,15 +1519,5 @@ impl RoadSurfaceSystem {
 
     fn normalize_surface_edge_array(a: usize, b: usize) -> [usize; 2] {
         if a < b { [a, b] } else { [b, a] }
-    }
-
-    fn sample_node_band_height_from_domains_for_kind(
-        point_xz: Vector2,
-        domains: &[NodeBandHeightDomain],
-        kind: RoadSurfaceBandKind,
-    ) -> Option<f32> {
-        Self::sample_node_band_height_from_filtered_domains(point_xz, domains, |domain_kind| {
-            domain_kind == kind
-        })
     }
 }
