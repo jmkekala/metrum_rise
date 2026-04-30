@@ -18,6 +18,7 @@ mod debug;
 mod earthwork;
 mod edge;
 mod geometry;
+mod grade;
 mod node;
 mod overlay;
 mod query;
@@ -282,14 +283,6 @@ struct NodeNonRoadCandidatePolygon {
 struct NodeBandHeightDomain {
     kind: RoadSurfaceBandKind,
     polygon: RoadSurfaceVisualPolygon,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct NodeBandHeightSample {
-    priority: u8,
-    domain_index: usize,
-    distance_squared: f32,
-    height_m: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

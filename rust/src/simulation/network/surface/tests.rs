@@ -2,6 +2,7 @@
 
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::{CURB_STEP_HEIGHT_M, MAX_STANDARD_DESIGN_CROSSFALL_RATE};
+use super::grade::NodeGradeField;
 use super::{
     ChunkCacheKind, NodeBandHeightDomain, PreviewRoadSurfaceResult, RoadSurfaceBandKind,
     RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
@@ -1858,7 +1859,7 @@ fn boundary_curb_overlap_detection_splits_mismatched_overlay_edges() {
 }
 
 #[test]
-fn boundary_curb_outer_height_prefers_local_curb_step_on_overlapping_sidewalk_domains() {
+fn boundary_curb_outer_height_uses_local_grade_field_constraint() {
     let road_y = 10.0;
     let wrong_neighbor_y = 25.0;
     let road_shapes = vec![vec![vec![[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]]]];
@@ -1876,10 +1877,10 @@ fn boundary_curb_outer_height_prefers_local_curb_step_on_overlapping_sidewalk_do
     let wrong_neighbor_sidewalk = NodeBandHeightDomain {
         kind: RoadSurfaceBandKind::Sidewalk,
         polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, wrong_neighbor_y, 1.0),
-            Vector3::new(2.0, wrong_neighbor_y, 1.0),
-            Vector3::new(2.0, wrong_neighbor_y, 2.0),
-            Vector3::new(0.0, wrong_neighbor_y, 2.0),
+            Vector3::new(0.0, wrong_neighbor_y, 3.0),
+            Vector3::new(2.0, wrong_neighbor_y, 3.0),
+            Vector3::new(2.0, wrong_neighbor_y, 4.0),
+            Vector3::new(0.0, wrong_neighbor_y, 4.0),
         ])
         .unwrap(),
     };
@@ -1894,11 +1895,12 @@ fn boundary_curb_outer_height_prefers_local_curb_step_on_overlapping_sidewalk_do
         .unwrap(),
     };
 
+    let grade_domains = vec![road_domain, wrong_neighbor_sidewalk, local_sidewalk];
+    let grade_field = NodeGradeField::from_domains(&grade_domains);
     let domains = RoadSurfaceSystem::boundary_curb_transition_domains(
         &road_shapes,
         &non_road_shapes,
-        &[road_domain],
-        &[wrong_neighbor_sidewalk, local_sidewalk],
+        &grade_field,
     );
 
     let max_curb_y = domains
@@ -1908,7 +1910,7 @@ fn boundary_curb_outer_height_prefers_local_curb_step_on_overlapping_sidewalk_do
         .fold(f32::NEG_INFINITY, f32::max);
     assert!(
         max_curb_y <= road_y + CURB_STEP_HEIGHT_M + 0.001,
-        "overlapping elevated sidewalk domains must not pull curb strip corners to a neighboring approach height; max_curb_y={max_curb_y:.3}"
+        "distant elevated sidewalk domains must not pull curb strip corners away from the local grade constraint; max_curb_y={max_curb_y:.3}"
     );
 }
 
@@ -1939,12 +1941,15 @@ fn non_road_visual_domains_preserve_same_kind_height_seams() {
         .unwrap(),
     };
 
+    let height_domains = vec![low_sidewalk, high_sidewalk];
+    let grade_field = NodeGradeField::from_domains(&height_domains);
     let polygons = RoadSurfaceSystem::visual_non_road_band_polygons_from_height_domains(
         7,
         RoadSurfaceVisualNodePieceKind::JunctionN,
         &target_non_road_shapes,
         &road_shapes,
-        &[low_sidewalk, high_sidewalk],
+        &height_domains,
+        &grade_field,
     )
     .unwrap();
 
@@ -2011,7 +2016,7 @@ fn visual_polygon_builder_preserves_skinny_closure_geometry() {
 }
 
 #[test]
-fn node_band_height_uses_curb_transition_at_road_boundary() {
+fn node_grade_field_uses_material_constraint_at_road_boundary() {
     let sidewalk_domain = NodeBandHeightDomain {
         kind: RoadSurfaceBandKind::Sidewalk,
         polygon: RoadSurfaceSystem::make_visual_polygon(vec![
@@ -2033,11 +2038,11 @@ fn node_band_height_uses_curb_transition_at_road_boundary() {
         .unwrap(),
     };
 
-    let height_m = RoadSurfaceSystem::sample_node_band_height_from_domains(
-        Vector2::new(1.0, 0.0),
-        &[sidewalk_domain, curb_domain],
-    )
-    .unwrap();
+    let grade_domains = vec![sidewalk_domain, curb_domain];
+    let grade_field = NodeGradeField::from_domains(&grade_domains);
+    let height_m = grade_field
+        .sample_material_height(RoadSurfaceBandKind::CurbOrShoulder, Vector2::new(1.0, 0.0))
+        .unwrap();
 
     assert!(
         height_m.abs() <= 0.001,
@@ -2083,11 +2088,12 @@ fn boundary_curb_domains_stitch_adjacent_segment_joints() {
         .unwrap(),
     };
 
+    let grade_domains = vec![road_domain, sidewalk_top, sidewalk_left];
+    let grade_field = NodeGradeField::from_domains(&grade_domains);
     let domains = RoadSurfaceSystem::boundary_curb_transition_domains(
         &road_shapes,
         &non_road_shapes,
-        &[road_domain],
-        &[sidewalk_top, sidewalk_left],
+        &grade_field,
     );
 
     assert!(
