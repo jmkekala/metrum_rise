@@ -20,6 +20,7 @@ mod debug;
 mod earthwork;
 mod edge;
 mod geometry;
+mod input;
 mod node;
 mod overlay;
 mod query;
