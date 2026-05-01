@@ -15,10 +15,14 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
 chrono = "0.4"
+cavalier_contours = "0.7"
+glam = "0.30"
 i_overlay = "5.0"
+parry2d = { version = "0.26", features = ["enhanced-determinism"] }
 rstar = "0.12"
 soa_derive = "0.14"
 spade = "2.15"
+splines = { version = "5.0", features = ["glam"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

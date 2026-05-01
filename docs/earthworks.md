@@ -180,6 +180,13 @@ Deterministic seam contract:
     CDT input is built
   - Spade is the chosen CDT backend; `ghx_constrained_delaunay` is not part of this spec, is not a
     fallback, and may only be reconsidered through a new explicit benchmarked spec change
+  - road node contour construction, grade evaluation, spatial lookup, and validation follow the
+    accepted geometry-backend responsibilities in [`improved_roads.md`](improved_roads.md);
+    earthworks must not depend on hand-rolled road offset, boundary recovery, or sampled-height
+    repair paths to produce a valid seam
+  - road / earthwork seam math should use the same internal `glam` vector representation and
+    explicit quantized keys as the road arrangement builder; Godot vectors are render / bridge
+    payloads, not the authoritative seam identity
   - `robust` is not part of the accepted implementation path for now; exact-predicate needs should
     first be handled by `i_overlay` and Spade, and any standalone predicate dependency requires a
     narrow future spec change
@@ -599,16 +606,17 @@ The following are current hardcut implementation rules:
 - `Terminal`, `Bend`, and `JunctionN` node pieces must compile final asphalt, curb / shoulder, and
   sidewalk regions as band-owned surfaces whose mouth seams, material seams, and outer footprint
   edges survive through `i_overlay` ownership cleanup and local Spade CDT triangulation
-- bend / junction full-roadbed closure carriers are last-priority residual owners only; explicit
-  curb / shoulder and sidewalk carriers must claim their seams and heights before any closure
-  carrier is allowed to fill remaining non-road area
+- bend / junction full-roadbed closure carriers are legacy debt, not the target rendered ownership
+  path; explicit curb / shoulder and sidewalk carriers must claim their seams and heights, and
+  remaining non-road residuals must be rejected or debug-counted instead of filled by a generic
+  closure carrier
 - node-piece terrain clips and local earthwork / skirt roots must be extracted from the canonical
   final band-owned top mesh. If the final owned-region outline introduces boundary vertices, those
-  vertices must be inserted into the rendered top mesh before export when Spade can represent them
-  explicitly. If the point is already covered by the canonical top-surface triangles, the exported
-  boundary height may be sampled from that owned coverage and must be debug-visible. A node path
-  must not reconstruct a later outer boundary loop that contains vertices outside the canonical
-  rendered node top-surface coverage.
+  vertices must be inserted into the canonical node arrangement and rendered top mesh before CDT
+  input is built. A point that is merely covered by an existing top-surface triangle is not enough
+  for export; non-explicit boundary vertices and sampled boundary heights are geometry errors. A
+  node path must not reconstruct a later outer boundary loop that contains vertices outside the
+  canonical rendered node top-surface coverage.
 - visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
   water meshes receive the same road footprint clip polygons after a network edit and suppress
   touched water cells wholesale, so water is no longer allowed to render under grounded road-owned

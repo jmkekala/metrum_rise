@@ -152,8 +152,7 @@ impl RoadSurfaceSystem {
             piece_kind,
             &mut loops,
             owned_regions,
-        )
-        {
+        ) {
             crate::debug_log!(
                 "road",
                 "node_boundary_missing_top_vertices node={} piece={:?}",

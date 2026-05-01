@@ -13,6 +13,7 @@ use super::graph::RegionGraph;
 use super::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 
+mod backend;
 mod cache;
 mod debug;
 mod earthwork;

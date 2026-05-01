@@ -47,9 +47,15 @@ Terminology:
 - `throat`: the edge-local boundary where an edge corridor hands off into a visual piece
 - `node grade carrier`: the deterministic node-local ownership model that carries each rendered
   node top-surface vertex from an explicit band owner, seam constraint, and height surface
+- `canonical node arrangement`: the final node-local 2D ownership graph built before
+  triangulation; it contains the exact asphalt, curb / shoulder, sidewalk, and footprint seam
+  vertices that the renderer, terrain clipper, and debug output will consume
 - `canonical node-owned mesh`: the final node-local top-surface graph for `Terminal`, `Bend`, and
   `JunctionN`; render polygons, terrain clip loops, query footprints, and local earthwork / skirt
   roots are all derived from this one graph
+- `geometry backend`: a reviewed Rust crate or existing project subsystem that owns a low-level
+  geometry operation such as offsetting, boolean clipping, triangulation, spatial lookup, spline
+  evaluation, or shape validation
 - `seam constraint`: a required node-local edge such as road / curb, curb / sidewalk, sidewalk
   outer edge, span / node handoff, or final road / terrain footprint boundary
 - `legacy node patch`: the retired loop-based junction / terminal carrier that previously tried to
@@ -114,18 +120,17 @@ Live behavior:
 - terrain clip input is the `i_overlay` union of all grounded `Standard` span and node footprints
   intersecting the patch query, not the raw per-piece loops; overlapping piece loops must be
   resolved before Spade sees terrain constraints
-- node outer-boundary / skirt loops use the final visible top-surface heights. Coincident node top
-  vertices are snapped only when their owner-local heights already agree within the snap tolerance;
-  shared seam edges may be welded only when the weld is below the seam-height and incident-slope
-  limits. Large cross-arm height disagreements remain owner-local instead of forcing vertical curb
-  or sidewalk triangles.
+- known debt: the current node compiler still contains post-overlay height repair paths for
+  boundary snapping, seam welding, and owned-region reconstruction. Those paths are deterministic
+  only in the narrow repeatability sense and are not the accepted target for `Bend` or `JunctionN`.
+  The hardcut replacement must build the final node arrangement before triangulation, so the
+  terrain boundary, skirts, and rendered top mesh consume the same exact vertices and heights.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
-  band-owned top mesh. A final-owned-region outline union may introduce boundary vertices only
-  before export. The compiler must first insert those vertices into the rendered top mesh; if a
-  deterministic CDT boundary point is already covered by the canonical top-surface triangles but is
-  not an explicit top vertex, its exported height must be sampled from that same owned top surface
-  and reported through road-geometry debug. A node path must not run a later footprint union that
-  creates terrain-clip or skirt vertices outside the canonical top-surface coverage.
+  band-owned top mesh. A final-owned-region outline pass may introduce boundary vertices only
+  before CDT input is built, and the compiler must insert those vertices into the canonical
+  arrangement and rendered top mesh. A node path must not export a boundary point merely because an
+  existing triangle covers it; non-explicit boundary vertices, sampled boundary heights, and later
+  footprint unions are invalid.
 - surface and road-touched terrain chunk ownership is now indexed by compiled visual piece
   coverage; dirty recompiles rebuild `old_coverage union new_coverage`
 - ordinary dirty chunk rebuilds read sorted chunk contributor sets instead of scanning every
@@ -133,18 +138,44 @@ Live behavior:
 
 Remaining ROAD-01 gap:
 
-- elevated `Bend` and `JunctionN` pieces now use owner-local band carriers for asphalt, curb /
-  shoulder, and sidewalk heights. The remaining work is validation and hardening across more
-  in-game DEM junctions, bends, terminals, acute angles, and clipped terrain seams; new fixes must
-  preserve owner-local height provenance and must not reintroduce the retired shared grade sampler
-  or derived curb-transition fallback.
+- elevated and flat `Bend` / `JunctionN` pieces still rely on too much project-owned
+  computational geometry: hand-built offsets, hand-built joins, post-overlay boundary recovery,
+  post-triangulation seam repair, and sampled-height fallback. The remaining work is a
+  library-backed canonical node arrangement that preserves owner-local height provenance and
+  deletes the retired shared grade sampler, derived curb-transition fallback, and "close enough"
+  vertex repair paths.
 
-Accepted ownership backend:
+Accepted Geometry Backends:
 
-- `i_overlay` is the Rust-side polygon boolean / ownership backend for road-piece region cleanup
-- Spade remains the Rust-side CDT backend for triangulating already-owned regions
+- `i_overlay` is the Rust-side polygon boolean / ownership backend for road-piece region cleanup.
+  It owns union, intersection, difference, hole handling, and overlap removal.
+- Spade remains the Rust-side CDT backend for triangulating already-owned regions. It must receive
+  canonical regions with explicit constraints, not overlapping material hints.
+- `rstar` remains the spatial lookup backend for broadphase queries, dirty-region lookup, and
+  indexed road / terrain ownership searches. Road code must not add another spatial index when the
+  existing R-tree answers the query.
+- `glam` is the preferred internal vector math backend for road geometry. Use `DVec2` / `DVec3`
+  for canonical arrangement construction, intersections, offsets, grade evaluation, and validation
+  where precision matters; use `Vec2` / `Vec3` only for clearly non-critical float math. Godot
+  `Vector2` / `Vector3` are boundary types for GDExtension input, render upload, debug output, and
+  save/load interoperability, not the long-lived internal geometry representation.
+- `cavalier_contours` is the preferred backend for polyline offsetting, joins, caps, parallel
+  curves, and contour cleanup in the node rework. Road code must not continue hand-rolling offset
+  rails or corner joins once this backend is adopted.
+- `splines` is the preferred backend for explicit longitudinal grade profiles and height
+  evaluation at canonical vertices. It may evaluate heights only after ownership and seam vertices
+  are known; it must not decide material ownership.
+- Parry may be used for shape intersection, containment, distance, and validation diagnostics when
+  those checks would otherwise be reimplemented locally. Use the 2D crate for XZ road arrangement
+  validation unless a later 3D earthwork check explicitly needs the 3D crate.
+- `lyon_geom` may be used for path math and deterministic curve flattening. `lyon_tessellation`
+  may only be adopted if it replaces a specific tessellation responsibility with tests; it must not
+  run beside Spade as a second triangulation truth for the same surface.
+- A new hand-written computational geometry routine is accepted only when no existing project
+  subsystem or reviewed Rust crate covers the operation. The spec or code comment must name the
+  missing backend capability, the deterministic ordering rule, and the complexity bound.
 - `robust` is intentionally out of scope for now; the road runtime should not add a standalone
-  predicate crate unless `i_overlay` plus Spade leaves one measured, specific predicate gap
+  predicate crate unless the accepted geometry backends leave one measured, specific predicate gap.
 
 Not accepted as the final target:
 
@@ -157,6 +188,12 @@ Not accepted as the final target:
 - additional sliver cleanup as the primary answer to malformed node candidates
 - nearest-polygon, nearest-segment, terrain, asphalt, or full-roadbed fallback as a rendered node
   sidewalk / curb / shoulder height source
+- using float vector equality as canonical topology identity. Canonical node arrangement identity
+  must use explicit quantized keys / stable IDs; `glam` values are numeric working values only.
+- carrying Godot vector types through core road-surface geometry after the data has crossed into
+  the Rust simulation boundary, except as a temporary adapter while migrating existing code
+- hand-written offsetting, polygon cleanup, point-in-polygon, intersection, or triangulation logic
+  when an accepted backend already owns that operation
 - any compatibility path that keeps the old post-overlay shared grade sampler as the source of
   rendered elevated `Bend` or `JunctionN` top-surface heights
 - any second-pass outer-boundary reconstruction that creates terrain clip or mouth seam vertices
@@ -567,9 +604,11 @@ change asphalt-first ownership.
 
 #### Node Band Grade Carrier Hardcut
 
-`Bend` and `JunctionN` geometry must be graded by one deterministic node-local band-owned height
-model. Overlay cleanup may own polygon boolean operations, but it must not erase the band owner,
-required seam rails, or height surface that will grade each rendered vertex.
+`Terminal`, `Bend`, and `JunctionN` geometry must be built from one deterministic node-local
+arrangement before triangulation. Accepted geometry backends may own low-level operations such as
+offsetting, polygon booleans, spatial lookup, spline evaluation, validation, and CDT
+triangulation, but they must not erase the band owner, required seam rails, or height surface that
+will grade each rendered vertex.
 
 This is the long-term replacement for nearest-polygon, nearest-segment, full-roadbed, or
 domain-index height sampling inside node pieces. It is a hardcut replacement, not a compatibility
@@ -581,8 +620,15 @@ Implementation ownership:
 
 - keep `node.rs` responsible for incident mouth collection, endpoint-profile collection, piece
   classification, and topology
-- keep `overlay.rs` responsible for XZ boolean ownership, owner-preserving clipping, owner-local
-  height sampling, and final terrain footprint extraction
+- move offset rails, caps, contour joins, and node-outline construction to accepted geometry
+  backends where they exist; project code adapts backend output into road-owned data structures
+  instead of reimplementing those algorithms
+- keep `overlay.rs` or its replacement responsible for wrapping `i_overlay` boolean ownership,
+  owner-preserving clipping, and canonical ordering; it must not be the place that invents missing
+  heights after ownership is already damaged
+- keep height evaluation in an explicit grade-surface layer. Spline or ruled-surface backends may
+  evaluate known vertices, but they must not create vertices, choose material ownership, or repair
+  contradictory seams
 - keep `Terminal` on explicit side-band / end-band topology, but record the same owned-region
   metadata so terminal, bend, and junction seam checks share one contract
 
@@ -590,10 +636,16 @@ Minimum private data model:
 
 - `NodeGradeCarrier`: one owner-preserving source surface for a node piece band, built from the
   visible throat profile and the graph-endpoint profile
-- `NodeOwnedRegion`: one resolved material region with band kind, deterministic owner index, and
-  final triangulated source-sampled polygon
-- a node-local height-snap tolerance for coincident overlay keys; it may only merge near-equal
-  owner-local heights and must not collapse unrelated cross-arm ramp heights to the lowest value
+- `NodeOwnedRegion`: one resolved material region with band kind, deterministic owner index,
+  canonical rings, seam constraints, and final triangulated source-sampled polygon
+- `NodeArrangementVertex`: one canonical XZ key, one material-owner context, one height source, and
+  one solved height. A vertex may be shared by several final regions only when those regions agree
+  on the same source height exactly after project quantization.
+- `NodeArrangementEdge`: one explicit seam segment with owner(s), material transition kind, and
+  source constraint IDs
+- numeric epsilon / quantization keys are representation tools only. They may deduplicate identical
+  coordinates produced by a backend, but they must not average heights, choose the nearest owner,
+  weld contradictory seams, or hide a missing band owner.
 
 Inputs:
 
@@ -611,8 +663,9 @@ Output:
 - one height value for every rendered node top-surface vertex, produced by barycentric or edge
   sampling from that vertex's owning `NodeGradeCarrier`
 - one material / band owner for every rendered node triangle
-- one canonical outer footprint loop set extracted from final band-owned top mesh for terrain seam
-  generation, chunk coverage, and local earthwork / skirt roots
+- one canonical outer footprint loop set extracted from the final node arrangement and represented
+  by explicit rendered top-mesh vertices before terrain seam generation, chunk coverage, and local
+  earthwork / skirt roots
 - optional debug records for missing constraints, dropped regions, seam height mismatches, and
   grade-limit violations
 
@@ -631,12 +684,10 @@ Core invariants:
   rendered top-surface vertex at the same overlay coordinate unless asphalt-priority ownership
   deliberately removes that non-road island
 - every node outer-boundary vertex used by terrain clipping or local earthwork generation must be
-  covered by the canonical node-owned top mesh. Boundary vertices introduced by a final-owned-region
-  outline pass are first inserted into the top mesh as deterministic Steiner vertices; if Spade
-  already covers the point through an existing triangle edge or interior, export may sample the
-  height from that owned top-surface coverage instead of rejecting the whole node. Vertices
-  introduced by a later union, unrelated height resampling pass, hull, or terrain-clip
-  reconstruction are invalid.
+  an explicit vertex in the canonical node-owned top mesh. Boundary vertices introduced by a
+  final-owned-region outline pass must be inserted into the arrangement before CDT input is built.
+  Vertices introduced by a later union, unrelated height resampling pass, hull, terrain-clip
+  reconstruction, or "already covered so sample it" export path are invalid.
 
 Material height fields:
 
@@ -654,8 +705,8 @@ Height provenance rules:
 - `CurbOrShoulder` vertices use only curb / shoulder carriers
 - `Sidewalk` vertices use only sidewalk carriers
 - `Footpath` vertices use only footpath carriers
-- terrain clip / earthwork boundary vertices may sample footprint heights, but those vertices are
-  not rendered road material vertices
+- terrain clip / earthwork boundary vertices must be explicit canonical top-mesh vertices with
+  solved footprint heights. They must not be generated by a later sampled-height export pass.
 - constants such as curb step height or shoulder width may exist only in the section/profile
   solver; node builders consume solved profile output instead of duplicating those constants
 
@@ -673,10 +724,13 @@ Elevated-junction policy:
 - the compiler must not hide an excessive grade delta by lifting sidewalks, burying asphalt, adding
   a render-only skirt, or flattening the node without updating incident mouth constraints
 
-Hardcut region solve sequence for `Bend` and `JunctionN`:
+Hardcut region solve sequence for `Terminal`, `Bend`, and `JunctionN`:
 
-1. Build conflict-bounded full-roadbed and carriageway candidates from incident mouth profiles.
-2. Use `i_overlay` to produce primary XZ ownership:
+1. Build incident mouth rails, endpoint rails, and conflict handoff distances from solved profiles.
+   Use accepted geometry backends for offset rails, caps, joins, and contour cleanup instead of
+   local ad hoc line-intersection or corner-special-case code.
+2. Build conflict-bounded full-roadbed and carriageway candidates from those canonical rails.
+3. Use `i_overlay` to produce primary XZ ownership:
 
 ```text
 node_footprint = union(full_roadbed_corridors)
@@ -684,36 +738,32 @@ node_asphalt   = union(carriageway_corridors) intersect node_footprint
 node_non_road  = node_footprint - node_asphalt
 ```
 
-3. Extract required seam rails from incident mouth profiles and primary XZ ownership: span
+4. Extract required seam rails from incident mouth profiles and primary XZ ownership: span
    handoff, asphalt boundary, asphalt / curb contact, curb / sidewalk contact, sidewalk outer edge,
    and final footprint boundary.
-4. Split `node_non_road` into explicit `CurbOrShoulder` and `Sidewalk` owned regions. A residual
+5. Split `node_non_road` into explicit `CurbOrShoulder` and `Sidewalk` owned regions. A residual
    non-road area without a deterministic band owner is a geometry error, not a fallback sidewalk.
-5. Clip solved mouth and endpoint band carrier surfaces to their owned regions while preserving
+6. Clip solved mouth and endpoint band carrier surfaces to their owned regions while preserving
    owner metadata: incident edge ordering, band kind, deterministic owner index, and source height
    surface.
-6. Full-roadbed closure carriers may exist only as last-priority residual owners after explicit
-   curb, sidewalk, and other non-road band carriers have claimed their regions. A closure carrier
-   must not steal a mouth seam, material seam, or sidewalk outer edge from the explicit band that
-   supplied that height rail.
-7. Build `NodeOwnedRegion` records from every accepted region. Each record carries material,
-   canonical XZ rings, and a band-local source-sampled height surface.
-8. Triangulate owned regions with Spade CDT.
-9. Sample each emitted triangle vertex from that triangle's owning `NodeOwnedRegion`. Cross-region
+7. Reject unowned residuals. A full-roadbed closure carrier is not a rendered fallback for missing
+   curb, sidewalk, or shoulder ownership.
+8. Build the canonical node arrangement from every accepted region. Every seam vertex and outer
+   footprint vertex is inserted before triangulation and receives one owner and one height source.
+9. Triangulate owned regions with Spade CDT using the arrangement vertices and seam constraints as
+   input.
+10. Sample each emitted triangle vertex from that triangle's owning `NodeOwnedRegion`. Cross-region
    nearest sampling, terrain sampling, and full-footprint grade fallback are forbidden.
-10. Reject or debug-count any triangle whose centroid or vertices cross a material seam after
+11. Reject or debug-count any triangle whose centroid or vertices cross a material seam after
    triangulation.
-11. Weld final shared seam edges only when all owners on that edge are within the documented
-    seam-height tolerance and applying the weld keeps every incident edge below the node
-    seam-slope limit. The weld chooses the deterministic lower material / owner rank; it is not a
-    nearest-height sampler and it must not hide large cross-arm grade disagreements.
-12. Build the canonical outer footprint from the final owned regions, then insert every exported
-    boundary vertex into the rendered top mesh before terrain clipping or local earthwork roots can
-    consume it. If an outline vertex is not an explicit rendered top vertex but lies on canonical
-    top-surface coverage, export the deterministic sampled top height and debug-count that event.
-    Open chains, unmatched endpoints, or exported vertices outside canonical top coverage are
-    geometry errors.
-13. Export those canonical top-mesh footprint loops to terrain clipping. Terrain seam height and
+12. Verify final shared seam edges. All regions sharing a seam vertex must reference the same
+    canonical arrangement vertex and solved height. Any cross-owner height disagreement after
+    quantization is a geometry error; do not weld, average, min/max, choose by owner priority, or
+    move either side.
+13. Export the canonical outer footprint directly from the final arrangement graph. Open chains,
+    unmatched endpoints, non-explicit boundary vertices, or exported vertices outside canonical top
+    coverage are geometry errors.
+14. Export those canonical top-mesh footprint loops to terrain clipping. Terrain seam height and
     local earthwork / skirt roots come from those exact visible top surfaces, not from a second
     independent footprint-height pass.
 
@@ -803,7 +853,8 @@ Required terminal inputs:
 - the solved endpoint profile at the graph endpoint
 - the ordered physical bands from the endpoint profile
 - the outward dead-end direction opposite the incident edge's inward direction
-- the existing overlay / CDT tolerances used by node pieces
+- the accepted geometry-backend configuration for offset / contour generation, boolean ownership,
+  grade evaluation, validation, and CDT triangulation
 
 Deterministic terminal topology:
 
@@ -867,12 +918,14 @@ actual clipped throat boundary segments, plus local side joins around the graph 
 - classify each throat segment into left and right endpoints relative to its local travel
   direction; start travel is throat-to-node, end travel is node-to-throat
 - build local full-roadbed side joins and local carriageway side joins for ownership
-- build local non-road band joins for height sampling
-- side joins are sampled as the shorter local arc around the graph node using only the real side
-  offset radius and interpolated heights; they must not use the throat distance as radius
+- build local non-road band joins as explicit canonical arrangement edges with owner-preserving
+  height sources
+- side joins are generated as explicit backend-produced contour segments around the graph node using
+  only the real side offset radius and owner-preserving height sources; they must not use the
+  throat distance as radius
 - final bend asphalt is the `i_overlay` union of carriageway corridors and carriageway side joins
 - final bend sidewalk / curb / shoulder shape is `full_roadbed_candidates - carriageway_candidates`
-  and its height is sampled from non-road band candidates
+  split by explicit band seam rails; its vertices use only their owning non-road band height source
 - no single bend candidate may contain crossing throat caps; if two cap segments would cross, they
   must remain separate overlay candidates
 - a bend with sidewalks must not expose terrain or world background between the two incident
@@ -1356,35 +1409,120 @@ The Godot terrain renderer remains a thin upload bridge. It continues to choose 
 rectangular terrain patch mesh and a Rust-baked road-touched terrain patch mesh, but it must not
 clip road holes itself.
 
-### Implementation Sequence
+### Implementation Status
 
-Implement the hardcut in this order:
+The terrain CDT hardcut is the accepted baseline. Its required properties are:
 
-1. Done: move `spade` from `dev-dependencies` to runtime `dependencies`.
-2. Done: add a small Rust terrain CDT module with no Godot dependencies.
-3. Done: port the current Spade spike into module-local tests.
-4. Done: add constrained patch-boundary clipping for road footprint loops.
-5. Done: add tests for roads crossing one patch edge, two patch edges, and a patch corner.
-6. Done: add tests for multiple footprint loops in one patch.
-7. Done: add tests for `Bend`, `Terminal`, and `JunctionN` footprint loops.
-8. Done: replace the live road-touched terrain patch builder with the CDT module.
-9. Done: remove the retired seam-strip / cell-triangle live path.
-10. Done: update `--debug road-geometry` output to report CDT constraints, accepted faces, rejected
-    faces, invalid constraints, and preserved seam-edge counts.
-11. Done: make live terrain CDT use `try_bulk_load_cdt` so malformed constraints are debug-counted
-    instead of panicking the backend.
-12. Done: hard-cut `Bend` and `JunctionN` visual fills to local Spade CDT triangulation fed by
-    resolved road-piece regions; `Terminal` now uses explicit band-owned end topology.
-13. Done: replace node-piece material hints with `i_overlay` boolean ownership for `Bend` and
-    `JunctionN`, while keeping `Terminal` on explicit side-band / end-band ownership.
-14. Done: remove hint-only / nearest-material / centroid-vote node material fallbacks after
-    boolean ownership emits disjoint asphalt and sidewalk regions.
-15. Done: replace paired adjacent-mouth node candidate strips with conflict-bounded full-roadbed
-    and carriageway corridor candidates for `Bend` and `JunctionN`, and explicit endpoint band
-    topology for `Terminal`.
-16. Later: adapt `Span` output to the same resolved-region contract once node pieces are validated.
+- Spade is a runtime dependency, not a test-only spike.
+- The terrain CDT module has no Godot dependency.
+- Road footprint loops are clipped to patch boundaries before CDT input is built.
+- Road-touched terrain patches use CDT output instead of seam strips or conservative terrain-cell
+  omission.
+- CDT diagnostics report constraints, accepted faces, rejected faces, invalid constraints, and
+  preserved seam-edge counts through road-geometry debug output.
+- Live terrain CDT uses `try_bulk_load_cdt`; malformed constraints are debug-counted and must not
+  panic the simulation thread or re-enable an older terrain path.
 
-Acceptance requires `cargo check`, the CDT contract tests, and Godot headless load to pass.
+The current node-piece overlay / CDT path is transitional debt. Its useful pieces are `i_overlay`
+ownership cleanup, Spade triangulation of already-owned regions, explicit `Terminal` band topology,
+and the existing debug surface. Its rejected pieces are post-overlay height repair, boundary
+reconstruction, sampled missing boundary heights, full-roadbed closure fallback, and hand-written
+offset / join geometry. The next node implementation must follow the canonical arrangement contract
+below rather than preserve those transitional helpers.
+
+Acceptance for changes in this area requires `cargo check`, the relevant road-surface contract
+tests, and Godot headless load to pass.
+
+### Library-Backed Node Rework Plan
+
+This is a clean-cut replacement of the current node surface compiler. The implementation must not
+ship or merge with a temporary dual path where old node code remains reachable. The hardcut change
+must route `Terminal`, `Bend`, and `JunctionN` through the new arrangement builder in the same
+patch series that removes the retired helpers from runtime use.
+
+Implementation phases:
+
+1. Dependency and adapter boundary:
+   - add direct dependencies only for accepted backends used by the implementation: `glam`,
+     `cavalier_contours`, `splines`, `parry2d`, and optional `lyon_geom`
+   - keep `i_overlay`, `rstar`, and Spade as existing accepted backends
+   - add a small road-geometry adapter layer for converting between Godot vectors, `glam`
+     vectors, overlay contours, Spade points, and backend contour types
+   - keep Godot `Vector2` / `Vector3` out of new core geometry structs except at bridge and output
+     conversion points
+
+2. Canonical identity and data model:
+   - introduce `NodeArrangement`, `NodeArrangementVertex`, `NodeArrangementEdge`, and
+     `NodeOwnedRegion` records backed by quantized keys / stable IDs
+   - represent material owner, band owner, seam source, and height source explicitly on every
+     arrangement vertex / edge / face
+   - reject float-vector equality as topology identity; `glam` values are working coordinates only
+
+3. Input extraction:
+   - keep the existing solved edge section/profile pipeline as the source of mouth data
+   - extract mouth rails, endpoint rails, band intervals, conflict handoff distance, and solved
+     boundary heights once per incident mouth
+   - do not duplicate curb height, sidewalk width, shoulder width, or grade constants inside the
+     node builder
+
+4. Rail and contour generation:
+   - use `cavalier_contours` for offsets, joins, caps, parallel curves, and contour cleanup
+   - generate full-roadbed, carriageway, curb / shoulder, sidewalk, and footprint seam rails from
+     backend-produced contours
+   - represent every generated rail as an arrangement constraint before boolean ownership or CDT
+     input is built
+
+5. Boolean ownership:
+   - use `i_overlay` for union / intersection / difference of candidate regions
+   - produce `node_footprint`, `node_asphalt`, and `node_non_road`
+   - split `node_non_road` into explicit curb / shoulder and sidewalk regions using profile seam
+     rails; reject unowned residuals
+   - preserve owner metadata through every clipping operation
+
+6. Height sources:
+   - use `splines` for longitudinal grade profiles where an edge or rail height profile is a spline
+     / piecewise curve
+   - evaluate heights only at already-known canonical arrangement vertices
+   - reject same-XZ height conflicts instead of welding, averaging, nearest sampling, owner-priority
+     selection, or min/max selection
+
+7. Triangulation:
+   - feed only final owned regions and explicit seam constraints into Spade
+   - require CDT output faces to stay inside one material owner
+   - keep CDT out of material ownership decisions
+
+8. Validation and debug:
+   - use Parry / backend shape queries for containment, crossing, distance, and overlap validation
+     when those checks are available from the backend
+   - debug output must name the failing stage and backend: contour generation, boolean ownership,
+     height evaluation, validation, or CDT triangulation
+   - report rejected residuals, non-explicit boundary vertices, height conflicts, open boundaries,
+     duplicate exposed edges, and invalid constraints as structured road-geometry diagnostics
+
+9. Runtime integration:
+   - route `build_terminal_visual_node_piece`, `build_bend_visual_node_piece`, and
+     `build_junction_visual_node_piece` through the new arrangement builder
+   - export render polygons, query triangles, terrain clip loops, earthwork roots, and chunk
+     coverage from the same arrangement-owned mesh
+   - keep span compilation and dirty-chunk indexing unless the new node output requires a narrow
+     adapter
+
+10. Deletion pass:
+    - remove or make unreachable post-overlay height repair, boundary snapping, shared seam
+      welding, sampled missing-boundary height export, full-roadbed closure fallback, and
+      hand-written offset / join helpers
+    - remove tests that only preserve the retired implementation shape; keep or rewrite black-box
+      contract tests
+
+Acceptance gates:
+
+- `cargo check --manifest-path rust/Cargo.toml`
+- focused `simulation::network::surface` tests for flat and elevated `Terminal`, `Bend`,
+  T-junction, 4-way junction, and arbitrary `N > 4` junctions
+- deterministic rebuild tests that compare canonical arrangement keys and emitted mesh indices
+- terrain seam tests proving every exported footprint vertex is an explicit top-mesh vertex
+- road-geometry debug tests proving failures are reported before visual fallback can hide them
+- Godot headless load with road-touched terrain enabled
 
 ### Road-Piece CDT Rules
 
@@ -1438,8 +1576,8 @@ node_non_road  = node_footprint - node_asphalt
 
 For `Bend` and `JunctionN`, `node_non_road` is an intermediate ownership area only. It must be
 split into explicit `CurbOrShoulder` and `Sidewalk` owned regions before any render triangle or
-height sample is emitted. `Terminal` uses explicit side-band and end-band topology from the solved
-endpoint bands, so it does not render a generic `node_non_road` remainder.
+height evaluation is emitted. `Terminal` uses explicit side-band and end-band topology from the
+solved endpoint bands, so it does not render a generic `node_non_road` remainder.
 
 Required node-piece input:
 
@@ -1585,26 +1723,51 @@ Debug contract:
 - debug output must make any missing mouth seam or outer-footprint top owner measurable as a
   specific missing `NodeOwnedRegion` / seam constraint, not only as a rendered visual gap
 - debug output must make any canonical outline failure measurable as an open boundary, duplicate
-  exposed edge, missing owned-region edge, missing top-surface coverage, or sampled non-explicit
-  top vertex instead of allowing earthwork faces to attach to an unrelated reconstructed boundary
-  point
+  exposed edge, missing owned-region edge, missing top-surface coverage, or rejected
+  non-explicit boundary vertex instead of allowing earthwork faces to attach to an unrelated
+  reconstructed boundary point
+- debug output must report which accepted geometry backend produced each major stage: offset /
+  contour generation, boolean ownership, grade evaluation, validation, and CDT triangulation
 
-Legacy removal target:
+Legacy node removal target:
 
-- paired adjacent-mouth connector strips are not final carriers or primary candidates
-- node asphalt wedges must not be assembled gap-by-gap around the center
-- no `Bend` or `JunctionN` path may depend on second-pass outer-boundary reconstruction from
-  candidate loops or already-emitted render triangles
-- no `Terminal`, `Bend`, or `JunctionN` path may feed node terrain clipping or local earthwork
-  generation from candidate loops, raw render triangles, or a post-export
-  `union_terrain_clip_polygons` pass. The only allowed outline union is over final owned regions
-  before export, and every produced boundary vertex must be covered by the canonical top mesh.
-- no `Bend` or `JunctionN` path may keep the old shared post-overlay grade sampler as a
-  compatibility path for rendered top-surface heights
-- hint-only, nearest-material, centroid-vote, render-order, and CDT-material fallbacks are not
-  allowed in node-piece material ownership
-- keep mouth/profile calculation, conflict handoffs, grade/crossfall sampling, chunk
-  invalidation, `i_overlay`, and Spade CDT triangulation because those remain the target pipeline
+The node rework must remove the old node-patch behaviors without throwing away the useful solved
+roadbed pipeline around them.
+
+Retire these node-construction patterns:
+
+- paired adjacent-mouth connector strips as final carriers or primary candidates
+- gap-by-gap node asphalt wedge assembly around the center
+- global annulus / halo sidewalk ownership around one node center
+- generic junction fill polygons as the source of bend or multi-arm node semantics
+- full-roadbed closure carriers as rendered fallbacks for missing curb, shoulder, or sidewalk
+  ownership
+- second-pass outer-boundary reconstruction from candidate loops, already-emitted render
+  triangles, or terrain clip loops
+- shared post-overlay grade sampling as a compatibility path for rendered `Bend` or `JunctionN`
+  top-surface heights
+
+Forbid these replacement shortcuts:
+
+- feeding node terrain clipping or local earthwork generation from candidate loops, raw render
+  triangles, or a post-export `union_terrain_clip_polygons` pass
+- accepting an outer-boundary vertex that is not an explicit canonical top-mesh vertex
+- choosing material ownership with hint-only classification, nearest material, centroid voting,
+  render order, or CDT face classification
+- resolving same-XZ height conflicts by welding, averaging, min/max choice, owner priority, or
+  nearest-height sampling
+- falling back to shader masks, terrain masks, water, zoning overlays, or background-color
+  coincidence for missing topology
+
+Keep and extend these target components:
+
+- mouth / endpoint profile extraction from solved sections
+- conflict handoff calculation and grade / crossfall sampling
+- explicit `Span`, `Terminal`, `Bend`, and `JunctionN` visual piece boundaries
+- chunk invalidation based on compiled piece coverage
+- accepted geometry backends for vector math, offset / contour generation, validation, spline
+  evaluation, boolean ownership, spatial lookup, and CDT triangulation
+- Godot upload as a thin rendering bridge
 
 Acceptance tests for the conflict-first node hardcut:
 
@@ -1646,8 +1809,9 @@ only on already-resolved legal regions:
 
 ## Legacy Retirement Rules
 
-The hardcut does not retire the whole roadbed runtime. It retires the remaining terrain-seam and
-generic-ownership patterns that conflict with the piece/profile model.
+The hardcut does not retire the whole roadbed runtime. It retires only the terrain-seam,
+centerline-lift, and generic node-ownership patterns that conflict with the piece/profile model.
+Node-specific removal details are owned by `Legacy node removal target` above.
 
 Still valid and must be extended:
 
@@ -1661,12 +1825,6 @@ Still valid and must be extended:
 Retired patterns that must not return:
 
 - centerline-only road lifting or terrain flattening
-- generic node patches as final visual authority
-- annulus-style sidewalk ownership around one global node center
-- paired adjacent-mouth strip candidates as the source of node footprint or sidewalk ownership
-- second-pass outer-boundary reconstruction from candidate loops or already-emitted polygons as
-  the ownership source
-- generic junction fill polygons as the source of bend or multi-arm node semantics
 - road-touched terrain generated from seam strips plus conservative terrain-cell omission
 - Godot-side road-hole polygon clipping
 - shader, water, zoning, or background-color masking as a road / terrain seam carrier
@@ -1725,7 +1883,8 @@ Must cover:
 ## Explicit Runtime Rule
 
 The shipped roadbed runtime is the only valid path for surface roads. New work must extend it
-instead of reintroducing retired centerline ownership.
+through the contracts in this document instead of reintroducing retired centerline ownership,
+generic node patches, or renderer-owned road topology.
 
 The following legacy patterns must not be reintroduced:
 

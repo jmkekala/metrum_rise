@@ -3,8 +3,8 @@
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::{CURB_STEP_HEIGHT_M, MAX_STANDARD_DESIGN_CROSSFALL_RATE};
 use super::{
-    ChunkCacheKind, NodeGradeCarrier, PreviewRoadSurfaceResult, RoadSurfaceBandKind,
-    NodeOwnedRegion, RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
+    ChunkCacheKind, NodeGradeCarrier, NodeOwnedRegion, PreviewRoadSurfaceResult,
+    RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
     RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
     SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
@@ -548,8 +548,11 @@ fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNod
             Vector2::new(closest.x - boundary_point.x, closest.z - boundary_point.z).length();
         if xz_error <= overlay_match_tolerance_m {
             let matching_height = top_vertices.iter().any(|candidate| {
-                Vector2::new(candidate.x - boundary_point.x, candidate.z - boundary_point.z)
-                    .length()
+                Vector2::new(
+                    candidate.x - boundary_point.x,
+                    candidate.z - boundary_point.z,
+                )
+                .length()
                     <= overlay_match_tolerance_m
                     && (candidate.y - boundary_point.y).abs() <= overlay_match_tolerance_m
             });
@@ -2403,8 +2406,7 @@ fn skewed_elevated_four_way_junction_compiles_visible_center_surface() {
     ] {
         let endpoint_pos = Vector3::new(
             endpoint_xz.x,
-            terrain.sample_height_world(endpoint_xz.x, endpoint_xz.y)
-                * crate::config::HEIGHT_SCALE,
+            terrain.sample_height_world(endpoint_xz.x, endpoint_xz.y) * crate::config::HEIGHT_SCALE,
             endpoint_xz.y,
         );
         let endpoint = graph.add_node(endpoint_pos, NodeType::Junction);
