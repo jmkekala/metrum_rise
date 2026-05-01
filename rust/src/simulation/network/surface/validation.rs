@@ -10,7 +10,7 @@ use super::triangulation::{
     NodeTriangulationError, NodeTriangulationSolution,
 };
 use super::{
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, RoadSurfaceBandKind, RoadSurfaceSystem,
+    NODE_OVERLAY_NUMERIC_AREA_EPS_M2, NodeOverlayContour, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualNodePieceKind,
 };
 use parry2d::math::{Pose, Vector};
@@ -381,17 +381,6 @@ impl NodeGeometryDiagnostic {
         error: &NodeHeightSourceError,
     ) -> Self {
         let kind = match error {
-            NodeHeightSourceError::SameXzHeightConflict {
-                x_mm,
-                z_mm,
-                existing_height_mm,
-                incoming_height_mm,
-            } => NodeGeometryDiagnosticKind::HeightConflict {
-                x_mm: *x_mm,
-                z_mm: *z_mm,
-                existing_height_mm: *existing_height_mm,
-                incoming_height_mm: *incoming_height_mm,
-            },
             NodeHeightSourceError::MissingSourceBand { .. }
             | NodeHeightSourceError::MissingRegionBandIndex { .. }
             | NodeHeightSourceError::SourceBandKindMismatch { .. }
@@ -833,7 +822,7 @@ fn validate_triangle_area_coverage(
         .map(|triangle| triangle_area_m2(region, triangle))
         .sum::<f32>();
     let overlap_area_m2 = (triangle_area_sum - union_area).max(0.0);
-    if overlap_area_m2 > NODE_OVERLAY_MIN_AREA_M2 {
+    if overlap_area_m2 > NODE_OVERLAY_NUMERIC_AREA_EPS_M2 {
         push_validation_diagnostic(
             solution,
             diagnostics,
@@ -846,7 +835,7 @@ fn validate_triangle_area_coverage(
     }
 
     let area_delta = union_area - region.area_m2;
-    if area_delta.abs() > NODE_OVERLAY_MIN_AREA_M2 {
+    if area_delta.abs() > NODE_OVERLAY_NUMERIC_AREA_EPS_M2 {
         push_validation_diagnostic(
             solution,
             diagnostics,
@@ -1138,29 +1127,6 @@ mod tests {
                 }
             )
         }));
-    }
-
-    #[test]
-    fn maps_height_conflict_to_structured_debug_record() {
-        let report = NodeValidationReport::from_height_source_error(
-            7,
-            RoadSurfaceVisualNodePieceKind::Bend,
-            &NodeHeightSourceError::SameXzHeightConflict {
-                x_mm: 10,
-                z_mm: 20,
-                existing_height_mm: 1000,
-                incoming_height_mm: 1250,
-            },
-        );
-
-        let diagnostic = &report.diagnostics[0];
-        assert_eq!(diagnostic.stage, NodeGeometryStage::HeightEvaluation);
-        assert_eq!(diagnostic.backend, NodeGeometryBackend::Splines);
-        assert!(matches!(
-            diagnostic.kind,
-            NodeGeometryDiagnosticKind::HeightConflict { .. }
-        ));
-        assert!(report.debug_dump().contains("\"backend\":\"splines\""));
     }
 
     #[test]

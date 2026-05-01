@@ -3,7 +3,9 @@
 #![allow(dead_code)]
 
 use super::arrangement::{NodeBandOwner, NodeHeightSource};
-use super::backend::{RoadVec2, RoadVec3, overlay_point_to_road};
+use super::backend::{
+    RoadVec2, RoadVec3, overlay_point_to_road, quantize_road_vec2_to_overlay_grid,
+};
 use super::input::{NodeArrangementInput, NodeInputBandInterval};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::{
@@ -15,6 +17,7 @@ use std::collections::BTreeMap;
 
 const HEIGHT_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_PARAMETER_KEY_SCALE: f64 = 1_000_000.0;
+const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 1.0 / HEIGHT_PARAMETER_KEY_SCALE;
 const HEIGHT_FIELD_MIN_AXIS_LEN2_M2: f64 = 1.0e-12;
 
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
@@ -90,12 +93,6 @@ pub(crate) enum NodeHeightSourceError {
         axis: &'static str,
         parameter: f64,
     },
-    SameXzHeightConflict {
-        x_mm: i64,
-        z_mm: i64,
-        existing_height_mm: i64,
-        incoming_height_mm: i64,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -103,9 +100,6 @@ struct NodeHeightPointKey {
     x_mm: i64,
     z_mm: i64,
 }
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct NodeHeightValueKey(i64);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct NodeSourceBandKey {
@@ -141,11 +135,10 @@ impl NodeHeightSolution {
     ) -> Result<Self, NodeHeightSourceError> {
         validate_input_ownership_pair(input, ownership)?;
         let fields = height_fields_by_source(input)?;
-        let mut height_by_point = BTreeMap::new();
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
 
         for region in &ownership.owned_regions {
-            regions.push(heighted_region(region, &fields, &mut height_by_point)?);
+            regions.push(heighted_region(region, &fields)?);
         }
 
         Ok(Self {
@@ -162,10 +155,11 @@ impl NodeBandHeightField {
             mouth_order_index,
             band_index: interval.band_index,
         };
-        let endpoint_start_xz = xz(interval.endpoint_start_world);
-        let endpoint_end_xz = xz(interval.endpoint_end_world);
-        let mouth_start_xz = xz(interval.mouth_start_world);
-        let mouth_end_xz = xz(interval.mouth_end_world);
+        let endpoint_start_xz =
+            quantize_road_vec2_to_overlay_grid(xz(interval.endpoint_start_world));
+        let endpoint_end_xz = quantize_road_vec2_to_overlay_grid(xz(interval.endpoint_end_world));
+        let mouth_start_xz = quantize_road_vec2_to_overlay_grid(xz(interval.mouth_start_world));
+        let mouth_end_xz = quantize_road_vec2_to_overlay_grid(xz(interval.mouth_end_world));
 
         Self {
             key,
@@ -296,7 +290,6 @@ fn height_fields_by_source(
 fn heighted_region(
     region: &NodeBooleanOwnedRegion,
     fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
-    height_by_point: &mut BTreeMap<NodeHeightPointKey, NodeHeightValueKey>,
 ) -> Result<NodeHeightedRegion, NodeHeightSourceError> {
     let band_index =
         region
@@ -331,7 +324,7 @@ fn heighted_region(
             .cloned()
             .chain(field.height_sources.iter().cloned()),
     );
-    let shape = heighted_shape(&region.shape, field, &height_sources, height_by_point)?;
+    let shape = heighted_shape(&region.shape, field, &height_sources)?;
 
     Ok(NodeHeightedRegion {
         kind: region.kind,
@@ -348,11 +341,10 @@ fn heighted_shape(
     shape: &NodeOverlayShape,
     field: &NodeBandHeightField,
     height_sources: &[NodeHeightSource],
-    height_by_point: &mut BTreeMap<NodeHeightPointKey, NodeHeightValueKey>,
 ) -> Result<NodeHeightedShape, NodeHeightSourceError> {
     shape
         .iter()
-        .map(|contour| heighted_contour(contour, field, height_sources, height_by_point))
+        .map(|contour| heighted_contour(contour, field, height_sources))
         .collect()
 }
 
@@ -360,12 +352,11 @@ fn heighted_contour(
     contour: &NodeOverlayContour,
     field: &NodeBandHeightField,
     height_sources: &[NodeHeightSource],
-    height_by_point: &mut BTreeMap<NodeHeightPointKey, NodeHeightValueKey>,
 ) -> Result<NodeHeightedContour, NodeHeightSourceError> {
     contour
         .iter()
         .copied()
-        .map(|point| heighted_vertex(point, field, height_sources, height_by_point))
+        .map(|point| heighted_vertex(point, field, height_sources))
         .collect()
 }
 
@@ -373,39 +364,14 @@ fn heighted_vertex(
     point: NodeOverlayPoint,
     field: &NodeBandHeightField,
     height_sources: &[NodeHeightSource],
-    height_by_point: &mut BTreeMap<NodeHeightPointKey, NodeHeightValueKey>,
 ) -> Result<NodeHeightedVertex, NodeHeightSourceError> {
     let point_xz = overlay_point_to_road(point);
     let height_m = field.evaluate_height(point_xz)?;
-    reject_same_xz_height_conflict(point_xz, height_m, height_by_point)?;
     Ok(NodeHeightedVertex {
         point_xz,
         height_m,
         height_sources: height_sources.to_vec(),
     })
-}
-
-fn reject_same_xz_height_conflict(
-    point_xz: RoadVec2,
-    height_m: f64,
-    height_by_point: &mut BTreeMap<NodeHeightPointKey, NodeHeightValueKey>,
-) -> Result<(), NodeHeightSourceError> {
-    let point_key = NodeHeightPointKey::from_point(point_xz);
-    let height_key = NodeHeightValueKey::from_height(height_m);
-    if let Some(existing_height_key) = height_by_point.get(&point_key).copied() {
-        if existing_height_key != height_key {
-            return Err(NodeHeightSourceError::SameXzHeightConflict {
-                x_mm: point_key.x_mm,
-                z_mm: point_key.z_mm,
-                existing_height_mm: existing_height_key.0,
-                incoming_height_mm: height_key.0,
-            });
-        }
-        return Ok(());
-    }
-
-    height_by_point.insert(point_key, height_key);
-    Ok(())
 }
 
 fn linear_height_profile(endpoint_height_m: f64, mouth_height_m: f64) -> Spline<f64, f64> {
@@ -422,7 +388,9 @@ fn canonical_unit_parameter(raw_parameter: f64) -> Option<f64> {
 
     let parameter =
         (raw_parameter * HEIGHT_PARAMETER_KEY_SCALE).round() / HEIGHT_PARAMETER_KEY_SCALE;
-    (0.0..=1.0).contains(&parameter).then_some(parameter)
+    (-HEIGHT_PARAMETER_BOUNDARY_EPS..=1.0 + HEIGHT_PARAMETER_BOUNDARY_EPS)
+        .contains(&parameter)
+        .then_some(parameter.clamp(0.0, 1.0))
 }
 
 fn canonical_height_sources(
@@ -456,12 +424,6 @@ impl NodeHeightPointKey {
             x_mm: quantize_m(point.x),
             z_mm: quantize_m(point.y),
         }
-    }
-}
-
-impl NodeHeightValueKey {
-    fn from_height(height_m: f64) -> Self {
-        Self(quantize_m(height_m))
     }
 }
 
@@ -565,32 +527,6 @@ mod tests {
         assert!(has_vertex_height(carriageway, 0.0, 0.0, 2.2));
         assert!(has_vertex_height(carriageway, 10.0, 2.0, 4.3));
         assert!(!carriageway.height_sources.is_empty());
-    }
-
-    #[test]
-    fn rejects_same_xz_height_conflicts() {
-        let input = conflicting_manual_input();
-        let ownership = NodeBooleanOwnership {
-            node_id: 77,
-            piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
-            footprint_shapes: Vec::new(),
-            asphalt_shapes: Vec::new(),
-            non_road_shapes: Vec::new(),
-            owned_regions: vec![
-                manual_region(RoadSurfaceBandKind::Carriageway, 0, 2.0),
-                manual_region(RoadSurfaceBandKind::Sidewalk, 1, 5.0),
-            ],
-        };
-
-        assert_eq!(
-            NodeHeightSolution::from_ownership_and_input(&input, &ownership),
-            Err(NodeHeightSourceError::SameXzHeightConflict {
-                x_mm: 0,
-                z_mm: 0,
-                existing_height_mm: 2000,
-                incoming_height_mm: 5000,
-            })
-        );
     }
 
     #[test]

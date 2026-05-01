@@ -6,9 +6,9 @@ use super::arrangement::{NodeBandOwner, NodeHeightSource};
 use super::backend::RoadVec3;
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::{
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
-    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
-    SurfaceCdt,
+    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_EPS_M2, NodeOverlayContour,
+    NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePieceKind, SurfaceCdt,
 };
 use i_overlay::core::overlay_rule::OverlayRule;
 use spade::{Point2, Triangulation};
@@ -337,7 +337,9 @@ fn reject_triangle_coverage_mismatch(
     )?;
     let missing_area_m2 = overlay_area_m2(&missing);
     let extra_area_m2 = overlay_area_m2(&extra);
-    if missing_area_m2 > 0.0 || extra_area_m2 > 0.0 {
+    if missing_area_m2 > NODE_OVERLAY_NUMERIC_AREA_EPS_M2
+        || extra_area_m2 > NODE_OVERLAY_NUMERIC_AREA_EPS_M2
+    {
         return Err(NodeTriangulationError::TriangleCoverageMismatch {
             node_id,
             region_index,

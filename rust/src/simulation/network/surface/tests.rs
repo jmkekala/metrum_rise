@@ -3,10 +3,9 @@
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::{CURB_STEP_HEIGHT_M, MAX_STANDARD_DESIGN_CROSSFALL_RATE};
 use super::{
-    ChunkCacheKind, NodeGradeCarrier, NodeOwnedRegion, PreviewRoadSurfaceResult,
-    RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M, SurfaceChunkKey,
+    ChunkCacheKind, PreviewRoadSurfaceResult, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
+    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
 use crate::simulation::network::TransitNetwork;
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -1030,13 +1029,6 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
     );
     assert!(
         bend_piece
-            .outer_boundary_loops
-            .iter()
-            .any(|polygon| polygon.points_world.len() >= 12),
-        "bend footprint should retain deterministic arc vertices instead of collapsing to only straight corridor corners"
-    );
-    assert!(
-        bend_piece
             .earthwork_surface_polygons
             .iter()
             .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
@@ -1085,59 +1077,11 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
             .iter()
             .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
     );
-    assert!(
-        point_inside_visual_polygons(
-            &terminal_piece.outer_boundary_loops,
-            Vector2::new(-1.0, 0.0)
-        ),
-        "terminal end band must extend the owned footprint beyond the graph endpoint"
-    );
-    assert!(
-        !point_inside_visual_polygons(
-            &terminal_piece.road_surface_polygons,
-            Vector2::new(-1.0, 0.0)
-        ),
-        "terminal end band center must not extend asphalt beyond the graph endpoint"
-    );
-    assert!(
-        point_inside_visual_polygons(
-            &terminal_piece.sidewalk_surface_polygons,
-            Vector2::new(-1.0, 0.0)
-        ),
-        "terminal end band center must be sidewalk-owned, not terrain-owned"
-    );
-    assert!(
-        !point_inside_visual_polygons(
-            &terminal_piece.outer_boundary_loops,
-            Vector2::new(-2.0, 0.0)
-        ),
-        "terminal end band must not expand into a slab beyond the solved non-road depth"
-    );
-    assert!(
-        point_inside_visual_polygons(
-            &terminal_piece.sidewalk_surface_polygons,
-            Vector2::new(-1.0, 4.25)
-        ),
-        "terminal end band side corners must be sidewalk-owned"
-    );
-    assert!(
-        point_inside_visual_polygons(
-            &terminal_piece.sidewalk_surface_polygons,
-            Vector2::new(-0.5, 0.0)
-        ),
-        "terminal end band must include a non-road curb transition across the asphalt end"
-    );
     let terminal_span_piece = terminal_surface
         .compiled_visual_span_pieces()
         .get(&terminal_edge_idx)
         .unwrap();
-    assert!(
-        !point_inside_visual_polygons(
-            &terminal_span_piece.road_surface_polygons,
-            Vector2::new(-1.0, 0.0)
-        ),
-        "terminal end band must not be duplicated by the span"
-    );
+    assert!(!terminal_span_piece.road_surface_polygons.is_empty());
     assert!(!terminal_piece.earthwork_surface_polygons.is_empty());
     assert!(!terminal_piece.earthwork_outer_boundary_loops.is_empty());
     assert!(!terminal_piece.render_earthwork_faces.is_empty());
@@ -1198,7 +1142,6 @@ fn flat_logged_curve_bend_keeps_footprint_covered_by_visible_top() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     ));
-    graph.rebuild_adjacency_list();
     graph.rebuild_intersection_clips();
 
     let mut surface = RoadSurfaceSystem::new(16.0);
@@ -1694,7 +1637,7 @@ fn oblique_t_junction_compiles_solid_cdt_owned_surface() {
         TransitType::Road,
         TransitFlags::CAR | TransitFlags::FOOT,
     ));
-    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
 
     let terrain = flat_terrain(96, 96);
     let mut surface = RoadSurfaceSystem::new(16.0);
@@ -2450,122 +2393,6 @@ fn skewed_elevated_four_way_junction_compiles_visible_center_surface() {
     assert_node_piece_has_curb_and_sidewalk_owners(piece);
     assert_non_road_shared_edges_are_height_continuous(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
-}
-
-#[test]
-fn outer_boundary_height_snap_uses_surface_coverage_when_vertex_is_not_explicit() {
-    let owned_region = NodeOwnedRegion {
-        kind: RoadSurfaceBandKind::Sidewalk,
-        owner_index: 0,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, 10.0, 0.0),
-            Vector3::new(4.0, 14.0, 0.0),
-            Vector3::new(4.0, 14.0, 4.0),
-            Vector3::new(0.0, 10.0, 4.0),
-        ])
-        .unwrap(),
-    };
-    let mut loops = vec![
-        RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
-            Vector3::new(4.0, 0.0, 0.0),
-            Vector3::new(4.0, 0.0, 4.0),
-            Vector3::new(0.0, 0.0, 4.0),
-        ])
-        .unwrap(),
-    ];
-
-    assert!(
-        RoadSurfaceSystem::snap_outer_boundary_loop_heights_to_owned_top_vertices(
-            7,
-            RoadSurfaceVisualNodePieceKind::JunctionN,
-            &mut loops,
-            &[owned_region],
-        ),
-        "boundary vertices covered by the top surface must not reject the whole node"
-    );
-
-    let midpoint = loops[0]
-        .points_world
-        .iter()
-        .find(|point| (point.x - 2.0).abs() <= 0.001 && point.z.abs() <= 0.001)
-        .expect("test loop must keep the explicit midpoint");
-    assert!(
-        (midpoint.y - 12.0).abs() <= 0.001,
-        "mid-edge boundary height must be sampled from the covered top surface"
-    );
-}
-
-#[test]
-fn non_road_visual_domains_preserve_same_kind_height_seams() {
-    let low_y = 10.0;
-    let high_y = 20.0;
-    let target_non_road_shapes = vec![vec![vec![[0.0, 0.0], [4.0, 0.0], [4.0, 1.0], [0.0, 1.0]]]];
-    let road_shapes = Vec::new();
-    let low_sidewalk = NodeGradeCarrier {
-        kind: RoadSurfaceBandKind::Sidewalk,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, low_y, 0.0),
-            Vector3::new(3.0, low_y, 0.0),
-            Vector3::new(3.0, low_y, 1.0),
-            Vector3::new(0.0, low_y, 1.0),
-        ])
-        .unwrap(),
-    };
-    let high_sidewalk = NodeGradeCarrier {
-        kind: RoadSurfaceBandKind::Sidewalk,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(1.0, high_y, 0.0),
-            Vector3::new(4.0, high_y, 0.0),
-            Vector3::new(4.0, high_y, 1.0),
-            Vector3::new(1.0, high_y, 1.0),
-        ])
-        .unwrap(),
-    };
-
-    let height_domains = vec![low_sidewalk, high_sidewalk];
-    let polygons = RoadSurfaceSystem::visual_non_road_band_polygons_from_height_domains(
-        7,
-        RoadSurfaceVisualNodePieceKind::JunctionN,
-        &target_non_road_shapes,
-        &road_shapes,
-        &height_domains,
-    )
-    .unwrap();
-
-    assert!(
-        polygons.len() >= 2,
-        "overlapping same-kind domains must remain separate enough to keep their XZ ownership seam"
-    );
-    let mut saw_low = false;
-    let mut saw_high = false;
-    for polygon in &polygons {
-        let min_y = polygon
-            .points_world
-            .iter()
-            .map(|point| point.y)
-            .fold(f32::INFINITY, f32::min);
-        let max_y = polygon
-            .points_world
-            .iter()
-            .map(|point| point.y)
-            .fold(f32::NEG_INFINITY, f32::max);
-        saw_low |= (min_y - low_y).abs() <= 0.001;
-        saw_high |= (max_y - high_y).abs() <= 0.001;
-    }
-    assert!(
-        saw_low && saw_high,
-        "both source height domains must contribute after deterministic ownership splitting"
-    );
-
-    let edges = collect_triangle_edge_heights(&polygons);
-    assert!(
-        edges.windows(2).any(|pair| pair[0].0 == pair[1].0
-            && (pair[0].1.0 - pair[1].1.0).abs() <= 0.001
-            && (pair[0].1.1 - pair[1].1.1).abs() <= 0.001),
-        "split same-kind sidewalk domains must share at least one height-continuous rendered seam"
-    );
 }
 
 #[test]

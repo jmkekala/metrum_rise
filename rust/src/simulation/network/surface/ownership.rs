@@ -102,11 +102,6 @@ impl NodeBooleanOwnership {
             .map(|domain| overlay_contour_from_domain(domain))
             .collect::<Vec<_>>();
         let mut asphalt_shapes = overlay_union(&asphalt_contours, "asphalt_union")?;
-        asphalt_shapes = overlay_intersect(
-            &asphalt_shapes,
-            &footprint_shapes,
-            "asphalt_clip_to_footprint",
-        )?;
         RoadSurfaceSystem::sort_overlay_shapes(&mut asphalt_shapes);
 
         let mut non_road_shapes =
@@ -229,7 +224,61 @@ fn owned_regions_from_domains(
     }
 
     let residual = overlay_difference(target_shapes, &claimed_shapes, "domain_residual")?;
+    if !residual.is_empty() {
+        let residual_result =
+            residual_regions_from_domains(&residual, domains, "domain_residual_reclaim")?;
+        regions.extend(residual_result.regions);
+        claimed_shapes = overlay_union_shape_sets(
+            &claimed_shapes,
+            &residual_result.claimed_shapes,
+            "domain_residual_claim_union",
+        )?;
+    }
+
+    let residual = overlay_difference(target_shapes, &claimed_shapes, "domain_residual_final")?;
     reject_residual(residual, residual_kind)?;
+    Ok(OwnedDomainResult {
+        regions,
+        claimed_shapes,
+    })
+}
+
+fn residual_regions_from_domains(
+    residual_shapes: &NodeOverlayShapes,
+    domains: &[&NodeGeneratedContour],
+    stage: &'static str,
+) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
+    let mut regions = Vec::new();
+    let mut claimed_shapes = Vec::new();
+    for domain in domains {
+        let owner = domain
+            .owner
+            .ok_or(NodeBooleanOwnershipError::MissingBandOwner {
+                mouth_order_index: domain.source_mouth_order_index,
+                band_index: domain.source_band_index,
+            })?;
+        let domain_contour = overlay_contour_from_domain(domain);
+        let mut domain_shapes = overlay_union(&[domain_contour], stage)?;
+        domain_shapes = overlay_intersect(&domain_shapes, residual_shapes, stage)?;
+        domain_shapes = overlay_difference(&domain_shapes, &claimed_shapes, stage)?;
+        RoadSurfaceSystem::sort_overlay_shapes(&mut domain_shapes);
+        if domain_shapes.is_empty() {
+            continue;
+        }
+
+        for shape in &domain_shapes {
+            regions.push(NodeBooleanOwnedRegion {
+                kind: band_kind(domain).expect("owned domain must be a band contour"),
+                owner,
+                source_mouth_order_index: domain.source_mouth_order_index,
+                source_band_index: domain.source_band_index,
+                shape: shape.clone(),
+                area_m2: RoadSurfaceSystem::overlay_shape_area_m2(shape),
+                height_sources: canonical_height_sources(domain.height_sources.iter().cloned()),
+            });
+        }
+        claimed_shapes = overlay_union_shape_sets(&claimed_shapes, &domain_shapes, stage)?;
+    }
     Ok(OwnedDomainResult {
         regions,
         claimed_shapes,

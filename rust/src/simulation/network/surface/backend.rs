@@ -15,6 +15,7 @@ pub(crate) type RoadPolylineVertex = PlineVertex<f64>;
 pub(crate) type RoadParryVector2 = parry2d::math::Vector;
 
 const LINE_SEGMENT_BULGE: f64 = 0.0;
+pub(crate) const ROAD_OVERLAY_COORDINATE_SCALE: f64 = 1000.0;
 
 pub(crate) fn godot_vec2_to_road(point: Vector2) -> RoadVec2 {
     RoadVec2::new(f64::from(point.x), f64::from(point.y))
@@ -41,10 +42,18 @@ pub(crate) fn road_xz_with_height_to_godot(point_xz: RoadVec2, height_m: f64) ->
 }
 
 pub(crate) fn overlay_point_to_road(point: NodeOverlayPoint) -> RoadVec2 {
-    RoadVec2::new(f64::from(point[0]), f64::from(point[1]))
+    quantize_road_vec2_to_overlay_grid(RoadVec2::new(f64::from(point[0]), f64::from(point[1])))
+}
+
+pub(crate) fn quantize_road_vec2_to_overlay_grid(point: RoadVec2) -> RoadVec2 {
+    RoadVec2::new(
+        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() / ROAD_OVERLAY_COORDINATE_SCALE,
+        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() / ROAD_OVERLAY_COORDINATE_SCALE,
+    )
 }
 
 pub(crate) fn road_vec2_to_overlay_point(point: RoadVec2) -> NodeOverlayPoint {
+    let point = quantize_road_vec2_to_overlay_grid(point);
     [point.x as f32, point.y as f32]
 }
 

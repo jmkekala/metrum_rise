@@ -36,6 +36,8 @@ const SAMPLE_EPSILON_M: f32 = 0.001;
 const WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2: f32 = 1.0e-8;
 // Shared overlay/geometry area floor: one 1 mm quantized square keeps closure slivers visible.
 const NODE_OVERLAY_MIN_AREA_M2: f32 = 1.0e-6;
+// Self-checks that compare two backend results allow a small fixed-grid residual budget.
+const NODE_OVERLAY_NUMERIC_AREA_EPS_M2: f32 = NODE_OVERLAY_MIN_AREA_M2 * 16.0;
 // Avoid Rayon setup overhead for the small edge/node sets common in single-edit rebuilds.
 const PARALLEL_SURFACE_COMPILE_MIN_ITEMS: usize = 16;
 
@@ -278,38 +280,10 @@ struct OrderedIncidentPieceMouth {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct NodeCorridorCandidates {
-    road_candidate_polygons: Vec<RoadSurfaceVisualPolygon>,
-    non_road_candidate_polygons: Vec<NodeNonRoadCandidatePolygon>,
-    non_road_height_domains: Vec<NodeGradeCarrier>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct NodeNonRoadCandidatePolygon {
-    polygon: RoadSurfaceVisualPolygon,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-struct NodeGradeCarrier {
-    kind: RoadSurfaceBandKind,
-    polygon: RoadSurfaceVisualPolygon,
-}
-
-#[derive(Clone, Debug, PartialEq)]
 struct NodeOwnedRegion {
     kind: RoadSurfaceBandKind,
     owner_index: usize,
     polygon: RoadSurfaceVisualPolygon,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct TerminalEndBandLayer {
-    left_inner_point_world: Vector3,
-    left_outer_point_world: Vector3,
-    right_inner_point_world: Vector3,
-    right_outer_point_world: Vector3,
-    inner_offset_m: f32,
-    outer_offset_m: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
