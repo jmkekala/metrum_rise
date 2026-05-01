@@ -13,6 +13,7 @@ use super::graph::RegionGraph;
 use super::types::EdgeClass;
 use crate::simulation::terrain::TerrainSystem;
 
+mod arrangement;
 mod backend;
 mod cache;
 mod debug;
@@ -43,7 +44,7 @@ type NodeOverlayShapes = Vec<NodeOverlayShape>;
 pub type SurfaceChunkKey = (i32, i32);
 
 /// Ordered lateral surface-band kinds supported by the compiled roadbed.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum RoadSurfaceBandKind {
     /// Main drivable carriageway surface.
     Carriageway,
@@ -219,7 +220,7 @@ pub(crate) struct RoadSurfaceDebugData {
     pub(crate) earthwork_chunk_lines: Vec<Vector3>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Ord, PartialOrd)]
 enum IncidentEdgeSide {
     Start,
     End,
