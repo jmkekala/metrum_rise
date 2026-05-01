@@ -760,7 +760,7 @@ impl RoadSurfaceSystem {
         Some(Self::filter_overlay_shapes_by_area(shapes))
     }
 
-    fn overlay_binary_shapes(
+    pub(super) fn overlay_binary_shapes(
         subject: &NodeOverlayShapes,
         clip: &NodeOverlayShapes,
         rule: OverlayRule,
@@ -792,7 +792,7 @@ impl RoadSurfaceSystem {
             .collect()
     }
 
-    fn sort_overlay_shapes(shapes: &mut [NodeOverlayShape]) {
+    pub(super) fn sort_overlay_shapes(shapes: &mut [NodeOverlayShape]) {
         shapes.sort_by(|a, b| {
             let area_a = a
                 .first()
@@ -1168,7 +1168,7 @@ impl RoadSurfaceSystem {
         Self::overlay_union_contours(&contours)
     }
 
-    fn overlay_shape_area_m2(shape: &NodeOverlayShape) -> f32 {
+    pub(super) fn overlay_shape_area_m2(shape: &NodeOverlayShape) -> f32 {
         let Some(outer) = shape.first() else {
             return 0.0;
         };

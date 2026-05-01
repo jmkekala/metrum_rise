@@ -63,6 +63,7 @@ pub(crate) struct NodeGeneratedContour {
     pub(crate) owner: Option<NodeBandOwner>,
     pub(crate) points_xz: Vec<RoadVec2>,
     pub(crate) backend_polyline: RoadPolyline,
+    pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -184,6 +185,7 @@ fn push_full_roadbed_contour(
         points,
     )?;
     let points_xz = polyline_to_road_points(&contour);
+    let height_sources = all_boundary_height_sources(mouth);
     contours.push(NodeGeneratedContour {
         kind: NodeGeneratedContourKind::FullRoadbed,
         source_mouth_order_index: mouth.order_index,
@@ -191,6 +193,7 @@ fn push_full_roadbed_contour(
         owner: None,
         points_xz: points_xz.clone(),
         backend_polyline: contour,
+        height_sources: height_sources.clone(),
     });
     push_constraint(
         constraints,
@@ -201,7 +204,7 @@ fn push_full_roadbed_contour(
         None,
         None,
         points_xz,
-        all_boundary_height_sources(mouth),
+        height_sources,
     )
 }
 
@@ -224,6 +227,10 @@ fn push_band_contour(
     let contour =
         cleaned_closed_contour(kind, mouth.order_index, Some(interval.band_index), points)?;
     let points_xz = polyline_to_road_points(&contour);
+    let height_sources = vec![
+        interval.mouth_height_source.clone(),
+        interval.endpoint_height_source.clone(),
+    ];
     contours.push(NodeGeneratedContour {
         kind,
         source_mouth_order_index: mouth.order_index,
@@ -231,6 +238,7 @@ fn push_band_contour(
         owner: Some(owner),
         points_xz: points_xz.clone(),
         backend_polyline: contour,
+        height_sources: height_sources.clone(),
     });
     push_constraint(
         constraints,
@@ -243,10 +251,7 @@ fn push_band_contour(
         Some(owner),
         None,
         points_xz,
-        vec![
-            interval.mouth_height_source.clone(),
-            interval.endpoint_height_source.clone(),
-        ],
+        height_sources,
     )
 }
 
