@@ -24,6 +24,7 @@ mod input;
 mod node;
 mod overlay;
 mod query;
+mod rails;
 mod span;
 
 // Shared geometric tolerances used across surface compilation, overlay solving, and queries.
