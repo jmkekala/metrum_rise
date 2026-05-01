@@ -29,6 +29,7 @@ mod query;
 mod rails;
 mod span;
 mod triangulation;
+mod validation;
 
 // Shared geometric tolerances used across surface compilation, overlay solving, and queries.
 const SAMPLE_EPSILON_M: f32 = 0.001;
