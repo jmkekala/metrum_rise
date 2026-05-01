@@ -95,9 +95,10 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   taken far enough to prove the representation problem: the thin corridor-sheet plus
   terrain-stamp approach does not produce acceptable flat-ground or arbitrary-angle tie-ins.
   Phase 11 remains the deterministic `10 m` versus `5 m` characterization gate, Phase 12 is the
-  fixed-roadbed-under-later-terrain-edits follow-up, and Phase 13 is the closed road-owned
-  earthwork mesh rewrite rather than more polishing of the corridor-sheet prototype. That rewrite
-  now has one explicit target split: the logical graph stays as connectivity/routing authority,
+  fixed-roadbed-under-later-terrain-edits follow-up, and the hardcut road geometry target is now
+  road-owned top surfaces plus Rust-stitched terrain topology rather than more polishing of the
+  corridor-sheet prototype or visible closure meshes. That rewrite now has one explicit target
+  split: the logical graph stays as connectivity/routing authority,
   while the visible road system becomes a separate deterministic piece/profile carrier built from
   `Span`, `Bend`, `Terminal`, and `JunctionN` pieces. The hard-cut carrier replacement is partially
   live in the road-surface runtime: renderer output, visible-surface queries, road-surface debug
@@ -146,12 +147,15 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   as far as their roadbed / asphalt materials would otherwise overlap.
   The paired adjacent-mouth strip candidate model has been hard-cut out of node-piece ownership.
   Conflict-bounded full-roadbed corridor unions now define node footprints, conflict-bounded
-  carriageway corridor unions define asphalt, and sidewalk / curb ownership is derived only as
-  `footprint - asphalt`. The terminal spec now requires an explicit U-shaped sidewalk / curb
-  end-band built from the same side-aware profile rails as the incident road, with carriageway
-  ownership stopping at the graph endpoint and no grounded-road render-only closure workaround.
-  The remaining blocking work is in-game validation of that conflict-first node model plus clipped
-  terrain topology hardening, followed by retaining, wall, and material variants.
+  carriageway corridor unions define asphalt, and non-road ownership is split into explicit curb /
+  shoulder and sidewalk owned regions. Elevated `Bend` and `JunctionN` top-surface heights now use
+  owner-local `NodeGradeCarrier` surfaces built from throat and graph-endpoint profiles; the old
+  shared post-overlay grade sampler and derived curb-transition fallback have been removed. The
+  terminal spec now requires an explicit U-shaped sidewalk / curb end-band built from the same
+  side-aware profile rails as the incident road, with carriageway ownership stopping at the graph
+  endpoint and no grounded-road render-only closure workaround. The remaining blocking work is
+  in-game validation of that conflict-first node model plus clipped terrain topology hardening,
+  followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
@@ -197,13 +201,15 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
 - The first roads-first engineered-ground prototype did useful architectural work but is no longer
   treated as the final path: later terrain edits can keep committed roads fixed, chunk-local
   rebuilds and visible-surface precedence remain required, and terrain / road ownership stays
-  explicit, but the thin corridor-sheet visual carrier is now retired in favor of a closed
-  road-owned earthwork mesh rewrite. See [`earthworks.md`](earthworks.md),
+  explicit, but the thin corridor-sheet visual carrier is now retired in favor of road-owned top
+  surfaces, band-owned node geometry, and Rust-stitched terrain topology. See [`earthworks.md`](earthworks.md),
   [`improved_roads.md`](improved_roads.md), and [`terrain.md`](terrain.md).
 - `ROAD-01` is now pinned to one deterministic target architecture: the next road geometry pass
   must stop treating the logical graph as the visible-shape carrier and instead compile a separate
   deterministic piece/profile geometry layer with `Span`, `Bend`, `Terminal`, and `JunctionN`
-  pieces, while keeping the existing graph / clip / lane ownership layers intact. See
+  pieces, while the elevated `Bend` / `JunctionN` hardcut replaces post-overlay height sampling
+  with band-owned regions and a `NodeGradeCarrier`. The existing graph / clip / lane ownership
+  layers stay intact. See
   [`improved_roads.md`](improved_roads.md).
 - The retired annulus/corridor prototype still produced useful conclusions that remain valid after
   the code revert: arbitrary-angle bends and multi-arm junctions need explicit road and sidewalk

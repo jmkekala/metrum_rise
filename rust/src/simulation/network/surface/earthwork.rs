@@ -175,6 +175,8 @@ impl RoadSurfaceSystem {
                 Self::classify_earthwork_face_kind(current, next, outer_next, outer_current);
             render_faces.push(RoadSurfaceEarthworkRenderFace {
                 kind: face_kind,
+                inner_start: current,
+                inner_end: next,
                 polygon: polygon.clone(),
             });
             side_polygons.push(polygon);
@@ -270,40 +272,32 @@ impl RoadSurfaceSystem {
             if kind_order != std::cmp::Ordering::Equal {
                 return kind_order;
             }
-            match (
-                a.polygon.points_world.first(),
-                b.polygon.points_world.first(),
-            ) {
-                (Some(point_a), Some(point_b)) => point_a
-                    .x
-                    .total_cmp(&point_b.x)
-                    .then(point_a.z.total_cmp(&point_b.z))
-                    .then(point_a.y.total_cmp(&point_b.y)),
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            }
-            .then(
-                a.polygon
-                    .points_world
-                    .len()
-                    .cmp(&b.polygon.points_world.len()),
-            )
-            .then_with(|| {
-                a.polygon
-                    .points_world
-                    .iter()
-                    .zip(&b.polygon.points_world)
-                    .find_map(|(point_a, point_b)| {
-                        let ordering = point_a
-                            .x
-                            .total_cmp(&point_b.x)
-                            .then(point_a.z.total_cmp(&point_b.z))
-                            .then(point_a.y.total_cmp(&point_b.y));
-                        (ordering != std::cmp::Ordering::Equal).then_some(ordering)
-                    })
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            a.inner_start
+                .x
+                .total_cmp(&b.inner_start.x)
+                .then(a.inner_start.z.total_cmp(&b.inner_start.z))
+                .then(a.inner_start.y.total_cmp(&b.inner_start.y))
+                .then(
+                    a.polygon
+                        .points_world
+                        .len()
+                        .cmp(&b.polygon.points_world.len()),
+                )
+                .then_with(|| {
+                    a.polygon
+                        .points_world
+                        .iter()
+                        .zip(&b.polygon.points_world)
+                        .find_map(|(point_a, point_b)| {
+                            let ordering = point_a
+                                .x
+                                .total_cmp(&point_b.x)
+                                .then(point_a.z.total_cmp(&point_b.z))
+                                .then(point_a.y.total_cmp(&point_b.y));
+                            (ordering != std::cmp::Ordering::Equal).then_some(ordering)
+                        })
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
     }
     pub(super) fn earthwork_transition_point(

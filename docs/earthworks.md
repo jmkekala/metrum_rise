@@ -388,9 +388,11 @@ Deterministic choice:
   3. visible-world query precedence
   4. bounded render uploads
   5. the rule that terrain is not the sole near-footprint owner
-- the replacement target is a closed road-owned earthwork mesh
+- the replacement target for ordinary grounded roads is the road-owned top surface plus
+  Rust-stitched terrain topology; visible road-owned closure / earthwork meshes are reserved for
+  structural classes or later explicit retaining variants
 
-### 2. Roads-First Rewrite Uses A Separate Piece/Profile Carrier Plus A Closed Road-Owned Earthwork Mesh
+### 2. Roads-First Rewrite Uses A Separate Piece/Profile Carrier Plus Stitched Terrain
 
 The next implementation slice is still roads-first, but the geometry contract changes.
 
@@ -411,20 +413,19 @@ Required road geometry contract:
   4. right carriageway edge
   5. right curb / shoulder edge
   6. right outer sidewalk edge
-- edge-side and node-side earthworks must derive from those same piece-owned profile boundaries
-  instead of from separate terrain-side widening or generic node-fill polygons
-- grounded roads own closed local earthwork geometry adjoining the committed roadbed footprint
-- that local geometry must include:
-  1. the road-owned top-surface boundary condition
-  2. left and right tie-in faces from the footprint to the tie-in boundary
-  3. terminal top-surface sidewalk / curb end-band geometry at dead ends, using the same
-     side-aware bands as the incident road profile
-  4. closure / underside geometry anywhere the side faces would otherwise expose a visible void
-- terrain owns only the far-field ground outside the deterministic tie-in boundary
+- terrain seam generation must derive from those same piece-owned profile boundaries instead of
+  from separate terrain-side widening or generic node-fill polygons
+- ordinary grounded `Standard` roads use the road-owned top surface inside the footprint and
+  Rust-stitched terrain topology outside it; they must not render a visible road-owned closure
+  strip, carpet, skirt, or second support mesh as the seam fix
+- structural road classes or later explicit retaining variants may render local earthwork geometry,
+  but that path is not a compatibility fallback for ordinary grounded-road gaps
+- terrain owns the far-field ground outside the deterministic road-owned footprint and receives
+  exact road-footprint constraints for the hardcut
 - flat-ground cases must collapse toward a visually minimal shoulder / verge join instead of
   emitting a wide apron
-- sloped cases must emit real cut / fill faces instead of asking the terrain heightfield to fake
-  the entire join
+- sloped ordinary-road cases must keep asphalt, curb / shoulder, and sidewalk as road-owned top
+  surfaces while the clipped terrain mesh terminates at their exact outer footprint
 
 ### 3. Tie-In Boundaries Follow Piece-Owned Boundaries, Not Coarse Terrain Cells Or Generic Node Loops
 
@@ -446,8 +447,9 @@ Required first variant:
   loop plus one global inner loop
 - two-edge non-pass-through nodes and `3+` arm nodes share the same band semantics, but they
   remain different visual piece classes with different builders
-- node top-surface ownership must compile to explicit road polygons plus explicit sidewalk sectors
-  owned by those pieces; it must not rely on one annulus-style ring carrier
+- node top-surface ownership must compile to explicit band-owned regions whose seam constraints and
+  height owners are preserved through clipping and triangulation; it must not rely on one
+  annulus-style ring carrier or a post-overlay nearest-height sampler
 - future building pads follow the same owner model, but with a perimeter tie-in ring instead of
   two longitudinal side runs
 
@@ -574,7 +576,7 @@ For the roads-first rewrite, the following are deterministic and implemented:
 - the logical graph and the visible road carrier are split: graph owns connectivity, while the
   visible road system owns deterministic geometry pieces
 - the minimum required visual piece set is `Span`, `Bend`, `Terminal`, and `JunctionN`
-- roads compile explicit top-surface ownership and earthwork ownership carriers near the footprint
+- roads compile explicit top-surface ownership and exact footprint constraints near the terrain seam
 - tie-in boundaries are specified to use dense local sampling at a maximum `2 m` longitudinal
   spacing
 - committed clients stay fixed under later terrain-authoring edits
@@ -594,10 +596,19 @@ The following are current hardcut implementation rules:
   baked mesh or the normal rectangular terrain mesh
 - grounded `Standard` roads do not render an ordinary visible closure strip, seam carpet, or second
   support mesh; the CDT terrain patch mesh is the seam carrier
-- `Terminal`, `Bend`, and `JunctionN` node pieces now compile their final asphalt / sidewalk
-  regions through `i_overlay` ownership cleanup and local Spade CDT triangulation, so oblique
-  junctions do not depend on strip sectors, hint classifiers, or render order staying perfectly
-  watertight
+- `Terminal`, `Bend`, and `JunctionN` node pieces must compile final asphalt, curb / shoulder, and
+  sidewalk regions as band-owned surfaces whose mouth seams, material seams, and outer footprint
+  edges survive through `i_overlay` ownership cleanup and local Spade CDT triangulation
+- bend / junction full-roadbed closure carriers are last-priority residual owners only; explicit
+  curb / shoulder and sidewalk carriers must claim their seams and heights before any closure
+  carrier is allowed to fill remaining non-road area
+- node-piece terrain clips and local earthwork / skirt roots must be extracted from the canonical
+  final band-owned top mesh. If the final owned-region outline introduces boundary vertices, those
+  vertices must be inserted into the rendered top mesh before export when Spade can represent them
+  explicitly. If the point is already covered by the canonical top-surface triangles, the exported
+  boundary height may be sampled from that owned coverage and must be debug-visible. A node path
+  must not reconstruct a later outer boundary loop that contains vertices outside the canonical
+  rendered node top-surface coverage.
 - visible water patches now use depth-owned local topology instead of full-patch planes; road-touched
   water meshes receive the same road footprint clip polygons after a network edit and suppress
   touched water cells wholesale, so water is no longer allowed to render under grounded road-owned

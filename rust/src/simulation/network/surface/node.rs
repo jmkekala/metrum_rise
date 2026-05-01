@@ -2,10 +2,11 @@
 
 use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile,
-    IncidentSurfaceEdge, NodeBandHeightDomain, NodeCorridorCandidates, NodeNonRoadCandidatePolygon,
-    OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkRenderFace,
-    RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
-    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, TerminalEndBandLayer,
+    IncidentSurfaceEdge, NodeCorridorCandidates, NodeGradeCarrier, NodeNonRoadCandidatePolygon,
+    NodeOwnedRegion, OrderedIncidentPieceMouth, RoadSurfaceBandKind,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    TerminalEndBandLayer,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
@@ -45,14 +46,37 @@ impl RoadSurfaceSystem {
     ) -> Option<RoadSurfaceVisualNodePiece> {
         let mouths = self.build_ordered_piece_mouths(&[incident])?;
         let mouth = mouths.first()?;
-        let endpoint_profile = self.build_incident_endpoint_profile(incident)?;
         let (road_surface_polygons, sidewalk_surface_polygons) =
-            Self::build_terminal_band_surface_polygons(&mouth.profile, &endpoint_profile)?;
-        let mut footprint_polygons =
-            Vec::with_capacity(road_surface_polygons.len() + sidewalk_surface_polygons.len());
-        footprint_polygons.extend(road_surface_polygons.iter().cloned());
-        footprint_polygons.extend(sidewalk_surface_polygons.iter().cloned());
-        let outer_boundary_loops = Self::union_terrain_clip_polygons(&footprint_polygons);
+            Self::build_terminal_band_surface_polygons(&mouth.profile, &mouth.endpoint_profile)?;
+        let mut owned_regions = Self::node_owned_regions_from_material_polygons(
+            &road_surface_polygons,
+            &sidewalk_surface_polygons,
+        );
+        Self::split_owned_region_contours_at_shared_vertices(&mut owned_regions)?;
+        if !Self::normalize_owned_region_surface_heights(&mut owned_regions) {
+            return None;
+        }
+        Self::insert_outer_boundary_vertices_into_owned_regions(&mut owned_regions)?;
+        if !Self::normalize_owned_region_surface_heights(&mut owned_regions) {
+            return None;
+        }
+        Self::weld_shared_top_surface_edges(&mut owned_regions);
+        Self::sort_node_owned_regions(&mut owned_regions);
+        let road_surface_polygons = owned_regions
+            .iter()
+            .filter(|region| region.kind == RoadSurfaceBandKind::Carriageway)
+            .map(|region| region.polygon.clone())
+            .collect::<Vec<_>>();
+        let sidewalk_surface_polygons = owned_regions
+            .iter()
+            .filter(|region| region.kind != RoadSurfaceBandKind::Carriageway)
+            .map(|region| region.polygon.clone())
+            .collect::<Vec<_>>();
+        let outer_boundary_loops = Self::outer_boundary_loops_from_canonical_owned_regions(
+            node_id,
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            &owned_regions,
+        )?;
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
@@ -65,6 +89,7 @@ impl RoadSurfaceSystem {
             outer_boundary_loops,
             road_surface_polygons,
             sidewalk_surface_polygons,
+            owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
@@ -94,6 +119,7 @@ impl RoadSurfaceSystem {
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
         let sidewalk_surface_polygons = node_regions.sidewalk_surface_polygons;
+        let owned_regions = node_regions.owned_regions;
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
@@ -106,6 +132,7 @@ impl RoadSurfaceSystem {
             outer_boundary_loops,
             road_surface_polygons,
             sidewalk_surface_polygons,
+            owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
@@ -135,6 +162,7 @@ impl RoadSurfaceSystem {
         let outer_boundary_loops = node_regions.outer_boundary_loops;
         let road_surface_polygons = node_regions.road_surface_polygons;
         let sidewalk_surface_polygons = node_regions.sidewalk_surface_polygons;
+        let owned_regions = node_regions.owned_regions;
         let (earthwork_surface_polygons, earthwork_outer_boundary_loops, render_earthwork_faces) =
             self.build_closed_earthwork_geometry_from_boundary_loops(
                 &outer_boundary_loops,
@@ -147,6 +175,7 @@ impl RoadSurfaceSystem {
             outer_boundary_loops,
             road_surface_polygons,
             sidewalk_surface_polygons,
+            owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
@@ -159,8 +188,11 @@ impl RoadSurfaceSystem {
     ) -> Option<Vec<OrderedIncidentPieceMouth>> {
         let mut mouths = Vec::with_capacity(incidents.len());
         for &incident in incidents {
+            let profile = self.build_incident_mouth_profile(incident)?;
+            let endpoint_profile = self.build_incident_endpoint_profile(incident)?;
             mouths.push(OrderedIncidentPieceMouth {
-                profile: self.build_incident_mouth_profile(incident)?,
+                profile,
+                endpoint_profile,
                 direction_angle_ccw: Self::normalized_angle_ccw(incident.direction_xz),
                 direction_xz: incident.direction_xz,
                 edge_idx: incident.edge_idx,
@@ -363,27 +395,50 @@ impl RoadSurfaceSystem {
         let mut road_candidate_polygons = Vec::new();
         let mut non_road_candidate_polygons = Vec::new();
         let mut non_road_height_domains = Vec::new();
+        let mut non_road_closure_domains = Vec::new();
+        let closure_kind = Self::node_non_road_closure_kind(mouths);
 
         for mouth in mouths {
             let Some((outer_a, outer_b)) = Self::mouth_full_roadbed_segment(&mouth.profile) else {
                 continue;
             };
-            if let Some(polygon) =
-                Self::build_mouth_corridor_polygon(node_pos, mouth.direction_xz, outer_a, outer_b)
-            {
-                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
+            let Some((endpoint_outer_a, endpoint_outer_b)) =
+                Self::mouth_full_roadbed_segment(&mouth.endpoint_profile)
+            else {
+                continue;
+            };
+            if let Some(polygon) = Self::build_mouth_corridor_polygon(
+                node_pos,
+                mouth.direction_xz,
+                outer_a,
+                outer_b,
+                endpoint_outer_a,
+                endpoint_outer_b,
+            ) {
+                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon {
+                    polygon: polygon.clone(),
+                });
+                if let Some(kind) = closure_kind {
+                    non_road_closure_domains.push(NodeGradeCarrier { kind, polygon });
+                }
             }
 
             if let Some((carriageway_a, carriageway_b)) =
                 Self::mouth_carriageway_segment(&mouth.profile)
             {
-                if let Some(polygon) = Self::build_mouth_corridor_polygon(
-                    node_pos,
-                    mouth.direction_xz,
-                    carriageway_a,
-                    carriageway_b,
-                ) {
-                    road_candidate_polygons.push(polygon);
+                if let Some((endpoint_carriageway_a, endpoint_carriageway_b)) =
+                    Self::mouth_carriageway_segment(&mouth.endpoint_profile)
+                {
+                    if let Some(polygon) = Self::build_mouth_corridor_polygon(
+                        node_pos,
+                        mouth.direction_xz,
+                        carriageway_a,
+                        carriageway_b,
+                        endpoint_carriageway_a,
+                        endpoint_carriageway_b,
+                    ) {
+                        road_candidate_polygons.push(polygon);
+                    }
                 }
             }
 
@@ -398,6 +453,7 @@ impl RoadSurfaceSystem {
             mouths,
             &mut non_road_height_domains,
         );
+        non_road_height_domains.extend(non_road_closure_domains);
 
         (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
             NodeCorridorCandidates {
@@ -420,31 +476,50 @@ impl RoadSurfaceSystem {
         let mut road_candidate_polygons = Vec::new();
         let mut non_road_candidate_polygons = Vec::new();
         let mut non_road_height_domains = Vec::new();
+        let mut non_road_closure_domains = Vec::new();
+        let closure_kind = Self::node_non_road_closure_kind(mouths);
 
         // Keep each bend corridor/join as a simple overlay candidate; merging them into one loop
         // can make the two throat caps cross at the node on tight bends.
         for mouth in [start_mouth, end_mouth] {
             if let Some((outer_a, outer_b)) = Self::mouth_full_roadbed_segment(&mouth.profile) {
-                if let Some(polygon) = Self::build_mouth_corridor_polygon(
-                    node_pos,
-                    mouth.direction_xz,
-                    outer_a,
-                    outer_b,
-                ) {
-                    non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
+                if let Some((endpoint_outer_a, endpoint_outer_b)) =
+                    Self::mouth_full_roadbed_segment(&mouth.endpoint_profile)
+                {
+                    if let Some(polygon) = Self::build_mouth_corridor_polygon(
+                        node_pos,
+                        mouth.direction_xz,
+                        outer_a,
+                        outer_b,
+                        endpoint_outer_a,
+                        endpoint_outer_b,
+                    ) {
+                        non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon {
+                            polygon: polygon.clone(),
+                        });
+                        if let Some(kind) = closure_kind {
+                            non_road_closure_domains.push(NodeGradeCarrier { kind, polygon });
+                        }
+                    }
                 }
             }
 
             if let Some((carriageway_a, carriageway_b)) =
                 Self::mouth_carriageway_segment(&mouth.profile)
             {
-                if let Some(polygon) = Self::build_mouth_corridor_polygon(
-                    node_pos,
-                    mouth.direction_xz,
-                    carriageway_a,
-                    carriageway_b,
-                ) {
-                    road_candidate_polygons.push(polygon);
+                if let Some((endpoint_carriageway_a, endpoint_carriageway_b)) =
+                    Self::mouth_carriageway_segment(&mouth.endpoint_profile)
+                {
+                    if let Some(polygon) = Self::build_mouth_corridor_polygon(
+                        node_pos,
+                        mouth.direction_xz,
+                        carriageway_a,
+                        carriageway_b,
+                        endpoint_carriageway_a,
+                        endpoint_carriageway_b,
+                    ) {
+                        road_candidate_polygons.push(polygon);
+                    }
                 }
             }
 
@@ -463,7 +538,12 @@ impl RoadSurfaceSystem {
                 Self::mouth_full_roadbed_segment,
                 left_side,
             ) {
-                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon { polygon });
+                non_road_candidate_polygons.push(NodeNonRoadCandidatePolygon {
+                    polygon: polygon.clone(),
+                });
+                if let Some(kind) = closure_kind {
+                    non_road_closure_domains.push(NodeGradeCarrier { kind, polygon });
+                }
             }
 
             if let Some(polygon) = Self::build_bend_local_side_join_polygon(
@@ -478,14 +558,12 @@ impl RoadSurfaceSystem {
         }
 
         for (start_band, end_band) in start_mouth
-            .profile
+            .endpoint_profile
             .bands
             .iter()
-            .zip(&end_mouth.profile.bands)
+            .zip(&end_mouth.endpoint_profile.bands)
         {
-            if start_band.kind != end_band.kind
-                || start_band.kind == RoadSurfaceBandKind::Carriageway
-            {
+            if start_band.kind != end_band.kind {
                 continue;
             }
             if let Some(polygon) = Self::build_bend_local_band_join_polygon(
@@ -495,12 +573,17 @@ impl RoadSurfaceSystem {
                 start_band,
                 end_band,
             ) {
-                non_road_height_domains.push(NodeBandHeightDomain {
+                if start_band.kind == RoadSurfaceBandKind::Carriageway {
+                    road_candidate_polygons.push(polygon);
+                    continue;
+                }
+                non_road_height_domains.push(NodeGradeCarrier {
                     kind: start_band.kind,
                     polygon,
                 });
             }
         }
+        non_road_height_domains.extend(non_road_closure_domains);
 
         (!road_candidate_polygons.is_empty() || !non_road_candidate_polygons.is_empty()).then_some(
             NodeCorridorCandidates {
@@ -514,10 +597,15 @@ impl RoadSurfaceSystem {
     fn append_mouth_non_road_height_candidates(
         node_pos: Vector3,
         mouth: &OrderedIncidentPieceMouth,
-        non_road_height_domains: &mut Vec<NodeBandHeightDomain>,
+        non_road_height_domains: &mut Vec<NodeGradeCarrier>,
     ) {
-        for band in &mouth.profile.bands {
-            if band.kind == RoadSurfaceBandKind::Carriageway {
+        for (band, endpoint_band) in mouth
+            .profile
+            .bands
+            .iter()
+            .zip(&mouth.endpoint_profile.bands)
+        {
+            if band.kind != endpoint_band.kind || band.kind == RoadSurfaceBandKind::Carriageway {
                 continue;
             }
             let Some(polygon) = Self::build_mouth_corridor_polygon(
@@ -525,10 +613,12 @@ impl RoadSurfaceSystem {
                 mouth.direction_xz,
                 band.start_point_world,
                 band.end_point_world,
+                endpoint_band.start_point_world,
+                endpoint_band.end_point_world,
             ) else {
                 continue;
             };
-            non_road_height_domains.push(NodeBandHeightDomain {
+            non_road_height_domains.push(NodeGradeCarrier {
                 kind: band.kind,
                 polygon,
             });
@@ -538,7 +628,7 @@ impl RoadSurfaceSystem {
     fn append_adjacent_non_road_height_join_domains(
         node_pos: Vector3,
         mouths: &[OrderedIncidentPieceMouth],
-        non_road_height_domains: &mut Vec<NodeBandHeightDomain>,
+        non_road_height_domains: &mut Vec<NodeGradeCarrier>,
     ) {
         if mouths.len() < 2 {
             return;
@@ -548,10 +638,10 @@ impl RoadSurfaceSystem {
             let start_mouth = &mouths[index];
             let end_mouth = &mouths[(index + 1) % mouths.len()];
             for (start_band, end_band) in start_mouth
-                .profile
+                .endpoint_profile
                 .bands
                 .iter()
-                .zip(&end_mouth.profile.bands)
+                .zip(&end_mouth.endpoint_profile.bands)
             {
                 if start_band.kind != end_band.kind
                     || start_band.kind == RoadSurfaceBandKind::Carriageway
@@ -565,13 +655,39 @@ impl RoadSurfaceSystem {
                     start_band,
                     end_band,
                 ) {
-                    non_road_height_domains.push(NodeBandHeightDomain {
+                    non_road_height_domains.push(NodeGradeCarrier {
                         kind: start_band.kind,
                         polygon,
                     });
                 }
             }
         }
+    }
+
+    fn node_non_road_closure_kind(
+        mouths: &[OrderedIncidentPieceMouth],
+    ) -> Option<RoadSurfaceBandKind> {
+        for kind in [
+            RoadSurfaceBandKind::Sidewalk,
+            RoadSurfaceBandKind::Footpath,
+            RoadSurfaceBandKind::CycleTrack,
+            RoadSurfaceBandKind::Parking,
+            RoadSurfaceBandKind::Median,
+            RoadSurfaceBandKind::TramReservation,
+            RoadSurfaceBandKind::CurbOrShoulder,
+        ] {
+            if mouths.iter().any(|mouth| {
+                mouth
+                    .profile
+                    .bands
+                    .iter()
+                    .chain(mouth.endpoint_profile.bands.iter())
+                    .any(|band| band.kind == kind)
+            }) {
+                return Some(kind);
+            }
+        }
+        None
     }
 
     fn mouth_full_roadbed_segment(profile: &IncidentMouthProfile) -> Option<(Vector3, Vector3)> {
@@ -865,7 +981,15 @@ impl RoadSurfaceSystem {
         direction_xz: Vector2,
         segment_a: Vector3,
         segment_b: Vector3,
+        endpoint_a: Vector3,
+        endpoint_b: Vector3,
     ) -> Option<RoadSurfaceVisualPolygon> {
+        if let Some(polygon) =
+            Self::make_visual_polygon(vec![segment_a, segment_b, endpoint_b, endpoint_a])
+        {
+            return Some(polygon);
+        }
+
         if direction_xz.length_squared() <= SAMPLE_EPSILON_M {
             return None;
         }
@@ -886,8 +1010,16 @@ impl RoadSurfaceSystem {
         }
 
         let backtrack = Vector3::new(direction_xz.x * depth_m, 0.0, direction_xz.y * depth_m);
-        let node_a = segment_a - backtrack;
-        let node_b = segment_b - backtrack;
+        let node_a = Vector3::new(
+            segment_a.x - backtrack.x,
+            endpoint_a.y,
+            segment_a.z - backtrack.z,
+        );
+        let node_b = Vector3::new(
+            segment_b.x - backtrack.x,
+            endpoint_b.y,
+            segment_b.z - backtrack.z,
+        );
         Self::make_visual_polygon(vec![segment_a, segment_b, node_b, node_a])
     }
 
@@ -907,6 +1039,7 @@ impl RoadSurfaceSystem {
         outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
         mut road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+        mut owned_regions: Vec<NodeOwnedRegion>,
         mut earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
         mut render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
@@ -916,6 +1049,7 @@ impl RoadSurfaceSystem {
         }
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
+        Self::sort_node_owned_regions(&mut owned_regions);
         Self::sort_visual_polygons(&mut earthwork_surface_polygons);
         Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
         Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
@@ -928,11 +1062,37 @@ impl RoadSurfaceSystem {
             outer_boundary_loops,
             road_surface_polygons,
             sidewalk_surface_polygons,
+            owned_regions,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
             render_earthwork_faces,
         })
     }
+
+    fn node_owned_regions_from_material_polygons(
+        road_surface_polygons: &[RoadSurfaceVisualPolygon],
+        sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Vec<NodeOwnedRegion> {
+        let mut owned_regions =
+            Vec::with_capacity(road_surface_polygons.len() + sidewalk_surface_polygons.len());
+        owned_regions.extend(road_surface_polygons.iter().enumerate().map(
+            |(owner_index, polygon)| NodeOwnedRegion {
+                kind: RoadSurfaceBandKind::Carriageway,
+                owner_index,
+                polygon: polygon.clone(),
+            },
+        ));
+        owned_regions.extend(sidewalk_surface_polygons.iter().enumerate().map(
+            |(owner_index, polygon)| NodeOwnedRegion {
+                kind: RoadSurfaceBandKind::Sidewalk,
+                owner_index,
+                polygon: polygon.clone(),
+            },
+        ));
+        Self::sort_node_owned_regions(&mut owned_regions);
+        owned_regions
+    }
+
     fn classify_visual_node_kind(&self, incidents: &[IncidentSurfaceEdge]) -> CompiledNodeKind {
         match incidents.len() {
             0 | 1 => CompiledNodeKind::Terminal,

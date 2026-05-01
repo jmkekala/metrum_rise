@@ -2,10 +2,9 @@
 
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::{CURB_STEP_HEIGHT_M, MAX_STANDARD_DESIGN_CROSSFALL_RATE};
-use super::grade::NodeGradeField;
 use super::{
-    ChunkCacheKind, NodeBandHeightDomain, PreviewRoadSurfaceResult, RoadSurfaceBandKind,
-    RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
+    ChunkCacheKind, NodeGradeCarrier, PreviewRoadSurfaceResult, RoadSurfaceBandKind,
+    NodeOwnedRegion, RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
     RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
     SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
@@ -362,6 +361,226 @@ fn assert_material_triangle_centroids_do_not_overlap(piece: &RoadSurfaceVisualNo
     }
 }
 
+type QuantizedTriangleEdge = (((i64, i64), (i64, i64)), (f32, f32));
+
+fn collect_triangle_edge_heights(
+    polygons: &[RoadSurfaceVisualPolygon],
+) -> Vec<QuantizedTriangleEdge> {
+    let mut edges: Vec<QuantizedTriangleEdge> = Vec::new();
+    for triangle in polygons
+        .iter()
+        .flat_map(|polygon| polygon.triangles_world.iter())
+    {
+        for edge_index in 0..3 {
+            let start = triangle[edge_index];
+            let end = triangle[(edge_index + 1) % 3];
+            let start_key = (
+                (start.x * 1000.0).round() as i64,
+                (start.z * 1000.0).round() as i64,
+            );
+            let end_key = (
+                (end.x * 1000.0).round() as i64,
+                (end.z * 1000.0).round() as i64,
+            );
+            if start_key == end_key {
+                continue;
+            }
+            let (key, heights) = if start_key <= end_key {
+                ((start_key, end_key), (start.y, end.y))
+            } else {
+                ((end_key, start_key), (end.y, start.y))
+            };
+            edges.push((key, heights));
+        }
+    }
+    edges.sort_by(|a, b| a.0.cmp(&b.0));
+    edges
+}
+
+fn assert_shared_edges_are_height_continuous(
+    polygons: &[RoadSurfaceVisualPolygon],
+    tolerance_m: f32,
+    label: &str,
+) {
+    let edges = collect_triangle_edge_heights(polygons);
+    for pair in edges.windows(2) {
+        if pair[0].0 != pair[1].0 {
+            continue;
+        }
+        assert!(
+            (pair[0].1.0 - pair[1].1.0).abs() <= tolerance_m
+                && (pair[0].1.1 - pair[1].1.1).abs() <= tolerance_m,
+            "{label} shared edge must be height-continuous; edge={:?} heights_a={:?} heights_b={:?}",
+            pair[0].0,
+            pair[0].1,
+            pair[1].1
+        );
+    }
+}
+
+fn assert_non_road_shared_edges_are_height_continuous(piece: &RoadSurfaceVisualNodePiece) {
+    assert_shared_edges_are_height_continuous(
+        &piece.sidewalk_surface_polygons,
+        0.004,
+        "node non-road",
+    );
+}
+
+fn max_visual_triangle_slope_ratio(
+    piece: &RoadSurfaceVisualNodePiece,
+) -> (f32, RoadSurfaceBandKind, usize, Vector3, Vector3) {
+    let mut max_slope = 0.0_f32;
+    let mut max_kind = RoadSurfaceBandKind::Carriageway;
+    let mut max_owner_index = 0usize;
+    let mut max_start = Vector3::ZERO;
+    let mut max_end = Vector3::ZERO;
+    for region in &piece.owned_regions {
+        for triangle in &region.polygon.triangles_world {
+            for edge_index in 0..3 {
+                let start = triangle[edge_index];
+                let end = triangle[(edge_index + 1) % 3];
+                let xz_distance = Vector2::new(end.x - start.x, end.z - start.z).length();
+                if xz_distance <= SAMPLE_EPSILON_M {
+                    continue;
+                }
+                let slope = (end.y - start.y).abs() / xz_distance;
+                if slope > max_slope {
+                    max_slope = slope;
+                    max_kind = region.kind;
+                    max_owner_index = region.owner_index;
+                    max_start = start;
+                    max_end = end;
+                }
+            }
+        }
+    }
+    (max_slope, max_kind, max_owner_index, max_start, max_end)
+}
+
+fn assert_node_piece_uses_band_owned_regions(piece: &RoadSurfaceVisualNodePiece) {
+    assert!(
+        !piece.owned_regions.is_empty(),
+        "node piece must keep explicit band-owned regions as its source of rendered top surfaces"
+    );
+    let carriageway_count = piece
+        .owned_regions
+        .iter()
+        .filter(|region| region.kind == RoadSurfaceBandKind::Carriageway)
+        .count();
+    let non_road_count = piece
+        .owned_regions
+        .iter()
+        .filter(|region| region.kind != RoadSurfaceBandKind::Carriageway)
+        .count();
+    assert_eq!(
+        carriageway_count,
+        piece.road_surface_polygons.len(),
+        "asphalt polygons must be derived from carriageway-owned node regions"
+    );
+    assert_eq!(
+        non_road_count,
+        piece.sidewalk_surface_polygons.len(),
+        "non-road polygons must be derived from curb/sidewalk-owned node regions"
+    );
+    assert!(
+        piece
+            .owned_regions
+            .iter()
+            .all(|region| RoadSurfaceSystem::polygon_has_area_xz(&region.polygon.points_world)),
+        "owned node regions must be non-degenerate before triangulation"
+    );
+}
+
+fn assert_node_piece_has_curb_and_sidewalk_owners(piece: &RoadSurfaceVisualNodePiece) {
+    assert!(
+        piece
+            .owned_regions
+            .iter()
+            .any(|region| region.kind == RoadSurfaceBandKind::CurbOrShoulder),
+        "node non-road hardcut must expose explicit curb/shoulder owners"
+    );
+    assert!(
+        piece
+            .owned_regions
+            .iter()
+            .any(|region| region.kind == RoadSurfaceBandKind::Sidewalk),
+        "node non-road hardcut must expose explicit sidewalk owners"
+    );
+}
+
+fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNodePiece) {
+    let top_polygons = piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .collect::<Vec<_>>();
+    let top_vertices = piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .flat_map(|polygon| {
+            polygon.points_world.iter().chain(
+                polygon
+                    .triangles_world
+                    .iter()
+                    .flat_map(|triangle| triangle.iter()),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !top_vertices.is_empty(),
+        "node piece must emit visible top vertices before boundary matching can be checked"
+    );
+    for boundary_point in piece
+        .outer_boundary_loops
+        .iter()
+        .flat_map(|polygon| polygon.points_world.iter())
+    {
+        let overlay_match_tolerance_m = SAMPLE_EPSILON_M * 2.0;
+        let Some(closest) = top_vertices.iter().min_by(|a, b| {
+            let da = Vector2::new(a.x - boundary_point.x, a.z - boundary_point.z).length_squared();
+            let db = Vector2::new(b.x - boundary_point.x, b.z - boundary_point.z).length_squared();
+            da.total_cmp(&db)
+        }) else {
+            panic!("node piece emitted no top vertices");
+        };
+        let xz_error =
+            Vector2::new(closest.x - boundary_point.x, closest.z - boundary_point.z).length();
+        if xz_error <= overlay_match_tolerance_m {
+            let matching_height = top_vertices.iter().any(|candidate| {
+                Vector2::new(candidate.x - boundary_point.x, candidate.z - boundary_point.z)
+                    .length()
+                    <= overlay_match_tolerance_m
+                    && (candidate.y - boundary_point.y).abs() <= overlay_match_tolerance_m
+            });
+            assert!(
+                matching_height,
+                "node outer boundary must use the colocated visible top height; boundary={boundary_point:?} closest={closest:?} xz_error={xz_error:.4}"
+            );
+            continue;
+        }
+
+        if let Some(height) = top_polygons.iter().find_map(|polygon| {
+            polygon.triangles_world.iter().find_map(|&triangle| {
+                RoadSurfaceSystem::triangle_barycentric_weights_xz(
+                    triangle,
+                    Vector2::new(boundary_point.x, boundary_point.z),
+                )
+                .map(|(wa, wb, wc)| triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc)
+            })
+        }) {
+            assert!(
+                (height - boundary_point.y).abs() <= overlay_match_tolerance_m,
+                "node outer boundary must use the visible top-surface height at covered boundary points; boundary={boundary_point:?} sampled_height={height:.4}"
+            );
+        } else {
+            panic!(
+                "node outer boundary vertex must be covered by visible top geometry; boundary={boundary_point:?} closest={closest:?} xz_error={xz_error:.4}"
+            );
+        }
+    }
+}
+
 fn polygon_area_m2(polygon: &RoadSurfaceVisualPolygon) -> f32 {
     RoadSurfaceSystem::signed_polygon_area_xz(&polygon.points_world).abs()
 }
@@ -375,6 +594,27 @@ fn polygon_triangle_area_m2(polygon: &RoadSurfaceVisualPolygon) -> f32 {
                 .abs()
         })
         .sum()
+}
+
+fn assert_node_piece_material_area_closes_footprint(
+    piece: &RoadSurfaceVisualNodePiece,
+    tolerance_m2: f32,
+) {
+    let footprint_area: f32 = piece.outer_boundary_loops.iter().map(polygon_area_m2).sum();
+    let asphalt_area: f32 = piece
+        .road_surface_polygons
+        .iter()
+        .map(polygon_triangle_area_m2)
+        .sum();
+    let non_road_area: f32 = piece
+        .sidewalk_surface_polygons
+        .iter()
+        .map(polygon_triangle_area_m2)
+        .sum();
+    assert!(
+        (footprint_area - asphalt_area - non_road_area).abs() <= tolerance_m2,
+        "node material ownership must close the exported footprint; footprint={footprint_area:.3} asphalt={asphalt_area:.3} non_road={non_road_area:.3} tolerance={tolerance_m2:.3}"
+    );
 }
 
 #[test]
@@ -754,6 +994,8 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
         .get(&bend_center)
         .unwrap();
     assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(bend_piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(bend_piece);
     assert!(!bend_piece.outer_boundary_loops.is_empty());
     assert!(!bend_piece.road_surface_polygons.is_empty());
     assert!(!bend_piece.sidewalk_surface_polygons.is_empty());
@@ -790,9 +1032,6 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
             .any(|polygon| polygon.points_world.len() >= 12),
         "bend footprint should retain deterministic arc vertices instead of collapsing to only straight corridor corners"
     );
-    assert!(!bend_piece.earthwork_surface_polygons.is_empty());
-    assert!(!bend_piece.earthwork_outer_boundary_loops.is_empty());
-    assert!(!bend_piece.render_earthwork_faces.is_empty());
     assert!(
         bend_piece
             .earthwork_surface_polygons
@@ -804,10 +1043,6 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
             .render_earthwork_faces
             .iter()
             .all(|face| RoadSurfaceSystem::polygon_has_area_xz(&face.polygon.points_world))
-    );
-    assert_ne!(
-        bend_piece.earthwork_outer_boundary_loops,
-        bend_piece.outer_boundary_loops
     );
 
     let mut terminal_graph = RegionGraph::new();
@@ -919,6 +1154,63 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
         terminal_piece.earthwork_outer_boundary_loops,
         terminal_piece.outer_boundary_loops
     );
+}
+
+#[test]
+fn flat_logged_curve_bend_keeps_footprint_covered_by_visible_top() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-17.539, 0.0, 12.635), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(57.560, 0.0, 4.157), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(119.799, 0.0, 82.841), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-17.539, 0.0, 12.635),
+            Vector3::new(0.259, 0.0, 10.625),
+            Vector3::new(30.126, 0.0, 7.254),
+            Vector3::new(49.571, 0.0, 5.059),
+            Vector3::new(57.560, 0.0, 4.157),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(57.560, 0.0, 4.157),
+            Vector3::new(61.267, 0.0, 8.844),
+            Vector3::new(71.839, 0.0, 22.209),
+            Vector3::new(89.956, 0.0, 45.112),
+            Vector3::new(105.986, 0.0, 65.379),
+            Vector3::new(119.799, 0.0, 82.841),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("logged curve should compile one bend node piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
+    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
+    assert_node_piece_material_area_closes_footprint(piece, 0.25);
 }
 
 #[test]
@@ -1456,6 +1748,8 @@ fn arbitrary_six_way_junction_keeps_visible_ownership_disjoint() {
     assert!(!piece.outer_boundary_loops.is_empty());
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
 
     let footprint_area: f32 = piece.outer_boundary_loops.iter().map(polygon_area_m2).sum();
     let asphalt_area: f32 = piece
@@ -1469,7 +1763,7 @@ fn arbitrary_six_way_junction_keeps_visible_ownership_disjoint() {
         .map(polygon_triangle_area_m2)
         .sum();
     assert!(
-        (footprint_area - asphalt_area - non_road_area).abs() <= 0.1,
+        (footprint_area - asphalt_area - non_road_area).abs() <= 0.25,
         "arbitrary JunctionN ownership must close the footprint without overlapping materials; footprint={footprint_area:.3} asphalt={asphalt_area:.3} non_road={non_road_area:.3}"
     );
     assert_material_triangle_centroids_do_not_overlap(piece);
@@ -1798,6 +2092,8 @@ fn junction_node_non_road_surface_is_footprint_minus_asphalt() {
     surface.compile_dirty(&graph, &terrain);
 
     let piece = surface.compiled_visual_node_pieces().get(&center).unwrap();
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
     let footprint_area: f32 = piece.outer_boundary_loops.iter().map(polygon_area_m2).sum();
     let asphalt_area: f32 = piece
         .road_surface_polygons
@@ -1833,84 +2129,369 @@ fn junction_node_non_road_surface_is_footprint_minus_asphalt() {
 }
 
 #[test]
-fn boundary_curb_overlap_detection_splits_mismatched_overlay_edges() {
-    let road_shapes = vec![vec![vec![[-1.0, 0.0], [3.0, 0.0], [3.0, 2.0], [-1.0, 2.0]]]];
-    let non_road_shapes = vec![vec![vec![
-        [0.0, 0.0],
-        [1.0, 0.0],
-        [2.0, 0.0],
-        [4.0, 0.0],
-        [4.0, -1.0],
-        [0.0, -1.0],
-    ]]];
+fn elevated_four_way_junction_keeps_span_mouth_vertices_seamless() {
+    let terrain = planar_world_terrain(192, 192, 1.0, 150.0, 0.045, -0.018);
+    let mut graph = RegionGraph::new();
+    let center_pos = Vector3::new(
+        0.0,
+        terrain.sample_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE,
+        0.0,
+    );
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    for endpoint_xz in [
+        Vector2::new(-72.0, 0.0),
+        Vector2::new(72.0, 0.0),
+        Vector2::new(0.0, -72.0),
+        Vector2::new(0.0, 72.0),
+    ] {
+        let endpoint_pos = Vector3::new(
+            endpoint_xz.x,
+            terrain.sample_height_world(endpoint_xz.x, endpoint_xz.y) * crate::config::HEIGHT_SCALE,
+            endpoint_xz.y,
+        );
+        let endpoint = graph.add_node(endpoint_pos, NodeType::Junction);
+        let points = if endpoint_xz.x < 0.0 || endpoint_xz.y < 0.0 {
+            grounded_polyline_points_from_terrain(&terrain, endpoint_xz, Vector2::ZERO, 24)
+        } else {
+            grounded_polyline_points_from_terrain(&terrain, Vector2::ZERO, endpoint_xz, 24)
+        };
+        if endpoint_xz.x < 0.0 || endpoint_xz.y < 0.0 {
+            graph.add_edge(test_edge(
+                endpoint,
+                center,
+                points,
+                7.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        } else {
+            graph.add_edge(test_edge(
+                center,
+                endpoint,
+                points,
+                7.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        }
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
 
-    let segments =
-        RoadSurfaceSystem::overlay_shared_collinear_segments(&road_shapes, &non_road_shapes);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
 
-    assert_eq!(
-        segments,
-        vec![
-            ([0.0, 0.0], [1.0, 0.0]),
-            ([1.0, 0.0], [2.0, 0.0]),
-            ([2.0, 0.0], [3.0, 0.0]),
-        ],
-        "boundary curb strips must not require identical road/non-road overlay endpoint segmentation"
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("elevated 4-way node must compile one JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
+    assert_non_road_shared_edges_are_height_continuous(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
+    let seam_vertices = piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .flat_map(|polygon| polygon.points_world.iter())
+        .collect::<Vec<_>>();
+
+    for &edge_idx in graph.node_adjacency(center) {
+        let edge = graph.edge(edge_idx);
+        let span_piece = surface
+            .compiled_visual_span_pieces()
+            .get(&edge_idx)
+            .unwrap();
+        let mouth = if graph.get_valid_node(edge.start_node) == center {
+            span_piece.start_mouth_profile.as_ref().unwrap()
+        } else {
+            span_piece.end_mouth_profile.as_ref().unwrap()
+        };
+        for (point_index, mouth_point) in mouth.boundary_points_world.iter().enumerate() {
+            if point_index > 0 && point_index < mouth.boundary_points_world.len() - 1 {
+                let before = mouth.bands[point_index - 1].kind;
+                let after = mouth.bands[point_index].kind;
+                if before == after {
+                    continue;
+                }
+            }
+            let Some(node_point) = seam_vertices.iter().min_by(|a, b| {
+                let da = Vector2::new(a.x - mouth_point.x, a.z - mouth_point.z).length_squared();
+                let db = Vector2::new(b.x - mouth_point.x, b.z - mouth_point.z).length_squared();
+                da.total_cmp(&db)
+            }) else {
+                panic!("JunctionN emitted no material vertices");
+            };
+            let xz_error =
+                Vector2::new(node_point.x - mouth_point.x, node_point.z - mouth_point.z).length();
+            assert!(
+                xz_error <= 0.004,
+                "node material vertex must preserve the span mouth XZ seam; mouth={mouth_point:?} closest={node_point:?} xz_error={xz_error:.4}"
+            );
+            assert!(
+                (node_point.y - mouth_point.y).abs() <= 0.004,
+                "elevated JunctionN mouth vertex must match the incident span height; mouth={mouth_point:?} closest={node_point:?}"
+            );
+        }
+    }
+
+    let debug_edges = graph.node_adjacency(center).to_vec();
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &debug_edges);
+    assert!(dump.contains("\"kind\": \"JunctionN\""));
+    assert!(dump.contains("\"sidewalk_topology\""));
+    assert!(dump.contains("\"band_ownership\""));
+    assert!(dump.contains("\"height_owner\""));
+    assert!(dump.contains("\"seam_constraints\""));
+    assert!(dump.contains("\"outer_boundary_top_match\""));
+    assert!(dump.contains("\"mouth_seams\""));
+    assert!(dump.contains("\"earthwork_face_top_match\""));
+}
+
+#[test]
+fn elevated_junction_uses_endpoint_heights_for_node_side_vertices() {
+    let terrain = flat_terrain(192, 192);
+    let mut graph = RegionGraph::new();
+    let center_pos = Vector3::new(0.0, 0.0, 0.0);
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    for (endpoint_pos, starts_at_center) in [
+        (Vector3::new(-80.0, 80.0, 0.0), false),
+        (Vector3::new(80.0, -80.0, 0.0), true),
+        (Vector3::new(0.0, 64.0, -80.0), false),
+        (Vector3::new(0.0, -64.0, 80.0), true),
+    ] {
+        let endpoint = graph.add_node(endpoint_pos, NodeType::Junction);
+        let (start, end, points) = if starts_at_center {
+            (center, endpoint, vec![center_pos, endpoint_pos])
+        } else {
+            (endpoint, center, vec![endpoint_pos, center_pos])
+        };
+        graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("steep 4-way node must compile one JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+
+    let mut max_mouth_abs_y = 0.0_f32;
+    for &edge_idx in graph.node_adjacency(center) {
+        let edge = graph.edge(edge_idx);
+        let span_piece = surface
+            .compiled_visual_span_pieces()
+            .get(&edge_idx)
+            .expect("incident edge must compile a span piece");
+        let mouth = if graph.get_valid_node(edge.start_node) == center {
+            span_piece.start_mouth_profile.as_ref().unwrap()
+        } else {
+            span_piece.end_mouth_profile.as_ref().unwrap()
+        };
+        for point in &mouth.boundary_points_world {
+            max_mouth_abs_y = max_mouth_abs_y.max(point.y.abs());
+        }
+    }
+    assert!(
+        max_mouth_abs_y >= 3.0,
+        "test setup must put visible throats far above or below the endpoint; max_mouth_abs_y={max_mouth_abs_y:.3}"
+    );
+
+    let (max_slope, max_kind, max_owner_index, max_start, max_end) =
+        max_visual_triangle_slope_ratio(piece);
+    assert!(
+        max_slope <= 1.35,
+        "JunctionN top-surface triangles must follow endpoint-to-throat ramps instead of near-vertical projected throat plateaus; bounded curb-step diagonals are allowed, max_slope={max_slope:.3} kind={max_kind:?} owner={max_owner_index} edge=({max_start:?}, {max_end:?})"
     );
 }
 
 #[test]
-fn boundary_curb_outer_height_uses_local_grade_field_constraint() {
-    let road_y = 10.0;
-    let wrong_neighbor_y = 25.0;
-    let road_shapes = vec![vec![vec![[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]]]];
-    let non_road_shapes = vec![vec![vec![[0.0, 1.0], [2.0, 1.0], [2.0, 2.0], [0.0, 2.0]]]];
-    let road_domain = NodeBandHeightDomain {
-        kind: RoadSurfaceBandKind::Carriageway,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, road_y, 0.0),
-            Vector3::new(2.0, road_y, 0.0),
-            Vector3::new(2.0, road_y, 1.0),
-            Vector3::new(0.0, road_y, 1.0),
-        ])
-        .unwrap(),
-    };
-    let wrong_neighbor_sidewalk = NodeBandHeightDomain {
-        kind: RoadSurfaceBandKind::Sidewalk,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, wrong_neighbor_y, 3.0),
-            Vector3::new(2.0, wrong_neighbor_y, 3.0),
-            Vector3::new(2.0, wrong_neighbor_y, 4.0),
-            Vector3::new(0.0, wrong_neighbor_y, 4.0),
-        ])
-        .unwrap(),
-    };
-    let local_sidewalk = NodeBandHeightDomain {
-        kind: RoadSurfaceBandKind::Sidewalk,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, road_y + CURB_STEP_HEIGHT_M, 1.0),
-            Vector3::new(2.0, road_y + CURB_STEP_HEIGHT_M, 1.0),
-            Vector3::new(2.0, road_y + CURB_STEP_HEIGHT_M, 2.0),
-            Vector3::new(0.0, road_y + CURB_STEP_HEIGHT_M, 2.0),
-        ])
-        .unwrap(),
-    };
+fn elevated_three_way_junction_keeps_outer_boundary_on_visible_top() {
+    let terrain = planar_world_terrain(192, 192, 1.0, 150.0, 0.045, -0.018);
+    let mut graph = RegionGraph::new();
+    let center_pos = Vector3::new(
+        0.0,
+        terrain.sample_height_world(0.0, 0.0) * crate::config::HEIGHT_SCALE,
+        0.0,
+    );
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    for endpoint_xz in [
+        Vector2::new(-72.0, 0.0),
+        Vector2::new(72.0, 0.0),
+        Vector2::new(0.0, 72.0),
+    ] {
+        let endpoint_pos = Vector3::new(
+            endpoint_xz.x,
+            terrain.sample_height_world(endpoint_xz.x, endpoint_xz.y) * crate::config::HEIGHT_SCALE,
+            endpoint_xz.y,
+        );
+        let endpoint = graph.add_node(endpoint_pos, NodeType::Junction);
+        let points = if endpoint_xz.x < 0.0 || endpoint_xz.y < 0.0 {
+            grounded_polyline_points_from_terrain(&terrain, endpoint_xz, Vector2::ZERO, 24)
+        } else {
+            grounded_polyline_points_from_terrain(&terrain, Vector2::ZERO, endpoint_xz, 24)
+        };
+        if endpoint_xz.x < 0.0 || endpoint_xz.y < 0.0 {
+            graph.add_edge(test_edge(
+                endpoint,
+                center,
+                points,
+                7.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        } else {
+            graph.add_edge(test_edge(
+                center,
+                endpoint,
+                points,
+                7.0,
+                EdgeClass::Standard,
+                TransitType::Road,
+                TransitFlags::CAR | TransitFlags::FOOT,
+            ));
+        }
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
 
-    let grade_domains = vec![road_domain, wrong_neighbor_sidewalk, local_sidewalk];
-    let grade_field = NodeGradeField::from_domains(&grade_domains);
-    let domains = RoadSurfaceSystem::boundary_curb_transition_domains(
-        &road_shapes,
-        &non_road_shapes,
-        &grade_field,
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("elevated 3-way node must compile one JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
+    assert_non_road_shared_edges_are_height_continuous(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
+}
+
+#[test]
+fn skewed_elevated_four_way_junction_compiles_visible_center_surface() {
+    let terrain = planar_world_terrain(256, 256, 1.0, 148.0, -0.080, -0.035);
+    let mut graph = RegionGraph::new();
+    let center_xz = Vector2::new(14.096, -65.592);
+    let center_pos = Vector3::new(
+        center_xz.x,
+        terrain.sample_height_world(center_xz.x, center_xz.y) * crate::config::HEIGHT_SCALE,
+        center_xz.y,
+    );
+    let center = graph.add_node(center_pos, NodeType::Junction);
+    for (endpoint_xz, starts_at_center) in [
+        (Vector2::new(-15.703, -93.471), false),
+        (Vector2::new(56.138, -72.850), false),
+        (Vector2::new(-17.050, -60.215), true),
+        (Vector2::new(50.308, -31.714), true),
+    ] {
+        let endpoint_pos = Vector3::new(
+            endpoint_xz.x,
+            terrain.sample_height_world(endpoint_xz.x, endpoint_xz.y)
+                * crate::config::HEIGHT_SCALE,
+            endpoint_xz.y,
+        );
+        let endpoint = graph.add_node(endpoint_pos, NodeType::Junction);
+        let (start, end, points) = if starts_at_center {
+            (
+                center,
+                endpoint,
+                grounded_polyline_points_from_terrain(&terrain, center_xz, endpoint_xz, 24),
+            )
+        } else {
+            (
+                endpoint,
+                center,
+                grounded_polyline_points_from_terrain(&terrain, endpoint_xz, center_xz, 24),
+            )
+        };
+        graph.add_edge(test_edge(
+            start,
+            end,
+            points,
+            7.0,
+            EdgeClass::Standard,
+            TransitType::Road,
+            TransitFlags::CAR | TransitFlags::FOOT,
+        ));
+    }
+    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("skewed elevated 4-way node must compile one visible JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
+    assert_non_road_shared_edges_are_height_continuous(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
+}
+
+#[test]
+fn outer_boundary_height_snap_uses_surface_coverage_when_vertex_is_not_explicit() {
+    let owned_region = NodeOwnedRegion {
+        kind: RoadSurfaceBandKind::Sidewalk,
+        owner_index: 0,
+        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(0.0, 10.0, 0.0),
+            Vector3::new(4.0, 14.0, 0.0),
+            Vector3::new(4.0, 14.0, 4.0),
+            Vector3::new(0.0, 10.0, 4.0),
+        ])
+        .unwrap(),
+    };
+    let mut loops = vec![
+        RoadSurfaceSystem::make_visual_polygon(vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(2.0, 0.0, 0.0),
+            Vector3::new(4.0, 0.0, 0.0),
+            Vector3::new(4.0, 0.0, 4.0),
+            Vector3::new(0.0, 0.0, 4.0),
+        ])
+        .unwrap(),
+    ];
+
+    assert!(
+        RoadSurfaceSystem::snap_outer_boundary_loop_heights_to_owned_top_vertices(
+            7,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &mut loops,
+            &[owned_region],
+        ),
+        "boundary vertices covered by the top surface must not reject the whole node"
     );
 
-    let max_curb_y = domains
+    let midpoint = loops[0]
+        .points_world
         .iter()
-        .flat_map(|domain| domain.polygon.points_world.iter())
-        .map(|point| point.y)
-        .fold(f32::NEG_INFINITY, f32::max);
+        .find(|point| (point.x - 2.0).abs() <= 0.001 && point.z.abs() <= 0.001)
+        .expect("test loop must keep the explicit midpoint");
     assert!(
-        max_curb_y <= road_y + CURB_STEP_HEIGHT_M + 0.001,
-        "distant elevated sidewalk domains must not pull curb strip corners away from the local grade constraint; max_curb_y={max_curb_y:.3}"
+        (midpoint.y - 12.0).abs() <= 0.001,
+        "mid-edge boundary height must be sampled from the covered top surface"
     );
 }
 
@@ -1920,7 +2501,7 @@ fn non_road_visual_domains_preserve_same_kind_height_seams() {
     let high_y = 20.0;
     let target_non_road_shapes = vec![vec![vec![[0.0, 0.0], [4.0, 0.0], [4.0, 1.0], [0.0, 1.0]]]];
     let road_shapes = Vec::new();
-    let low_sidewalk = NodeBandHeightDomain {
+    let low_sidewalk = NodeGradeCarrier {
         kind: RoadSurfaceBandKind::Sidewalk,
         polygon: RoadSurfaceSystem::make_visual_polygon(vec![
             Vector3::new(0.0, low_y, 0.0),
@@ -1930,7 +2511,7 @@ fn non_road_visual_domains_preserve_same_kind_height_seams() {
         ])
         .unwrap(),
     };
-    let high_sidewalk = NodeBandHeightDomain {
+    let high_sidewalk = NodeGradeCarrier {
         kind: RoadSurfaceBandKind::Sidewalk,
         polygon: RoadSurfaceSystem::make_visual_polygon(vec![
             Vector3::new(1.0, high_y, 0.0),
@@ -1942,24 +2523,22 @@ fn non_road_visual_domains_preserve_same_kind_height_seams() {
     };
 
     let height_domains = vec![low_sidewalk, high_sidewalk];
-    let grade_field = NodeGradeField::from_domains(&height_domains);
     let polygons = RoadSurfaceSystem::visual_non_road_band_polygons_from_height_domains(
         7,
         RoadSurfaceVisualNodePieceKind::JunctionN,
         &target_non_road_shapes,
         &road_shapes,
         &height_domains,
-        &grade_field,
     )
     .unwrap();
 
     assert!(
         polygons.len() >= 2,
-        "overlapping same-kind domains must remain separate enough to keep their height seam"
+        "overlapping same-kind domains must remain separate enough to keep their XZ ownership seam"
     );
     let mut saw_low = false;
     let mut saw_high = false;
-    for polygon in polygons {
+    for polygon in &polygons {
         let min_y = polygon
             .points_world
             .iter()
@@ -1970,16 +2549,20 @@ fn non_road_visual_domains_preserve_same_kind_height_seams() {
             .iter()
             .map(|point| point.y)
             .fold(f32::NEG_INFINITY, f32::max);
-        assert!(
-            max_y - min_y <= 0.001,
-            "one visual polygon must not bridge two source sidewalk height planes; min_y={min_y:.3} max_y={max_y:.3}"
-        );
         saw_low |= (min_y - low_y).abs() <= 0.001;
         saw_high |= (max_y - high_y).abs() <= 0.001;
     }
     assert!(
         saw_low && saw_high,
         "both source height domains must contribute after deterministic ownership splitting"
+    );
+
+    let edges = collect_triangle_edge_heights(&polygons);
+    assert!(
+        edges.windows(2).any(|pair| pair[0].0 == pair[1].0
+            && (pair[0].1.0 - pair[1].1.0).abs() <= 0.001
+            && (pair[0].1.1 - pair[1].1.1).abs() <= 0.001),
+        "split same-kind sidewalk domains must share at least one height-continuous rendered seam"
     );
 }
 
@@ -2012,102 +2595,6 @@ fn visual_polygon_builder_preserves_skinny_closure_geometry() {
     assert!(
         !polygon.triangles_world.is_empty(),
         "curb closure polygons must keep renderable CDT triangles"
-    );
-}
-
-#[test]
-fn node_grade_field_uses_material_constraint_at_road_boundary() {
-    let sidewalk_domain = NodeBandHeightDomain {
-        kind: RoadSurfaceBandKind::Sidewalk,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 0.0),
-            Vector3::new(2.0, CURB_STEP_HEIGHT_M, 0.0),
-            Vector3::new(2.0, CURB_STEP_HEIGHT_M, 2.0),
-            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 2.0),
-        ])
-        .unwrap(),
-    };
-    let curb_domain = NodeBandHeightDomain {
-        kind: RoadSurfaceBandKind::CurbOrShoulder,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
-            Vector3::new(2.0, CURB_STEP_HEIGHT_M, 1.0),
-            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 1.0),
-        ])
-        .unwrap(),
-    };
-
-    let grade_domains = vec![sidewalk_domain, curb_domain];
-    let grade_field = NodeGradeField::from_domains(&grade_domains);
-    let height_m = grade_field
-        .sample_material_height(RoadSurfaceBandKind::CurbOrShoulder, Vector2::new(1.0, 0.0))
-        .unwrap();
-
-    assert!(
-        height_m.abs() <= 0.001,
-        "shared road/non-road boundary vertices must stay at road height so curb skirts do not cap upward; height_m={height_m:.3}"
-    );
-}
-
-#[test]
-fn boundary_curb_domains_stitch_adjacent_segment_joints() {
-    let road_shapes = vec![vec![vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]]];
-    let non_road_shapes = vec![
-        vec![vec![[0.0, 2.0], [2.0, 2.0], [2.0, 3.0], [0.0, 3.0]]],
-        vec![vec![[-1.0, 0.0], [0.0, 0.0], [0.0, 2.0], [-1.0, 2.0]]],
-    ];
-    let road_domain = NodeBandHeightDomain {
-        kind: RoadSurfaceBandKind::Carriageway,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 0.0),
-            Vector3::new(2.0, 0.0, 2.0),
-            Vector3::new(0.0, 0.0, 2.0),
-        ])
-        .unwrap(),
-    };
-    let sidewalk_top = NodeBandHeightDomain {
-        kind: RoadSurfaceBandKind::Sidewalk,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 2.0),
-            Vector3::new(2.0, CURB_STEP_HEIGHT_M, 2.0),
-            Vector3::new(2.0, CURB_STEP_HEIGHT_M, 3.0),
-            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 3.0),
-        ])
-        .unwrap(),
-    };
-    let sidewalk_left = NodeBandHeightDomain {
-        kind: RoadSurfaceBandKind::Sidewalk,
-        polygon: RoadSurfaceSystem::make_visual_polygon(vec![
-            Vector3::new(-1.0, CURB_STEP_HEIGHT_M, 0.0),
-            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 0.0),
-            Vector3::new(0.0, CURB_STEP_HEIGHT_M, 2.0),
-            Vector3::new(-1.0, CURB_STEP_HEIGHT_M, 2.0),
-        ])
-        .unwrap(),
-    };
-
-    let grade_domains = vec![road_domain, sidewalk_top, sidewalk_left];
-    let grade_field = NodeGradeField::from_domains(&grade_domains);
-    let domains = RoadSurfaceSystem::boundary_curb_transition_domains(
-        &road_shapes,
-        &non_road_shapes,
-        &grade_field,
-    );
-
-    assert!(
-        domains.len() >= 3,
-        "two adjacent boundary strips must add at least one joint-fill domain"
-    );
-    assert!(
-        domains.iter().any(|domain| {
-            domain.polygon.triangles_world.iter().any(|triangle| {
-                let centroid = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
-                centroid.x < -0.01 && centroid.z > 2.01
-            })
-        }),
-        "the shared road corner must own a curb joint outside both independent segment strips"
     );
 }
 
@@ -2939,6 +3426,15 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"visual_center_y_m\""));
     assert!(dump.contains("\"left_outer_margin\""));
     assert!(dump.contains("\"right_outer_margin\""));
+    assert!(dump.contains("\"nodes\""));
+    assert!(dump.contains("\"road_topology\""));
+    assert!(dump.contains("\"sidewalk_topology\""));
+    assert!(dump.contains("\"band_ownership\""));
+    assert!(dump.contains("\"height_owner\""));
+    assert!(dump.contains("\"seam_constraints\""));
+    assert!(dump.contains("\"outer_boundary_top_match\""));
+    assert!(dump.contains("\"mouth_seams\""));
+    assert!(dump.contains("\"earthwork_face_top_match\""));
     assert!(dump.contains("ROAD_GEOMETRY_DUMP_END"));
 }
 

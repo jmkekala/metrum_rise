@@ -18,7 +18,6 @@ mod debug;
 mod earthwork;
 mod edge;
 mod geometry;
-mod grade;
 mod node;
 mod overlay;
 mod query;
@@ -35,7 +34,6 @@ const PARALLEL_SURFACE_COMPILE_MIN_ITEMS: usize = 16;
 type SurfaceCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 type NodeOverlayPoint = [f32; 2];
 type NodeOverlayPointKey = (i64, i64);
-type NodeOverlayEdgeKey = (NodeOverlayPointKey, NodeOverlayPointKey);
 type NodeOverlayContour = Vec<NodeOverlayPoint>;
 type NodeOverlayShape = Vec<NodeOverlayContour>;
 type NodeOverlayShapes = Vec<NodeOverlayShape>;
@@ -127,6 +125,8 @@ pub(crate) enum RoadSurfaceEarthworkFaceKind {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RoadSurfaceEarthworkRenderFace {
     pub(crate) kind: RoadSurfaceEarthworkFaceKind,
+    pub(crate) inner_start: Vector3,
+    pub(crate) inner_end: Vector3,
     pub(crate) polygon: RoadSurfaceVisualPolygon,
 }
 
@@ -143,6 +143,7 @@ pub struct RoadSurfaceVisualNodePiece {
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit sidewalk-owned polygons for the node piece.
     pub sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    owned_regions: Vec<NodeOwnedRegion>,
     pub(crate) earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     pub(crate) render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
@@ -261,6 +262,7 @@ struct IncidentMouthProfile {
 #[derive(Clone, Debug, PartialEq)]
 struct OrderedIncidentPieceMouth {
     profile: IncidentMouthProfile,
+    endpoint_profile: IncidentMouthProfile,
     direction_angle_ccw: f32,
     direction_xz: Vector2,
     edge_idx: usize,
@@ -271,7 +273,7 @@ struct OrderedIncidentPieceMouth {
 struct NodeCorridorCandidates {
     road_candidate_polygons: Vec<RoadSurfaceVisualPolygon>,
     non_road_candidate_polygons: Vec<NodeNonRoadCandidatePolygon>,
-    non_road_height_domains: Vec<NodeBandHeightDomain>,
+    non_road_height_domains: Vec<NodeGradeCarrier>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -280,8 +282,15 @@ struct NodeNonRoadCandidatePolygon {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct NodeBandHeightDomain {
+struct NodeGradeCarrier {
     kind: RoadSurfaceBandKind,
+    polygon: RoadSurfaceVisualPolygon,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct NodeOwnedRegion {
+    kind: RoadSurfaceBandKind,
+    owner_index: usize,
     polygon: RoadSurfaceVisualPolygon,
 }
 
@@ -300,6 +309,7 @@ struct NodeSurfaceRegionResult {
     outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
     road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+    owned_regions: Vec<NodeOwnedRegion>,
 }
 
 /// Ownership cache and compiler for the road-surface pipeline.
@@ -670,6 +680,35 @@ impl RoadSurfaceSystem {
                     })
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
+        });
+    }
+
+    fn sort_node_owned_regions(regions: &mut [NodeOwnedRegion]) {
+        regions.sort_by(|a, b| {
+            Self::band_kind_sort_key(a.kind)
+                .cmp(&Self::band_kind_sort_key(b.kind))
+                .then(a.owner_index.cmp(&b.owner_index))
+                .then_with(|| {
+                    match (
+                        a.polygon.points_world.first(),
+                        b.polygon.points_world.first(),
+                    ) {
+                        (Some(point_a), Some(point_b)) => point_a
+                            .x
+                            .total_cmp(&point_b.x)
+                            .then(point_a.z.total_cmp(&point_b.z))
+                            .then(point_a.y.total_cmp(&point_b.y)),
+                        (None, Some(_)) => std::cmp::Ordering::Less,
+                        (Some(_), None) => std::cmp::Ordering::Greater,
+                        (None, None) => std::cmp::Ordering::Equal,
+                    }
+                })
+                .then(
+                    a.polygon
+                        .points_world
+                        .len()
+                        .cmp(&b.polygon.points_world.len()),
+                )
         });
     }
 }

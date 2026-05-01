@@ -1,11 +1,41 @@
 //! Debug extraction helpers for compiled road-surface state.
 
-use super::{RoadSurfaceDebugData, RoadSurfaceSection, RoadSurfaceSystem, SurfaceChunkKey};
+use super::{
+    IncidentEdgeSide, IncidentMouthProfile, RoadSurfaceBandKind, RoadSurfaceDebugData,
+    RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
+};
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use std::fmt::Write as _;
+
+const DEBUG_MAX_PROBLEM_SAMPLES: usize = 12;
+const DEBUG_VERTEX_MATCH_TOLERANCE_M: f32 = 0.004;
+const DEBUG_VERTEX_NEAR_TOLERANCE_M: f32 = 0.002;
+
+#[derive(Clone, Copy)]
+struct DebugTopVertex {
+    material: &'static str,
+    point: Vector3,
+}
+
+#[derive(Clone, Copy)]
+struct DebugClosestTopVertex {
+    material: &'static str,
+    point: Vector3,
+    xz_error_m: f32,
+    y_delta_m: f32,
+}
+
+#[derive(Default)]
+struct DebugMatchStats {
+    total: usize,
+    problem_count: usize,
+    max_xz_error_m: f32,
+    max_y_error_m: f32,
+}
 
 impl RoadSurfaceSystem {
     pub(crate) fn build_debug_line_data(
@@ -141,7 +171,7 @@ impl RoadSurfaceSystem {
         let _ = writeln!(dump, "  \"edges\": [");
 
         let mut first_edge = true;
-        for edge_idx in sorted_edge_ids {
+        for &edge_idx in &sorted_edge_ids {
             if edge_idx >= graph.edge_count() {
                 continue;
             }
@@ -158,11 +188,47 @@ impl RoadSurfaceSystem {
         }
 
         let _ = writeln!(dump);
+        let _ = writeln!(dump, "  ],");
+        let _ = writeln!(dump, "  \"nodes\": [");
+
+        let mut first_node = true;
+        for node_id in self.debug_node_ids_for_edges(graph, &sorted_edge_ids) {
+            let Some(piece) = self.compiled_visual_node_pieces.get(&node_id) else {
+                continue;
+            };
+
+            if !first_node {
+                let _ = writeln!(dump, ",");
+            }
+            first_node = false;
+            self.append_node_geometry_debug_dump(&mut dump, graph, terrain, node_id, piece);
+        }
+
+        let _ = writeln!(dump);
         let _ = writeln!(dump, "  ]");
         let _ = writeln!(dump, "}}");
         let _ = write!(dump, "ROAD_GEOMETRY_DUMP_END");
         dump
     }
+
+    fn debug_node_ids_for_edges(&self, graph: &RegionGraph, edge_ids: &[usize]) -> Vec<u32> {
+        let mut node_ids = Vec::with_capacity(edge_ids.len().saturating_mul(2));
+        for &edge_idx in edge_ids {
+            if edge_idx >= graph.edge_count() {
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            if edge.deleted {
+                continue;
+            }
+            node_ids.push(graph.get_valid_node(edge.start_node));
+            node_ids.push(graph.get_valid_node(edge.end_node));
+        }
+        node_ids.sort_unstable();
+        node_ids.dedup();
+        node_ids
+    }
+
     fn append_edge_geometry_debug_dump(
         &self,
         dump: &mut String,
@@ -319,6 +385,618 @@ impl RoadSurfaceSystem {
         let _ = write!(dump, "        }}");
     }
 
+    fn append_node_geometry_debug_dump(
+        &self,
+        dump: &mut String,
+        graph: &RegionGraph,
+        terrain: &TerrainSystem,
+        node_id: u32,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        let surface_chunks = self
+            .surface_node_chunks
+            .get(&node_id)
+            .cloned()
+            .unwrap_or_default();
+        let earthwork_chunks = self
+            .earthwork_node_chunks
+            .get(&node_id)
+            .cloned()
+            .unwrap_or_default();
+        let incident_edges = self.debug_incident_edges_for_node(graph, node_id);
+        let uses_visible_earthwork =
+            self.node_piece_uses_visible_earthwork(graph, node_id, terrain);
+
+        let _ = writeln!(dump, "    {{");
+        let _ = writeln!(dump, "      \"node_id\": {node_id},");
+        let _ = writeln!(dump, "      \"kind\": \"{:?}\",", piece.kind);
+        dump.push_str("      \"incident_edges\": ");
+        Self::append_usize_list_literal(dump, &incident_edges);
+        dump.push_str(",\n");
+        dump.push_str("      \"surface_chunks\": ");
+        Self::append_chunk_key_list_literal(dump, &surface_chunks);
+        dump.push_str(",\n");
+        dump.push_str("      \"earthwork_chunks\": ");
+        Self::append_chunk_key_list_literal(dump, &earthwork_chunks);
+        dump.push_str(",\n");
+        let _ = writeln!(
+            dump,
+            "      \"uses_visible_earthwork\": {},",
+            uses_visible_earthwork
+        );
+        dump.push_str("      \"band_ownership\": ");
+        Self::append_node_band_ownership_debug_literal(dump, piece);
+        dump.push_str(",\n");
+        dump.push_str("      \"height_owner\": ");
+        Self::append_node_height_owner_debug_literal(dump, piece);
+        dump.push_str(",\n");
+        dump.push_str("      \"seam_constraints\": ");
+        self.append_node_seam_constraints_debug_literal(dump, graph, node_id);
+        dump.push_str(",\n");
+        dump.push_str("      \"road_topology\": ");
+        Self::append_polygon_collection_debug_literal(dump, terrain, &piece.road_surface_polygons);
+        dump.push_str(",\n");
+        dump.push_str("      \"sidewalk_topology\": ");
+        Self::append_polygon_collection_debug_literal(
+            dump,
+            terrain,
+            &piece.sidewalk_surface_polygons,
+        );
+        dump.push_str(",\n");
+        dump.push_str("      \"outer_boundary_top_match\": ");
+        self.append_outer_boundary_top_match_debug_literal(dump, terrain, piece);
+        dump.push_str(",\n");
+        dump.push_str("      \"mouth_seams\": ");
+        self.append_mouth_seam_debug_literal(dump, graph, node_id, piece);
+        dump.push_str(",\n");
+        dump.push_str("      \"earthwork_face_top_match\": ");
+        self.append_earthwork_face_top_match_debug_literal(dump, terrain, piece);
+        dump.push('\n');
+        let _ = write!(dump, "    }}");
+    }
+
+    fn append_node_band_ownership_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        dump.push('{');
+        let _ = write!(dump, "\"owned_region_count\":{}", piece.owned_regions.len());
+        for kind in Self::debug_band_kind_order() {
+            let count = piece
+                .owned_regions
+                .iter()
+                .filter(|region| region.kind == kind)
+                .count();
+            let _ = write!(dump, ",\"{:?}\":{}", kind, count);
+        }
+        dump.push('}');
+    }
+
+    fn append_node_height_owner_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        dump.push('[');
+        for (region_index, region) in piece.owned_regions.iter().enumerate() {
+            if region_index > 0 {
+                dump.push_str(", ");
+            }
+            let mut y_min = f32::INFINITY;
+            let mut y_max = f32::NEG_INFINITY;
+            for point in region.polygon.points_world.iter().copied().chain(
+                region
+                    .polygon
+                    .triangles_world
+                    .iter()
+                    .flat_map(|triangle| triangle.iter().copied()),
+            ) {
+                y_min = y_min.min(point.y);
+                y_max = y_max.max(point.y);
+            }
+            let _ = write!(
+                dump,
+                "{{\"region\":{},\"kind\":\"{:?}\",\"owner_index\":{},\"polygon_vertex_count\":{},\"triangle_count\":{},\"y_min_m\":{:.3},\"y_max_m\":{:.3}}}",
+                region_index,
+                region.kind,
+                region.owner_index,
+                region.polygon.points_world.len(),
+                region.polygon.triangles_world.len(),
+                y_min,
+                y_max
+            );
+        }
+        dump.push(']');
+    }
+
+    fn append_node_seam_constraints_debug_literal(
+        &self,
+        dump: &mut String,
+        graph: &RegionGraph,
+        node_id: u32,
+    ) {
+        let mut mouth_count = 0usize;
+        let mut span_handoff_vertices = 0usize;
+        let mut material_seam_vertices = 0usize;
+        let mut outer_footprint_vertices = 0usize;
+        for edge_idx in self.debug_incident_edges_for_node(graph, node_id) {
+            if edge_idx >= graph.edge_count() {
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            if edge.deleted {
+                continue;
+            }
+            let start_node = graph.get_valid_node(edge.start_node);
+            let side = if start_node == node_id {
+                IncidentEdgeSide::Start
+            } else {
+                IncidentEdgeSide::End
+            };
+            let Some(span_piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                continue;
+            };
+            let mouth = match side {
+                IncidentEdgeSide::Start => span_piece.start_mouth_profile.as_ref(),
+                IncidentEdgeSide::End => span_piece.end_mouth_profile.as_ref(),
+            };
+            let Some(mouth) = mouth else {
+                continue;
+            };
+            mouth_count += 1;
+            for point_index in 0..mouth.boundary_points_world.len() {
+                if Self::mouth_boundary_point_is_outer_footprint(mouth, point_index) {
+                    outer_footprint_vertices += 1;
+                    span_handoff_vertices += 1;
+                } else if Self::mouth_boundary_point_is_material_seam(mouth, point_index) {
+                    material_seam_vertices += 1;
+                    span_handoff_vertices += 1;
+                }
+            }
+        }
+        dump.push('{');
+        let _ = write!(
+            dump,
+            "\"mouth_count\":{},\"span_handoff_vertices\":{},\"material_seam_vertices\":{},\"outer_footprint_vertices\":{}",
+            mouth_count, span_handoff_vertices, material_seam_vertices, outer_footprint_vertices
+        );
+        dump.push('}');
+    }
+
+    fn debug_incident_edges_for_node(&self, graph: &RegionGraph, node_id: u32) -> Vec<usize> {
+        if node_id as usize >= graph.node_adjacency_count() {
+            return Vec::new();
+        }
+        let mut incident_edges = graph.node_adjacency(node_id).to_vec();
+        incident_edges.sort_unstable();
+        incident_edges.dedup();
+        incident_edges
+    }
+
+    fn append_polygon_collection_debug_literal(
+        dump: &mut String,
+        terrain: &TerrainSystem,
+        polygons: &[RoadSurfaceVisualPolygon],
+    ) {
+        let polygon_count = polygons.len();
+        let triangle_count: usize = polygons
+            .iter()
+            .map(|polygon| polygon.triangles_world.len())
+            .sum();
+        let vertex_count: usize = polygons
+            .iter()
+            .map(|polygon| polygon.points_world.len())
+            .sum();
+
+        let mut y_min = f32::INFINITY;
+        let mut y_max = f32::NEG_INFINITY;
+        let mut source_delta_min = f32::INFINITY;
+        let mut source_delta_max = f32::NEG_INFINITY;
+        let mut visual_delta_min = f32::INFINITY;
+        let mut visual_delta_max = f32::NEG_INFINITY;
+        for point in polygons
+            .iter()
+            .flat_map(|polygon| polygon.points_world.iter().copied())
+        {
+            y_min = y_min.min(point.y);
+            y_max = y_max.max(point.y);
+            let source_y_m = terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE;
+            let visual_y_m =
+                terrain.sample_visual_height_world(point.x, point.z) * config::HEIGHT_SCALE;
+            source_delta_min = source_delta_min.min(point.y - source_y_m);
+            source_delta_max = source_delta_max.max(point.y - source_y_m);
+            visual_delta_min = visual_delta_min.min(point.y - visual_y_m);
+            visual_delta_max = visual_delta_max.max(point.y - visual_y_m);
+        }
+
+        let mut max_triangle_y_delta_m = 0.0_f32;
+        let mut max_triangle_slope_ratio = 0.0_f32;
+        for triangle in polygons
+            .iter()
+            .flat_map(|polygon| polygon.triangles_world.iter().copied())
+        {
+            for edge_index in 0..3 {
+                let start = triangle[edge_index];
+                let end = triangle[(edge_index + 1) % 3];
+                let y_delta = (end.y - start.y).abs();
+                max_triangle_y_delta_m = max_triangle_y_delta_m.max(y_delta);
+                let xz_distance = Vector2::new(end.x - start.x, end.z - start.z).length();
+                if xz_distance > SAMPLE_EPSILON_M {
+                    max_triangle_slope_ratio = max_triangle_slope_ratio.max(y_delta / xz_distance);
+                }
+            }
+        }
+
+        dump.push('{');
+        let _ = write!(
+            dump,
+            "\"polygon_count\":{},\"triangle_count\":{},\"vertex_count\":{},",
+            polygon_count, triangle_count, vertex_count
+        );
+        dump.push_str("\"y_min_m\":");
+        Self::append_optional_f32_literal(dump, (vertex_count > 0).then_some(y_min));
+        dump.push_str(",\"y_max_m\":");
+        Self::append_optional_f32_literal(dump, (vertex_count > 0).then_some(y_max));
+        dump.push_str(",\"source_delta_min_m\":");
+        Self::append_optional_f32_literal(dump, (vertex_count > 0).then_some(source_delta_min));
+        dump.push_str(",\"source_delta_max_m\":");
+        Self::append_optional_f32_literal(dump, (vertex_count > 0).then_some(source_delta_max));
+        dump.push_str(",\"visual_delta_min_m\":");
+        Self::append_optional_f32_literal(dump, (vertex_count > 0).then_some(visual_delta_min));
+        dump.push_str(",\"visual_delta_max_m\":");
+        Self::append_optional_f32_literal(dump, (vertex_count > 0).then_some(visual_delta_max));
+        let _ = write!(
+            dump,
+            ",\"max_triangle_y_delta_m\":{:.3},\"max_triangle_slope_ratio\":{:.3}",
+            max_triangle_y_delta_m, max_triangle_slope_ratio
+        );
+        dump.push('}');
+    }
+
+    fn append_outer_boundary_top_match_debug_literal(
+        &self,
+        dump: &mut String,
+        terrain: &TerrainSystem,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        let top_vertices = Self::debug_top_vertices(piece);
+        let mut stats = DebugMatchStats::default();
+        let mut samples = Vec::new();
+        for (loop_index, boundary_loop) in piece.outer_boundary_loops.iter().enumerate() {
+            for (vertex_index, &point) in boundary_loop.points_world.iter().enumerate() {
+                let Some(closest) = Self::closest_debug_top_vertex(point, &top_vertices) else {
+                    continue;
+                };
+                Self::update_debug_match_stats(&mut stats, closest);
+                if Self::debug_match_is_problem(closest)
+                    && samples.len() < DEBUG_MAX_PROBLEM_SAMPLES
+                {
+                    let source_y_m =
+                        terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE;
+                    let visual_y_m =
+                        terrain.sample_visual_height_world(point.x, point.z) * config::HEIGHT_SCALE;
+                    let mut sample = String::new();
+                    let _ = write!(
+                        sample,
+                        "{{\"loop\":{},\"vertex\":{},\"boundary\":",
+                        loop_index, vertex_index
+                    );
+                    Self::append_vector3_literal(&mut sample, point);
+                    sample.push_str(",\"closest_material\":\"");
+                    sample.push_str(closest.material);
+                    sample.push_str("\",\"closest\":");
+                    Self::append_vector3_literal(&mut sample, closest.point);
+                    let _ = write!(
+                        sample,
+                        ",\"xz_error_m\":{:.4},\"y_delta_m\":{:.4},\"source_terrain_y_m\":{:.3},\"visual_terrain_y_m\":{:.3}}}",
+                        closest.xz_error_m, closest.y_delta_m, source_y_m, visual_y_m
+                    );
+                    samples.push(sample);
+                }
+            }
+        }
+        Self::append_match_stats_with_samples_literal(dump, &stats, &samples);
+    }
+
+    fn append_mouth_seam_debug_literal(
+        &self,
+        dump: &mut String,
+        graph: &RegionGraph,
+        node_id: u32,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        let top_vertices = Self::debug_top_vertices(piece);
+        dump.push('[');
+        let incident_edges = self.debug_incident_edges_for_node(graph, node_id);
+        let mut first = true;
+        for edge_idx in incident_edges {
+            if edge_idx >= graph.edge_count() {
+                continue;
+            }
+            let edge = graph.edge(edge_idx);
+            if edge.deleted {
+                continue;
+            }
+            let start_node = graph.get_valid_node(edge.start_node);
+            let side = if start_node == node_id {
+                IncidentEdgeSide::Start
+            } else {
+                IncidentEdgeSide::End
+            };
+            let Some(span_piece) = self.compiled_visual_span_pieces.get(&edge_idx) else {
+                continue;
+            };
+            let mouth = match side {
+                IncidentEdgeSide::Start => span_piece.start_mouth_profile.as_ref(),
+                IncidentEdgeSide::End => span_piece.end_mouth_profile.as_ref(),
+            };
+            let Some(mouth) = mouth else {
+                continue;
+            };
+
+            if !first {
+                dump.push_str(", ");
+            }
+            first = false;
+
+            let mut stats = DebugMatchStats::default();
+            let mut samples = Vec::new();
+            for (point_index, &point) in mouth.boundary_points_world.iter().enumerate() {
+                if !Self::mouth_boundary_point_requires_top_match(mouth, point_index) {
+                    continue;
+                }
+                let Some(closest) = Self::closest_debug_top_vertex(point, &top_vertices) else {
+                    continue;
+                };
+                Self::update_debug_match_stats(&mut stats, closest);
+                if Self::debug_match_is_problem(closest)
+                    && samples.len() < DEBUG_MAX_PROBLEM_SAMPLES
+                {
+                    let mut sample = String::new();
+                    let _ = write!(sample, "{{\"point\":{},\"mouth\":", point_index);
+                    Self::append_vector3_literal(&mut sample, point);
+                    sample.push_str(",\"closest_material\":\"");
+                    sample.push_str(closest.material);
+                    sample.push_str("\",\"closest\":");
+                    Self::append_vector3_literal(&mut sample, closest.point);
+                    let _ = write!(
+                        sample,
+                        ",\"xz_error_m\":{:.4},\"y_delta_m\":{:.4}}}",
+                        closest.xz_error_m, closest.y_delta_m
+                    );
+                    samples.push(sample);
+                }
+            }
+
+            let _ = write!(
+                dump,
+                "{{\"edge_idx\":{},\"side\":\"{:?}\",\"mouth_vertex_count\":{},",
+                edge_idx,
+                side,
+                mouth.boundary_points_world.len()
+            );
+            Self::append_match_stats_fields(dump, &stats);
+            dump.push_str(",\"samples\":[");
+            Self::append_raw_json_samples(dump, &samples);
+            dump.push_str("]}");
+        }
+        dump.push(']');
+    }
+
+    fn append_earthwork_face_top_match_debug_literal(
+        &self,
+        dump: &mut String,
+        terrain: &TerrainSystem,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        let top_vertices = Self::debug_top_vertices(piece);
+        let mut stats = DebugMatchStats::default();
+        let mut samples = Vec::new();
+        let mut slope_count = 0_usize;
+        let mut retaining_wall_count = 0_usize;
+        for (face_index, face) in piece.render_earthwork_faces.iter().enumerate() {
+            match face.kind {
+                RoadSurfaceEarthworkFaceKind::Slope => slope_count += 1,
+                RoadSurfaceEarthworkFaceKind::RetainingWall => retaining_wall_count += 1,
+            }
+            let inner_start = face.inner_start;
+            let inner_end = face.inner_end;
+            let mut face_problem = false;
+            for point in [inner_start, inner_end] {
+                let Some(closest) = Self::closest_debug_top_vertex(point, &top_vertices) else {
+                    continue;
+                };
+                Self::update_debug_match_stats(&mut stats, closest);
+                face_problem |= Self::debug_match_is_problem(closest);
+            }
+            if face_problem && samples.len() < DEBUG_MAX_PROBLEM_SAMPLES {
+                let outer_end = face.polygon.points_world[2];
+                let outer_start = face.polygon.points_world[3];
+                let mut sample = String::new();
+                let _ = write!(
+                    sample,
+                    "{{\"face\":{},\"kind\":\"{:?}\",\"inner_start\":",
+                    face_index, face.kind
+                );
+                Self::append_surface_sample_literal(&mut sample, terrain, inner_start);
+                sample.push_str(",\"inner_end\":");
+                Self::append_surface_sample_literal(&mut sample, terrain, inner_end);
+                sample.push_str(",\"outer_end\":");
+                Self::append_surface_sample_literal(&mut sample, terrain, outer_end);
+                sample.push_str(",\"outer_start\":");
+                Self::append_surface_sample_literal(&mut sample, terrain, outer_start);
+                sample.push('}');
+                samples.push(sample);
+            }
+        }
+
+        dump.push('{');
+        let _ = write!(
+            dump,
+            "\"face_count\":{},\"slope_count\":{},\"retaining_wall_count\":{},",
+            piece.render_earthwork_faces.len(),
+            slope_count,
+            retaining_wall_count
+        );
+        Self::append_match_stats_fields(dump, &stats);
+        dump.push_str(",\"samples\":[");
+        Self::append_raw_json_samples(dump, &samples);
+        dump.push_str("]}");
+    }
+
+    fn debug_band_kind_order() -> [RoadSurfaceBandKind; 8] {
+        [
+            RoadSurfaceBandKind::Carriageway,
+            RoadSurfaceBandKind::CurbOrShoulder,
+            RoadSurfaceBandKind::Sidewalk,
+            RoadSurfaceBandKind::Footpath,
+            RoadSurfaceBandKind::Median,
+            RoadSurfaceBandKind::Parking,
+            RoadSurfaceBandKind::CycleTrack,
+            RoadSurfaceBandKind::TramReservation,
+        ]
+    }
+
+    fn mouth_boundary_point_requires_top_match(
+        mouth: &IncidentMouthProfile,
+        point_index: usize,
+    ) -> bool {
+        Self::mouth_boundary_point_is_outer_footprint(mouth, point_index)
+            || Self::mouth_boundary_point_is_material_seam(mouth, point_index)
+    }
+
+    fn mouth_boundary_point_is_outer_footprint(
+        mouth: &IncidentMouthProfile,
+        point_index: usize,
+    ) -> bool {
+        point_index == 0 || point_index + 1 == mouth.boundary_points_world.len()
+    }
+
+    fn mouth_boundary_point_is_material_seam(
+        mouth: &IncidentMouthProfile,
+        point_index: usize,
+    ) -> bool {
+        if point_index == 0 || point_index >= mouth.boundary_points_world.len().saturating_sub(1) {
+            return false;
+        }
+        let Some(before) = mouth.bands.get(point_index - 1) else {
+            return false;
+        };
+        let Some(after) = mouth.bands.get(point_index) else {
+            return false;
+        };
+        before.kind != after.kind
+    }
+
+    fn debug_top_vertices(piece: &RoadSurfaceVisualNodePiece) -> Vec<DebugTopVertex> {
+        let mut vertices = Vec::new();
+        for polygon in &piece.road_surface_polygons {
+            vertices.extend(
+                polygon
+                    .points_world
+                    .iter()
+                    .copied()
+                    .map(|point| DebugTopVertex {
+                        material: "road",
+                        point,
+                    }),
+            );
+            vertices.extend(polygon.triangles_world.iter().flat_map(|triangle| {
+                triangle.iter().copied().map(|point| DebugTopVertex {
+                    material: "road",
+                    point,
+                })
+            }));
+        }
+        for polygon in &piece.sidewalk_surface_polygons {
+            vertices.extend(
+                polygon
+                    .points_world
+                    .iter()
+                    .copied()
+                    .map(|point| DebugTopVertex {
+                        material: "sidewalk",
+                        point,
+                    }),
+            );
+            vertices.extend(polygon.triangles_world.iter().flat_map(|triangle| {
+                triangle.iter().copied().map(|point| DebugTopVertex {
+                    material: "sidewalk",
+                    point,
+                })
+            }));
+        }
+        vertices
+    }
+
+    fn closest_debug_top_vertex(
+        point: Vector3,
+        top_vertices: &[DebugTopVertex],
+    ) -> Option<DebugClosestTopVertex> {
+        top_vertices
+            .iter()
+            .map(|vertex| {
+                let xz_error_m =
+                    Vector2::new(vertex.point.x - point.x, vertex.point.z - point.z).length();
+                DebugClosestTopVertex {
+                    material: vertex.material,
+                    point: vertex.point,
+                    xz_error_m,
+                    y_delta_m: point.y - vertex.point.y,
+                }
+            })
+            .min_by(|a, b| {
+                a.xz_error_m
+                    .total_cmp(&b.xz_error_m)
+                    .then(a.y_delta_m.abs().total_cmp(&b.y_delta_m.abs()))
+            })
+    }
+
+    fn update_debug_match_stats(stats: &mut DebugMatchStats, closest: DebugClosestTopVertex) {
+        stats.total += 1;
+        stats.max_xz_error_m = stats.max_xz_error_m.max(closest.xz_error_m);
+        if closest.xz_error_m <= DEBUG_VERTEX_NEAR_TOLERANCE_M {
+            stats.max_y_error_m = stats.max_y_error_m.max(closest.y_delta_m.abs());
+        }
+        if Self::debug_match_is_problem(closest) {
+            stats.problem_count += 1;
+        }
+    }
+
+    fn debug_match_is_problem(closest: DebugClosestTopVertex) -> bool {
+        closest.xz_error_m > DEBUG_VERTEX_NEAR_TOLERANCE_M
+            || (closest.xz_error_m <= DEBUG_VERTEX_NEAR_TOLERANCE_M
+                && closest.y_delta_m.abs() > DEBUG_VERTEX_MATCH_TOLERANCE_M)
+    }
+
+    fn append_match_stats_with_samples_literal(
+        dump: &mut String,
+        stats: &DebugMatchStats,
+        samples: &[String],
+    ) {
+        dump.push('{');
+        Self::append_match_stats_fields(dump, stats);
+        dump.push_str(",\"samples\":[");
+        Self::append_raw_json_samples(dump, samples);
+        dump.push_str("]}");
+    }
+
+    fn append_match_stats_fields(dump: &mut String, stats: &DebugMatchStats) {
+        let _ = write!(
+            dump,
+            "\"tested_vertices\":{},\"problem_count\":{},\"max_xz_error_m\":{:.4},\"max_y_error_m\":{:.4}",
+            stats.total, stats.problem_count, stats.max_xz_error_m, stats.max_y_error_m
+        );
+    }
+
+    fn append_raw_json_samples(dump: &mut String, samples: &[String]) {
+        for (index, sample) in samples.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            dump.push_str(sample);
+        }
+    }
+
     fn append_surface_sample_literal(dump: &mut String, terrain: &TerrainSystem, point: Vector3) {
         let source_y_m = terrain.sample_height_world(point.x, point.z) * config::HEIGHT_SCALE;
         let visual_y_m =
@@ -345,6 +1023,17 @@ impl RoadSurfaceSystem {
         dump.push(']');
     }
 
+    fn append_usize_list_literal(dump: &mut String, values: &[usize]) {
+        dump.push('[');
+        for (index, value) in values.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            let _ = write!(dump, "{value}");
+        }
+        dump.push(']');
+    }
+
     fn append_chunk_key_list_literal(dump: &mut String, chunks: &[SurfaceChunkKey]) {
         dump.push('[');
         for (index, chunk) in chunks.iter().enumerate() {
@@ -362,5 +1051,13 @@ impl RoadSurfaceSystem {
 
     fn append_vector2_literal(dump: &mut String, point: Vector2) {
         let _ = write!(dump, "[{:.3}, {:.3}]", point.x, point.y);
+    }
+
+    fn append_optional_f32_literal(dump: &mut String, value: Option<f32>) {
+        if let Some(value) = value {
+            let _ = write!(dump, "{value:.3}");
+        } else {
+            dump.push_str("null");
+        }
     }
 }
