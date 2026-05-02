@@ -21,7 +21,7 @@ const HEIGHT_PARAMETER_KEY_SCALE: f64 = 1_000_000.0;
 const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 32.0 / ROAD_OVERLAY_COORDINATE_SCALE;
 const HEIGHT_PARAMETER_BOUNDARY_DISTANCE_EPS_M: f64 = 0.002;
 const HEIGHT_FIELD_MIN_AXIS_LEN2_M2: f64 = 1.0e-12;
-const NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M: f64 = 0.36;
+const NON_BEND_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M: f64 = 0.36;
 
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
@@ -468,12 +468,20 @@ fn canonicalize_non_road_shared_heights(
             let key = NodeHeightPointKey::from_point(vertex.point_xz);
             if let Some(stats) = shared_heights.get(&key)
                 && stats.count > 1
-                && stats.height_delta_m() <= NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
+                && shared_height_canonicalization_allowed(stats, piece_kind)
             {
                 vertex.height_m = stats.canonical_height_for_kind(region.kind, piece_kind);
             }
         }
     }
+}
+
+fn shared_height_canonicalization_allowed(
+    stats: &SharedHeightStats,
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) -> bool {
+    piece_kind == RoadSurfaceVisualNodePieceKind::Bend
+        || stats.height_delta_m() <= NON_BEND_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
 }
 
 impl SharedHeightStats {

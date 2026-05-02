@@ -1373,6 +1373,98 @@ fn logged_inside_bend_curb_anchor_stays_at_asphalt_height() {
 }
 
 #[test]
+fn logged_elevated_bend_keeps_non_road_edges_height_continuous() {
+    let terrain = flat_terrain(1024, 1024);
+    let mut graph = RegionGraph::new();
+    let a = graph.add_node(Vector3::new(362.721, 212.172, -543.419), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(354.920, 197.879, -455.205), NodeType::Junction);
+    let c = graph.add_node(Vector3::new(389.920, 181.789, -394.583), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        a,
+        bend,
+        vec![
+            Vector3::new(362.721, 212.172, -543.419),
+            Vector3::new(354.920, 197.879, -455.205),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        c,
+        vec![
+            Vector3::new(354.920, 197.879, -455.205),
+            Vector3::new(389.920, 181.789, -394.583),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("logged elevated bend should compile");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
+    assert_non_road_shared_edges_are_height_continuous(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
+
+    let seam_vertices = piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .flat_map(|polygon| polygon.points_world.iter())
+        .collect::<Vec<_>>();
+    for &edge_idx in graph.node_adjacency(bend) {
+        let edge = graph.edge(edge_idx);
+        let span_piece = surface
+            .compiled_visual_span_pieces()
+            .get(&edge_idx)
+            .expect("incident edge must compile a span piece");
+        let mouth = if graph.get_valid_node(edge.start_node) == bend {
+            span_piece.start_mouth_profile.as_ref().unwrap()
+        } else {
+            span_piece.end_mouth_profile.as_ref().unwrap()
+        };
+        for (point_index, mouth_point) in mouth.boundary_points_world.iter().enumerate() {
+            if point_index > 0 && point_index < mouth.boundary_points_world.len() - 1 {
+                let before = mouth.bands[point_index - 1].kind;
+                let after = mouth.bands[point_index].kind;
+                if before == after {
+                    continue;
+                }
+            }
+            let Some(node_point) = seam_vertices.iter().min_by(|a, b| {
+                let da = Vector2::new(a.x - mouth_point.x, a.z - mouth_point.z).length_squared();
+                let db = Vector2::new(b.x - mouth_point.x, b.z - mouth_point.z).length_squared();
+                da.total_cmp(&db)
+            }) else {
+                panic!("Bend emitted no material vertices");
+            };
+            let xz_error =
+                Vector2::new(node_point.x - mouth_point.x, node_point.z - mouth_point.z).length();
+            assert!(
+                xz_error <= 0.004,
+                "elevated Bend material vertex must preserve the span mouth XZ seam; mouth={mouth_point:?} closest={node_point:?} xz_error={xz_error:.4}"
+            );
+            assert!(
+                (node_point.y - mouth_point.y).abs() <= 0.004,
+                "elevated Bend mouth vertex must match the incident span height; mouth={mouth_point:?} closest={node_point:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
     let terrain = flat_terrain(64, 64);
     let mut graph = RegionGraph::new();
