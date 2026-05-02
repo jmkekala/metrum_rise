@@ -89,6 +89,7 @@ pub(crate) struct NodeInputTerminalEndBand {
     pub(crate) inner_end_world: RoadVec3,
     pub(crate) outer_start_world: RoadVec3,
     pub(crate) outer_end_world: RoadVec3,
+    pub(crate) contour_world: Vec<RoadVec3>,
     pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
@@ -170,6 +171,7 @@ impl NodeArrangementInput {
                 mouth,
             )?);
         }
+        add_bend_corner_end_bands(piece_kind, &mut input_mouths);
 
         Ok(Self {
             node_id,
@@ -421,6 +423,528 @@ fn band_intervals(mouth: &OrderedIncidentPieceMouth) -> Vec<NodeInputBandInterva
         .collect()
 }
 
+#[derive(Clone, Copy)]
+enum BendCornerProfileSide {
+    Start,
+    End,
+}
+
+const BEND_CORNER_HEIGHT_EDGE_EPS_M: f64 = 0.001;
+const BEND_CORNER_HEIGHT_FIELD_PAD_M: f64 = 0.1;
+const BEND_CORNER_CURVE_SEGMENTS: usize = 4;
+
+#[derive(Clone, Copy)]
+struct BendCornerLayer {
+    band_index: usize,
+    band_kind: RoadSurfaceBandKind,
+    inner_boundary_index: usize,
+    outer_boundary_index: usize,
+}
+
+fn add_bend_corner_end_bands(
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+    mouths: &mut [NodeInputMouth],
+) {
+    if piece_kind != RoadSurfaceVisualNodePieceKind::Bend || mouths.len() != 2 {
+        return;
+    }
+
+    let gap_0_to_1 = ccw_angle_delta(mouths[0].direction_angle_ccw, mouths[1].direction_angle_ccw);
+    let gap_1_to_0 = ccw_angle_delta(mouths[1].direction_angle_ccw, mouths[0].direction_angle_ccw);
+    let (from_index, to_index) = if gap_0_to_1 >= gap_1_to_0 {
+        (0, 1)
+    } else {
+        (1, 0)
+    };
+    let from_mouth = mouths[from_index].clone();
+    let to_mouth = mouths[to_index].clone();
+    // Bend outside corners need explicit curved ownership bands; span-mouth rectangles alone leave
+    // the wide-gap slice unowned.
+    let from_layers = bend_corner_layers(&from_mouth, BendCornerProfileSide::End);
+    let to_layers = bend_corner_layers(&to_mouth, BendCornerProfileSide::Start);
+    if from_layers.is_empty() || to_layers.is_empty() {
+        return;
+    }
+
+    let next_source_band_index =
+        mouths[from_index].band_intervals.len() + mouths[from_index].terminal_end_bands.len();
+    let end_bands = bend_corner_end_bands(
+        &from_mouth,
+        &from_layers,
+        &to_mouth,
+        &to_layers,
+        next_source_band_index,
+    );
+    mouths[from_index].terminal_end_bands.extend(end_bands);
+}
+
+fn ccw_angle_delta(from_angle: f64, to_angle: f64) -> f64 {
+    let mut delta = to_angle - from_angle;
+    if delta < 0.0 {
+        delta += std::f64::consts::TAU;
+    }
+    delta
+}
+
+fn bend_corner_layers(mouth: &NodeInputMouth, side: BendCornerProfileSide) -> Vec<BendCornerLayer> {
+    let Some(first_carriageway) = mouth
+        .band_intervals
+        .iter()
+        .position(|band| band.band_kind == RoadSurfaceBandKind::Carriageway)
+    else {
+        return Vec::new();
+    };
+    let Some(last_carriageway) = mouth
+        .band_intervals
+        .iter()
+        .rposition(|band| band.band_kind == RoadSurfaceBandKind::Carriageway)
+    else {
+        return Vec::new();
+    };
+
+    match side {
+        BendCornerProfileSide::Start => (0..=first_carriageway)
+            .rev()
+            .filter_map(|band_index| {
+                mouth
+                    .band_intervals
+                    .get(band_index)
+                    .map(|band| BendCornerLayer {
+                        band_index,
+                        band_kind: band.band_kind,
+                        inner_boundary_index: band_index + 1,
+                        outer_boundary_index: band_index,
+                    })
+            })
+            .collect(),
+        BendCornerProfileSide::End => (last_carriageway..mouth.band_intervals.len())
+            .filter_map(|band_index| {
+                mouth
+                    .band_intervals
+                    .get(band_index)
+                    .map(|band| BendCornerLayer {
+                        band_index,
+                        band_kind: band.band_kind,
+                        inner_boundary_index: band_index,
+                        outer_boundary_index: band_index + 1,
+                    })
+            })
+            .collect(),
+    }
+}
+
+fn bend_corner_end_bands(
+    from_mouth: &NodeInputMouth,
+    from_layers: &[BendCornerLayer],
+    to_mouth: &NodeInputMouth,
+    to_layers: &[BendCornerLayer],
+    next_source_band_index: usize,
+) -> Vec<NodeInputTerminalEndBand> {
+    let mut end_bands = Vec::new();
+    for (from_layer, to_layer) in from_layers.iter().zip(to_layers) {
+        if from_layer.band_kind != to_layer.band_kind {
+            break;
+        }
+        if from_layer.band_kind == RoadSurfaceBandKind::CurbOrShoulder {
+            push_bend_corner_curve_strips(
+                &mut end_bands,
+                from_mouth,
+                from_layer,
+                to_mouth,
+                to_layer,
+                next_source_band_index,
+            );
+        } else {
+            push_bend_corner_chord_band(
+                &mut end_bands,
+                from_mouth,
+                from_layer,
+                to_mouth,
+                to_layer,
+                next_source_band_index,
+            );
+            push_bend_corner_miter_cap(
+                &mut end_bands,
+                from_mouth,
+                from_layer,
+                to_mouth,
+                to_layer,
+                next_source_band_index,
+            );
+        }
+    }
+    end_bands
+}
+
+fn push_bend_corner_chord_band(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+    next_source_band_index: usize,
+) {
+    let Some(inner_start_world) =
+        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(inner_end_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(outer_start_world) =
+        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(outer_end_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let (height_inner_start_world, height_inner_end_world) = nondegenerate_height_edge(
+        inner_start_world,
+        inner_end_world,
+        outer_start_world,
+        outer_end_world,
+    );
+    let contour_world = if xz_from_road_vec3(inner_start_world)
+        .distance_squared(xz_from_road_vec3(inner_end_world))
+        <= BEND_CORNER_HEIGHT_EDGE_EPS_M * BEND_CORNER_HEIGHT_EDGE_EPS_M
+    {
+        vec![inner_start_world, outer_end_world, outer_start_world]
+    } else {
+        vec![
+            inner_start_world,
+            inner_end_world,
+            outer_end_world,
+            outer_start_world,
+        ]
+    };
+    let height_sources = bend_corner_height_sources(from_mouth, from_layer, to_mouth, to_layer);
+
+    end_bands.push(NodeInputTerminalEndBand {
+        source_band_index: next_source_band_index + end_bands.len(),
+        band_kind: from_layer.band_kind,
+        inner_start_world: height_inner_start_world,
+        inner_end_world: height_inner_end_world,
+        outer_start_world,
+        outer_end_world,
+        contour_world,
+        height_sources,
+    });
+}
+
+fn push_bend_corner_curve_strips(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+    next_source_band_index: usize,
+) {
+    let Some(from_inner_world) =
+        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(to_inner_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(from_outer_world) =
+        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(to_outer_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(inner_control_xz) = line_intersection_xz(
+        xz_from_road_vec3(from_inner_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(to_inner_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+    let Some(outer_control_xz) = line_intersection_xz(
+        xz_from_road_vec3(from_outer_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(to_outer_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+
+    let inner_control_world = RoadVec3::new(
+        inner_control_xz.x,
+        (from_inner_world.y + to_inner_world.y) * 0.5,
+        inner_control_xz.y,
+    );
+    let outer_control_world = RoadVec3::new(
+        outer_control_xz.x,
+        (from_outer_world.y + to_outer_world.y) * 0.5,
+        outer_control_xz.y,
+    );
+    let height_sources = bend_corner_height_sources(from_mouth, from_layer, to_mouth, to_layer);
+
+    let mut previous_inner = from_inner_world;
+    let mut previous_outer = from_outer_world;
+    for step in 1..=BEND_CORNER_CURVE_SEGMENTS {
+        let t = step as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
+        let next_inner =
+            quadratic_bezier_world(from_inner_world, inner_control_world, to_inner_world, t);
+        let next_outer =
+            quadratic_bezier_world(from_outer_world, outer_control_world, to_outer_world, t);
+        let (
+            height_endpoint_start_world,
+            height_endpoint_end_world,
+            height_mouth_start_world,
+            height_mouth_end_world,
+        ) = bend_corner_strip_height_edges(previous_inner, previous_outer, next_inner, next_outer);
+        let contour_world = if xz_from_road_vec3(previous_inner)
+            .distance_squared(xz_from_road_vec3(next_inner))
+            <= BEND_CORNER_HEIGHT_EDGE_EPS_M * BEND_CORNER_HEIGHT_EDGE_EPS_M
+        {
+            vec![previous_inner, next_outer, previous_outer]
+        } else {
+            vec![previous_inner, next_inner, next_outer, previous_outer]
+        };
+        end_bands.push(NodeInputTerminalEndBand {
+            source_band_index: next_source_band_index + end_bands.len(),
+            band_kind: from_layer.band_kind,
+            inner_start_world: height_endpoint_start_world,
+            inner_end_world: height_endpoint_end_world,
+            outer_start_world: height_mouth_start_world,
+            outer_end_world: height_mouth_end_world,
+            contour_world,
+            height_sources: height_sources.clone(),
+        });
+        previous_inner = next_inner;
+        previous_outer = next_outer;
+    }
+}
+
+fn push_bend_corner_miter_cap(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+    next_source_band_index: usize,
+) {
+    let Some(from_outer_world) =
+        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(to_outer_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(miter_xz) = line_intersection_xz(
+        xz_from_road_vec3(from_outer_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(to_outer_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+
+    let inner_axis = xz_from_road_vec3(to_outer_world) - xz_from_road_vec3(from_outer_world);
+    let inner_axis_len = inner_axis.length();
+    if inner_axis_len <= f64::EPSILON {
+        return;
+    }
+    let miter_height_m = (from_outer_world.y + to_outer_world.y) * 0.5;
+    let miter_world = RoadVec3::new(miter_xz.x, miter_height_m, miter_xz.y);
+    let miter_axis = inner_axis / inner_axis_len * BEND_CORNER_HEIGHT_EDGE_EPS_M;
+    let outer_start_world = RoadVec3::new(
+        miter_xz.x - miter_axis.x,
+        miter_height_m,
+        miter_xz.y - miter_axis.y,
+    );
+    let outer_end_world = RoadVec3::new(
+        miter_xz.x + miter_axis.x,
+        miter_height_m,
+        miter_xz.y + miter_axis.y,
+    );
+    let height_sources = bend_corner_height_sources(from_mouth, from_layer, to_mouth, to_layer);
+
+    end_bands.push(NodeInputTerminalEndBand {
+        source_band_index: next_source_band_index + end_bands.len(),
+        band_kind: from_layer.band_kind,
+        inner_start_world: from_outer_world,
+        inner_end_world: to_outer_world,
+        outer_start_world,
+        outer_end_world,
+        contour_world: bend_corner_curve_cap_contour(from_outer_world, to_outer_world, miter_world),
+        height_sources,
+    });
+}
+
+fn bend_corner_height_sources(
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+) -> Vec<NodeHeightSource> {
+    let mut height_sources = vec![
+        NodeHeightSource::EndpointBand {
+            edge_idx: from_mouth.edge_idx,
+            side: from_mouth.side,
+            band_index: from_layer.band_index,
+        },
+        NodeHeightSource::EndpointBand {
+            edge_idx: to_mouth.edge_idx,
+            side: to_mouth.side,
+            band_index: to_layer.band_index,
+        },
+    ];
+    height_sources.sort();
+    height_sources.dedup();
+    height_sources
+}
+
+fn bend_corner_strip_height_edges(
+    endpoint_start_world: RoadVec3,
+    endpoint_end_world: RoadVec3,
+    mouth_start_world: RoadVec3,
+    mouth_end_world: RoadVec3,
+) -> (RoadVec3, RoadVec3, RoadVec3, RoadVec3) {
+    let (mut endpoint_start_world, mut endpoint_end_world) = nondegenerate_height_edge(
+        endpoint_start_world,
+        endpoint_end_world,
+        mouth_start_world,
+        mouth_end_world,
+    );
+    let (mut mouth_start_world, mut mouth_end_world) = nondegenerate_height_edge(
+        mouth_start_world,
+        mouth_end_world,
+        endpoint_start_world,
+        endpoint_end_world,
+    );
+    let endpoint_center = midpoint_xz(
+        xz_from_road_vec3(endpoint_start_world),
+        xz_from_road_vec3(endpoint_end_world),
+    );
+    let mouth_center = midpoint_xz(
+        xz_from_road_vec3(mouth_start_world),
+        xz_from_road_vec3(mouth_end_world),
+    );
+    let axis = mouth_center - endpoint_center;
+    let axis_len = axis.length();
+    if axis_len > f64::EPSILON {
+        let pad = BEND_CORNER_HEIGHT_FIELD_PAD_M.min(axis_len * 0.25);
+        let offset = axis / axis_len * pad;
+        endpoint_start_world = offset_road_vec3_xz(endpoint_start_world, -offset);
+        endpoint_end_world = offset_road_vec3_xz(endpoint_end_world, -offset);
+        mouth_start_world = offset_road_vec3_xz(mouth_start_world, offset);
+        mouth_end_world = offset_road_vec3_xz(mouth_end_world, offset);
+    }
+    (
+        endpoint_start_world,
+        endpoint_end_world,
+        mouth_start_world,
+        mouth_end_world,
+    )
+}
+
+fn nondegenerate_height_edge(
+    start_world: RoadVec3,
+    end_world: RoadVec3,
+    fallback_start_world: RoadVec3,
+    fallback_end_world: RoadVec3,
+) -> (RoadVec3, RoadVec3) {
+    if xz_from_road_vec3(start_world).distance_squared(xz_from_road_vec3(end_world))
+        > BEND_CORNER_HEIGHT_EDGE_EPS_M * BEND_CORNER_HEIGHT_EDGE_EPS_M
+    {
+        return (start_world, end_world);
+    }
+
+    let fallback_axis =
+        xz_from_road_vec3(fallback_end_world) - xz_from_road_vec3(fallback_start_world);
+    let axis = if fallback_axis.length() > f64::EPSILON {
+        fallback_axis.normalize() * BEND_CORNER_HEIGHT_EDGE_EPS_M
+    } else {
+        RoadVec2::new(BEND_CORNER_HEIGHT_EDGE_EPS_M, 0.0)
+    };
+    let center = RoadVec3::new(
+        (start_world.x + end_world.x) * 0.5,
+        (start_world.y + end_world.y) * 0.5,
+        (start_world.z + end_world.z) * 0.5,
+    );
+    (
+        RoadVec3::new(center.x - axis.x, center.y, center.z - axis.y),
+        RoadVec3::new(center.x + axis.x, center.y, center.z + axis.y),
+    )
+}
+
+fn midpoint_xz(start: RoadVec2, end: RoadVec2) -> RoadVec2 {
+    (start + end) * 0.5
+}
+
+fn offset_road_vec3_xz(point: RoadVec3, offset: RoadVec2) -> RoadVec3 {
+    RoadVec3::new(point.x + offset.x, point.y, point.z + offset.y)
+}
+
+fn bend_corner_curve_cap_contour(
+    from_outer_world: RoadVec3,
+    to_outer_world: RoadVec3,
+    control_world: RoadVec3,
+) -> Vec<RoadVec3> {
+    let mut contour = Vec::with_capacity(BEND_CORNER_CURVE_SEGMENTS + 1);
+    contour.push(from_outer_world);
+    contour.push(to_outer_world);
+    for step in 1..BEND_CORNER_CURVE_SEGMENTS {
+        let t = step as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
+        contour.push(quadratic_bezier_world(
+            to_outer_world,
+            control_world,
+            from_outer_world,
+            t,
+        ));
+    }
+    contour
+}
+
+fn quadratic_bezier_world(start: RoadVec3, control: RoadVec3, end: RoadVec3, t: f64) -> RoadVec3 {
+    let one_minus_t = 1.0 - t;
+    start * (one_minus_t * one_minus_t) + control * (2.0 * one_minus_t * t) + end * (t * t)
+}
+
+fn endpoint_boundary_world(mouth: &NodeInputMouth, boundary_index: usize) -> Option<RoadVec3> {
+    mouth
+        .boundary_rails
+        .get(boundary_index)
+        .map(|rail| rail.endpoint_world)
+}
+
+fn line_intersection_xz(
+    start_a: RoadVec2,
+    direction_a: RoadVec2,
+    start_b: RoadVec2,
+    direction_b: RoadVec2,
+) -> Option<RoadVec2> {
+    let det = cross_xz(direction_a, direction_b);
+    if det.abs() <= f64::EPSILON {
+        return None;
+    }
+    let offset = start_b - start_a;
+    let t = cross_xz(offset, direction_b) / det;
+    Some(start_a + direction_a * t)
+}
+
+fn cross_xz(a: RoadVec2, b: RoadVec2) -> f64 {
+    a.x * b.y - a.y * b.x
+}
+
+fn xz_from_road_vec3(point: RoadVec3) -> RoadVec2 {
+    RoadVec2::new(point.x, point.z)
+}
+
 fn terminal_end_bands(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     mouth: &OrderedIncidentPieceMouth,
@@ -659,6 +1183,12 @@ fn push_terminal_end_band<const N: usize>(
         inner_end_world,
         outer_start_world,
         outer_end_world,
+        contour_world: vec![
+            inner_start_world,
+            inner_end_world,
+            outer_end_world,
+            outer_start_world,
+        ],
         height_sources,
     });
 }

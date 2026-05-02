@@ -281,12 +281,12 @@ fn push_terminal_end_band_contour(
     contours: &mut Vec<NodeGeneratedContour>,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
-    let points = vec![
-        xz(end_band.inner_start_world),
-        xz(end_band.inner_end_world),
-        xz(end_band.outer_end_world),
-        xz(end_band.outer_start_world),
-    ];
+    let points = end_band
+        .contour_world
+        .iter()
+        .copied()
+        .map(xz)
+        .collect::<Vec<_>>();
     let footprint = cleaned_closed_contour(
         NodeGeneratedContourKind::FullRoadbed,
         mouth.order_index,

@@ -110,6 +110,15 @@ struct NodeSourceBandKey {
     band_index: usize,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct SharedHeightStats {
+    count: usize,
+    min_height_m: f64,
+    max_height_m: f64,
+    height_sum_m: f64,
+    has_curb_or_shoulder: bool,
+}
+
 struct NodeBandHeightField {
     key: NodeSourceBandKey,
     kind: RoadSurfaceBandKind,
@@ -144,7 +153,7 @@ impl NodeHeightSolution {
         for region in &ownership.owned_regions {
             regions.push(heighted_region(region, &fields, &global_points)?);
         }
-        canonicalize_non_road_shared_heights(&mut regions);
+        canonicalize_non_road_shared_heights(&mut regions, ownership.piece_kind);
 
         Ok(Self {
             node_id: ownership.node_id,
@@ -429,8 +438,11 @@ fn heighted_vertex(
     })
 }
 
-fn canonicalize_non_road_shared_heights(regions: &mut [NodeHeightedRegion]) {
-    let mut shared_heights = BTreeMap::<NodeHeightPointKey, (usize, f64, f64, f64)>::new();
+fn canonicalize_non_road_shared_heights(
+    regions: &mut [NodeHeightedRegion],
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) {
+    let mut shared_heights = BTreeMap::<NodeHeightPointKey, SharedHeightStats>::new();
     for region in regions
         .iter()
         .filter(|region| region.kind != RoadSurfaceBandKind::Carriageway)
@@ -439,13 +451,8 @@ fn canonicalize_non_road_shared_heights(regions: &mut [NodeHeightedRegion]) {
             let key = NodeHeightPointKey::from_point(vertex.point_xz);
             shared_heights
                 .entry(key)
-                .and_modify(|(count, min_height, max_height, height_sum)| {
-                    *count += 1;
-                    *min_height = min_height.min(vertex.height_m);
-                    *max_height = max_height.max(vertex.height_m);
-                    *height_sum += vertex.height_m;
-                })
-                .or_insert((1, vertex.height_m, vertex.height_m, vertex.height_m));
+                .and_modify(|stats| stats.record(region.kind, vertex.height_m))
+                .or_insert_with(|| SharedHeightStats::new(region.kind, vertex.height_m));
         }
     }
 
@@ -459,13 +466,53 @@ fn canonicalize_non_road_shared_heights(regions: &mut [NodeHeightedRegion]) {
             .flat_map(|contour| contour.iter_mut())
         {
             let key = NodeHeightPointKey::from_point(vertex.point_xz);
-            if let Some((count, min_height, max_height, height_sum)) = shared_heights.get(&key)
-                && *count > 1
-                && max_height - min_height <= NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
+            if let Some(stats) = shared_heights.get(&key)
+                && stats.count > 1
+                && stats.height_delta_m() <= NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
             {
-                vertex.height_m = height_sum / *count as f64;
+                vertex.height_m = stats.canonical_height_for_kind(region.kind, piece_kind);
             }
         }
+    }
+}
+
+impl SharedHeightStats {
+    fn new(kind: RoadSurfaceBandKind, height_m: f64) -> Self {
+        Self {
+            count: 1,
+            min_height_m: height_m,
+            max_height_m: height_m,
+            height_sum_m: height_m,
+            has_curb_or_shoulder: kind == RoadSurfaceBandKind::CurbOrShoulder,
+        }
+    }
+
+    fn record(&mut self, kind: RoadSurfaceBandKind, height_m: f64) {
+        self.count += 1;
+        self.min_height_m = self.min_height_m.min(height_m);
+        self.max_height_m = self.max_height_m.max(height_m);
+        self.height_sum_m += height_m;
+        self.has_curb_or_shoulder |= kind == RoadSurfaceBandKind::CurbOrShoulder;
+    }
+
+    fn height_delta_m(&self) -> f64 {
+        self.max_height_m - self.min_height_m
+    }
+
+    fn canonical_height_for_kind(
+        &self,
+        kind: RoadSurfaceBandKind,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+    ) -> f64 {
+        if piece_kind == RoadSurfaceVisualNodePieceKind::Bend && self.has_curb_or_shoulder {
+            return match kind {
+                RoadSurfaceBandKind::CurbOrShoulder => self.min_height_m,
+                RoadSurfaceBandKind::Sidewalk => self.max_height_m,
+                _ => self.height_sum_m / self.count as f64,
+            };
+        }
+
+        self.height_sum_m / self.count as f64
     }
 }
 

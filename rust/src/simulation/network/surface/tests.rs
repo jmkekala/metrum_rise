@@ -326,6 +326,37 @@ fn point_inside_visual_polygons(polygons: &[RoadSurfaceVisualPolygon], point: Ve
     })
 }
 
+fn node_region_height_at_kind(
+    piece: &RoadSurfaceVisualNodePiece,
+    kind: RoadSurfaceBandKind,
+    point: Vector2,
+) -> Option<f32> {
+    for region in &piece.owned_regions {
+        if region.kind != kind {
+            continue;
+        }
+        for &triangle in &region.polygon.triangles_world {
+            if let Some((wa, wb, wc)) =
+                RoadSurfaceSystem::triangle_barycentric_weights_xz(triangle, point)
+            {
+                return Some(triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc);
+            }
+        }
+        if region.polygon.triangles_world.is_empty()
+            && RoadSurfaceSystem::polygon_contains_point_xz(&region.polygon.points_world, point)
+        {
+            let height_sum: f32 = region
+                .polygon
+                .points_world
+                .iter()
+                .map(|point| point.y)
+                .sum();
+            return Some(height_sum / region.polygon.points_world.len() as f32);
+        }
+    }
+    None
+}
+
 fn assert_material_triangle_centroids_do_not_overlap(piece: &RoadSurfaceVisualNodePiece) {
     for sidewalk_polygon in &piece.sidewalk_surface_polygons {
         for &sidewalk_triangle in &sidewalk_polygon.triangles_world {
@@ -1207,6 +1238,138 @@ fn flat_logged_curve_bend_keeps_footprint_covered_by_visible_top() {
     assert_material_triangle_centroids_do_not_overlap(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_piece_material_area_closes_footprint(piece, 0.25);
+}
+
+#[test]
+fn logged_sixty_degree_bend_keeps_outer_corner_covered() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-131.350, 0.0, -31.215), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(-21.350, 0.0, -31.215), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(13.650, 0.0, 29.406), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-131.350, 0.0, -31.215),
+            Vector3::new(-21.350, 0.0, -31.215),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-21.350, 0.0, -31.215),
+            Vector3::new(13.650, 0.0, 29.406),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("logged sixty-degree turn should compile one bend node piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_node_piece_material_area_closes_footprint(piece, 0.25);
+    let corner_point = Vector2::new(-18.850, -35.545);
+    assert!(
+        point_inside_visual_polygons(&piece.outer_boundary_loops, corner_point),
+        "bend footprint must include the visible outer-corner join point"
+    );
+    assert!(
+        point_inside_visual_polygons(&piece.road_surface_polygons, corner_point)
+            || point_inside_visual_polygons(&piece.sidewalk_surface_polygons, corner_point),
+        "bend visible top surface must cover the outer-corner join point"
+    );
+    let curb_curve_point = Vector2::new(-19.562, -34.311);
+    let curb_height =
+        node_region_height_at_kind(piece, RoadSurfaceBandKind::CurbOrShoulder, curb_curve_point)
+            .expect("bend curved outer curb strip must be owned by curb/shoulder");
+    assert!(
+        (0.02..0.10).contains(&curb_height),
+        "bend curved outer curb strip must keep the curb ramp height, point={curb_curve_point:?} height={curb_height:.4}"
+    );
+}
+
+#[test]
+fn logged_inside_bend_curb_anchor_stays_at_asphalt_height() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-82.047, 0.0, -9.463), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(28.584, 0.0, -15.027), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(71.960, 0.0, 47.832), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-82.047, 0.0, -9.463),
+            Vector3::new(28.584, 0.0, -15.027),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(28.584, 0.0, -15.027),
+            Vector3::new(71.960, 0.0, 47.832),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("logged inside bend should compile");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
+
+    let inner_anchor_point = Vector2::new(26.635197, -11.424565);
+    let (_, anchor_height) = piece
+        .owned_regions
+        .iter()
+        .filter(|region| region.kind == RoadSurfaceBandKind::CurbOrShoulder)
+        .flat_map(|region| region.polygon.points_world.iter())
+        .filter_map(|point| {
+            let distance_m = Vector2::new(
+                point.x - inner_anchor_point.x,
+                point.z - inner_anchor_point.y,
+            )
+            .length();
+            (distance_m <= 0.01).then_some((distance_m, point.y))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .expect("logged inner bend must keep a curb vertex at the road-edge anchor");
+    assert!(
+        anchor_height <= 0.005,
+        "inside bend curb skirt must anchor to asphalt height; point={inner_anchor_point:?} height={anchor_height:.4}"
+    );
 }
 
 #[test]
