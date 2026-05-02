@@ -1257,6 +1257,53 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
 }
 
 #[test]
+fn steep_standard_terminal_compiles_visible_end_bands() {
+    let terrain = flat_terrain(64, 64);
+    let mut graph = RegionGraph::new();
+    let points = vec![
+        Vector3::new(178.256, 203.772, -564.088),
+        Vector3::new(178.174, 203.724, -563.275),
+        Vector3::new(178.103, 203.674, -562.575),
+        Vector3::new(178.045, 203.619, -561.999),
+        Vector3::new(177.978, 203.551, -561.337),
+        Vector3::new(177.903, 203.462, -560.595),
+        Vector3::new(177.820, 203.350, -559.774),
+        Vector3::new(177.729, 203.220, -558.879),
+        Vector3::new(177.656, 203.082, -558.161),
+        Vector3::new(177.606, 202.946, -557.661),
+        Vector3::new(177.554, 202.818, -557.143),
+        Vector3::new(170.931, 183.624, -491.661),
+    ];
+    let start = graph.add_node(*points.first().unwrap(), NodeType::Junction);
+    let end = graph.add_node(*points.last().unwrap(), NodeType::Junction);
+    graph.add_edge(test_edge(
+        start,
+        end,
+        points,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let start_piece = surface
+        .compiled_visual_node_pieces()
+        .get(&start)
+        .expect("steep start terminal should compile a visible node piece");
+    let end_piece = surface
+        .compiled_visual_node_pieces()
+        .get(&end)
+        .expect("steep end terminal should compile a visible node piece");
+
+    assert_eq!(start_piece.kind, RoadSurfaceVisualNodePieceKind::Terminal);
+    assert_eq!(end_piece.kind, RoadSurfaceVisualNodePieceKind::Terminal);
+    assert!(!start_piece.sidewalk_surface_polygons.is_empty());
+    assert!(!end_piece.sidewalk_surface_polygons.is_empty());
+}
+
+#[test]
 fn span_visual_pieces_compile_explicit_band_polygons() {
     let terrain = flat_terrain(64, 64);
     let mut graph = RegionGraph::new();

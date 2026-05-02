@@ -2,10 +2,11 @@
 
 use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayPoint, NodeOverlayPointKey, NodeOverlayShapes,
-    NodeOwnedRegion, OrderedIncidentPieceMouth, RoadSurfaceBandKind,
-    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
-    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_CAP_M2, NodeOverlayPoint,
+    NodeOverlayPointKey, NodeOverlayShapes, NodeOwnedRegion, OrderedIncidentPieceMouth,
+    RoadSurfaceBandKind, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
+    SAMPLE_EPSILON_M,
     backend::{ROAD_OVERLAY_COORDINATE_SCALE, road_vec3_to_godot},
     height::NodeHeightedRegion,
     input::NodeInputExtractionError,
@@ -19,6 +20,7 @@ use std::collections::BTreeMap;
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
+const MATERIAL_CENTROID_OVERLAP_DUST_AREA_M2: f32 = 0.01;
 
 impl RoadSurfaceSystem {
     pub(super) fn compile_visual_node_piece(
@@ -206,7 +208,23 @@ impl RoadSurfaceSystem {
         let mut owned_regions = Vec::new();
 
         for (region_index, region) in triangulation.regions.iter().enumerate() {
-            let polygons = Self::visual_polygons_from_triangulated_region(region)?;
+            let Some(mut polygons) = Self::visual_polygons_from_triangulated_region(region) else {
+                if region.area_m2 <= NODE_OVERLAY_NUMERIC_AREA_CAP_M2 {
+                    continue;
+                }
+                return None;
+            };
+            if region.kind != RoadSurfaceBandKind::Carriageway {
+                polygons.retain(|polygon| {
+                    !Self::visual_polygon_centroid_overlaps_material(
+                        polygon,
+                        &road_surface_polygons,
+                    )
+                });
+                if polygons.is_empty() {
+                    continue;
+                }
+            }
             for polygon in polygons {
                 if region.kind == RoadSurfaceBandKind::Carriageway {
                     road_surface_polygons.push(polygon.clone());
@@ -227,6 +245,11 @@ impl RoadSurfaceSystem {
 
         let mut outer_boundary_loops =
             Self::outer_boundary_loops_from_footprint_shapes(footprint_shapes, height_regions)?;
+        Self::align_outer_boundary_loop_heights_to_visible_top(
+            &mut outer_boundary_loops,
+            &road_surface_polygons,
+            &sidewalk_surface_polygons,
+        );
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
@@ -389,13 +412,131 @@ impl RoadSurfaceSystem {
         )
     }
 
+    fn align_outer_boundary_loop_heights_to_visible_top(
+        outer_boundary_loops: &mut [RoadSurfaceVisualPolygon],
+        road_surface_polygons: &[RoadSurfaceVisualPolygon],
+        sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
+    ) {
+        for point in outer_boundary_loops
+            .iter_mut()
+            .flat_map(|polygon| polygon.points_world.iter_mut())
+        {
+            if let Some(height) = Self::visible_top_height_at_boundary_point(
+                *point,
+                sidewalk_surface_polygons,
+                road_surface_polygons,
+            ) {
+                point.y = height;
+            }
+        }
+    }
+
+    fn visible_top_height_at_boundary_point(
+        point: Vector3,
+        primary_polygons: &[RoadSurfaceVisualPolygon],
+        fallback_polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Option<f32> {
+        Self::visible_top_vertex_height_at_boundary_point(point, primary_polygons)
+            .or_else(|| Self::visible_top_vertex_height_at_boundary_point(point, fallback_polygons))
+            .or_else(|| {
+                Self::visible_top_triangle_height_at_boundary_point(point, primary_polygons)
+            })
+            .or_else(|| {
+                Self::visible_top_triangle_height_at_boundary_point(point, fallback_polygons)
+            })
+    }
+
+    fn visible_top_vertex_height_at_boundary_point(
+        point: Vector3,
+        polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Option<f32> {
+        let tolerance_m = SAMPLE_EPSILON_M * 2.0;
+        polygons
+            .iter()
+            .flat_map(|polygon| {
+                polygon.points_world.iter().chain(
+                    polygon
+                        .triangles_world
+                        .iter()
+                        .flat_map(|triangle| triangle.iter()),
+                )
+            })
+            .filter_map(|candidate| {
+                let distance_m =
+                    Vector2::new(candidate.x - point.x, candidate.z - point.z).length();
+                (distance_m <= tolerance_m).then_some((distance_m, candidate.y))
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, height)| height)
+    }
+
+    fn visible_top_triangle_height_at_boundary_point(
+        point: Vector3,
+        polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Option<f32> {
+        let point_xz = Vector2::new(point.x, point.z);
+        polygons.iter().find_map(|polygon| {
+            polygon.triangles_world.iter().find_map(|&triangle| {
+                Self::triangle_barycentric_weights_xz(triangle, point_xz).map(|(wa, wb, wc)| {
+                    triangle[0].y * wa + triangle[1].y * wb + triangle[2].y * wc
+                })
+            })
+        })
+    }
+
+    fn visual_polygon_centroid_overlaps_material(
+        polygon: &RoadSurfaceVisualPolygon,
+        material_polygons: &[RoadSurfaceVisualPolygon],
+    ) -> bool {
+        let polygon_centroid_inside_material = polygon.triangles_world.iter().any(|&triangle| {
+            let centroid = Vector2::new(
+                (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
+                (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
+            );
+            material_polygons.iter().any(|material_polygon| {
+                material_polygon
+                    .triangles_world
+                    .iter()
+                    .any(|&material_triangle| {
+                        Self::triangle_barycentric_weights_xz(material_triangle, centroid).is_some()
+                    })
+            })
+        });
+        if polygon_centroid_inside_material {
+            return true;
+        }
+        let polygon_area = Self::signed_polygon_area_xz(&polygon.points_world).abs();
+        let material_centroid_inside_polygon = material_polygons.iter().any(|material_polygon| {
+            material_polygon
+                .triangles_world
+                .iter()
+                .any(|&material_triangle| {
+                    let material_centroid = Vector2::new(
+                        (material_triangle[0].x + material_triangle[1].x + material_triangle[2].x)
+                            / 3.0,
+                        (material_triangle[0].z + material_triangle[1].z + material_triangle[2].z)
+                            / 3.0,
+                    );
+                    polygon.triangles_world.iter().any(|&triangle| {
+                        Self::triangle_barycentric_weights_xz(triangle, material_centroid).is_some()
+                    })
+                })
+        });
+        material_centroid_inside_polygon && polygon_area <= MATERIAL_CENTROID_OVERLAP_DUST_AREA_M2
+    }
+
     fn visual_polygons_from_triangulated_region(
         region: &NodeTriangulatedRegion,
     ) -> Option<Vec<RoadSurfaceVisualPolygon>> {
         let mut polygons = Vec::with_capacity(region.triangles.len());
         for triangle in &region.triangles {
             let triangle_world = Self::triangle_world_from_triangulated_region(region, *triangle)?;
-            if !Self::triangle_has_area_xz(triangle_world) {
+            let has_area = if region.kind == RoadSurfaceBandKind::Carriageway {
+                Self::triangle_has_area_xz(triangle_world)
+            } else {
+                Self::signed_polygon_area_xz(&triangle_world).abs() > NODE_OVERLAY_MIN_AREA_M2
+            };
+            if !has_area {
                 continue;
             }
             polygons.push(RoadSurfaceVisualPolygon {

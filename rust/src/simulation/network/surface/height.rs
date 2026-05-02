@@ -7,7 +7,7 @@ use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
     quantize_road_vec2_to_overlay_grid,
 };
-use super::input::{NodeArrangementInput, NodeInputBandInterval};
+use super::input::{NodeArrangementInput, NodeInputBandInterval, NodeInputTerminalEndBand};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
@@ -18,8 +18,10 @@ use std::collections::BTreeMap;
 
 const HEIGHT_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_PARAMETER_KEY_SCALE: f64 = 1_000_000.0;
-const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 8.0 / ROAD_OVERLAY_COORDINATE_SCALE;
+const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 32.0 / ROAD_OVERLAY_COORDINATE_SCALE;
+const HEIGHT_PARAMETER_BOUNDARY_DISTANCE_EPS_M: f64 = 0.002;
 const HEIGHT_FIELD_MIN_AXIS_LEN2_M2: f64 = 1.0e-12;
+const NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M: f64 = 0.36;
 
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
@@ -142,6 +144,7 @@ impl NodeHeightSolution {
         for region in &ownership.owned_regions {
             regions.push(heighted_region(region, &fields, &global_points)?);
         }
+        canonicalize_non_road_shared_heights(&mut regions);
 
         Ok(Self {
             node_id: ownership.node_id,
@@ -185,6 +188,38 @@ impl NodeBandHeightField {
         }
     }
 
+    fn from_terminal_end_band(
+        mouth_order_index: usize,
+        end_band: &NodeInputTerminalEndBand,
+    ) -> Self {
+        let key = NodeSourceBandKey {
+            mouth_order_index,
+            band_index: end_band.source_band_index,
+        };
+        let endpoint_start_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.inner_start_world));
+        let endpoint_end_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.inner_end_world));
+        let mouth_start_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.outer_start_world));
+        let mouth_end_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.outer_end_world));
+
+        Self {
+            key,
+            kind: end_band.band_kind,
+            endpoint_start_xz,
+            endpoint_end_xz,
+            mouth_start_xz,
+            mouth_end_xz,
+            start_height_profile: linear_height_profile(
+                end_band.inner_start_world.y,
+                end_band.outer_start_world.y,
+            ),
+            end_height_profile: linear_height_profile(
+                end_band.inner_end_world.y,
+                end_band.outer_end_world.y,
+            ),
+            height_sources: canonical_height_sources(end_band.height_sources.iter().cloned()),
+        }
+    }
+
     fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightSourceError> {
         let endpoint_center = midpoint(self.endpoint_start_xz, self.endpoint_end_xz);
         let mouth_center = midpoint(self.mouth_start_xz, self.mouth_end_xz);
@@ -197,9 +232,10 @@ impl NodeBandHeightField {
                 axis: "longitudinal",
             });
         }
+        let longitudinal_len_m = longitudinal_len2.sqrt();
 
         let raw_t = (point_xz - endpoint_center).dot(longitudinal_axis) / longitudinal_len2;
-        let t = canonical_unit_parameter(raw_t)
+        let t = canonical_unit_parameter(raw_t, longitudinal_len_m)
             .ok_or_else(|| self.outside_field_error(point_xz, "longitudinal", raw_t))?;
 
         let start_xz = interpolate(self.endpoint_start_xz, self.mouth_start_xz, t);
@@ -213,9 +249,10 @@ impl NodeBandHeightField {
                 axis: "lateral",
             });
         }
+        let lateral_len_m = lateral_len2.sqrt();
 
         let raw_u = (point_xz - start_xz).dot(lateral_axis) / lateral_len2;
-        let u = canonical_unit_parameter(raw_u)
+        let u = canonical_unit_parameter(raw_u, lateral_len_m)
             .ok_or_else(|| self.outside_field_error(point_xz, "lateral", raw_u))?;
         let start_height = self.start_height_profile.clamped_sample(t).ok_or(
             NodeHeightSourceError::HeightSampleFailed {
@@ -285,6 +322,15 @@ fn height_fields_by_source(
                 });
             }
         }
+        for end_band in &mouth.terminal_end_bands {
+            let field = NodeBandHeightField::from_terminal_end_band(mouth.order_index, end_band);
+            if fields.insert(field.key, field).is_some() {
+                return Err(NodeHeightSourceError::DuplicateSourceBand {
+                    mouth_order_index: mouth.order_index,
+                    band_index: end_band.source_band_index,
+                });
+            }
+        }
     }
     Ok(fields)
 }
@@ -346,10 +392,14 @@ fn heighted_shape(
     height_sources: &[NodeHeightSource],
     global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedShape, NodeHeightSourceError> {
-    shape
-        .iter()
-        .map(|contour| heighted_contour(contour, field, height_sources, global_points))
-        .collect()
+    let mut heighted = Vec::with_capacity(shape.len());
+    for contour in shape {
+        let contour = heighted_contour(contour, field, height_sources, global_points)?;
+        if contour.len() >= 3 {
+            heighted.push(contour);
+        }
+    }
+    Ok(heighted)
 }
 
 fn heighted_contour(
@@ -379,6 +429,46 @@ fn heighted_vertex(
     })
 }
 
+fn canonicalize_non_road_shared_heights(regions: &mut [NodeHeightedRegion]) {
+    let mut shared_heights = BTreeMap::<NodeHeightPointKey, (usize, f64, f64, f64)>::new();
+    for region in regions
+        .iter()
+        .filter(|region| region.kind != RoadSurfaceBandKind::Carriageway)
+    {
+        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
+            let key = NodeHeightPointKey::from_point(vertex.point_xz);
+            shared_heights
+                .entry(key)
+                .and_modify(|(count, min_height, max_height, height_sum)| {
+                    *count += 1;
+                    *min_height = min_height.min(vertex.height_m);
+                    *max_height = max_height.max(vertex.height_m);
+                    *height_sum += vertex.height_m;
+                })
+                .or_insert((1, vertex.height_m, vertex.height_m, vertex.height_m));
+        }
+    }
+
+    for region in regions
+        .iter_mut()
+        .filter(|region| region.kind != RoadSurfaceBandKind::Carriageway)
+    {
+        for vertex in region
+            .shape
+            .iter_mut()
+            .flat_map(|contour| contour.iter_mut())
+        {
+            let key = NodeHeightPointKey::from_point(vertex.point_xz);
+            if let Some((count, min_height, max_height, height_sum)) = shared_heights.get(&key)
+                && *count > 1
+                && max_height - min_height <= NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
+            {
+                vertex.height_m = height_sum / *count as f64;
+            }
+        }
+    }
+}
+
 fn linear_height_profile(endpoint_height_m: f64, mouth_height_m: f64) -> Spline<f64, f64> {
     Spline::from_vec(vec![
         Key::new(0.0, endpoint_height_m, Interpolation::Linear),
@@ -386,14 +476,19 @@ fn linear_height_profile(endpoint_height_m: f64, mouth_height_m: f64) -> Spline<
     ])
 }
 
-fn canonical_unit_parameter(raw_parameter: f64) -> Option<f64> {
+fn canonical_unit_parameter(raw_parameter: f64, axis_length_m: f64) -> Option<f64> {
     if !raw_parameter.is_finite() {
         return None;
     }
 
     let parameter =
         (raw_parameter * HEIGHT_PARAMETER_KEY_SCALE).round() / HEIGHT_PARAMETER_KEY_SCALE;
-    (-HEIGHT_PARAMETER_BOUNDARY_EPS..=1.0 + HEIGHT_PARAMETER_BOUNDARY_EPS)
+    let boundary_eps = if axis_length_m > f64::EPSILON {
+        HEIGHT_PARAMETER_BOUNDARY_EPS.max(HEIGHT_PARAMETER_BOUNDARY_DISTANCE_EPS_M / axis_length_m)
+    } else {
+        HEIGHT_PARAMETER_BOUNDARY_EPS
+    };
+    (-boundary_eps..=1.0 + boundary_eps)
         .contains(&parameter)
         .then_some(parameter.clamp(0.0, 1.0))
 }
@@ -471,7 +566,30 @@ fn noded_overlay_contour(
     {
         noded.pop();
     }
+    remove_overlay_spikes(&mut noded);
     noded
+}
+
+fn remove_overlay_spikes(points: &mut NodeOverlayContour) {
+    if points.len() < 3 {
+        return;
+    }
+
+    let mut changed = true;
+    while changed && points.len() >= 3 {
+        changed = false;
+        let len = points.len();
+        for index in 0..len {
+            let prev = if index == 0 { len - 1 } else { index - 1 };
+            let next = if index + 1 == len { 0 } else { index + 1 };
+            if height_overlay_point_key(points[prev]) == height_overlay_point_key(points[next]) {
+                points.remove(index);
+                dedup_consecutive_overlay_points(points);
+                changed = true;
+                break;
+            }
+        }
+    }
 }
 
 fn point_lies_strictly_inside_segment(
@@ -537,6 +655,13 @@ fn overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
     (
         (point[0] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
         (point[1] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
+}
+
+fn height_overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
+    (
+        (point[0] * HEIGHT_KEY_SCALE).round() as i64,
+        (point[1] * HEIGHT_KEY_SCALE).round() as i64,
     )
 }
 
@@ -714,6 +839,7 @@ mod tests {
                     manual_interval(0, RoadSurfaceBandKind::Carriageway, 2.0, 4.0),
                     manual_interval(1, RoadSurfaceBandKind::Sidewalk, 5.0, 7.0),
                 ],
+                terminal_end_bands: Vec::new(),
                 boundary_heights: Vec::new(),
             }],
         }

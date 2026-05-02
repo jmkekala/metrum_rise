@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 const VALIDATION_KEY_SCALE: f64 = 1000.0;
-const VALIDATION_MIN_SEGMENT_LENGTH_M: f32 = 0.001;
+const VALIDATION_MIN_SEGMENT_LENGTH_M: f32 = 0.000001;
 const VALIDATION_PARALLEL_EPSILON_M: f32 = 0.001;
 
 #[derive(Clone, Debug, PartialEq)]

@@ -501,23 +501,15 @@ impl RoadSurfaceSystem {
     }
 
     pub(super) fn visual_start_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
-        if edge.start_clip <= SAMPLE_EPSILON_M {
-            0.0
-        } else {
-            edge.start_clip
-                .max(Self::visual_node_handoff_limit_m(edge))
-                .clamp(0.0, total_length_m)
-        }
+        edge.start_clip
+            .max(Self::visual_node_handoff_limit_m(edge))
+            .clamp(0.0, total_length_m)
     }
 
     fn visual_end_handoff_m(edge: &Edge, total_length_m: f32) -> f32 {
-        if edge.end_clip <= SAMPLE_EPSILON_M {
-            0.0
-        } else {
-            edge.end_clip
-                .max(Self::visual_node_handoff_limit_m(edge))
-                .clamp(0.0, total_length_m)
-        }
+        edge.end_clip
+            .max(Self::visual_node_handoff_limit_m(edge))
+            .clamp(0.0, total_length_m)
     }
 
     pub(super) fn visual_end_handoff_s_m(edge: &Edge, total_length_m: f32) -> f32 {

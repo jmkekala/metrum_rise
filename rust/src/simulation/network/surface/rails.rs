@@ -8,7 +8,7 @@ use super::backend::{
 };
 use super::input::{
     NodeArrangementInput, NodeInputBandInterval, NodeInputBoundaryRailRole, NodeInputMouth,
-    NodeInputProfileKind, NodeInputProfileRail,
+    NodeInputProfileKind, NodeInputProfileRail, NodeInputTerminalEndBand,
 };
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceSystem,
@@ -101,6 +101,11 @@ pub(crate) enum NodeRailGenerationError {
     },
 }
 
+struct MouthOwners {
+    band_owners: Vec<NodeBandOwner>,
+    terminal_end_band_owners: Vec<NodeBandOwner>,
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn build_node_rail_contours_from_input(
         input: &NodeArrangementInput,
@@ -123,17 +128,31 @@ impl NodeRailContourSet {
         let mut contours = Vec::new();
         let mut constraints = Vec::new();
 
-        for (mouth, band_owners) in input.mouths.iter().zip(&owners_by_mouth) {
+        for (mouth, mouth_owners) in input.mouths.iter().zip(&owners_by_mouth) {
             push_full_roadbed_contour(mouth, &mut contours, &mut constraints)?;
 
             for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
-                let owner = band_owners[band_index];
+                let owner = mouth_owners.band_owners[band_index];
                 push_band_contour(mouth, interval, owner, &mut contours, &mut constraints)?;
+            }
+
+            for (end_band, owner) in mouth
+                .terminal_end_bands
+                .iter()
+                .zip(&mouth_owners.terminal_end_band_owners)
+            {
+                push_terminal_end_band_contour(
+                    mouth,
+                    end_band,
+                    *owner,
+                    &mut contours,
+                    &mut constraints,
+                )?;
             }
 
             for boundary_rail in &mouth.boundary_rails {
                 let (owner, opposite_owner) =
-                    boundary_owners(boundary_rail.boundary_index, band_owners);
+                    boundary_owners(boundary_rail.boundary_index, &mouth_owners.band_owners);
                 push_boundary_constraint(
                     mouth,
                     boundary_rail.boundary_index,
@@ -145,7 +164,7 @@ impl NodeRailContourSet {
             }
 
             for profile_rail in &mouth.mouth_rails {
-                let owner = band_owners[profile_rail.band_index];
+                let owner = mouth_owners.band_owners[profile_rail.band_index];
                 push_span_handoff_constraint(mouth, profile_rail, owner, &mut constraints)?;
             }
         }
@@ -247,6 +266,82 @@ fn push_band_contour(
         },
         mouth.order_index,
         Some(interval.band_index),
+        None,
+        Some(owner),
+        None,
+        points_xz,
+        height_sources,
+    )
+}
+
+fn push_terminal_end_band_contour(
+    mouth: &NodeInputMouth,
+    end_band: &NodeInputTerminalEndBand,
+    owner: NodeBandOwner,
+    contours: &mut Vec<NodeGeneratedContour>,
+    constraints: &mut Vec<NodeRailConstraint>,
+) -> Result<(), NodeRailGenerationError> {
+    let points = vec![
+        xz(end_band.inner_start_world),
+        xz(end_band.inner_end_world),
+        xz(end_band.outer_end_world),
+        xz(end_band.outer_start_world),
+    ];
+    let footprint = cleaned_closed_contour(
+        NodeGeneratedContourKind::FullRoadbed,
+        mouth.order_index,
+        None,
+        points.clone(),
+    )?;
+    let footprint_points_xz = polyline_to_road_points(&footprint);
+    let height_sources = canonical_height_sources(end_band.height_sources.iter().cloned());
+    contours.push(NodeGeneratedContour {
+        kind: NodeGeneratedContourKind::FullRoadbed,
+        source_mouth_order_index: mouth.order_index,
+        source_band_index: None,
+        owner: None,
+        points_xz: footprint_points_xz.clone(),
+        backend_polyline: footprint,
+        height_sources: height_sources.clone(),
+    });
+    push_constraint(
+        constraints,
+        NodeRailConstraintKind::FullRoadbedContour,
+        mouth.order_index,
+        None,
+        None,
+        None,
+        None,
+        footprint_points_xz,
+        height_sources.clone(),
+    )?;
+
+    let kind = NodeGeneratedContourKind::Band {
+        kind: end_band.band_kind,
+    };
+    let contour = cleaned_closed_contour(
+        kind,
+        mouth.order_index,
+        Some(end_band.source_band_index),
+        points,
+    )?;
+    let points_xz = polyline_to_road_points(&contour);
+    contours.push(NodeGeneratedContour {
+        kind,
+        source_mouth_order_index: mouth.order_index,
+        source_band_index: Some(end_band.source_band_index),
+        owner: Some(owner),
+        points_xz: points_xz.clone(),
+        backend_polyline: contour,
+        height_sources: height_sources.clone(),
+    });
+    push_constraint(
+        constraints,
+        NodeRailConstraintKind::BandContour {
+            kind: end_band.band_kind,
+        },
+        mouth.order_index,
+        Some(end_band.source_band_index),
         None,
         Some(owner),
         None,
@@ -378,13 +473,13 @@ fn cleaned_open_rail(
     Ok(rail)
 }
 
-fn owners_by_mouth(input: &NodeArrangementInput) -> Vec<Vec<NodeBandOwner>> {
+fn owners_by_mouth(input: &NodeArrangementInput) -> Vec<MouthOwners> {
     let mut next_owner_index = 0usize;
     input
         .mouths
         .iter()
         .map(|mouth| {
-            mouth
+            let band_owners = mouth
                 .band_intervals
                 .iter()
                 .map(|interval| {
@@ -392,7 +487,20 @@ fn owners_by_mouth(input: &NodeArrangementInput) -> Vec<Vec<NodeBandOwner>> {
                     next_owner_index += 1;
                     owner
                 })
-                .collect()
+                .collect();
+            let terminal_end_band_owners = mouth
+                .terminal_end_bands
+                .iter()
+                .map(|end_band| {
+                    let owner = NodeBandOwner::new(end_band.band_kind, next_owner_index);
+                    next_owner_index += 1;
+                    owner
+                })
+                .collect();
+            MouthOwners {
+                band_owners,
+                terminal_end_band_owners,
+            }
         })
         .collect()
 }
