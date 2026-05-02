@@ -1,7 +1,7 @@
 //! Unit tests for the road-surface compiler and ownership caches.
 
 use super::earthwork::EARTHWORK_MAX_MARGIN_M;
-use super::edge::{CURB_STEP_HEIGHT_M, MAX_STANDARD_DESIGN_CROSSFALL_RATE};
+use super::edge::CURB_STEP_HEIGHT_M;
 use super::{
     ChunkCacheKind, PreviewRoadSurfaceResult, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
     RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
@@ -316,9 +316,13 @@ fn triangle_centroid_xz(triangle: [Vector3; 3]) -> Vector2 {
 
 fn point_inside_visual_polygons(polygons: &[RoadSurfaceVisualPolygon], point: Vector2) -> bool {
     polygons.iter().any(|polygon| {
-        polygon.triangles_world.iter().any(|&triangle| {
-            RoadSurfaceSystem::triangle_barycentric_weights_xz(triangle, point).is_some()
-        })
+        if polygon.triangles_world.is_empty() {
+            RoadSurfaceSystem::polygon_contains_point_xz(&polygon.points_world, point)
+        } else {
+            polygon.triangles_world.iter().any(|&triangle| {
+                RoadSurfaceSystem::triangle_barycentric_weights_xz(triangle, point).is_some()
+            })
+        }
     })
 }
 
@@ -357,6 +361,21 @@ fn assert_material_triangle_centroids_do_not_overlap(piece: &RoadSurfaceVisualNo
                 }
             }
         }
+    }
+}
+
+fn assert_top_mesh_centroids_inside_outer_boundary(piece: &RoadSurfaceVisualNodePiece) {
+    for triangle in piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .flat_map(|polygon| polygon.triangles_world.iter().copied())
+    {
+        let centroid = triangle_centroid_xz(triangle);
+        assert!(
+            point_inside_visual_polygons(&piece.outer_boundary_loops, centroid),
+            "node outer boundary must contain emitted top-surface triangle centroids; centroid={centroid:?}"
+        );
     }
 }
 
@@ -616,6 +635,37 @@ fn assert_node_piece_material_area_closes_footprint(
     assert!(
         (footprint_area - asphalt_area - non_road_area).abs() <= tolerance_m2,
         "node material ownership must close the exported footprint; footprint={footprint_area:.3} asphalt={asphalt_area:.3} non_road={non_road_area:.3} tolerance={tolerance_m2:.3}"
+    );
+}
+
+#[test]
+fn overlay_numeric_area_budget_accepts_logged_sub_visual_cdt_residual() {
+    let small_four_edge_region = vec![vec![[0.0, 0.0], [0.02, 0.0], [0.02, 0.02], [0.0, 0.02]]];
+    let budget_m2 =
+        RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(&small_four_edge_region);
+
+    assert!(
+        budget_m2 > 1.6660093e-5,
+        "the logged 60-degree T-junction CDT residual must be treated as numeric dust, budget={budget_m2:.8}"
+    );
+    assert!(
+        budget_m2 <= 1.0e-3,
+        "numeric dust acceptance must remain capped below visually meaningful polygon loss"
+    );
+}
+
+#[test]
+fn overlay_numeric_area_budget_accepts_logged_centimeter_scale_cdt_residual() {
+    let meter_scale_region = vec![vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]];
+    let budget_m2 = RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(&meter_scale_region);
+
+    assert!(
+        budget_m2 > 0.00020319251,
+        "the logged oblique 3-way CDT residual must be treated as numeric dust, budget={budget_m2:.8}"
+    );
+    assert!(
+        budget_m2 <= 1.0e-3,
+        "numeric dust acceptance must remain capped at 10 cm^2"
     );
 }
 
@@ -1380,7 +1430,7 @@ fn terrain_clip_polygons_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
             TransitFlags::CAR | TransitFlags::FOOT,
         ));
     }
-    graph.rebuild_adjacency_list();
+    graph.rebuild_intersection_clips();
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
@@ -1651,6 +1701,7 @@ fn oblique_t_junction_compiles_solid_cdt_owned_surface() {
     assert!(!piece.outer_boundary_loops.is_empty());
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert!(
         piece
             .road_surface_polygons
@@ -1659,6 +1710,345 @@ fn oblique_t_junction_compiles_solid_cdt_owned_surface() {
             .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)),
         "overlay-owned JunctionN polygons must be non-degenerate"
     );
+    assert_material_triangle_centroids_do_not_overlap(piece);
+}
+
+#[test]
+fn editor_sized_60_degree_t_junction_width_7_compiles_node_surface() {
+    let mut graph = RegionGraph::new();
+    let left = graph.add_node(Vector3::new(-87.843, 0.0, -11.753), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(-50.197, 0.0, -11.753), NodeType::Junction);
+    let right = graph.add_node(Vector3::new(32.157, 0.0, -11.753), NodeType::Junction);
+    let oblique = graph.add_node(Vector3::new(-20.197, 0.0, 40.209), NodeType::Junction);
+    graph.add_edge(test_edge(
+        left,
+        center,
+        vec![
+            Vector3::new(-87.843, 0.0, -11.753),
+            Vector3::new(-50.197, 0.0, -11.753),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        right,
+        vec![
+            Vector3::new(-50.197, 0.0, -11.753),
+            Vector3::new(32.157, 0.0, -11.753),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        oblique,
+        vec![
+            Vector3::new(-50.197, 0.0, -11.753),
+            Vector3::new(-20.197, 0.0, 40.209),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(128, 128);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("editor-sized 60-degree T junction must compile a JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
+    assert_material_triangle_centroids_do_not_overlap(piece);
+
+    let raw_clip_sources = surface
+        .compiled_visual_span_pieces()
+        .values()
+        .flat_map(|piece| piece.outer_boundary_loops.iter().cloned())
+        .chain(
+            surface
+                .compiled_visual_node_pieces()
+                .values()
+                .flat_map(|piece| piece.outer_boundary_loops.iter().cloned()),
+        )
+        .collect::<Vec<_>>();
+    assert!(
+        !raw_clip_sources.is_empty(),
+        "editor-sized 60-degree T junction must have raw terrain clip source loops"
+    );
+    let unioned_clip_sources = RoadSurfaceSystem::union_terrain_clip_polygons(&raw_clip_sources);
+    assert!(
+        !unioned_clip_sources.is_empty(),
+        "editor-sized 60-degree T junction raw clip loops must survive deterministic union"
+    );
+
+    let clip_polygons =
+        surface.terrain_clip_polygons_for_world_bounds(&graph, -128.0, -32.0, 64.0, 64.0);
+    assert!(
+        !clip_polygons.is_empty(),
+        "editor-sized 60-degree T junction must export terrain clip cutters"
+    );
+    let road_loops = clip_polygons
+        .iter()
+        .enumerate()
+        .map(|(index, polygon)| {
+            TerrainCdtRoadLoop::new(
+                index as u64,
+                0,
+                polygon
+                    .points_world
+                    .iter()
+                    .map(|point| {
+                        TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z))
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        TerrainCdtPatch::new(-128.0, -32.0, 64.0, 64.0, [0.0; 4]),
+        road_loops,
+        Vec::new(),
+    ))
+    .expect("editor-sized 60-degree T terrain cutters must be accepted by terrain CDT");
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+}
+
+#[test]
+fn logged_flat_oblique_t_junction_compiles_node_surface() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-140.162, 0.0, -60.230), NodeType::Junction);
+    let north = graph.add_node(Vector3::new(-75.827, 0.0, 89.838), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(-57.710, 0.0, 22.223), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(50.757, 0.0, 130.689), NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-140.162, 0.0, -60.230),
+            Vector3::new(-57.710, 0.0, 22.223),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        north,
+        vec![
+            Vector3::new(-57.710, 0.0, 22.223),
+            Vector3::new(-75.827, 0.0, 89.838),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(-57.710, 0.0, 22.223),
+            Vector3::new(50.757, 0.0, 130.689),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(128, 128);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let incidents = [
+        super::IncidentSurfaceEdge {
+            edge_idx: 0,
+            side: super::IncidentEdgeSide::End,
+            direction_xz: surface
+                .compiled_visual_span_pieces()
+                .get(&0)
+                .and_then(|piece| piece.end_mouth_profile.as_ref())
+                .expect("west span must expose an end mouth")
+                .inward_direction_xz,
+        },
+        super::IncidentSurfaceEdge {
+            edge_idx: 1,
+            side: super::IncidentEdgeSide::Start,
+            direction_xz: surface
+                .compiled_visual_span_pieces()
+                .get(&1)
+                .and_then(|piece| piece.start_mouth_profile.as_ref())
+                .expect("north span must expose a start mouth")
+                .inward_direction_xz,
+        },
+        super::IncidentSurfaceEdge {
+            edge_idx: 2,
+            side: super::IncidentEdgeSide::Start,
+            direction_xz: surface
+                .compiled_visual_span_pieces()
+                .get(&2)
+                .and_then(|piece| piece.start_mouth_profile.as_ref())
+                .expect("east span must expose a start mouth")
+                .inward_direction_xz,
+        },
+    ];
+    let mut mouths = incidents
+        .iter()
+        .map(|incident| {
+            let span_piece = surface
+                .compiled_visual_span_pieces()
+                .get(&incident.edge_idx)
+                .expect("incident span piece must be compiled");
+            let profile = match incident.side {
+                super::IncidentEdgeSide::Start => span_piece.start_mouth_profile.clone(),
+                super::IncidentEdgeSide::End => span_piece.end_mouth_profile.clone(),
+            }
+            .expect("incident span piece must expose a mouth profile");
+            let sections = surface
+                .compiled_sections()
+                .get(&incident.edge_idx)
+                .expect("incident sections must be compiled");
+            let section = match incident.side {
+                super::IncidentEdgeSide::Start => sections.first(),
+                super::IncidentEdgeSide::End => sections.last(),
+            }
+            .expect("incident endpoint section must exist");
+            let endpoint_profile =
+                RoadSurfaceSystem::build_mouth_profile_from_section(section, incident.side)
+                    .expect("incident endpoint profile must compile");
+            super::OrderedIncidentPieceMouth {
+                profile,
+                endpoint_profile,
+                direction_angle_ccw: {
+                    let angle = incident.direction_xz.y.atan2(incident.direction_xz.x);
+                    if angle < 0.0 {
+                        angle + std::f32::consts::TAU
+                    } else {
+                        angle
+                    }
+                },
+                direction_xz: incident.direction_xz,
+                edge_idx: incident.edge_idx,
+                side: incident.side,
+            }
+        })
+        .collect::<Vec<_>>();
+    mouths.sort_by(|a, b| {
+        a.direction_angle_ccw
+            .total_cmp(&b.direction_angle_ccw)
+            .then(a.edge_idx.cmp(&b.edge_idx))
+            .then(a.side.cmp(&b.side))
+    });
+    let input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
+        center,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &mouths,
+    )
+    .expect("logged flat oblique T input must compile");
+    let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&input)
+        .expect("logged flat oblique T rails must compile");
+    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+        .expect("logged flat oblique T ownership must compile");
+    let heights = RoadSurfaceSystem::build_node_height_solution_from_ownership(&input, &ownership)
+        .expect("logged flat oblique T heights must compile");
+    RoadSurfaceSystem::build_node_triangulation_from_height_solution(&heights)
+        .expect("logged flat oblique T height regions must triangulate");
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("logged flat oblique T junction must compile a JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_material_triangle_centroids_do_not_overlap(piece);
+}
+
+#[test]
+fn logged_flat_oblique_four_way_compiles_node_surface_after_new_incident_road() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-168.693, 0.0, 22.598), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(-9.454, 0.0, 18.003), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(-125.850, 0.0, 21.362), NodeType::Junction);
+    let north = graph.add_node(Vector3::new(-83.868, 0.0, 89.461), NodeType::Junction);
+    let south = graph.add_node(Vector3::new(-143.870, 0.0, -84.460), NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-168.693, 0.0, 22.598),
+            Vector3::new(-125.850, 0.0, 21.362),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        north,
+        vec![
+            Vector3::new(-125.850, 0.0, 21.362),
+            Vector3::new(-83.868, 0.0, 89.461),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(-125.850, 0.0, 21.362),
+            Vector3::new(-9.454, 0.0, 18.003),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        south,
+        center,
+        vec![
+            Vector3::new(-143.870, 0.0, -84.460),
+            Vector3::new(-125.850, 0.0, 21.362),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(512, 512);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface.compiled_visual_node_pieces().get(&center).expect(
+        "logged flat oblique four-way must keep the center JunctionN after adding the fourth road",
+    );
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
     assert_material_triangle_centroids_do_not_overlap(piece);
 }
 
@@ -2567,7 +2957,7 @@ fn standard_road_footprint_uses_stitched_mesh_instead_of_visual_terrain_stamp() 
 }
 
 #[test]
-fn grounded_standard_crossfall_is_bounded_and_footprint_stays_below_carriageway() {
+fn grounded_standard_roadbed_is_laterally_flat_and_footprint_stays_below_carriageway() {
     let mut terrain = TerrainSystem::with_chunking(129, 97, 1.0, 8, 0.0);
     for z in 0..97 {
         for x in 0..129 {
@@ -2608,13 +2998,25 @@ fn grounded_standard_crossfall_is_bounded_and_footprint_stays_below_carriageway(
     let half_carriageway = graph.edge(edge_idx).width.max(crate::config::LANE_WIDTH) * 0.5;
     let left_height = section_height_at_lateral_offset(section, -half_carriageway).unwrap();
     let right_height = section_height_at_lateral_offset(section, half_carriageway).unwrap();
-    let actual_crossfall_rate =
+    let lateral_grade_rate =
         (right_height - left_height) / (half_carriageway * 2.0).max(super::SAMPLE_EPSILON_M);
 
     assert!(
-        actual_crossfall_rate.abs() <= MAX_STANDARD_DESIGN_CROSSFALL_RATE + 0.001,
-        "expected grounded-road crossfall to stay within the design bound: actual_rate={actual_crossfall_rate:.4}"
+        lateral_grade_rate.abs() <= 0.001,
+        "expected grounded-road carriageway to stay laterally flat: actual_rate={lateral_grade_rate:.4}"
     );
+    for sidewalk in section
+        .bands
+        .iter()
+        .filter(|band| band.kind == RoadSurfaceBandKind::Sidewalk)
+    {
+        assert!(
+            (sidewalk.height_start_m - section.center_height_m - CURB_STEP_HEIGHT_M).abs() <= 0.001
+        );
+        assert!(
+            (sidewalk.height_end_m - section.center_height_m - CURB_STEP_HEIGHT_M).abs() <= 0.001
+        );
+    }
 
     let mut sampled_profile = Vec::new();
     for lateral_offset in [-half_carriageway * 0.8, 0.0, half_carriageway * 0.8] {
@@ -2645,7 +3047,7 @@ fn grounded_standard_crossfall_is_bounded_and_footprint_stays_below_carriageway(
     let support_profile_delta = right.2 - left.2;
     assert!(
         (support_profile_delta - road_profile_delta).abs() <= 0.05,
-        "expected visible road footprint to follow the solved road crossfall instead of a flat slab: road_profile_delta={road_profile_delta:.3} support_profile_delta={support_profile_delta:.3}"
+        "expected visible road footprint to follow the solved flat roadbed profile: road_profile_delta={road_profile_delta:.3} support_profile_delta={support_profile_delta:.3}"
     );
 }
 

@@ -1,11 +1,13 @@
 //! Explicit visual node-piece construction and incident-edge classification.
 
 use super::{
-    CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge, NodeOwnedRegion,
-    OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceEarthworkRenderFace,
-    RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
-    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
-    backend::road_vec3_to_godot,
+    CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
+    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayPoint, NodeOverlayPointKey, NodeOverlayShapes,
+    NodeOwnedRegion, OrderedIncidentPieceMouth, RoadSurfaceBandKind,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    backend::{ROAD_OVERLAY_COORDINATE_SCALE, road_vec3_to_godot},
+    height::NodeHeightedRegion,
     input::NodeInputExtractionError,
     triangulation::{NodeTriangulatedRegion, NodeTriangulatedTriangle, NodeTriangulationSolution},
     validation::NodeValidationReport,
@@ -13,6 +15,7 @@ use super::{
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
+use std::collections::BTreeMap;
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
@@ -168,15 +171,35 @@ impl RoadSurfaceSystem {
             Ok(report) => Self::log_node_validation_report(&report),
             Err(error) => {
                 Self::log_node_validation_report(&error.report);
-                return None;
+                if error.report.has_blocking_diagnostics() {
+                    return None;
+                }
             }
         }
 
-        Self::node_surface_regions_from_triangulation(&triangulation)
+        match Self::node_surface_regions_from_triangulation(
+            &triangulation,
+            &ownership.footprint_shapes,
+            &heights.regions,
+        ) {
+            Some(regions) => Some(regions),
+            None => {
+                Self::log_node_validation_report(
+                    &NodeValidationReport::from_boundary_export_error(
+                        node_id,
+                        kind,
+                        "outer_boundary_extraction_failed",
+                    ),
+                );
+                None
+            }
+        }
     }
 
     fn node_surface_regions_from_triangulation(
         triangulation: &NodeTriangulationSolution,
+        footprint_shapes: &NodeOverlayShapes,
+        height_regions: &[NodeHeightedRegion],
     ) -> Option<super::NodeSurfaceRegionResult> {
         let mut road_surface_polygons = Vec::new();
         let mut sidewalk_surface_polygons = Vec::new();
@@ -202,15 +225,8 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        let top_polygons = road_surface_polygons
-            .iter()
-            .chain(&sidewalk_surface_polygons)
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut outer_boundary_loops = Self::union_terrain_clip_polygons(&top_polygons);
-        if outer_boundary_loops.is_empty() {
-            return None;
-        }
+        let mut outer_boundary_loops =
+            Self::outer_boundary_loops_from_footprint_shapes(footprint_shapes, height_regions)?;
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
@@ -223,6 +239,154 @@ impl RoadSurfaceSystem {
             sidewalk_surface_polygons,
             owned_regions,
         })
+    }
+
+    fn outer_boundary_loops_from_footprint_shapes(
+        footprint_shapes: &NodeOverlayShapes,
+        height_regions: &[NodeHeightedRegion],
+    ) -> Option<Vec<RoadSurfaceVisualPolygon>> {
+        let boundary_heights = Self::heighted_region_boundary_heights_by_key(height_regions);
+        let mut polygons = Vec::new();
+        for shape in footprint_shapes {
+            for contour in shape {
+                let boundary_points = contour
+                    .iter()
+                    .copied()
+                    .map(|point| {
+                        let key = Self::overlay_boundary_point_key(point);
+                        let point_xz = super::backend::overlay_point_to_road(point);
+                        (point_xz, boundary_heights.get(&key).copied())
+                    })
+                    .collect::<Vec<_>>();
+                let points = Self::resolve_boundary_contour_heights(&boundary_points)?;
+                let area_m2 = Self::signed_polygon_area_xz(&points).abs();
+                if area_m2 <= NODE_OVERLAY_MIN_AREA_M2 {
+                    continue;
+                };
+                let area_budget_m2 = Self::overlay_numeric_area_budget_for_world_loop(&points);
+                let Some(polygon) = Self::make_boundary_loop_polygon(points) else {
+                    if area_m2 <= area_budget_m2 {
+                        continue;
+                    }
+                    return None;
+                };
+                polygons.push(polygon);
+            }
+        }
+        (!polygons.is_empty()).then_some(polygons)
+    }
+
+    fn resolve_boundary_contour_heights(
+        points: &[(super::backend::RoadVec2, Option<f64>)],
+    ) -> Option<Vec<Vector3>> {
+        if points.len() < 3 {
+            return None;
+        }
+        let known_indices = points
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (_, height))| height.is_some().then_some(index))
+            .collect::<Vec<_>>();
+        if known_indices.is_empty() {
+            return None;
+        }
+
+        let mut heights = vec![0.0; points.len()];
+        for &index in &known_indices {
+            heights[index] = points[index].1?;
+        }
+        if known_indices.len() < points.len() {
+            for pair_index in 0..known_indices.len() {
+                let start_index = known_indices[pair_index];
+                let end_index = known_indices[(pair_index + 1) % known_indices.len()];
+                if Self::next_loop_index(start_index, points.len()) == end_index {
+                    continue;
+                }
+                let start_height = points[start_index].1?;
+                let end_height = points[end_index].1?;
+                let total_distance =
+                    Self::contour_distance_between(points, start_index, end_index)?;
+                if total_distance <= f64::EPSILON {
+                    return None;
+                }
+                let mut cursor = start_index;
+                let mut walked = 0.0;
+                loop {
+                    let next = Self::next_loop_index(cursor, points.len());
+                    walked += points[cursor].0.distance(points[next].0);
+                    if next == end_index {
+                        break;
+                    }
+                    let t = (walked / total_distance).clamp(0.0, 1.0);
+                    heights[next] = start_height + (end_height - start_height) * t;
+                    cursor = next;
+                }
+            }
+        }
+
+        Some(
+            points
+                .iter()
+                .enumerate()
+                .map(|(index, (point_xz, _))| {
+                    super::backend::road_xz_with_height_to_godot(*point_xz, heights[index])
+                })
+                .collect(),
+        )
+    }
+
+    fn contour_distance_between(
+        points: &[(super::backend::RoadVec2, Option<f64>)],
+        start_index: usize,
+        end_index: usize,
+    ) -> Option<f64> {
+        let mut cursor = start_index;
+        let mut distance = 0.0;
+        for _ in 0..points.len() {
+            let next = Self::next_loop_index(cursor, points.len());
+            distance += points[cursor].0.distance(points[next].0);
+            if next == end_index {
+                return Some(distance);
+            }
+            cursor = next;
+        }
+        None
+    }
+
+    fn next_loop_index(index: usize, len: usize) -> usize {
+        if index + 1 == len { 0 } else { index + 1 }
+    }
+
+    fn heighted_region_boundary_heights_by_key(
+        regions: &[NodeHeightedRegion],
+    ) -> BTreeMap<NodeOverlayPointKey, f64> {
+        let mut heights = BTreeMap::new();
+        for region in regions {
+            for contour in &region.shape {
+                for vertex in contour {
+                    let key = Self::heighted_boundary_point_key(vertex.point_xz);
+                    heights
+                        .entry(key)
+                        .and_modify(|height: &mut f64| *height = height.max(vertex.height_m))
+                        .or_insert(vertex.height_m);
+                }
+            }
+        }
+        heights
+    }
+
+    fn overlay_boundary_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
+        (
+            (point[0] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            (point[1] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        )
+    }
+
+    fn heighted_boundary_point_key(point: super::backend::RoadVec2) -> NodeOverlayPointKey {
+        (
+            (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        )
     }
 
     fn visual_polygons_from_triangulated_region(

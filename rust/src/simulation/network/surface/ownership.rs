@@ -209,13 +209,17 @@ fn owned_regions_from_domains(
         }
 
         for shape in &domain_shapes {
+            let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
+            if owned_shape_is_numeric_dust(shape, area_m2) {
+                continue;
+            }
             regions.push(NodeBooleanOwnedRegion {
                 kind: band_kind(domain).expect("owned domain must be a band contour"),
                 owner,
                 source_mouth_order_index: domain.source_mouth_order_index,
                 source_band_index: domain.source_band_index,
                 shape: shape.clone(),
-                area_m2: RoadSurfaceSystem::overlay_shape_area_m2(shape),
+                area_m2,
                 height_sources: canonical_height_sources(domain.height_sources.iter().cloned()),
             });
         }
@@ -267,13 +271,17 @@ fn residual_regions_from_domains(
         }
 
         for shape in &domain_shapes {
+            let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
+            if owned_shape_is_numeric_dust(shape, area_m2) {
+                continue;
+            }
             regions.push(NodeBooleanOwnedRegion {
                 kind: band_kind(domain).expect("owned domain must be a band contour"),
                 owner,
                 source_mouth_order_index: domain.source_mouth_order_index,
                 source_band_index: domain.source_band_index,
                 shape: shape.clone(),
-                area_m2: RoadSurfaceSystem::overlay_shape_area_m2(shape),
+                area_m2,
                 height_sources: canonical_height_sources(domain.height_sources.iter().cloned()),
             });
         }
@@ -365,12 +373,10 @@ fn overlay_union_shape_sets(
     if added.is_empty() {
         return Ok(existing.clone());
     }
-    let contours = existing
-        .iter()
-        .chain(added.iter())
-        .flat_map(|shape| shape.iter().cloned())
-        .collect::<Vec<_>>();
-    overlay_union(&contours, stage)
+    let mut shapes = RoadSurfaceSystem::overlay_binary_shapes(existing, added, OverlayRule::Union)
+        .ok_or(NodeBooleanOwnershipError::BooleanOperationFailed { stage })?;
+    RoadSurfaceSystem::sort_overlay_shapes(&mut shapes);
+    Ok(shapes)
 }
 
 fn reject_residual(
@@ -386,6 +392,9 @@ fn reject_residual(
         .iter()
         .map(RoadSurfaceSystem::overlay_shape_area_m2)
         .sum();
+    if area_m2 <= RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&residual) {
+        return Ok(());
+    }
     match residual_kind {
         ResidualKind::Asphalt => Err(NodeBooleanOwnershipError::UnownedAsphaltResidual {
             shape_count,
@@ -401,6 +410,10 @@ fn reject_residual(
             area_m2,
         }),
     }
+}
+
+fn owned_shape_is_numeric_dust(shape: &NodeOverlayShape, area_m2: f32) -> bool {
+    area_m2 <= RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(shape)
 }
 
 fn band_kind(contour: &NodeGeneratedContour) -> Option<RoadSurfaceBandKind> {

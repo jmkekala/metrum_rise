@@ -10,8 +10,7 @@ use super::triangulation::{
     NodeTriangulationError, NodeTriangulationSolution,
 };
 use super::{
-    NODE_OVERLAY_NUMERIC_AREA_EPS_M2, NodeOverlayContour, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind,
+    NodeOverlayContour, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
 };
 use parry2d::math::{Pose, Vector};
 use parry2d::query::PointQuery;
@@ -234,6 +233,18 @@ impl NodeValidationReport {
         dump
     }
 
+    pub(crate) fn has_blocking_diagnostics(&self) -> bool {
+        self.diagnostics.iter().any(|diagnostic| {
+            !matches!(
+                diagnostic.kind,
+                NodeGeometryDiagnosticKind::InvalidConstraint {
+                    reason: NodeInvalidConstraintReason::Crossing,
+                    ..
+                }
+            )
+        })
+    }
+
     pub(crate) fn from_rail_generation_error(
         node_id: u32,
         piece_kind: RoadSurfaceVisualNodePieceKind,
@@ -272,6 +283,20 @@ impl NodeValidationReport {
         Self::single_diagnostic(NodeGeometryDiagnostic::from_triangulation_error(
             node_id, piece_kind, error,
         ))
+    }
+
+    pub(crate) fn from_boundary_export_error(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        reason: &'static str,
+    ) -> Self {
+        Self::single_diagnostic(NodeGeometryDiagnostic {
+            node_id,
+            piece_kind,
+            stage: NodeGeometryStage::Validation,
+            backend: NodeGeometryBackend::Parry2d,
+            kind: NodeGeometryDiagnosticKind::BackendFailure { reason },
+        })
     }
 
     fn single_diagnostic(diagnostic: NodeGeometryDiagnostic) -> Self {
@@ -737,7 +762,9 @@ fn validate_triangles(
         }
         let edge_key = edge_key_for_indices(region, edge);
         exposed_edges.push(edge_key);
-        if boundary_edges.contains(&edge) {
+        if boundary_edges.contains(&edge)
+            || edge_lies_on_boundary_constraint(region, edge, boundary_segments)
+        {
             continue;
         }
         let start_distance_mm =
@@ -822,7 +849,9 @@ fn validate_triangle_area_coverage(
         .map(|triangle| triangle_area_m2(region, triangle))
         .sum::<f32>();
     let overlap_area_m2 = (triangle_area_sum - union_area).max(0.0);
-    if overlap_area_m2 > NODE_OVERLAY_NUMERIC_AREA_EPS_M2 {
+    let area_budget_m2 =
+        RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&triangle_shapes);
+    if overlap_area_m2 > area_budget_m2 {
         push_validation_diagnostic(
             solution,
             diagnostics,
@@ -835,7 +864,7 @@ fn validate_triangle_area_coverage(
     }
 
     let area_delta = union_area - region.area_m2;
-    if area_delta.abs() > NODE_OVERLAY_NUMERIC_AREA_EPS_M2 {
+    if area_delta.abs() > area_budget_m2 {
         push_validation_diagnostic(
             solution,
             diagnostics,
@@ -892,6 +921,26 @@ fn min_distance_to_boundary_mm(
         .unwrap_or(i64::MAX)
 }
 
+fn edge_lies_on_boundary_constraint(
+    region: &NodeTriangulatedRegion,
+    edge: [usize; 2],
+    boundary_segments: &[BoundarySegment],
+) -> bool {
+    let edge_segment = parry_segment_for_edge(region, edge);
+    [edge_segment.a, edge_segment.b]
+        .into_iter()
+        .all(|point| point_lies_on_boundary_constraint(point, boundary_segments))
+}
+
+fn point_lies_on_boundary_constraint(point: Vector, boundary_segments: &[BoundarySegment]) -> bool {
+    boundary_segments.iter().any(|boundary| {
+        boundary
+            .segment
+            .distance_to_point(&Pose::identity(), point, false)
+            <= VALIDATION_MIN_SEGMENT_LENGTH_M
+    })
+}
+
 fn strict_intersection(intersection: SegmentsIntersection) -> bool {
     match intersection {
         SegmentsIntersection::Point { loc1, loc2 } => {
@@ -926,7 +975,7 @@ fn triangle_contour(
         .iter()
         .map(|index| {
             let point = region.vertices[*index].point_world;
-            [point.x as f32, point.z as f32]
+            [point.x, point.z]
         })
         .collect::<Vec<_>>();
     if signed_overlay_area_m2(&contour) < 0.0 {
@@ -949,7 +998,7 @@ fn signed_overlay_area_m2(contour: &NodeOverlayContour) -> f32 {
         let end = contour[(index + 1) % contour.len()];
         area += start[0] * end[1] - end[0] * start[1];
     }
-    area * 0.5
+    (area * 0.5) as f32
 }
 
 fn edge_key_for_indices(

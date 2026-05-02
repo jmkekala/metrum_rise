@@ -1,23 +1,30 @@
 //! Deterministic overlay boolean geometry helpers for road surfaces.
 
 use super::{
-    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayPointKey,
+    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_CAP_M2, NODE_OVERLAY_NUMERIC_AREA_EPS_M2,
+    NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, NodeOverlayPoint, NodeOverlayPointKey,
     NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceCdt, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
+    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
 };
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::fill_rule::FillRule;
+use i_overlay::core::overlay::{IntOverlayOptions, Overlay};
 use i_overlay::core::overlay_rule::OverlayRule;
-use i_overlay::float::scale::FixedScaleFloatOverlay;
-use i_overlay::float::simplify::SimplifyShape;
-use spade::{Point2, Triangulation};
-use std::collections::{BTreeMap, BTreeSet};
+use i_overlay::i_float::int::point::IntPoint;
 
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 
 // Overlay boolean operations quantize coordinates to millimetres for deterministic keys.
-const NODE_OVERLAY_SCALE: f32 = ROAD_OVERLAY_COORDINATE_SCALE as f32;
-const NODE_SURFACE_HEIGHT_EPSILON_M: f32 = 1.0 / NODE_OVERLAY_SCALE;
+const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
+type NodeIntContour = Vec<IntPoint>;
+type NodeIntShape = Vec<NodeIntContour>;
+type NodeIntShapes = Vec<NodeIntShape>;
+
+#[derive(Clone, Copy)]
+struct NodeIntGridOrigin {
+    x: i64,
+    y: i64,
+}
 
 impl RoadSurfaceSystem {
     fn overlay_contours_from_polygons(
@@ -52,8 +59,8 @@ impl RoadSurfaceSystem {
 
     fn overlay_point_from_world_point(point: Vector3) -> NodeOverlayPoint {
         [
-            (point.x * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
-            (point.z * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
+            (f64::from(point.x) * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
+            (f64::from(point.z) * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
         ]
     }
 
@@ -63,8 +70,19 @@ impl RoadSurfaceSystem {
         if contours.is_empty() {
             return Some(Vec::new());
         }
-        let shapes = contours.simplify_shape(FillRule::Positive);
-        Some(Self::filter_overlay_shapes_by_area(shapes))
+        let origin = Self::int_grid_origin_for_contours(contours);
+        let subject = Self::int_contours_from_overlay_contours(contours, origin)?;
+        let clip = Vec::new();
+        let mut overlay = Overlay::with_contours_custom(
+            &subject,
+            &clip,
+            Self::int_overlay_options(),
+            Default::default(),
+        );
+        let shapes = overlay.overlay(OverlayRule::Union, FillRule::Positive);
+        Some(Self::filter_overlay_shapes_by_area(
+            Self::overlay_shapes_from_int_shapes(shapes, origin),
+        ))
     }
 
     pub(super) fn overlay_binary_shapes(
@@ -78,10 +96,171 @@ impl RoadSurfaceSystem {
         if clip.is_empty() {
             return Some(subject.clone());
         }
-        let shapes = subject
-            .overlay_with_fixed_scale(clip, rule, FillRule::Positive, NODE_OVERLAY_SCALE)
-            .ok()?;
-        Some(Self::filter_overlay_shapes_by_area(shapes))
+        let origin = Self::int_grid_origin_for_shapes(subject, clip);
+        let subject = Self::int_shapes_from_overlay_shapes(subject, origin)?;
+        let clip = Self::int_shapes_from_overlay_shapes(clip, origin)?;
+        let mut overlay = Overlay::with_shapes_options(
+            &subject,
+            &clip,
+            Self::int_overlay_options(),
+            Default::default(),
+        );
+        let shapes = overlay.overlay(rule, FillRule::Positive);
+        Some(Self::filter_overlay_shapes_by_area(
+            Self::overlay_shapes_from_int_shapes(shapes, origin),
+        ))
+    }
+
+    fn int_overlay_options() -> IntOverlayOptions {
+        IntOverlayOptions {
+            min_output_area: 0,
+            ..Default::default()
+        }
+    }
+
+    fn int_contours_from_overlay_contours(
+        contours: &[NodeOverlayContour],
+        origin: NodeIntGridOrigin,
+    ) -> Option<Vec<NodeIntContour>> {
+        contours
+            .iter()
+            .map(|contour| Self::int_contour_from_overlay_contour(contour, origin))
+            .collect::<Option<Vec<_>>>()
+            .map(|contours| {
+                contours
+                    .into_iter()
+                    .filter(|contour| contour.len() >= 3)
+                    .collect()
+            })
+    }
+
+    fn int_shapes_from_overlay_shapes(
+        shapes: &[NodeOverlayShape],
+        origin: NodeIntGridOrigin,
+    ) -> Option<NodeIntShapes> {
+        shapes
+            .iter()
+            .map(|shape| {
+                shape
+                    .iter()
+                    .map(|contour| Self::int_contour_from_overlay_contour(contour, origin))
+                    .collect::<Option<Vec<_>>>()
+                    .map(|shape| {
+                        shape
+                            .into_iter()
+                            .filter(|contour| contour.len() >= 3)
+                            .collect::<Vec<_>>()
+                    })
+            })
+            .collect::<Option<Vec<_>>>()
+            .map(|shapes| {
+                shapes
+                    .into_iter()
+                    .filter(|shape| !shape.is_empty())
+                    .collect()
+            })
+    }
+
+    fn int_contour_from_overlay_contour(
+        contour: &NodeOverlayContour,
+        origin: NodeIntGridOrigin,
+    ) -> Option<NodeIntContour> {
+        let mut int_contour = Vec::with_capacity(contour.len());
+        for point in contour {
+            let point = Self::int_point_from_overlay_point(*point, origin)?;
+            if int_contour.last().is_none_or(|last| *last != point) {
+                int_contour.push(point);
+            }
+        }
+        if int_contour.len() >= 2 && int_contour.first() == int_contour.last() {
+            int_contour.pop();
+        }
+        Some(int_contour)
+    }
+
+    fn int_grid_origin_for_contours(contours: &[NodeOverlayContour]) -> NodeIntGridOrigin {
+        let mut min_x = i64::MAX;
+        let mut min_y = i64::MAX;
+        for contour in contours {
+            for point in contour {
+                let key = Self::overlay_point_grid_key(*point);
+                min_x = min_x.min(key.0);
+                min_y = min_y.min(key.1);
+            }
+        }
+        if min_x == i64::MAX {
+            return NodeIntGridOrigin { x: 0, y: 0 };
+        }
+        NodeIntGridOrigin { x: min_x, y: min_y }
+    }
+
+    fn int_grid_origin_for_shapes(
+        subject: &[NodeOverlayShape],
+        clip: &[NodeOverlayShape],
+    ) -> NodeIntGridOrigin {
+        let mut min_x = i64::MAX;
+        let mut min_y = i64::MAX;
+        for shape in subject.iter().chain(clip.iter()) {
+            for contour in shape {
+                for point in contour {
+                    let key = Self::overlay_point_grid_key(*point);
+                    min_x = min_x.min(key.0);
+                    min_y = min_y.min(key.1);
+                }
+            }
+        }
+        if min_x == i64::MAX {
+            return NodeIntGridOrigin { x: 0, y: 0 };
+        }
+        NodeIntGridOrigin { x: min_x, y: min_y }
+    }
+
+    fn overlay_point_grid_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
+        (
+            (point[0] * NODE_OVERLAY_SCALE).round() as i64,
+            (point[1] * NODE_OVERLAY_SCALE).round() as i64,
+        )
+    }
+
+    fn int_point_from_overlay_point(
+        point: NodeOverlayPoint,
+        origin: NodeIntGridOrigin,
+    ) -> Option<IntPoint> {
+        let key = Self::overlay_point_grid_key(point);
+        Some(IntPoint::new(
+            i32::try_from(key.0 - origin.x).ok()?,
+            i32::try_from(key.1 - origin.y).ok()?,
+        ))
+    }
+
+    fn overlay_shapes_from_int_shapes(
+        shapes: NodeIntShapes,
+        origin: NodeIntGridOrigin,
+    ) -> NodeOverlayShapes {
+        shapes
+            .into_iter()
+            .map(|shape| {
+                shape
+                    .into_iter()
+                    .map(|contour| {
+                        contour
+                            .into_iter()
+                            .map(|point| Self::overlay_point_from_int_point(point, origin))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    fn overlay_point_from_int_point(
+        point: IntPoint,
+        origin: NodeIntGridOrigin,
+    ) -> NodeOverlayPoint {
+        [
+            (origin.x + i64::from(point.x)) as f64 / NODE_OVERLAY_SCALE,
+            (origin.y + i64::from(point.y)) as f64 / NODE_OVERLAY_SCALE,
+        ]
     }
 
     fn filter_overlay_shapes_by_area(shapes: NodeOverlayShapes) -> NodeOverlayShapes {
@@ -90,13 +269,36 @@ impl RoadSurfaceSystem {
             .filter_map(|shape| {
                 let filtered = shape
                     .into_iter()
-                    .filter(|contour| contour.len() >= 3)
+                    .filter_map(Self::canonical_overlay_contour)
                     .collect::<Vec<_>>();
                 let outer = filtered.first()?;
                 (Self::overlay_contour_area(outer).abs() > NODE_OVERLAY_MIN_AREA_M2)
                     .then_some(filtered)
             })
             .collect()
+    }
+
+    fn canonical_overlay_contour(contour: NodeOverlayContour) -> Option<NodeOverlayContour> {
+        let mut canonical = Vec::with_capacity(contour.len());
+        for point in contour {
+            let point = Self::canonical_overlay_point(point);
+            if canonical.last().is_none_or(|last| *last != point) {
+                canonical.push(point);
+            }
+        }
+        if canonical.len() >= 2 && canonical.first() == canonical.last() {
+            canonical.pop();
+        }
+        (canonical.len() >= 3
+            && Self::overlay_contour_area(&canonical).abs() > NODE_OVERLAY_MIN_AREA_M2)
+            .then_some(canonical)
+    }
+
+    fn canonical_overlay_point(point: NodeOverlayPoint) -> NodeOverlayPoint {
+        [
+            (point[0] * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
+            (point[1] * NODE_OVERLAY_SCALE).round() / NODE_OVERLAY_SCALE,
+        ]
     }
 
     pub(super) fn sort_overlay_shapes(shapes: &mut [NodeOverlayShape]) {
@@ -139,7 +341,7 @@ impl RoadSurfaceSystem {
             let next = contour[(index + 1) % contour.len()];
             signed_area += current[0] * next[1] - next[0] * current[1];
         }
-        signed_area * 0.5
+        (signed_area * 0.5) as f32
     }
 
     pub(super) fn union_terrain_clip_polygons(
@@ -154,18 +356,20 @@ impl RoadSurfaceSystem {
             return Vec::new();
         };
         Self::sort_overlay_shapes(&mut shapes);
-        Self::outer_boundary_polygons_from_overlay_shapes_with_candidate_heights(&shapes, polygons)
+        Self::terrain_clip_polygons_from_overlay_shapes_with_candidate_heights(&shapes, polygons)
     }
 
-    fn outer_boundary_polygons_from_overlay_shapes_with_candidate_heights(
+    fn terrain_clip_polygons_from_overlay_shapes_with_candidate_heights(
         shapes: &[NodeOverlayShape],
         candidates: &[RoadSurfaceVisualPolygon],
     ) -> Vec<RoadSurfaceVisualPolygon> {
         let mut polygons = Vec::new();
         for shape in shapes {
-            let Some(polygon) = Self::visual_polygon_from_overlay_shape_with_candidate_heights(
-                shape, candidates, false,
-            ) else {
+            let Some(polygon) =
+                Self::terrain_clip_polygon_from_overlay_shape_with_candidate_heights(
+                    shape, candidates,
+                )
+            else {
                 continue;
             };
             polygons.push(polygon);
@@ -184,6 +388,65 @@ impl RoadSurfaceSystem {
             .map(|hole| Self::overlay_contour_area(hole).abs())
             .sum::<f32>();
         (Self::overlay_contour_area(outer).abs() - holes).max(0.0)
+    }
+
+    pub(super) fn overlay_numeric_area_budget_for_shape(shape: &NodeOverlayShape) -> f32 {
+        let perimeter_m = shape
+            .iter()
+            .map(|contour| Self::overlay_contour_perimeter_m(contour))
+            .sum::<f32>();
+        let vertex_count = shape.iter().map(Vec::len).sum::<usize>();
+        Self::overlay_numeric_area_budget_m2(perimeter_m, vertex_count)
+    }
+
+    pub(super) fn overlay_numeric_area_budget_for_shapes(shapes: &NodeOverlayShapes) -> f32 {
+        let perimeter_m = shapes
+            .iter()
+            .flat_map(|shape| shape.iter())
+            .map(|contour| Self::overlay_contour_perimeter_m(contour))
+            .sum::<f32>();
+        let vertex_count = shapes
+            .iter()
+            .flat_map(|shape| shape.iter())
+            .map(Vec::len)
+            .sum::<usize>();
+        Self::overlay_numeric_area_budget_m2(perimeter_m, vertex_count)
+    }
+
+    pub(super) fn overlay_numeric_area_budget_for_world_loop(points_world: &[Vector3]) -> f32 {
+        if points_world.len() < 2 {
+            return NODE_OVERLAY_NUMERIC_AREA_EPS_M2;
+        }
+        let perimeter_m = points_world
+            .iter()
+            .zip(points_world.iter().cycle().skip(1))
+            .take(points_world.len())
+            .map(|(start, end)| start.distance_to(*end))
+            .sum::<f32>();
+        Self::overlay_numeric_area_budget_m2(perimeter_m, points_world.len())
+    }
+
+    fn overlay_numeric_area_budget_m2(perimeter_m: f32, vertex_count: usize) -> f32 {
+        let boundary_strip_m2 = perimeter_m * NODE_OVERLAY_NUMERIC_DUST_WIDTH_M;
+        let vertex_floor_m2 = vertex_count.max(1) as f32 * NODE_OVERLAY_MIN_AREA_M2;
+        (NODE_OVERLAY_NUMERIC_AREA_EPS_M2 + boundary_strip_m2 + vertex_floor_m2)
+            .min(NODE_OVERLAY_NUMERIC_AREA_CAP_M2)
+    }
+
+    fn overlay_contour_perimeter_m(contour: &NodeOverlayContour) -> f32 {
+        if contour.len() < 2 {
+            return 0.0;
+        }
+        contour
+            .iter()
+            .zip(contour.iter().cycle().skip(1))
+            .take(contour.len())
+            .map(|(start, end)| {
+                let dx = start[0] - end[0];
+                let dz = start[1] - end[1];
+                (dx * dx + dz * dz).sqrt() as f32
+            })
+            .sum()
     }
 
     fn overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
@@ -206,48 +469,16 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn visual_polygon_from_overlay_shape_with_candidate_heights(
+    fn terrain_clip_polygon_from_overlay_shape_with_candidate_heights(
         shape: &NodeOverlayShape,
         candidates: &[RoadSurfaceVisualPolygon],
-        preserve_holes: bool,
     ) -> Option<RoadSurfaceVisualPolygon> {
         let outer_contour = shape.first()?;
-        let mut outer_points = Self::world_points_from_overlay_contour_with_candidate_heights(
+        let outer_points = Self::world_points_from_overlay_contour_with_candidate_heights(
             outer_contour,
             candidates,
         )?;
-        if Self::signed_polygon_area_xz(&outer_points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
-            return None;
-        }
-        if Self::signed_polygon_area_xz(&outer_points) < 0.0 {
-            outer_points.reverse();
-        }
-
-        let mut hole_points = Vec::new();
-        if preserve_holes {
-            for contour in shape.iter().skip(1) {
-                let mut points = Self::world_points_from_overlay_contour_with_candidate_heights(
-                    contour, candidates,
-                )?;
-                if Self::signed_polygon_area_xz(&points).abs() <= NODE_OVERLAY_MIN_AREA_M2 {
-                    continue;
-                }
-                if Self::signed_polygon_area_xz(&points) > 0.0 {
-                    points.reverse();
-                }
-                hole_points.push(points);
-            }
-        }
-
-        Self::canonicalize_world_loop(&mut outer_points)?;
-        for hole in &mut hole_points {
-            Self::canonicalize_world_loop(hole)?;
-        }
-        let triangles_world = Self::triangulate_constrained_shape_xz(&outer_points, &hole_points)?;
-        Some(RoadSurfaceVisualPolygon {
-            points_world: outer_points,
-            triangles_world,
-        })
+        Self::make_boundary_loop_polygon(outer_points)
     }
 
     fn world_points_from_overlay_contour_with_candidate_heights(
@@ -257,56 +488,52 @@ impl RoadSurfaceSystem {
         contour
             .iter()
             .map(|point| {
-                let xz = Vector2::new(point[0], point[1]);
+                let xz = Vector2::new(point[0] as f32, point[1] as f32);
                 let y = Self::sample_height_from_candidate_coverage(xz, candidates)?;
-                Some(Vector3::new(point[0], y, point[1]))
+                Some(Vector3::new(point[0] as f32, y, point[1] as f32))
             })
             .collect()
-    }
-
-    fn canonicalize_world_loop(points_world: &mut Vec<Vector3>) -> Option<()> {
-        points_world
-            .dedup_by(|a, b| (*a - *b).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2);
-        if points_world.len() >= 2
-            && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
-                <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
-        {
-            points_world.pop();
-        }
-        if points_world.len() < 3 {
-            return None;
-        }
-        let (start_index, _) = points_world.iter().enumerate().min_by(|(_, a), (_, b)| {
-            a.x.total_cmp(&b.x)
-                .then(a.z.total_cmp(&b.z))
-                .then(a.y.total_cmp(&b.y))
-        })?;
-        points_world.rotate_left(start_index);
-        Some(())
     }
 
     fn sample_height_from_candidate_coverage(
         point_xz: Vector2,
         candidates: &[RoadSurfaceVisualPolygon],
     ) -> Option<f32> {
-        let point_key = Self::overlay_point_key([point_xz.x, point_xz.y]);
+        let point_key = Self::overlay_point_key([f64::from(point_xz.x), f64::from(point_xz.y)]);
         let mut vertex_heights = Vec::new();
         for polygon in candidates {
             for point in &polygon.points_world {
-                if Self::overlay_point_key([point.x, point.z]) == point_key {
+                if Self::overlay_point_key([f64::from(point.x), f64::from(point.z)]) == point_key {
                     vertex_heights.push(point.y);
                 }
             }
             for triangle in &polygon.triangles_world {
                 for point in triangle {
-                    if Self::overlay_point_key([point.x, point.z]) == point_key {
+                    if Self::overlay_point_key([f64::from(point.x), f64::from(point.z)])
+                        == point_key
+                    {
                         vertex_heights.push(point.y);
                     }
                 }
             }
         }
         if !vertex_heights.is_empty() {
-            return Self::canonical_height_sample(vertex_heights);
+            return Self::highest_height_sample(vertex_heights);
+        }
+
+        let mut edge_heights = Vec::new();
+        for polygon in candidates {
+            for index in 0..polygon.points_world.len() {
+                let start = polygon.points_world[index];
+                let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
+                if let Some(height) = Self::sample_height_from_candidate_edge(point_xz, start, end)
+                {
+                    edge_heights.push(height);
+                }
+            }
+        }
+        if !edge_heights.is_empty() {
+            return Self::highest_height_sample(edge_heights);
         }
 
         let mut covered_heights = Vec::new();
@@ -320,10 +547,32 @@ impl RoadSurfaceSystem {
                 }
             }
         }
-        Self::canonical_height_sample(covered_heights)
+        Self::highest_height_sample(covered_heights)
     }
 
-    fn canonical_height_sample<I>(heights: I) -> Option<f32>
+    fn sample_height_from_candidate_edge(
+        point_xz: Vector2,
+        start: Vector3,
+        end: Vector3,
+    ) -> Option<f32> {
+        let start_xz = Vector2::new(start.x, start.z);
+        let end_xz = Vector2::new(end.x, end.z);
+        let segment = end_xz - start_xz;
+        let length_squared = segment.length_squared();
+        if length_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+            return None;
+        }
+        let t = ((point_xz - start_xz).dot(segment) / length_squared).clamp(0.0, 1.0);
+        let closest = start_xz + segment * t;
+        if point_xz.distance_squared_to(closest) > SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+            return None;
+        }
+        Some(start.y + (end.y - start.y) * t)
+    }
+
+    // Unioned terrain cutters may touch several visible top surfaces at the same XZ seam.
+    // Use the highest deterministic top height so terrain cannot survive above a road surface.
+    fn highest_height_sample<I>(heights: I) -> Option<f32>
     where
         I: IntoIterator<Item = f32>,
     {
@@ -332,133 +581,6 @@ impl RoadSurfaceSystem {
             return None;
         }
         heights.sort_by(|a, b| a.total_cmp(b));
-        let min_height = *heights.first()?;
-        let max_height = *heights.last()?;
-        (max_height - min_height <= NODE_SURFACE_HEIGHT_EPSILON_M).then_some(min_height)
-    }
-
-    fn triangulate_constrained_shape_xz(
-        outer_points: &[Vector3],
-        holes: &[Vec<Vector3>],
-    ) -> Option<Vec<[Vector3; 3]>> {
-        if outer_points.len() < 3 {
-            return None;
-        }
-
-        let mut vertices = Vec::new();
-        let mut vertex_lookup = BTreeMap::new();
-        let mut constraints = BTreeSet::new();
-        Self::push_surface_cdt_loop(
-            outer_points,
-            &mut vertices,
-            &mut vertex_lookup,
-            &mut constraints,
-        );
-        for hole in holes {
-            Self::push_surface_cdt_loop(hole, &mut vertices, &mut vertex_lookup, &mut constraints);
-        }
-
-        Self::triangulate_surface_cdt_vertices(vertices, constraints, outer_points, holes)
-    }
-
-    fn triangulate_surface_cdt_vertices(
-        vertices: Vec<Vector3>,
-        constraints: BTreeSet<[usize; 2]>,
-        outer_points: &[Vector3],
-        holes: &[Vec<Vector3>],
-    ) -> Option<Vec<[Vector3; 3]>> {
-        let spade_vertices = vertices
-            .iter()
-            .map(|point| Point2::new(f64::from(point.x), f64::from(point.z)))
-            .collect::<Vec<_>>();
-        let mut invalid_constraints = 0usize;
-        let cdt = SurfaceCdt::try_bulk_load_cdt(
-            spade_vertices,
-            constraints.into_iter().collect(),
-            |_| invalid_constraints += 1,
-        )
-        .ok()?;
-        if invalid_constraints > 0 {
-            return None;
-        }
-
-        let mut triangles = Vec::new();
-        for face in cdt.inner_faces() {
-            let [a, b, c] = face.vertices();
-            let triangle = [
-                vertices[a.fix().index()],
-                vertices[b.fix().index()],
-                vertices[c.fix().index()],
-            ];
-            let centroid = Vector2::new(
-                (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
-                (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
-            );
-            if !Self::triangle_has_area_xz(triangle) {
-                continue;
-            }
-            if !Self::polygon_contains_point_xz(outer_points, centroid) {
-                continue;
-            }
-            if holes
-                .iter()
-                .any(|hole| Self::polygon_contains_point_xz(hole, centroid))
-            {
-                continue;
-            }
-            triangles.push(triangle);
-        }
-
-        (!triangles.is_empty()).then_some(triangles)
-    }
-
-    fn push_surface_cdt_loop(
-        points_world: &[Vector3],
-        vertices: &mut Vec<Vector3>,
-        vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
-        constraints: &mut BTreeSet<[usize; 2]>,
-    ) {
-        if points_world.len() < 2 {
-            return;
-        }
-        let indices = points_world
-            .iter()
-            .map(|point| Self::insert_surface_cdt_vertex(*point, vertices, vertex_lookup))
-            .collect::<Vec<_>>();
-        for index in 0..indices.len() {
-            let edge = Self::normalize_surface_edge_array(
-                indices[index],
-                indices[(index + 1) % indices.len()],
-            );
-            if edge[0] != edge[1] {
-                constraints.insert(edge);
-            }
-        }
-    }
-
-    fn insert_surface_cdt_vertex(
-        point: Vector3,
-        vertices: &mut Vec<Vector3>,
-        vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
-    ) -> usize {
-        let key = Self::surface_cdt_vertex_key(point);
-        if let Some(index) = vertex_lookup.get(&key) {
-            return *index;
-        }
-        let index = vertices.len();
-        vertices.push(point);
-        vertex_lookup.insert(key, index);
-        index
-    }
-
-    fn surface_cdt_vertex_key(point: Vector3) -> (i64, i64) {
-        (
-            (point.x / SAMPLE_EPSILON_M).round() as i64,
-            (point.z / SAMPLE_EPSILON_M).round() as i64,
-        )
-    }
-
-    fn normalize_surface_edge_array(a: usize, b: usize) -> [usize; 2] {
-        if a < b { [a, b] } else { [b, a] }
+        heights.last().copied()
     }
 }

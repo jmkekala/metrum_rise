@@ -4,7 +4,8 @@
 
 use super::arrangement::{NodeBandOwner, NodeHeightSource};
 use super::backend::{
-    RoadVec2, RoadVec3, overlay_point_to_road, quantize_road_vec2_to_overlay_grid,
+    ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
+    quantize_road_vec2_to_overlay_grid,
 };
 use super::input::{NodeArrangementInput, NodeInputBandInterval};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
@@ -17,7 +18,7 @@ use std::collections::BTreeMap;
 
 const HEIGHT_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_PARAMETER_KEY_SCALE: f64 = 1_000_000.0;
-const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 1.0 / HEIGHT_PARAMETER_KEY_SCALE;
+const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 8.0 / ROAD_OVERLAY_COORDINATE_SCALE;
 const HEIGHT_FIELD_MIN_AXIS_LEN2_M2: f64 = 1.0e-12;
 
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
@@ -136,9 +137,10 @@ impl NodeHeightSolution {
         validate_input_ownership_pair(input, ownership)?;
         let fields = height_fields_by_source(input)?;
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
+        let global_points = global_ownership_points(ownership);
 
         for region in &ownership.owned_regions {
-            regions.push(heighted_region(region, &fields)?);
+            regions.push(heighted_region(region, &fields, &global_points)?);
         }
 
         Ok(Self {
@@ -290,6 +292,7 @@ fn height_fields_by_source(
 fn heighted_region(
     region: &NodeBooleanOwnedRegion,
     fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+    global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedRegion, NodeHeightSourceError> {
     let band_index =
         region
@@ -324,7 +327,7 @@ fn heighted_region(
             .cloned()
             .chain(field.height_sources.iter().cloned()),
     );
-    let shape = heighted_shape(&region.shape, field, &height_sources)?;
+    let shape = heighted_shape(&region.shape, field, &height_sources, global_points)?;
 
     Ok(NodeHeightedRegion {
         kind: region.kind,
@@ -341,10 +344,11 @@ fn heighted_shape(
     shape: &NodeOverlayShape,
     field: &NodeBandHeightField,
     height_sources: &[NodeHeightSource],
+    global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedShape, NodeHeightSourceError> {
     shape
         .iter()
-        .map(|contour| heighted_contour(contour, field, height_sources))
+        .map(|contour| heighted_contour(contour, field, height_sources, global_points))
         .collect()
 }
 
@@ -352,10 +356,11 @@ fn heighted_contour(
     contour: &NodeOverlayContour,
     field: &NodeBandHeightField,
     height_sources: &[NodeHeightSource],
+    global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedContour, NodeHeightSourceError> {
+    let contour = noded_overlay_contour(contour, global_points);
     contour
-        .iter()
-        .copied()
+        .into_iter()
         .map(|point| heighted_vertex(point, field, height_sources))
         .collect()
 }
@@ -412,6 +417,134 @@ fn midpoint(start: RoadVec2, end: RoadVec2) -> RoadVec2 {
 
 fn interpolate(start: RoadVec2, end: RoadVec2, t: f64) -> RoadVec2 {
     start + (end - start) * t
+}
+
+type NodeOverlayPointKey = (i64, i64);
+
+fn global_ownership_points(ownership: &NodeBooleanOwnership) -> Vec<NodeOverlayPointKey> {
+    let mut points = ownership
+        .owned_regions
+        .iter()
+        .flat_map(|region| region.shape.iter())
+        .flat_map(|contour| contour.iter().copied())
+        .map(overlay_point_key)
+        .collect::<Vec<_>>();
+    points.extend(
+        ownership
+            .footprint_shapes
+            .iter()
+            .flat_map(|shape| shape.iter())
+            .flat_map(|contour| contour.iter().copied())
+            .map(overlay_point_key),
+    );
+    points.sort_unstable();
+    points.dedup();
+    points
+}
+
+fn noded_overlay_contour(
+    contour: &NodeOverlayContour,
+    global_points: &[NodeOverlayPointKey],
+) -> NodeOverlayContour {
+    if contour.len() < 2 {
+        return contour.clone();
+    }
+
+    let mut noded = Vec::with_capacity(contour.len());
+    for edge_index in 0..contour.len() {
+        let start = overlay_point_key(contour[edge_index]);
+        let end = overlay_point_key(contour[(edge_index + 1) % contour.len()]);
+        noded.push(overlay_point_from_key(start));
+        let mut split_points = global_points
+            .iter()
+            .copied()
+            .filter(|point| point_lies_strictly_inside_segment(*point, start, end))
+            .collect::<Vec<_>>();
+        sort_segment_split_points(start, end, &mut split_points);
+        noded.extend(split_points.into_iter().map(overlay_point_from_key));
+    }
+
+    dedup_consecutive_overlay_points(&mut noded);
+    if noded.len() >= 2
+        && overlay_point_key(*noded.first().expect("noded contour has first point"))
+            == overlay_point_key(*noded.last().expect("noded contour has last point"))
+    {
+        noded.pop();
+    }
+    noded
+}
+
+fn point_lies_strictly_inside_segment(
+    point: NodeOverlayPointKey,
+    start: NodeOverlayPointKey,
+    end: NodeOverlayPointKey,
+) -> bool {
+    if point == start || point == end || start == end {
+        return false;
+    }
+    let dx = i128::from(end.0 - start.0);
+    let dz = i128::from(end.1 - start.1);
+    let px = i128::from(point.0 - start.0);
+    let pz = i128::from(point.1 - start.1);
+    if px * dz - pz * dx != 0 {
+        return false;
+    }
+    let inside_x = if start.0 == end.0 {
+        point.0 == start.0
+    } else {
+        point.0 > start.0.min(end.0) && point.0 < start.0.max(end.0)
+    };
+    let inside_z = if start.1 == end.1 {
+        point.1 == start.1
+    } else {
+        point.1 > start.1.min(end.1) && point.1 < start.1.max(end.1)
+    };
+    inside_x && inside_z
+}
+
+fn sort_segment_split_points(
+    start: NodeOverlayPointKey,
+    end: NodeOverlayPointKey,
+    points: &mut Vec<NodeOverlayPointKey>,
+) {
+    let dx = end.0 - start.0;
+    let dz = end.1 - start.1;
+    if dx.abs() >= dz.abs() {
+        points.sort_by_key(|point| {
+            if dx >= 0 {
+                point.0 - start.0
+            } else {
+                start.0 - point.0
+            }
+        });
+    } else {
+        points.sort_by_key(|point| {
+            if dz >= 0 {
+                point.1 - start.1
+            } else {
+                start.1 - point.1
+            }
+        });
+    }
+    points.dedup();
+}
+
+fn dedup_consecutive_overlay_points(points: &mut NodeOverlayContour) {
+    points.dedup_by(|a, b| overlay_point_key(*a) == overlay_point_key(*b));
+}
+
+fn overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
+    (
+        (point[0] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        (point[1] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
+}
+
+fn overlay_point_from_key(point: NodeOverlayPointKey) -> NodeOverlayPoint {
+    [
+        point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+        point.1 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+    ]
 }
 
 fn quantize_m(value: f64) -> i64 {

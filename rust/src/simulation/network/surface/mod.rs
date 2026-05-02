@@ -33,16 +33,20 @@ mod validation;
 
 // Shared geometric tolerances used across surface compilation, overlay solving, and queries.
 const SAMPLE_EPSILON_M: f32 = 0.001;
-const WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2: f32 = 1.0e-8;
+const WORLD_POINT_DEDUP_DISTANCE_M: f32 = 1.0e-4;
+const WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2: f32 =
+    WORLD_POINT_DEDUP_DISTANCE_M * WORLD_POINT_DEDUP_DISTANCE_M;
 // Shared overlay/geometry area floor: one 1 mm quantized square keeps closure slivers visible.
 const NODE_OVERLAY_MIN_AREA_M2: f32 = 1.0e-6;
 // Self-checks that compare two backend results allow a small fixed-grid residual budget.
 const NODE_OVERLAY_NUMERIC_AREA_EPS_M2: f32 = NODE_OVERLAY_MIN_AREA_M2 * 16.0;
+const NODE_OVERLAY_NUMERIC_DUST_WIDTH_M: f32 = WORLD_POINT_DEDUP_DISTANCE_M;
+const NODE_OVERLAY_NUMERIC_AREA_CAP_M2: f32 = 1.0e-3;
 // Avoid Rayon setup overhead for the small edge/node sets common in single-edit rebuilds.
 const PARALLEL_SURFACE_COMPILE_MIN_ITEMS: usize = 16;
 
 type SurfaceCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
-type NodeOverlayPoint = [f32; 2];
+type NodeOverlayPoint = [f64; 2];
 type NodeOverlayPointKey = (i64, i64);
 type NodeOverlayContour = Vec<NodeOverlayPoint>;
 type NodeOverlayShape = Vec<NodeOverlayContour>;
@@ -457,10 +461,7 @@ impl RoadSurfaceSystem {
                 if !Self::is_surface_edge(edge) {
                     return (edge_idx, None);
                 }
-                (
-                    edge_idx,
-                    Some(self.compile_edge_sections(graph, terrain, edge_idx)),
-                )
+                (edge_idx, Some(self.compile_edge_sections(graph, edge_idx)))
             });
         for (edge_idx, sections) in section_results {
             if let Some(sections) = sections {
@@ -546,10 +547,7 @@ impl RoadSurfaceSystem {
         let edge_ids = self.all_surface_edge_ids(graph);
         let section_results: Vec<(usize, Vec<RoadSurfaceSection>)> =
             Self::collect_surface_compile_work(&edge_ids, |edge_idx| {
-                (
-                    edge_idx,
-                    self.compile_edge_sections(graph, terrain, edge_idx),
-                )
+                (edge_idx, self.compile_edge_sections(graph, edge_idx))
             });
         for (edge_idx, sections) in section_results {
             self.compiled_sections.insert(edge_idx, sections);

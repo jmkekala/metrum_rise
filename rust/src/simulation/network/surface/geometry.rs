@@ -48,6 +48,42 @@ impl RoadSurfaceSystem {
         })
     }
 
+    pub(super) fn make_boundary_loop_polygon(
+        mut points_world: Vec<Vector3>,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        points_world
+            .dedup_by(|a, b| (*a - *b).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2);
+        if points_world.len() >= 2
+            && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
+                <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+        {
+            points_world.pop();
+        }
+        if points_world.len() < 3 {
+            return None;
+        }
+        if Self::polygon_has_strict_edge_crossing_xz(&points_world) {
+            return None;
+        }
+        let signed_area = Self::signed_polygon_area_xz(&points_world);
+        if signed_area.abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+            return None;
+        }
+        if signed_area < 0.0 {
+            points_world.reverse();
+        }
+        let (start_index, _) = points_world.iter().enumerate().min_by(|(_, a), (_, b)| {
+            a.x.total_cmp(&b.x)
+                .then(a.z.total_cmp(&b.z))
+                .then(a.y.total_cmp(&b.y))
+        })?;
+        points_world.rotate_left(start_index);
+        Some(RoadSurfaceVisualPolygon {
+            points_world,
+            triangles_world: Vec::new(),
+        })
+    }
+
     pub(super) fn make_visual_strip_polygon(
         mut points_world: Vec<Vector3>,
     ) -> Option<RoadSurfaceVisualPolygon> {

@@ -227,6 +227,10 @@ Deterministic seam contract:
 For roads, that means:
 
 - grounded road footprint support is owned by the committed road top surface
+- the committed road top surface is intentionally laterally flat at each section station:
+  carriageway, left edge, and right edge share the same road height, while sidewalks use
+  `road_height + curb_step`
+- drainage crown, banking, and terrain-derived crossfall are not part of the road support surface
 - bridges limit that support to abutment-owned grounded regions
 - tunnels limit that support to visible portal-owned grounded regions
 - grounded `Standard` roads replace the near-road visible terrain locally:

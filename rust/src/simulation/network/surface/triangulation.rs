@@ -6,9 +6,9 @@ use super::arrangement::{NodeBandOwner, NodeHeightSource};
 use super::backend::RoadVec3;
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::{
-    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_EPS_M2, NodeOverlayContour,
-    NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind, SurfaceCdt,
+    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
+    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
+    SurfaceCdt,
 };
 use i_overlay::core::overlay_rule::OverlayRule;
 use spade::{Point2, Triangulation};
@@ -295,6 +295,7 @@ fn triangle_is_inside_owner(
     owner_shape: &NodeOverlayShape,
 ) -> Result<bool, NodeTriangulationError> {
     let triangle_shape = vec![positive_triangle_contour(triangle, vertices)];
+    let area_budget_m2 = RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(&triangle_shape);
     let triangle_shapes = vec![triangle_shape];
     let owner_shapes = vec![owner_shape.clone()];
     let residual = overlay_difference(
@@ -304,7 +305,7 @@ fn triangle_is_inside_owner(
         &owner_shapes,
         "triangle_minus_owner",
     )?;
-    Ok(residual.is_empty())
+    Ok(overlay_area_m2(&residual) <= area_budget_m2)
 }
 
 fn reject_triangle_coverage_mismatch(
@@ -337,9 +338,8 @@ fn reject_triangle_coverage_mismatch(
     )?;
     let missing_area_m2 = overlay_area_m2(&missing);
     let extra_area_m2 = overlay_area_m2(&extra);
-    if missing_area_m2 > NODE_OVERLAY_NUMERIC_AREA_EPS_M2
-        || extra_area_m2 > NODE_OVERLAY_NUMERIC_AREA_EPS_M2
-    {
+    let area_budget_m2 = RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(owner_shape);
+    if missing_area_m2 > area_budget_m2 || extra_area_m2 > area_budget_m2 {
         return Err(NodeTriangulationError::TriangleCoverageMismatch {
             node_id,
             region_index,
@@ -393,7 +393,7 @@ fn overlay_shape_from_heighted_region(region: &NodeHeightedRegion) -> NodeOverla
         .map(|contour| {
             contour
                 .iter()
-                .map(|vertex| [vertex.point_xz.x as f32, vertex.point_xz.y as f32])
+                .map(|vertex| [vertex.point_xz.x, vertex.point_xz.y])
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -415,7 +415,7 @@ fn positive_triangle_contour(
 }
 
 fn overlay_point_from_vertex(vertex: &NodeTriangulatedVertex) -> NodeOverlayPoint {
-    [vertex.point_world.x as f32, vertex.point_world.z as f32]
+    [vertex.point_world.x, vertex.point_world.z]
 }
 
 fn overlay_area_m2(shapes: &NodeOverlayShapes) -> f32 {
@@ -445,7 +445,7 @@ fn signed_overlay_area_m2(contour: &NodeOverlayContour) -> f32 {
         let end = contour[(index + 1) % contour.len()];
         area += start[0] * end[1] - end[0] * start[1];
     }
-    area * 0.5
+    (area * 0.5) as f32
 }
 
 fn triangle_sort_key(
