@@ -189,19 +189,15 @@ pub(crate) fn build_road_touched_terrain_patch(
         .collect::<Vec<_>>();
     let mut invalid_constraint_edges = 0usize;
     let mut invalid_constraint_samples = Vec::new();
-    let cdt = SpadeCdt::try_bulk_load_cdt(
-        spade_vertices,
-        canonical.constraints.clone(),
-        |edge| {
-            invalid_constraint_edges += 1;
-            insert_invalid_constraint_sample(
-                &mut invalid_constraint_samples,
-                normalize_edge_array(edge[0], edge[1]),
-                &canonical.vertices,
-                &canonical.road_constraint_sources,
-            );
-        },
-    )
+    let cdt = SpadeCdt::try_bulk_load_cdt(spade_vertices, canonical.constraints.clone(), |edge| {
+        invalid_constraint_edges += 1;
+        insert_invalid_constraint_sample(
+            &mut invalid_constraint_samples,
+            normalize_edge_array(edge[0], edge[1]),
+            &canonical.vertices,
+            &canonical.road_constraint_sources,
+        );
+    })
     .map_err(|_| TerrainCdtError::TriangulationFailed)?;
 
     let mut triangles = Vec::new();
@@ -260,7 +256,7 @@ pub(crate) fn build_road_touched_terrain_patch(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct TerrainCdtRoadConstraintSource {
     stable_piece_id: u64,
     local_loop_index: u32,
@@ -360,6 +356,13 @@ fn canonicalize_input(
         insert_vertex(sample, &mut vertices, &mut vertex_lookup);
     }
 
+    node_road_constraint_edges(
+        &mut vertices,
+        &mut vertex_lookup,
+        input.patch,
+        &mut road_constraint_edges,
+        &mut road_constraint_sources,
+    );
     push_patch_boundary_constraints(input.patch, &vertices, &mut constraint_set);
     for edge in &road_constraint_edges {
         insert_constraint(*edge, &mut constraint_set);
@@ -475,6 +478,266 @@ fn insert_constraint(edge: [usize; 2], constraint_set: &mut BTreeSet<[usize; 2]>
     if edge[0] != edge[1] {
         constraint_set.insert(edge);
     }
+}
+
+// Spade accepts a constrained graph but does not node crossing or T-touching
+// constraints for us. i_overlay owns roadbed area union; this patch-local pass
+// only canonicalizes the final CDT constraint graph. Determinism comes from
+// sorted original road loops, quantized XZ vertex lookup, and BTreeSet edge
+// emission. Complexity is O(E^2) with bbox rejection over one dirty terrain
+// patch's roadbed constraints, outside the per-tick simulation hot path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerrainCdtRoadConstraintSplit {
+    t: f64,
+    vertex_index: usize,
+}
+
+fn node_road_constraint_edges(
+    vertices: &mut Vec<TerrainCdtVertex>,
+    vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
+    patch: TerrainCdtPatch,
+    road_constraint_edges: &mut Vec<[usize; 2]>,
+    road_constraint_sources: &mut BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+) {
+    if road_constraint_edges.len() < 2 {
+        return;
+    }
+
+    let original_edges = road_constraint_edges.clone();
+    let mut split_points = original_edges
+        .iter()
+        .map(|edge| {
+            vec![
+                TerrainCdtRoadConstraintSplit {
+                    t: 0.0,
+                    vertex_index: edge[0],
+                },
+                TerrainCdtRoadConstraintSplit {
+                    t: 1.0,
+                    vertex_index: edge[1],
+                },
+            ]
+        })
+        .collect::<Vec<_>>();
+
+    for first_index in 0..original_edges.len() {
+        for second_index in first_index + 1..original_edges.len() {
+            let first_edge = original_edges[first_index];
+            let second_edge = original_edges[second_index];
+            if first_edge == second_edge {
+                continue;
+            }
+            let first_start = vertices[first_edge[0]];
+            let first_end = vertices[first_edge[1]];
+            let second_start = vertices[second_edge[0]];
+            let second_end = vertices[second_edge[1]];
+            if !segment_bounds_overlap(first_start, first_end, second_start, second_end) {
+                continue;
+            }
+
+            for intersection in
+                segment_intersections(first_start, first_end, second_start, second_end)
+            {
+                let first_t =
+                    segment_parameter(first_start, first_end, intersection.x, intersection.z);
+                let second_t =
+                    segment_parameter(second_start, second_end, intersection.x, intersection.z);
+                if !unit_interval_contains(first_t) || !unit_interval_contains(second_t) {
+                    continue;
+                }
+                let first_height =
+                    interpolated_segment_height(first_start, first_end, clamp_unit(first_t));
+                let second_height =
+                    interpolated_segment_height(second_start, second_end, clamp_unit(second_t));
+                let vertex_index = insert_road_constraint_vertex(
+                    TerrainCdtVertex::new(
+                        intersection.x,
+                        first_height.max(second_height),
+                        intersection.z,
+                    ),
+                    vertices,
+                    vertex_lookup,
+                );
+                split_points[first_index].push(TerrainCdtRoadConstraintSplit {
+                    t: clamp_unit(first_t),
+                    vertex_index,
+                });
+                split_points[second_index].push(TerrainCdtRoadConstraintSplit {
+                    t: clamp_unit(second_t),
+                    vertex_index,
+                });
+            }
+        }
+    }
+
+    let original_sources = road_constraint_sources.clone();
+    let mut noded_edges = BTreeSet::new();
+    road_constraint_sources.clear();
+
+    for (edge, splits) in original_edges.iter().copied().zip(split_points.iter_mut()) {
+        sort_dedup_constraint_splits(splits);
+        let source = original_sources.get(&edge).copied();
+        for pair in splits.windows(2) {
+            let noded_edge = normalize_edge_array(pair[0].vertex_index, pair[1].vertex_index);
+            if noded_edge[0] == noded_edge[1]
+                || edge_lies_on_patch_boundary(
+                    vertices[noded_edge[0]],
+                    vertices[noded_edge[1]],
+                    patch,
+                )
+            {
+                continue;
+            }
+            noded_edges.insert(noded_edge);
+            if let Some(source) = source {
+                road_constraint_sources
+                    .entry(noded_edge)
+                    .and_modify(|existing| *existing = (*existing).min(source))
+                    .or_insert(source);
+            }
+        }
+    }
+
+    *road_constraint_edges = noded_edges.into_iter().collect();
+}
+
+fn insert_road_constraint_vertex(
+    vertex: TerrainCdtVertex,
+    vertices: &mut Vec<TerrainCdtVertex>,
+    vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
+) -> usize {
+    let key = (quantized_coord(vertex.x), quantized_coord(vertex.z));
+    if let Some(index) = vertex_lookup.get(&key) {
+        vertices[*index].height_m = vertices[*index].height_m.max(vertex.height_m);
+        return *index;
+    }
+    let index = vertices.len();
+    vertices.push(vertex);
+    vertex_lookup.insert(key, index);
+    index
+}
+
+fn sort_dedup_constraint_splits(splits: &mut Vec<TerrainCdtRoadConstraintSplit>) {
+    splits.sort_by(|a, b| {
+        a.t.total_cmp(&b.t)
+            .then_with(|| a.vertex_index.cmp(&b.vertex_index))
+    });
+    let mut deduped = Vec::with_capacity(splits.len());
+    for split in splits.iter().copied() {
+        if let Some(last) = deduped.last_mut() {
+            let last: &mut TerrainCdtRoadConstraintSplit = last;
+            if (split.t - last.t).abs() <= CDT_EPSILON_M || split.vertex_index == last.vertex_index
+            {
+                if split.vertex_index < last.vertex_index {
+                    *last = split;
+                }
+                continue;
+            }
+        }
+        deduped.push(split);
+    }
+    *splits = deduped;
+}
+
+fn segment_intersections(
+    first_start: TerrainCdtVertex,
+    first_end: TerrainCdtVertex,
+    second_start: TerrainCdtVertex,
+    second_end: TerrainCdtVertex,
+) -> Vec<TerrainCdtVertex> {
+    let first_dx = first_end.x - first_start.x;
+    let first_dz = first_end.z - first_start.z;
+    let second_dx = second_end.x - second_start.x;
+    let second_dz = second_end.z - second_start.z;
+    let first_len_sq = first_dx * first_dx + first_dz * first_dz;
+    let second_len_sq = second_dx * second_dx + second_dz * second_dz;
+    if first_len_sq <= CDT_EPSILON_M * CDT_EPSILON_M
+        || second_len_sq <= CDT_EPSILON_M * CDT_EPSILON_M
+    {
+        return Vec::new();
+    }
+
+    let cross = cross_xz(first_dx, first_dz, second_dx, second_dz);
+    let start_delta_x = second_start.x - first_start.x;
+    let start_delta_z = second_start.z - first_start.z;
+    if cross.abs() > CDT_EPSILON_M * first_len_sq.sqrt().max(second_len_sq.sqrt()) {
+        let first_t = cross_xz(start_delta_x, start_delta_z, second_dx, second_dz) / cross;
+        let second_t = cross_xz(start_delta_x, start_delta_z, first_dx, first_dz) / cross;
+        if unit_interval_contains(first_t) && unit_interval_contains(second_t) {
+            return vec![TerrainCdtVertex::new(
+                first_start.x + first_dx * clamp_unit(first_t),
+                0.0,
+                first_start.z + first_dz * clamp_unit(first_t),
+            )];
+        }
+        return Vec::new();
+    }
+
+    if cross_xz(start_delta_x, start_delta_z, first_dx, first_dz).abs()
+        > CDT_EPSILON_M * first_len_sq.sqrt()
+    {
+        return Vec::new();
+    }
+
+    let first_t0 = segment_parameter(first_start, first_end, second_start.x, second_start.z);
+    let first_t1 = segment_parameter(first_start, first_end, second_end.x, second_end.z);
+    let overlap_start = first_t0.min(first_t1).max(0.0);
+    let overlap_end = first_t0.max(first_t1).min(1.0);
+    if overlap_start > overlap_end + CDT_EPSILON_M {
+        return Vec::new();
+    }
+
+    let mut intersections = vec![TerrainCdtVertex::new(
+        first_start.x + first_dx * clamp_unit(overlap_start),
+        0.0,
+        first_start.z + first_dz * clamp_unit(overlap_start),
+    )];
+    if (overlap_end - overlap_start).abs() > CDT_EPSILON_M {
+        intersections.push(TerrainCdtVertex::new(
+            first_start.x + first_dx * clamp_unit(overlap_end),
+            0.0,
+            first_start.z + first_dz * clamp_unit(overlap_end),
+        ));
+    }
+    intersections
+}
+
+fn segment_bounds_overlap(
+    first_start: TerrainCdtVertex,
+    first_end: TerrainCdtVertex,
+    second_start: TerrainCdtVertex,
+    second_end: TerrainCdtVertex,
+) -> bool {
+    first_start.x.min(first_end.x) <= second_start.x.max(second_end.x) + CDT_EPSILON_M
+        && second_start.x.min(second_end.x) <= first_start.x.max(first_end.x) + CDT_EPSILON_M
+        && first_start.z.min(first_end.z) <= second_start.z.max(second_end.z) + CDT_EPSILON_M
+        && second_start.z.min(second_end.z) <= first_start.z.max(first_end.z) + CDT_EPSILON_M
+}
+
+fn segment_parameter(start: TerrainCdtVertex, end: TerrainCdtVertex, x: f64, z: f64) -> f64 {
+    let dx = end.x - start.x;
+    let dz = end.z - start.z;
+    let length_squared = dx * dx + dz * dz;
+    if length_squared <= CDT_EPSILON_M * CDT_EPSILON_M {
+        return 0.0;
+    }
+    ((x - start.x) * dx + (z - start.z) * dz) / length_squared
+}
+
+fn interpolated_segment_height(start: TerrainCdtVertex, end: TerrainCdtVertex, t: f64) -> f32 {
+    (f64::from(start.height_m) + f64::from(end.height_m - start.height_m) * t) as f32
+}
+
+fn unit_interval_contains(value: f64) -> bool {
+    value >= -CDT_EPSILON_M && value <= 1.0 + CDT_EPSILON_M
+}
+
+fn clamp_unit(value: f64) -> f64 {
+    value.clamp(0.0, 1.0)
+}
+
+fn cross_xz(ax: f64, az: f64, bx: f64, bz: f64) -> f64 {
+    ax * bz - az * bx
 }
 
 fn edge_lies_on_patch_boundary(
@@ -1193,7 +1456,7 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_road_constraints_are_reported_without_panicking() {
+    fn crossing_road_constraints_are_noded_before_triangulation() {
         let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
         let road_a = road_loop_from_centerline(
             TerrainCdtVertex::new(4.0, 0.0, 20.0),
@@ -1214,15 +1477,61 @@ mod tests {
             ],
             piece_source_samples(),
         ))
-        .expect("conflicting road loops must not panic the terrain bridge");
+        .expect("crossing road loops must not panic the terrain bridge");
 
+        assert_eq!(
+            mesh.stats.invalid_constraint_edges, 0,
+            "road constraints must be split at deterministic intersections before Spade sees them"
+        );
         assert!(
-            mesh.stats.invalid_constraint_edges > 0,
-            "overlapping road loops must be reported as skipped CDT constraints"
+            mesh.stats.road_constraint_edges > 8,
+            "crossing road loops should gain noded roadbed constraints"
         );
         for vertex in &mesh.vertices {
             assert!(patch_contains(*vertex, patch));
         }
+    }
+
+    #[test]
+    fn road_loop_endpoint_on_another_loop_edge_splits_the_roadbed_constraint() {
+        let patch = TerrainCdtPatch::new(-96.0, -32.0, 64.0, 64.0, [0.0; 4]);
+        let horizontal = vec![
+            TerrainCdtVertex::new(-83.390, 0.12, -18.916),
+            TerrainCdtVertex::new(49.610, 0.12, -18.916),
+            TerrainCdtVertex::new(49.610, 0.12, -8.916),
+            TerrainCdtVertex::new(-83.390, 0.12, -8.916),
+        ];
+        let incoming = vec![
+            TerrainCdtVertex::new(-16.818, 0.12, -8.916),
+            TerrainCdtVertex::new(-9.747, 0.12, -1.845),
+            TerrainCdtVertex::new(-16.818, 0.12, 5.226),
+            TerrainCdtVertex::new(-23.889, 0.12, -1.845),
+        ];
+
+        let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![
+                TerrainCdtRoadLoop::new(0, 0, horizontal),
+                TerrainCdtRoadLoop::new(1, 0, incoming),
+            ],
+            Vec::new(),
+        ))
+        .expect("T-touching terrain roadbed constraints must be accepted");
+
+        assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+        assert!(
+            mesh.stats.road_constraint_edges > 8,
+            "the horizontal roadbed edge must be split at the incoming mouth vertex"
+        );
+        assert_eq!(
+            mesh.stats.preserved_road_constraint_edges,
+            mesh.stats.road_constraint_edges
+        );
+        assert!(mesh.vertices.iter().any(|vertex| {
+            same_coord(vertex.x, -16.818)
+                && same_coord(vertex.z, -8.916)
+                && (vertex.height_m - 0.12).abs() <= 0.0001
+        }));
     }
 
     fn diagonal_road_loop() -> Vec<TerrainCdtVertex> {

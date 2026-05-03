@@ -120,6 +120,11 @@ Live behavior:
 - terrain clip input is the `i_overlay` union of all grounded `Standard` span and node footprints
   intersecting the patch query, not the raw per-piece loops; overlapping piece loops must be
   resolved before Spade sees terrain constraints
+- before a road-touched terrain patch is handed to Spade, the Rust CDT bridge deterministically
+  nodes the patch-local roadbed constraint graph: T-touching endpoints, proper crossings, and
+  collinear overlap endpoints are split into shared XZ vertices, with inserted roadbed heights
+  sampled as the maximum incident top height. This keeps `cdt_invalid_constraints=0` from being
+  dependent on whether the roadbed union exported one loop or several touching loops.
 - known debt: the post-overlay boundary snapping, seam welding, shared grade sampler, and
   hand-written terminal / bend helper path have been removed. The remaining blocker is that the
   current rail / contour generation still does not create enough canonical curb / sidewalk join
