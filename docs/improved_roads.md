@@ -114,6 +114,10 @@ Live behavior:
 - bend / junction non-road ownership starts from the resolved `footprint - asphalt` remainder, then
   splits into explicit curb / shoulder and sidewalk band-owned regions before height sampling or
   triangulation
+- shared node-surface heights no longer average curb / sidewalk rail values. If a shared XZ point
+  touches asphalt it snaps to the asphalt rail height; if curb touches sidewalk it snaps to the
+  sidewalk rail height; curb-only shared vertices snap to a curb rail endpoint instead of a
+  mid-curb cap height.
 - visual edge-to-node handoff extends far enough to cover deterministic material conflicts between
   incident road arms; shallow-angle roads therefore create a longer shared ownership region instead
   of allowing independent sidewalk strips to cross asphalt before they reach the graph node
@@ -751,6 +755,8 @@ Core invariants:
 - no rendered node triangle may cross an asphalt / curb, curb / sidewalk, sidewalk outer, or
   span-handoff seam
 - no material may sample from an unrelated material's height field
+- no shared curb / shoulder vertex may be canonicalized to an averaged half-step height; flat
+  road nodes may use only asphalt-height and sidewalk-height curb rail vertices
 - no rendered node top-surface vertex may sample terrain, full-roadbed interpolation, or zero height
 - a missing band-local grade owner is a geometry error and must be reported through
   `--debug road-geometry`; it must not silently fall back to a nearby unrelated domain

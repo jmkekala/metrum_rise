@@ -22,6 +22,9 @@ const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 32.0 / ROAD_OVERLAY_COORDINATE_SCALE;
 const HEIGHT_PARAMETER_BOUNDARY_DISTANCE_EPS_M: f64 = 0.002;
 const HEIGHT_FIELD_MIN_AXIS_LEN2_M2: f64 = 1.0e-12;
 const NON_BEND_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M: f64 = 0.36;
+// Non-road seams can differ by curb-step plus local grade. They may snap only to existing rail
+// heights; averaging would create a synthetic cap height that violates the node topology spec.
+const NON_BEND_NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M: f64 = 0.5;
 
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
@@ -115,7 +118,6 @@ struct SharedHeightStats {
     count: usize,
     min_height_m: f64,
     max_height_m: f64,
-    height_sum_m: f64,
     has_carriageway: bool,
     has_curb_or_shoulder: bool,
     has_sidewalk: bool,
@@ -466,7 +468,8 @@ fn canonicalize_shared_material_heights(
                 && stats.count > 1
                 && shared_height_canonicalization_allowed(stats, piece_kind)
             {
-                vertex.height_m = stats.canonical_height_for_kind(region.kind, piece_kind);
+                vertex.height_m =
+                    stats.canonical_height_for_kind(region.kind, piece_kind, vertex.height_m);
             }
         }
     }
@@ -477,7 +480,12 @@ fn shared_height_canonicalization_allowed(
     piece_kind: RoadSurfaceVisualNodePieceKind,
 ) -> bool {
     piece_kind == RoadSurfaceVisualNodePieceKind::Bend
-        || stats.height_delta_m() <= NON_BEND_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
+        || stats.height_delta_m()
+            <= if stats.has_carriageway {
+                NON_BEND_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
+            } else {
+                NON_BEND_NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
+            }
 }
 
 impl SharedHeightStats {
@@ -486,7 +494,6 @@ impl SharedHeightStats {
             count: 1,
             min_height_m: height_m,
             max_height_m: height_m,
-            height_sum_m: height_m,
             has_carriageway: kind == RoadSurfaceBandKind::Carriageway,
             has_curb_or_shoulder: kind == RoadSurfaceBandKind::CurbOrShoulder,
             has_sidewalk: kind == RoadSurfaceBandKind::Sidewalk,
@@ -497,7 +504,6 @@ impl SharedHeightStats {
         self.count += 1;
         self.min_height_m = self.min_height_m.min(height_m);
         self.max_height_m = self.max_height_m.max(height_m);
-        self.height_sum_m += height_m;
         self.has_carriageway |= kind == RoadSurfaceBandKind::Carriageway;
         self.has_curb_or_shoulder |= kind == RoadSurfaceBandKind::CurbOrShoulder;
         self.has_sidewalk |= kind == RoadSurfaceBandKind::Sidewalk;
@@ -509,21 +515,27 @@ impl SharedHeightStats {
 
     fn canonical_height_for_kind(
         &self,
-        _kind: RoadSurfaceBandKind,
+        kind: RoadSurfaceBandKind,
         piece_kind: RoadSurfaceVisualNodePieceKind,
+        current_height_m: f64,
     ) -> f64 {
         if self.has_carriageway {
             return self.min_height_m;
         }
-        if piece_kind == RoadSurfaceVisualNodePieceKind::Bend && self.has_curb_or_shoulder {
-            return if self.has_sidewalk {
-                self.max_height_m
-            } else {
-                self.min_height_m
-            };
+        if self.has_curb_or_shoulder {
+            if self.has_sidewalk || kind == RoadSurfaceBandKind::Sidewalk {
+                return self.max_height_m;
+            }
+            if piece_kind == RoadSurfaceVisualNodePieceKind::Bend {
+                return self.min_height_m;
+            }
+            return self.max_height_m;
+        }
+        if self.has_sidewalk {
+            return self.max_height_m;
         }
 
-        self.height_sum_m / self.count as f64
+        current_height_m
     }
 }
 

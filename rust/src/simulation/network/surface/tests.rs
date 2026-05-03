@@ -2336,6 +2336,94 @@ fn logged_flat_three_way_oblique_junction_exports_noded_outer_boundary() {
 }
 
 #[test]
+fn logged_current_flat_three_way_oblique_junction_keeps_curb_vertices_on_rails() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-82.716, 0.0, -14.881), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(-25.618, 0.0, -14.881), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(57.284, 0.0, -14.881), NodeType::Junction);
+    let oblique = graph.add_node(Vector3::new(30.950, 0.0, 41.687), NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-82.716, 0.0, -14.881),
+            Vector3::new(-25.618, 0.0, -14.881),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        oblique,
+        vec![
+            Vector3::new(-25.618, 0.0, -14.881),
+            Vector3::new(30.950, 0.0, 41.687),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(-25.618, 0.0, -14.881),
+            Vector3::new(57.284, 0.0, -14.881),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(192, 192);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("current flat 3-way oblique junction must compile a JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_outer_boundary_edges_are_noded_by_visible_top(piece);
+    assert_material_triangles_do_not_overlap(piece);
+
+    let clip_polygons =
+        surface.terrain_clip_polygons_for_world_bounds(&graph, -128.0, -32.0, 64.0, 64.0);
+    assert_eq!(
+        clip_polygons.len(),
+        1,
+        "flat oblique T roadbed clips must union to one terrain cutter instead of leaving an internal road seam"
+    );
+
+    for region in &piece.owned_regions {
+        if region.kind != RoadSurfaceBandKind::CurbOrShoulder {
+            continue;
+        }
+        for point in region.polygon.points_world.iter().chain(
+            region
+                .polygon
+                .triangles_world
+                .iter()
+                .flat_map(|triangle| triangle.iter()),
+        ) {
+            let on_road_rail = point.y.abs() <= 0.004;
+            let on_sidewalk_rail = (point.y - CURB_STEP_HEIGHT_M).abs() <= 0.004;
+            assert!(
+                on_road_rail || on_sidewalk_rail,
+                "flat JunctionN curb vertices must snap to asphalt or sidewalk rails, not a mid-curb cap height; point={point:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn logged_flat_oblique_t_junction_compiles_node_surface() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-140.162, 0.0, -60.230), NodeType::Junction);
@@ -3160,8 +3248,8 @@ fn elevated_junction_uses_endpoint_heights_for_node_side_vertices() {
     let (max_slope, max_kind, max_owner_index, max_start, max_end) =
         max_visual_triangle_slope_ratio(piece);
     assert!(
-        max_slope <= 1.35,
-        "JunctionN top-surface triangles must follow endpoint-to-throat ramps instead of near-vertical projected throat plateaus; bounded curb-step diagonals are allowed, max_slope={max_slope:.3} kind={max_kind:?} owner={max_owner_index} edge=({max_start:?}, {max_end:?})"
+        max_slope <= 2.0,
+        "JunctionN top-surface triangles must follow endpoint-to-throat ramps instead of near-vertical projected throat plateaus; explicit curb rail diagonals are allowed, max_slope={max_slope:.3} kind={max_kind:?} owner={max_owner_index} edge=({max_start:?}, {max_end:?})"
     );
 }
 
