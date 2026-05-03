@@ -136,6 +136,7 @@ impl NodeBooleanOwnership {
         reject_residual(non_road_residual, ResidualKind::NonRoad)?;
 
         sort_boolean_owned_regions(&mut owned_regions);
+        canonicalize_owned_region_rings(&mut owned_regions, &footprint_shapes);
         append_shared_region_seam_constraints(
             &mut owned_regions,
             &footprint_shapes,
@@ -565,6 +566,73 @@ fn append_shared_region_seam_constraints(
     }
 }
 
+fn canonicalize_owned_region_rings(
+    regions: &mut [NodeBooleanOwnedRegion],
+    footprint_shapes: &NodeOverlayShapes,
+) {
+    let global_points = owned_region_global_points(regions, footprint_shapes);
+    for region in regions {
+        for contour in &mut region.shape {
+            *contour = noded_owned_region_contour(contour, &global_points);
+        }
+    }
+}
+
+fn owned_region_global_points(
+    regions: &[NodeBooleanOwnedRegion],
+    footprint_shapes: &NodeOverlayShapes,
+) -> Vec<NodeOwnershipPointKey> {
+    let mut global_points = regions
+        .iter()
+        .flat_map(|region| region.shape.iter())
+        .flat_map(|contour| contour.iter().copied())
+        .map(overlay_point_key)
+        .chain(
+            footprint_shapes
+                .iter()
+                .flat_map(|shape| shape.iter())
+                .flat_map(|contour| contour.iter().copied())
+                .map(overlay_point_key),
+        )
+        .collect::<Vec<_>>();
+    global_points.sort_unstable();
+    global_points.dedup();
+    global_points
+}
+
+fn noded_owned_region_contour(
+    contour: &NodeOverlayContour,
+    global_points: &[NodeOwnershipPointKey],
+) -> NodeOverlayContour {
+    if contour.len() < 2 {
+        return contour.clone();
+    }
+
+    let mut noded = Vec::with_capacity(contour.len());
+    for edge_index in 0..contour.len() {
+        let start = overlay_point_key(contour[edge_index]);
+        let end = overlay_point_key(contour[(edge_index + 1) % contour.len()]);
+        if start == end {
+            continue;
+        }
+        let points = noded_owned_region_edge_points(start, end, global_points);
+        let limit = points.len().saturating_sub(1);
+        noded.extend(points.into_iter().take(limit).map(overlay_point_from_key));
+    }
+    dedup_consecutive_overlay_points(&mut noded);
+    if noded.len() >= 2
+        && overlay_point_key(noded[0])
+            == overlay_point_key(*noded.last().expect("noded contour has last point"))
+    {
+        noded.pop();
+    }
+    noded
+}
+
+fn dedup_consecutive_overlay_points(points: &mut NodeOverlayContour) {
+    points.dedup_by(|a, b| overlay_point_key(*a) == overlay_point_key(*b));
+}
+
 fn append_shared_constraint_for_refs(
     regions: &mut [NodeBooleanOwnedRegion],
     refs: &[OwnedRegionEdgeRef],
@@ -718,6 +786,13 @@ fn road_point_from_key(point: NodeOwnershipPointKey) -> RoadVec2 {
         point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
         point.1 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
     )
+}
+
+fn overlay_point_from_key(point: NodeOwnershipPointKey) -> NodeOverlayPoint {
+    [
+        point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+        point.1 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+    ]
 }
 
 fn constraint_constrains_shared_height(constraint: &NodeRailConstraint) -> bool {
@@ -1061,5 +1136,72 @@ mod tests {
             error,
             NodeBooleanOwnershipError::UnownedNonRoadResidual { .. }
         ));
+    }
+
+    #[test]
+    fn owned_region_rings_are_noded_before_shared_seam_constraints() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [4.0, 0.0], [4.0, 2.0], [0.0, 2.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::Sidewalk,
+                sidewalk,
+                vec![[1.0, 0.0], [3.0, 0.0], [3.0, -1.0], [1.0, -1.0]],
+            ),
+        ];
+        let footprint_shapes = Vec::new();
+
+        canonicalize_owned_region_rings(&mut regions, &footprint_shapes);
+        append_shared_region_seam_constraints(&mut regions, &footprint_shapes, 0);
+
+        let carriageway_contour = &regions[0].shape[0];
+        assert!(
+            carriageway_contour
+                .iter()
+                .any(|point| overlay_point_key(*point) == overlay_point_key([1.0, 0.0]))
+        );
+        assert!(
+            carriageway_contour
+                .iter()
+                .any(|point| overlay_point_key(*point) == overlay_point_key([3.0, 0.0]))
+        );
+        for region in &regions {
+            assert!(
+                region.seam_constraints.iter().any(|constraint| {
+                    let start = road_point_key(constraint.start_xz);
+                    let end = road_point_key(constraint.end_xz);
+                    start == road_point_key(RoadVec2::new(1.0, 0.0))
+                        && end == road_point_key(RoadVec2::new(3.0, 0.0))
+                        && constraint.constrains_shared_height
+                        && constraint.is_material_transition
+                }),
+                "region {:?} must own the exact shared sub-edge seam before height/CDT",
+                region.owner
+            );
+        }
+    }
+
+    fn test_owned_region(
+        kind: RoadSurfaceBandKind,
+        owner: NodeBandOwner,
+        contour: NodeOverlayContour,
+    ) -> NodeBooleanOwnedRegion {
+        NodeBooleanOwnedRegion {
+            kind,
+            owner,
+            source_mouth_order_index: owner.owner_index(),
+            source_band_index: Some(owner.owner_index()),
+            shape: vec![contour],
+            area_m2: 1.0,
+            height_sources: vec![NodeHeightSource::ArrangementConstraint {
+                constraint_index: owner.owner_index(),
+            }],
+            seam_constraints: Vec::new(),
+        }
     }
 }
