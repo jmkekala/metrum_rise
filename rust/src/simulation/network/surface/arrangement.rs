@@ -93,6 +93,8 @@ pub(crate) enum NodeSeamSource {
 pub(crate) struct NodeRegionSeamConstraint {
     pub(crate) constraint_index: usize,
     pub(crate) seam_source: NodeSeamSource,
+    pub(crate) constrains_shared_height: bool,
+    pub(crate) is_material_transition: bool,
     pub(crate) start_xz: RoadVec2,
     pub(crate) end_xz: RoadVec2,
 }
@@ -699,9 +701,28 @@ fn source_constraints_for_edge<'a>(
                 && point_key_lies_on_segment(end, constraint_start, constraint_end)
         })
         .collect::<Vec<_>>();
-    matches.sort_by_key(|constraint| constraint.constraint_index);
+    matches.sort_by_key(|constraint| {
+        (
+            !constraint.constrains_shared_height,
+            !constraint.is_material_transition,
+            seam_source_priority(&constraint.seam_source),
+            constraint.constraint_index,
+        )
+    });
     matches.dedup_by_key(|constraint| constraint.constraint_index);
     matches
+}
+
+pub(crate) fn seam_source_priority(source: &NodeSeamSource) -> usize {
+    match source {
+        NodeSeamSource::SpanHandoff { .. } => 0,
+        NodeSeamSource::AsphaltCurbContact { .. } => 1,
+        NodeSeamSource::CurbSidewalkContact { .. } => 2,
+        NodeSeamSource::AsphaltBoundary { .. } => 3,
+        NodeSeamSource::TerminalEndBand { .. } => 4,
+        NodeSeamSource::SidewalkOuter { .. } => 5,
+        NodeSeamSource::FootprintBoundary { .. } => 6,
+    }
 }
 
 fn point_key_lies_on_segment(
@@ -986,9 +1007,19 @@ mod tests {
     fn arrangement_edges_match_opposite_owners_by_canonical_xz_segment() {
         let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
         let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
+        let generic_seam = NodeRegionSeamConstraint {
+            constraint_index: 2,
+            seam_source: NodeSeamSource::FootprintBoundary { owner_index: 0 },
+            constrains_shared_height: true,
+            is_material_transition: false,
+            start_xz: RoadVec2::new(1.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 1.0),
+        };
         let shared_seam = NodeRegionSeamConstraint {
             constraint_index: 17,
             seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 0 },
+            constrains_shared_height: true,
+            is_material_transition: true,
             start_xz: RoadVec2::new(1.0, 0.0),
             end_xz: RoadVec2::new(1.0, 1.0),
         };
@@ -1005,7 +1036,7 @@ mod tests {
                         height_vertex(1.0, 1.0, 0.0),
                         height_vertex(0.0, 1.0, 0.0),
                     ],
-                    vec![shared_seam.clone()],
+                    vec![generic_seam.clone(), shared_seam.clone()],
                 ),
                 test_height_region_with_seams(
                     RoadSurfaceBandKind::Sidewalk,
@@ -1016,7 +1047,7 @@ mod tests {
                         height_vertex(2.0, 1.0, 0.0),
                         height_vertex(1.0, 1.0, 0.0),
                     ],
-                    vec![shared_seam],
+                    vec![generic_seam, shared_seam],
                 ),
             ],
         };
@@ -1056,13 +1087,13 @@ mod tests {
             edge.owner == carriageway
                 && edge.opposite_owner == Some(sidewalk)
                 && matches!(edge.seam_source, NodeSeamSource::AsphaltBoundary { .. })
-                && edge.source_constraint_indices == vec![17]
+                && edge.source_constraint_indices == vec![2, 17]
         }));
         assert!(arrangement.edges().iter().any(|edge| {
             edge.owner == sidewalk
                 && edge.opposite_owner == Some(carriageway)
                 && matches!(edge.seam_source, NodeSeamSource::AsphaltBoundary { .. })
-                && edge.source_constraint_indices == vec![17]
+                && edge.source_constraint_indices == vec![2, 17]
         }));
     }
 

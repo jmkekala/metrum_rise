@@ -2,7 +2,9 @@
 
 #![allow(dead_code)]
 
-use super::arrangement::{NodeBandOwner, NodeHeightSource, NodeRegionSeamConstraint};
+use super::arrangement::{
+    NodeBandOwner, NodeHeightSource, NodeRegionSeamConstraint, seam_source_priority,
+};
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
     quantize_road_vec2_to_overlay_grid,
@@ -130,6 +132,12 @@ struct NodeHeightVertexContextKey {
     height_sources: Vec<NodeHeightSource>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct SharedRailConstraintKey {
+    point: NodeHeightPointKey,
+    constraint_index: usize,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct SharedRailHeightStats {
     count: usize,
@@ -191,7 +199,10 @@ impl NodeHeightSolution {
                 &global_points,
             )?);
         }
-        constrain_shared_material_rail_heights(&mut regions, ownership.piece_kind);
+        if ownership.piece_kind == RoadSurfaceVisualNodePieceKind::Bend {
+            constrain_explicit_material_seam_heights(&mut regions, ownership.piece_kind);
+        }
+        constrain_unresolved_shared_material_rail_heights(&mut regions, ownership.piece_kind);
         validate_shared_source_height_agreement(&regions)?;
 
         Ok(Self {
@@ -748,7 +759,118 @@ fn road_overlay_point_key(point: RoadVec2) -> NodeOverlayPointKey {
     )
 }
 
-fn constrain_shared_material_rail_heights(
+fn constrain_explicit_material_seam_heights(
+    regions: &mut [NodeHeightedRegion],
+    piece_kind: RoadSurfaceVisualNodePieceKind,
+) {
+    let mut shared_heights = BTreeMap::<SharedRailConstraintKey, SharedRailHeightStats>::new();
+    for region in regions.iter() {
+        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
+            for constraint in
+                material_height_constraints_for_vertex(vertex.point_xz, &region.seam_constraints)
+            {
+                let key = SharedRailConstraintKey {
+                    point: NodeHeightPointKey::from_point(vertex.point_xz),
+                    constraint_index: constraint.constraint_index,
+                };
+                shared_heights
+                    .entry(key)
+                    .and_modify(|stats| stats.record(region.kind, vertex.height_m))
+                    .or_insert_with(|| SharedRailHeightStats::new(region.kind, vertex.height_m));
+            }
+        }
+    }
+
+    for region in regions.iter_mut() {
+        let seam_constraints = &region.seam_constraints;
+        let kind = region.kind;
+        for vertex in region
+            .shape
+            .iter_mut()
+            .flat_map(|contour| contour.iter_mut())
+        {
+            if let Some((_, stats)) =
+                material_height_constraints_for_vertex(vertex.point_xz, seam_constraints)
+                    .into_iter()
+                    .filter_map(|constraint| {
+                        let key = SharedRailConstraintKey {
+                            point: NodeHeightPointKey::from_point(vertex.point_xz),
+                            constraint_index: constraint.constraint_index,
+                        };
+                        shared_heights.get(&key).map(|stats| (constraint, stats))
+                    })
+                    .filter(|(_, stats)| {
+                        stats.count > 1
+                            && shared_material_rail_constraint_allowed(stats, piece_kind)
+                    })
+                    .min_by_key(|(constraint, _)| {
+                        (
+                            !constraint.is_material_transition,
+                            seam_source_priority(&constraint.seam_source),
+                            constraint.constraint_index,
+                        )
+                    })
+            {
+                vertex.height_m =
+                    stats.constrained_height_for_kind(kind, piece_kind, vertex.height_m);
+            }
+        }
+    }
+}
+
+fn material_height_constraints_for_vertex<'a>(
+    point_xz: RoadVec2,
+    constraints: &'a [NodeRegionSeamConstraint],
+) -> Vec<&'a NodeRegionSeamConstraint> {
+    let mut matches = constraints
+        .iter()
+        .filter(|constraint| constraint.constrains_shared_height)
+        .filter(|constraint| {
+            point_lies_on_height_segment(point_xz, constraint.start_xz, constraint.end_xz)
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|constraint| {
+        (
+            !constraint.is_material_transition,
+            seam_source_priority(&constraint.seam_source),
+            constraint.constraint_index,
+        )
+    });
+    matches.dedup_by_key(|constraint| constraint.constraint_index);
+    matches
+}
+
+fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2) -> bool {
+    let point = NodeHeightPointKey::from_point(point);
+    let start = NodeHeightPointKey::from_point(start);
+    let end = NodeHeightPointKey::from_point(end);
+    if point == start || point == end {
+        return true;
+    }
+    if start == end {
+        return false;
+    }
+    let dx = i128::from(end.x_mm - start.x_mm);
+    let dz = i128::from(end.z_mm - start.z_mm);
+    let px = i128::from(point.x_mm - start.x_mm);
+    let pz = i128::from(point.z_mm - start.z_mm);
+    if px * dz - pz * dx != 0 {
+        return false;
+    }
+    let inside_x = if start.x_mm == end.x_mm {
+        point.x_mm == start.x_mm
+    } else {
+        point.x_mm > start.x_mm.min(end.x_mm) && point.x_mm < start.x_mm.max(end.x_mm)
+    };
+    let inside_z = if start.z_mm == end.z_mm {
+        point.z_mm == start.z_mm
+    } else {
+        point.z_mm > start.z_mm.min(end.z_mm) && point.z_mm < start.z_mm.max(end.z_mm)
+    };
+    inside_x && inside_z
+}
+
+fn constrain_unresolved_shared_material_rail_heights(
     regions: &mut [NodeHeightedRegion],
     piece_kind: RoadSurfaceVisualNodePieceKind,
 ) {
@@ -1098,6 +1220,7 @@ impl NodeHeightPointKey {
 
 #[cfg(test)]
 mod tests {
+    use super::super::arrangement::NodeSeamSource;
     use super::*;
     use crate::simulation::network::surface::input::NodeInputMouth;
     use crate::simulation::network::surface::ownership::NodeBooleanOwnership;
@@ -1244,6 +1367,100 @@ mod tests {
     }
 
     #[test]
+    fn shared_xz_vertices_without_explicit_seam_are_not_height_constrained() {
+        let mut regions = vec![
+            manual_heighted_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                0,
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.0)],
+            ),
+            manual_heighted_region(
+                RoadSurfaceBandKind::Sidewalk,
+                1,
+                0.25,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+            ),
+        ];
+
+        constrain_explicit_material_seam_heights(
+            &mut regions,
+            RoadSurfaceVisualNodePieceKind::Bend,
+        );
+
+        assert_eq!(regions[0].shape[0][0].height_m, 0.0);
+        assert_eq!(regions[1].shape[0][0].height_m, 0.25);
+    }
+
+    #[test]
+    fn explicit_curb_sidewalk_seam_constrains_shared_height() {
+        let seam = manual_seam_constraint(
+            12,
+            NodeSeamSource::CurbSidewalkContact { owner_index: 0 },
+            true,
+            true,
+        );
+        let mut regions = vec![
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                0,
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.0)],
+                vec![seam.clone()],
+            ),
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                1,
+                0.25,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+                vec![seam],
+            ),
+        ];
+
+        constrain_explicit_material_seam_heights(
+            &mut regions,
+            RoadSurfaceVisualNodePieceKind::Bend,
+        );
+
+        assert_eq!(regions[0].shape[0][0].height_m, 0.25);
+        assert_eq!(regions[1].shape[0][0].height_m, 0.25);
+    }
+
+    #[test]
+    fn generic_contour_seams_constrain_as_explicit_fallback() {
+        let seam = manual_seam_constraint(
+            3,
+            NodeSeamSource::AsphaltCurbContact { owner_index: 0 },
+            true,
+            false,
+        );
+        let mut regions = vec![
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::Carriageway,
+                0,
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.0)],
+                vec![seam.clone()],
+            ),
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                1,
+                0.25,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+                vec![seam],
+            ),
+        ];
+
+        constrain_explicit_material_seam_heights(
+            &mut regions,
+            RoadSurfaceVisualNodePieceKind::Bend,
+        );
+
+        assert_eq!(regions[0].shape[0][0].height_m, 0.0);
+        assert_eq!(regions[1].shape[0][0].height_m, 0.0);
+    }
+
+    #[test]
     fn shared_xz_vertices_reject_same_source_height_conflict() {
         let regions = vec![
             manual_heighted_region(
@@ -1352,6 +1569,16 @@ mod tests {
         area_m2: f32,
         contour: NodeHeightedContour,
     ) -> NodeHeightedRegion {
+        manual_heighted_region_with_seams(kind, owner_index, area_m2, contour, Vec::new())
+    }
+
+    fn manual_heighted_region_with_seams(
+        kind: RoadSurfaceBandKind,
+        owner_index: usize,
+        area_m2: f32,
+        contour: NodeHeightedContour,
+        seam_constraints: Vec<NodeRegionSeamConstraint>,
+    ) -> NodeHeightedRegion {
         NodeHeightedRegion {
             kind,
             owner: NodeBandOwner::new(kind, owner_index),
@@ -1362,7 +1589,23 @@ mod tests {
             height_sources: vec![NodeHeightSource::ArrangementConstraint {
                 constraint_index: owner_index,
             }],
-            seam_constraints: Vec::new(),
+            seam_constraints,
+        }
+    }
+
+    fn manual_seam_constraint(
+        constraint_index: usize,
+        seam_source: NodeSeamSource,
+        constrains_shared_height: bool,
+        is_material_transition: bool,
+    ) -> NodeRegionSeamConstraint {
+        NodeRegionSeamConstraint {
+            constraint_index,
+            seam_source,
+            constrains_shared_height,
+            is_material_transition,
+            start_xz: RoadVec2::new(0.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 0.0),
         }
     }
 
