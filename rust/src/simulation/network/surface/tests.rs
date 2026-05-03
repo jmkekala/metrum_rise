@@ -19,6 +19,7 @@ use crate::simulation::terrain::cdt::{
 };
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn test_edge(
     start_node: u32,
@@ -432,7 +433,29 @@ fn assert_top_mesh_centroids_inside_outer_boundary(piece: &RoadSurfaceVisualNode
     }
 }
 
-type QuantizedTriangleEdge = (((i64, i64), (i64, i64)), (f32, f32));
+type QuantizedXzKey = (i64, i64);
+type QuantizedXzEdgeKey = (QuantizedXzKey, QuantizedXzKey);
+type QuantizedTriangleEdge = (QuantizedXzEdgeKey, (f32, f32));
+
+fn quantized_xz_key(point: Vector3) -> QuantizedXzKey {
+    (
+        (point.x * 1000.0).round() as i64,
+        (point.z * 1000.0).round() as i64,
+    )
+}
+
+fn normalized_quantized_edge_key(start: Vector3, end: Vector3) -> Option<QuantizedXzEdgeKey> {
+    let start_key = quantized_xz_key(start);
+    let end_key = quantized_xz_key(end);
+    if start_key == end_key {
+        return None;
+    }
+    Some(if start_key <= end_key {
+        (start_key, end_key)
+    } else {
+        (end_key, start_key)
+    })
+}
 
 fn collect_triangle_edge_heights(
     polygons: &[RoadSurfaceVisualPolygon],
@@ -445,21 +468,13 @@ fn collect_triangle_edge_heights(
         for edge_index in 0..3 {
             let start = triangle[edge_index];
             let end = triangle[(edge_index + 1) % 3];
-            let start_key = (
-                (start.x * 1000.0).round() as i64,
-                (start.z * 1000.0).round() as i64,
-            );
-            let end_key = (
-                (end.x * 1000.0).round() as i64,
-                (end.z * 1000.0).round() as i64,
-            );
-            if start_key == end_key {
+            let Some(key) = normalized_quantized_edge_key(start, end) else {
                 continue;
-            }
-            let (key, heights) = if start_key <= end_key {
-                ((start_key, end_key), (start.y, end.y))
+            };
+            let heights = if quantized_xz_key(start) <= quantized_xz_key(end) {
+                (start.y, end.y)
             } else {
-                ((end_key, start_key), (end.y, start.y))
+                (end.y, start.y)
             };
             edges.push((key, heights));
         }
@@ -505,6 +520,54 @@ fn assert_all_top_shared_edges_are_height_continuous(piece: &RoadSurfaceVisualNo
         .cloned()
         .collect::<Vec<_>>();
     assert_shared_edges_are_height_continuous(&top_polygons, 0.004, "node top");
+}
+
+fn assert_outer_boundary_edges_are_noded_by_visible_top(piece: &RoadSurfaceVisualNodePiece) {
+    let top_polygons = piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .collect::<Vec<_>>();
+    let mut top_edge_counts = BTreeMap::<QuantizedXzEdgeKey, usize>::new();
+    for triangle in top_polygons
+        .iter()
+        .flat_map(|polygon| polygon.triangles_world.iter().copied())
+    {
+        for edge_index in 0..3 {
+            let Some(key) =
+                normalized_quantized_edge_key(triangle[edge_index], triangle[(edge_index + 1) % 3])
+            else {
+                continue;
+            };
+            *top_edge_counts.entry(key).or_default() += 1;
+        }
+    }
+    let top_boundary_edges = top_edge_counts
+        .into_iter()
+        .filter_map(|(key, count)| (count == 1).then_some(key))
+        .collect::<BTreeSet<_>>();
+
+    let mut outer_edges = BTreeSet::new();
+    for polygon in &piece.outer_boundary_loops {
+        for index in 0..polygon.points_world.len() {
+            let start = polygon.points_world[index];
+            let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
+            if let Some(key) = normalized_quantized_edge_key(start, end) {
+                outer_edges.insert(key);
+            }
+        }
+    }
+
+    let extra = outer_edges
+        .difference(&top_boundary_edges)
+        .take(8)
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(
+        extra.is_empty(),
+        "node outer boundary must not export sparse skirt edges that are absent from the visible top mesh; extra_count={} extra_samples={extra:?}",
+        outer_edges.difference(&top_boundary_edges).count()
+    );
 }
 
 fn max_visual_triangle_slope_ratio(
@@ -2209,6 +2272,67 @@ fn editor_sized_60_degree_t_junction_width_7_compiles_node_surface() {
     ))
     .expect("editor-sized 60-degree T terrain cutters must be accepted by terrain CDT");
     assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+}
+
+#[test]
+fn logged_flat_three_way_oblique_junction_exports_noded_outer_boundary() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-60.311, 0.0, -3.324), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(-12.773, 0.0, -3.324), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(79.689, 0.0, -3.324), NodeType::Junction);
+    let oblique = graph.add_node(Vector3::new(22.227, 0.0, 57.298), NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-60.311, 0.0, -3.324),
+            Vector3::new(-12.773, 0.0, -3.324),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        oblique,
+        vec![
+            Vector3::new(-12.773, 0.0, -3.324),
+            Vector3::new(22.227, 0.0, 57.298),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(-12.773, 0.0, -3.324),
+            Vector3::new(79.689, 0.0, -3.324),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(192, 192);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("logged flat 3-way oblique junction must compile a JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_outer_boundary_edges_are_noded_by_visible_top(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]

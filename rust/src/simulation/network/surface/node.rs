@@ -246,6 +246,13 @@ impl RoadSurfaceSystem {
             &road_surface_polygons,
             &sidewalk_surface_polygons,
         );
+        if Self::should_node_outer_boundary_loop_edges(arrangement.piece_kind(), height_regions) {
+            Self::node_outer_boundary_loop_edges_with_visible_top_vertices(
+                &mut outer_boundary_loops,
+                &road_surface_polygons,
+                &sidewalk_surface_polygons,
+            )?;
+        }
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
@@ -353,6 +360,114 @@ impl RoadSurfaceSystem {
             }
         }
         triangles
+    }
+
+    fn node_outer_boundary_loop_edges_with_visible_top_vertices(
+        outer_boundary_loops: &mut [RoadSurfaceVisualPolygon],
+        road_surface_polygons: &[RoadSurfaceVisualPolygon],
+        sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Option<()> {
+        let candidates = Self::visible_top_boundary_candidate_vertices(
+            road_surface_polygons,
+            sidewalk_surface_polygons,
+        );
+        if candidates.is_empty() {
+            return Some(());
+        }
+
+        for polygon in outer_boundary_loops {
+            let original_points = polygon.points_world.clone();
+            let mut noded_points = Vec::new();
+            for edge_index in 0..original_points.len() {
+                let start = original_points[edge_index];
+                let end = original_points[(edge_index + 1) % original_points.len()];
+                noded_points.push(start);
+                let mut split_points = candidates
+                    .iter()
+                    .filter_map(|candidate| {
+                        boundary_vertex_on_edge_xz(start, end, *candidate).map(|t| {
+                            (
+                                t,
+                                Vector3::new(
+                                    start.x + (end.x - start.x) * t,
+                                    candidate.y,
+                                    start.z + (end.z - start.z) * t,
+                                ),
+                            )
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                split_points.sort_by(|a, b| a.0.total_cmp(&b.0));
+                split_points.dedup_by(|a, b| {
+                    (a.0 - b.0).abs() <= 0.0001
+                        || (a.1 - b.1).length_squared()
+                            <= super::WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+                });
+                noded_points.extend(split_points.into_iter().map(|(_, point)| point));
+            }
+            let area_m2 = Self::signed_polygon_area_xz(&noded_points).abs();
+            if area_m2 <= NODE_OVERLAY_MIN_AREA_M2 {
+                continue;
+            }
+            let area_budget_m2 = Self::overlay_numeric_area_budget_for_world_loop(&noded_points);
+            let Some(noded_polygon) = Self::make_boundary_loop_polygon(noded_points) else {
+                if area_m2 <= area_budget_m2 {
+                    continue;
+                }
+                return None;
+            };
+            *polygon = noded_polygon;
+        }
+        Some(())
+    }
+
+    fn should_node_outer_boundary_loop_edges(
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        height_regions: &[NodeHeightedRegion],
+    ) -> bool {
+        match piece_kind {
+            RoadSurfaceVisualNodePieceKind::Bend => true,
+            RoadSurfaceVisualNodePieceKind::JunctionN => {
+                let mut mouth_indices = height_regions
+                    .iter()
+                    .map(|region| region.source_mouth_order_index)
+                    .collect::<Vec<_>>();
+                mouth_indices.sort_unstable();
+                mouth_indices.dedup();
+                mouth_indices.len() <= 3
+            }
+            RoadSurfaceVisualNodePieceKind::Terminal => false,
+        }
+    }
+
+    fn visible_top_boundary_candidate_vertices(
+        road_surface_polygons: &[RoadSurfaceVisualPolygon],
+        sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Vec<Vector3> {
+        let mut vertices = BTreeMap::<NodeOverlayPointKey, Vector3>::new();
+        for point in road_surface_polygons
+            .iter()
+            .chain(sidewalk_surface_polygons.iter())
+            .flat_map(|polygon| {
+                polygon.points_world.iter().chain(
+                    polygon
+                        .triangles_world
+                        .iter()
+                        .flat_map(|triangle| triangle.iter()),
+                )
+            })
+        {
+            let key = Self::world_boundary_point_key(*point);
+            vertices
+                .entry(key)
+                .and_modify(|existing| {
+                    if point.y > existing.y {
+                        *existing = *point;
+                    }
+                })
+                .or_insert(*point);
+        }
+        vertices.into_values().collect()
     }
 
     fn outer_boundary_loops_from_footprint_shapes(
@@ -500,6 +615,13 @@ impl RoadSurfaceSystem {
         (
             (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
             (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        )
+    }
+
+    fn world_boundary_point_key(point: Vector3) -> NodeOverlayPointKey {
+        (
+            (f64::from(point.x) * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            (f64::from(point.z) * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
         )
     }
 
@@ -905,4 +1027,22 @@ fn arrangement_vertex_on_triangle_edge(
     }
     let edge_height = start.y + (end.y - start.y) * t;
     ((candidate.y - edge_height).abs() <= ARRANGEMENT_EDGE_SPLIT_HEIGHT_TOLERANCE_M).then_some(t)
+}
+
+fn boundary_vertex_on_edge_xz(start: Vector3, end: Vector3, candidate: Vector3) -> Option<f32> {
+    let start_xz = Vector2::new(start.x, start.z);
+    let end_xz = Vector2::new(end.x, end.z);
+    let candidate_xz = Vector2::new(candidate.x, candidate.z);
+    let segment = end_xz - start_xz;
+    let length_squared = segment.length_squared();
+    if length_squared <= SAMPLE_EPSILON_M {
+        return None;
+    }
+    let t = (candidate_xz - start_xz).dot(segment) / length_squared;
+    if !(0.0005..=0.9995).contains(&t) {
+        return None;
+    }
+    let closest_xz = start_xz + segment * t;
+    (candidate_xz.distance_squared_to(closest_xz) <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M)
+        .then_some(t)
 }
