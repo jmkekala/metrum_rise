@@ -2336,6 +2336,100 @@ fn logged_flat_three_way_oblique_junction_exports_noded_outer_boundary() {
 }
 
 #[test]
+fn logged_flat_thirty_degree_three_way_oblique_junction_exports_valid_terrain_cdt_constraints() {
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-75.831, 0.0, -2.896), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(44.169, 0.0, -2.896), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(-21.699, 0.0, -2.896), NodeType::Junction);
+    let oblique = graph.add_node(Vector3::new(47.583, 0.0, 37.104), NodeType::Junction);
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-75.831, 0.0, -2.896),
+            Vector3::new(-21.699, 0.0, -2.896),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        oblique,
+        vec![
+            Vector3::new(-21.699, 0.0, -2.896),
+            Vector3::new(47.583, 0.0, 37.104),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(-21.699, 0.0, -2.896),
+            Vector3::new(44.169, 0.0, -2.896),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let terrain = flat_terrain(192, 192);
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("logged flat 30-degree 3-way oblique junction must compile a JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
+    assert_outer_boundary_edges_are_noded_by_visible_top(piece);
+    assert_material_triangles_do_not_overlap(piece);
+
+    let clip_polygons =
+        surface.terrain_clip_polygons_for_world_bounds(&graph, -128.0, -32.0, 64.0, 64.0);
+    assert!(
+        !clip_polygons.is_empty(),
+        "logged flat 30-degree junction must export terrain clip cutters"
+    );
+    let road_loops = clip_polygons
+        .iter()
+        .enumerate()
+        .map(|(index, polygon)| {
+            TerrainCdtRoadLoop::new(
+                index as u64,
+                0,
+                polygon
+                    .points_world
+                    .iter()
+                    .map(|point| {
+                        TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z))
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        TerrainCdtPatch::new(-128.0, -32.0, 64.0, 64.0, [0.0; 4]),
+        road_loops,
+        Vec::new(),
+    ))
+    .expect("logged flat 30-degree junction terrain cutters must be accepted by terrain CDT");
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+    assert_eq!(
+        mesh.stats.preserved_road_constraint_edges, mesh.stats.road_constraint_edges,
+        "terrain CDT must preserve every road-owned seam constraint"
+    );
+}
+
+#[test]
 fn logged_flat_oblique_t_junction_compiles_node_surface() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-140.162, 0.0, -60.230), NodeType::Junction);

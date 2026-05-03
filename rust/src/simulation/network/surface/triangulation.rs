@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use super::arrangement::{NodeBandOwner, NodeHeightSource};
-use super::backend::RoadVec3;
+use super::backend::{RoadVec2, RoadVec3};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
@@ -15,6 +15,7 @@ use spade::{Point2, Triangulation};
 use std::collections::{BTreeMap, BTreeSet};
 
 const NODE_TRIANGULATION_KEY_SCALE: f64 = 1000.0;
+const NODE_CONTOUR_INTERSECTION_EPS_M: f64 = 1.0e-9;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeTriangulationSolution {
@@ -106,6 +107,18 @@ struct NodeTriangulationPointKey {
 struct NodeTriangulationHeightKey(i64);
 
 impl RoadSurfaceSystem {
+    pub(super) fn split_self_touching_node_height_solution(
+        mut heights: NodeHeightSolution,
+    ) -> NodeHeightSolution {
+        // Sharp node footprints can self-touch after ownership clipping. CDT needs simple loops.
+        heights.regions = heights
+            .regions
+            .iter()
+            .flat_map(split_self_touching_heighted_region)
+            .collect();
+        heights
+    }
+
     pub(super) fn build_node_triangulation_from_height_solution(
         heights: &NodeHeightSolution,
     ) -> Result<NodeTriangulationSolution, NodeTriangulationError> {
@@ -134,6 +147,299 @@ impl NodeTriangulationSolution {
             regions,
         })
     }
+}
+
+fn split_self_touching_heighted_region(region: &NodeHeightedRegion) -> Vec<NodeHeightedRegion> {
+    let split_shapes = split_self_touching_heighted_shape(&region.shape);
+    if split_shapes.is_empty() {
+        return vec![region.clone()];
+    }
+
+    split_shapes
+        .into_iter()
+        .filter_map(|shape| {
+            let area_m2 = heighted_shape_area_m2(&shape);
+            (area_m2 > NODE_OVERLAY_MIN_AREA_M2).then(|| NodeHeightedRegion {
+                kind: region.kind,
+                owner: region.owner,
+                source_mouth_order_index: region.source_mouth_order_index,
+                source_band_index: region.source_band_index,
+                shape,
+                area_m2,
+                height_sources: region.height_sources.clone(),
+            })
+        })
+        .collect()
+}
+
+fn split_self_touching_heighted_shape(
+    shape: &[Vec<NodeHeightedVertex>],
+) -> Vec<Vec<Vec<NodeHeightedVertex>>> {
+    let Some(outer) = shape.first() else {
+        return Vec::new();
+    };
+    let outer_contours = split_self_touching_heighted_contour(outer.clone())
+        .into_iter()
+        .map(|contour| oriented_heighted_contour(contour, true))
+        .collect::<Vec<_>>();
+    if outer_contours.is_empty() {
+        return Vec::new();
+    }
+
+    let hole_contours = shape
+        .iter()
+        .skip(1)
+        .flat_map(|contour| split_self_touching_heighted_contour(contour.clone()))
+        .map(|contour| oriented_heighted_contour(contour, false))
+        .collect::<Vec<_>>();
+
+    let mut shapes = Vec::new();
+    for outer in outer_contours {
+        let mut split_shape = vec![outer.clone()];
+        split_shape.extend(
+            hole_contours
+                .iter()
+                .filter(|hole| heighted_contour_inside_contour(hole, &outer))
+                .cloned(),
+        );
+        if heighted_shape_area_m2(&split_shape) > NODE_OVERLAY_MIN_AREA_M2 {
+            shapes.push(split_shape);
+        }
+    }
+    shapes
+}
+
+fn split_self_touching_heighted_contour(
+    contour: Vec<NodeHeightedVertex>,
+) -> Vec<Vec<NodeHeightedVertex>> {
+    let contour = dedup_consecutive_heighted_vertices(contour);
+    if contour.len() < 3
+        || signed_heighted_contour_area_m2(&contour).abs() <= NODE_OVERLAY_MIN_AREA_M2
+    {
+        return Vec::new();
+    }
+
+    if let Some((first, second)) = first_repeated_heighted_vertex_pair(&contour) {
+        let first_loop = contour[first..second].to_vec();
+        let mut second_loop = contour[second..].to_vec();
+        second_loop.extend_from_slice(&contour[..first]);
+
+        let mut loops = Vec::new();
+        for candidate in [first_loop, second_loop] {
+            loops.extend(split_self_touching_heighted_contour(candidate));
+        }
+        return loops;
+    }
+
+    if let Some(intersection) = first_strict_heighted_contour_intersection(&contour) {
+        let mut noded = Vec::with_capacity(contour.len() + 2);
+        for index in 0..contour.len() {
+            noded.push(contour[index].clone());
+            if index == intersection.first_edge_index || index == intersection.second_edge_index {
+                noded.push(intersection.vertex.clone());
+            }
+        }
+        return split_self_touching_heighted_contour(noded);
+    }
+
+    vec![contour]
+}
+
+fn dedup_consecutive_heighted_vertices(
+    contour: Vec<NodeHeightedVertex>,
+) -> Vec<NodeHeightedVertex> {
+    let mut deduped = Vec::with_capacity(contour.len());
+    for vertex in contour {
+        if deduped
+            .last()
+            .is_some_and(|last| same_heighted_vertex_xz(last, &vertex))
+        {
+            continue;
+        }
+        deduped.push(vertex);
+    }
+    if deduped.len() >= 2
+        && same_heighted_vertex_xz(deduped.first().unwrap(), deduped.last().unwrap())
+    {
+        deduped.pop();
+    }
+    deduped
+}
+
+fn first_repeated_heighted_vertex_pair(contour: &[NodeHeightedVertex]) -> Option<(usize, usize)> {
+    for first in 0..contour.len() {
+        for second in first + 1..contour.len() {
+            if same_heighted_vertex_xz(&contour[first], &contour[second]) {
+                return Some((first, second));
+            }
+        }
+    }
+    None
+}
+
+struct HeightedContourIntersection {
+    first_edge_index: usize,
+    second_edge_index: usize,
+    vertex: NodeHeightedVertex,
+}
+
+fn first_strict_heighted_contour_intersection(
+    contour: &[NodeHeightedVertex],
+) -> Option<HeightedContourIntersection> {
+    for first_edge_index in 0..contour.len() {
+        let first_next = (first_edge_index + 1) % contour.len();
+        for second_edge_index in first_edge_index + 1..contour.len() {
+            let second_next = (second_edge_index + 1) % contour.len();
+            if first_edge_index == second_next || first_next == second_edge_index {
+                continue;
+            }
+            let Some((first_t, second_t, point_xz)) = strict_segment_intersection_xz(
+                contour[first_edge_index].point_xz,
+                contour[first_next].point_xz,
+                contour[second_edge_index].point_xz,
+                contour[second_next].point_xz,
+            ) else {
+                continue;
+            };
+            let first_height =
+                interpolate_height(&contour[first_edge_index], &contour[first_next], first_t);
+            let second_height =
+                interpolate_height(&contour[second_edge_index], &contour[second_next], second_t);
+            let mut height_sources = contour[first_edge_index].height_sources.clone();
+            height_sources.extend(contour[first_next].height_sources.iter().cloned());
+            height_sources.extend(contour[second_edge_index].height_sources.iter().cloned());
+            height_sources.extend(contour[second_next].height_sources.iter().cloned());
+            height_sources.sort();
+            height_sources.dedup();
+            return Some(HeightedContourIntersection {
+                first_edge_index,
+                second_edge_index,
+                vertex: NodeHeightedVertex {
+                    point_xz,
+                    height_m: (first_height + second_height) * 0.5,
+                    height_sources,
+                },
+            });
+        }
+    }
+    None
+}
+
+fn strict_segment_intersection_xz(
+    a: RoadVec2,
+    b: RoadVec2,
+    c: RoadVec2,
+    d: RoadVec2,
+) -> Option<(f64, f64, RoadVec2)> {
+    let ab = b - a;
+    let cd = d - c;
+    let denominator = cross_xz(ab, cd);
+    if denominator.abs() <= NODE_CONTOUR_INTERSECTION_EPS_M {
+        return None;
+    }
+
+    let ac = c - a;
+    let first_t = cross_xz(ac, cd) / denominator;
+    let second_t = cross_xz(ac, ab) / denominator;
+    if !(NODE_CONTOUR_INTERSECTION_EPS_M..=1.0 - NODE_CONTOUR_INTERSECTION_EPS_M).contains(&first_t)
+        || !(NODE_CONTOUR_INTERSECTION_EPS_M..=1.0 - NODE_CONTOUR_INTERSECTION_EPS_M)
+            .contains(&second_t)
+    {
+        return None;
+    }
+
+    Some((first_t, second_t, a + ab * first_t))
+}
+
+fn cross_xz(a: RoadVec2, b: RoadVec2) -> f64 {
+    a.x * b.y - a.y * b.x
+}
+
+fn interpolate_height(start: &NodeHeightedVertex, end: &NodeHeightedVertex, t: f64) -> f64 {
+    start.height_m + (end.height_m - start.height_m) * t
+}
+
+fn same_heighted_vertex_xz(a: &NodeHeightedVertex, b: &NodeHeightedVertex) -> bool {
+    NodeTriangulationPointKey::from_vertex(a) == NodeTriangulationPointKey::from_vertex(b)
+}
+
+fn oriented_heighted_contour(
+    mut contour: Vec<NodeHeightedVertex>,
+    positive_area: bool,
+) -> Vec<NodeHeightedVertex> {
+    let is_positive = signed_heighted_contour_area_m2(&contour) >= 0.0;
+    if is_positive != positive_area {
+        contour.reverse();
+    }
+    contour
+}
+
+fn heighted_shape_area_m2(shape: &[Vec<NodeHeightedVertex>]) -> f32 {
+    let Some(outer) = shape.first() else {
+        return 0.0;
+    };
+    let holes = shape
+        .iter()
+        .skip(1)
+        .map(|hole| signed_heighted_contour_area_m2(hole).abs())
+        .sum::<f32>();
+    (signed_heighted_contour_area_m2(outer).abs() - holes).max(0.0)
+}
+
+fn signed_heighted_contour_area_m2(contour: &[NodeHeightedVertex]) -> f32 {
+    if contour.len() < 3 {
+        return 0.0;
+    }
+    let mut area = 0.0;
+    for index in 0..contour.len() {
+        let current = contour[index].point_xz;
+        let next = contour[(index + 1) % contour.len()].point_xz;
+        area += current.x * next.y - next.x * current.y;
+    }
+    (area * 0.5) as f32
+}
+
+fn heighted_contour_inside_contour(
+    inner: &[NodeHeightedVertex],
+    outer: &[NodeHeightedVertex],
+) -> bool {
+    let Some(point) =
+        heighted_contour_centroid(inner).or_else(|| inner.first().map(|v| v.point_xz))
+    else {
+        return false;
+    };
+    heighted_contour_contains_point(outer, point)
+}
+
+fn heighted_contour_centroid(contour: &[NodeHeightedVertex]) -> Option<RoadVec2> {
+    if contour.is_empty() {
+        return None;
+    }
+    let mut point = RoadVec2::ZERO;
+    for vertex in contour {
+        point += vertex.point_xz;
+    }
+    Some(point / contour.len() as f64)
+}
+
+fn heighted_contour_contains_point(contour: &[NodeHeightedVertex], point: RoadVec2) -> bool {
+    if contour.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut previous = contour.len() - 1;
+    for current in 0..contour.len() {
+        let a = contour[current].point_xz;
+        let b = contour[previous].point_xz;
+        if (a.y > point.y) != (b.y > point.y) {
+            let intersection_x = (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x;
+            if point.x < intersection_x {
+                inside = !inside;
+            }
+        }
+        previous = current;
+    }
+    inside
 }
 
 fn triangulate_region(
