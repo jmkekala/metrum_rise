@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
 const CDT_EPSILON_M: f64 = 0.001;
+const MAX_INVALID_CONSTRAINT_SAMPLES: usize = 8;
 const MAX_ROAD_SEAM_FACE_SAMPLES: usize = 8;
 const MAX_TERRAIN_TIE_IN_SLOPE_RATIO: f32 = 0.5;
 const MIN_TIE_IN_HEIGHT_DELTA_M: f32 = 0.01;
@@ -122,6 +123,7 @@ pub(crate) struct TerrainCdtMesh {
     pub(crate) vertices: Vec<TerrainCdtVertex>,
     pub(crate) triangles: Vec<[usize; 3]>,
     pub(crate) stats: TerrainCdtStats,
+    pub(crate) invalid_constraint_samples: Vec<TerrainCdtInvalidConstraintSample>,
     pub(crate) road_seam_face_samples: Vec<TerrainCdtFaceSample>,
 }
 
@@ -144,6 +146,7 @@ pub(crate) struct TerrainCdtStats {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TerrainCdtFaceSample {
+    pub(crate) vertices: [TerrainCdtVertex; 3],
     pub(crate) centroid: TerrainCdtVertex,
     pub(crate) min_x: f64,
     pub(crate) min_z: f64,
@@ -153,6 +156,16 @@ pub(crate) struct TerrainCdtFaceSample {
     pub(crate) max_y_m: f32,
     pub(crate) max_y_delta_m: f32,
     pub(crate) max_slope_ratio: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TerrainCdtInvalidConstraintSample {
+    pub(crate) start: TerrainCdtVertex,
+    pub(crate) end: TerrainCdtVertex,
+    pub(crate) road_owned: bool,
+    pub(crate) stable_piece_id: u64,
+    pub(crate) local_loop_index: u32,
+    pub(crate) local_edge_index: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,9 +188,20 @@ pub(crate) fn build_road_touched_terrain_patch(
         .map(|vertex| vertex.point2())
         .collect::<Vec<_>>();
     let mut invalid_constraint_edges = 0usize;
-    let cdt = SpadeCdt::try_bulk_load_cdt(spade_vertices, canonical.constraints.clone(), |_| {
-        invalid_constraint_edges += 1
-    })
+    let mut invalid_constraint_samples = Vec::new();
+    let cdt = SpadeCdt::try_bulk_load_cdt(
+        spade_vertices,
+        canonical.constraints.clone(),
+        |edge| {
+            invalid_constraint_edges += 1;
+            insert_invalid_constraint_sample(
+                &mut invalid_constraint_samples,
+                normalize_edge_array(edge[0], edge[1]),
+                &canonical.vertices,
+                &canonical.road_constraint_sources,
+            );
+        },
+    )
     .map_err(|_| TerrainCdtError::TriangulationFailed)?;
 
     let mut triangles = Vec::new();
@@ -231,8 +255,16 @@ pub(crate) fn build_road_touched_terrain_patch(
         },
         vertices: canonical.vertices,
         triangles,
+        invalid_constraint_samples,
         road_seam_face_samples: diagnostics.road_seam_face_samples,
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TerrainCdtRoadConstraintSource {
+    stable_piece_id: u64,
+    local_loop_index: u32,
+    local_edge_index: u32,
 }
 
 struct TerrainCdtDiagnostics {
@@ -249,6 +281,7 @@ struct CanonicalTerrainCdtInput {
     vertices: Vec<TerrainCdtVertex>,
     constraints: Vec<[usize; 2]>,
     road_constraint_edges: Vec<[usize; 2]>,
+    road_constraint_sources: BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
     road_loops: Vec<Vec<TerrainCdtVertex>>,
 }
 
@@ -259,6 +292,7 @@ fn canonicalize_input(
     let mut vertex_lookup = BTreeMap::new();
     let mut constraint_set = BTreeSet::new();
     let mut road_constraint_edges = Vec::new();
+    let mut road_constraint_sources = BTreeMap::new();
     let mut road_loops = Vec::new();
 
     let patch_corners = input.patch.corners_cw();
@@ -292,7 +326,10 @@ fn canonicalize_input(
             &loop_indices,
             &vertices,
             input.patch,
+            road_loop.stable_piece_id,
+            road_loop.local_loop_index,
             &mut road_constraint_edges,
+            &mut road_constraint_sources,
         );
         road_loops.push(points);
     }
@@ -332,6 +369,7 @@ fn canonicalize_input(
         vertices,
         constraints: constraint_set.into_iter().collect(),
         road_constraint_edges,
+        road_constraint_sources,
         road_loops,
     })
 }
@@ -355,7 +393,10 @@ fn push_road_loop_constraints(
     indices: &[usize],
     vertices: &[TerrainCdtVertex],
     patch: TerrainCdtPatch,
+    stable_piece_id: u64,
+    local_loop_index: u32,
     road_constraint_edges: &mut Vec<[usize; 2]>,
+    road_constraint_sources: &mut BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
 ) {
     for index in 0..indices.len() {
         let edge = normalize_edge_array(indices[index], indices[(index + 1) % indices.len()]);
@@ -364,6 +405,13 @@ fn push_road_loop_constraints(
         }
         if !edge_lies_on_patch_boundary(vertices[edge[0]], vertices[edge[1]], patch) {
             road_constraint_edges.push(edge);
+            road_constraint_sources
+                .entry(edge)
+                .or_insert(TerrainCdtRoadConstraintSource {
+                    stable_piece_id,
+                    local_loop_index,
+                    local_edge_index: u32::try_from(index).unwrap_or(u32::MAX),
+                });
         }
     }
 }
@@ -763,6 +811,7 @@ fn terrain_face_sample(points: [TerrainCdtVertex; 3]) -> TerrainCdtFaceSample {
     }
 
     TerrainCdtFaceSample {
+        vertices: points,
         centroid: centroid(points),
         min_x,
         min_z,
@@ -809,6 +858,41 @@ fn insert_road_seam_face_sample(
             .then_with(|| a.centroid.z.total_cmp(&b.centroid.z))
     });
     samples.truncate(MAX_ROAD_SEAM_FACE_SAMPLES);
+}
+
+fn insert_invalid_constraint_sample(
+    samples: &mut Vec<TerrainCdtInvalidConstraintSample>,
+    edge: [usize; 2],
+    vertices: &[TerrainCdtVertex],
+    road_constraint_sources: &BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
+) {
+    let Some(&start) = vertices.get(edge[0]) else {
+        return;
+    };
+    let Some(&end) = vertices.get(edge[1]) else {
+        return;
+    };
+    let source = road_constraint_sources.get(&edge);
+    samples.push(TerrainCdtInvalidConstraintSample {
+        start,
+        end,
+        road_owned: source.is_some(),
+        stable_piece_id: source.map_or(0, |source| source.stable_piece_id),
+        local_loop_index: source.map_or(u32::MAX, |source| source.local_loop_index),
+        local_edge_index: source.map_or(u32::MAX, |source| source.local_edge_index),
+    });
+    samples.sort_by(|a, b| {
+        b.road_owned
+            .cmp(&a.road_owned)
+            .then_with(|| a.stable_piece_id.cmp(&b.stable_piece_id))
+            .then_with(|| a.local_loop_index.cmp(&b.local_loop_index))
+            .then_with(|| a.local_edge_index.cmp(&b.local_edge_index))
+            .then_with(|| a.start.x.total_cmp(&b.start.x))
+            .then_with(|| a.start.z.total_cmp(&b.start.z))
+            .then_with(|| a.end.x.total_cmp(&b.end.x))
+            .then_with(|| a.end.z.total_cmp(&b.end.z))
+    });
+    samples.truncate(MAX_INVALID_CONSTRAINT_SAMPLES);
 }
 
 fn normalize_edge(a: usize, b: usize) -> (usize, usize) {

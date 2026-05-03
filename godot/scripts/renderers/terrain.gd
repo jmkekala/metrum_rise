@@ -715,9 +715,10 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_road_seam_steep_faces: int = int(patch_data.get("terrain_cdt_road_seam_steep_faces", 0))
 		var cdt_road_seam_max_y_delta_m: float = float(patch_data.get("terrain_cdt_road_seam_max_y_delta_m", 0.0))
 		var cdt_road_seam_max_slope_ratio: float = float(patch_data.get("terrain_cdt_road_seam_max_slope_ratio", 0.0))
+		var cdt_invalid_constraint_samples: String = _road_geometry_terrain_invalid_constraint_samples_label(patch_data)
 		var cdt_road_seam_samples: String = _road_geometry_terrain_seam_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d cdt_status=%s cdt_error=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_steep=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_road_seam_samples=%s"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d cdt_status=%s cdt_error=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_steep=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_invalid_samples=%s cdt_road_seam_samples=%s"
 			% [
 				key.x,
 				key.y,
@@ -757,6 +758,7 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				cdt_road_seam_steep_faces,
 				cdt_road_seam_max_y_delta_m,
 				cdt_road_seam_max_slope_ratio,
+				cdt_invalid_constraint_samples,
 				cdt_road_seam_samples,
 			]
 		)
@@ -1257,6 +1259,10 @@ func _road_geometry_terrain_seam_samples_label(patch_data: Dictionary) -> String
 		patch_data.get("terrain_cdt_road_seam_sample_metrics", PackedFloat32Array())
 		as PackedFloat32Array
 	)
+	var vertices: PackedVector3Array = (
+		patch_data.get("terrain_cdt_road_seam_sample_vertices", PackedVector3Array())
+		as PackedVector3Array
+	)
 	var sample_count: int = mini(
 		centroids.size(),
 		mini(int(bounds.size() / 2), int(metrics.size() / 2))
@@ -1271,8 +1277,24 @@ func _road_geometry_terrain_seam_samples_label(patch_data: Dictionary) -> String
 		var bounds_max: Vector3 = bounds[index * 2 + 1]
 		var y_delta_m: float = metrics[index * 2]
 		var slope_ratio: float = metrics[index * 2 + 1]
+		var vertices_label := ""
+		if vertices.size() >= (index + 1) * 3:
+			var v0: Vector3 = vertices[index * 3]
+			var v1: Vector3 = vertices[index * 3 + 1]
+			var v2: Vector3 = vertices[index * 3 + 2]
+			vertices_label = ",verts=[(%.3f,%.3f,%.3f),(%.3f,%.3f,%.3f),(%.3f,%.3f,%.3f)]" % [
+				v0.x,
+				v0.y,
+				v0.z,
+				v1.x,
+				v1.y,
+				v1.z,
+				v2.x,
+				v2.y,
+				v2.z,
+			]
 		parts.append(
-			"{centroid=(%.3f,%.3f,%.3f),bounds=[(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)],y_delta=%.3f,slope=%.3f}"
+			"{centroid=(%.3f,%.3f,%.3f),bounds=[(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)],y_delta=%.3f,slope=%.3f%s}"
 			% [
 				centroid.x,
 				centroid.y,
@@ -1285,6 +1307,51 @@ func _road_geometry_terrain_seam_samples_label(patch_data: Dictionary) -> String
 				bounds_max.z,
 				y_delta_m,
 				slope_ratio,
+				vertices_label,
+			]
+		)
+	return "[" + ", ".join(parts) + "]"
+
+func _road_geometry_terrain_invalid_constraint_samples_label(patch_data: Dictionary) -> String:
+	if not patch_data.has("terrain_cdt_invalid_constraint_sample_edges"):
+		return "[]"
+	var edges: PackedVector3Array = (
+		patch_data["terrain_cdt_invalid_constraint_sample_edges"] as PackedVector3Array
+	)
+	var metadata: PackedInt32Array = (
+		patch_data.get("terrain_cdt_invalid_constraint_sample_metadata", PackedInt32Array())
+		as PackedInt32Array
+	)
+	var sample_count: int = int(edges.size() / 2)
+	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
+	if sample_count <= 0:
+		return "[]"
+	var parts: Array[String] = []
+	for index in range(sample_count):
+		var start: Vector3 = edges[index * 2]
+		var end: Vector3 = edges[index * 2 + 1]
+		var road_owned := false
+		var stable_piece_id := -1
+		var local_loop_index := -1
+		var local_edge_index := -1
+		if metadata.size() >= (index + 1) * 4:
+			road_owned = metadata[index * 4] != 0
+			stable_piece_id = metadata[index * 4 + 1]
+			local_loop_index = metadata[index * 4 + 2]
+			local_edge_index = metadata[index * 4 + 3]
+		parts.append(
+			"{road=%s,piece=%d,loop=%d,edge=%d,start=(%.3f,%.3f,%.3f),end=(%.3f,%.3f,%.3f)}"
+			% [
+				str(road_owned),
+				stable_piece_id,
+				local_loop_index,
+				local_edge_index,
+				start.x,
+				start.y,
+				start.z,
+				end.x,
+				end.y,
+				end.z,
 			]
 		)
 	return "[" + ", ".join(parts) + "]"

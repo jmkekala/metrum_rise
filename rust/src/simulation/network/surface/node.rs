@@ -157,8 +157,6 @@ impl RoadSurfaceSystem {
                 return None;
             }
         };
-        // Keep height, triangulation, and arrangement region indices aligned after splitting.
-        let heights = Self::split_self_touching_node_height_solution(heights);
         let triangulation = match Self::build_node_triangulation_from_height_solution(&heights) {
             Ok(triangulation) => triangulation,
             Err(error) => {

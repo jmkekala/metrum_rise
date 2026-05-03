@@ -516,6 +516,7 @@ impl SimulationNode {
                     f64::from(mesh.stats.road_seam_max_slope_ratio),
                 );
                 Self::append_cdt_road_seam_face_samples(dict, &mesh);
+                Self::append_cdt_invalid_constraint_samples(dict, &mesh);
                 Self::append_cdt_mesh_buffers(dict, patch, &mesh);
             }
             Err(err) => {
@@ -549,6 +550,18 @@ impl SimulationNode {
                 dict.set(
                     "terrain_cdt_road_seam_sample_metrics",
                     PackedFloat32Array::new(),
+                );
+                dict.set(
+                    "terrain_cdt_road_seam_sample_vertices",
+                    PackedVector3Array::new(),
+                );
+                dict.set(
+                    "terrain_cdt_invalid_constraint_sample_edges",
+                    PackedVector3Array::new(),
+                );
+                dict.set(
+                    "terrain_cdt_invalid_constraint_sample_metadata",
+                    PackedInt32Array::new(),
                 );
                 dict.set("terrain_mesh_vertices", PackedVector3Array::new());
                 dict.set("terrain_mesh_normals", PackedVector3Array::new());
@@ -727,6 +740,7 @@ impl SimulationNode {
         let mut centroids = Vec::with_capacity(mesh.road_seam_face_samples.len());
         let mut bounds = Vec::with_capacity(mesh.road_seam_face_samples.len() * 2);
         let mut metrics = Vec::with_capacity(mesh.road_seam_face_samples.len() * 2);
+        let mut vertices = Vec::with_capacity(mesh.road_seam_face_samples.len() * 3);
         for sample in &mesh.road_seam_face_samples {
             centroids.push(Self::terrain_cdt_vertex_to_vector3(sample.centroid));
             bounds.push(Vector3::new(
@@ -741,6 +755,12 @@ impl SimulationNode {
             ));
             metrics.push(sample.max_y_delta_m);
             metrics.push(sample.max_slope_ratio);
+            vertices.extend(
+                sample
+                    .vertices
+                    .into_iter()
+                    .map(Self::terrain_cdt_vertex_to_vector3),
+            );
         }
         dict.set(
             "terrain_cdt_road_seam_sample_centroids",
@@ -753,6 +773,34 @@ impl SimulationNode {
         dict.set(
             "terrain_cdt_road_seam_sample_metrics",
             PackedFloat32Array::from_iter(metrics),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_sample_vertices",
+            PackedVector3Array::from_iter(vertices),
+        );
+    }
+
+    fn append_cdt_invalid_constraint_samples(
+        dict: &mut VarDictionary,
+        mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
+    ) {
+        let mut edges = Vec::with_capacity(mesh.invalid_constraint_samples.len() * 2);
+        let mut metadata = Vec::with_capacity(mesh.invalid_constraint_samples.len() * 4);
+        for sample in &mesh.invalid_constraint_samples {
+            edges.push(Self::terrain_cdt_vertex_to_vector3(sample.start));
+            edges.push(Self::terrain_cdt_vertex_to_vector3(sample.end));
+            metadata.push(if sample.road_owned { 1 } else { 0 });
+            metadata.push(i32::try_from(sample.stable_piece_id).unwrap_or(i32::MAX));
+            metadata.push(i32::try_from(sample.local_loop_index).unwrap_or(i32::MAX));
+            metadata.push(i32::try_from(sample.local_edge_index).unwrap_or(i32::MAX));
+        }
+        dict.set(
+            "terrain_cdt_invalid_constraint_sample_edges",
+            PackedVector3Array::from_iter(edges),
+        );
+        dict.set(
+            "terrain_cdt_invalid_constraint_sample_metadata",
+            PackedInt32Array::from_iter(metadata),
         );
     }
 
