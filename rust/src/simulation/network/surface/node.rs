@@ -186,6 +186,9 @@ impl RoadSurfaceSystem {
                     return None;
                 }
             };
+        if let Some(report) = NodeValidationReport::from_arrangement_diagnostics(&arrangement) {
+            Self::log_node_validation_report(&report);
+        }
 
         match Self::node_surface_regions_from_arrangement(
             &arrangement,

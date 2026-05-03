@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use super::arrangement::NodeArrangementError;
+use super::arrangement::{NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError};
 use super::height::NodeHeightSourceError;
 use super::ownership::NodeBooleanOwnershipError;
 use super::rails::NodeRailGenerationError;
@@ -112,6 +112,18 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         region_index: usize,
         overlap_area_m2: f32,
     },
+    SeamConstraintFailure {
+        region_index: usize,
+        owner: RoadSurfaceBandKind,
+        owner_index: usize,
+        opposite_owner: RoadSurfaceBandKind,
+        opposite_owner_index: usize,
+        start_x_mm: i64,
+        start_z_mm: i64,
+        end_x_mm: i64,
+        end_z_mm: i64,
+        reason: NodeSeamConstraintFailureReason,
+    },
     BackendFailure {
         reason: &'static str,
     },
@@ -131,6 +143,12 @@ pub(crate) enum NodeInvalidConstraintReason {
     Crossing,
     Duplicate,
     CdtRejected,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum NodeSeamConstraintFailureReason {
+    Missing,
+    Ambiguous,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -294,6 +312,30 @@ impl NodeValidationReport {
         Self::single_diagnostic(NodeGeometryDiagnostic::from_arrangement_error(
             node_id, piece_kind, error,
         ))
+    }
+
+    pub(crate) fn from_arrangement_diagnostics(arrangement: &NodeArrangement) -> Option<Self> {
+        if arrangement.diagnostics().is_empty() {
+            return None;
+        }
+        Some(Self {
+            node_id: arrangement.node_id(),
+            piece_kind: arrangement.piece_kind(),
+            region_count: arrangement.regions().len(),
+            triangle_count: arrangement.faces().len(),
+            exposed_edge_count: arrangement.edges().len(),
+            diagnostics: arrangement
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| {
+                    NodeGeometryDiagnostic::from_arrangement_diagnostic(
+                        arrangement.node_id(),
+                        arrangement.piece_kind(),
+                        diagnostic,
+                    )
+                })
+                .collect(),
+        })
     }
 
     pub(crate) fn from_boundary_export_error(
@@ -580,6 +622,58 @@ impl NodeGeometryDiagnostic {
         }
     }
 
+    fn from_arrangement_diagnostic(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        diagnostic: &NodeArrangementDiagnostic,
+    ) -> Self {
+        let kind = match diagnostic {
+            NodeArrangementDiagnostic::MissingSeamConstraint {
+                region_index,
+                owner,
+                opposite_owner,
+                start,
+                end,
+            } => NodeGeometryDiagnosticKind::SeamConstraintFailure {
+                region_index: *region_index,
+                owner: owner.kind(),
+                owner_index: owner.owner_index(),
+                opposite_owner: opposite_owner.kind(),
+                opposite_owner_index: opposite_owner.owner_index(),
+                start_x_mm: start.x_mm(),
+                start_z_mm: start.z_mm(),
+                end_x_mm: end.x_mm(),
+                end_z_mm: end.z_mm(),
+                reason: NodeSeamConstraintFailureReason::Missing,
+            },
+            NodeArrangementDiagnostic::AmbiguousSeamConstraint {
+                region_index,
+                owner,
+                opposite_owner,
+                start,
+                end,
+            } => NodeGeometryDiagnosticKind::SeamConstraintFailure {
+                region_index: *region_index,
+                owner: owner.kind(),
+                owner_index: owner.owner_index(),
+                opposite_owner: opposite_owner.kind(),
+                opposite_owner_index: opposite_owner.owner_index(),
+                start_x_mm: start.x_mm(),
+                start_z_mm: start.z_mm(),
+                end_x_mm: end.x_mm(),
+                end_z_mm: end.z_mm(),
+                reason: NodeSeamConstraintFailureReason::Ambiguous,
+            },
+        };
+        Self {
+            node_id,
+            piece_kind,
+            stage: NodeGeometryStage::Validation,
+            backend: NodeGeometryBackend::Parry2d,
+            kind,
+        }
+    }
+
     fn debug_record(&self) -> String {
         format!(
             "{{\"node_id\":{},\"piece_kind\":\"{:?}\",\"stage\":\"{}\",\"backend\":\"{}\",\"kind\":\"{}\",\"detail\":\"{:?}\"}}",
@@ -628,6 +722,7 @@ impl NodeGeometryDiagnosticKind {
             Self::InvalidConstraint { .. } => "invalid_constraint",
             Self::TriangleCoverageMismatch { .. } => "triangle_coverage_mismatch",
             Self::TriangleOverlap { .. } => "triangle_overlap",
+            Self::SeamConstraintFailure { .. } => "seam_constraint_failure",
             Self::BackendFailure { .. } => "backend_failure",
         }
     }
@@ -1118,6 +1213,10 @@ impl NodeValidationEdgeKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::simulation::network::surface::arrangement::{
+        NodeArrangementDiagnostic, NodeArrangementKey, NodeBandOwner,
+    };
+    use crate::simulation::network::surface::backend::RoadVec2;
     use crate::simulation::network::surface::height::NodeHeightSolution;
     use crate::simulation::network::surface::input::NodeArrangementInput;
     use crate::simulation::network::surface::ownership::NodeBooleanOwnership;
@@ -1278,6 +1377,48 @@ mod tests {
             report
                 .debug_dump()
                 .contains("\"kind\":\"rejected_residual\"")
+        );
+    }
+
+    #[test]
+    fn maps_arrangement_seam_diagnostic_to_structured_debug_record() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let opposite_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+        let diagnostic = NodeArrangementDiagnostic::MissingSeamConstraint {
+            region_index: 3,
+            owner,
+            opposite_owner,
+            start: NodeArrangementKey::from_point(RoadVec2::new(1.0, 0.0)),
+            end: NodeArrangementKey::from_point(RoadVec2::new(1.0, 2.0)),
+        };
+
+        let mapped = NodeGeometryDiagnostic::from_arrangement_diagnostic(
+            9,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &diagnostic,
+        );
+
+        assert_eq!(mapped.stage, NodeGeometryStage::Validation);
+        assert_eq!(mapped.backend, NodeGeometryBackend::Parry2d);
+        assert!(matches!(
+            mapped.kind,
+            NodeGeometryDiagnosticKind::SeamConstraintFailure {
+                region_index: 3,
+                owner: RoadSurfaceBandKind::Carriageway,
+                owner_index: 0,
+                opposite_owner: RoadSurfaceBandKind::Sidewalk,
+                opposite_owner_index: 1,
+                start_x_mm: 1000,
+                start_z_mm: 0,
+                end_x_mm: 1000,
+                end_z_mm: 2000,
+                reason: NodeSeamConstraintFailureReason::Missing,
+            }
+        ));
+        assert!(
+            mapped
+                .debug_record()
+                .contains("\"kind\":\"seam_constraint_failure\"")
         );
     }
 }

@@ -149,7 +149,26 @@ pub(crate) struct NodeArrangement {
     edges: Vec<NodeArrangementEdge>,
     regions: Vec<NodeOwnedRegion>,
     faces: Vec<NodeArrangementFace>,
+    diagnostics: Vec<NodeArrangementDiagnostic>,
     vertex_by_context_key: BTreeMap<NodeArrangementVertexContextKey, NodeArrangementVertexId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum NodeArrangementDiagnostic {
+    MissingSeamConstraint {
+        region_index: usize,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+        start: NodeArrangementKey,
+        end: NodeArrangementKey,
+    },
+    AmbiguousSeamConstraint {
+        region_index: usize,
+        owner: NodeBandOwner,
+        opposite_owner: NodeBandOwner,
+        start: NodeArrangementKey,
+        end: NodeArrangementKey,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -224,6 +243,7 @@ impl NodeArrangement {
             edges: Vec::new(),
             regions: Vec::new(),
             faces: Vec::new(),
+            diagnostics: Vec::new(),
             vertex_by_context_key: BTreeMap::new(),
         }
     }
@@ -250,6 +270,10 @@ impl NodeArrangement {
 
     pub(crate) fn faces(&self) -> &[NodeArrangementFace] {
         &self.faces
+    }
+
+    pub(crate) fn diagnostics(&self) -> &[NodeArrangementDiagnostic] {
+        &self.diagnostics
     }
 
     pub(crate) fn insert_vertex(
@@ -429,6 +453,29 @@ impl NodeArrangement {
                     &pending.seam_constraints,
                     &arrangement.vertices,
                 );
+                if let Some(opposite_owner) = opposite_owner {
+                    if source_constraints.is_empty() {
+                        arrangement.diagnostics.push(
+                            NodeArrangementDiagnostic::MissingSeamConstraint {
+                                region_index: pending.region_index,
+                                owner: pending.owner,
+                                opposite_owner,
+                                start: edge.key.start,
+                                end: edge.key.end,
+                            },
+                        );
+                    } else if source_constraints_are_ambiguous(&source_constraints) {
+                        arrangement.diagnostics.push(
+                            NodeArrangementDiagnostic::AmbiguousSeamConstraint {
+                                region_index: pending.region_index,
+                                owner: pending.owner,
+                                opposite_owner,
+                                start: edge.key.start,
+                                end: edge.key.end,
+                            },
+                        );
+                    }
+                }
                 let seam_source = source_constraints
                     .first()
                     .map(|constraint| constraint.seam_source.clone())
@@ -515,6 +562,7 @@ impl NodeArrangement {
             })?;
         let holes = contours.collect();
         Ok(PendingArrangementRegion {
+            region_index,
             owner: region.owner,
             outer_loop,
             holes,
@@ -615,6 +663,7 @@ fn quantize_m(value_m: f64) -> i64 {
 
 #[derive(Clone)]
 struct PendingArrangementRegion {
+    region_index: usize,
     owner: NodeBandOwner,
     outer_loop: Vec<NodeArrangementVertexId>,
     holes: Vec<Vec<NodeArrangementVertexId>>,
@@ -711,6 +760,26 @@ fn source_constraints_for_edge<'a>(
     });
     matches.dedup_by_key(|constraint| constraint.constraint_index);
     matches
+}
+
+fn source_constraints_are_ambiguous(constraints: &[&NodeRegionSeamConstraint]) -> bool {
+    let Some(first) = constraints.first() else {
+        return false;
+    };
+    let first_priority = seam_constraint_priority(first);
+    constraints
+        .iter()
+        .skip(1)
+        .take_while(|constraint| seam_constraint_priority(constraint) == first_priority)
+        .any(|constraint| constraint.seam_source != first.seam_source)
+}
+
+fn seam_constraint_priority(constraint: &NodeRegionSeamConstraint) -> (bool, bool, usize) {
+    (
+        !constraint.constrains_shared_height,
+        !constraint.is_material_transition,
+        seam_source_priority(&constraint.seam_source),
+    )
 }
 
 pub(crate) fn seam_source_priority(source: &NodeSeamSource) -> usize {
@@ -1098,6 +1167,69 @@ mod tests {
     }
 
     #[test]
+    fn shared_arrangement_edge_reports_missing_source_constraint() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
+        let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
+        let heights = two_region_height_solution(carriageway, sidewalk, Vec::new(), Vec::new());
+        let triangulation = two_region_triangulation(carriageway, sidewalk);
+
+        let arrangement =
+            NodeArrangement::from_height_solution_and_triangulation(&heights, &triangulation)
+                .expect("missing seam source is diagnostic-only until the full node model hardcut");
+
+        assert!(matches!(
+            arrangement.diagnostics().first(),
+            Some(NodeArrangementDiagnostic::MissingSeamConstraint {
+                region_index: 0,
+                owner,
+                opposite_owner,
+                ..
+            }) if *owner == carriageway && *opposite_owner == sidewalk
+        ));
+    }
+
+    #[test]
+    fn equally_ranked_conflicting_arrangement_seams_are_reported() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
+        let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
+        let first = NodeRegionSeamConstraint {
+            constraint_index: 20,
+            seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 0 },
+            constrains_shared_height: true,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(1.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 1.0),
+        };
+        let second = NodeRegionSeamConstraint {
+            constraint_index: 21,
+            seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 1 },
+            constrains_shared_height: true,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(1.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 1.0),
+        };
+        let seams = vec![first, second];
+        let heights = two_region_height_solution(carriageway, sidewalk, seams.clone(), seams);
+        let triangulation = two_region_triangulation(carriageway, sidewalk);
+
+        let arrangement =
+            NodeArrangement::from_height_solution_and_triangulation(&heights, &triangulation)
+                .expect(
+                    "ambiguous seam source is diagnostic-only until the full node model hardcut",
+                );
+
+        assert!(matches!(
+            arrangement.diagnostics().first(),
+            Some(NodeArrangementDiagnostic::AmbiguousSeamConstraint {
+                region_index: 0,
+                owner,
+                opposite_owner,
+                ..
+            }) if *owner == carriageway && *opposite_owner == sidewalk
+        ));
+    }
+
+    #[test]
     fn arrangement_vertex_requires_explicit_owner() {
         let mut arrangement = NodeArrangement::new(9, RoadSurfaceVisualNodePieceKind::Terminal);
 
@@ -1121,6 +1253,74 @@ mod tests {
         contour: Vec<NodeHeightedVertex>,
     ) -> NodeHeightedRegion {
         test_height_region_with_seams(kind, owner, contour, Vec::new())
+    }
+
+    fn two_region_height_solution(
+        carriageway: NodeBandOwner,
+        sidewalk: NodeBandOwner,
+        carriageway_seams: Vec<NodeRegionSeamConstraint>,
+        sidewalk_seams: Vec<NodeRegionSeamConstraint>,
+    ) -> NodeHeightSolution {
+        NodeHeightSolution {
+            node_id: 11,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![
+                test_height_region_with_seams(
+                    RoadSurfaceBandKind::Carriageway,
+                    carriageway,
+                    vec![
+                        height_vertex(0.0, 0.0, 0.0),
+                        height_vertex(1.0, 0.0, 0.0),
+                        height_vertex(1.0, 1.0, 0.0),
+                        height_vertex(0.0, 1.0, 0.0),
+                    ],
+                    carriageway_seams,
+                ),
+                test_height_region_with_seams(
+                    RoadSurfaceBandKind::Sidewalk,
+                    sidewalk,
+                    vec![
+                        height_vertex(1.0, 0.0, 0.0),
+                        height_vertex(2.0, 0.0, 0.0),
+                        height_vertex(2.0, 1.0, 0.0),
+                        height_vertex(1.0, 1.0, 0.0),
+                    ],
+                    sidewalk_seams,
+                ),
+            ],
+        }
+    }
+
+    fn two_region_triangulation(
+        carriageway: NodeBandOwner,
+        sidewalk: NodeBandOwner,
+    ) -> NodeTriangulationSolution {
+        NodeTriangulationSolution {
+            node_id: 11,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![
+                test_triangulated_region(
+                    RoadSurfaceBandKind::Carriageway,
+                    carriageway,
+                    vec![
+                        road_vertex(0.0, 0.0, 0.0),
+                        road_vertex(1.0, 0.0, 0.0),
+                        road_vertex(1.0, 0.0, 1.0),
+                        road_vertex(0.0, 0.0, 1.0),
+                    ],
+                ),
+                test_triangulated_region(
+                    RoadSurfaceBandKind::Sidewalk,
+                    sidewalk,
+                    vec![
+                        road_vertex(1.0, 0.0, 0.0),
+                        road_vertex(2.0, 0.0, 0.0),
+                        road_vertex(2.0, 0.0, 1.0),
+                        road_vertex(1.0, 0.0, 1.0),
+                    ],
+                ),
+            ],
+        }
     }
 
     fn test_height_region_with_seams(
