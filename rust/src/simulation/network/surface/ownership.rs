@@ -2,11 +2,18 @@
 
 #![allow(dead_code)]
 
-use super::arrangement::{NodeBandOwner, NodeHeightSource};
-use super::backend::road_vec2_to_overlay_point;
-use super::rails::{NodeGeneratedContour, NodeGeneratedContourKind, NodeRailContourSet};
+use super::arrangement::{
+    NodeBandOwner, NodeHeightSource, NodeRegionSeamConstraint, NodeSeamSource,
+};
+use super::backend::{
+    ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, overlay_point_to_road, road_vec2_to_overlay_point,
+};
+use super::rails::{
+    NodeGeneratedContour, NodeGeneratedContourKind, NodeRailConstraint, NodeRailConstraintKind,
+    NodeRailContourSet,
+};
 use super::{
-    NodeOverlayContour, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
+    NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
     RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
 };
 use i_overlay::core::overlay_rule::OverlayRule;
@@ -30,6 +37,7 @@ pub(crate) struct NodeBooleanOwnedRegion {
     pub(crate) shape: NodeOverlayShape,
     pub(crate) area_m2: f32,
     pub(crate) height_sources: Vec<NodeHeightSource>,
+    pub(crate) seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -109,8 +117,12 @@ impl NodeBooleanOwnership {
         RoadSurfaceSystem::sort_overlay_shapes(&mut non_road_shapes);
 
         let mut owned_regions = Vec::new();
-        let asphalt_result =
-            owned_regions_from_domains(&asphalt_shapes, &asphalt_domains, ResidualKind::Asphalt)?;
+        let asphalt_result = owned_regions_from_domains(
+            &asphalt_shapes,
+            &asphalt_domains,
+            &rails.constraints,
+            ResidualKind::Asphalt,
+        )?;
         owned_regions.extend(asphalt_result.regions);
 
         let non_road_result = split_non_road_regions(&non_road_shapes, rails)?;
@@ -163,8 +175,12 @@ fn split_non_road_regions(
             continue;
         }
 
-        let kind_result =
-            owned_regions_from_domains(&kind_target, &kind_domains, ResidualKind::Band(kind))?;
+        let kind_result = owned_regions_from_domains(
+            &kind_target,
+            &kind_domains,
+            &rails.constraints,
+            ResidualKind::Band(kind),
+        )?;
         claimed_shapes =
             overlay_union_shape_sets(&claimed_shapes, &kind_result.claimed_shapes, "claim_union")?;
         regions.extend(kind_result.regions);
@@ -180,6 +196,7 @@ fn split_non_road_regions(
 fn owned_regions_from_domains(
     target_shapes: &NodeOverlayShapes,
     domains: &[&NodeGeneratedContour],
+    rail_constraints: &[NodeRailConstraint],
     residual_kind: ResidualKind,
 ) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
     if target_shapes.is_empty() {
@@ -221,6 +238,7 @@ fn owned_regions_from_domains(
                 shape: shape.clone(),
                 area_m2,
                 height_sources: canonical_height_sources(domain.height_sources.iter().cloned()),
+                seam_constraints: seam_constraints_for_shape(shape, owner, rail_constraints),
             });
         }
         claimed_shapes =
@@ -229,8 +247,12 @@ fn owned_regions_from_domains(
 
     let residual = overlay_difference(target_shapes, &claimed_shapes, "domain_residual")?;
     if !residual.is_empty() {
-        let residual_result =
-            residual_regions_from_domains(&residual, domains, "domain_residual_reclaim")?;
+        let residual_result = residual_regions_from_domains(
+            &residual,
+            domains,
+            rail_constraints,
+            "domain_residual_reclaim",
+        )?;
         regions.extend(residual_result.regions);
         claimed_shapes = overlay_union_shape_sets(
             &claimed_shapes,
@@ -250,6 +272,7 @@ fn owned_regions_from_domains(
 fn residual_regions_from_domains(
     residual_shapes: &NodeOverlayShapes,
     domains: &[&NodeGeneratedContour],
+    rail_constraints: &[NodeRailConstraint],
     stage: &'static str,
 ) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
     let mut regions = Vec::new();
@@ -283,6 +306,7 @@ fn residual_regions_from_domains(
                 shape: shape.clone(),
                 area_m2,
                 height_sources: canonical_height_sources(domain.height_sources.iter().cloned()),
+                seam_constraints: seam_constraints_for_shape(shape, owner, rail_constraints),
             });
         }
         claimed_shapes = overlay_union_shape_sets(&claimed_shapes, &domain_shapes, stage)?;
@@ -414,6 +438,195 @@ fn reject_residual(
 
 fn owned_shape_is_numeric_dust(shape: &NodeOverlayShape, area_m2: f32) -> bool {
     area_m2 <= RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(shape)
+}
+
+fn seam_constraints_for_shape(
+    shape: &NodeOverlayShape,
+    owner: NodeBandOwner,
+    rail_constraints: &[NodeRailConstraint],
+) -> Vec<NodeRegionSeamConstraint> {
+    let mut seams = Vec::new();
+    for contour in shape {
+        if contour.len() < 2 {
+            continue;
+        }
+        for edge_index in 0..contour.len() {
+            let start = contour[edge_index];
+            let end = contour[(edge_index + 1) % contour.len()];
+            if overlay_point_key(start) == overlay_point_key(end) {
+                continue;
+            }
+            for constraint in rail_constraints
+                .iter()
+                .filter(|constraint| constraint_applies_to_owner(constraint, owner))
+                .filter(|constraint| edge_lies_on_constraint(start, end, constraint))
+            {
+                seams.push(NodeRegionSeamConstraint {
+                    constraint_index: constraint.constraint_index,
+                    seam_source: seam_source_from_constraint(constraint, owner),
+                    start_xz: overlay_point_to_road(start),
+                    end_xz: overlay_point_to_road(end),
+                });
+            }
+        }
+    }
+    seams.sort_by(|a, b| {
+        a.constraint_index
+            .cmp(&b.constraint_index)
+            .then(road_point_key(a.start_xz).cmp(&road_point_key(b.start_xz)))
+            .then(road_point_key(a.end_xz).cmp(&road_point_key(b.end_xz)))
+    });
+    seams.dedup_by(|a, b| {
+        a.constraint_index == b.constraint_index
+            && road_point_key(a.start_xz) == road_point_key(b.start_xz)
+            && road_point_key(a.end_xz) == road_point_key(b.end_xz)
+    });
+    seams
+}
+
+fn constraint_applies_to_owner(constraint: &NodeRailConstraint, owner: NodeBandOwner) -> bool {
+    if constraint.owner == Some(owner) || constraint.opposite_owner == Some(owner) {
+        return true;
+    }
+    match constraint.kind {
+        NodeRailConstraintKind::FullRoadbedContour => true,
+        NodeRailConstraintKind::BandContour { kind }
+        | NodeRailConstraintKind::SpanHandoff { kind }
+        | NodeRailConstraintKind::FootprintSeam {
+            adjacent_kind: kind,
+        } => kind == owner.kind(),
+        NodeRailConstraintKind::AsphaltBoundary { adjacent_kind } => {
+            is_carriageway(owner.kind()) || adjacent_kind == owner.kind()
+        }
+        NodeRailConstraintKind::AsphaltCurbContact => {
+            is_carriageway(owner.kind()) || is_curb_or_shoulder(owner.kind())
+        }
+        NodeRailConstraintKind::CurbSidewalkContact => {
+            is_curb_or_shoulder(owner.kind()) || is_sidewalk(owner.kind())
+        }
+        NodeRailConstraintKind::BandBoundary {
+            left_kind,
+            right_kind,
+        } => left_kind == owner.kind() || right_kind == owner.kind(),
+    }
+}
+
+fn edge_lies_on_constraint(
+    edge_start: NodeOverlayPoint,
+    edge_end: NodeOverlayPoint,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    if constraint.points_xz.len() < 2 {
+        return false;
+    }
+    let edge_start = overlay_point_key(edge_start);
+    let edge_end = overlay_point_key(edge_end);
+    constraint.points_xz.windows(2).any(|segment| {
+        let start = road_point_key(segment[0]);
+        let end = road_point_key(segment[1]);
+        point_key_lies_on_segment(edge_start, start, end)
+            && point_key_lies_on_segment(edge_end, start, end)
+    })
+}
+
+fn point_key_lies_on_segment(
+    point: NodeOwnershipPointKey,
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+) -> bool {
+    if point == start || point == end {
+        return true;
+    }
+    if start == end {
+        return false;
+    }
+    let dx = i128::from(end.0 - start.0);
+    let dz = i128::from(end.1 - start.1);
+    let px = i128::from(point.0 - start.0);
+    let pz = i128::from(point.1 - start.1);
+    if px * dz - pz * dx != 0 {
+        return false;
+    }
+    let inside_x = if start.0 == end.0 {
+        point.0 == start.0
+    } else {
+        point.0 > start.0.min(end.0) && point.0 < start.0.max(end.0)
+    };
+    let inside_z = if start.1 == end.1 {
+        point.1 == start.1
+    } else {
+        point.1 > start.1.min(end.1) && point.1 < start.1.max(end.1)
+    };
+    inside_x && inside_z
+}
+
+fn seam_source_from_constraint(
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+) -> NodeSeamSource {
+    match constraint.kind {
+        NodeRailConstraintKind::AsphaltCurbContact => NodeSeamSource::AsphaltCurbContact {
+            owner_index: owner.owner_index(),
+        },
+        NodeRailConstraintKind::AsphaltBoundary { .. } => NodeSeamSource::AsphaltBoundary {
+            owner_index: owner.owner_index(),
+        },
+        NodeRailConstraintKind::CurbSidewalkContact => NodeSeamSource::CurbSidewalkContact {
+            owner_index: owner.owner_index(),
+        },
+        NodeRailConstraintKind::FootprintSeam { .. }
+        | NodeRailConstraintKind::FullRoadbedContour => NodeSeamSource::FootprintBoundary {
+            owner_index: owner.owner_index(),
+        },
+        NodeRailConstraintKind::BandContour { .. }
+        | NodeRailConstraintKind::SpanHandoff { .. }
+        | NodeRailConstraintKind::BandBoundary { .. } => seam_source_for_owner(owner),
+    }
+}
+
+fn seam_source_for_owner(owner: NodeBandOwner) -> NodeSeamSource {
+    match owner.kind() {
+        RoadSurfaceBandKind::Carriageway => NodeSeamSource::AsphaltBoundary {
+            owner_index: owner.owner_index(),
+        },
+        RoadSurfaceBandKind::CurbOrShoulder => NodeSeamSource::AsphaltCurbContact {
+            owner_index: owner.owner_index(),
+        },
+        RoadSurfaceBandKind::Sidewalk => NodeSeamSource::SidewalkOuter {
+            owner_index: owner.owner_index(),
+        },
+        _ => NodeSeamSource::FootprintBoundary {
+            owner_index: owner.owner_index(),
+        },
+    }
+}
+
+type NodeOwnershipPointKey = (i64, i64);
+
+fn overlay_point_key(point: NodeOverlayPoint) -> NodeOwnershipPointKey {
+    (
+        (point[0] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        (point[1] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
+}
+
+fn road_point_key(point: RoadVec2) -> NodeOwnershipPointKey {
+    (
+        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
+}
+
+fn is_carriageway(kind: RoadSurfaceBandKind) -> bool {
+    kind == RoadSurfaceBandKind::Carriageway
+}
+
+fn is_curb_or_shoulder(kind: RoadSurfaceBandKind) -> bool {
+    kind == RoadSurfaceBandKind::CurbOrShoulder
+}
+
+fn is_sidewalk(kind: RoadSurfaceBandKind) -> bool {
+    kind == RoadSurfaceBandKind::Sidewalk
 }
 
 fn band_kind(contour: &NodeGeneratedContour) -> Option<RoadSurfaceBandKind> {
@@ -548,13 +761,23 @@ mod tests {
         assert_eq!(ownership.asphalt_shapes.len(), 1);
         assert_eq!(ownership.non_road_shapes.len(), 2);
         assert_eq!(ownership.owned_regions.len(), 4);
+        assert!(ownership.owned_regions.iter().any(|region| region.kind
+            == RoadSurfaceBandKind::Carriageway
+            && region.owner == NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2)
+            && !region.height_sources.is_empty()
+            && !region.seam_constraints.is_empty()));
         assert!(
-            ownership
-                .owned_regions
-                .iter()
-                .any(|region| region.kind == RoadSurfaceBandKind::Carriageway
-                    && region.owner == NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2)
-                    && !region.height_sources.is_empty())
+            ownership.owned_regions.iter().any(|region| {
+                region.seam_constraints.iter().any(|constraint| {
+                    matches!(
+                        constraint.seam_source,
+                        NodeSeamSource::AsphaltCurbContact { .. }
+                            | NodeSeamSource::CurbSidewalkContact { .. }
+                            | NodeSeamSource::FootprintBoundary { .. }
+                    )
+                })
+            }),
+            "owned regions must preserve source rail seam constraints"
         );
         assert_eq!(
             ownership

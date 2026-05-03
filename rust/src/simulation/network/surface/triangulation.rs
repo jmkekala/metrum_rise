@@ -634,6 +634,7 @@ mod tests {
                 shape: vec![vec![flat_vertex(0.0, 0.0), flat_vertex(1.0, 0.0)]],
                 area_m2: 0.0,
                 height_sources: Vec::new(),
+                seam_constraints: Vec::new(),
             }],
         };
 
@@ -670,6 +671,7 @@ mod tests {
             ],
             area_m2: 12.0,
             height_sources: Vec::new(),
+            seam_constraints: Vec::new(),
         }
     }
 

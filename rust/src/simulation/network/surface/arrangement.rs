@@ -90,6 +90,14 @@ pub(crate) enum NodeSeamSource {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NodeRegionSeamConstraint {
+    pub(crate) constraint_index: usize,
+    pub(crate) seam_source: NodeSeamSource,
+    pub(crate) start_xz: RoadVec2,
+    pub(crate) end_xz: RoadVec2,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeArrangementVertex {
     id: NodeArrangementVertexId,
     key: NodeArrangementKey,
@@ -109,6 +117,7 @@ pub(crate) struct NodeArrangementEdge {
     owner: NodeBandOwner,
     opposite_owner: Option<NodeBandOwner>,
     seam_source: NodeSeamSource,
+    source_constraint_indices: Vec<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +128,7 @@ pub(crate) struct NodeOwnedRegion {
     holes: Vec<Vec<NodeArrangementVertexId>>,
     boundary_edges: Vec<NodeArrangementEdgeId>,
     height_source: NodeHeightSource,
+    seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -317,6 +327,7 @@ impl NodeArrangement {
         owner: NodeBandOwner,
         opposite_owner: Option<NodeBandOwner>,
         seam_source: NodeSeamSource,
+        source_constraint_indices: Vec<usize>,
     ) -> NodeArrangementEdgeId {
         let id = NodeArrangementEdgeId(self.edges.len());
         self.edges.push(NodeArrangementEdge {
@@ -326,6 +337,7 @@ impl NodeArrangement {
             owner,
             opposite_owner,
             seam_source,
+            source_constraint_indices,
         });
         id
     }
@@ -337,6 +349,7 @@ impl NodeArrangement {
         holes: Vec<Vec<NodeArrangementVertexId>>,
         boundary_edges: Vec<NodeArrangementEdgeId>,
         height_source: NodeHeightSource,
+        seam_constraints: Vec<NodeRegionSeamConstraint>,
     ) -> NodeOwnedRegionId {
         let id = NodeOwnedRegionId(self.regions.len());
         self.regions.push(NodeOwnedRegion {
@@ -346,6 +359,7 @@ impl NodeArrangement {
             holes,
             boundary_edges,
             height_source,
+            seam_constraints,
         });
         id
     }
@@ -408,13 +422,27 @@ impl NodeArrangement {
                 let opposite_owner = edge_owners.get(&edge.key).and_then(|owners| {
                     owners.iter().copied().find(|owner| *owner != pending.owner)
                 });
-                let seam_source = seam_source_for_edge(pending.owner, opposite_owner);
+                let source_constraints = source_constraints_for_edge(
+                    edge,
+                    &pending.seam_constraints,
+                    &arrangement.vertices,
+                );
+                let seam_source = source_constraints
+                    .first()
+                    .map(|constraint| constraint.seam_source.clone())
+                    .unwrap_or_else(|| seam_source_for_edge(pending.owner, opposite_owner));
+                let source_constraint_indices = canonical_sources(
+                    source_constraints
+                        .iter()
+                        .map(|constraint| constraint.constraint_index),
+                );
                 boundary_edges.push(arrangement.push_edge(
                     edge.start,
                     edge.end,
                     pending.owner,
                     opposite_owner,
                     seam_source,
+                    source_constraint_indices,
                 ));
             }
             let region_id = arrangement.push_region(
@@ -423,6 +451,7 @@ impl NodeArrangement {
                 pending.holes,
                 boundary_edges,
                 primary_height_source(&pending.height_sources),
+                pending.seam_constraints,
             );
             arrangement_region_ids.push(region_id);
         }
@@ -488,6 +517,7 @@ impl NodeArrangement {
             outer_loop,
             holes,
             height_sources: region.height_sources.clone(),
+            seam_constraints: region.seam_constraints.clone(),
         })
     }
 
@@ -587,6 +617,7 @@ struct PendingArrangementRegion {
     outer_loop: Vec<NodeArrangementVertexId>,
     holes: Vec<Vec<NodeArrangementVertexId>>,
     height_sources: Vec<NodeHeightSource>,
+    seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -646,6 +677,62 @@ impl NodeArrangementEdgeKey {
             Self { start: b, end: a }
         }
     }
+}
+
+fn source_constraints_for_edge<'a>(
+    edge: PendingArrangementEdge,
+    constraints: &'a [NodeRegionSeamConstraint],
+    vertices: &[NodeArrangementVertex],
+) -> Vec<&'a NodeRegionSeamConstraint> {
+    let Some(start) = vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+        return Vec::new();
+    };
+    let Some(end) = vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+        return Vec::new();
+    };
+    let mut matches = constraints
+        .iter()
+        .filter(|constraint| {
+            let constraint_start = NodeArrangementKey::from_point(constraint.start_xz);
+            let constraint_end = NodeArrangementKey::from_point(constraint.end_xz);
+            point_key_lies_on_segment(start, constraint_start, constraint_end)
+                && point_key_lies_on_segment(end, constraint_start, constraint_end)
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|constraint| constraint.constraint_index);
+    matches.dedup_by_key(|constraint| constraint.constraint_index);
+    matches
+}
+
+fn point_key_lies_on_segment(
+    point: NodeArrangementKey,
+    start: NodeArrangementKey,
+    end: NodeArrangementKey,
+) -> bool {
+    if point == start || point == end {
+        return true;
+    }
+    if start == end {
+        return false;
+    }
+    let dx = i128::from(end.x_mm - start.x_mm);
+    let dz = i128::from(end.z_mm - start.z_mm);
+    let px = i128::from(point.x_mm - start.x_mm);
+    let pz = i128::from(point.z_mm - start.z_mm);
+    if px * dz - pz * dx != 0 {
+        return false;
+    }
+    let inside_x = if start.x_mm == end.x_mm {
+        point.x_mm == start.x_mm
+    } else {
+        point.x_mm > start.x_mm.min(end.x_mm) && point.x_mm < start.x_mm.max(end.x_mm)
+    };
+    let inside_z = if start.z_mm == end.z_mm {
+        point.z_mm == start.z_mm
+    } else {
+        point.z_mm > start.z_mm.min(end.z_mm) && point.z_mm < start.z_mm.max(end.z_mm)
+    };
+    inside_x && inside_z
 }
 
 fn validate_region_pair(
@@ -899,11 +986,17 @@ mod tests {
     fn arrangement_edges_match_opposite_owners_by_canonical_xz_segment() {
         let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
         let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
+        let shared_seam = NodeRegionSeamConstraint {
+            constraint_index: 17,
+            seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 0 },
+            start_xz: RoadVec2::new(1.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 1.0),
+        };
         let heights = NodeHeightSolution {
             node_id: 11,
             piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
             regions: vec![
-                test_height_region(
+                test_height_region_with_seams(
                     RoadSurfaceBandKind::Carriageway,
                     carriageway,
                     vec![
@@ -912,8 +1005,9 @@ mod tests {
                         height_vertex(1.0, 1.0, 0.0),
                         height_vertex(0.0, 1.0, 0.0),
                     ],
+                    vec![shared_seam.clone()],
                 ),
-                test_height_region(
+                test_height_region_with_seams(
                     RoadSurfaceBandKind::Sidewalk,
                     sidewalk,
                     vec![
@@ -922,6 +1016,7 @@ mod tests {
                         height_vertex(2.0, 1.0, 0.0),
                         height_vertex(1.0, 1.0, 0.0),
                     ],
+                    vec![shared_seam],
                 ),
             ],
         };
@@ -961,11 +1056,13 @@ mod tests {
             edge.owner == carriageway
                 && edge.opposite_owner == Some(sidewalk)
                 && matches!(edge.seam_source, NodeSeamSource::AsphaltBoundary { .. })
+                && edge.source_constraint_indices == vec![17]
         }));
         assert!(arrangement.edges().iter().any(|edge| {
             edge.owner == sidewalk
                 && edge.opposite_owner == Some(carriageway)
                 && matches!(edge.seam_source, NodeSeamSource::AsphaltBoundary { .. })
+                && edge.source_constraint_indices == vec![17]
         }));
     }
 
@@ -992,6 +1089,15 @@ mod tests {
         owner: NodeBandOwner,
         contour: Vec<NodeHeightedVertex>,
     ) -> NodeHeightedRegion {
+        test_height_region_with_seams(kind, owner, contour, Vec::new())
+    }
+
+    fn test_height_region_with_seams(
+        kind: RoadSurfaceBandKind,
+        owner: NodeBandOwner,
+        contour: Vec<NodeHeightedVertex>,
+        seam_constraints: Vec<NodeRegionSeamConstraint>,
+    ) -> NodeHeightedRegion {
         NodeHeightedRegion {
             kind,
             owner,
@@ -1000,6 +1106,7 @@ mod tests {
             shape: vec![contour],
             area_m2: 1.0,
             height_sources: vec![height_source()],
+            seam_constraints,
         }
     }
 

@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use super::arrangement::{NodeBandOwner, NodeHeightSource};
+use super::arrangement::{NodeBandOwner, NodeHeightSource, NodeRegionSeamConstraint};
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
     quantize_road_vec2_to_overlay_grid,
@@ -46,6 +46,7 @@ pub(crate) struct NodeHeightedRegion {
     pub(crate) shape: NodeHeightedShape,
     pub(crate) area_m2: f32,
     pub(crate) height_sources: Vec<NodeHeightSource>,
+    pub(crate) seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -608,6 +609,7 @@ fn heighted_region(
         shape,
         area_m2: region.area_m2,
         height_sources,
+        seam_constraints: region.seam_constraints.clone(),
     })
 }
 
@@ -1340,6 +1342,7 @@ mod tests {
             shape: vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 2.0], [0.0, 2.0]]],
             area_m2,
             height_sources: Vec::new(),
+            seam_constraints: Vec::new(),
         }
     }
 
@@ -1359,6 +1362,7 @@ mod tests {
             height_sources: vec![NodeHeightSource::ArrangementConstraint {
                 constraint_index: owner_index,
             }],
+            seam_constraints: Vec::new(),
         }
     }
 

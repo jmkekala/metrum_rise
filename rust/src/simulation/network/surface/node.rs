@@ -359,7 +359,7 @@ impl RoadSurfaceSystem {
                 .cross(triangle[2] - triangle[0])
                 .length()
                 * 0.5;
-            if has_area && area_3d_m2 >= 1.0e-6 {
+            if has_area && area_3d_m2 >= NODE_OVERLAY_MIN_AREA_M2 {
                 triangles.push(triangle);
             }
         }
