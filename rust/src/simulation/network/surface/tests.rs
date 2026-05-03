@@ -728,6 +728,46 @@ fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNod
     }
 }
 
+fn assert_outer_boundary_vertices_are_emitted_top_vertices(piece: &RoadSurfaceVisualNodePiece) {
+    let top_vertices = piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .flat_map(|polygon| {
+            polygon.points_world.iter().chain(
+                polygon
+                    .triangles_world
+                    .iter()
+                    .flat_map(|triangle| triangle.iter()),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !top_vertices.is_empty(),
+        "node piece must emit visible top vertices before exact boundary matching can be checked"
+    );
+    let tolerance_m = SAMPLE_EPSILON_M * 2.0;
+    for boundary_point in piece
+        .outer_boundary_loops
+        .iter()
+        .flat_map(|polygon| polygon.points_world.iter())
+    {
+        let matching_vertex = top_vertices.iter().any(|candidate| {
+            Vector2::new(
+                candidate.x - boundary_point.x,
+                candidate.z - boundary_point.z,
+            )
+            .length()
+                <= tolerance_m
+                && (candidate.y - boundary_point.y).abs() <= tolerance_m
+        });
+        assert!(
+            matching_vertex,
+            "node outer boundary vertex must be emitted by the visible top mesh; boundary={boundary_point:?}"
+        );
+    }
+}
+
 fn polygon_area_m2(polygon: &RoadSurfaceVisualPolygon) -> f32 {
     RoadSurfaceSystem::signed_polygon_area_xz(&polygon.points_world).abs()
 }
@@ -2421,6 +2461,68 @@ fn logged_current_flat_three_way_oblique_junction_keeps_curb_vertices_on_rails()
             );
         }
     }
+}
+
+#[test]
+fn logged_elevated_three_way_oblique_junction_emits_outer_boundary_vertices() {
+    let terrain = flat_terrain(512, 512);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-5.708, 139.500, 43.670), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(51.778, 146.820, 55.467), NodeType::Junction);
+    let branch = graph.add_node(Vector3::new(126.913, 143.009, 5.921), NodeType::Junction);
+    let east = graph.add_node(Vector3::new(161.991, 147.143, 78.086), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-5.708, 139.500, 43.670),
+            Vector3::new(51.778, 146.820, 55.467),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        branch,
+        vec![
+            Vector3::new(51.778, 146.820, 55.467),
+            Vector3::new(126.913, 143.009, 5.921),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        east,
+        vec![
+            Vector3::new(51.778, 146.820, 55.467),
+            Vector3::new(161.991, 147.143, 78.086),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("elevated oblique 3-way junction must compile a JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
+    assert_material_triangles_do_not_overlap(piece);
+    assert_outer_boundary_vertices_are_emitted_top_vertices(piece);
+    assert_outer_boundary_edges_are_noded_by_visible_top(piece);
 }
 
 #[test]
