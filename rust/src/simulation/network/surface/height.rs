@@ -1223,7 +1223,9 @@ mod tests {
     use super::super::arrangement::NodeSeamSource;
     use super::*;
     use crate::simulation::network::surface::input::NodeInputMouth;
-    use crate::simulation::network::surface::ownership::NodeBooleanOwnership;
+    use crate::simulation::network::surface::ownership::{
+        NodeBooleanOwnership, NodeOwnedRegionArrangement,
+    };
     use crate::simulation::network::surface::rails::NodeRailContourSet;
     use crate::simulation::network::surface::{
         IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
@@ -1324,13 +1326,20 @@ mod tests {
     #[test]
     fn rejects_missing_source_band() {
         let input = conflicting_manual_input();
+        let owned_regions = vec![manual_region(RoadSurfaceBandKind::Carriageway, 99, 2.0)];
         let ownership = NodeBooleanOwnership {
             node_id: 77,
             piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
             footprint_shapes: Vec::new(),
             asphalt_shapes: Vec::new(),
             non_road_shapes: Vec::new(),
-            owned_regions: vec![manual_region(RoadSurfaceBandKind::Carriageway, 99, 2.0)],
+            owned_region_arrangement: NodeOwnedRegionArrangement::from_owned_regions(
+                77,
+                RoadSurfaceVisualNodePieceKind::Bend,
+                &owned_regions,
+                &Vec::new(),
+            ),
+            owned_regions,
         };
 
         assert_eq!(

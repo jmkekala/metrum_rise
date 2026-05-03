@@ -4,7 +4,9 @@
 
 use super::arrangement::{NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError};
 use super::height::NodeHeightSourceError;
-use super::ownership::NodeBooleanOwnershipError;
+use super::ownership::{
+    NodeBooleanOwnershipError, NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
+};
 use super::rails::NodeRailGenerationError;
 use super::triangulation::{
     NodeTriangulatedRegion, NodeTriangulatedTriangle, NodeTriangulatedVertex,
@@ -329,6 +331,32 @@ impl NodeValidationReport {
                 .iter()
                 .map(|diagnostic| {
                     NodeGeometryDiagnostic::from_arrangement_diagnostic(
+                        arrangement.node_id(),
+                        arrangement.piece_kind(),
+                        diagnostic,
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    pub(crate) fn from_owned_region_arrangement_diagnostics(
+        arrangement: &NodeOwnedRegionArrangement,
+    ) -> Option<Self> {
+        if arrangement.diagnostics().is_empty() {
+            return None;
+        }
+        Some(Self {
+            node_id: arrangement.node_id(),
+            piece_kind: arrangement.piece_kind(),
+            region_count: arrangement.region_count(),
+            triangle_count: 0,
+            exposed_edge_count: arrangement.edges().len(),
+            diagnostics: arrangement
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| {
+                    NodeGeometryDiagnostic::from_owned_region_arrangement_diagnostic(
                         arrangement.node_id(),
                         arrangement.piece_kind(),
                         diagnostic,
@@ -670,6 +698,58 @@ impl NodeGeometryDiagnostic {
             piece_kind,
             stage: NodeGeometryStage::Validation,
             backend: NodeGeometryBackend::Parry2d,
+            kind,
+        }
+    }
+
+    fn from_owned_region_arrangement_diagnostic(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        diagnostic: &NodeOwnedRegionArrangementDiagnostic,
+    ) -> Self {
+        let kind = match diagnostic {
+            NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
+                region_index,
+                owner,
+                opposite_owner,
+                start,
+                end,
+            } => NodeGeometryDiagnosticKind::SeamConstraintFailure {
+                region_index: *region_index,
+                owner: owner.kind(),
+                owner_index: owner.owner_index(),
+                opposite_owner: opposite_owner.kind(),
+                opposite_owner_index: opposite_owner.owner_index(),
+                start_x_mm: start.x_mm(),
+                start_z_mm: start.z_mm(),
+                end_x_mm: end.x_mm(),
+                end_z_mm: end.z_mm(),
+                reason: NodeSeamConstraintFailureReason::Missing,
+            },
+            NodeOwnedRegionArrangementDiagnostic::AmbiguousSeamConstraint {
+                region_index,
+                owner,
+                opposite_owner,
+                start,
+                end,
+            } => NodeGeometryDiagnosticKind::SeamConstraintFailure {
+                region_index: *region_index,
+                owner: owner.kind(),
+                owner_index: owner.owner_index(),
+                opposite_owner: opposite_owner.kind(),
+                opposite_owner_index: opposite_owner.owner_index(),
+                start_x_mm: start.x_mm(),
+                start_z_mm: start.z_mm(),
+                end_x_mm: end.x_mm(),
+                end_z_mm: end.z_mm(),
+                reason: NodeSeamConstraintFailureReason::Ambiguous,
+            },
+        };
+        Self {
+            node_id,
+            piece_kind,
+            stage: NodeGeometryStage::BooleanOwnership,
+            backend: NodeGeometryBackend::IOverlay,
             kind,
         }
     }
@@ -1219,7 +1299,9 @@ mod tests {
     use crate::simulation::network::surface::backend::RoadVec2;
     use crate::simulation::network::surface::height::NodeHeightSolution;
     use crate::simulation::network::surface::input::NodeArrangementInput;
-    use crate::simulation::network::surface::ownership::NodeBooleanOwnership;
+    use crate::simulation::network::surface::ownership::{
+        NodeBooleanOwnership, NodeOwnedRegionArrangementDiagnostic, NodeOwnedRegionArrangementKey,
+    };
     use crate::simulation::network::surface::rails::NodeRailContourSet;
     use crate::simulation::network::surface::{
         IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
@@ -1419,6 +1501,48 @@ mod tests {
             mapped
                 .debug_record()
                 .contains("\"kind\":\"seam_constraint_failure\"")
+        );
+    }
+
+    #[test]
+    fn maps_owned_region_arrangement_diagnostic_to_boolean_stage_debug_record() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let opposite_owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+        let diagnostic = NodeOwnedRegionArrangementDiagnostic::MissingSeamConstraint {
+            region_index: 2,
+            owner,
+            opposite_owner,
+            start: NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(2.0, 0.0)),
+            end: NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(2.0, 3.0)),
+        };
+
+        let mapped = NodeGeometryDiagnostic::from_owned_region_arrangement_diagnostic(
+            10,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &diagnostic,
+        );
+
+        assert_eq!(mapped.stage, NodeGeometryStage::BooleanOwnership);
+        assert_eq!(mapped.backend, NodeGeometryBackend::IOverlay);
+        assert!(matches!(
+            mapped.kind,
+            NodeGeometryDiagnosticKind::SeamConstraintFailure {
+                region_index: 2,
+                owner: RoadSurfaceBandKind::Carriageway,
+                owner_index: 0,
+                opposite_owner: RoadSurfaceBandKind::Sidewalk,
+                opposite_owner_index: 1,
+                start_x_mm: 2000,
+                start_z_mm: 0,
+                end_x_mm: 2000,
+                end_z_mm: 3000,
+                reason: NodeSeamConstraintFailureReason::Missing,
+            }
+        ));
+        assert!(
+            mapped
+                .debug_record()
+                .contains("\"stage\":\"boolean_ownership\"")
         );
     }
 }

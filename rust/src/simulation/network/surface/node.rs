@@ -148,6 +148,11 @@ impl RoadSurfaceSystem {
                 return None;
             }
         };
+        if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
+            &ownership.owned_region_arrangement,
+        ) {
+            Self::log_node_validation_report(&report);
+        }
         let heights = match Self::build_node_height_solution_from_ownership(&input, &ownership) {
             Ok(heights) => heights,
             Err(error) => {
