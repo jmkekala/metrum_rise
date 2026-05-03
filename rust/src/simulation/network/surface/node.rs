@@ -2,16 +2,12 @@
 
 use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
-    NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_CAP_M2, NodeOverlayPoint,
-    NodeOverlayPointKey, NodeOverlayShapes, NodeOwnedRegion, OrderedIncidentPieceMouth,
-    RoadSurfaceBandKind, RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M,
-    backend::{ROAD_OVERLAY_COORDINATE_SCALE, road_vec3_to_godot},
-    height::NodeHeightedRegion,
-    input::NodeInputExtractionError,
-    triangulation::{NodeTriangulatedRegion, NodeTriangulatedTriangle, NodeTriangulationSolution},
-    validation::NodeValidationReport,
+    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayPoint, NodeOverlayPointKey, NodeOverlayShapes,
+    NodeOwnedRegion, OrderedIncidentPieceMouth, RoadSurfaceBandKind,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    arrangement::NodeArrangement, backend::ROAD_OVERLAY_COORDINATE_SCALE,
+    height::NodeHeightedRegion, input::NodeInputExtractionError, validation::NodeValidationReport,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
@@ -20,7 +16,8 @@ use std::collections::BTreeMap;
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
-const MATERIAL_CENTROID_OVERLAP_DUST_AREA_M2: f32 = 0.01;
+const ARRANGEMENT_EDGE_SPLIT_TOLERANCE_M: f32 = 0.02;
+const ARRANGEMENT_EDGE_SPLIT_HEIGHT_TOLERANCE_M: f32 = 0.004;
 
 impl RoadSurfaceSystem {
     pub(super) fn compile_visual_node_piece(
@@ -178,9 +175,20 @@ impl RoadSurfaceSystem {
                 }
             }
         }
+        let arrangement =
+            match NodeArrangement::from_height_solution_and_triangulation(&heights, &triangulation)
+            {
+                Ok(arrangement) => arrangement,
+                Err(error) => {
+                    Self::log_node_validation_report(
+                        &NodeValidationReport::from_arrangement_error(node_id, kind, &error),
+                    );
+                    return None;
+                }
+            };
 
-        match Self::node_surface_regions_from_triangulation(
-            &triangulation,
+        match Self::node_surface_regions_from_arrangement(
+            &arrangement,
             &ownership.footprint_shapes,
             &heights.regions,
         ) {
@@ -198,8 +206,8 @@ impl RoadSurfaceSystem {
         }
     }
 
-    fn node_surface_regions_from_triangulation(
-        triangulation: &NodeTriangulationSolution,
+    fn node_surface_regions_from_arrangement(
+        arrangement: &NodeArrangement,
         footprint_shapes: &NodeOverlayShapes,
         height_regions: &[NodeHeightedRegion],
     ) -> Option<super::NodeSurfaceRegionResult> {
@@ -207,33 +215,21 @@ impl RoadSurfaceSystem {
         let mut sidewalk_surface_polygons = Vec::new();
         let mut owned_regions = Vec::new();
 
-        for (region_index, region) in triangulation.regions.iter().enumerate() {
-            let Some(mut polygons) = Self::visual_polygons_from_triangulated_region(region) else {
-                if region.area_m2 <= NODE_OVERLAY_NUMERIC_AREA_CAP_M2 {
-                    continue;
-                }
+        for face in arrangement.faces() {
+            let owner = face.owner();
+            let Some(polygons) = Self::visual_polygons_from_arrangement_face(arrangement, face)
+            else {
                 return None;
             };
-            if region.kind != RoadSurfaceBandKind::Carriageway {
-                polygons.retain(|polygon| {
-                    !Self::visual_polygon_centroid_overlaps_material(
-                        polygon,
-                        &road_surface_polygons,
-                    )
-                });
-                if polygons.is_empty() {
-                    continue;
-                }
-            }
             for polygon in polygons {
-                if region.kind == RoadSurfaceBandKind::Carriageway {
+                if owner.kind() == RoadSurfaceBandKind::Carriageway {
                     road_surface_polygons.push(polygon.clone());
                 } else {
                     sidewalk_surface_polygons.push(polygon.clone());
                 }
                 owned_regions.push(NodeOwnedRegion {
-                    kind: region.kind,
-                    owner_index: region_index,
+                    kind: owner.kind(),
+                    owner_index: owner.owner_index(),
                     polygon,
                 });
             }
@@ -262,6 +258,101 @@ impl RoadSurfaceSystem {
             sidewalk_surface_polygons,
             owned_regions,
         })
+    }
+
+    fn visual_polygons_from_arrangement_face(
+        arrangement: &NodeArrangement,
+        face: &super::arrangement::NodeArrangementFace,
+    ) -> Option<Vec<RoadSurfaceVisualPolygon>> {
+        let mut points_world = Self::noded_arrangement_face_boundary(arrangement, face)?;
+        points_world.dedup_by(|a, b| {
+            (*a - *b).length_squared() <= super::WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+        });
+        if points_world.len() < 3 {
+            return None;
+        }
+        if Self::signed_polygon_area_xz(&points_world) < 0.0 {
+            points_world.reverse();
+        }
+        let triangles_world =
+            Self::triangulate_noded_arrangement_face(&points_world, face.owner().kind());
+        Some(
+            triangles_world
+                .into_iter()
+                .map(|triangle| RoadSurfaceVisualPolygon {
+                    points_world: triangle.to_vec(),
+                    triangles_world: vec![triangle],
+                })
+                .collect(),
+        )
+    }
+
+    fn noded_arrangement_face_boundary(
+        arrangement: &NodeArrangement,
+        face: &super::arrangement::NodeArrangementFace,
+    ) -> Option<Vec<Vector3>> {
+        let vertices = face.vertices();
+        let mut boundary = Vec::new();
+        for edge_index in 0..3 {
+            let start_id = vertices[edge_index];
+            let end_id = vertices[(edge_index + 1) % 3];
+            let start = Self::arrangement_vertex_world(arrangement, start_id)?;
+            let end = Self::arrangement_vertex_world(arrangement, end_id)?;
+            boundary.push(start);
+            let mut split_points = arrangement
+                .vertices()
+                .iter()
+                .enumerate()
+                .filter_map(|(candidate_index, candidate)| {
+                    if candidate_index == start_id.index() || candidate_index == end_id.index() {
+                        return None;
+                    }
+                    let candidate_world = super::backend::road_xz_with_height_to_godot(
+                        candidate.point_xz(),
+                        candidate.height_m(),
+                    );
+                    arrangement_vertex_on_triangle_edge(start, end, candidate_world)
+                        .map(|t| (t, candidate_world))
+                })
+                .collect::<Vec<_>>();
+            split_points.sort_by(|a, b| a.0.total_cmp(&b.0));
+            boundary.extend(split_points.into_iter().map(|(_, point)| point));
+        }
+        Some(boundary)
+    }
+
+    fn arrangement_vertex_world(
+        arrangement: &NodeArrangement,
+        vertex_id: super::arrangement::NodeArrangementVertexId,
+    ) -> Option<Vector3> {
+        let vertex = arrangement.vertices().get(vertex_id.index())?;
+        Some(super::backend::road_xz_with_height_to_godot(
+            vertex.point_xz(),
+            vertex.height_m(),
+        ))
+    }
+
+    fn triangulate_noded_arrangement_face(
+        points_world: &[Vector3],
+        kind: RoadSurfaceBandKind,
+    ) -> Vec<[Vector3; 3]> {
+        if points_world.len() < 3 {
+            return Vec::new();
+        }
+        let anchor = points_world[0];
+        let mut triangles = Vec::with_capacity(points_world.len().saturating_sub(2));
+        for index in 1..points_world.len() - 1 {
+            let triangle = [anchor, points_world[index], points_world[index + 1]];
+            let has_area = if kind == RoadSurfaceBandKind::Carriageway {
+                Self::triangle_has_area_xz(triangle)
+            } else {
+                Self::signed_polygon_area_xz(&triangle).abs() > NODE_OVERLAY_MIN_AREA_M2
+            };
+            if has_area {
+                triangles.push(triangle);
+            }
+        }
+        triangles
     }
 
     fn outer_boundary_loops_from_footprint_shapes(
@@ -482,84 +573,6 @@ impl RoadSurfaceSystem {
                 })
             })
         })
-    }
-
-    fn visual_polygon_centroid_overlaps_material(
-        polygon: &RoadSurfaceVisualPolygon,
-        material_polygons: &[RoadSurfaceVisualPolygon],
-    ) -> bool {
-        let polygon_centroid_inside_material = polygon.triangles_world.iter().any(|&triangle| {
-            let centroid = Vector2::new(
-                (triangle[0].x + triangle[1].x + triangle[2].x) / 3.0,
-                (triangle[0].z + triangle[1].z + triangle[2].z) / 3.0,
-            );
-            material_polygons.iter().any(|material_polygon| {
-                material_polygon
-                    .triangles_world
-                    .iter()
-                    .any(|&material_triangle| {
-                        Self::triangle_barycentric_weights_xz(material_triangle, centroid).is_some()
-                    })
-            })
-        });
-        if polygon_centroid_inside_material {
-            return true;
-        }
-        let polygon_area = Self::signed_polygon_area_xz(&polygon.points_world).abs();
-        let material_centroid_inside_polygon = material_polygons.iter().any(|material_polygon| {
-            material_polygon
-                .triangles_world
-                .iter()
-                .any(|&material_triangle| {
-                    let material_centroid = Vector2::new(
-                        (material_triangle[0].x + material_triangle[1].x + material_triangle[2].x)
-                            / 3.0,
-                        (material_triangle[0].z + material_triangle[1].z + material_triangle[2].z)
-                            / 3.0,
-                    );
-                    polygon.triangles_world.iter().any(|&triangle| {
-                        Self::triangle_barycentric_weights_xz(triangle, material_centroid).is_some()
-                    })
-                })
-        });
-        material_centroid_inside_polygon && polygon_area <= MATERIAL_CENTROID_OVERLAP_DUST_AREA_M2
-    }
-
-    fn visual_polygons_from_triangulated_region(
-        region: &NodeTriangulatedRegion,
-    ) -> Option<Vec<RoadSurfaceVisualPolygon>> {
-        let mut polygons = Vec::with_capacity(region.triangles.len());
-        for triangle in &region.triangles {
-            let triangle_world = Self::triangle_world_from_triangulated_region(region, *triangle)?;
-            let has_area = if region.kind == RoadSurfaceBandKind::Carriageway {
-                Self::triangle_has_area_xz(triangle_world)
-            } else {
-                Self::signed_polygon_area_xz(&triangle_world).abs() > NODE_OVERLAY_MIN_AREA_M2
-            };
-            if !has_area {
-                continue;
-            }
-            polygons.push(RoadSurfaceVisualPolygon {
-                points_world: triangle_world.to_vec(),
-                triangles_world: vec![triangle_world],
-            });
-        }
-        (!polygons.is_empty()).then_some(polygons)
-    }
-
-    fn triangle_world_from_triangulated_region(
-        region: &NodeTriangulatedRegion,
-        triangle: NodeTriangulatedTriangle,
-    ) -> Option<[Vector3; 3]> {
-        let mut triangle_world = [
-            road_vec3_to_godot(region.vertices.get(triangle.vertices[0])?.point_world),
-            road_vec3_to_godot(region.vertices.get(triangle.vertices[1])?.point_world),
-            road_vec3_to_godot(region.vertices.get(triangle.vertices[2])?.point_world),
-        ];
-        if Self::signed_polygon_area_xz(&triangle_world) < 0.0 {
-            triangle_world.swap(1, 2);
-        }
-        Some(triangle_world)
     }
 
     fn log_node_input_extraction_error(
@@ -865,4 +878,31 @@ impl RoadSurfaceSystem {
         incidents.sort_by(|a, b| a.edge_idx.cmp(&b.edge_idx).then(a.side.cmp(&b.side)));
         incidents
     }
+}
+
+fn arrangement_vertex_on_triangle_edge(
+    start: Vector3,
+    end: Vector3,
+    candidate: Vector3,
+) -> Option<f32> {
+    let start_xz = Vector2::new(start.x, start.z);
+    let end_xz = Vector2::new(end.x, end.z);
+    let candidate_xz = Vector2::new(candidate.x, candidate.z);
+    let segment = end_xz - start_xz;
+    let length_squared = segment.length_squared();
+    if length_squared <= SAMPLE_EPSILON_M {
+        return None;
+    }
+    let t = (candidate_xz - start_xz).dot(segment) / length_squared;
+    if !(0.0005..=0.9995).contains(&t) {
+        return None;
+    }
+    let closest_xz = start_xz + segment * t;
+    if candidate_xz.distance_squared_to(closest_xz)
+        > ARRANGEMENT_EDGE_SPLIT_TOLERANCE_M * ARRANGEMENT_EDGE_SPLIT_TOLERANCE_M
+    {
+        return None;
+    }
+    let edge_height = start.y + (end.y - start.y) * t;
+    ((candidate.y - edge_height).abs() <= ARRANGEMENT_EDGE_SPLIT_HEIGHT_TOLERANCE_M).then_some(t)
 }

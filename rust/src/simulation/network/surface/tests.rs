@@ -18,6 +18,7 @@ use crate::simulation::terrain::cdt::{
     build_road_touched_terrain_patch,
 };
 use godot::prelude::{Vector2, Vector3};
+use i_overlay::core::overlay_rule::OverlayRule;
 
 fn test_edge(
     start_node: u32,
@@ -357,42 +358,63 @@ fn node_region_height_at_kind(
     None
 }
 
-fn assert_material_triangle_centroids_do_not_overlap(piece: &RoadSurfaceVisualNodePiece) {
-    for sidewalk_polygon in &piece.sidewalk_surface_polygons {
-        for &sidewalk_triangle in &sidewalk_polygon.triangles_world {
-            let sidewalk_centroid = triangle_centroid_xz(sidewalk_triangle);
-            for road_polygon in &piece.road_surface_polygons {
-                for &road_triangle in &road_polygon.triangles_world {
+fn assert_material_triangles_do_not_overlap(piece: &RoadSurfaceVisualNodePiece) {
+    for non_road_region in piece
+        .owned_regions
+        .iter()
+        .filter(|region| region.kind != RoadSurfaceBandKind::Carriageway)
+    {
+        for &non_road_triangle in &non_road_region.polygon.triangles_world {
+            for road_region in piece
+                .owned_regions
+                .iter()
+                .filter(|region| region.kind == RoadSurfaceBandKind::Carriageway)
+            {
+                for &road_triangle in &road_region.polygon.triangles_world {
+                    let overlap_area_m2 =
+                        triangle_overlap_area_m2(non_road_triangle, road_triangle);
+                    let area_budget_m2 =
+                        triangle_overlap_numeric_budget_m2(non_road_triangle, road_triangle);
                     assert!(
-                        RoadSurfaceSystem::triangle_barycentric_weights_xz(
-                            road_triangle,
-                            sidewalk_centroid,
-                        )
-                        .is_none(),
-                        "sidewalk triangle centroid must not be owned by asphalt after overlay difference; centroid={sidewalk_centroid:?} sidewalk_triangle={sidewalk_triangle:?} road_triangle={road_triangle:?}"
+                        overlap_area_m2 <= area_budget_m2,
+                        "node material triangles must not overlap beyond numeric dust; kind={:?} overlap_area={overlap_area_m2:.8} budget={area_budget_m2:.8} non_road_triangle={non_road_triangle:?} road_triangle={road_triangle:?}",
+                        non_road_region.kind
                     );
                 }
             }
         }
     }
+}
 
-    for road_polygon in &piece.road_surface_polygons {
-        for &road_triangle in &road_polygon.triangles_world {
-            let road_centroid = triangle_centroid_xz(road_triangle);
-            for sidewalk_polygon in &piece.sidewalk_surface_polygons {
-                for &sidewalk_triangle in &sidewalk_polygon.triangles_world {
-                    assert!(
-                        RoadSurfaceSystem::triangle_barycentric_weights_xz(
-                            sidewalk_triangle,
-                            road_centroid,
-                        )
-                        .is_none(),
-                        "asphalt triangle centroid must not be owned by sidewalk after overlay difference"
-                    );
-                }
-            }
-        }
+fn triangle_overlap_area_m2(a: [Vector3; 3], b: [Vector3; 3]) -> f32 {
+    RoadSurfaceSystem::overlay_binary_shapes(
+        &triangle_overlay_shapes(a),
+        &triangle_overlay_shapes(b),
+        OverlayRule::Intersect,
+    )
+    .unwrap_or_default()
+    .iter()
+    .map(RoadSurfaceSystem::overlay_shape_area_m2)
+    .sum()
+}
+
+fn triangle_overlap_numeric_budget_m2(a: [Vector3; 3], b: [Vector3; 3]) -> f32 {
+    RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&triangle_overlay_shapes(a)).max(
+        RoadSurfaceSystem::overlay_numeric_area_budget_for_shapes(&triangle_overlay_shapes(b)),
+    )
+}
+
+fn triangle_overlay_shapes(triangle: [Vector3; 3]) -> super::NodeOverlayShapes {
+    let mut contour = triangle
+        .iter()
+        .map(|point| [f64::from(point.x), f64::from(point.z)])
+        .collect::<Vec<_>>();
+    let area = (contour[1][0] - contour[0][0]) * (contour[2][1] - contour[0][1])
+        - (contour[1][1] - contour[0][1]) * (contour[2][0] - contour[0][0]);
+    if area < 0.0 {
+        contour.swap(1, 2);
     }
+    vec![vec![contour]]
 }
 
 fn assert_top_mesh_centroids_inside_outer_boundary(piece: &RoadSurfaceVisualNodePiece) {
@@ -473,6 +495,16 @@ fn assert_non_road_shared_edges_are_height_continuous(piece: &RoadSurfaceVisualN
         0.004,
         "node non-road",
     );
+}
+
+fn assert_all_top_shared_edges_are_height_continuous(piece: &RoadSurfaceVisualNodePiece) {
+    let top_polygons = piece
+        .road_surface_polygons
+        .iter()
+        .chain(piece.sidewalk_surface_polygons.iter())
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_shared_edges_are_height_continuous(&top_polygons, 0.004, "node top");
 }
 
 fn max_visual_triangle_slope_ratio(
@@ -1235,7 +1267,7 @@ fn flat_logged_curve_bend_keeps_footprint_covered_by_visible_top() {
     assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert_node_piece_uses_band_owned_regions(piece);
     assert_node_piece_has_curb_and_sidewalk_owners(piece);
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
     assert_node_piece_material_area_closes_footprint(piece, 0.25);
 }
@@ -1283,7 +1315,8 @@ fn logged_sixty_degree_bend_keeps_outer_corner_covered() {
         .expect("logged sixty-degree turn should compile one bend node piece");
     assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert_node_piece_uses_band_owned_regions(piece);
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
+    assert_all_top_shared_edges_are_height_continuous(piece);
     assert_node_piece_material_area_closes_footprint(piece, 0.25);
     let corner_point = Vector2::new(-18.850, -35.545);
     assert!(
@@ -1303,6 +1336,56 @@ fn logged_sixty_degree_bend_keeps_outer_corner_covered() {
         (0.02..0.10).contains(&curb_height),
         "bend curved outer curb strip must keep the curb ramp height, point={curb_curve_point:?} height={curb_height:.4}"
     );
+}
+
+#[test]
+fn logged_flat_sixty_degree_bend_uses_canonical_material_edge_heights() {
+    let terrain = flat_terrain(384, 384);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-104.032, 0.0, -0.181), NodeType::Junction);
+    let bend = graph.add_node(Vector3::new(-4.032, 0.0, -0.181), NodeType::Junction);
+    let northeast = graph.add_node(Vector3::new(30.968, 0.0, 60.440), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        bend,
+        vec![
+            Vector3::new(-104.032, 0.0, -0.181),
+            Vector3::new(-4.032, 0.0, -0.181),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        bend,
+        northeast,
+        vec![
+            Vector3::new(-4.032, 0.0, -0.181),
+            Vector3::new(30.968, 0.0, 60.440),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("flat-bend.log geometry should compile one Bend node piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(piece);
+    assert_material_triangles_do_not_overlap(piece);
+    assert_all_top_shared_edges_are_height_continuous(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
+    assert_node_piece_material_area_closes_footprint(piece, 0.001);
 }
 
 #[test]
@@ -1347,7 +1430,7 @@ fn logged_inside_bend_curb_anchor_stays_at_asphalt_height() {
         .expect("logged inside bend should compile");
     assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
     assert_node_piece_uses_band_owned_regions(piece);
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
     assert_outer_boundary_vertices_match_visible_top(piece);
 
     let inner_anchor_point = Vector2::new(26.635197, -11.424565);
@@ -1949,7 +2032,7 @@ fn visual_node_pieces_are_deterministic_for_multi_arm_nodes() {
         !piece_a.sidewalk_surface_polygons.is_empty(),
         "expected explicit JunctionN builder to emit overlay-owned sidewalk polygons"
     );
-    assert_material_triangle_centroids_do_not_overlap(piece_a);
+    assert_material_triangles_do_not_overlap(piece_a);
 }
 
 #[test]
@@ -2012,7 +2095,7 @@ fn oblique_t_junction_compiles_solid_cdt_owned_surface() {
             .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world)),
         "overlay-owned JunctionN polygons must be non-degenerate"
     );
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]
@@ -2073,7 +2156,7 @@ fn editor_sized_60_degree_t_junction_width_7_compiles_node_surface() {
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.sidewalk_surface_polygons.is_empty());
     assert_top_mesh_centroids_inside_outer_boundary(piece);
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
 
     let raw_clip_sources = surface
         .compiled_visual_span_pieces()
@@ -2279,7 +2362,7 @@ fn logged_flat_oblique_t_junction_compiles_node_surface() {
     assert!(!piece.outer_boundary_loops.is_empty());
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]
@@ -2351,7 +2434,7 @@ fn logged_flat_oblique_four_way_compiles_node_surface_after_new_incident_road() 
     assert!(!piece.outer_boundary_loops.is_empty());
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]
@@ -2404,7 +2487,7 @@ fn arbitrary_six_way_junction_keeps_visible_ownership_disjoint() {
         (footprint_area - asphalt_area - non_road_area).abs() <= 0.25,
         "arbitrary JunctionN ownership must close the footprint without overlapping materials; footprint={footprint_area:.3} asphalt={asphalt_area:.3} non_road={non_road_area:.3}"
     );
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]
@@ -2469,7 +2552,7 @@ fn arbitrary_five_way_junction_uses_conflict_bounded_footprint() {
             "visual JunctionN footprint must stay inside the conflict-bounded handoff; point={point:?} radius={radius:.3} max={max_expected_radius:.3}"
         );
     }
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]
@@ -2763,7 +2846,7 @@ fn junction_node_non_road_surface_is_footprint_minus_asphalt() {
         (footprint_area - asphalt_area - non_road_area).abs() <= 0.05,
         "node non-road ownership must be exactly the resolved footprint minus asphalt; footprint={footprint_area:.3} asphalt={asphalt_area:.3} non_road={non_road_area:.3}"
     );
-    assert_material_triangle_centroids_do_not_overlap(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]

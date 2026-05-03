@@ -540,6 +540,81 @@ Required rule:
 - no sidewalk triangle may overlap any asphalt triangle, including acute-angle corners
 - no carriageway seam may appear between an incident `Span` throat and the node-owned continuation
 
+#### Node-Owned Canonical Topology Contract
+
+`Terminal`, `Bend`, and `JunctionN` are the sole topological owners of their node-local surface.
+Incident spans provide solved mouth constraints; they do not own or patch the node interior. This
+rule is independent of edit order: a road that happened to exist first has no priority over a road
+added later once both are incident to the same logical node.
+
+Required ownership model:
+
+- the stable logical node ID owns exactly one active canonical node topology at a time
+- the active topology kind is derived from the current incident surface mouths:
+  - one mouth becomes `Terminal`
+  - two non-pass-through mouths become `Bend`
+  - three or more mouths become `JunctionN`
+- changing the incident mouth set replaces the node topology deterministically under the same node
+  ID; it must not keep hidden geometry from the previous `Terminal`, `Bend`, or `JunctionN`
+- spans export mouth profiles and source constraint IDs only:
+  - boundary vertex XZ
+  - solved height
+  - band kind
+  - side / profile role
+  - edge ID and incident side
+  - boundary / rail index
+- the node arrangement inserts those mouth vertices as canonical constraints before boolean
+  ownership, height evaluation, or CDT triangulation
+- any node-local vertex that has the same quantized XZ as a mouth vertex must reuse the same
+  canonical arrangement vertex when the material owner and solved height agree
+- if two candidate sources produce the same quantized XZ but incompatible material ownership or
+  height, the node compiler must report a deterministic geometry error; it must not choose the
+  first-created road, average heights, min/max heights, nearest owner, or render-order priority
+- every material seam is an explicit canonical arrangement edge, not an accidental adjacency
+  between independently triangulated polygons
+- asphalt / curb, curb / sidewalk, sidewalk outer edge, span handoff, and final footprint boundary
+  edges must be represented in the same canonical graph before material triangles are exported
+
+Deterministic construction order:
+
+1. Collect every current incident surface mouth from the graph and sort by stable node-local angle,
+   then edge ID, side, band index, and source constraint index.
+2. Convert each mouth profile into canonical source constraints. These constraints are immutable
+   inputs for the node solve; they are not rendered directly by the span once the node owns that
+   area.
+3. Build full-roadbed, carriageway, curb / shoulder, sidewalk, and footprint candidates from those
+   canonical constraints.
+4. Resolve material ownership with `i_overlay` into disjoint owned regions while preserving every
+   source constraint ID that contributed to each exposed boundary.
+5. Build one `NodeArrangement` containing all accepted owned-region rings, required material seams,
+   span handoff edges, and footprint edges.
+6. Assign exactly one material / band height field to every arrangement vertex and edge.
+7. Triangulate from the arrangement constraints and label emitted faces by their owning
+   `NodeOwnedRegion`.
+8. Export road render triangles, sidewalk / curb render triangles, visible-surface query triangles,
+   terrain clip loops, earthwork roots, and chunk coverage from that same arrangement.
+
+Required reuse semantics:
+
+- reuse means "same canonical arrangement vertex", not "copy coordinates from whichever road was
+  older"
+- spans and nodes share vertices only at explicit handoff constraints
+- same-material internal seams may share vertices when their height source agrees exactly after
+  quantization
+- different-material seams share endpoints but keep explicit seam-edge ownership on both sides
+- terrain, water, zoning overlays, and Godot renderers consume exported node topology; they never
+  rebuild or simplify node ownership from raw road centerlines
+
+Forbidden outcomes:
+
+- placement order changes the node footprint, material regions, or rendered heights
+- a previous terminal cap remains as hidden ownership after the node becomes a bend or junction
+- two incident roads independently triangulate overlapping sidewalks or curbs inside the node
+- a material gap is accepted because the union of all top triangles covers the footprint in XZ
+- terrain CDT, renderer z-bias, or material ordering hides a missing node-owned seam
+- debug output reports only a visual background gap without identifying the missing canonical
+  vertex, seam edge, owned region, or height owner
+
 ### 10. Correct Non-Road Ownership Is Material-First
 
 The shipped roadbed runtime does not treat sidewalks as a symmetric visual halo around the road

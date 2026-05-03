@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+use super::arrangement::NodeArrangementError;
 use super::height::NodeHeightSourceError;
 use super::ownership::NodeBooleanOwnershipError;
 use super::rails::NodeRailGenerationError;
@@ -285,6 +286,16 @@ impl NodeValidationReport {
         ))
     }
 
+    pub(crate) fn from_arrangement_error(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        error: &NodeArrangementError,
+    ) -> Self {
+        Self::single_diagnostic(NodeGeometryDiagnostic::from_arrangement_error(
+            node_id, piece_kind, error,
+        ))
+    }
+
     pub(crate) fn from_boundary_export_error(
         node_id: u32,
         piece_kind: RoadSurfaceVisualNodePieceKind,
@@ -500,6 +511,58 @@ impl NodeGeometryDiagnostic {
             node_id,
             piece_kind,
             stage: NodeGeometryStage::CdtTriangulation,
+            backend,
+            kind,
+        }
+    }
+
+    fn from_arrangement_error(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        error: &NodeArrangementError,
+    ) -> Self {
+        let (backend, kind) = match error {
+            NodeArrangementError::DuplicateVertexHeightConflict {
+                key,
+                existing_height_mm,
+                incoming_height_mm,
+            } => (
+                NodeGeometryBackend::Parry2d,
+                NodeGeometryDiagnosticKind::HeightConflict {
+                    x_mm: key.x_mm(),
+                    z_mm: key.z_mm(),
+                    existing_height_mm: *existing_height_mm,
+                    incoming_height_mm: *incoming_height_mm,
+                },
+            ),
+            NodeArrangementError::EmptyOwnerSet { .. } => (
+                NodeGeometryBackend::Parry2d,
+                NodeGeometryDiagnosticKind::BackendFailure {
+                    reason: "empty_arrangement_owner_set",
+                },
+            ),
+            NodeArrangementError::DegenerateRegionContour { region_index, .. } => (
+                NodeGeometryBackend::Parry2d,
+                NodeGeometryDiagnosticKind::InvalidConstraint {
+                    region_index: *region_index,
+                    constraint_index: None,
+                    reason: NodeInvalidConstraintReason::Degenerate,
+                },
+            ),
+            NodeArrangementError::InputSolutionMismatch { .. }
+            | NodeArrangementError::MissingHeightRegion { .. }
+            | NodeArrangementError::RegionOwnerMismatch { .. }
+            | NodeArrangementError::MissingTriangulatedVertex { .. } => (
+                NodeGeometryBackend::Parry2d,
+                NodeGeometryDiagnosticKind::BackendFailure {
+                    reason: "arrangement_build_failed",
+                },
+            ),
+        };
+        Self {
+            node_id,
+            piece_kind,
+            stage: NodeGeometryStage::Validation,
             backend,
             kind,
         }
