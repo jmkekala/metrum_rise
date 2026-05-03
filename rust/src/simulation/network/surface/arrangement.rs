@@ -31,10 +31,11 @@ pub(crate) struct NodeArrangementKey {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 struct NodeArrangementHeightKey(i64);
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
-struct NodeArrangementVertexHeightedKey {
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+struct NodeArrangementVertexContextKey {
     position: NodeArrangementKey,
-    height: NodeArrangementHeightKey,
+    owners: Vec<NodeBandOwner>,
+    height_source: NodeHeightSource,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -136,8 +137,7 @@ pub(crate) struct NodeArrangement {
     edges: Vec<NodeArrangementEdge>,
     regions: Vec<NodeOwnedRegion>,
     faces: Vec<NodeArrangementFace>,
-    vertex_by_key: BTreeMap<NodeArrangementKey, NodeArrangementVertexId>,
-    vertex_by_heighted_key: BTreeMap<NodeArrangementVertexHeightedKey, NodeArrangementVertexId>,
+    vertex_by_context_key: BTreeMap<NodeArrangementVertexContextKey, NodeArrangementVertexId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -212,8 +212,7 @@ impl NodeArrangement {
             edges: Vec::new(),
             regions: Vec::new(),
             faces: Vec::new(),
-            vertex_by_key: BTreeMap::new(),
-            vertex_by_heighted_key: BTreeMap::new(),
+            vertex_by_context_key: BTreeMap::new(),
         }
     }
 
@@ -251,37 +250,17 @@ impl NodeArrangement {
     ) -> Result<NodeArrangementVertexId, NodeArrangementError> {
         let key = NodeArrangementKey::from_point(point_xz);
         let height_key = NodeArrangementHeightKey(quantize_m(height_m));
-        let heighted_key = NodeArrangementVertexHeightedKey {
-            position: key,
-            height: height_key,
-        };
         let owners = canonical_non_empty_owners(key, owners)?;
         let seam_sources = canonical_sources(seam_sources);
+        let context_key = NodeArrangementVertexContextKey {
+            position: key,
+            owners: owners.clone(),
+            height_source: height_source.clone(),
+        };
 
-        if let Some(existing_id) = self.vertex_by_key.get(&key).copied() {
+        if let Some(existing_id) = self.vertex_by_context_key.get(&context_key).copied() {
             let existing = &mut self.vertices[existing_id.0];
             if existing.height_key != height_key {
-                if self.piece_kind != RoadSurfaceVisualNodePieceKind::Bend {
-                    if let Some(heighted_existing_id) =
-                        self.vertex_by_heighted_key.get(&heighted_key).copied()
-                    {
-                        let existing = &mut self.vertices[heighted_existing_id.0];
-                        merge_sorted_unique(&mut existing.owners, owners);
-                        merge_sorted_unique(&mut existing.seam_sources, seam_sources);
-                        return Ok(heighted_existing_id);
-                    }
-                    return Ok(self.push_vertex(
-                        key,
-                        heighted_key,
-                        point_xz,
-                        height_m,
-                        height_key,
-                        owners,
-                        height_source,
-                        seam_sources,
-                        false,
-                    ));
-                }
                 return Err(NodeArrangementError::DuplicateVertexHeightConflict {
                     key,
                     existing_height_mm: existing.height_key.0,
@@ -295,28 +274,26 @@ impl NodeArrangement {
 
         Ok(self.push_vertex(
             key,
-            heighted_key,
+            context_key,
             point_xz,
             height_m,
             height_key,
             owners,
             height_source,
             seam_sources,
-            true,
         ))
     }
 
     fn push_vertex(
         &mut self,
         key: NodeArrangementKey,
-        heighted_key: NodeArrangementVertexHeightedKey,
+        context_key: NodeArrangementVertexContextKey,
         point_xz: RoadVec2,
         height_m: f64,
         height_key: NodeArrangementHeightKey,
         owners: Vec<NodeBandOwner>,
         height_source: NodeHeightSource,
         seam_sources: Vec<NodeSeamSource>,
-        insert_position_key: bool,
     ) -> NodeArrangementVertexId {
         let id = NodeArrangementVertexId(self.vertices.len());
         self.vertices.push(NodeArrangementVertex {
@@ -329,10 +306,7 @@ impl NodeArrangement {
             height_source,
             seam_sources,
         });
-        if insert_position_key {
-            self.vertex_by_key.insert(key, id);
-        }
-        self.vertex_by_heighted_key.insert(heighted_key, id);
+        self.vertex_by_context_key.insert(context_key, id);
         id
     }
 
@@ -418,7 +392,7 @@ impl NodeArrangement {
                 .ok_or(NodeArrangementError::MissingHeightRegion { region_index })?;
             validate_region_pair(region_index, height_region, triangulated_region)?;
             let pending = arrangement.pending_region(region_index, height_region)?;
-            for edge in pending.loop_edges() {
+            for edge in pending.loop_edges(&arrangement.vertices) {
                 edge_owners
                     .entry(edge.key)
                     .and_modify(|owners| merge_sorted_unique(owners, vec![pending.owner]))
@@ -430,7 +404,7 @@ impl NodeArrangement {
         let mut arrangement_region_ids = Vec::with_capacity(pending_regions.len());
         for pending in pending_regions {
             let mut boundary_edges = Vec::with_capacity(pending.edge_count());
-            for edge in pending.loop_edges() {
+            for edge in pending.loop_edges(&arrangement.vertices) {
                 let opposite_owner = edge_owners.get(&edge.key).and_then(|owners| {
                     owners.iter().copied().find(|owner| *owner != pending.owner)
                 });
@@ -617,8 +591,8 @@ struct PendingArrangementRegion {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct NodeArrangementEdgeKey {
-    start: NodeArrangementVertexId,
-    end: NodeArrangementVertexId,
+    start: NodeArrangementKey,
+    end: NodeArrangementKey,
 }
 
 #[derive(Clone, Copy)]
@@ -633,16 +607,19 @@ impl PendingArrangementRegion {
         self.outer_loop.len() + self.holes.iter().map(Vec::len).sum::<usize>()
     }
 
-    fn loop_edges(&self) -> Vec<PendingArrangementEdge> {
-        let mut edges = loop_edges(&self.outer_loop);
+    fn loop_edges(&self, vertices: &[NodeArrangementVertex]) -> Vec<PendingArrangementEdge> {
+        let mut edges = loop_edges(&self.outer_loop, vertices);
         for hole in &self.holes {
-            edges.extend(loop_edges(hole));
+            edges.extend(loop_edges(hole, vertices));
         }
         edges
     }
 }
 
-fn loop_edges(loop_vertices: &[NodeArrangementVertexId]) -> Vec<PendingArrangementEdge> {
+fn loop_edges(
+    loop_vertices: &[NodeArrangementVertexId],
+    vertices: &[NodeArrangementVertex],
+) -> Vec<PendingArrangementEdge> {
     if loop_vertices.len() < 2 {
         return Vec::new();
     }
@@ -650,8 +627,10 @@ fn loop_edges(loop_vertices: &[NodeArrangementVertexId]) -> Vec<PendingArrangeme
         .filter_map(|index| {
             let start = loop_vertices[index];
             let end = loop_vertices[(index + 1) % loop_vertices.len()];
-            (start != end).then_some(PendingArrangementEdge {
-                key: NodeArrangementEdgeKey::new(start, end),
+            let start_key = vertices.get(start.0)?.key;
+            let end_key = vertices.get(end.0)?.key;
+            (start != end && start_key != end_key).then_some(PendingArrangementEdge {
+                key: NodeArrangementEdgeKey::new(start_key, end_key),
                 start,
                 end,
             })
@@ -660,7 +639,7 @@ fn loop_edges(loop_vertices: &[NodeArrangementVertexId]) -> Vec<PendingArrangeme
 }
 
 impl NodeArrangementEdgeKey {
-    fn new(a: NodeArrangementVertexId, b: NodeArrangementVertexId) -> Self {
+    fn new(a: NodeArrangementKey, b: NodeArrangementKey) -> Self {
         if a <= b {
             Self { start: a, end: b }
         } else {
@@ -774,6 +753,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::super::triangulation::{NodeTriangulatedTriangle, NodeTriangulatedVertex};
     use super::*;
 
     fn owner(kind: RoadSurfaceBandKind, owner_index: usize) -> NodeBandOwner {
@@ -788,12 +768,50 @@ mod tests {
         }
     }
 
+    fn other_height_source() -> NodeHeightSource {
+        NodeHeightSource::EndpointBand {
+            edge_idx: 8,
+            side: IncidentEdgeSide::End,
+            band_index: 3,
+        }
+    }
+
     fn seam_source(owner_index: usize) -> NodeSeamSource {
         NodeSeamSource::FootprintBoundary { owner_index }
     }
 
     #[test]
-    fn duplicate_arrangement_vertex_key_merges_matching_height_context() {
+    fn duplicate_arrangement_vertex_key_merges_matching_owner_source_context() {
+        let mut arrangement = NodeArrangement::new(42, RoadSurfaceVisualNodePieceKind::JunctionN);
+        let point = RoadVec2::new(12.345, -6.789);
+
+        let first = arrangement
+            .insert_vertex(
+                point,
+                3.25,
+                [owner(RoadSurfaceBandKind::Sidewalk, 2)],
+                height_source(),
+                [seam_source(2)],
+            )
+            .expect("first vertex should insert");
+        let second = arrangement
+            .insert_vertex(
+                point,
+                3.25,
+                [owner(RoadSurfaceBandKind::Sidewalk, 2)],
+                height_source(),
+                [seam_source(2)],
+            )
+            .expect("matching context vertex should merge");
+
+        assert_eq!(first, second);
+        let vertex = &arrangement.vertices()[first.0];
+        assert_eq!(vertex.owners, vec![owner(RoadSurfaceBandKind::Sidewalk, 2)]);
+        assert_eq!(vertex.seam_sources, vec![seam_source(2)]);
+    }
+
+    #[test]
+    fn duplicate_arrangement_vertex_key_keeps_distinct_height_source_contexts() {
         let mut arrangement = NodeArrangement::new(42, RoadSurfaceVisualNodePieceKind::JunctionN);
         let point = RoadVec2::new(12.345, -6.789);
 
@@ -811,20 +829,18 @@ mod tests {
                 point,
                 3.25,
                 [owner(RoadSurfaceBandKind::CurbOrShoulder, 1)],
-                height_source(),
+                other_height_source(),
                 [seam_source(1)],
             )
-            .expect("matching-height vertex should merge");
+            .expect("distinct height source context should keep its own vertex");
 
-        assert_eq!(first, second);
-        let vertex = &arrangement.vertices()[first.0];
-        assert_eq!(vertex.owners.len(), 2);
-        assert_eq!(vertex.seam_sources.len(), 2);
+        assert_ne!(first, second);
+        assert_eq!(arrangement.vertices().len(), 2);
     }
 
     #[test]
-    fn duplicate_arrangement_vertex_key_rejects_height_conflict() {
-        let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::Bend);
+    fn duplicate_arrangement_vertex_key_rejects_same_context_height_conflict() {
+        let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::JunctionN);
         let point = RoadVec2::new(0.0, 0.0);
 
         arrangement
@@ -852,8 +868,8 @@ mod tests {
     }
 
     #[test]
-    fn non_bend_arrangement_keeps_height_distinct_duplicate_vertices() {
-        let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::JunctionN);
+    fn arrangement_keeps_height_distinct_explicit_seam_contexts() {
+        let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::Bend);
         let point = RoadVec2::new(0.0, 0.0);
 
         let low = arrangement
@@ -870,23 +886,87 @@ mod tests {
                 point,
                 2.0,
                 [owner(RoadSurfaceBandKind::Sidewalk, 1)],
-                height_source(),
+                other_height_source(),
                 [seam_source(1)],
             )
-            .expect("JunctionN keeps steep endpoint-height duplicates deterministic");
-        let high_again = arrangement
-            .insert_vertex(
-                point,
-                2.0,
-                [owner(RoadSurfaceBandKind::CurbOrShoulder, 2)],
-                height_source(),
-                [seam_source(2)],
-            )
-            .expect("matching duplicate height should merge into the height-distinct vertex");
+            .expect("explicit owner context keeps steep endpoint-height duplicates deterministic");
 
         assert_ne!(low, high);
-        assert_eq!(high, high_again);
         assert_eq!(arrangement.vertices().len(), 2);
+    }
+
+    #[test]
+    fn arrangement_edges_match_opposite_owners_by_canonical_xz_segment() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
+        let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
+        let heights = NodeHeightSolution {
+            node_id: 11,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![
+                test_height_region(
+                    RoadSurfaceBandKind::Carriageway,
+                    carriageway,
+                    vec![
+                        height_vertex(0.0, 0.0, 0.0),
+                        height_vertex(1.0, 0.0, 0.0),
+                        height_vertex(1.0, 1.0, 0.0),
+                        height_vertex(0.0, 1.0, 0.0),
+                    ],
+                ),
+                test_height_region(
+                    RoadSurfaceBandKind::Sidewalk,
+                    sidewalk,
+                    vec![
+                        height_vertex(1.0, 0.0, 0.0),
+                        height_vertex(2.0, 0.0, 0.0),
+                        height_vertex(2.0, 1.0, 0.0),
+                        height_vertex(1.0, 1.0, 0.0),
+                    ],
+                ),
+            ],
+        };
+        let triangulation = NodeTriangulationSolution {
+            node_id: 11,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![
+                test_triangulated_region(
+                    RoadSurfaceBandKind::Carriageway,
+                    carriageway,
+                    vec![
+                        road_vertex(0.0, 0.0, 0.0),
+                        road_vertex(1.0, 0.0, 0.0),
+                        road_vertex(1.0, 0.0, 1.0),
+                        road_vertex(0.0, 0.0, 1.0),
+                    ],
+                ),
+                test_triangulated_region(
+                    RoadSurfaceBandKind::Sidewalk,
+                    sidewalk,
+                    vec![
+                        road_vertex(1.0, 0.0, 0.0),
+                        road_vertex(2.0, 0.0, 0.0),
+                        road_vertex(2.0, 0.0, 1.0),
+                        road_vertex(1.0, 0.0, 1.0),
+                    ],
+                ),
+            ],
+        };
+
+        let arrangement =
+            NodeArrangement::from_height_solution_and_triangulation(&heights, &triangulation)
+                .expect("matching height and triangulation should arrange");
+
+        assert_eq!(arrangement.vertices().len(), 8);
+        assert!(arrangement.edges().iter().any(|edge| {
+            edge.owner == carriageway
+                && edge.opposite_owner == Some(sidewalk)
+                && matches!(edge.seam_source, NodeSeamSource::AsphaltBoundary { .. })
+        }));
+        assert!(arrangement.edges().iter().any(|edge| {
+            edge.owner == sidewalk
+                && edge.opposite_owner == Some(carriageway)
+                && matches!(edge.seam_source, NodeSeamSource::AsphaltBoundary { .. })
+        }));
     }
 
     #[test]
@@ -905,5 +985,61 @@ mod tests {
             result,
             Err(NodeArrangementError::EmptyOwnerSet { .. })
         ));
+    }
+
+    fn test_height_region(
+        kind: RoadSurfaceBandKind,
+        owner: NodeBandOwner,
+        contour: Vec<NodeHeightedVertex>,
+    ) -> NodeHeightedRegion {
+        NodeHeightedRegion {
+            kind,
+            owner,
+            source_mouth_order_index: owner.owner_index(),
+            source_band_index: owner.owner_index(),
+            shape: vec![contour],
+            area_m2: 1.0,
+            height_sources: vec![height_source()],
+        }
+    }
+
+    fn test_triangulated_region(
+        kind: RoadSurfaceBandKind,
+        owner: NodeBandOwner,
+        vertices: Vec<NodeTriangulatedVertex>,
+    ) -> NodeTriangulatedRegion {
+        NodeTriangulatedRegion {
+            kind,
+            owner,
+            source_mouth_order_index: owner.owner_index(),
+            source_band_index: owner.owner_index(),
+            vertices,
+            boundary_constraints: vec![[0, 1], [1, 2], [2, 3], [3, 0]],
+            triangles: vec![
+                NodeTriangulatedTriangle {
+                    vertices: [0, 1, 2],
+                },
+                NodeTriangulatedTriangle {
+                    vertices: [0, 2, 3],
+                },
+            ],
+            area_m2: 1.0,
+            height_sources: vec![height_source()],
+        }
+    }
+
+    fn height_vertex(x: f64, z: f64, height_m: f64) -> NodeHeightedVertex {
+        NodeHeightedVertex {
+            point_xz: RoadVec2::new(x, z),
+            height_m,
+            height_sources: vec![height_source()],
+        }
+    }
+
+    fn road_vertex(x: f64, y: f64, z: f64) -> NodeTriangulatedVertex {
+        NodeTriangulatedVertex {
+            point_world: super::super::backend::RoadVec3::new(x, y, z),
+            height_sources: vec![height_source()],
+        }
     }
 }

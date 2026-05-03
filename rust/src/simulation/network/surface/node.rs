@@ -355,7 +355,11 @@ impl RoadSurfaceSystem {
             } else {
                 Self::signed_polygon_area_xz(&triangle).abs() > NODE_OVERLAY_MIN_AREA_M2
             };
-            if has_area {
+            let area_3d_m2 = (triangle[1] - triangle[0])
+                .cross(triangle[2] - triangle[0])
+                .length()
+                * 0.5;
+            if has_area && area_3d_m2 >= 1.0e-6 {
                 triangles.push(triangle);
             }
         }

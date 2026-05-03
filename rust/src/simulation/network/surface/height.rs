@@ -7,7 +7,10 @@ use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
     quantize_road_vec2_to_overlay_grid,
 };
-use super::input::{NodeArrangementInput, NodeInputBandInterval, NodeInputTerminalEndBand};
+use super::input::{
+    NodeArrangementInput, NodeInputBandInterval, NodeInputBoundaryRail, NodeInputBoundaryRailRole,
+    NodeInputMouth, NodeInputTerminalEndBand,
+};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
@@ -21,10 +24,8 @@ const HEIGHT_PARAMETER_KEY_SCALE: f64 = 1_000_000.0;
 const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 32.0 / ROAD_OVERLAY_COORDINATE_SCALE;
 const HEIGHT_PARAMETER_BOUNDARY_DISTANCE_EPS_M: f64 = 0.002;
 const HEIGHT_FIELD_MIN_AXIS_LEN2_M2: f64 = 1.0e-12;
-const NON_BEND_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M: f64 = 0.36;
-// Non-road seams can differ by curb-step plus local grade. They may snap only to existing rail
-// heights; averaging would create a synthetic cap height that violates the node topology spec.
-const NON_BEND_NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M: f64 = 0.5;
+const NON_BEND_SHARED_RAIL_CONSTRAINT_LIMIT_M: f64 = 0.36;
+const NON_BEND_NON_ROAD_SHARED_RAIL_CONSTRAINT_LIMIT_M: f64 = 0.5;
 
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
@@ -99,6 +100,14 @@ pub(crate) enum NodeHeightSourceError {
         axis: &'static str,
         parameter: f64,
     },
+    SharedSourceHeightConflict {
+        point_x_mm: i64,
+        point_z_mm: i64,
+        kind: RoadSurfaceBandKind,
+        owner_index: usize,
+        existing_height_mm: i64,
+        incoming_height_mm: i64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -113,8 +122,15 @@ struct NodeSourceBandKey {
     band_index: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct NodeHeightVertexContextKey {
+    point: NodeHeightPointKey,
+    owner: NodeBandOwner,
+    height_sources: Vec<NodeHeightSource>,
+}
+
 #[derive(Clone, Copy, Debug)]
-struct SharedHeightStats {
+struct SharedRailHeightStats {
     count: usize,
     min_height_m: f64,
     max_height_m: f64,
@@ -135,6 +151,17 @@ struct NodeBandHeightField {
     height_sources: Vec<NodeHeightSource>,
 }
 
+struct NodeBoundaryHeightField {
+    mouth_order_index: usize,
+    boundary_index: usize,
+    role: NodeInputBoundaryRailRole,
+    endpoint_xz: RoadVec2,
+    mouth_xz: RoadVec2,
+    endpoint_height_m: f64,
+    mouth_height_m: f64,
+    height_sources: Vec<NodeHeightSource>,
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn build_node_height_solution_from_ownership(
         input: &NodeArrangementInput,
@@ -151,13 +178,20 @@ impl NodeHeightSolution {
     ) -> Result<Self, NodeHeightSourceError> {
         validate_input_ownership_pair(input, ownership)?;
         let fields = height_fields_by_source(input)?;
+        let boundary_fields = boundary_height_fields(input);
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
         let global_points = global_ownership_points(ownership);
 
         for region in &ownership.owned_regions {
-            regions.push(heighted_region(region, &fields, &global_points)?);
+            regions.push(heighted_region(
+                region,
+                &fields,
+                &boundary_fields,
+                &global_points,
+            )?);
         }
-        canonicalize_shared_material_heights(&mut regions, ownership.piece_kind);
+        constrain_shared_material_rail_heights(&mut regions, ownership.piece_kind);
+        validate_shared_source_height_agreement(&regions)?;
 
         Ok(Self {
             node_id: ownership.node_id,
@@ -305,6 +339,116 @@ impl NodeBandHeightField {
     }
 }
 
+impl NodeBoundaryHeightField {
+    fn from_boundary_rail(mouth: &NodeInputMouth, rail: &NodeInputBoundaryRail) -> Self {
+        Self {
+            mouth_order_index: mouth.order_index,
+            boundary_index: rail.boundary_index,
+            role: rail.role,
+            endpoint_xz: quantize_road_vec2_to_overlay_grid(xz(rail.endpoint_world)),
+            mouth_xz: quantize_road_vec2_to_overlay_grid(xz(rail.mouth_world)),
+            endpoint_height_m: rail.endpoint_world.y,
+            mouth_height_m: rail.mouth_world.y,
+            height_sources: canonical_height_sources(
+                mouth
+                    .boundary_heights
+                    .iter()
+                    .filter(|height| height.boundary_index == rail.boundary_index)
+                    .flat_map(|height| height.height_sources.iter().cloned()),
+            ),
+        }
+    }
+
+    fn from_terminal_end_band_edges(
+        mouth_order_index: usize,
+        end_band: &NodeInputTerminalEndBand,
+    ) -> [Self; 2] {
+        let inner_role = terminal_inner_boundary_role(end_band.band_kind);
+        let outer_role = terminal_outer_boundary_role(end_band.band_kind);
+        [
+            Self {
+                mouth_order_index,
+                boundary_index: end_band.source_band_index * 2,
+                role: inner_role,
+                endpoint_xz: quantize_road_vec2_to_overlay_grid(xz(end_band.inner_start_world)),
+                mouth_xz: quantize_road_vec2_to_overlay_grid(xz(end_band.inner_end_world)),
+                endpoint_height_m: end_band.inner_start_world.y,
+                mouth_height_m: end_band.inner_end_world.y,
+                height_sources: canonical_height_sources(end_band.height_sources.iter().cloned()),
+            },
+            Self {
+                mouth_order_index,
+                boundary_index: end_band.source_band_index * 2 + 1,
+                role: outer_role,
+                endpoint_xz: quantize_road_vec2_to_overlay_grid(xz(end_band.outer_start_world)),
+                mouth_xz: quantize_road_vec2_to_overlay_grid(xz(end_band.outer_end_world)),
+                endpoint_height_m: end_band.outer_start_world.y,
+                mouth_height_m: end_band.outer_end_world.y,
+                height_sources: canonical_height_sources(end_band.height_sources.iter().cloned()),
+            },
+        ]
+    }
+
+    fn applies_to_kind(&self, kind: RoadSurfaceBandKind) -> bool {
+        match self.role {
+            NodeInputBoundaryRailRole::OuterFootprint { adjacent_kind } => adjacent_kind == kind,
+            NodeInputBoundaryRailRole::InteriorBandBoundary {
+                left_kind,
+                right_kind,
+            } => left_kind == kind || right_kind == kind,
+        }
+    }
+
+    fn role_priority_for_kind(&self, kind: RoadSurfaceBandKind) -> usize {
+        match (kind, self.role) {
+            (
+                RoadSurfaceBandKind::Carriageway,
+                NodeInputBoundaryRailRole::InteriorBandBoundary {
+                    left_kind,
+                    right_kind,
+                },
+            ) if is_carriageway(left_kind) || is_carriageway(right_kind) => 0,
+            (
+                RoadSurfaceBandKind::CurbOrShoulder,
+                NodeInputBoundaryRailRole::InteriorBandBoundary {
+                    left_kind,
+                    right_kind,
+                },
+            ) if is_carriageway(left_kind) || is_carriageway(right_kind) => 0,
+            (
+                RoadSurfaceBandKind::CurbOrShoulder,
+                NodeInputBoundaryRailRole::InteriorBandBoundary {
+                    left_kind,
+                    right_kind,
+                },
+            ) if is_sidewalk(left_kind) || is_sidewalk(right_kind) => 1,
+            (
+                RoadSurfaceBandKind::Sidewalk,
+                NodeInputBoundaryRailRole::InteriorBandBoundary {
+                    left_kind,
+                    right_kind,
+                },
+            ) if is_sidewalk(left_kind) || is_sidewalk(right_kind) => 0,
+            (RoadSurfaceBandKind::Sidewalk, NodeInputBoundaryRailRole::OuterFootprint { .. }) => 1,
+            (_, NodeInputBoundaryRailRole::OuterFootprint { .. }) => 2,
+            _ => 3,
+        }
+    }
+
+    fn sample_height(&self, point_xz: RoadVec2) -> Option<f64> {
+        if !point_lies_on_road_segment(point_xz, self.endpoint_xz, self.mouth_xz) {
+            return None;
+        }
+        let axis = self.mouth_xz - self.endpoint_xz;
+        let len2 = axis.length_squared();
+        if len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
+            return None;
+        }
+        let t = ((point_xz - self.endpoint_xz).dot(axis) / len2).clamp(0.0, 1.0);
+        Some(self.endpoint_height_m + (self.mouth_height_m - self.endpoint_height_m) * t)
+    }
+}
+
 fn validate_input_ownership_pair(
     input: &NodeArrangementInput,
     ownership: &NodeBooleanOwnership,
@@ -348,9 +492,69 @@ fn height_fields_by_source(
     Ok(fields)
 }
 
+fn boundary_height_fields(input: &NodeArrangementInput) -> Vec<NodeBoundaryHeightField> {
+    let mut fields = input
+        .mouths
+        .iter()
+        .flat_map(|mouth| {
+            let boundary_fields = mouth
+                .boundary_rails
+                .iter()
+                .map(move |rail| NodeBoundaryHeightField::from_boundary_rail(mouth, rail));
+            let terminal_fields = mouth.terminal_end_bands.iter().flat_map(move |end_band| {
+                NodeBoundaryHeightField::from_terminal_end_band_edges(mouth.order_index, end_band)
+            });
+            boundary_fields.chain(terminal_fields)
+        })
+        .collect::<Vec<_>>();
+    fields.sort_by(|a, b| {
+        a.mouth_order_index
+            .cmp(&b.mouth_order_index)
+            .then(a.boundary_index.cmp(&b.boundary_index))
+    });
+    fields
+}
+
+fn terminal_inner_boundary_role(kind: RoadSurfaceBandKind) -> NodeInputBoundaryRailRole {
+    match kind {
+        RoadSurfaceBandKind::Carriageway => NodeInputBoundaryRailRole::InteriorBandBoundary {
+            left_kind: RoadSurfaceBandKind::Carriageway,
+            right_kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        RoadSurfaceBandKind::CurbOrShoulder => NodeInputBoundaryRailRole::InteriorBandBoundary {
+            left_kind: RoadSurfaceBandKind::Carriageway,
+            right_kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        RoadSurfaceBandKind::Sidewalk => NodeInputBoundaryRailRole::InteriorBandBoundary {
+            left_kind: RoadSurfaceBandKind::CurbOrShoulder,
+            right_kind: RoadSurfaceBandKind::Sidewalk,
+        },
+        _ => NodeInputBoundaryRailRole::OuterFootprint {
+            adjacent_kind: kind,
+        },
+    }
+}
+
+fn terminal_outer_boundary_role(kind: RoadSurfaceBandKind) -> NodeInputBoundaryRailRole {
+    match kind {
+        RoadSurfaceBandKind::Carriageway => NodeInputBoundaryRailRole::InteriorBandBoundary {
+            left_kind: RoadSurfaceBandKind::Carriageway,
+            right_kind: RoadSurfaceBandKind::CurbOrShoulder,
+        },
+        RoadSurfaceBandKind::CurbOrShoulder => NodeInputBoundaryRailRole::InteriorBandBoundary {
+            left_kind: RoadSurfaceBandKind::CurbOrShoulder,
+            right_kind: RoadSurfaceBandKind::Sidewalk,
+        },
+        _ => NodeInputBoundaryRailRole::OuterFootprint {
+            adjacent_kind: kind,
+        },
+    }
+}
+
 fn heighted_region(
     region: &NodeBooleanOwnedRegion,
     fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+    boundary_fields: &[NodeBoundaryHeightField],
     global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedRegion, NodeHeightSourceError> {
     let band_index =
@@ -386,7 +590,15 @@ fn heighted_region(
             .cloned()
             .chain(field.height_sources.iter().cloned()),
     );
-    let shape = heighted_shape(&region.shape, field, &height_sources, global_points)?;
+    let shape = heighted_shape(
+        &region.shape,
+        region.kind,
+        region.source_mouth_order_index,
+        field,
+        boundary_fields,
+        &height_sources,
+        global_points,
+    )?;
 
     Ok(NodeHeightedRegion {
         kind: region.kind,
@@ -401,13 +613,24 @@ fn heighted_region(
 
 fn heighted_shape(
     shape: &NodeOverlayShape,
+    kind: RoadSurfaceBandKind,
+    source_mouth_order_index: usize,
     field: &NodeBandHeightField,
+    boundary_fields: &[NodeBoundaryHeightField],
     height_sources: &[NodeHeightSource],
     global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedShape, NodeHeightSourceError> {
     let mut heighted = Vec::with_capacity(shape.len());
     for contour in shape {
-        let contour = heighted_contour(contour, field, height_sources, global_points)?;
+        let contour = heighted_contour(
+            contour,
+            kind,
+            source_mouth_order_index,
+            field,
+            boundary_fields,
+            height_sources,
+            global_points,
+        )?;
         if contour.len() >= 3 {
             heighted.push(contour);
         }
@@ -417,43 +640,124 @@ fn heighted_shape(
 
 fn heighted_contour(
     contour: &NodeOverlayContour,
+    kind: RoadSurfaceBandKind,
+    source_mouth_order_index: usize,
     field: &NodeBandHeightField,
+    boundary_fields: &[NodeBoundaryHeightField],
     height_sources: &[NodeHeightSource],
     global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedContour, NodeHeightSourceError> {
     let contour = noded_overlay_contour(contour, global_points);
     contour
         .into_iter()
-        .map(|point| heighted_vertex(point, field, height_sources))
+        .map(|point| {
+            heighted_vertex(
+                point,
+                kind,
+                source_mouth_order_index,
+                field,
+                boundary_fields,
+                height_sources,
+            )
+        })
         .collect()
 }
 
 fn heighted_vertex(
     point: NodeOverlayPoint,
+    kind: RoadSurfaceBandKind,
+    source_mouth_order_index: usize,
     field: &NodeBandHeightField,
+    boundary_fields: &[NodeBoundaryHeightField],
     height_sources: &[NodeHeightSource],
 ) -> Result<NodeHeightedVertex, NodeHeightSourceError> {
     let point_xz = overlay_point_to_road(point);
-    let height_m = field.evaluate_height(point_xz)?;
-    Ok(NodeHeightedVertex {
-        point_xz,
-        height_m,
-        height_sources: height_sources.to_vec(),
-    })
+    let mut vertex = if let Some((height_m, sources)) =
+        boundary_height_at_point(kind, source_mouth_order_index, point_xz, boundary_fields)
+    {
+        NodeHeightedVertex {
+            point_xz,
+            height_m,
+            height_sources: canonical_height_sources(
+                height_sources
+                    .iter()
+                    .cloned()
+                    .chain(sources.iter().cloned()),
+            ),
+        }
+    } else {
+        NodeHeightedVertex {
+            point_xz,
+            height_m: field.evaluate_height(point_xz)?,
+            height_sources: height_sources.to_vec(),
+        }
+    };
+    vertex.height_sources = canonical_height_sources(vertex.height_sources);
+    Ok(vertex)
 }
 
-fn canonicalize_shared_material_heights(
+fn boundary_height_at_point(
+    kind: RoadSurfaceBandKind,
+    source_mouth_order_index: usize,
+    point_xz: RoadVec2,
+    fields: &[NodeBoundaryHeightField],
+) -> Option<(f64, Vec<NodeHeightSource>)> {
+    fields
+        .iter()
+        .filter(|field| field.mouth_order_index == source_mouth_order_index)
+        .filter(|field| field.applies_to_kind(kind))
+        .filter_map(|field| {
+            field.sample_height(point_xz).map(|height_m| {
+                (
+                    field.role_priority_for_kind(kind),
+                    field.mouth_order_index,
+                    field.boundary_index,
+                    height_m,
+                    field.height_sources.clone(),
+                )
+            })
+        })
+        .min_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)))
+        .map(|(_, _, _, height_m, sources)| (height_m, sources))
+}
+
+fn is_carriageway(kind: RoadSurfaceBandKind) -> bool {
+    kind == RoadSurfaceBandKind::Carriageway
+}
+
+fn is_sidewalk(kind: RoadSurfaceBandKind) -> bool {
+    kind == RoadSurfaceBandKind::Sidewalk
+}
+
+fn point_lies_on_road_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2) -> bool {
+    let point = road_overlay_point_key(point);
+    let start = road_overlay_point_key(start);
+    let end = road_overlay_point_key(end);
+    if point == start || point == end {
+        return true;
+    }
+    point_lies_strictly_inside_segment(point, start, end)
+}
+
+fn road_overlay_point_key(point: RoadVec2) -> NodeOverlayPointKey {
+    (
+        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
+}
+
+fn constrain_shared_material_rail_heights(
     regions: &mut [NodeHeightedRegion],
     piece_kind: RoadSurfaceVisualNodePieceKind,
 ) {
-    let mut shared_heights = BTreeMap::<NodeHeightPointKey, SharedHeightStats>::new();
+    let mut shared_heights = BTreeMap::<NodeHeightPointKey, SharedRailHeightStats>::new();
     for region in regions.iter() {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
             let key = NodeHeightPointKey::from_point(vertex.point_xz);
             shared_heights
                 .entry(key)
                 .and_modify(|stats| stats.record(region.kind, vertex.height_m))
-                .or_insert_with(|| SharedHeightStats::new(region.kind, vertex.height_m));
+                .or_insert_with(|| SharedRailHeightStats::new(region.kind, vertex.height_m));
         }
     }
 
@@ -466,29 +770,29 @@ fn canonicalize_shared_material_heights(
             let key = NodeHeightPointKey::from_point(vertex.point_xz);
             if let Some(stats) = shared_heights.get(&key)
                 && stats.count > 1
-                && shared_height_canonicalization_allowed(stats, piece_kind)
+                && shared_material_rail_constraint_allowed(stats, piece_kind)
             {
                 vertex.height_m =
-                    stats.canonical_height_for_kind(region.kind, piece_kind, vertex.height_m);
+                    stats.constrained_height_for_kind(region.kind, piece_kind, vertex.height_m);
             }
         }
     }
 }
 
-fn shared_height_canonicalization_allowed(
-    stats: &SharedHeightStats,
+fn shared_material_rail_constraint_allowed(
+    stats: &SharedRailHeightStats,
     piece_kind: RoadSurfaceVisualNodePieceKind,
 ) -> bool {
     piece_kind == RoadSurfaceVisualNodePieceKind::Bend
         || stats.height_delta_m()
             <= if stats.has_carriageway {
-                NON_BEND_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
+                NON_BEND_SHARED_RAIL_CONSTRAINT_LIMIT_M
             } else {
-                NON_BEND_NON_ROAD_SHARED_HEIGHT_CANONICALIZATION_LIMIT_M
+                NON_BEND_NON_ROAD_SHARED_RAIL_CONSTRAINT_LIMIT_M
             }
 }
 
-impl SharedHeightStats {
+impl SharedRailHeightStats {
     fn new(kind: RoadSurfaceBandKind, height_m: f64) -> Self {
         Self {
             count: 1,
@@ -513,7 +817,7 @@ impl SharedHeightStats {
         self.max_height_m - self.min_height_m
     }
 
-    fn canonical_height_for_kind(
+    fn constrained_height_for_kind(
         &self,
         kind: RoadSurfaceBandKind,
         piece_kind: RoadSurfaceVisualNodePieceKind,
@@ -534,9 +838,44 @@ impl SharedHeightStats {
         if self.has_sidewalk {
             return self.max_height_m;
         }
-
         current_height_m
     }
+}
+
+fn validate_shared_source_height_agreement(
+    regions: &[NodeHeightedRegion],
+) -> Result<(), NodeHeightSourceError> {
+    let mut heights = BTreeMap::<NodeHeightVertexContextKey, i64>::new();
+    for region in regions {
+        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
+            let point = NodeHeightPointKey::from_point(vertex.point_xz);
+            let key = NodeHeightVertexContextKey {
+                point,
+                owner: region.owner,
+                height_sources: canonical_height_sources(
+                    region
+                        .height_sources
+                        .iter()
+                        .cloned()
+                        .chain(vertex.height_sources.iter().cloned()),
+                ),
+            };
+            let height_mm = quantize_m(vertex.height_m);
+            if let Some(existing_height_mm) = heights.insert(key, height_mm)
+                && existing_height_mm != height_mm
+            {
+                return Err(NodeHeightSourceError::SharedSourceHeightConflict {
+                    point_x_mm: point.x_mm,
+                    point_z_mm: point.z_mm,
+                    kind: region.kind,
+                    owner_index: region.owner.owner_index(),
+                    existing_height_mm,
+                    incoming_height_mm: height_mm,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn linear_height_profile(endpoint_height_m: f64, mouth_height_m: f64) -> Spline<f64, f64> {
@@ -878,6 +1217,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn shared_xz_vertices_keep_distinct_owner_source_heights() {
+        let regions = vec![
+            manual_heighted_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                0,
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.0)],
+            ),
+            manual_heighted_region(
+                RoadSurfaceBandKind::Sidewalk,
+                1,
+                0.25,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+            ),
+        ];
+
+        validate_shared_source_height_agreement(&regions)
+            .expect("different owner/source contexts are explicit seams, not height repairs");
+
+        assert_eq!(regions[0].shape[0][0].height_m, 0.0);
+        assert_eq!(regions[1].shape[0][0].height_m, 0.25);
+    }
+
+    #[test]
+    fn shared_xz_vertices_reject_same_source_height_conflict() {
+        let regions = vec![
+            manual_heighted_region(
+                RoadSurfaceBandKind::Sidewalk,
+                0,
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.0)],
+            ),
+            manual_heighted_region(
+                RoadSurfaceBandKind::Sidewalk,
+                0,
+                0.25,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+            ),
+        ];
+
+        assert!(matches!(
+            validate_shared_source_height_agreement(&regions),
+            Err(NodeHeightSourceError::SharedSourceHeightConflict { .. })
+        ));
+    }
+
     fn has_vertex_height(
         region: &NodeHeightedRegion,
         expected_x: f64,
@@ -953,6 +1339,33 @@ mod tests {
             source_band_index: Some(band_index),
             shape: vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 2.0], [0.0, 2.0]]],
             area_m2,
+            height_sources: Vec::new(),
+        }
+    }
+
+    fn manual_heighted_region(
+        kind: RoadSurfaceBandKind,
+        owner_index: usize,
+        area_m2: f32,
+        contour: NodeHeightedContour,
+    ) -> NodeHeightedRegion {
+        NodeHeightedRegion {
+            kind,
+            owner: NodeBandOwner::new(kind, owner_index),
+            source_mouth_order_index: owner_index,
+            source_band_index: owner_index,
+            shape: vec![contour],
+            area_m2,
+            height_sources: vec![NodeHeightSource::ArrangementConstraint {
+                constraint_index: owner_index,
+            }],
+        }
+    }
+
+    fn manual_heighted_vertex(x: f64, z: f64, height_m: f64) -> NodeHeightedVertex {
+        NodeHeightedVertex {
+            point_xz: RoadVec2::new(x, z),
+            height_m,
             height_sources: Vec::new(),
         }
     }
