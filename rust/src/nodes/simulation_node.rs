@@ -491,6 +491,31 @@ impl SimulationNode {
                     "terrain_cdt_invalid_constraints",
                     i64::try_from(mesh.stats.invalid_constraint_edges).unwrap_or(0),
                 );
+                dict.set(
+                    "terrain_cdt_max_face_y_delta_m",
+                    f64::from(mesh.stats.max_face_y_delta_m),
+                );
+                dict.set(
+                    "terrain_cdt_max_face_slope_ratio",
+                    f64::from(mesh.stats.max_face_slope_ratio),
+                );
+                dict.set(
+                    "terrain_cdt_road_seam_faces",
+                    i64::try_from(mesh.stats.road_seam_faces).unwrap_or(0),
+                );
+                dict.set(
+                    "terrain_cdt_road_seam_steep_faces",
+                    i64::try_from(mesh.stats.road_seam_steep_faces).unwrap_or(0),
+                );
+                dict.set(
+                    "terrain_cdt_road_seam_max_y_delta_m",
+                    f64::from(mesh.stats.road_seam_max_y_delta_m),
+                );
+                dict.set(
+                    "terrain_cdt_road_seam_max_slope_ratio",
+                    f64::from(mesh.stats.road_seam_max_slope_ratio),
+                );
+                Self::append_cdt_road_seam_face_samples(dict, &mesh);
                 Self::append_cdt_mesh_buffers(dict, patch, &mesh);
             }
             Err(err) => {
@@ -507,6 +532,24 @@ impl SimulationNode {
                 dict.set("terrain_cdt_preserved_road_constraint_edges", 0i64);
                 dict.set("terrain_cdt_invalid_constraints", 1i64);
                 dict.set("terrain_cdt_emitted_faces", 0i64);
+                dict.set("terrain_cdt_max_face_y_delta_m", 0.0f64);
+                dict.set("terrain_cdt_max_face_slope_ratio", 0.0f64);
+                dict.set("terrain_cdt_road_seam_faces", 0i64);
+                dict.set("terrain_cdt_road_seam_steep_faces", 0i64);
+                dict.set("terrain_cdt_road_seam_max_y_delta_m", 0.0f64);
+                dict.set("terrain_cdt_road_seam_max_slope_ratio", 0.0f64);
+                dict.set(
+                    "terrain_cdt_road_seam_sample_centroids",
+                    PackedVector3Array::new(),
+                );
+                dict.set(
+                    "terrain_cdt_road_seam_sample_bounds",
+                    PackedVector3Array::new(),
+                );
+                dict.set(
+                    "terrain_cdt_road_seam_sample_metrics",
+                    PackedFloat32Array::new(),
+                );
                 dict.set("terrain_mesh_vertices", PackedVector3Array::new());
                 dict.set("terrain_mesh_normals", PackedVector3Array::new());
                 dict.set("terrain_mesh_uvs", PackedVector2Array::new());
@@ -675,6 +718,42 @@ impl SimulationNode {
             PackedVector3Array::from_iter(normals),
         );
         dict.set("terrain_mesh_uvs", PackedVector2Array::from_iter(uvs));
+    }
+
+    fn append_cdt_road_seam_face_samples(
+        dict: &mut VarDictionary,
+        mesh: &crate::simulation::terrain::cdt::TerrainCdtMesh,
+    ) {
+        let mut centroids = Vec::with_capacity(mesh.road_seam_face_samples.len());
+        let mut bounds = Vec::with_capacity(mesh.road_seam_face_samples.len() * 2);
+        let mut metrics = Vec::with_capacity(mesh.road_seam_face_samples.len() * 2);
+        for sample in &mesh.road_seam_face_samples {
+            centroids.push(Self::terrain_cdt_vertex_to_vector3(sample.centroid));
+            bounds.push(Vector3::new(
+                sample.min_x as f32,
+                sample.min_y_m,
+                sample.min_z as f32,
+            ));
+            bounds.push(Vector3::new(
+                sample.max_x as f32,
+                sample.max_y_m,
+                sample.max_z as f32,
+            ));
+            metrics.push(sample.max_y_delta_m);
+            metrics.push(sample.max_slope_ratio);
+        }
+        dict.set(
+            "terrain_cdt_road_seam_sample_centroids",
+            PackedVector3Array::from_iter(centroids),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_sample_bounds",
+            PackedVector3Array::from_iter(bounds),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_sample_metrics",
+            PackedFloat32Array::from_iter(metrics),
+        );
     }
 
     fn terrain_cdt_vertex_to_vector3(vertex: TerrainCdtVertex) -> Vector3 {

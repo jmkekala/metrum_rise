@@ -2883,6 +2883,7 @@ fn elevated_four_way_junction_keeps_span_mouth_vertices_seamless() {
     assert!(dump.contains("\"band_ownership\""));
     assert!(dump.contains("\"height_owner\""));
     assert!(dump.contains("\"seam_constraints\""));
+    assert!(dump.contains("\"material_footprint_coverage\""));
     assert!(dump.contains("\"outer_boundary_top_match\""));
     assert!(dump.contains("\"mouth_seams\""));
     assert!(dump.contains("\"earthwork_face_top_match\""));
@@ -3965,6 +3966,7 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"band_ownership\""));
     assert!(dump.contains("\"height_owner\""));
     assert!(dump.contains("\"seam_constraints\""));
+    assert!(dump.contains("\"material_footprint_coverage\""));
     assert!(dump.contains("\"outer_boundary_top_match\""));
     assert!(dump.contains("\"mouth_seams\""));
     assert!(dump.contains("\"earthwork_face_top_match\""));

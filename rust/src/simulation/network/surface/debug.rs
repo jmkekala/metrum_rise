@@ -1,14 +1,16 @@
 //! Debug extraction helpers for compiled road-surface state.
 
 use super::{
-    IncidentEdgeSide, IncidentMouthProfile, RoadSurfaceBandKind, RoadSurfaceDebugData,
-    RoadSurfaceEarthworkFaceKind, RoadSurfaceSection, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
+    IncidentEdgeSide, IncidentMouthProfile, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
+    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceDebugData, RoadSurfaceEarthworkFaceKind,
+    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon,
+    SAMPLE_EPSILON_M, SurfaceChunkKey, backend,
 };
 use crate::config;
 use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
+use i_overlay::core::overlay_rule::OverlayRule;
 use std::fmt::Write as _;
 
 const DEBUG_MAX_PROBLEM_SAMPLES: usize = 12;
@@ -35,6 +37,17 @@ struct DebugMatchStats {
     problem_count: usize,
     max_xz_error_m: f32,
     max_y_error_m: f32,
+}
+
+#[derive(Default)]
+struct DebugCoverageStats {
+    footprint_area_m2: f32,
+    top_area_m2: f32,
+    missing_area_m2: f32,
+    extra_area_m2: f32,
+    area_budget_m2: f32,
+    missing_shape_count: usize,
+    extra_shape_count: usize,
 }
 
 impl RoadSurfaceSystem {
@@ -443,6 +456,9 @@ impl RoadSurfaceSystem {
             &piece.sidewalk_surface_polygons,
         );
         dump.push_str(",\n");
+        dump.push_str("      \"material_footprint_coverage\": ");
+        Self::append_material_footprint_coverage_debug_literal(dump, piece);
+        dump.push_str(",\n");
         dump.push_str("      \"outer_boundary_top_match\": ");
         self.append_outer_boundary_top_match_debug_literal(dump, terrain, piece);
         dump.push_str(",\n");
@@ -650,6 +666,79 @@ impl RoadSurfaceSystem {
             max_triangle_y_delta_m, max_triangle_slope_ratio
         );
         dump.push('}');
+    }
+
+    fn append_material_footprint_coverage_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        let footprint_contours =
+            Self::debug_overlay_contours_from_polygons(&piece.outer_boundary_loops);
+        let Some(mut footprint_shapes) = Self::overlay_union_contours(&footprint_contours) else {
+            dump.push_str("{\"status\":\"overlay_failed\"}");
+            return;
+        };
+        Self::sort_overlay_shapes(&mut footprint_shapes);
+
+        let top_contours = Self::debug_overlay_contours_from_top_polygons(
+            piece
+                .road_surface_polygons
+                .iter()
+                .chain(piece.sidewalk_surface_polygons.iter()),
+        );
+        let Some(mut top_shapes) = Self::overlay_union_contours(&top_contours) else {
+            dump.push_str("{\"status\":\"overlay_failed\"}");
+            return;
+        };
+        Self::sort_overlay_shapes(&mut top_shapes);
+
+        let Some(mut missing_shapes) =
+            Self::overlay_binary_shapes(&footprint_shapes, &top_shapes, OverlayRule::Difference)
+        else {
+            dump.push_str("{\"status\":\"overlay_failed\"}");
+            return;
+        };
+        Self::sort_overlay_shapes(&mut missing_shapes);
+
+        let Some(mut extra_shapes) =
+            Self::overlay_binary_shapes(&top_shapes, &footprint_shapes, OverlayRule::Difference)
+        else {
+            dump.push_str("{\"status\":\"overlay_failed\"}");
+            return;
+        };
+        Self::sort_overlay_shapes(&mut extra_shapes);
+
+        let stats = DebugCoverageStats {
+            footprint_area_m2: Self::debug_overlay_area_m2(&footprint_shapes),
+            top_area_m2: Self::debug_overlay_area_m2(&top_shapes),
+            missing_area_m2: Self::debug_overlay_area_m2(&missing_shapes),
+            extra_area_m2: Self::debug_overlay_area_m2(&extra_shapes),
+            area_budget_m2: Self::overlay_numeric_area_budget_for_shapes(&footprint_shapes)
+                .max(Self::overlay_numeric_area_budget_for_shapes(&top_shapes)),
+            missing_shape_count: missing_shapes.len(),
+            extra_shape_count: extra_shapes.len(),
+        };
+
+        dump.push('{');
+        let problem = stats.missing_area_m2 > stats.area_budget_m2
+            || stats.extra_area_m2 > stats.area_budget_m2;
+        let _ = write!(
+            dump,
+            "\"status\":\"ok\",\"problem\":{},\"footprint_area_m2\":{:.6},\"top_area_m2\":{:.6},\"missing_area_m2\":{:.6},\"extra_area_m2\":{:.6},\"area_budget_m2\":{:.6},\"missing_shape_count\":{},\"extra_shape_count\":{}",
+            problem,
+            stats.footprint_area_m2,
+            stats.top_area_m2,
+            stats.missing_area_m2,
+            stats.extra_area_m2,
+            stats.area_budget_m2,
+            stats.missing_shape_count,
+            stats.extra_shape_count
+        );
+        dump.push_str(",\"missing_samples\":[");
+        Self::append_overlay_shape_samples(dump, &missing_shapes);
+        dump.push_str("],\"extra_samples\":[");
+        Self::append_overlay_shape_samples(dump, &extra_shapes);
+        dump.push_str("]}");
     }
 
     fn append_outer_boundary_top_match_debug_literal(
@@ -926,6 +1015,136 @@ impl RoadSurfaceSystem {
             }));
         }
         vertices
+    }
+
+    fn debug_overlay_contours_from_polygons(
+        polygons: &[RoadSurfaceVisualPolygon],
+    ) -> Vec<NodeOverlayContour> {
+        polygons
+            .iter()
+            .filter_map(|polygon| {
+                Self::debug_overlay_contour_from_world_points(&polygon.points_world)
+            })
+            .collect()
+    }
+
+    fn debug_overlay_contours_from_top_polygons<'a>(
+        polygons: impl IntoIterator<Item = &'a RoadSurfaceVisualPolygon>,
+    ) -> Vec<NodeOverlayContour> {
+        let mut contours = Vec::new();
+        for polygon in polygons {
+            if polygon.triangles_world.is_empty() {
+                if let Some(contour) =
+                    Self::debug_overlay_contour_from_world_points(&polygon.points_world)
+                {
+                    contours.push(contour);
+                }
+                continue;
+            }
+            for triangle in &polygon.triangles_world {
+                if let Some(contour) = Self::debug_overlay_contour_from_world_points(triangle) {
+                    contours.push(contour);
+                }
+            }
+        }
+        contours
+    }
+
+    fn debug_overlay_contour_from_world_points(points: &[Vector3]) -> Option<NodeOverlayContour> {
+        let mut contour = Vec::with_capacity(points.len());
+        for point in points {
+            let point = backend::road_vec2_to_overlay_point(backend::godot_vec3_xz_to_road(*point));
+            if contour.last().is_none_or(|last| *last != point) {
+                contour.push(point);
+            }
+        }
+        if contour.len() >= 2 && contour.first() == contour.last() {
+            contour.pop();
+        }
+        (contour.len() >= 3).then_some(contour)
+    }
+
+    fn debug_overlay_area_m2(shapes: &NodeOverlayShapes) -> f32 {
+        shapes.iter().map(Self::overlay_shape_area_m2).sum()
+    }
+
+    fn append_overlay_shape_samples(dump: &mut String, shapes: &[NodeOverlayShape]) {
+        for (index, shape) in shapes.iter().take(DEBUG_MAX_PROBLEM_SAMPLES).enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            let area_m2 = Self::overlay_shape_area_m2(shape);
+            let (centroid_x, centroid_z) = Self::overlay_shape_centroid_xz(shape);
+            let (min_x, min_z, max_x, max_z) = Self::overlay_shape_bounds_xz(shape);
+            let _ = write!(
+                dump,
+                "{{\"area_m2\":{:.6},\"centroid\":[{:.3}, {:.3}],\"bounds\":[[{:.3}, {:.3}], [{:.3}, {:.3}]]}}",
+                area_m2, centroid_x, centroid_z, min_x, min_z, max_x, max_z
+            );
+        }
+    }
+
+    fn overlay_shape_centroid_xz(shape: &NodeOverlayShape) -> (f64, f64) {
+        let mut weighted_x = 0.0;
+        let mut weighted_z = 0.0;
+        let mut total_weight = 0.0;
+        for contour in shape {
+            let area = Self::debug_overlay_contour_signed_area_m2(contour);
+            let weight = area.abs();
+            let (x, z) = Self::overlay_contour_average_xz(contour);
+            weighted_x += x * weight;
+            weighted_z += z * weight;
+            total_weight += weight;
+        }
+        if total_weight <= f64::EPSILON {
+            return Self::overlay_contour_average_xz(
+                shape.first().map(Vec::as_slice).unwrap_or(&[]),
+            );
+        }
+        (weighted_x / total_weight, weighted_z / total_weight)
+    }
+
+    fn overlay_contour_average_xz(contour: &[NodeOverlayPoint]) -> (f64, f64) {
+        if contour.is_empty() {
+            return (0.0, 0.0);
+        }
+        let mut x = 0.0;
+        let mut z = 0.0;
+        for point in contour {
+            x += point[0];
+            z += point[1];
+        }
+        (x / contour.len() as f64, z / contour.len() as f64)
+    }
+
+    fn debug_overlay_contour_signed_area_m2(contour: &NodeOverlayContour) -> f64 {
+        if contour.len() < 3 {
+            return 0.0;
+        }
+        let mut signed_area = 0.0;
+        for index in 0..contour.len() {
+            let current = contour[index];
+            let next = contour[(index + 1) % contour.len()];
+            signed_area += current[0] * next[1] - next[0] * current[1];
+        }
+        signed_area * 0.5
+    }
+
+    fn overlay_shape_bounds_xz(shape: &NodeOverlayShape) -> (f64, f64, f64, f64) {
+        let mut min_x = f64::INFINITY;
+        let mut min_z = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_z = f64::NEG_INFINITY;
+        for point in shape.iter().flat_map(|contour| contour.iter()) {
+            min_x = min_x.min(point[0]);
+            min_z = min_z.min(point[1]);
+            max_x = max_x.max(point[0]);
+            max_z = max_z.max(point[1]);
+        }
+        if !min_x.is_finite() {
+            return (0.0, 0.0, 0.0, 0.0);
+        }
+        (min_x, min_z, max_x, max_z)
     }
 
     fn closest_debug_top_vertex(

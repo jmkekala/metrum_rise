@@ -12,6 +12,9 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
 
 const CDT_EPSILON_M: f64 = 0.001;
+const MAX_ROAD_SEAM_FACE_SAMPLES: usize = 8;
+const MAX_TERRAIN_TIE_IN_SLOPE_RATIO: f32 = 0.5;
+const MIN_TIE_IN_HEIGHT_DELTA_M: f32 = 0.01;
 
 type SpadeCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 
@@ -119,9 +122,10 @@ pub(crate) struct TerrainCdtMesh {
     pub(crate) vertices: Vec<TerrainCdtVertex>,
     pub(crate) triangles: Vec<[usize; 3]>,
     pub(crate) stats: TerrainCdtStats,
+    pub(crate) road_seam_face_samples: Vec<TerrainCdtFaceSample>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct TerrainCdtStats {
     pub(crate) input_vertices: usize,
     pub(crate) constraint_edges: usize,
@@ -130,6 +134,25 @@ pub(crate) struct TerrainCdtStats {
     pub(crate) rejected_road_faces: usize,
     pub(crate) preserved_road_constraint_edges: usize,
     pub(crate) invalid_constraint_edges: usize,
+    pub(crate) max_face_y_delta_m: f32,
+    pub(crate) max_face_slope_ratio: f32,
+    pub(crate) road_seam_faces: usize,
+    pub(crate) road_seam_steep_faces: usize,
+    pub(crate) road_seam_max_y_delta_m: f32,
+    pub(crate) road_seam_max_slope_ratio: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TerrainCdtFaceSample {
+    pub(crate) centroid: TerrainCdtVertex,
+    pub(crate) min_x: f64,
+    pub(crate) min_z: f64,
+    pub(crate) max_x: f64,
+    pub(crate) max_z: f64,
+    pub(crate) min_y_m: f32,
+    pub(crate) max_y_m: f32,
+    pub(crate) max_y_delta_m: f32,
+    pub(crate) max_slope_ratio: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -184,6 +207,11 @@ pub(crate) fn build_road_touched_terrain_patch(
         .iter()
         .filter(|edge| accepted_edges.contains(&normalize_edge(edge[0], edge[1])))
         .count();
+    let diagnostics = terrain_face_diagnostics(
+        &canonical.vertices,
+        &triangles,
+        &canonical.road_constraint_edges,
+    );
 
     Ok(TerrainCdtMesh {
         stats: TerrainCdtStats {
@@ -194,10 +222,27 @@ pub(crate) fn build_road_touched_terrain_patch(
             rejected_road_faces,
             preserved_road_constraint_edges,
             invalid_constraint_edges,
+            max_face_y_delta_m: diagnostics.max_face_y_delta_m,
+            max_face_slope_ratio: diagnostics.max_face_slope_ratio,
+            road_seam_faces: diagnostics.road_seam_faces,
+            road_seam_steep_faces: diagnostics.road_seam_steep_faces,
+            road_seam_max_y_delta_m: diagnostics.road_seam_max_y_delta_m,
+            road_seam_max_slope_ratio: diagnostics.road_seam_max_slope_ratio,
         },
         vertices: canonical.vertices,
         triangles,
+        road_seam_face_samples: diagnostics.road_seam_face_samples,
     })
+}
+
+struct TerrainCdtDiagnostics {
+    max_face_y_delta_m: f32,
+    max_face_slope_ratio: f32,
+    road_seam_faces: usize,
+    road_seam_steep_faces: usize,
+    road_seam_max_y_delta_m: f32,
+    road_seam_max_slope_ratio: f32,
+    road_seam_face_samples: Vec<TerrainCdtFaceSample>,
 }
 
 struct CanonicalTerrainCdtInput {
@@ -266,6 +311,12 @@ fn canonicalize_input(
         if road_loops
             .iter()
             .any(|road_loop| point_in_polygon(sample, road_loop))
+        {
+            continue;
+        }
+        if road_loops
+            .iter()
+            .any(|road_loop| source_sample_would_make_oversteep_tie_in(sample, road_loop))
         {
             continue;
         }
@@ -567,6 +618,199 @@ fn emitted_triangle_edges(triangles: &[[usize; 3]]) -> HashSet<(usize, usize)> {
     edges
 }
 
+fn terrain_face_diagnostics(
+    vertices: &[TerrainCdtVertex],
+    triangles: &[[usize; 3]],
+    road_constraint_edges: &[[usize; 2]],
+) -> TerrainCdtDiagnostics {
+    let road_edge_set = road_constraint_edges
+        .iter()
+        .map(|edge| normalize_edge(edge[0], edge[1]))
+        .collect::<HashSet<_>>();
+    let mut diagnostics = TerrainCdtDiagnostics {
+        max_face_y_delta_m: 0.0,
+        max_face_slope_ratio: 0.0,
+        road_seam_faces: 0,
+        road_seam_steep_faces: 0,
+        road_seam_max_y_delta_m: 0.0,
+        road_seam_max_slope_ratio: 0.0,
+        road_seam_face_samples: Vec::new(),
+    };
+
+    for triangle in triangles {
+        let points = [
+            vertices[triangle[0]],
+            vertices[triangle[1]],
+            vertices[triangle[2]],
+        ];
+        let metrics = terrain_face_sample(points);
+        diagnostics.max_face_y_delta_m = diagnostics.max_face_y_delta_m.max(metrics.max_y_delta_m);
+        diagnostics.max_face_slope_ratio = diagnostics
+            .max_face_slope_ratio
+            .max(metrics.max_slope_ratio);
+
+        let touches_road_seam = triangle_edges(triangle)
+            .iter()
+            .any(|edge| road_edge_set.contains(edge));
+        if !touches_road_seam {
+            continue;
+        }
+
+        diagnostics.road_seam_faces += 1;
+        diagnostics.road_seam_max_y_delta_m = diagnostics
+            .road_seam_max_y_delta_m
+            .max(metrics.max_y_delta_m);
+        diagnostics.road_seam_max_slope_ratio = diagnostics
+            .road_seam_max_slope_ratio
+            .max(metrics.max_slope_ratio);
+        if metrics.max_slope_ratio > MAX_TERRAIN_TIE_IN_SLOPE_RATIO {
+            diagnostics.road_seam_steep_faces += 1;
+        }
+        insert_road_seam_face_sample(&mut diagnostics.road_seam_face_samples, metrics);
+    }
+
+    diagnostics
+}
+
+fn source_sample_would_make_oversteep_tie_in(
+    sample: TerrainCdtVertex,
+    road_loop: &[TerrainCdtVertex],
+) -> bool {
+    let Some((distance_m, seam_height_m)) =
+        closest_loop_edge_distance_and_height(sample, road_loop)
+    else {
+        return false;
+    };
+    let height_delta_m = (sample.height_m - seam_height_m).abs();
+    if height_delta_m <= MIN_TIE_IN_HEIGHT_DELTA_M {
+        return false;
+    }
+    let min_tie_in_distance_m = f64::from(height_delta_m / MAX_TERRAIN_TIE_IN_SLOPE_RATIO);
+    distance_m < min_tie_in_distance_m - CDT_EPSILON_M
+}
+
+fn closest_loop_edge_distance_and_height(
+    point: TerrainCdtVertex,
+    road_loop: &[TerrainCdtVertex],
+) -> Option<(f64, f32)> {
+    if road_loop.len() < 2 {
+        return None;
+    }
+
+    let mut closest_distance_m = f64::INFINITY;
+    let mut closest_height_m = 0.0_f32;
+    for index in 0..road_loop.len() {
+        let start = road_loop[index];
+        let end = road_loop[(index + 1) % road_loop.len()];
+        let segment_x = end.x - start.x;
+        let segment_z = end.z - start.z;
+        let segment_len_sq = segment_x * segment_x + segment_z * segment_z;
+        let t = if segment_len_sq <= CDT_EPSILON_M * CDT_EPSILON_M {
+            0.0
+        } else {
+            (((point.x - start.x) * segment_x + (point.z - start.z) * segment_z) / segment_len_sq)
+                .clamp(0.0, 1.0)
+        };
+        let closest_x = start.x + segment_x * t;
+        let closest_z = start.z + segment_z * t;
+        let dx = point.x - closest_x;
+        let dz = point.z - closest_z;
+        let distance_m = (dx * dx + dz * dz).sqrt();
+        if distance_m < closest_distance_m {
+            closest_distance_m = distance_m;
+            closest_height_m =
+                (f64::from(start.height_m) + f64::from(end.height_m - start.height_m) * t) as f32;
+        }
+    }
+
+    closest_distance_m
+        .is_finite()
+        .then_some((closest_distance_m, closest_height_m))
+}
+
+fn triangle_edges(triangle: &[usize; 3]) -> [(usize, usize); 3] {
+    [
+        normalize_edge(triangle[0], triangle[1]),
+        normalize_edge(triangle[1], triangle[2]),
+        normalize_edge(triangle[2], triangle[0]),
+    ]
+}
+
+fn terrain_face_sample(points: [TerrainCdtVertex; 3]) -> TerrainCdtFaceSample {
+    let mut min_x = points[0].x;
+    let mut min_z = points[0].z;
+    let mut max_x = points[0].x;
+    let mut max_z = points[0].z;
+    let mut min_y_m = points[0].height_m;
+    let mut max_y_m = points[0].height_m;
+    let mut max_y_delta_m = 0.0_f32;
+    let max_slope_ratio = terrain_face_plane_slope_ratio(points);
+
+    for point in points {
+        min_x = min_x.min(point.x);
+        min_z = min_z.min(point.z);
+        max_x = max_x.max(point.x);
+        max_z = max_z.max(point.z);
+        min_y_m = min_y_m.min(point.height_m);
+        max_y_m = max_y_m.max(point.height_m);
+    }
+
+    for edge_index in 0..3 {
+        let start = points[edge_index];
+        let end = points[(edge_index + 1) % 3];
+        let y_delta_m = (end.height_m - start.height_m).abs();
+        max_y_delta_m = max_y_delta_m.max(y_delta_m);
+    }
+
+    TerrainCdtFaceSample {
+        centroid: centroid(points),
+        min_x,
+        min_z,
+        max_x,
+        max_z,
+        min_y_m,
+        max_y_m,
+        max_y_delta_m,
+        max_slope_ratio,
+    }
+}
+
+fn terrain_face_plane_slope_ratio(points: [TerrainCdtVertex; 3]) -> f32 {
+    let ax = points[1].x - points[0].x;
+    let ay = f64::from(points[1].height_m - points[0].height_m);
+    let az = points[1].z - points[0].z;
+    let bx = points[2].x - points[0].x;
+    let by = f64::from(points[2].height_m - points[0].height_m);
+    let bz = points[2].z - points[0].z;
+
+    let normal_x = ay * bz - az * by;
+    let normal_y = az * bx - ax * bz;
+    let normal_z = ax * by - ay * bx;
+    let horizontal_normal = (normal_x * normal_x + normal_z * normal_z).sqrt();
+    if horizontal_normal <= CDT_EPSILON_M * CDT_EPSILON_M {
+        return 0.0;
+    }
+    if normal_y.abs() <= CDT_EPSILON_M * CDT_EPSILON_M {
+        return 1_000_000.0;
+    }
+    (horizontal_normal / normal_y.abs()) as f32
+}
+
+fn insert_road_seam_face_sample(
+    samples: &mut Vec<TerrainCdtFaceSample>,
+    sample: TerrainCdtFaceSample,
+) {
+    samples.push(sample);
+    samples.sort_by(|a, b| {
+        b.max_slope_ratio
+            .total_cmp(&a.max_slope_ratio)
+            .then_with(|| b.max_y_delta_m.total_cmp(&a.max_y_delta_m))
+            .then_with(|| a.centroid.x.total_cmp(&b.centroid.x))
+            .then_with(|| a.centroid.z.total_cmp(&b.centroid.z))
+    });
+    samples.truncate(MAX_ROAD_SEAM_FACE_SAMPLES);
+}
+
 fn normalize_edge(a: usize, b: usize) -> (usize, usize) {
     if a < b { (a, b) } else { (b, a) }
 }
@@ -642,6 +886,47 @@ mod tests {
             canonical_triangle_set(&second.triangles)
         );
         assert_eq!(first.stats, second.stats);
+    }
+
+    #[test]
+    fn cdt_skips_source_samples_that_would_make_oversteep_road_tie_ins() {
+        let road = vec![
+            TerrainCdtVertex::new(3.0, 0.12, 3.0),
+            TerrainCdtVertex::new(7.0, 0.12, 3.0),
+            TerrainCdtVertex::new(7.0, 0.12, 7.0),
+            TerrainCdtVertex::new(3.0, 0.12, 7.0),
+        ];
+        let input = TerrainCdtInput::new(
+            TerrainCdtPatch::new(0.0, 0.0, 10.0, 10.0, [0.0; 4]),
+            vec![TerrainCdtRoadLoop::new(3, 0, road)],
+            vec![
+                TerrainCdtVertex::new(5.0, 0.0, 2.99),
+                TerrainCdtVertex::new(2.99, 0.0, 5.0),
+                TerrainCdtVertex::new(7.01, 0.0, 5.0),
+                TerrainCdtVertex::new(5.0, 0.0, 7.01),
+            ],
+        );
+
+        let mesh = build_road_touched_terrain_patch(input)
+            .expect("Spade should triangulate a raised road seam");
+
+        assert_eq!(
+            mesh.stats.input_vertices, 8,
+            "near-road source samples should be omitted from the tie-in input"
+        );
+        assert!(mesh.stats.road_seam_faces > 0);
+        assert_eq!(mesh.stats.road_seam_steep_faces, 0);
+        assert!(mesh.stats.road_seam_max_y_delta_m >= 0.12);
+        assert!(
+            mesh.stats.road_seam_max_slope_ratio <= MAX_TERRAIN_TIE_IN_SLOPE_RATIO + 0.0001,
+            "terrain tie-in should not exceed the configured slope budget; stats={:?}",
+            mesh.stats
+        );
+        assert!(!mesh.road_seam_face_samples.is_empty());
+        assert!(
+            mesh.road_seam_face_samples[0].max_slope_ratio
+                >= mesh.stats.road_seam_max_slope_ratio - 0.0001
+        );
     }
 
     #[test]

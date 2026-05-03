@@ -64,6 +64,7 @@ const PATCH_MESH_LOD_NEAR_DISTANCE_M := 2000.0
 const PATCH_MESH_LOD_MID_DISTANCE_M := 5000.0
 const PATCH_MESH_LOD_FAR_DISTANCE_M := 12000.0
 const ROAD_LOCKED_PATCH_TARGET_RENDER_STEP_M := 2.0
+const ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT := 4
 
 @onready var simulation_node = $"../SimulationNode"
 
@@ -708,8 +709,15 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 		var cdt_accepted_faces: int = int(patch_data.get("terrain_cdt_accepted_faces", 0))
 		var cdt_rejected_road_faces: int = int(patch_data.get("terrain_cdt_rejected_road_faces", 0))
 		var cdt_emitted_faces: int = int(patch_data.get("terrain_cdt_emitted_faces", 0))
+		var cdt_max_face_y_delta_m: float = float(patch_data.get("terrain_cdt_max_face_y_delta_m", 0.0))
+		var cdt_max_face_slope_ratio: float = float(patch_data.get("terrain_cdt_max_face_slope_ratio", 0.0))
+		var cdt_road_seam_faces: int = int(patch_data.get("terrain_cdt_road_seam_faces", 0))
+		var cdt_road_seam_steep_faces: int = int(patch_data.get("terrain_cdt_road_seam_steep_faces", 0))
+		var cdt_road_seam_max_y_delta_m: float = float(patch_data.get("terrain_cdt_road_seam_max_y_delta_m", 0.0))
+		var cdt_road_seam_max_slope_ratio: float = float(patch_data.get("terrain_cdt_road_seam_max_slope_ratio", 0.0))
+		var cdt_road_seam_samples: String = _road_geometry_terrain_seam_samples_label(patch_data)
 		lines.append(
-			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d cdt_status=%s cdt_error=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d"
+			"terrain_patch key=(%d,%d) resident=%s road_locked=%s mesh=\"%s\" sample=%dx%d texture=%dx%d world_origin=(%.3f,%.3f) world_size=(%.3f,%.3f) height_min=%.3f height_max=%.3f clip_polys=%d clip_points=%d clip_area=%.3f clip_bounds=%s max_clip_bbox=(%.3f,%.3f) baked_vertices=%d cdt_status=%s cdt_error=%s cdt_input_vertices=%d cdt_constraints=%d cdt_road_constraints=%d cdt_preserved_road_constraints=%d cdt_invalid_constraints=%d cdt_accepted_faces=%d cdt_rejected_road_faces=%d cdt_emitted_faces=%d cdt_face_max_y_delta=%.3f cdt_face_max_slope=%.3f cdt_road_seam_faces=%d cdt_road_seam_steep=%d cdt_road_seam_max_y_delta=%.3f cdt_road_seam_max_slope=%.3f cdt_road_seam_samples=%s"
 			% [
 				key.x,
 				key.y,
@@ -743,6 +751,13 @@ func road_geometry_debug_patch_lines(flat_pairs: PackedInt32Array) -> Array[Stri
 				cdt_accepted_faces,
 				cdt_rejected_road_faces,
 				cdt_emitted_faces,
+				cdt_max_face_y_delta_m,
+				cdt_max_face_slope_ratio,
+				cdt_road_seam_faces,
+				cdt_road_seam_steep_faces,
+				cdt_road_seam_max_y_delta_m,
+				cdt_road_seam_max_slope_ratio,
+				cdt_road_seam_samples,
 			]
 		)
 	return lines
@@ -1227,6 +1242,52 @@ func _road_geometry_clip_stats(patch_data: Dictionary) -> Dictionary:
 	stats["max_bbox_x"] = max_bbox_x
 	stats["max_bbox_z"] = max_bbox_z
 	return stats
+
+func _road_geometry_terrain_seam_samples_label(patch_data: Dictionary) -> String:
+	if not patch_data.has("terrain_cdt_road_seam_sample_centroids"):
+		return "[]"
+	var centroids: PackedVector3Array = (
+		patch_data["terrain_cdt_road_seam_sample_centroids"] as PackedVector3Array
+	)
+	var bounds: PackedVector3Array = (
+		patch_data.get("terrain_cdt_road_seam_sample_bounds", PackedVector3Array())
+		as PackedVector3Array
+	)
+	var metrics: PackedFloat32Array = (
+		patch_data.get("terrain_cdt_road_seam_sample_metrics", PackedFloat32Array())
+		as PackedFloat32Array
+	)
+	var sample_count: int = mini(
+		centroids.size(),
+		mini(int(bounds.size() / 2), int(metrics.size() / 2))
+	)
+	sample_count = mini(sample_count, ROAD_GEOMETRY_TERRAIN_SEAM_SAMPLE_LOG_LIMIT)
+	if sample_count <= 0:
+		return "[]"
+	var parts: Array[String] = []
+	for index in range(sample_count):
+		var centroid: Vector3 = centroids[index]
+		var bounds_min: Vector3 = bounds[index * 2]
+		var bounds_max: Vector3 = bounds[index * 2 + 1]
+		var y_delta_m: float = metrics[index * 2]
+		var slope_ratio: float = metrics[index * 2 + 1]
+		parts.append(
+			"{centroid=(%.3f,%.3f,%.3f),bounds=[(%.3f,%.3f,%.3f)..(%.3f,%.3f,%.3f)],y_delta=%.3f,slope=%.3f}"
+			% [
+				centroid.x,
+				centroid.y,
+				centroid.z,
+				bounds_min.x,
+				bounds_min.y,
+				bounds_min.z,
+				bounds_max.x,
+				bounds_max.y,
+				bounds_max.z,
+				y_delta_m,
+				slope_ratio,
+			]
+		)
+	return "[" + ", ".join(parts) + "]"
 
 func _road_geometry_baked_vertex_count(patch_data: Dictionary) -> int:
 	if not _patch_has_baked_terrain_mesh(patch_data):
