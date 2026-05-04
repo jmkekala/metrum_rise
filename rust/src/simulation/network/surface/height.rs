@@ -192,12 +192,15 @@ impl NodeHeightSolution {
         let global_points = global_ownership_points(ownership);
 
         for region in &ownership.owned_regions {
-            regions.push(heighted_region(
+            let region = heighted_region(
                 region,
                 &fields,
                 &boundary_fields,
                 &global_points,
-            )?);
+            )?;
+            if !region.shape.is_empty() {
+                regions.push(region);
+            }
         }
         if ownership.piece_kind == RoadSurfaceVisualNodePieceKind::Bend {
             constrain_explicit_material_seam_heights(&mut regions, ownership.piece_kind);

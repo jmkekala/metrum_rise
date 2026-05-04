@@ -412,7 +412,7 @@ fn owned_regions_from_domains(
 
         for shape in &domain_shapes {
             let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
-            if owned_shape_is_numeric_dust(shape, area_m2) {
+            if owned_shape_is_discardable_numeric_dust(shape, area_m2, owner, rail_constraints) {
                 continue;
             }
             regions.push(NodeBooleanOwnedRegion {
@@ -480,7 +480,7 @@ fn residual_regions_from_domains(
 
         for shape in &domain_shapes {
             let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
-            if owned_shape_is_numeric_dust(shape, area_m2) {
+            if owned_shape_is_discardable_numeric_dust(shape, area_m2, owner, rail_constraints) {
                 continue;
             }
             regions.push(NodeBooleanOwnedRegion {
@@ -621,8 +621,68 @@ fn reject_residual(
     }
 }
 
-fn owned_shape_is_numeric_dust(shape: &NodeOverlayShape, area_m2: f32) -> bool {
+fn owned_shape_is_discardable_numeric_dust(
+    shape: &NodeOverlayShape,
+    area_m2: f32,
+    owner: NodeBandOwner,
+    rail_constraints: &[NodeRailConstraint],
+) -> bool {
+    let protected_constraints = protected_constraints_for_owner(owner, rail_constraints);
     area_m2 <= RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(shape)
+        && !shape_touches_protected_boundary_constraint(shape, &protected_constraints)
+}
+
+fn shape_touches_protected_boundary_constraint(
+    shape: &NodeOverlayShape,
+    protected_constraints: &[&NodeRailConstraint],
+) -> bool {
+    for contour in shape {
+        for &point in contour {
+            let point = overlay_point_key(point);
+            if protected_constraints.iter().any(|constraint| {
+                constraint.points_xz.windows(2).any(|segment| {
+                    point_key_lies_on_segment(
+                        point,
+                        road_point_key(segment[0]),
+                        road_point_key(segment[1]),
+                    )
+                })
+            }) {
+                return true;
+            }
+        }
+        if contour.len() < 2 {
+            continue;
+        }
+        for edge_index in 0..contour.len() {
+            let start = contour[edge_index];
+            let end = contour[(edge_index + 1) % contour.len()];
+            if protected_constraints
+                .iter()
+                .any(|constraint| edge_lies_on_constraint(start, end, constraint))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn protected_constraints_for_owner(
+    owner: NodeBandOwner,
+    rail_constraints: &[NodeRailConstraint],
+) -> Vec<&NodeRailConstraint> {
+    rail_constraints
+        .iter()
+        .filter(move |constraint| constraint_applies_to_owner(constraint, owner))
+        .filter(|constraint| {
+            matches!(
+                constraint.kind,
+                NodeRailConstraintKind::SpanHandoff { .. }
+                    | NodeRailConstraintKind::FootprintSeam { .. }
+            )
+        })
+        .collect()
 }
 
 fn seam_constraints_for_shape(
@@ -1401,6 +1461,48 @@ mod tests {
         assert!(matches!(
             error,
             NodeBooleanOwnershipError::UnownedNonRoadResidual { .. }
+        ));
+    }
+
+    #[test]
+    fn protected_span_handoff_dust_stays_owned() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 3);
+        let shape = vec![vec![[0.0, 0.0], [0.0001, 0.0], [0.0, 0.0001]]];
+        let constraints = vec![NodeRailConstraint {
+            constraint_index: 7,
+            kind: NodeRailConstraintKind::SpanHandoff {
+                kind: RoadSurfaceBandKind::Sidewalk,
+            },
+            source_mouth_order_index: 0,
+            source_band_index: Some(0),
+            source_boundary_index: None,
+            owner: Some(owner),
+            opposite_owner: None,
+            points_xz: vec![RoadVec2::new(0.0, 0.0), RoadVec2::new(0.0001, 0.0)],
+            height_sources: Vec::new(),
+        }];
+
+        assert!(
+            !owned_shape_is_discardable_numeric_dust(
+                &shape,
+                RoadSurfaceSystem::overlay_shape_area_m2(&shape),
+                owner,
+                &constraints,
+            ),
+            "span-handoff dust must remain an owned top region so mouth/skirt seams cannot point at missing top mesh"
+        );
+    }
+
+    #[test]
+    fn unprotected_numeric_dust_can_still_be_discarded() {
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 3);
+        let shape = vec![vec![[0.0, 0.0], [0.0001, 0.0], [0.0, 0.0001]]];
+
+        assert!(owned_shape_is_discardable_numeric_dust(
+            &shape,
+            RoadSurfaceSystem::overlay_shape_area_m2(&shape),
+            owner,
+            &[],
         ));
     }
 
