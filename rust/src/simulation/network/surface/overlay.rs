@@ -413,19 +413,6 @@ impl RoadSurfaceSystem {
         Self::overlay_numeric_area_budget_m2(perimeter_m, vertex_count)
     }
 
-    pub(super) fn overlay_numeric_area_budget_for_world_loop(points_world: &[Vector3]) -> f32 {
-        if points_world.len() < 2 {
-            return NODE_OVERLAY_NUMERIC_AREA_EPS_M2;
-        }
-        let perimeter_m = points_world
-            .iter()
-            .zip(points_world.iter().cycle().skip(1))
-            .take(points_world.len())
-            .map(|(start, end)| start.distance_to(*end))
-            .sum::<f32>();
-        Self::overlay_numeric_area_budget_m2(perimeter_m, points_world.len())
-    }
-
     fn overlay_numeric_area_budget_m2(perimeter_m: f32, vertex_count: usize) -> f32 {
         let boundary_strip_m2 = perimeter_m * NODE_OVERLAY_NUMERIC_DUST_WIDTH_M;
         let vertex_floor_m2 = vertex_count.max(1) as f32 * NODE_OVERLAY_MIN_AREA_M2;

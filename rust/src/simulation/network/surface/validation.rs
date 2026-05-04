@@ -2,7 +2,9 @@
 
 #![allow(dead_code)]
 
-use super::arrangement::{NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError};
+use super::arrangement::{
+    NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError, NodeArrangementKey,
+};
 use super::height::NodeHeightSourceError;
 use super::ownership::{
     NodeBooleanOwnershipError, NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
@@ -125,6 +127,14 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         end_x_mm: i64,
         end_z_mm: i64,
         reason: NodeSeamConstraintFailureReason,
+    },
+    MissingOuterBoundaryOwner {
+        owner: RoadSurfaceBandKind,
+        owner_index: usize,
+        start_x_mm: i64,
+        start_z_mm: i64,
+        end_x_mm: i64,
+        end_z_mm: i64,
     },
     BackendFailure {
         reason: &'static str,
@@ -377,6 +387,30 @@ impl NodeValidationReport {
             stage: NodeGeometryStage::Validation,
             backend: NodeGeometryBackend::Parry2d,
             kind: NodeGeometryDiagnosticKind::BackendFailure { reason },
+        })
+    }
+
+    pub(crate) fn from_missing_outer_boundary_owner(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        owner: RoadSurfaceBandKind,
+        owner_index: usize,
+        start: NodeArrangementKey,
+        end: NodeArrangementKey,
+    ) -> Self {
+        Self::single_diagnostic(NodeGeometryDiagnostic {
+            node_id,
+            piece_kind,
+            stage: NodeGeometryStage::Validation,
+            backend: NodeGeometryBackend::Parry2d,
+            kind: NodeGeometryDiagnosticKind::MissingOuterBoundaryOwner {
+                owner,
+                owner_index,
+                start_x_mm: start.x_mm(),
+                start_z_mm: start.z_mm(),
+                end_x_mm: end.x_mm(),
+                end_z_mm: end.z_mm(),
+            },
         })
     }
 
@@ -803,6 +837,7 @@ impl NodeGeometryDiagnosticKind {
             Self::TriangleCoverageMismatch { .. } => "triangle_coverage_mismatch",
             Self::TriangleOverlap { .. } => "triangle_overlap",
             Self::SeamConstraintFailure { .. } => "seam_constraint_failure",
+            Self::MissingOuterBoundaryOwner { .. } => "missing_outer_boundary_owner",
             Self::BackendFailure { .. } => "backend_failure",
         }
     }

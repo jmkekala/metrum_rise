@@ -118,6 +118,7 @@ pub(crate) struct NodeArrangementEdge {
     end: NodeArrangementVertexId,
     owner: NodeBandOwner,
     opposite_owner: Option<NodeBandOwner>,
+    exposed_boundary: bool,
     seam_source: NodeSeamSource,
     source_constraint_indices: Vec<usize>,
 }
@@ -352,6 +353,7 @@ impl NodeArrangement {
         end: NodeArrangementVertexId,
         owner: NodeBandOwner,
         opposite_owner: Option<NodeBandOwner>,
+        exposed_boundary: bool,
         seam_source: NodeSeamSource,
         source_constraint_indices: Vec<usize>,
     ) -> NodeArrangementEdgeId {
@@ -362,6 +364,7 @@ impl NodeArrangement {
             end,
             owner,
             opposite_owner,
+            exposed_boundary,
             seam_source,
             source_constraint_indices,
         });
@@ -424,6 +427,7 @@ impl NodeArrangement {
         let mut arrangement = Self::new(heights.node_id, heights.piece_kind);
         let mut pending_regions = Vec::with_capacity(triangulation.regions.len());
         let mut edge_owners = BTreeMap::<NodeArrangementEdgeKey, Vec<NodeBandOwner>>::new();
+        let mut edge_use_counts = BTreeMap::<NodeArrangementEdgeKey, usize>::new();
 
         for (region_index, triangulated_region) in triangulation.regions.iter().enumerate() {
             let height_region = heights
@@ -433,6 +437,7 @@ impl NodeArrangement {
             validate_region_pair(region_index, height_region, triangulated_region)?;
             let pending = arrangement.pending_region(region_index, height_region)?;
             for edge in pending.loop_edges(&arrangement.vertices) {
+                *edge_use_counts.entry(edge.key).or_default() += 1;
                 edge_owners
                     .entry(edge.key)
                     .and_modify(|owners| merge_sorted_unique(owners, vec![pending.owner]))
@@ -490,6 +495,7 @@ impl NodeArrangement {
                     edge.end,
                     pending.owner,
                     opposite_owner,
+                    edge_use_counts.get(&edge.key).copied() == Some(1),
                     seam_source,
                     source_constraint_indices,
                 ));
@@ -640,6 +646,28 @@ impl NodeArrangementVertex {
 
     pub(crate) fn height_m(&self) -> f64 {
         self.height_m
+    }
+}
+
+impl NodeArrangementEdge {
+    pub(crate) fn start(&self) -> NodeArrangementVertexId {
+        self.start
+    }
+
+    pub(crate) fn end(&self) -> NodeArrangementVertexId {
+        self.end
+    }
+
+    pub(crate) fn owner(&self) -> NodeBandOwner {
+        self.owner
+    }
+
+    pub(crate) fn opposite_owner(&self) -> Option<NodeBandOwner> {
+        self.opposite_owner
+    }
+
+    pub(crate) fn is_exposed_boundary(&self) -> bool {
+        self.exposed_boundary
     }
 }
 
