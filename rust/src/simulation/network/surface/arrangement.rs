@@ -61,7 +61,7 @@ pub(crate) enum NodeHeightSource {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum NodeSeamSource {
     SpanHandoff {
         edge_idx: usize,
@@ -668,6 +668,10 @@ impl NodeArrangementEdge {
 
     pub(crate) fn is_exposed_boundary(&self) -> bool {
         self.exposed_boundary
+    }
+
+    pub(crate) fn seam_source(&self) -> NodeSeamSource {
+        self.seam_source
     }
 }
 

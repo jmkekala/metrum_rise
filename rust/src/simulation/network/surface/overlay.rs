@@ -5,7 +5,7 @@ use super::{
     NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, NodeOverlayPoint, NodeOverlayPointKey,
     NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M,
+    SAMPLE_EPSILON_M, edge::CURB_BAND_WIDTH_M,
 };
 use godot::prelude::Vector3;
 use i_overlay::core::fill_rule::FillRule;
@@ -17,6 +17,7 @@ use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 
 // Overlay boolean operations quantize coordinates to millimetres for deterministic keys.
 const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
+const TERRAIN_CLIP_HAIRPIN_BASE_TOLERANCE_M: f64 = 0.02;
 type NodeIntContour = Vec<IntPoint>;
 type NodeIntShape = Vec<NodeIntContour>;
 type NodeIntShapes = Vec<NodeIntShape>;
@@ -516,6 +517,7 @@ impl RoadSurfaceSystem {
         shape_index: usize,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Option<Vec<Vector3>> {
+        let contour = Self::compact_overlay_contour_by_key(contour);
         if contour.len() < 3 {
             return None;
         }
@@ -570,6 +572,26 @@ impl RoadSurfaceSystem {
             ));
         }
         Some(points)
+    }
+
+    fn compact_overlay_contour_by_key(contour: &NodeOverlayContour) -> NodeOverlayContour {
+        let mut compact = Vec::with_capacity(contour.len());
+        for &point in contour {
+            if compact
+                .last()
+                .is_none_or(|last| !overlay_points_same_for_boundary(*last, point))
+            {
+                compact.push(point);
+            }
+        }
+        while compact.len() >= 2
+            && overlay_points_same_for_boundary(*compact.first().unwrap(), *compact.last().unwrap())
+        {
+            compact.pop();
+        }
+        remove_repeated_overlay_point_spurs(&mut compact);
+        remove_overlay_hairpin_spikes(&mut compact);
+        compact
     }
 
     fn terrain_clip_source_edges_from_boundary_loops(
@@ -893,6 +915,93 @@ impl RoadSurfaceSystem {
 
 fn interpolate_height_f64(start_y: f32, end_y: f32, t: f64) -> f32 {
     (f64::from(start_y) + f64::from(end_y - start_y) * t) as f32
+}
+
+fn overlay_points_same_for_boundary(a: NodeOverlayPoint, b: NodeOverlayPoint) -> bool {
+    let dx = a[0] - b[0];
+    let dz = a[1] - b[1];
+    dx * dx + dz * dz <= f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M)
+}
+
+fn remove_repeated_overlay_point_spurs(points: &mut NodeOverlayContour) {
+    while points.len() >= 3 {
+        let Some((first, second)) = first_repeated_overlay_point_pair(points) else {
+            break;
+        };
+        let cycle = points[first..second].to_vec();
+        let mut remainder = Vec::with_capacity(points.len() - (second - first));
+        remainder.extend_from_slice(&points[..=first]);
+        remainder.extend_from_slice(&points[second + 1..]);
+
+        let cycle_area = overlay_contour_area_local(&cycle).abs();
+        let remainder_area = overlay_contour_area_local(&remainder).abs();
+        if remainder.len() >= 3 && remainder_area >= cycle_area {
+            *points = remainder;
+        } else if cycle.len() >= 3 {
+            *points = cycle;
+        } else {
+            break;
+        }
+    }
+}
+
+fn first_repeated_overlay_point_pair(points: &NodeOverlayContour) -> Option<(usize, usize)> {
+    for first in 0..points.len() {
+        for second in first + 2..points.len() {
+            if first == 0 && second + 1 == points.len() {
+                continue;
+            }
+            if overlay_points_same_for_boundary(points[first], points[second]) {
+                return Some((first, second));
+            }
+        }
+    }
+    None
+}
+
+fn overlay_contour_area_local(contour: &NodeOverlayContour) -> f64 {
+    if contour.len() < 3 {
+        return 0.0;
+    }
+    let mut signed_area = 0.0;
+    for index in 0..contour.len() {
+        let current = contour[index];
+        let next = contour[(index + 1) % contour.len()];
+        signed_area += current[0] * next[1] - next[0] * current[1];
+    }
+    signed_area * 0.5
+}
+
+fn remove_overlay_hairpin_spikes(points: &mut NodeOverlayContour) {
+    let max_base_m = f64::from(CURB_BAND_WIDTH_M) + TERRAIN_CLIP_HAIRPIN_BASE_TOLERANCE_M;
+    while points.len() >= 3 {
+        let mut removed = false;
+        let len = points.len();
+        for index in 0..len {
+            let prev = if index == 0 { len - 1 } else { index - 1 };
+            let next = if index + 1 == len { 0 } else { index + 1 };
+            let base_m = overlay_point_distance_m(points[prev], points[next]);
+            let side_a_m = overlay_point_distance_m(points[prev], points[index]);
+            let side_b_m = overlay_point_distance_m(points[index], points[next]);
+            if base_m <= max_base_m
+                && side_a_m.min(side_b_m) >= max_base_m * 4.0
+                && side_a_m.max(side_b_m) >= 1.0
+            {
+                points.remove(index);
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            break;
+        }
+    }
+}
+
+fn overlay_point_distance_m(a: NodeOverlayPoint, b: NodeOverlayPoint) -> f64 {
+    let dx = a[0] - b[0];
+    let dz = a[1] - b[1];
+    (dx * dx + dz * dz).sqrt()
 }
 
 fn interpolate_overlay_point(

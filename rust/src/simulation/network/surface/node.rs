@@ -3,10 +3,11 @@
 use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
     NODE_OVERLAY_MIN_AREA_M2, NodeOwnedRegion, OrderedIncidentPieceMouth, RoadSurfaceBandKind,
-    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipLoop,
-    RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
-    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
-    arrangement::{NodeArrangement, NodeArrangementKey, NodeBandOwner},
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
+    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    arrangement::{NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeSeamSource},
+    edge::CURB_BAND_WIDTH_M,
     input::NodeInputExtractionError,
     terrain_clip_edge_kind_for_band,
     validation::NodeValidationReport,
@@ -20,6 +21,8 @@ use std::collections::{BTreeMap, BTreeSet};
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const ARRANGEMENT_EDGE_SPLIT_TOLERANCE_M: f32 = 0.02;
 const ARRANGEMENT_EDGE_SPLIT_HEIGHT_TOLERANCE_M: f32 = 0.004;
+const ARRANGEMENT_PARALLEL_COVER_TOLERANCE_M: f32 = 0.02;
+const ARRANGEMENT_HEIGHT_COVER_TOLERANCE_M: f32 = 0.004;
 
 #[derive(Clone, Copy)]
 struct ArrangementBoundarySegment {
@@ -28,17 +31,26 @@ struct ArrangementBoundarySegment {
     start: Vector3,
     end: Vector3,
     owner: NodeBandOwner,
+    seam_source: NodeSeamSource,
 }
 
 #[derive(Clone, Copy)]
 struct ArrangementCanonicalBoundaryEdge {
     start: Vector3,
     end: Vector3,
-    start_point_key: ArrangementBoundaryPointKey,
-    end_point_key: ArrangementBoundaryPointKey,
     start_key: NodeArrangementKey,
     end_key: NodeArrangementKey,
     owner: NodeBandOwner,
+    seam_source: NodeSeamSource,
+}
+
+#[derive(Clone, Copy)]
+struct ArrangementTerrainClipSourceSegment {
+    start: Vector3,
+    end: Vector3,
+    owner: NodeBandOwner,
+    seam_source: NodeSeamSource,
+    kind: RoadSurfaceTerrainClipEdgeKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -338,11 +350,12 @@ impl RoadSurfaceSystem {
         let canonical_segments = canonical_edges
             .iter()
             .map(|edge| ArrangementBoundarySegment {
-                start_key: edge.start_point_key,
-                end_key: edge.end_point_key,
+                start_key: ArrangementBoundaryPointKey::from_world(edge.start),
+                end_key: ArrangementBoundaryPointKey::from_world(edge.end),
                 start: edge.start,
                 end: edge.end,
                 owner: edge.owner,
+                seam_source: edge.seam_source,
             })
             .collect::<Vec<_>>();
 
@@ -377,11 +390,10 @@ impl RoadSurfaceSystem {
             edges.push(ArrangementCanonicalBoundaryEdge {
                 start,
                 end,
-                start_point_key,
-                end_point_key,
                 start_key,
                 end_key,
                 owner: edge.owner(),
+                seam_source: edge.seam_source(),
             });
         }
         if edges.is_empty() {
@@ -486,20 +498,24 @@ impl RoadSurfaceSystem {
     ) -> Vec<RoadSurfaceTerrainClipLoop> {
         let mut loops = Vec::new();
         for canonical_loop in canonical_loops {
-            let points = boundary_start_points_from_segment_loop(canonical_loop);
-            if points.len() < 3
-                || Self::signed_polygon_area_xz(&points).abs() <= NODE_OVERLAY_MIN_AREA_M2
-            {
+            let (mut points, mut source_edges) =
+                terrain_clip_boundary_points_and_source_edges_from_segments(canonical_loop);
+            if points.len() < 3 {
                 continue;
             }
-            let source_edges = canonical_loop
-                .iter()
-                .map(|segment| RoadSurfaceTerrainClipSourceEdge {
-                    start: segment.start,
-                    end: segment.end,
-                    kind: terrain_clip_edge_kind_for_band(segment.owner.kind()),
-                })
-                .collect::<Vec<_>>();
+            let signed_area = Self::signed_polygon_area_xz(&points);
+            if signed_area.abs() <= NODE_OVERLAY_MIN_AREA_M2 {
+                continue;
+            }
+            if signed_area < 0.0 {
+                // Terrain overlay uses positive-fill contours; arrangement traversal direction
+                // must not decide whether an owner seam reaches the terrain CDT.
+                points.reverse();
+                source_edges.reverse();
+                for edge in &mut source_edges {
+                    std::mem::swap(&mut edge.start, &mut edge.end);
+                }
+            }
             loops.push(RoadSurfaceTerrainClipLoop {
                 points_world: points,
                 source_edges,
@@ -1037,6 +1053,7 @@ fn oriented_arrangement_boundary_segment(
             start: segment.end,
             end: segment.start,
             owner: segment.owner,
+            seam_source: segment.seam_source,
         });
     }
     None
@@ -1047,6 +1064,168 @@ fn arrangement_boundary_point_same_xz(
     b: ArrangementBoundaryPointKey,
 ) -> bool {
     a.x_mm == b.x_mm && a.z_mm == b.z_mm
+}
+
+fn terrain_clip_boundary_points_and_source_edges_from_segments(
+    segments: &[ArrangementBoundarySegment],
+) -> (Vec<Vector3>, Vec<RoadSurfaceTerrainClipSourceEdge>) {
+    let source_segments = segments
+        .iter()
+        .map(|segment| ArrangementTerrainClipSourceSegment {
+            start: segment.start,
+            end: segment.end,
+            owner: segment.owner,
+            seam_source: segment.seam_source,
+            kind: terrain_clip_edge_kind_for_band(segment.owner.kind()),
+        })
+        .collect::<Vec<_>>();
+
+    let filtered = source_segments
+        .iter()
+        .copied()
+        .filter(|segment| {
+            // Lower material contacts are not terrain seams when an explicit non-carriageway
+            // arrangement edge already covers the same interval at the solved top height.
+            !arrangement_source_is_lower_material_contact(*segment)
+                || !arrangement_source_is_covered_by_outer_top(*segment, &source_segments)
+        })
+        .collect::<Vec<_>>();
+    let points = filtered.iter().map(|segment| segment.start).collect();
+    let source_edges = filtered
+        .iter()
+        .map(|segment| RoadSurfaceTerrainClipSourceEdge {
+            start: segment.start,
+            end: segment.end,
+            kind: segment.kind,
+        })
+        .collect();
+    (points, source_edges)
+}
+
+fn arrangement_source_is_lower_material_contact(
+    segment: ArrangementTerrainClipSourceSegment,
+) -> bool {
+    if segment.owner.kind() == RoadSurfaceBandKind::Carriageway {
+        return true;
+    }
+    segment.owner.kind() == RoadSurfaceBandKind::CurbOrShoulder
+        && matches!(
+            segment.seam_source,
+            NodeSeamSource::AsphaltCurbContact { .. } | NodeSeamSource::AsphaltBoundary { .. }
+        )
+}
+
+fn arrangement_source_is_covered_by_outer_top(
+    segment: ArrangementTerrainClipSourceSegment,
+    source_segments: &[ArrangementTerrainClipSourceSegment],
+) -> bool {
+    let mut intervals = source_segments
+        .iter()
+        .copied()
+        .filter(|candidate| arrangement_source_can_cover_lower(*candidate, segment))
+        .filter_map(|candidate| arrangement_source_overlap_interval(segment, candidate))
+        .collect::<Vec<_>>();
+    if intervals.is_empty() {
+        return false;
+    }
+
+    intervals.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut covered_end = 0.0_f32;
+    for (start, end) in intervals {
+        if start > covered_end + SAMPLE_EPSILON_M {
+            return false;
+        }
+        covered_end = covered_end.max(end);
+        if covered_end >= 1.0 - SAMPLE_EPSILON_M {
+            return true;
+        }
+    }
+    false
+}
+
+fn arrangement_source_overlap_interval(
+    segment: ArrangementTerrainClipSourceSegment,
+    candidate: ArrangementTerrainClipSourceSegment,
+) -> Option<(f32, f32)> {
+    let candidate_start_t =
+        boundary_line_parameter_xz(candidate.start, segment.start, segment.end)?;
+    let candidate_end_t = boundary_line_parameter_xz(candidate.end, segment.start, segment.end)?;
+    let start = candidate_start_t.min(candidate_end_t).max(0.0);
+    let end = candidate_start_t.max(candidate_end_t).min(1.0);
+    if end - start <= SAMPLE_EPSILON_M {
+        return None;
+    }
+    if !candidate_covers_lower_heights(
+        segment,
+        candidate,
+        candidate_start_t,
+        candidate_end_t,
+        start,
+    ) || !candidate_covers_lower_heights(
+        segment,
+        candidate,
+        candidate_start_t,
+        candidate_end_t,
+        end,
+    ) {
+        return None;
+    }
+    (end - start > SAMPLE_EPSILON_M).then_some((start, end))
+}
+
+fn boundary_line_parameter_xz(point: Vector3, start: Vector3, end: Vector3) -> Option<f32> {
+    let segment = Vector2::new(end.x - start.x, end.z - start.z);
+    let length_squared = segment.length_squared();
+    if length_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+        return None;
+    }
+    let offset = Vector2::new(point.x - start.x, point.z - start.z);
+    let length = length_squared.sqrt();
+    let max_offset_m = CURB_BAND_WIDTH_M + ARRANGEMENT_PARALLEL_COVER_TOLERANCE_M;
+    if (offset.x * segment.y - offset.y * segment.x).abs() > max_offset_m * length {
+        return None;
+    }
+    Some(offset.dot(segment) / length_squared)
+}
+
+fn arrangement_source_can_cover_lower(
+    candidate: ArrangementTerrainClipSourceSegment,
+    lower: ArrangementTerrainClipSourceSegment,
+) -> bool {
+    if candidate.owner.kind() == RoadSurfaceBandKind::Carriageway {
+        return false;
+    }
+    !arrangement_sources_same_xz(candidate, lower)
+}
+
+fn arrangement_sources_same_xz(
+    a: ArrangementTerrainClipSourceSegment,
+    b: ArrangementTerrainClipSourceSegment,
+) -> bool {
+    let same_direction = (a.start - b.start).length_squared()
+        <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+        && (a.end - b.end).length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M;
+    let opposite_direction = (a.start - b.end).length_squared()
+        <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
+        && (a.end - b.start).length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M;
+    same_direction || opposite_direction
+}
+
+fn candidate_covers_lower_heights(
+    lower: ArrangementTerrainClipSourceSegment,
+    candidate: ArrangementTerrainClipSourceSegment,
+    candidate_start_t: f32,
+    candidate_end_t: f32,
+    lower_t: f32,
+) -> bool {
+    let candidate_span = candidate_end_t - candidate_start_t;
+    if candidate_span.abs() <= SAMPLE_EPSILON_M {
+        return false;
+    }
+    let candidate_t = ((lower_t - candidate_start_t) / candidate_span).clamp(0.0, 1.0);
+    let lower_y = lower.start.y + (lower.end.y - lower.start.y) * lower_t;
+    let candidate_y = candidate.start.y + (candidate.end.y - candidate.start.y) * candidate_t;
+    candidate_y + ARRANGEMENT_HEIGHT_COVER_TOLERANCE_M >= lower_y
 }
 
 fn split_boundary_segment_loop_at_repeated_xz(
@@ -1102,12 +1281,6 @@ fn boundary_points_from_segment_loop(segments: &[ArrangementBoundarySegment]) ->
         points.push(segment.end);
     }
     points
-}
-
-fn boundary_start_points_from_segment_loop(
-    segments: &[ArrangementBoundarySegment],
-) -> Vec<Vector3> {
-    segments.iter().map(|segment| segment.start).collect()
 }
 
 fn uncross_boundary_loop_points(mut points: Vec<Vector3>) -> Vec<Vector3> {
