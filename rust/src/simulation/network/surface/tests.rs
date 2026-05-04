@@ -19,7 +19,6 @@ use crate::simulation::terrain::cdt::{
 };
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
-use std::collections::{BTreeMap, BTreeSet};
 
 fn test_edge(
     start_node: u32,
@@ -520,54 +519,6 @@ fn assert_all_top_shared_edges_are_height_continuous(piece: &RoadSurfaceVisualNo
         .cloned()
         .collect::<Vec<_>>();
     assert_shared_edges_are_height_continuous(&top_polygons, 0.004, "node top");
-}
-
-fn assert_outer_boundary_edges_are_noded_by_visible_top(piece: &RoadSurfaceVisualNodePiece) {
-    let top_polygons = piece
-        .road_surface_polygons
-        .iter()
-        .chain(piece.sidewalk_surface_polygons.iter())
-        .collect::<Vec<_>>();
-    let mut top_edge_counts = BTreeMap::<QuantizedXzEdgeKey, usize>::new();
-    for triangle in top_polygons
-        .iter()
-        .flat_map(|polygon| polygon.triangles_world.iter().copied())
-    {
-        for edge_index in 0..3 {
-            let Some(key) =
-                normalized_quantized_edge_key(triangle[edge_index], triangle[(edge_index + 1) % 3])
-            else {
-                continue;
-            };
-            *top_edge_counts.entry(key).or_default() += 1;
-        }
-    }
-    let top_boundary_edges = top_edge_counts
-        .into_iter()
-        .filter_map(|(key, count)| (count == 1).then_some(key))
-        .collect::<BTreeSet<_>>();
-
-    let mut outer_edges = BTreeSet::new();
-    for polygon in &piece.outer_boundary_loops {
-        for index in 0..polygon.points_world.len() {
-            let start = polygon.points_world[index];
-            let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
-            if let Some(key) = normalized_quantized_edge_key(start, end) {
-                outer_edges.insert(key);
-            }
-        }
-    }
-
-    let extra = outer_edges
-        .difference(&top_boundary_edges)
-        .take(8)
-        .copied()
-        .collect::<Vec<_>>();
-    assert!(
-        extra.is_empty(),
-        "node outer boundary must not export sparse skirt edges that are absent from the visible top mesh; extra_count={} extra_samples={extra:?}",
-        outer_edges.difference(&top_boundary_edges).count()
-    );
 }
 
 fn max_visual_triangle_slope_ratio(
@@ -2315,7 +2266,7 @@ fn editor_sized_60_degree_t_junction_width_7_compiles_node_surface() {
 }
 
 #[test]
-fn logged_flat_three_way_oblique_junction_exports_noded_outer_boundary() {
+fn logged_flat_three_way_oblique_junction_exports_arrangement_outer_boundary() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-60.311, 0.0, -3.324), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-12.773, 0.0, -3.324), NodeType::Junction);
@@ -2371,7 +2322,8 @@ fn logged_flat_three_way_oblique_junction_exports_noded_outer_boundary() {
     assert!(!piece.outer_boundary_loops.is_empty());
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_outer_boundary_edges_are_noded_by_visible_top(piece);
+    assert_outer_boundary_vertices_are_emitted_top_vertices(piece);
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert_material_triangles_do_not_overlap(piece);
 }
 
@@ -2431,7 +2383,8 @@ fn logged_current_flat_three_way_oblique_junction_keeps_curb_vertices_on_rails()
     assert!(!piece.outer_boundary_loops.is_empty());
     assert!(!piece.road_surface_polygons.is_empty());
     assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_outer_boundary_edges_are_noded_by_visible_top(piece);
+    assert_outer_boundary_vertices_are_emitted_top_vertices(piece);
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert_material_triangles_do_not_overlap(piece);
 
     let clip_polygons =
@@ -2522,7 +2475,7 @@ fn logged_elevated_three_way_oblique_junction_emits_outer_boundary_vertices() {
     assert_node_piece_has_curb_and_sidewalk_owners(piece);
     assert_material_triangles_do_not_overlap(piece);
     assert_outer_boundary_vertices_are_emitted_top_vertices(piece);
-    assert_outer_boundary_edges_are_noded_by_visible_top(piece);
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
 }
 
 #[test]
@@ -2805,7 +2758,7 @@ fn arbitrary_six_way_junction_keeps_visible_ownership_disjoint() {
 }
 
 #[test]
-fn arbitrary_five_way_junction_uses_conflict_bounded_footprint() {
+fn arbitrary_five_way_junction_rejects_noncanonical_outer_boundary() {
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(2.668, 0.0, 10.799);
     let center = graph.add_node(center_pos, NodeType::Junction);
@@ -2834,39 +2787,10 @@ fn arbitrary_five_way_junction_uses_conflict_bounded_footprint() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .expect("arbitrary five-way node must compile one conflict-bounded JunctionN piece");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-
-    let max_expected_radius = graph
-        .node_adjacency(center)
-        .iter()
-        .map(|&edge_idx| {
-            let edge = graph.edge(edge_idx);
-            let clip = if graph.get_valid_node(edge.start_node) == center {
-                edge.start_clip
-            } else {
-                edge.end_clip
-            };
-            clip.max(RoadSurfaceSystem::visual_node_handoff_limit_m(edge))
-                + RoadSurfaceSystem::visual_roadbed_half_width_m(edge)
-                + 0.25
-        })
-        .fold(0.0_f32, f32::max);
-    for point in piece
-        .outer_boundary_loops
-        .iter()
-        .flat_map(|polygon| polygon.points_world.iter())
-    {
-        let radius = Vector2::new(point.x - center_pos.x, point.z - center_pos.z).length();
-        assert!(
-            radius <= max_expected_radius,
-            "visual JunctionN footprint must stay inside the conflict-bounded handoff; point={point:?} radius={radius:.3} max={max_expected_radius:.3}"
-        );
-    }
-    assert_material_triangles_do_not_overlap(piece);
+    assert!(
+        surface.compiled_visual_node_pieces().get(&center).is_none(),
+        "outer boundary export must reject this five-way fixture instead of recovering a loop from emitted render geometry"
+    );
 }
 
 #[test]

@@ -46,12 +46,6 @@ struct ArrangementBoundaryPointKey {
     y_mm: i64,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct ArrangementBoundaryEdgeKey {
-    start: NodeArrangementKey,
-    end: NodeArrangementKey,
-}
-
 impl ArrangementBoundaryPointKey {
     fn from_world(point: Vector3) -> Self {
         Self {
@@ -66,18 +60,6 @@ impl ArrangementBoundaryPointKey {
             self.x_mm as f64 / 1000.0,
             self.z_mm as f64 / 1000.0,
         ))
-    }
-}
-
-impl ArrangementBoundaryEdgeKey {
-    fn new(a: ArrangementBoundaryPointKey, b: ArrangementBoundaryPointKey) -> Self {
-        let a = a.xz_key();
-        let b = b.xz_key();
-        if a <= b {
-            Self { start: a, end: b }
-        } else {
-            Self { start: b, end: a }
-        }
     }
 }
 
@@ -341,26 +323,15 @@ impl RoadSurfaceSystem {
     fn outer_boundary_loops_from_arrangement(
         arrangement: &NodeArrangement,
     ) -> Result<Vec<RoadSurfaceVisualPolygon>, NodeBoundaryExportError> {
-        let (canonical_segments, top_boundary_segments) =
-            Self::arrangement_outer_boundary_segment_sources(arrangement)?;
+        let canonical_segments = Self::arrangement_outer_boundary_segments(arrangement)?;
         let canonical_loops =
             Self::outer_boundary_segment_loops_from_arrangement_segments(&canonical_segments)?;
-        Self::outer_boundary_polygons_from_segment_loops(
-            &canonical_loops,
-            &top_boundary_segments,
-            arrangement.piece_kind() == RoadSurfaceVisualNodePieceKind::JunctionN,
-        )
+        Self::outer_boundary_polygons_from_segment_loops(&canonical_loops)
     }
 
-    fn arrangement_outer_boundary_segment_sources(
+    fn arrangement_outer_boundary_segments(
         arrangement: &NodeArrangement,
-    ) -> Result<
-        (
-            Vec<ArrangementBoundarySegment>,
-            Vec<ArrangementBoundarySegment>,
-        ),
-        NodeBoundaryExportError,
-    > {
+    ) -> Result<Vec<ArrangementBoundarySegment>, NodeBoundaryExportError> {
         let canonical_edges = Self::arrangement_canonical_boundary_edges(arrangement)?;
         let canonical_segments = canonical_edges
             .iter()
@@ -372,68 +343,11 @@ impl RoadSurfaceSystem {
                 owner: edge.owner,
             })
             .collect::<Vec<_>>();
-        let mut edge_counts = BTreeMap::<ArrangementBoundaryEdgeKey, usize>::new();
-        let mut top_segments = Vec::new();
-
-        for face in arrangement.faces() {
-            let Some(mut points) = Self::noded_arrangement_face_boundary(arrangement, face) else {
-                return Err(NodeBoundaryExportError::DegenerateOuterBoundaryLoop);
-            };
-            if points.len() < 3 {
-                continue;
-            }
-            if Self::signed_polygon_area_xz(&points) < 0.0 {
-                points.reverse();
-            }
-
-            for triangle in Self::triangulate_noded_arrangement_face(&points, face.owner().kind()) {
-                for edge_index in 0..3 {
-                    let start = triangle[edge_index];
-                    let end = triangle[(edge_index + 1) % 3];
-                    let start_key = ArrangementBoundaryPointKey::from_world(start);
-                    let end_key = ArrangementBoundaryPointKey::from_world(end);
-                    if start_key == end_key {
-                        continue;
-                    }
-                    let edge_key = ArrangementBoundaryEdgeKey::new(start_key, end_key);
-                    *edge_counts.entry(edge_key).or_default() += 1;
-                    top_segments.push(ArrangementBoundarySegment {
-                        start_key,
-                        end_key,
-                        start,
-                        end,
-                        owner: face.owner(),
-                    });
-                }
-            }
-        }
-
-        let mut top_boundary_segments = top_segments
-            .into_iter()
-            .filter(|segment| {
-                edge_counts
-                    .get(&ArrangementBoundaryEdgeKey::new(
-                        segment.start_key,
-                        segment.end_key,
-                    ))
-                    .copied()
-                    == Some(1)
-            })
-            .collect::<Vec<_>>();
 
         if canonical_segments.is_empty() {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
-        top_boundary_segments.sort_by(|a, b| {
-            a.start_key
-                .cmp(&b.start_key)
-                .then(a.end_key.cmp(&b.end_key))
-                .then(a.owner.kind().cmp(&b.owner.kind()))
-                .then(a.owner.owner_index().cmp(&b.owner.owner_index()))
-                .then(a.start.y.total_cmp(&b.start.y))
-                .then(a.end.y.total_cmp(&b.end.y))
-        });
-        Ok((canonical_segments, top_boundary_segments))
+        Ok(canonical_segments)
     }
 
     fn arrangement_canonical_boundary_edges(
@@ -545,47 +459,18 @@ impl RoadSurfaceSystem {
 
     fn outer_boundary_polygons_from_segment_loops(
         canonical_loops: &[Vec<ArrangementBoundarySegment>],
-        top_boundary_segments: &[ArrangementBoundarySegment],
-        allow_top_boundary_paths: bool,
     ) -> Result<Vec<RoadSurfaceVisualPolygon>, NodeBoundaryExportError> {
         let mut polygons = Vec::new();
         for canonical_loop in canonical_loops {
-            let mut points = Vec::new();
-            for &segment in canonical_loop {
-                let expanded_segments = complete_top_segments_for_canonical_segment(
-                    segment,
-                    top_boundary_segments,
-                    allow_top_boundary_paths,
-                );
-                let segment_iter: Box<dyn Iterator<Item = ArrangementBoundarySegment>> =
-                    if expanded_segments.is_empty() {
-                        Box::new(std::iter::once(segment))
-                    } else {
-                        Box::new(expanded_segments.into_iter())
-                    };
-                for expanded in segment_iter {
-                    if points.is_empty() {
-                        points.push(expanded.start);
-                    }
-                    points.push(expanded.end);
-                }
-            }
+            let points = boundary_points_from_segment_loop(canonical_loop);
             let area_m2 = Self::signed_polygon_area_xz(&points).abs();
             if area_m2 <= NODE_OVERLAY_MIN_AREA_M2 {
                 continue;
             }
             let Some(polygon) = Self::make_boundary_loop_polygon(points.clone())
-                .or_else(|| boundary_loop_polygon_after_uncrossing(points.clone()))
+                .or_else(|| boundary_loop_polygon_after_uncrossing(points))
             else {
-                if allow_top_boundary_paths {
-                    if let Some(fallback) = Self::make_boundary_loop_polygon(
-                        boundary_points_from_segment_loop(canonical_loop),
-                    ) {
-                        polygons.push(fallback);
-                        continue;
-                    }
-                }
-                continue;
+                return Err(NodeBoundaryExportError::DegenerateOuterBoundaryLoop);
             };
             polygons.push(polygon);
         }
@@ -1096,242 +981,6 @@ fn arrangement_vertex_on_triangle_edge(
     }
     let edge_height = start.y + (end.y - start.y) * t;
     ((candidate.y - edge_height).abs() <= ARRANGEMENT_EDGE_SPLIT_HEIGHT_TOLERANCE_M).then_some(t)
-}
-
-fn arrangement_key_lies_on_segment(
-    point: NodeArrangementKey,
-    start: NodeArrangementKey,
-    end: NodeArrangementKey,
-) -> bool {
-    if point == start || point == end {
-        return true;
-    }
-    if start == end {
-        return false;
-    }
-    let dx = i128::from(end.x_mm() - start.x_mm());
-    let dz = i128::from(end.z_mm() - start.z_mm());
-    let px = i128::from(point.x_mm() - start.x_mm());
-    let pz = i128::from(point.z_mm() - start.z_mm());
-    if px * dz - pz * dx != 0 {
-        return false;
-    }
-    point.x_mm() >= start.x_mm().min(end.x_mm())
-        && point.x_mm() <= start.x_mm().max(end.x_mm())
-        && point.z_mm() >= start.z_mm().min(end.z_mm())
-        && point.z_mm() <= start.z_mm().max(end.z_mm())
-}
-
-fn arrangement_boundary_segment_t(
-    point: NodeArrangementKey,
-    start: NodeArrangementKey,
-    end: NodeArrangementKey,
-) -> f64 {
-    let dx = (end.x_mm() - start.x_mm()) as f64;
-    let dz = (end.z_mm() - start.z_mm()) as f64;
-    if dx.abs() >= dz.abs() && dx.abs() > f64::EPSILON {
-        (point.x_mm() - start.x_mm()) as f64 / dx
-    } else if dz.abs() > f64::EPSILON {
-        (point.z_mm() - start.z_mm()) as f64 / dz
-    } else {
-        0.0
-    }
-}
-
-fn complete_top_segments_for_canonical_segment(
-    canonical: ArrangementBoundarySegment,
-    top_boundary_segments: &[ArrangementBoundarySegment],
-    allow_top_boundary_paths: bool,
-) -> Vec<ArrangementBoundarySegment> {
-    if !allow_top_boundary_paths {
-        return Vec::new();
-    }
-    let mut segments = top_boundary_segments
-        .iter()
-        .copied()
-        .filter(|segment| {
-            arrangement_key_lies_on_segment(
-                segment.start_key.xz_key(),
-                canonical.start_key.xz_key(),
-                canonical.end_key.xz_key(),
-            ) && arrangement_key_lies_on_segment(
-                segment.end_key.xz_key(),
-                canonical.start_key.xz_key(),
-                canonical.end_key.xz_key(),
-            )
-        })
-        .map(|segment| oriented_segment_along_canonical_segment(segment, canonical))
-        .collect::<Vec<_>>();
-    segments.sort_by(|a, b| {
-        arrangement_boundary_segment_t(
-            a.start_key.xz_key(),
-            canonical.start_key.xz_key(),
-            canonical.end_key.xz_key(),
-        )
-        .total_cmp(&arrangement_boundary_segment_t(
-            b.start_key.xz_key(),
-            canonical.start_key.xz_key(),
-            canonical.end_key.xz_key(),
-        ))
-        .then(a.end_key.cmp(&b.end_key))
-        .then(a.owner.kind().cmp(&b.owner.kind()))
-        .then(a.owner.owner_index().cmp(&b.owner.owner_index()))
-    });
-    segments.dedup_by_key(|segment| {
-        ArrangementBoundaryEdgeKey::new(segment.start_key, segment.end_key)
-    });
-    top_segments_cover_canonical_segment(canonical, &segments)
-        .then_some(segments)
-        .or_else(|| {
-            allow_top_boundary_paths
-                .then(|| top_boundary_path_between(canonical, top_boundary_segments))
-                .flatten()
-        })
-        .unwrap_or_default()
-}
-
-fn top_segments_cover_canonical_segment(
-    canonical: ArrangementBoundarySegment,
-    segments: &[ArrangementBoundarySegment],
-) -> bool {
-    let Some(first) = segments.first() else {
-        return false;
-    };
-    let Some(last) = segments.last() else {
-        return false;
-    };
-    if first.start_key.xz_key() != canonical.start_key.xz_key()
-        || last.end_key.xz_key() != canonical.end_key.xz_key()
-    {
-        return false;
-    }
-    segments
-        .windows(2)
-        .all(|pair| pair[0].end_key.xz_key() == pair[1].start_key.xz_key())
-}
-
-fn top_boundary_path_between(
-    canonical: ArrangementBoundarySegment,
-    top_boundary_segments: &[ArrangementBoundarySegment],
-) -> Option<Vec<ArrangementBoundarySegment>> {
-    let start_key = canonical.start_key;
-    let end_key = canonical.end_key;
-    if start_key == end_key {
-        return None;
-    }
-
-    let mut adjacency =
-        BTreeMap::<ArrangementBoundaryPointKey, Vec<ArrangementBoundarySegment>>::new();
-    for segment in top_boundary_segments {
-        let forward = ArrangementBoundarySegment {
-            owner: canonical.owner,
-            ..*segment
-        };
-        let reverse = ArrangementBoundarySegment {
-            start_key: segment.end_key,
-            end_key: segment.start_key,
-            start: segment.end,
-            end: segment.start,
-            owner: canonical.owner,
-        };
-        adjacency
-            .entry(forward.start_key)
-            .or_default()
-            .push(forward);
-        adjacency
-            .entry(reverse.start_key)
-            .or_default()
-            .push(reverse);
-    }
-    for segments in adjacency.values_mut() {
-        segments.sort_by(|a, b| {
-            a.end_key
-                .cmp(&b.end_key)
-                .then(a.owner.kind().cmp(&b.owner.kind()))
-                .then(a.owner.owner_index().cmp(&b.owner.owner_index()))
-        });
-    }
-
-    let mut distances = BTreeMap::<ArrangementBoundaryPointKey, f32>::new();
-    let mut previous = BTreeMap::<
-        ArrangementBoundaryPointKey,
-        (ArrangementBoundaryPointKey, ArrangementBoundarySegment),
-    >::new();
-    let mut settled = BTreeSet::<ArrangementBoundaryPointKey>::new();
-    distances.insert(start_key, 0.0);
-
-    while let Some((current_key, current_distance)) = distances
-        .iter()
-        .filter(|(key, _)| !settled.contains(key))
-        .min_by(|(key_a, distance_a), (key_b, distance_b)| {
-            distance_a.total_cmp(distance_b).then(key_a.cmp(key_b))
-        })
-        .map(|(key, distance)| (*key, *distance))
-    {
-        if current_key == end_key {
-            break;
-        }
-        settled.insert(current_key);
-        for segment in adjacency.get(&current_key).into_iter().flatten() {
-            if settled.contains(&segment.end_key) {
-                continue;
-            }
-            let length_m = Vector2::new(
-                segment.end.x - segment.start.x,
-                segment.end.z - segment.start.z,
-            )
-            .length();
-            let candidate_distance = current_distance + length_m;
-            let should_update = distances
-                .get(&segment.end_key)
-                .is_none_or(|distance| candidate_distance < *distance - SAMPLE_EPSILON_M);
-            if should_update {
-                distances.insert(segment.end_key, candidate_distance);
-                previous.insert(segment.end_key, (current_key, *segment));
-            }
-        }
-    }
-
-    distances.get(&end_key)?;
-    let mut path = Vec::new();
-    let mut cursor = end_key;
-    while cursor != start_key {
-        let (previous_key, segment) = previous.get(&cursor).copied()?;
-        path.push(segment);
-        cursor = previous_key;
-    }
-    path.reverse();
-    Some(path)
-}
-
-fn oriented_segment_along_canonical_segment(
-    segment: ArrangementBoundarySegment,
-    canonical: ArrangementBoundarySegment,
-) -> ArrangementBoundarySegment {
-    let start_t = arrangement_boundary_segment_t(
-        segment.start_key.xz_key(),
-        canonical.start_key.xz_key(),
-        canonical.end_key.xz_key(),
-    );
-    let end_t = arrangement_boundary_segment_t(
-        segment.end_key.xz_key(),
-        canonical.start_key.xz_key(),
-        canonical.end_key.xz_key(),
-    );
-    if start_t <= end_t {
-        ArrangementBoundarySegment {
-            owner: canonical.owner,
-            ..segment
-        }
-    } else {
-        ArrangementBoundarySegment {
-            start_key: segment.end_key,
-            end_key: segment.start_key,
-            start: segment.end,
-            end: segment.start,
-            owner: canonical.owner,
-        }
-    }
 }
 
 fn arrangement_boundary_segment_has_endpoint(
