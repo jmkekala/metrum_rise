@@ -1,5 +1,6 @@
 //! Deterministic overlay boolean geometry helpers for road surfaces.
 
+use super::edge::CURB_STEP_HEIGHT_M;
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NODE_OVERLAY_NUMERIC_AREA_CAP_M2, NODE_OVERLAY_NUMERIC_AREA_EPS_M2,
     NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, NodeOverlayPoint, NodeOverlayPointKey,
@@ -487,40 +488,30 @@ impl RoadSurfaceSystem {
         candidates: &[RoadSurfaceVisualPolygon],
     ) -> Option<f32> {
         let point_key = Self::overlay_point_key([f64::from(point_xz.x), f64::from(point_xz.y)]);
-        let mut vertex_heights = Vec::new();
+        let mut boundary_heights = Vec::new();
         for polygon in candidates {
             for point in &polygon.points_world {
                 if Self::overlay_point_key([f64::from(point.x), f64::from(point.z)]) == point_key {
-                    vertex_heights.push(point.y);
-                }
-            }
-            for triangle in &polygon.triangles_world {
-                for point in triangle {
-                    if Self::overlay_point_key([f64::from(point.x), f64::from(point.z)])
-                        == point_key
-                    {
-                        vertex_heights.push(point.y);
-                    }
+                    boundary_heights.push(point.y);
                 }
             }
         }
-        if !vertex_heights.is_empty() {
-            return Self::highest_height_sample(vertex_heights);
+        if !boundary_heights.is_empty() {
+            return Self::consistent_height_sample(boundary_heights);
         }
 
-        let mut edge_heights = Vec::new();
         for polygon in candidates {
             for index in 0..polygon.points_world.len() {
                 let start = polygon.points_world[index];
                 let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
                 if let Some(height) = Self::sample_height_from_candidate_edge(point_xz, start, end)
                 {
-                    edge_heights.push(height);
+                    boundary_heights.push(height);
                 }
             }
         }
-        if !edge_heights.is_empty() {
-            return Self::highest_height_sample(edge_heights);
+        if !boundary_heights.is_empty() {
+            return Self::consistent_height_sample(boundary_heights);
         }
 
         let mut covered_heights = Vec::new();
@@ -534,7 +525,7 @@ impl RoadSurfaceSystem {
                 }
             }
         }
-        Self::highest_height_sample(covered_heights)
+        Self::consistent_height_sample(covered_heights)
     }
 
     fn sample_height_from_candidate_edge(
@@ -557,9 +548,7 @@ impl RoadSurfaceSystem {
         Some(start.y + (end.y - start.y) * t)
     }
 
-    // Unioned terrain cutters may touch several visible top surfaces at the same XZ seam.
-    // Use the highest deterministic top height so terrain cannot survive above a road surface.
-    fn highest_height_sample<I>(heights: I) -> Option<f32>
+    fn consistent_height_sample<I>(heights: I) -> Option<f32>
     where
         I: IntoIterator<Item = f32>,
     {
@@ -568,6 +557,21 @@ impl RoadSurfaceSystem {
             return None;
         }
         heights.sort_by(|a, b| a.total_cmp(b));
-        heights.last().copied()
+        let first_key = Self::overlay_height_key(heights[0]);
+        if heights
+            .iter()
+            .all(|height| Self::overlay_height_key(*height) == first_key)
+        {
+            return Some(heights[0]);
+        }
+        let min_height = heights[0];
+        let max_height = *heights.last()?;
+        // Curb-cap vertices are legacy top samples, not terrain-seam owners. Prefer the
+        // outer sidewalk rail only for that bounded road-rule height band.
+        (max_height - min_height <= CURB_STEP_HEIGHT_M + SAMPLE_EPSILON_M).then_some(max_height)
+    }
+
+    fn overlay_height_key(height_m: f32) -> i64 {
+        (f64::from(height_m) * NODE_OVERLAY_SCALE).round() as i64
     }
 }

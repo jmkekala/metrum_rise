@@ -16,6 +16,9 @@ const MAX_INVALID_CONSTRAINT_SAMPLES: usize = 8;
 const MAX_ROAD_SEAM_FACE_SAMPLES: usize = 8;
 const MAX_TERRAIN_TIE_IN_SLOPE_RATIO: f32 = 0.5;
 const MIN_TIE_IN_HEIGHT_DELTA_M: f32 = 0.01;
+// Legacy clip loops can expose both curb-cap and sidewalk rail samples at one noded XZ.
+// Larger disagreements are distinct road-owned height contexts and must stay diagnostic.
+const MAX_COMPATIBLE_ROAD_CONSTRAINT_HEIGHT_DELTA_M: f32 = 0.121;
 
 type SpadeCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 
@@ -549,15 +552,18 @@ fn node_road_constraint_edges(
                     interpolated_segment_height(first_start, first_end, clamp_unit(first_t));
                 let second_height =
                     interpolated_segment_height(second_start, second_end, clamp_unit(second_t));
-                let vertex_index = insert_road_constraint_vertex(
-                    TerrainCdtVertex::new(
-                        intersection.x,
-                        first_height.max(second_height),
-                        intersection.z,
-                    ),
+                let Some(intersection_height) =
+                    compatible_road_constraint_height(first_height, second_height)
+                else {
+                    continue;
+                };
+                let Some(vertex_index) = insert_road_constraint_vertex(
+                    TerrainCdtVertex::new(intersection.x, intersection_height, intersection.z),
                     vertices,
                     vertex_lookup,
-                );
+                ) else {
+                    continue;
+                };
                 split_points[first_index].push(TerrainCdtRoadConstraintSplit {
                     t: clamp_unit(first_t),
                     vertex_index,
@@ -605,16 +611,21 @@ fn insert_road_constraint_vertex(
     vertex: TerrainCdtVertex,
     vertices: &mut Vec<TerrainCdtVertex>,
     vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
-) -> usize {
+) -> Option<usize> {
     let key = (quantized_coord(vertex.x), quantized_coord(vertex.z));
     if let Some(index) = vertex_lookup.get(&key) {
-        vertices[*index].height_m = vertices[*index].height_m.max(vertex.height_m);
-        return *index;
+        let Some(height_m) =
+            compatible_road_constraint_height(vertices[*index].height_m, vertex.height_m)
+        else {
+            return None;
+        };
+        vertices[*index].height_m = height_m;
+        return Some(*index);
     }
     let index = vertices.len();
     vertices.push(vertex);
     vertex_lookup.insert(key, index);
-    index
+    Some(index)
 }
 
 fn sort_dedup_constraint_splits(splits: &mut Vec<TerrainCdtRoadConstraintSplit>) {
@@ -879,6 +890,19 @@ fn same_xz(a: TerrainCdtVertex, b: TerrainCdtVertex) -> bool {
 
 fn same_coord(a: f64, b: f64) -> bool {
     quantized_coord(a) == quantized_coord(b)
+}
+
+fn same_height(a: f32, b: f32) -> bool {
+    quantized_coord(f64::from(a)) == quantized_coord(f64::from(b))
+}
+
+fn compatible_road_constraint_height(a: f32, b: f32) -> Option<f32> {
+    if same_height(a, b) {
+        return Some(a);
+    }
+    let min_height = a.min(b);
+    let max_height = a.max(b);
+    (max_height - min_height <= MAX_COMPATIBLE_ROAD_CONSTRAINT_HEIGHT_DELTA_M).then_some(max_height)
 }
 
 fn quantized_coord(value: f64) -> i64 {
@@ -1490,6 +1514,49 @@ mod tests {
         for vertex in &mesh.vertices {
             assert!(patch_contains(*vertex, patch));
         }
+    }
+
+    #[test]
+    fn conflicting_height_road_constraints_are_not_welded_by_height_max() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 40.0, 40.0, [0.0; 4]);
+        let road_a = road_loop_from_centerline(
+            TerrainCdtVertex::new(4.0, 0.0, 20.0),
+            TerrainCdtVertex::new(36.0, 0.0, 20.0),
+            8.0,
+        );
+        let mut road_b = road_loop_from_centerline(
+            TerrainCdtVertex::new(20.0, 0.0, 4.0),
+            TerrainCdtVertex::new(20.0, 0.0, 36.0),
+            8.0,
+        );
+        for vertex in &mut road_b {
+            vertex.height_m = 1.0;
+        }
+
+        let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![
+                TerrainCdtRoadLoop::new(31, 0, road_a),
+                TerrainCdtRoadLoop::new(32, 0, road_b),
+            ],
+            piece_source_samples(),
+        ))
+        .expect("conflicting road constraints should report invalid constraints without panicking");
+
+        assert!(
+            mesh.stats.invalid_constraint_edges > 0,
+            "conflicting road seam heights must stay visible as CDT diagnostics instead of being welded by max-height"
+        );
+        assert!(
+            !mesh.vertices.iter().any(|vertex| {
+                vertex.height_m > 0.9
+                    && vertex.x > 15.0
+                    && vertex.x < 25.0
+                    && vertex.z > 15.0
+                    && vertex.z < 25.0
+            }),
+            "conflicting road constraints must not create synthesized max-height intersection vertices"
+        );
     }
 
     #[test]
