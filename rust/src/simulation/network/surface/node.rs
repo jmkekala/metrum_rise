@@ -3,10 +3,12 @@
 use super::{
     CompiledNodeKind, IncidentEdgeSide, IncidentMouthProfile, IncidentSurfaceEdge,
     NODE_OVERLAY_MIN_AREA_M2, NodeOwnedRegion, OrderedIncidentPieceMouth, RoadSurfaceBandKind,
-    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
-    RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
+    RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipLoop,
+    RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece, RoadSurfaceVisualNodePieceKind,
+    RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
     arrangement::{NodeArrangement, NodeArrangementKey, NodeBandOwner},
     input::NodeInputExtractionError,
+    terrain_clip_edge_kind_for_band,
     validation::NodeValidationReport,
 };
 use crate::simulation::network::graph::{Edge, RegionGraph};
@@ -164,6 +166,7 @@ impl RoadSurfaceSystem {
             node_id,
             kind,
             node_regions.outer_boundary_loops,
+            node_regions.terrain_clip_boundary_loops,
             node_regions.road_surface_polygons,
             node_regions.sidewalk_surface_polygons,
             node_regions.owned_regions,
@@ -290,15 +293,23 @@ impl RoadSurfaceSystem {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
 
-        let mut outer_boundary_loops = Self::outer_boundary_loops_from_arrangement(arrangement)?;
+        let canonical_segments = Self::arrangement_outer_boundary_segments(arrangement)?;
+        let canonical_loops =
+            Self::outer_boundary_segment_loops_from_arrangement_segments(&canonical_segments)?;
+        let mut outer_boundary_loops =
+            Self::outer_boundary_polygons_from_segment_loops(&canonical_loops)?;
+        let mut terrain_clip_boundary_loops =
+            Self::terrain_clip_boundary_loops_from_segment_loops(&canonical_loops);
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         Self::sort_visual_polygons(&mut outer_boundary_loops);
+        Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
         Self::sort_node_owned_regions(&mut owned_regions);
 
         Ok(super::NodeSurfaceRegionResult {
             outer_boundary_loops,
+            terrain_clip_boundary_loops,
             road_surface_polygons,
             sidewalk_surface_polygons,
             owned_regions,
@@ -318,15 +329,6 @@ impl RoadSurfaceSystem {
             }
         }
         (road_surface_polygons, sidewalk_surface_polygons)
-    }
-
-    fn outer_boundary_loops_from_arrangement(
-        arrangement: &NodeArrangement,
-    ) -> Result<Vec<RoadSurfaceVisualPolygon>, NodeBoundaryExportError> {
-        let canonical_segments = Self::arrangement_outer_boundary_segments(arrangement)?;
-        let canonical_loops =
-            Self::outer_boundary_segment_loops_from_arrangement_segments(&canonical_segments)?;
-        Self::outer_boundary_polygons_from_segment_loops(&canonical_loops)
     }
 
     fn arrangement_outer_boundary_segments(
@@ -477,6 +479,33 @@ impl RoadSurfaceSystem {
         (!polygons.is_empty())
             .then_some(polygons)
             .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
+    }
+
+    fn terrain_clip_boundary_loops_from_segment_loops(
+        canonical_loops: &[Vec<ArrangementBoundarySegment>],
+    ) -> Vec<RoadSurfaceTerrainClipLoop> {
+        let mut loops = Vec::new();
+        for canonical_loop in canonical_loops {
+            let points = boundary_start_points_from_segment_loop(canonical_loop);
+            if points.len() < 3
+                || Self::signed_polygon_area_xz(&points).abs() <= NODE_OVERLAY_MIN_AREA_M2
+            {
+                continue;
+            }
+            let source_edges = canonical_loop
+                .iter()
+                .map(|segment| RoadSurfaceTerrainClipSourceEdge {
+                    start: segment.start,
+                    end: segment.end,
+                    kind: terrain_clip_edge_kind_for_band(segment.owner.kind()),
+                })
+                .collect::<Vec<_>>();
+            loops.push(RoadSurfaceTerrainClipLoop {
+                points_world: points,
+                source_edges,
+            });
+        }
+        loops
     }
 
     fn select_next_arrangement_boundary_segment(
@@ -740,6 +769,7 @@ impl RoadSurfaceSystem {
         node_id: u32,
         kind: RoadSurfaceVisualNodePieceKind,
         outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+        mut terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
         mut road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut owned_regions: Vec<NodeOwnedRegion>,
@@ -753,6 +783,7 @@ impl RoadSurfaceSystem {
         Self::sort_visual_polygons(&mut road_surface_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         Self::sort_node_owned_regions(&mut owned_regions);
+        Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
         Self::sort_visual_polygons(&mut earthwork_surface_polygons);
         Self::sort_visual_polygons(&mut earthwork_outer_boundary_loops);
         Self::sort_earthwork_render_faces(&mut render_earthwork_faces);
@@ -763,6 +794,7 @@ impl RoadSurfaceSystem {
             node_id,
             kind,
             outer_boundary_loops,
+            terrain_clip_boundary_loops,
             road_surface_polygons,
             sidewalk_surface_polygons,
             owned_regions,
@@ -1070,6 +1102,12 @@ fn boundary_points_from_segment_loop(segments: &[ArrangementBoundarySegment]) ->
         points.push(segment.end);
     }
     points
+}
+
+fn boundary_start_points_from_segment_loop(
+    segments: &[ArrangementBoundarySegment],
+) -> Vec<Vector3> {
+    segments.iter().map(|segment| segment.start).collect()
 }
 
 fn uncross_boundary_loop_points(mut points: Vec<Vector3>) -> Vec<Vector3> {

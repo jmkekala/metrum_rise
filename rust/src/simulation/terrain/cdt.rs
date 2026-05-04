@@ -16,9 +16,6 @@ const MAX_INVALID_CONSTRAINT_SAMPLES: usize = 8;
 const MAX_ROAD_SEAM_FACE_SAMPLES: usize = 8;
 const MAX_TERRAIN_TIE_IN_SLOPE_RATIO: f32 = 0.5;
 const MIN_TIE_IN_HEIGHT_DELTA_M: f32 = 0.01;
-// Legacy clip loops can expose both curb-cap and sidewalk rail samples at one noded XZ.
-// Larger disagreements are distinct road-owned height contexts and must stay diagnostic.
-const MAX_COMPATIBLE_ROAD_CONSTRAINT_HEIGHT_DELTA_M: f32 = 0.121;
 
 type SpadeCdt = ConstrainedDelaunayTriangulation<Point2<f64>>;
 
@@ -553,7 +550,7 @@ fn node_road_constraint_edges(
                 let second_height =
                     interpolated_segment_height(second_start, second_end, clamp_unit(second_t));
                 let Some(intersection_height) =
-                    compatible_road_constraint_height(first_height, second_height)
+                    shared_road_constraint_height(first_height, second_height)
                 else {
                     continue;
                 };
@@ -615,7 +612,7 @@ fn insert_road_constraint_vertex(
     let key = (quantized_coord(vertex.x), quantized_coord(vertex.z));
     if let Some(index) = vertex_lookup.get(&key) {
         let Some(height_m) =
-            compatible_road_constraint_height(vertices[*index].height_m, vertex.height_m)
+            shared_road_constraint_height(vertices[*index].height_m, vertex.height_m)
         else {
             return None;
         };
@@ -896,13 +893,8 @@ fn same_height(a: f32, b: f32) -> bool {
     quantized_coord(f64::from(a)) == quantized_coord(f64::from(b))
 }
 
-fn compatible_road_constraint_height(a: f32, b: f32) -> Option<f32> {
-    if same_height(a, b) {
-        return Some(a);
-    }
-    let min_height = a.min(b);
-    let max_height = a.max(b);
-    (max_height - min_height <= MAX_COMPATIBLE_ROAD_CONSTRAINT_HEIGHT_DELTA_M).then_some(max_height)
+fn shared_road_constraint_height(a: f32, b: f32) -> Option<f32> {
+    same_height(a, b).then_some(a)
 }
 
 fn quantized_coord(value: f64) -> i64 {

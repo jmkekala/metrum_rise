@@ -2,8 +2,9 @@
 
 use super::earthwork::EARTHWORK_PAVEMENT_DEPTH_M;
 use super::{
-    ChunkCacheKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
-    RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece, SurfaceChunkKey,
+    ChunkCacheKind, RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipLoop,
+    RoadSurfaceVisualNodePiece, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
+    SurfaceChunkKey,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::network::types::{EdgeClass, TransitType};
@@ -51,19 +52,19 @@ impl RoadSurfaceSystem {
         max_x: f32,
         max_z: f32,
     ) -> Vec<RoadSurfaceVisualPolygon> {
-        let mut polygons = Vec::new();
+        let mut boundary_loops = Vec::new();
 
         for piece in self.compiled_visual_span_pieces.values() {
             if piece.edge_class != EdgeClass::Standard {
                 continue;
             }
-            Self::collect_terrain_clip_polygons_from_piece(
-                &piece.outer_boundary_loops,
+            Self::collect_terrain_clip_boundary_loops_from_piece(
+                &piece.terrain_clip_boundary_loops,
                 min_x,
                 min_z,
                 max_x,
                 max_z,
-                &mut polygons,
+                &mut boundary_loops,
             );
         }
 
@@ -71,17 +72,17 @@ impl RoadSurfaceSystem {
             if !self.node_has_standard_surface_edges(graph, node_id) {
                 continue;
             }
-            Self::collect_terrain_clip_polygons_from_piece(
-                &piece.outer_boundary_loops,
+            Self::collect_terrain_clip_boundary_loops_from_piece(
+                &piece.terrain_clip_boundary_loops,
                 min_x,
                 min_z,
                 max_x,
                 max_z,
-                &mut polygons,
+                &mut boundary_loops,
             );
         }
 
-        Self::union_terrain_clip_polygons(&polygons)
+        Self::union_terrain_clip_boundary_loops(&boundary_loops)
     }
 
     pub(crate) fn sample_visible_surface_height(
@@ -627,23 +628,29 @@ impl RoadSurfaceSystem {
         Self::section_index_range_for_s_bounds(sections, start_handoff, end_handoff)
     }
 
-    fn collect_terrain_clip_polygons_from_piece(
-        source: &[RoadSurfaceVisualPolygon],
+    fn collect_terrain_clip_boundary_loops_from_piece(
+        source: &[RoadSurfaceTerrainClipLoop],
         min_x: f32,
         min_z: f32,
         max_x: f32,
         max_z: f32,
-        out: &mut Vec<RoadSurfaceVisualPolygon>,
+        out: &mut Vec<RoadSurfaceTerrainClipLoop>,
     ) {
-        for polygon in source {
-            if Self::visual_polygon_overlaps_bounds_xz(polygon, min_x, min_z, max_x, max_z) {
-                out.push(polygon.clone());
+        for boundary_loop in source {
+            if Self::visual_points_overlap_bounds_xz(
+                &boundary_loop.points_world,
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+            ) {
+                out.push(boundary_loop.clone());
             }
         }
     }
 
-    fn visual_polygon_overlaps_bounds_xz(
-        polygon: &RoadSurfaceVisualPolygon,
+    fn visual_points_overlap_bounds_xz(
+        points_world: &[Vector3],
         min_x: f32,
         min_z: f32,
         max_x: f32,
@@ -653,7 +660,7 @@ impl RoadSurfaceSystem {
         let mut polygon_max_x = f32::MIN;
         let mut polygon_min_z = f32::MAX;
         let mut polygon_max_z = f32::MIN;
-        for point in &polygon.points_world {
+        for point in points_world {
             polygon_min_x = polygon_min_x.min(point.x);
             polygon_max_x = polygon_max_x.max(point.x);
             polygon_min_z = polygon_min_z.min(point.z);

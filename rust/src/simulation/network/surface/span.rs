@@ -2,7 +2,9 @@
 
 use super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, RoadSurfaceBandKind,
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualPolygon, RoadSurfaceVisualSpanPiece,
+    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualPolygon,
+    RoadSurfaceVisualSpanPiece, terrain_clip_edge_kind_for_band,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
@@ -38,6 +40,8 @@ impl RoadSurfaceSystem {
         if outer_boundary_loops.is_empty() {
             return None;
         }
+        let terrain_clip_boundary_loops =
+            Self::build_span_terrain_clip_boundary_loops(sections, &visible_ranges);
 
         let earthwork_ranges = self.earthwork_section_ranges_for_edge(edge, sections, terrain);
         let (mut clearance_road_surface_polygons, mut clearance_sidewalk_surface_polygons) =
@@ -60,6 +64,7 @@ impl RoadSurfaceSystem {
         Some(RoadSurfaceVisualSpanPiece {
             edge_idx,
             outer_boundary_loops,
+            terrain_clip_boundary_loops,
             road_surface_polygons,
             sidewalk_surface_polygons,
             edge_class: edge.class,
@@ -170,6 +175,83 @@ impl RoadSurfaceSystem {
         loops
     }
 
+    fn build_span_terrain_clip_boundary_loops(
+        sections: &[RoadSurfaceSection],
+        ranges: &[(usize, usize)],
+    ) -> Vec<RoadSurfaceTerrainClipLoop> {
+        let mut loops = Vec::new();
+        for &(start_index, end_index) in ranges {
+            if end_index <= start_index {
+                continue;
+            }
+            let mut left_points = Vec::new();
+            let mut right_points = Vec::new();
+            let mut left_kind = RoadSurfaceTerrainClipEdgeKind::FootprintBoundary;
+            let mut right_kind = RoadSurfaceTerrainClipEdgeKind::FootprintBoundary;
+            for section in &sections[start_index..=end_index] {
+                let Some((left_point, right_point)) = Self::section_outer_boundary_pair(section)
+                else {
+                    continue;
+                };
+                let Some((section_left_kind, section_right_kind)) =
+                    Self::section_outer_boundary_edge_kinds(section)
+                else {
+                    continue;
+                };
+                left_kind = section_left_kind;
+                right_kind = section_right_kind;
+                left_points.push(left_point);
+                right_points.push(right_point);
+            }
+            if left_points.len() < 2 || right_points.len() < 2 {
+                continue;
+            }
+
+            let mut loop_points = left_points.clone();
+            let mut reversed_right_points = right_points.clone();
+            reversed_right_points.reverse();
+            loop_points.extend(reversed_right_points);
+            let Some(loop_polygon) = Self::make_boundary_loop_polygon(loop_points) else {
+                continue;
+            };
+
+            let mut source_edges =
+                Vec::with_capacity(left_points.len() + right_points.len().saturating_sub(2) + 2);
+            for pair in left_points.windows(2) {
+                source_edges.push(RoadSurfaceTerrainClipSourceEdge {
+                    start: pair[0],
+                    end: pair[1],
+                    kind: left_kind,
+                });
+            }
+            let last_left = *left_points.last().unwrap();
+            let last_right = *right_points.last().unwrap();
+            source_edges.push(RoadSurfaceTerrainClipSourceEdge {
+                start: last_left,
+                end: last_right,
+                kind: RoadSurfaceTerrainClipEdgeKind::SpanHandoff,
+            });
+            for pair in right_points.windows(2) {
+                source_edges.push(RoadSurfaceTerrainClipSourceEdge {
+                    start: pair[1],
+                    end: pair[0],
+                    kind: right_kind,
+                });
+            }
+            source_edges.push(RoadSurfaceTerrainClipSourceEdge {
+                start: right_points[0],
+                end: left_points[0],
+                kind: RoadSurfaceTerrainClipEdgeKind::SpanHandoff,
+            });
+            loops.push(RoadSurfaceTerrainClipLoop {
+                points_world: loop_polygon.points_world,
+                source_edges,
+            });
+        }
+        Self::sort_terrain_clip_loops(&mut loops);
+        loops
+    }
+
     fn section_outer_boundary_pair(section: &RoadSurfaceSection) -> Option<(Vector3, Vector3)> {
         let first_band = section.bands.first()?;
         let last_band = section.bands.last()?;
@@ -184,6 +266,18 @@ impl RoadSurfaceSystem {
             last_band.height_end_m,
         );
         Some((left_point, right_point))
+    }
+
+    fn section_outer_boundary_edge_kinds(
+        section: &RoadSurfaceSection,
+    ) -> Option<(
+        RoadSurfaceTerrainClipEdgeKind,
+        RoadSurfaceTerrainClipEdgeKind,
+    )> {
+        Some((
+            terrain_clip_edge_kind_for_band(section.bands.first()?.kind),
+            terrain_clip_edge_kind_for_band(section.bands.last()?.kind),
+        ))
     }
 
     fn section_range_mouth_profile(

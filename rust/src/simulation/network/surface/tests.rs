@@ -2215,19 +2215,20 @@ fn editor_sized_60_degree_t_junction_width_7_compiles_node_surface() {
     let raw_clip_sources = surface
         .compiled_visual_span_pieces()
         .values()
-        .flat_map(|piece| piece.outer_boundary_loops.iter().cloned())
+        .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned())
         .chain(
             surface
                 .compiled_visual_node_pieces()
                 .values()
-                .flat_map(|piece| piece.outer_boundary_loops.iter().cloned()),
+                .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned()),
         )
         .collect::<Vec<_>>();
     assert!(
         !raw_clip_sources.is_empty(),
         "editor-sized 60-degree T junction must have raw terrain clip source loops"
     );
-    let unioned_clip_sources = RoadSurfaceSystem::union_terrain_clip_polygons(&raw_clip_sources);
+    let unioned_clip_sources =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops(&raw_clip_sources);
     assert!(
         !unioned_clip_sources.is_empty(),
         "editor-sized 60-degree T junction raw clip loops must survive deterministic union"

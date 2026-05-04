@@ -153,6 +153,7 @@ pub struct RoadSurfaceVisualNodePiece {
     pub kind: RoadSurfaceVisualNodePieceKind,
     /// Outer piece-owned boundaries used for debug, surface chunk bounds, and terrain clipping.
     pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
     /// Explicit asphalt-owned polygons for the node piece.
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit sidewalk-owned polygons for the node piece.
@@ -170,6 +171,7 @@ pub struct RoadSurfaceVisualSpanPiece {
     pub edge_idx: usize,
     /// Outer piece-owned boundaries used for debug, surface chunk bounds, and terrain clipping.
     pub outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
     /// Explicit asphalt-owned polygons for the span piece.
     pub road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     /// Explicit sidewalk-owned polygons for the span piece.
@@ -290,9 +292,39 @@ struct NodeOwnedRegion {
     polygon: RoadSurfaceVisualPolygon,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+enum RoadSurfaceTerrainClipEdgeKind {
+    SidewalkOuter,
+    ShoulderOuter,
+    FootprintBoundary,
+    SpanHandoff,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RoadSurfaceTerrainClipSourceEdge {
+    start: Vector3,
+    end: Vector3,
+    kind: RoadSurfaceTerrainClipEdgeKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct RoadSurfaceTerrainClipLoop {
+    points_world: Vec<Vector3>,
+    source_edges: Vec<RoadSurfaceTerrainClipSourceEdge>,
+}
+
+fn terrain_clip_edge_kind_for_band(kind: RoadSurfaceBandKind) -> RoadSurfaceTerrainClipEdgeKind {
+    match kind {
+        RoadSurfaceBandKind::Sidewalk => RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+        RoadSurfaceBandKind::CurbOrShoulder => RoadSurfaceTerrainClipEdgeKind::ShoulderOuter,
+        _ => RoadSurfaceTerrainClipEdgeKind::FootprintBoundary,
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct NodeSurfaceRegionResult {
     outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
+    terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
     road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
     owned_regions: Vec<NodeOwnedRegion>,
@@ -635,6 +667,36 @@ impl RoadSurfaceSystem {
 
     fn sort_visual_polygons(polygons: &mut [RoadSurfaceVisualPolygon]) {
         polygons.sort_by(|a, b| {
+            match (a.points_world.first(), b.points_world.first()) {
+                (Some(point_a), Some(point_b)) => point_a
+                    .x
+                    .total_cmp(&point_b.x)
+                    .then(point_a.z.total_cmp(&point_b.z))
+                    .then(point_a.y.total_cmp(&point_b.y)),
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+            .then(a.points_world.len().cmp(&b.points_world.len()))
+            .then_with(|| {
+                a.points_world
+                    .iter()
+                    .zip(&b.points_world)
+                    .find_map(|(point_a, point_b)| {
+                        let ordering = point_a
+                            .x
+                            .total_cmp(&point_b.x)
+                            .then(point_a.z.total_cmp(&point_b.z))
+                            .then(point_a.y.total_cmp(&point_b.y));
+                        (ordering != std::cmp::Ordering::Equal).then_some(ordering)
+                    })
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+        });
+    }
+
+    fn sort_terrain_clip_loops(loops: &mut [RoadSurfaceTerrainClipLoop]) {
+        loops.sort_by(|a, b| {
             match (a.points_world.first(), b.points_world.first()) {
                 (Some(point_a), Some(point_b)) => point_a
                     .x
