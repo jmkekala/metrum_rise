@@ -139,6 +139,12 @@ enum NodeBoundaryExportError {
         start: NodeArrangementKey,
         end: NodeArrangementKey,
     },
+    ContradictoryOuterBoundaryHeight {
+        owner: NodeBandOwner,
+        point: NodeArrangementKey,
+        existing_height_mm: i64,
+        incoming_height_mm: i64,
+    },
     AmbiguousOuterBoundaryOwner,
     DegenerateOuterBoundaryLoop,
 }
@@ -345,6 +351,7 @@ impl RoadSurfaceSystem {
             Self::outer_boundary_segment_loops_from_arrangement_segments(&canonical_segments)?;
         let canonical_loops =
             Self::owner_preserving_boundary_loops_without_strict_crossings(canonical_loops);
+        validate_outer_boundary_loop_height_consistency(&canonical_loops)?;
         let boundary_split_points = boundary_points_from_segment_loops_unique(&canonical_loops);
 
         let mut owned_regions = Vec::new();
@@ -846,6 +853,20 @@ impl RoadSurfaceSystem {
                     *end,
                 )
             }
+            NodeBoundaryExportError::ContradictoryOuterBoundaryHeight {
+                owner,
+                point,
+                existing_height_mm,
+                incoming_height_mm,
+            } => NodeValidationReport::from_outer_boundary_height_conflict(
+                arrangement.node_id(),
+                arrangement.piece_kind(),
+                owner.kind(),
+                owner.owner_index(),
+                *point,
+                *existing_height_mm,
+                *incoming_height_mm,
+            ),
             NodeBoundaryExportError::EmptyOuterBoundary => {
                 NodeValidationReport::from_boundary_export_error(
                     arrangement.node_id(),
@@ -1230,6 +1251,48 @@ fn arrangement_boundary_point_same_xz(
     b: ArrangementBoundaryPointKey,
 ) -> bool {
     a.x_key == b.x_key && a.z_key == b.z_key
+}
+
+fn validate_outer_boundary_loop_height_consistency(
+    loops: &[Vec<ArrangementBoundarySegment>],
+) -> Result<(), NodeBoundaryExportError> {
+    let mut heights_by_xz = BTreeMap::<NodeArrangementKey, (i64, NodeBandOwner)>::new();
+    for loop_segments in loops {
+        for segment in loop_segments {
+            validate_outer_boundary_point_height(
+                segment.start_key,
+                segment.owner,
+                &mut heights_by_xz,
+            )?;
+            validate_outer_boundary_point_height(
+                segment.end_key,
+                segment.owner,
+                &mut heights_by_xz,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_outer_boundary_point_height(
+    point: ArrangementBoundaryPointKey,
+    owner: NodeBandOwner,
+    heights_by_xz: &mut BTreeMap<NodeArrangementKey, (i64, NodeBandOwner)>,
+) -> Result<(), NodeBoundaryExportError> {
+    let key = point.xz_key();
+    if let Some((existing_height_mm, existing_owner)) = heights_by_xz.get(&key).copied() {
+        if existing_height_mm != point.y_mm {
+            return Err(NodeBoundaryExportError::ContradictoryOuterBoundaryHeight {
+                owner: existing_owner,
+                point: key,
+                existing_height_mm,
+                incoming_height_mm: point.y_mm,
+            });
+        }
+    } else {
+        heights_by_xz.insert(key, (point.y_mm, owner));
+    }
+    Ok(())
 }
 
 fn boundary_segment_parameter_xz(

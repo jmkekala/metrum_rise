@@ -20,7 +20,6 @@ use crate::simulation::terrain::cdt::{
 };
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
-use std::collections::{BTreeMap, BTreeSet};
 
 fn test_edge(
     start_node: u32,
@@ -97,122 +96,6 @@ fn terrain_clip_source_edge_for_test(
         end,
         kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
     }
-}
-
-fn surface_has_conflicting_terrain_clip_source_heights(surface: &RoadSurfaceSystem) -> bool {
-    surface
-        .compiled_visual_span_pieces()
-        .values()
-        .flat_map(|piece| piece.terrain_clip_boundary_loops.iter())
-        .chain(
-            surface
-                .compiled_visual_node_pieces()
-                .values()
-                .flat_map(|piece| piece.terrain_clip_boundary_loops.iter()),
-        )
-        .any(terrain_clip_loop_has_conflicting_source_heights)
-}
-
-fn terrain_clip_loop_has_conflicting_source_heights(loop_: &RoadSurfaceTerrainClipLoop) -> bool {
-    let mut heights_by_xz = BTreeMap::<(i64, i64), BTreeSet<i64>>::new();
-    for edge in &loop_.source_edges {
-        for point in [edge.start, edge.end] {
-            heights_by_xz
-                .entry(terrain_clip_source_xz_key(point))
-                .or_default()
-                .insert(terrain_clip_source_height_key(point));
-        }
-    }
-    heights_by_xz.values().any(|heights| heights.len() > 1)
-}
-
-fn terrain_clip_source_xz_key(point: Vector3) -> (i64, i64) {
-    (
-        (f64::from(point.x) * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-        (f64::from(point.z) * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-    )
-}
-
-fn terrain_clip_source_height_key(point: Vector3) -> i64 {
-    (f64::from(point.y) * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64
-}
-
-fn terrain_cdt_source_samples_from_patch(
-    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-) -> Vec<TerrainCdtVertex> {
-    let mut source_samples =
-        Vec::with_capacity(patch.sample_width.saturating_mul(patch.sample_height));
-    for sample_z in 0..patch.sample_height {
-        let world_z = terrain_patch_sample_world_z(patch, sample_z);
-        for sample_x in 0..patch.sample_width {
-            source_samples.push(TerrainCdtVertex::new(
-                f64::from(terrain_patch_sample_world_x(patch, sample_x)),
-                terrain_patch_sample_height_m(patch, sample_x, sample_z),
-                f64::from(world_z),
-            ));
-        }
-    }
-    source_samples
-}
-
-fn terrain_cdt_patch_corner_heights(
-    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-) -> [f32; 4] {
-    [
-        terrain_patch_sample_height_m(patch, 0, 0),
-        terrain_patch_sample_height_m(patch, 0, patch.sample_height.saturating_sub(1)),
-        terrain_patch_sample_height_m(
-            patch,
-            patch.sample_width.saturating_sub(1),
-            patch.sample_height.saturating_sub(1),
-        ),
-        terrain_patch_sample_height_m(patch, patch.sample_width.saturating_sub(1), 0),
-    ]
-}
-
-fn terrain_patch_sample_world_x(
-    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-    sample_x: usize,
-) -> f32 {
-    if patch.sample_width <= 1 {
-        patch.world_origin_x
-    } else {
-        patch.world_origin_x
-            + patch.world_size_x * sample_x as f32 / patch.sample_width.saturating_sub(1) as f32
-    }
-}
-
-fn terrain_patch_sample_world_z(
-    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-    sample_z: usize,
-) -> f32 {
-    if patch.sample_height <= 1 {
-        patch.world_origin_z
-    } else {
-        patch.world_origin_z
-            + patch.world_size_z * sample_z as f32 / patch.sample_height.saturating_sub(1) as f32
-    }
-}
-
-fn terrain_patch_sample_height_m(
-    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
-    sample_x: usize,
-    sample_z: usize,
-) -> f32 {
-    if patch.texture_width == 0 || patch.height_data.is_empty() {
-        return 0.0;
-    }
-    let texture_x = patch
-        .inner_offset_x
-        .saturating_add(sample_x.min(patch.sample_width.saturating_sub(1)));
-    let texture_z = patch
-        .inner_offset_z
-        .saturating_add(sample_z.min(patch.sample_height.saturating_sub(1)));
-    let index = texture_z
-        .saturating_mul(patch.texture_width)
-        .saturating_add(texture_x)
-        .min(patch.height_data.len().saturating_sub(1));
-    patch.height_data[index] * crate::config::HEIGHT_SCALE
 }
 
 fn ridge_terrain(width: usize, height: usize) -> TerrainSystem {
@@ -656,37 +539,6 @@ fn assert_all_top_shared_edges_are_height_continuous(piece: &RoadSurfaceVisualNo
         .cloned()
         .collect::<Vec<_>>();
     assert_shared_edges_are_height_continuous(&top_polygons, 0.004, "node top");
-}
-
-fn max_visual_triangle_slope_ratio(
-    piece: &RoadSurfaceVisualNodePiece,
-) -> (f32, RoadSurfaceBandKind, usize, Vector3, Vector3) {
-    let mut max_slope = 0.0_f32;
-    let mut max_kind = RoadSurfaceBandKind::Carriageway;
-    let mut max_owner_index = 0usize;
-    let mut max_start = Vector3::ZERO;
-    let mut max_end = Vector3::ZERO;
-    for region in &piece.owned_regions {
-        for triangle in &region.polygon.triangles_world {
-            for edge_index in 0..3 {
-                let start = triangle[edge_index];
-                let end = triangle[(edge_index + 1) % 3];
-                let xz_distance = Vector2::new(end.x - start.x, end.z - start.z).length();
-                if xz_distance <= SAMPLE_EPSILON_M {
-                    continue;
-                }
-                let slope = (end.y - start.y).abs() / xz_distance;
-                if slope > max_slope {
-                    max_slope = slope;
-                    max_kind = region.kind;
-                    max_owner_index = region.owner_index;
-                    max_start = start;
-                    max_end = end;
-                }
-            }
-        }
-    }
-    (max_slope, max_kind, max_owner_index, max_start, max_end)
 }
 
 fn assert_node_piece_uses_band_owned_regions(piece: &RoadSurfaceVisualNodePiece) {
@@ -2607,7 +2459,7 @@ fn logged_current_flat_three_way_oblique_junction_keeps_curb_vertices_on_rails()
 }
 
 #[test]
-fn logged_elevated_three_way_oblique_junction_emits_outer_boundary_vertices() {
+fn logged_elevated_three_way_oblique_junction_rejects_contradictory_sidewalk_seam() {
     let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-5.708, 139.500, 43.670), NodeType::Junction);
@@ -2656,76 +2508,14 @@ fn logged_elevated_three_way_oblique_junction_emits_outer_boundary_vertices() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .expect("elevated oblique 3-way junction must compile a JunctionN piece");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert_node_piece_uses_band_owned_regions(piece);
-    assert_node_piece_has_curb_and_sidewalk_owners(piece);
-    assert_material_triangles_do_not_overlap(piece);
-    assert_outer_boundary_vertices_are_emitted_top_vertices(piece);
-    assert_top_mesh_centroids_inside_outer_boundary(piece);
-
-    let center_patch_key = terrain
-        .render_patch_keys_for_world_bounds(51.778, 55.467, 51.778, 55.467)
-        .into_iter()
-        .next()
-        .expect("elevated junction center must map to a terrain render patch");
     assert!(
-        surface
-            .terrain_render_patch_keys_with_visible_road(&terrain)
-            .contains(&center_patch_key),
-        "elevated junction patch must be road-locked by visible standard-road ownership"
+        !surface.compiled_visual_node_pieces().contains_key(&center),
+        "elevated oblique 3-way must not emit a JunctionN while its sidewalk seam has contradictory same-XZ heights"
     );
-    let patch = terrain
-        .visual_patch_snapshot(center_patch_key.0, center_patch_key.1)
-        .expect("road-locked elevated junction patch must be resident in the test terrain");
-    let clip_polygons = surface.terrain_clip_polygons_for_world_bounds(
-        &graph,
-        patch.world_origin_x,
-        patch.world_origin_z,
-        patch.world_origin_x + patch.world_size_x,
-        patch.world_origin_z + patch.world_size_z,
-    );
-    assert!(
-        !clip_polygons.is_empty(),
-        "road-locked elevated JunctionN terrain patch must not degrade to clip_polys=0"
-    );
-    let road_loops = clip_polygons
-        .iter()
-        .enumerate()
-        .map(|(index, polygon)| {
-            TerrainCdtRoadLoop::new(
-                index as u64,
-                0,
-                polygon
-                    .points_world
-                    .iter()
-                    .map(|point| {
-                        TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z))
-                    })
-                    .collect(),
-            )
-        })
-        .collect();
-    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
-        TerrainCdtPatch::new(
-            f64::from(patch.world_origin_x),
-            f64::from(patch.world_origin_z),
-            f64::from(patch.world_origin_x + patch.world_size_x),
-            f64::from(patch.world_origin_z + patch.world_size_z),
-            terrain_cdt_patch_corner_heights(&patch),
-        ),
-        road_loops,
-        terrain_cdt_source_samples_from_patch(&patch),
-    ))
-    .expect("elevated JunctionN terrain cutter must be accepted by the terrain CDT");
-    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
 }
 
 #[test]
-fn logged_current_elevated_oblique_three_way_compiles_junction_node() {
+fn logged_current_elevated_oblique_three_way_rejects_contradictory_junction_node() {
     let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-6.578, 141.206, -5.989), NodeType::Junction);
@@ -3078,74 +2868,14 @@ fn logged_current_elevated_oblique_three_way_compiles_junction_node() {
     }
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .expect("current elevated oblique 3-way junction must compile a JunctionN piece");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert!(!piece.road_surface_polygons.is_empty());
-    assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_material_triangles_do_not_overlap(piece);
-
-    let center_patch_key = terrain
-        .render_patch_keys_for_world_bounds(-23.211, -57.933, -23.211, -57.933)
-        .into_iter()
-        .next()
-        .expect("current elevated junction center must map to a terrain render patch");
     assert!(
-        surface
-            .terrain_render_patch_keys_with_visible_road(&terrain)
-            .contains(&center_patch_key),
-        "current elevated junction patch must be road-locked by visible standard-road ownership"
-    );
-    let patch = terrain
-        .visual_patch_snapshot(center_patch_key.0, center_patch_key.1)
-        .expect("road-locked current elevated junction patch must be resident in the test terrain");
-    let (clip_polygons, source_count) = surface
-        .terrain_clip_polygons_and_source_count_for_world_bounds(
-            &graph,
-            patch.world_origin_x,
-            patch.world_origin_z,
-            patch.world_origin_x + patch.world_size_x,
-            patch.world_origin_z + patch.world_size_z,
-        );
-    let raw_clip_sources = surface
-        .compiled_visual_span_pieces()
-        .values()
-        .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned())
-        .chain(
-            surface
-                .compiled_visual_node_pieces()
-                .values()
-                .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned()),
-        )
-        .collect::<Vec<_>>();
-    let raw_clip_area_m2: f32 = raw_clip_sources
-        .iter()
-        .filter_map(|clip_loop| {
-            RoadSurfaceSystem::make_boundary_loop_polygon(clip_loop.points_world.clone())
-        })
-        .map(|polygon| polygon_area_m2(&polygon))
-        .sum();
-    let raw_union_polygons =
-        RoadSurfaceSystem::union_terrain_clip_boundary_loops(&raw_clip_sources);
-    let raw_union_area_m2: f32 = raw_union_polygons.iter().map(polygon_area_m2).sum();
-    assert!(
-        source_count > 0,
-        "current elevated oblique 3-way patch must collect road-owned terrain clip sources"
-    );
-    let clip_area_m2: f32 = clip_polygons.iter().map(polygon_area_m2).sum();
-    assert!(
-        clip_area_m2 > 1_000.0,
-        "current elevated oblique 3-way must keep the full terrain cutter instead of shrinking to the logged buried-road footprint; sources={source_count} raw_sources={} raw_area={raw_clip_area_m2:.3} raw_union_polygons={} raw_union_area={raw_union_area_m2:.3} polygons={} area={clip_area_m2:.3}",
-        raw_clip_sources.len(),
-        raw_union_polygons.len(),
-        clip_polygons.len()
+        !surface.compiled_visual_node_pieces().contains_key(&center),
+        "current elevated oblique 3-way must not emit a JunctionN while its sidewalk seam has contradictory same-XZ heights"
     );
 }
 
 #[test]
-fn logged_latest_elevated_oblique_three_way_compiles_junction_node() {
+fn logged_latest_elevated_oblique_three_way_rejects_contradictory_junction_node() {
     let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
     let edge0_points = road_points_from_json(
         r#"[[-29.527,139.925,4.210],[-29.585,139.927,3.491],[-29.629,139.928,2.946],[-29.685,139.930,2.256],[-29.752,139.931,1.428],[-29.809,139.933,0.718],[-29.851,139.936,0.204],[-29.895,139.940,-0.342],[-29.941,139.944,-0.919],[-29.991,139.950,-1.526],[-30.042,139.956,-2.164],[-30.096,139.962,-2.831],[-30.152,139.969,-3.526],[-30.211,139.975,-4.250],[-30.271,139.981,-5.000],[-30.334,139.984,-5.778],[-30.399,139.986,-6.582],[-30.466,139.989,-7.411],[-30.535,139.996,-8.265],[-30.606,140.014,-9.143],[-30.679,140.046,-10.044],[-30.754,140.091,-10.969],[-30.830,140.146,-11.915],[-30.909,140.204,-12.884],[-30.969,140.258,-13.623],[-31.009,140.304,-14.123],[-31.050,140.342,-14.628],[-31.091,140.375,-15.138],[-31.132,140.406,-15.652],[-31.174,140.438,-16.171],[-31.217,140.470,-16.696],[-31.260,140.502,-17.224],[-31.303,140.533,-17.757],[-31.346,140.564,-18.295],[-31.390,140.598,-18.837],[-31.434,140.636,-19.384],[-31.479,140.684,-19.934],[-31.523,140.741,-20.489],[-31.569,140.808,-21.048],[-31.614,140.881,-21.611],[-31.660,140.958,-22.177],[-31.706,141.036,-22.748],[-31.753,141.113,-23.322],[-31.799,141.190,-23.900],[-31.846,141.266,-24.482],[-31.894,141.342,-25.067],[-31.941,141.419,-25.655],[-31.989,141.496,-26.247],[-32.037,141.571,-26.842],[-32.085,141.645,-27.440],[-32.134,141.719,-28.041],[-32.183,141.796,-28.646],[-32.232,141.881,-29.253],[-32.281,141.977,-29.863],[-32.331,142.088,-30.476],[-32.381,142.212,-31.092],[-32.431,142.347,-31.710],[-32.481,142.486,-32.331],[-32.531,142.628,-32.954],[-32.582,142.768,-33.579],[-32.632,142.908,-34.207],[-32.683,143.047,-34.837],[-32.734,143.187,-35.470],[-32.786,143.326,-36.104],[-32.837,143.464,-36.740],[-32.889,143.601,-37.378],[-32.940,143.739,-38.018],[-32.992,143.880,-38.660],[-33.044,144.030,-39.303],[-33.096,144.192,-39.948],[-33.149,144.369,-40.595],[-33.201,144.558,-41.243],[-33.254,144.756,-41.892],[-33.306,144.959,-42.542],[-33.359,145.162,-43.194],[-33.412,145.365,-43.846],[-33.464,145.566,-44.500],[-33.517,145.766,-45.155],[-33.570,145.965,-45.810],[-33.623,146.164,-46.466],[-33.676,146.362,-47.123],[-33.730,146.562,-47.780],[-33.783,146.765,-48.438],[-33.836,146.974,-49.097],[-33.889,147.190,-49.756],[-33.943,147.407,-50.415],[-33.996,147.618,-51.074],[-34.049,147.816,-51.733],[-34.102,147.998,-52.393],[-34.129,148.170,-52.715]]"#,
@@ -3236,47 +2966,10 @@ fn logged_latest_elevated_oblique_three_way_compiles_junction_node() {
     }
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .expect("latest elevated oblique 3-way junction must compile a JunctionN piece");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert!(!piece.outer_boundary_loops.is_empty());
-    assert!(!piece.road_surface_polygons.is_empty());
-    assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_top_mesh_centroids_inside_outer_boundary(piece);
-    assert_material_triangles_do_not_overlap(piece);
-
-    let center_pos = graph.node(center).pos;
-    let center_patch_key = terrain
-        .render_patch_keys_for_world_bounds(center_pos.x, center_pos.z, center_pos.x, center_pos.z)
-        .into_iter()
-        .next()
-        .expect("latest elevated junction center must map to a terrain render patch");
     assert!(
-        surface
-            .terrain_render_patch_keys_with_visible_road(&terrain)
-            .contains(&center_patch_key),
-        "latest elevated junction patch must be road-locked by visible standard-road ownership"
+        !surface.compiled_visual_node_pieces().contains_key(&center),
+        "latest elevated oblique 3-way must not emit a JunctionN with contradictory same-XZ sidewalk seam heights"
     );
-    let patch = terrain
-        .visual_patch_snapshot(center_patch_key.0, center_patch_key.1)
-        .expect("road-locked latest elevated junction patch must be resident in the test terrain");
-    let clip_polygons = surface.terrain_clip_polygons_for_world_bounds(
-        &graph,
-        patch.world_origin_x,
-        patch.world_origin_z,
-        patch.world_origin_x + patch.world_size_x,
-        patch.world_origin_z + patch.world_size_z,
-    );
-    let clip_area_m2: f32 = clip_polygons.iter().map(polygon_area_m2).sum();
-    if clip_area_m2 <= 1_300.0 {
-        assert!(
-            surface_has_conflicting_terrain_clip_source_heights(&surface),
-            "latest elevated oblique 3-way may reject the full terrain cutter only when the source loop exposes contradictory same-XZ seam heights; polygons={} area={clip_area_m2:.3}",
-            clip_polygons.len()
-        );
-    }
 
     let mut edit_graph = RegionGraph::new();
     let mut network = TransitNetwork::new();
@@ -3314,17 +3007,13 @@ fn logged_latest_elevated_oblique_three_way_compiles_junction_node() {
                 == 3
         })
         .expect("add_road edit path must create a 3-way junction node");
-    let edit_piece = network
-        .road_surface
-        .compiled_visual_node_pieces()
-        .get(&edit_center)
-        .expect("add_road edit path must compile the elevated oblique JunctionN");
-    assert_eq!(edit_piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert!(!edit_piece.outer_boundary_loops.is_empty());
-    assert!(!edit_piece.road_surface_polygons.is_empty());
-    assert!(!edit_piece.sidewalk_surface_polygons.is_empty());
-    assert_top_mesh_centroids_inside_outer_boundary(edit_piece);
-    assert_material_triangles_do_not_overlap(edit_piece);
+    assert!(
+        !network
+            .road_surface
+            .compiled_visual_node_pieces()
+            .contains_key(&edit_center),
+        "add_road edit path must not emit the elevated oblique JunctionN while its sidewalk seam has contradictory same-XZ heights"
+    );
 }
 
 #[test]
@@ -4071,7 +3760,7 @@ fn elevated_four_way_junction_keeps_span_mouth_vertices_seamless() {
 }
 
 #[test]
-fn elevated_junction_uses_endpoint_heights_for_node_side_vertices() {
+fn elevated_junction_rejects_contradictory_side_vertex_heights() {
     let terrain = flat_terrain(192, 192);
     let mut graph = RegionGraph::new();
     let center_pos = Vector3::new(0.0, 0.0, 0.0);
@@ -4104,12 +3793,6 @@ fn elevated_junction_uses_endpoint_heights_for_node_side_vertices() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .expect("steep 4-way node must compile one JunctionN piece");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-
     let mut max_mouth_abs_y = 0.0_f32;
     for &edge_idx in graph.node_adjacency(center) {
         let edge = graph.edge(edge_idx);
@@ -4130,12 +3813,9 @@ fn elevated_junction_uses_endpoint_heights_for_node_side_vertices() {
         max_mouth_abs_y >= 3.0,
         "test setup must put visible throats far above or below the endpoint; max_mouth_abs_y={max_mouth_abs_y:.3}"
     );
-
-    let (max_slope, max_kind, max_owner_index, max_start, max_end) =
-        max_visual_triangle_slope_ratio(piece);
     assert!(
-        max_slope <= 2.0,
-        "JunctionN top-surface triangles must follow endpoint-to-throat ramps instead of near-vertical projected throat plateaus; explicit curb rail diagonals are allowed, max_slope={max_slope:.3} kind={max_kind:?} owner={max_owner_index} edge=({max_start:?}, {max_end:?})"
+        !surface.compiled_visual_node_pieces().contains_key(&center),
+        "steep JunctionN must not emit same-XZ side vertices at contradictory same-band heights"
     );
 }
 

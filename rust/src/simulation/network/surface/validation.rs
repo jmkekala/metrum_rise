@@ -419,6 +419,29 @@ impl NodeValidationReport {
         })
     }
 
+    pub(crate) fn from_outer_boundary_height_conflict(
+        node_id: u32,
+        piece_kind: RoadSurfaceVisualNodePieceKind,
+        _owner: RoadSurfaceBandKind,
+        _owner_index: usize,
+        point: NodeArrangementKey,
+        existing_height_mm: i64,
+        incoming_height_mm: i64,
+    ) -> Self {
+        Self::single_diagnostic(NodeGeometryDiagnostic {
+            node_id,
+            piece_kind,
+            stage: NodeGeometryStage::Validation,
+            backend: NodeGeometryBackend::Parry2d,
+            kind: NodeGeometryDiagnosticKind::HeightConflict {
+                x_mm: point.x_mm(),
+                z_mm: point.z_mm(),
+                existing_height_mm,
+                incoming_height_mm,
+            },
+        })
+    }
+
     fn single_diagnostic(diagnostic: NodeGeometryDiagnostic) -> Self {
         Self {
             node_id: diagnostic.node_id,

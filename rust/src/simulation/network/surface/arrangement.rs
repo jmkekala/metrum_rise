@@ -305,6 +305,14 @@ impl NodeArrangement {
             height_source: height_source.clone(),
         };
 
+        if let Some(conflict) = self.same_band_height_conflict_at_key(key, height_key, &owners) {
+            return Err(NodeArrangementError::DuplicateVertexHeightConflict {
+                key,
+                existing_height_mm: conflict.0,
+                incoming_height_mm: height_key.0,
+            });
+        }
+
         if let Some(existing_id) = self.vertex_by_context_key.get(&context_key).copied() {
             let existing = &mut self.vertices[existing_id.0];
             if existing.height_key != height_key {
@@ -329,6 +337,22 @@ impl NodeArrangement {
             height_source,
             seam_sources,
         ))
+    }
+
+    fn same_band_height_conflict_at_key(
+        &self,
+        key: NodeArrangementKey,
+        height_key: NodeArrangementHeightKey,
+        owners: &[NodeBandOwner],
+    ) -> Option<NodeArrangementHeightKey> {
+        self.vertices
+            .iter()
+            .find(|vertex| {
+                vertex.key == key
+                    && vertex.height_key != height_key
+                    && owners_share_band_kind(&vertex.owners, owners)
+            })
+            .map(|vertex| vertex.height_key)
     }
 
     fn push_vertex(
@@ -994,6 +1018,11 @@ fn canonical_non_empty_owners(
     Ok(owners)
 }
 
+fn owners_share_band_kind(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
+    a.iter()
+        .any(|a_owner| b.iter().any(|b_owner| a_owner.kind == b_owner.kind))
+}
+
 fn canonical_sources<T>(sources: impl IntoIterator<Item = T>) -> Vec<T>
 where
     T: Ord,
@@ -1123,6 +1152,35 @@ mod tests {
             [owner(RoadSurfaceBandKind::Sidewalk, 0)],
             height_source(),
             [seam_source(0)],
+        );
+
+        assert!(matches!(
+            result,
+            Err(NodeArrangementError::DuplicateVertexHeightConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn duplicate_arrangement_vertex_key_rejects_same_band_height_conflict_across_sources() {
+        let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::JunctionN);
+        let point = RoadVec2::new(0.0, 0.0);
+
+        arrangement
+            .insert_vertex(
+                point,
+                1.0,
+                [owner(RoadSurfaceBandKind::Sidewalk, 0)],
+                height_source(),
+                [seam_source(0)],
+            )
+            .expect("first sidewalk vertex should insert");
+
+        let result = arrangement.insert_vertex(
+            point,
+            2.0,
+            [owner(RoadSurfaceBandKind::Sidewalk, 1)],
+            other_height_source(),
+            [seam_source(1)],
         );
 
         assert!(matches!(
