@@ -671,6 +671,7 @@ impl NodeGeometryDiagnostic {
                 },
             ),
             NodeArrangementError::InputSolutionMismatch { .. }
+            | NodeArrangementError::TriangulationRegionCountMismatch { .. }
             | NodeArrangementError::MissingHeightRegion { .. }
             | NodeArrangementError::RegionOwnerMismatch { .. }
             | NodeArrangementError::MissingTriangulatedVertex { .. } => (
@@ -1396,7 +1397,7 @@ impl NodeValidationEdgeKey {
 mod tests {
     use super::*;
     use crate::simulation::network::surface::arrangement::{
-        NodeArrangementDiagnostic, NodeArrangementKey, NodeBandOwner,
+        NodeArrangement, NodeArrangementDiagnostic, NodeArrangementKey, NodeBandOwner,
     };
     use crate::simulation::network::surface::backend::RoadVec2;
     use crate::simulation::network::surface::height::NodeHeightSolution;
@@ -1476,8 +1477,10 @@ mod tests {
             NodeBooleanOwnership::from_rails(&rails).expect("test rails should produce ownership");
         let heights = NodeHeightSolution::from_ownership_and_input(&input, &ownership)
             .expect("test ownership should height canonical regions");
-        NodeTriangulationSolution::from_height_solution(&heights)
-            .expect("test heights should triangulate")
+        let arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("test heights should produce canonical arrangement");
+        NodeTriangulationSolution::from_arrangement(&arrangement)
+            .expect("test arrangement should triangulate")
     }
 
     #[test]

@@ -2,9 +2,11 @@
 
 #![allow(dead_code)]
 
-use super::arrangement::{NodeBandOwner, NodeHeightSource};
+use super::arrangement::{
+    NodeArrangement, NodeArrangementVertex, NodeArrangementVertexId, NodeBandOwner,
+    NodeHeightSource, NodeOwnedRegion,
+};
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
-use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
     NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
@@ -107,42 +109,48 @@ struct NodeTriangulationPointKey {
 struct NodeTriangulationHeightKey(i64);
 
 impl RoadSurfaceSystem {
-    pub(super) fn build_node_triangulation_from_height_solution(
-        heights: &NodeHeightSolution,
+    pub(super) fn build_node_triangulation_from_arrangement(
+        arrangement: &NodeArrangement,
     ) -> Result<NodeTriangulationSolution, NodeTriangulationError> {
-        NodeTriangulationSolution::from_height_solution(heights)
+        NodeTriangulationSolution::from_arrangement(arrangement)
     }
 }
 
 impl NodeTriangulationSolution {
-    pub(crate) fn from_height_solution(
-        heights: &NodeHeightSolution,
+    pub(crate) fn from_arrangement(
+        arrangement: &NodeArrangement,
     ) -> Result<Self, NodeTriangulationError> {
-        if heights.regions.is_empty() {
+        if arrangement.regions().is_empty() {
             return Err(NodeTriangulationError::EmptyHeightSolution {
-                node_id: heights.node_id,
+                node_id: arrangement.node_id(),
             });
         }
 
-        let mut regions = Vec::with_capacity(heights.regions.len());
-        for (region_index, region) in heights.regions.iter().enumerate() {
-            regions.push(triangulate_region(heights.node_id, region_index, region)?);
+        let mut regions = Vec::with_capacity(arrangement.regions().len());
+        for (region_index, region) in arrangement.regions().iter().enumerate() {
+            regions.push(triangulate_arrangement_region(
+                arrangement.node_id(),
+                region_index,
+                arrangement,
+                region,
+            )?);
         }
 
         Ok(Self {
-            node_id: heights.node_id,
-            piece_kind: heights.piece_kind,
+            node_id: arrangement.node_id(),
+            piece_kind: arrangement.piece_kind(),
             regions,
         })
     }
 }
 
-fn triangulate_region(
+fn triangulate_arrangement_region(
     node_id: u32,
     region_index: usize,
-    region: &NodeHeightedRegion,
+    arrangement: &NodeArrangement,
+    region: &NodeOwnedRegion,
 ) -> Result<NodeTriangulatedRegion, NodeTriangulationError> {
-    if region.shape.is_empty() {
+    if region.outer_loop().is_empty() {
         return Err(NodeTriangulationError::EmptyRegionShape {
             node_id,
             region_index,
@@ -152,12 +160,23 @@ fn triangulate_region(
     let mut vertices = Vec::new();
     let mut vertex_lookup = BTreeMap::new();
     let mut constraints = BTreeSet::new();
-    for (contour_index, contour) in region.shape.iter().enumerate() {
-        push_region_constraint_loop(
+    push_arrangement_constraint_loop(
+        node_id,
+        region_index,
+        0,
+        region.outer_loop(),
+        arrangement,
+        &mut vertices,
+        &mut vertex_lookup,
+        &mut constraints,
+    )?;
+    for (hole_index, hole) in region.holes().iter().enumerate() {
+        push_arrangement_constraint_loop(
             node_id,
             region_index,
-            contour_index,
-            contour,
+            hole_index + 1,
+            hole,
+            arrangement,
             &mut vertices,
             &mut vertex_lookup,
             &mut constraints,
@@ -186,7 +205,7 @@ fn triangulate_region(
         });
     }
 
-    let owner_shape = overlay_shape_from_heighted_region(region);
+    let owner_shape = overlay_shape_from_arrangement_region(arrangement, region);
     let mut triangles = Vec::new();
     for face in cdt.inner_faces() {
         let [a, b, c] = face.vertices();
@@ -211,24 +230,26 @@ fn triangulate_region(
 
     reject_triangle_coverage_mismatch(node_id, region_index, &owner_shape, &triangles, &vertices)?;
 
+    let owner = region.owner();
     Ok(NodeTriangulatedRegion {
-        kind: region.kind,
-        owner: region.owner,
-        source_mouth_order_index: region.source_mouth_order_index,
-        source_band_index: region.source_band_index,
+        kind: owner.kind(),
+        owner,
+        source_mouth_order_index: region.source_mouth_order_index(),
+        source_band_index: region.source_band_index(),
         vertices,
         boundary_constraints: constraints.into_iter().collect(),
         triangles,
-        area_m2: region.area_m2,
-        height_sources: region.height_sources.clone(),
+        area_m2: region.area_m2(),
+        height_sources: region.height_sources().to_vec(),
     })
 }
 
-fn push_region_constraint_loop(
+fn push_arrangement_constraint_loop(
     node_id: u32,
     region_index: usize,
     contour_index: usize,
-    contour: &[NodeHeightedVertex],
+    contour: &[NodeArrangementVertexId],
+    arrangement: &NodeArrangement,
     vertices: &mut Vec<NodeTriangulatedVertex>,
     vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
     constraints: &mut BTreeSet<[usize; 2]>,
@@ -244,7 +265,17 @@ fn push_region_constraint_loop(
 
     let indices = contour
         .iter()
-        .map(|vertex| insert_region_vertex(node_id, region_index, vertex, vertices, vertex_lookup))
+        .map(|vertex_id| {
+            let vertex = arrangement.vertices().get(vertex_id.index()).ok_or(
+                NodeTriangulationError::DegenerateRegionContour {
+                    node_id,
+                    region_index,
+                    contour_index,
+                    vertex_count: contour.len(),
+                },
+            )?;
+            insert_arrangement_vertex(node_id, region_index, vertex, vertices, vertex_lookup)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     for index in 0..indices.len() {
         let constraint =
@@ -256,15 +287,15 @@ fn push_region_constraint_loop(
     Ok(())
 }
 
-fn insert_region_vertex(
+fn insert_arrangement_vertex(
     node_id: u32,
     region_index: usize,
-    vertex: &NodeHeightedVertex,
+    vertex: &NodeArrangementVertex,
     vertices: &mut Vec<NodeTriangulatedVertex>,
     vertex_lookup: &mut BTreeMap<NodeTriangulationPointKey, (usize, NodeTriangulationHeightKey)>,
 ) -> Result<usize, NodeTriangulationError> {
-    let point_key = NodeTriangulationPointKey::from_vertex(vertex);
-    let height_key = NodeTriangulationHeightKey::from_vertex(vertex);
+    let point_key = NodeTriangulationPointKey::from_arrangement_vertex(vertex);
+    let height_key = NodeTriangulationHeightKey::from_arrangement_vertex(vertex);
     if let Some((index, existing_height_key)) = vertex_lookup.get(&point_key).copied() {
         if existing_height_key != height_key {
             return Err(NodeTriangulationError::DuplicateVertexHeightConflict {
@@ -280,9 +311,10 @@ fn insert_region_vertex(
     }
 
     let index = vertices.len();
+    let point_xz = vertex.point_xz();
     vertices.push(NodeTriangulatedVertex {
-        point_world: RoadVec3::new(vertex.point_xz.x, vertex.height_m, vertex.point_xz.y),
-        height_sources: vertex.height_sources.clone(),
+        point_world: RoadVec3::new(point_xz.x, vertex.height_m(), point_xz.y),
+        height_sources: vec![vertex.height_source().clone()],
     });
     vertex_lookup.insert(point_key, (index, height_key));
     Ok(index)
@@ -387,14 +419,20 @@ fn overlay_difference(
     Ok(shapes)
 }
 
-fn overlay_shape_from_heighted_region(region: &NodeHeightedRegion) -> NodeOverlayShape {
-    region
-        .shape
-        .iter()
+fn overlay_shape_from_arrangement_region(
+    arrangement: &NodeArrangement,
+    region: &NodeOwnedRegion,
+) -> NodeOverlayShape {
+    std::iter::once(region.outer_loop())
+        .chain(region.holes().iter().map(Vec::as_slice))
         .map(|contour| {
             contour
                 .iter()
-                .map(|vertex| [vertex.point_xz.x, vertex.point_xz.y])
+                .filter_map(|vertex_id| arrangement.vertices().get(vertex_id.index()))
+                .map(|vertex| {
+                    let point = vertex.point_xz();
+                    [point.x, point.y]
+                })
                 .collect::<Vec<_>>()
         })
         .collect()
@@ -473,10 +511,11 @@ fn quantize_point(value: f64) -> i64 {
 }
 
 impl NodeTriangulationPointKey {
-    fn from_vertex(vertex: &NodeHeightedVertex) -> Self {
+    fn from_arrangement_vertex(vertex: &NodeArrangementVertex) -> Self {
+        let point = vertex.point_xz();
         Self {
-            x_mm: quantize_point(vertex.point_xz.x),
-            z_mm: quantize_point(vertex.point_xz.y),
+            x_mm: quantize_point(point.x),
+            z_mm: quantize_point(point.y),
         }
     }
 
@@ -489,15 +528,18 @@ impl NodeTriangulationPointKey {
 }
 
 impl NodeTriangulationHeightKey {
-    fn from_vertex(vertex: &NodeHeightedVertex) -> Self {
-        Self(quantize_m(vertex.height_m))
+    fn from_arrangement_vertex(vertex: &NodeArrangementVertex) -> Self {
+        Self(quantize_m(vertex.height_m()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::network::surface::height::NodeHeightedRegion;
+    use crate::simulation::network::surface::arrangement::NodeSeamSource;
+    use crate::simulation::network::surface::height::{
+        NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex,
+    };
     use crate::simulation::network::surface::input::NodeArrangementInput;
     use crate::simulation::network::surface::ownership::NodeBooleanOwnership;
     use crate::simulation::network::surface::rails::NodeRailContourSet;
@@ -574,11 +616,19 @@ mod tests {
             .expect("test ownership should height canonical regions")
     }
 
+    fn triangulation_from_height_solution(
+        heights: &NodeHeightSolution,
+    ) -> Result<NodeTriangulationSolution, NodeTriangulationError> {
+        let arrangement = NodeArrangement::from_height_solution(heights)
+            .expect("height solution should produce canonical arrangement before CDT");
+        NodeTriangulationSolution::from_arrangement(&arrangement)
+    }
+
     #[test]
     fn triangulates_heighted_owned_regions_with_spade() {
         let heights = solved_height_solution();
-        let solution = NodeTriangulationSolution::from_height_solution(&heights)
-            .expect("heighted regions should triangulate");
+        let solution = triangulation_from_height_solution(&heights)
+            .expect("arranged regions should triangulate");
 
         assert_eq!(solution.node_id, 42);
         assert_eq!(
@@ -608,7 +658,7 @@ mod tests {
             piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
             regions: vec![flat_region_with_hole()],
         };
-        let solution = NodeTriangulationSolution::from_height_solution(&heights)
+        let solution = triangulation_from_height_solution(&heights)
             .expect("owned region with an explicit hole should triangulate");
         let region = &solution.regions[0];
 
@@ -648,7 +698,7 @@ mod tests {
                 seam_constraints: Vec::new(),
             }],
         };
-        let solution = NodeTriangulationSolution::from_height_solution(&heights)
+        let solution = triangulation_from_height_solution(&heights)
             .expect("overlay-grid-distinct boundary vertices must remain valid CDT input");
         let region = &solution.regions[0];
 
@@ -667,23 +717,46 @@ mod tests {
 
     #[test]
     fn rejects_degenerate_region_contours() {
-        let heights = NodeHeightSolution {
-            node_id: 92,
-            piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
-            regions: vec![NodeHeightedRegion {
-                kind: RoadSurfaceBandKind::Carriageway,
-                owner: NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0),
-                source_mouth_order_index: 0,
-                source_band_index: 0,
-                shape: vec![vec![flat_vertex(0.0, 0.0), flat_vertex(1.0, 0.0)]],
-                area_m2: 0.0,
-                height_sources: Vec::new(),
-                seam_constraints: Vec::new(),
+        let owner = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let mut arrangement = NodeArrangement::new(92, RoadSurfaceVisualNodePieceKind::Bend);
+        let first = arrangement
+            .insert_vertex(
+                super::super::backend::RoadVec2::new(0.0, 0.0),
+                2.0,
+                [owner],
+                NodeHeightSource::ArrangementConstraint {
+                    constraint_index: 0,
+                },
+                [NodeSeamSource::FootprintBoundary { owner_index: 0 }],
+            )
+            .expect("test vertex should enter arrangement");
+        let second = arrangement
+            .insert_vertex(
+                super::super::backend::RoadVec2::new(1.0, 0.0),
+                2.0,
+                [owner],
+                NodeHeightSource::ArrangementConstraint {
+                    constraint_index: 1,
+                },
+                [NodeSeamSource::FootprintBoundary { owner_index: 0 }],
+            )
+            .expect("test vertex should enter arrangement");
+        arrangement.push_region(
+            owner,
+            0,
+            0,
+            vec![first, second],
+            Vec::new(),
+            Vec::new(),
+            0.0,
+            vec![NodeHeightSource::ArrangementConstraint {
+                constraint_index: 0,
             }],
-        };
+            Vec::new(),
+        );
 
         assert_eq!(
-            NodeTriangulationSolution::from_height_solution(&heights),
+            NodeTriangulationSolution::from_arrangement(&arrangement),
             Err(NodeTriangulationError::DegenerateRegionContour {
                 node_id: 92,
                 region_index: 0,

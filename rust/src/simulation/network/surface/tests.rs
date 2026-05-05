@@ -796,10 +796,17 @@ fn assert_outer_boundary_vertices_are_emitted_top_vertices(piece: &RoadSurfaceVi
         "node piece must emit visible top vertices before exact boundary matching can be checked"
     );
     let tolerance_m = SAMPLE_EPSILON_M * 2.0;
-    for boundary_point in piece
-        .outer_boundary_loops
-        .iter()
-        .flat_map(|polygon| polygon.points_world.iter())
+    for (loop_index, boundary_point) in
+        piece
+            .outer_boundary_loops
+            .iter()
+            .enumerate()
+            .flat_map(|(loop_index, polygon)| {
+                polygon
+                    .points_world
+                    .iter()
+                    .map(move |point| (loop_index, point))
+            })
     {
         let matching_vertex = top_vertices.iter().any(|candidate| {
             Vector2::new(
@@ -810,9 +817,16 @@ fn assert_outer_boundary_vertices_are_emitted_top_vertices(piece: &RoadSurfaceVi
                 <= tolerance_m
                 && (candidate.y - boundary_point.y).abs() <= tolerance_m
         });
+        let nearest = top_vertices.iter().min_by(|a, b| {
+            let a_delta = Vector2::new(a.x - boundary_point.x, a.z - boundary_point.z).length()
+                + (a.y - boundary_point.y).abs();
+            let b_delta = Vector2::new(b.x - boundary_point.x, b.z - boundary_point.z).length()
+                + (b.y - boundary_point.y).abs();
+            a_delta.total_cmp(&b_delta)
+        });
         assert!(
             matching_vertex,
-            "node outer boundary vertex must be emitted by the visible top mesh; boundary={boundary_point:?}"
+            "node outer boundary vertex must be emitted by the visible top mesh; loop={loop_index} boundary={boundary_point:?} nearest={nearest:?}"
         );
     }
 }
@@ -3412,8 +3426,10 @@ fn logged_flat_oblique_t_junction_compiles_node_surface() {
         .expect("logged flat oblique T ownership must compile");
     let heights = RoadSurfaceSystem::build_node_height_solution_from_ownership(&input, &ownership)
         .expect("logged flat oblique T heights must compile");
-    RoadSurfaceSystem::build_node_triangulation_from_height_solution(&heights)
-        .expect("logged flat oblique T height regions must triangulate");
+    let arrangement = super::arrangement::NodeArrangement::from_height_solution(&heights)
+        .expect("logged flat oblique T heights must produce canonical arrangement");
+    RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement)
+        .expect("logged flat oblique T arrangement regions must triangulate");
 
     let piece = surface
         .compiled_visual_node_pieces()
@@ -3591,7 +3607,7 @@ fn arbitrary_five_way_junction_exports_canonical_outer_boundary() {
     assert!(!piece.sidewalk_surface_polygons.is_empty());
     assert_node_piece_uses_band_owned_regions(piece);
     assert_node_piece_has_curb_and_sidewalk_owners(piece);
-    assert_outer_boundary_vertices_are_emitted_top_vertices(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
     assert_top_mesh_centroids_inside_outer_boundary(piece);
     assert_material_triangles_do_not_overlap(piece);
 }

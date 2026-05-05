@@ -128,10 +128,13 @@ pub(crate) struct NodeArrangementEdge {
 pub(crate) struct NodeOwnedRegion {
     id: NodeOwnedRegionId,
     owner: NodeBandOwner,
+    source_mouth_order_index: usize,
+    source_band_index: usize,
     outer_loop: Vec<NodeArrangementVertexId>,
     holes: Vec<Vec<NodeArrangementVertexId>>,
     boundary_edges: Vec<NodeArrangementEdgeId>,
-    height_source: NodeHeightSource,
+    area_m2: f32,
+    height_sources: Vec<NodeHeightSource>,
     seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
 
@@ -183,6 +186,10 @@ pub(crate) enum NodeArrangementError {
     },
     MissingHeightRegion {
         region_index: usize,
+    },
+    TriangulationRegionCountMismatch {
+        arrangement_region_count: usize,
+        triangulation_region_count: usize,
     },
     RegionOwnerMismatch {
         region_index: usize,
@@ -377,20 +384,26 @@ impl NodeArrangement {
     pub(crate) fn push_region(
         &mut self,
         owner: NodeBandOwner,
+        source_mouth_order_index: usize,
+        source_band_index: usize,
         outer_loop: Vec<NodeArrangementVertexId>,
         holes: Vec<Vec<NodeArrangementVertexId>>,
         boundary_edges: Vec<NodeArrangementEdgeId>,
-        height_source: NodeHeightSource,
+        area_m2: f32,
+        height_sources: Vec<NodeHeightSource>,
         seam_constraints: Vec<NodeRegionSeamConstraint>,
     ) -> NodeOwnedRegionId {
         let id = NodeOwnedRegionId(self.regions.len());
         self.regions.push(NodeOwnedRegion {
             id,
             owner,
+            source_mouth_order_index,
+            source_band_index,
             outer_loop,
             holes,
             boundary_edges,
-            height_source,
+            area_m2,
+            height_sources,
             seam_constraints,
         });
         id
@@ -412,32 +425,15 @@ impl NodeArrangement {
         id
     }
 
-    pub(crate) fn from_height_solution_and_triangulation(
+    pub(crate) fn from_height_solution(
         heights: &NodeHeightSolution,
-        triangulation: &NodeTriangulationSolution,
     ) -> Result<Self, NodeArrangementError> {
-        if heights.node_id != triangulation.node_id
-            || heights.piece_kind != triangulation.piece_kind
-        {
-            return Err(NodeArrangementError::InputSolutionMismatch {
-                height_node_id: heights.node_id,
-                triangulation_node_id: triangulation.node_id,
-                height_piece_kind: heights.piece_kind,
-                triangulation_piece_kind: triangulation.piece_kind,
-            });
-        }
-
         let mut arrangement = Self::new(heights.node_id, heights.piece_kind);
-        let mut pending_regions = Vec::with_capacity(triangulation.regions.len());
+        let mut pending_regions = Vec::with_capacity(heights.regions.len());
         let mut edge_owners = BTreeMap::<NodeArrangementEdgeKey, Vec<NodeBandOwner>>::new();
         let mut edge_use_counts = BTreeMap::<NodeArrangementEdgeKey, usize>::new();
 
-        for (region_index, triangulated_region) in triangulation.regions.iter().enumerate() {
-            let height_region = heights
-                .regions
-                .get(region_index)
-                .ok_or(NodeArrangementError::MissingHeightRegion { region_index })?;
-            validate_region_pair(region_index, height_region, triangulated_region)?;
+        for (region_index, height_region) in heights.regions.iter().enumerate() {
             let pending = arrangement.pending_region(region_index, height_region)?;
             for edge in pending.loop_edges(&arrangement.vertices) {
                 *edge_use_counts.entry(edge.key).or_default() += 1;
@@ -449,7 +445,6 @@ impl NodeArrangement {
             pending_regions.push(pending);
         }
 
-        let mut arrangement_region_ids = Vec::with_capacity(pending_regions.len());
         for pending in pending_regions {
             let mut boundary_edges = Vec::with_capacity(pending.edge_count());
             for edge in pending.loop_edges(&arrangement.vertices) {
@@ -503,42 +498,73 @@ impl NodeArrangement {
                     source_constraint_indices,
                 ));
             }
-            let region_id = arrangement.push_region(
+            arrangement.push_region(
                 pending.owner,
+                pending.source_mouth_order_index,
+                pending.source_band_index,
                 pending.outer_loop,
                 pending.holes,
                 boundary_edges,
-                primary_height_source(&pending.height_sources),
+                pending.area_m2,
+                pending.height_sources,
                 pending.seam_constraints,
             );
-            arrangement_region_ids.push(region_id);
+        }
+
+        Ok(arrangement)
+    }
+
+    pub(crate) fn attach_triangulation(
+        &mut self,
+        triangulation: &NodeTriangulationSolution,
+    ) -> Result<(), NodeArrangementError> {
+        if self.node_id != triangulation.node_id || self.piece_kind != triangulation.piece_kind {
+            return Err(NodeArrangementError::InputSolutionMismatch {
+                height_node_id: self.node_id,
+                triangulation_node_id: triangulation.node_id,
+                height_piece_kind: self.piece_kind,
+                triangulation_piece_kind: triangulation.piece_kind,
+            });
+        }
+        if self.regions.len() != triangulation.regions.len() {
+            return Err(NodeArrangementError::TriangulationRegionCountMismatch {
+                arrangement_region_count: self.regions.len(),
+                triangulation_region_count: triangulation.regions.len(),
+            });
         }
 
         for (region_index, triangulated_region) in triangulation.regions.iter().enumerate() {
-            let region_id = arrangement_region_ids[region_index];
+            let region_id = NodeOwnedRegionId(region_index);
+            let arrangement_region = self
+                .regions
+                .get(region_index)
+                .ok_or(NodeArrangementError::MissingHeightRegion { region_index })?;
+            if arrangement_region.owner != triangulated_region.owner {
+                return Err(NodeArrangementError::RegionOwnerMismatch { region_index });
+            }
             for triangle in &triangulated_region.triangles {
                 let vertices = [
-                    arrangement.insert_triangulated_vertex(
+                    self.insert_triangulated_vertex(
                         region_index,
                         triangulated_region,
                         triangle.vertices[0],
                     )?,
-                    arrangement.insert_triangulated_vertex(
+                    self.insert_triangulated_vertex(
                         region_index,
                         triangulated_region,
                         triangle.vertices[1],
                     )?,
-                    arrangement.insert_triangulated_vertex(
+                    self.insert_triangulated_vertex(
                         region_index,
                         triangulated_region,
                         triangle.vertices[2],
                     )?,
                 ];
-                arrangement.push_face(region_id, triangulated_region.owner, vertices);
+                self.push_face(region_id, triangulated_region.owner, vertices);
             }
         }
 
-        Ok(arrangement)
+        Ok(())
     }
 
     fn pending_region(
@@ -573,8 +599,11 @@ impl NodeArrangement {
         Ok(PendingArrangementRegion {
             region_index,
             owner: region.owner,
+            source_mouth_order_index: region.source_mouth_order_index,
+            source_band_index: region.source_band_index,
             outer_loop,
             holes,
+            area_m2: region.area_m2,
             height_sources: region.height_sources.clone(),
             seam_constraints: region.seam_constraints.clone(),
         })
@@ -650,6 +679,40 @@ impl NodeArrangementVertex {
     pub(crate) fn height_m(&self) -> f64 {
         self.height_m
     }
+
+    pub(crate) fn height_source(&self) -> &NodeHeightSource {
+        &self.height_source
+    }
+}
+
+impl NodeOwnedRegion {
+    pub(crate) fn owner(&self) -> NodeBandOwner {
+        self.owner
+    }
+
+    pub(crate) fn source_mouth_order_index(&self) -> usize {
+        self.source_mouth_order_index
+    }
+
+    pub(crate) fn source_band_index(&self) -> usize {
+        self.source_band_index
+    }
+
+    pub(crate) fn outer_loop(&self) -> &[NodeArrangementVertexId] {
+        &self.outer_loop
+    }
+
+    pub(crate) fn holes(&self) -> &[Vec<NodeArrangementVertexId>] {
+        &self.holes
+    }
+
+    pub(crate) fn area_m2(&self) -> f32 {
+        self.area_m2
+    }
+
+    pub(crate) fn height_sources(&self) -> &[NodeHeightSource] {
+        &self.height_sources
+    }
 }
 
 impl NodeArrangementEdge {
@@ -700,8 +763,11 @@ fn quantize_m(value_m: f64) -> i64 {
 struct PendingArrangementRegion {
     region_index: usize,
     owner: NodeBandOwner,
+    source_mouth_order_index: usize,
+    source_band_index: usize,
     outer_loop: Vec<NodeArrangementVertexId>,
     holes: Vec<Vec<NodeArrangementVertexId>>,
+    area_m2: f32,
     height_sources: Vec<NodeHeightSource>,
     seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
@@ -860,19 +926,6 @@ fn point_key_lies_on_segment(
     inside_x && inside_z
 }
 
-fn validate_region_pair(
-    region_index: usize,
-    height_region: &NodeHeightedRegion,
-    triangulated_region: &NodeTriangulatedRegion,
-) -> Result<(), NodeArrangementError> {
-    if height_region.kind == triangulated_region.kind
-        && height_region.owner == triangulated_region.owner
-    {
-        return Ok(());
-    }
-    Err(NodeArrangementError::RegionOwnerMismatch { region_index })
-}
-
 fn primary_height_source(sources: &[NodeHeightSource]) -> NodeHeightSource {
     sources
         .first()
@@ -965,7 +1018,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::super::triangulation::{NodeTriangulatedTriangle, NodeTriangulatedVertex};
     use super::*;
 
     fn owner(kind: RoadSurfaceBandKind, owner_index: usize) -> NodeBandOwner {
@@ -1155,36 +1207,8 @@ mod tests {
                 ),
             ],
         };
-        let triangulation = NodeTriangulationSolution {
-            node_id: 11,
-            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-            regions: vec![
-                test_triangulated_region(
-                    RoadSurfaceBandKind::Carriageway,
-                    carriageway,
-                    vec![
-                        road_vertex(0.0, 0.0, 0.0),
-                        road_vertex(1.0, 0.0, 0.0),
-                        road_vertex(1.0, 0.0, 1.0),
-                        road_vertex(0.0, 0.0, 1.0),
-                    ],
-                ),
-                test_triangulated_region(
-                    RoadSurfaceBandKind::Sidewalk,
-                    sidewalk,
-                    vec![
-                        road_vertex(1.0, 0.0, 0.0),
-                        road_vertex(2.0, 0.0, 0.0),
-                        road_vertex(2.0, 0.0, 1.0),
-                        road_vertex(1.0, 0.0, 1.0),
-                    ],
-                ),
-            ],
-        };
-
-        let arrangement =
-            NodeArrangement::from_height_solution_and_triangulation(&heights, &triangulation)
-                .expect("matching height and triangulation should arrange");
+        let arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("height-owned regions should produce canonical arrangement");
 
         assert_eq!(arrangement.vertices().len(), 8);
         assert!(arrangement.edges().iter().any(|edge| {
@@ -1206,11 +1230,9 @@ mod tests {
         let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
         let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
         let heights = two_region_height_solution(carriageway, sidewalk, Vec::new(), Vec::new());
-        let triangulation = two_region_triangulation(carriageway, sidewalk);
 
-        let arrangement =
-            NodeArrangement::from_height_solution_and_triangulation(&heights, &triangulation)
-                .expect("missing seam source is diagnostic-only until the full node model hardcut");
+        let arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("height-owned regions should produce canonical arrangement diagnostics");
 
         assert!(matches!(
             arrangement.diagnostics().first(),
@@ -1245,13 +1267,9 @@ mod tests {
         };
         let seams = vec![first, second];
         let heights = two_region_height_solution(carriageway, sidewalk, seams.clone(), seams);
-        let triangulation = two_region_triangulation(carriageway, sidewalk);
 
-        let arrangement =
-            NodeArrangement::from_height_solution_and_triangulation(&heights, &triangulation)
-                .expect(
-                    "ambiguous seam source is diagnostic-only until the full node model hardcut",
-                );
+        let arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("height-owned regions should produce canonical arrangement diagnostics");
 
         assert!(matches!(
             arrangement.diagnostics().first(),
@@ -1326,38 +1344,6 @@ mod tests {
         }
     }
 
-    fn two_region_triangulation(
-        carriageway: NodeBandOwner,
-        sidewalk: NodeBandOwner,
-    ) -> NodeTriangulationSolution {
-        NodeTriangulationSolution {
-            node_id: 11,
-            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-            regions: vec![
-                test_triangulated_region(
-                    RoadSurfaceBandKind::Carriageway,
-                    carriageway,
-                    vec![
-                        road_vertex(0.0, 0.0, 0.0),
-                        road_vertex(1.0, 0.0, 0.0),
-                        road_vertex(1.0, 0.0, 1.0),
-                        road_vertex(0.0, 0.0, 1.0),
-                    ],
-                ),
-                test_triangulated_region(
-                    RoadSurfaceBandKind::Sidewalk,
-                    sidewalk,
-                    vec![
-                        road_vertex(1.0, 0.0, 0.0),
-                        road_vertex(2.0, 0.0, 0.0),
-                        road_vertex(2.0, 0.0, 1.0),
-                        road_vertex(1.0, 0.0, 1.0),
-                    ],
-                ),
-            ],
-        }
-    }
-
     fn test_height_region_with_seams(
         kind: RoadSurfaceBandKind,
         owner: NodeBandOwner,
@@ -1376,42 +1362,10 @@ mod tests {
         }
     }
 
-    fn test_triangulated_region(
-        kind: RoadSurfaceBandKind,
-        owner: NodeBandOwner,
-        vertices: Vec<NodeTriangulatedVertex>,
-    ) -> NodeTriangulatedRegion {
-        NodeTriangulatedRegion {
-            kind,
-            owner,
-            source_mouth_order_index: owner.owner_index(),
-            source_band_index: owner.owner_index(),
-            vertices,
-            boundary_constraints: vec![[0, 1], [1, 2], [2, 3], [3, 0]],
-            triangles: vec![
-                NodeTriangulatedTriangle {
-                    vertices: [0, 1, 2],
-                },
-                NodeTriangulatedTriangle {
-                    vertices: [0, 2, 3],
-                },
-            ],
-            area_m2: 1.0,
-            height_sources: vec![height_source()],
-        }
-    }
-
     fn height_vertex(x: f64, z: f64, height_m: f64) -> NodeHeightedVertex {
         NodeHeightedVertex {
             point_xz: RoadVec2::new(x, z),
             height_m,
-            height_sources: vec![height_source()],
-        }
-    }
-
-    fn road_vertex(x: f64, y: f64, z: f64) -> NodeTriangulatedVertex {
-        NodeTriangulatedVertex {
-            point_world: super::super::backend::RoadVec3::new(x, y, z),
             height_sources: vec![height_source()],
         }
     }
