@@ -5,7 +5,7 @@ use super::{
     NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, NodeOverlayPoint, NodeOverlayPointKey,
     NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M, edge::CURB_BAND_WIDTH_M,
+    SAMPLE_EPSILON_M,
 };
 use godot::prelude::Vector3;
 use i_overlay::core::fill_rule::FillRule;
@@ -17,7 +17,6 @@ use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 
 // Overlay boolean operations quantize coordinates to millimetres for deterministic keys.
 const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
-const TERRAIN_CLIP_HAIRPIN_BASE_TOLERANCE_M: f64 = 0.02;
 type NodeIntContour = Vec<IntPoint>;
 type NodeIntShape = Vec<NodeIntContour>;
 type NodeIntShapes = Vec<NodeIntShape>;
@@ -53,6 +52,15 @@ struct TerrainClipSegmentSample {
 #[derive(Clone, Copy)]
 struct TerrainClipVertexSample {
     kind: RoadSurfaceTerrainClipEdgeKind,
+    source_length_m: f64,
+    y: f32,
+}
+
+#[derive(Clone, Copy)]
+struct TerrainClipEndpointSample {
+    kind: RoadSurfaceTerrainClipEdgeKind,
+    source_index: usize,
+    edge_index: usize,
     source_length_m: f64,
     y: f32,
 }
@@ -526,17 +534,29 @@ impl RoadSurfaceSystem {
         for index in 0..contour.len() {
             let start = contour[index];
             let end = contour[(index + 1) % contour.len()];
-            let Some(heights) =
-                Self::terrain_clip_segment_heights_from_source_edges(start, end, source_edges)
-            else {
+            let Some(heights) = Self::terrain_clip_segment_heights_from_source_edges(
+                start,
+                end,
+                source_edges,
+            )
+            .or_else(|| {
+                Self::terrain_clip_dust_connector_heights_from_source_edges(
+                    &contour,
+                    index,
+                    source_edges,
+                )
+            }) else {
+                let context =
+                    Self::terrain_clip_missing_source_context_label(start, end, source_edges);
                 crate::debug_log!(
                     "road",
-                    "terrain_clip_missing_outer_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3})",
+                    "terrain_clip_missing_outer_boundary_owner shape={} start=({:.3},{:.3}) end=({:.3},{:.3}) {}",
                     shape_index,
                     start[0],
                     start[1],
                     end[0],
-                    end[1]
+                    end[1],
+                    context
                 );
                 return None;
             };
@@ -590,7 +610,6 @@ impl RoadSurfaceSystem {
             compact.pop();
         }
         remove_repeated_overlay_point_spurs(&mut compact);
-        remove_overlay_hairpin_spikes(&mut compact);
         compact
     }
 
@@ -680,6 +699,191 @@ impl RoadSurfaceSystem {
             });
         }
         Self::consistent_terrain_clip_vertex_height(samples)
+    }
+
+    fn terrain_clip_dust_connector_heights_from_source_edges(
+        contour: &NodeOverlayContour,
+        segment_index: usize,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<TerrainClipSegmentHeights> {
+        let len = contour.len();
+        if len < 3 {
+            return None;
+        }
+
+        let start = contour[segment_index];
+        let end = contour[(segment_index + 1) % len];
+        if !Self::terrain_clip_connector_is_numeric_dust(contour, segment_index) {
+            return None;
+        }
+
+        let previous = contour[(segment_index + len - 1) % len];
+        let next = contour[(segment_index + 2) % len];
+        let previous_heights =
+            Self::terrain_clip_segment_heights_from_source_edges(previous, start, source_edges)?;
+        let next_heights =
+            Self::terrain_clip_segment_heights_from_source_edges(end, next, source_edges)?;
+        let start_sample = Self::consistent_terrain_clip_endpoint_sample(
+            Self::terrain_clip_endpoint_samples(start, source_edges),
+        )?;
+        let end_sample = Self::consistent_terrain_clip_endpoint_sample(
+            Self::terrain_clip_endpoint_samples(end, source_edges),
+        )?;
+
+        if start_sample.kind != end_sample.kind
+            || !Self::overlay_heights_equal(previous_heights.end_y, start_sample.y)
+            || !Self::overlay_heights_equal(next_heights.start_y, end_sample.y)
+            || !Self::overlay_heights_equal(start_sample.y, end_sample.y)
+        {
+            return None;
+        }
+
+        Some(TerrainClipSegmentHeights {
+            start_y: start_sample.y,
+            end_y: end_sample.y,
+        })
+    }
+
+    fn terrain_clip_connector_is_numeric_dust(
+        contour: &NodeOverlayContour,
+        segment_index: usize,
+    ) -> bool {
+        let len = contour.len();
+        if len < 4 {
+            return false;
+        }
+
+        let start = contour[segment_index];
+        let end = contour[(segment_index + 1) % len];
+        let connector_length_squared_m2 =
+            (start[0] - end[0]) * (start[0] - end[0])
+                + (start[1] - end[1]) * (start[1] - end[1]);
+        let budget_m2 = f64::from(Self::overlay_numeric_area_budget_m2(
+            Self::overlay_contour_perimeter_m(contour),
+            contour.len(),
+        ));
+        if connector_length_squared_m2 > budget_m2 {
+            return false;
+        }
+
+        let area_m2 = overlay_contour_area_local(contour).abs();
+        let remove_start_delta = contour_area_delta_after_removing_vertex(contour, segment_index)
+            .map(|area| (area - area_m2).abs());
+        let remove_end_delta =
+            contour_area_delta_after_removing_vertex(contour, (segment_index + 1) % len)
+                .map(|area| (area - area_m2).abs());
+        remove_start_delta
+            .into_iter()
+            .chain(remove_end_delta)
+            .any(|delta| delta <= budget_m2)
+    }
+
+    fn terrain_clip_endpoint_samples(
+        point: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Vec<TerrainClipEndpointSample> {
+        let point_key = Self::overlay_point_key(point);
+        let mut samples = Vec::new();
+        for &source_edge in source_edges {
+            let source_start = [
+                f64::from(source_edge.start.x),
+                f64::from(source_edge.start.z),
+            ];
+            let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
+            let source_length_m = ((source_end[0] - source_start[0]).powi(2)
+                + (source_end[1] - source_start[1]).powi(2))
+            .sqrt();
+            if Self::overlay_point_key(source_start) == point_key {
+                samples.push(TerrainClipEndpointSample {
+                    kind: source_edge.kind,
+                    source_index: source_edge.source_index,
+                    edge_index: source_edge.edge_index,
+                    source_length_m,
+                    y: source_edge.start.y,
+                });
+            }
+            if Self::overlay_point_key(source_end) == point_key {
+                samples.push(TerrainClipEndpointSample {
+                    kind: source_edge.kind,
+                    source_index: source_edge.source_index,
+                    edge_index: source_edge.edge_index,
+                    source_length_m,
+                    y: source_edge.end.y,
+                });
+            }
+        }
+        samples
+    }
+
+    fn consistent_terrain_clip_endpoint_sample<I>(heights: I) -> Option<TerrainClipEndpointSample>
+    where
+        I: IntoIterator<Item = TerrainClipEndpointSample>,
+    {
+        let mut heights = heights.into_iter().collect::<Vec<_>>();
+        if heights.is_empty() {
+            return None;
+        }
+        let best_priority = heights
+            .iter()
+            .map(|height| terrain_clip_edge_kind_priority(height.kind))
+            .min()?;
+        heights.retain(|height| terrain_clip_edge_kind_priority(height.kind) == best_priority);
+        let shortest_source = heights
+            .iter()
+            .map(|height| height.source_length_m)
+            .min_by(|a, b| a.total_cmp(b))?;
+        heights.retain(|height| {
+            (height.source_length_m - shortest_source).abs() <= f64::from(SAMPLE_EPSILON_M)
+        });
+        heights.sort_by_key(|height| {
+            (
+                Self::overlay_height_key(height.y),
+                height.source_index,
+                height.edge_index,
+            )
+        });
+        let first_y = heights[0].y;
+        if heights
+            .iter()
+            .all(|height| Self::overlay_heights_equal(height.y, first_y))
+        {
+            return Some(heights[0]);
+        }
+        None
+    }
+
+    fn terrain_clip_missing_source_context_label(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> String {
+        format!(
+            "start_sources={} end_sources={}",
+            Self::terrain_clip_endpoint_context_label(start, source_edges),
+            Self::terrain_clip_endpoint_context_label(end, source_edges)
+        )
+    }
+
+    fn terrain_clip_endpoint_context_label(
+        point: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> String {
+        let mut samples = Self::terrain_clip_endpoint_samples(point, source_edges)
+            .into_iter()
+            .map(|sample| {
+                format!(
+                    "{:?}:{}:{}@{:.3}",
+                    sample.kind, sample.source_index, sample.edge_index, sample.y
+                )
+            })
+            .collect::<Vec<_>>();
+        samples.sort();
+        samples.dedup();
+        if samples.is_empty() {
+            "none".to_string()
+        } else {
+            samples.into_iter().take(6).collect::<Vec<_>>().join("|")
+        }
     }
 
     fn terrain_clip_source_interval_on_segment(
@@ -918,9 +1122,7 @@ fn interpolate_height_f64(start_y: f32, end_y: f32, t: f64) -> f32 {
 }
 
 fn overlay_points_same_for_boundary(a: NodeOverlayPoint, b: NodeOverlayPoint) -> bool {
-    let dx = a[0] - b[0];
-    let dz = a[1] - b[1];
-    dx * dx + dz * dz <= f64::from(SAMPLE_EPSILON_M * SAMPLE_EPSILON_M)
+    RoadSurfaceSystem::overlay_point_key(a) == RoadSurfaceSystem::overlay_point_key(b)
 }
 
 fn remove_repeated_overlay_point_spurs(points: &mut NodeOverlayContour) {
@@ -972,36 +1174,17 @@ fn overlay_contour_area_local(contour: &NodeOverlayContour) -> f64 {
     signed_area * 0.5
 }
 
-fn remove_overlay_hairpin_spikes(points: &mut NodeOverlayContour) {
-    let max_base_m = f64::from(CURB_BAND_WIDTH_M) + TERRAIN_CLIP_HAIRPIN_BASE_TOLERANCE_M;
-    while points.len() >= 3 {
-        let mut removed = false;
-        let len = points.len();
-        for index in 0..len {
-            let prev = if index == 0 { len - 1 } else { index - 1 };
-            let next = if index + 1 == len { 0 } else { index + 1 };
-            let base_m = overlay_point_distance_m(points[prev], points[next]);
-            let side_a_m = overlay_point_distance_m(points[prev], points[index]);
-            let side_b_m = overlay_point_distance_m(points[index], points[next]);
-            if base_m <= max_base_m
-                && side_a_m.min(side_b_m) >= max_base_m * 4.0
-                && side_a_m.max(side_b_m) >= 1.0
-            {
-                points.remove(index);
-                removed = true;
-                break;
-            }
-        }
-        if !removed {
-            break;
-        }
+fn contour_area_delta_after_removing_vertex(
+    contour: &NodeOverlayContour,
+    index: usize,
+) -> Option<f64> {
+    if contour.len() <= 3 || index >= contour.len() {
+        return None;
     }
-}
-
-fn overlay_point_distance_m(a: NodeOverlayPoint, b: NodeOverlayPoint) -> f64 {
-    let dx = a[0] - b[0];
-    let dz = a[1] - b[1];
-    (dx * dx + dz * dz).sqrt()
+    let mut reduced = Vec::with_capacity(contour.len() - 1);
+    reduced.extend_from_slice(&contour[..index]);
+    reduced.extend_from_slice(&contour[index + 1..]);
+    Some(overlay_contour_area_local(&reduced).abs())
 }
 
 fn interpolate_overlay_point(

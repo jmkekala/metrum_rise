@@ -44,6 +44,7 @@ impl RoadSurfaceSystem {
         keys
     }
 
+    #[cfg(test)]
     pub(crate) fn terrain_clip_polygons_for_world_bounds(
         &self,
         graph: &RegionGraph,
@@ -52,6 +53,20 @@ impl RoadSurfaceSystem {
         max_x: f32,
         max_z: f32,
     ) -> Vec<RoadSurfaceVisualPolygon> {
+        self.terrain_clip_polygons_and_source_count_for_world_bounds(
+            graph, min_x, min_z, max_x, max_z,
+        )
+        .0
+    }
+
+    pub(crate) fn terrain_clip_polygons_and_source_count_for_world_bounds(
+        &self,
+        graph: &RegionGraph,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> (Vec<RoadSurfaceVisualPolygon>, usize) {
         let mut boundary_loops = Vec::new();
 
         for piece in self.compiled_visual_span_pieces.values() {
@@ -82,7 +97,11 @@ impl RoadSurfaceSystem {
             );
         }
 
-        Self::union_terrain_clip_boundary_loops(&boundary_loops)
+        let source_count = boundary_loops.len();
+        (
+            Self::union_terrain_clip_boundary_loops(&boundary_loops),
+            source_count,
+        )
     }
 
     pub(crate) fn sample_visible_surface_height(

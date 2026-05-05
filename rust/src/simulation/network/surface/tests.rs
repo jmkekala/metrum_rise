@@ -4,7 +4,8 @@ use super::earthwork::EARTHWORK_MAX_MARGIN_M;
 use super::edge::CURB_STEP_HEIGHT_M;
 use super::{
     ChunkCacheKind, PreviewRoadSurfaceResult, RoadSurfaceBandKind, RoadSurfaceEarthworkFaceKind,
-    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceVisualNodePiece,
+    RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
+    RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M, SurfaceChunkKey,
 };
 use crate::simulation::network::TransitNetwork;
@@ -76,6 +77,17 @@ fn sloped_terrain(width: usize, height: usize) -> TerrainSystem {
         }
     }
     terrain
+}
+
+fn terrain_clip_source_edge_for_test(
+    start: Vector3,
+    end: Vector3,
+) -> RoadSurfaceTerrainClipSourceEdge {
+    RoadSurfaceTerrainClipSourceEdge {
+        start,
+        end,
+        kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
+    }
 }
 
 fn ridge_terrain(width: usize, height: usize) -> TerrainSystem {
@@ -1851,6 +1863,44 @@ fn terrain_clip_polygons_include_standard_grounded_footprints() {
 }
 
 #[test]
+fn terrain_clip_union_preserves_endpoint_owned_numeric_connector() {
+    let y = 12.0;
+    let points = vec![
+        Vector3::new(0.0, y, 0.0),
+        Vector3::new(0.5, y, 0.0),
+        Vector3::new(0.501, y, 0.0001),
+        Vector3::new(1.0, y, 0.0),
+        Vector3::new(1.0, y, 0.1),
+        Vector3::new(0.0, y, 0.1),
+    ];
+    let raw_clip_sources = vec![RoadSurfaceTerrainClipLoop {
+        source_edges: vec![
+            terrain_clip_source_edge_for_test(points[0], points[1]),
+            terrain_clip_source_edge_for_test(points[2], points[3]),
+            terrain_clip_source_edge_for_test(points[3], points[4]),
+            terrain_clip_source_edge_for_test(points[4], points[5]),
+            terrain_clip_source_edge_for_test(points[5], points[0]),
+        ],
+        points_world: points,
+    }];
+
+    let clip_polygons = RoadSurfaceSystem::union_terrain_clip_boundary_loops(&raw_clip_sources);
+
+    assert_eq!(
+        clip_polygons.len(),
+        1,
+        "unioned terrain clip contour must keep source-owned endpoint continuity instead of dropping the road cutter"
+    );
+    assert!(
+        clip_polygons[0]
+            .points_world
+            .iter()
+            .all(|point| (point.y - y).abs() <= SAMPLE_EPSILON_M),
+        "accepted connector must reuse canonical source endpoint heights"
+    );
+}
+
+#[test]
 fn terrain_clip_polygons_are_unioned_before_cdt_for_arbitrary_multiway_nodes() {
     let terrain = flat_terrain(257, 257);
     let mut graph = RegionGraph::new();
@@ -2419,7 +2469,7 @@ fn logged_current_flat_three_way_oblique_junction_keeps_curb_vertices_on_rails()
 
 #[test]
 fn logged_elevated_three_way_oblique_junction_emits_outer_boundary_vertices() {
-    let terrain = flat_terrain(512, 512);
+    let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-5.708, 139.500, 43.670), NodeType::Junction);
     let center = graph.add_node(Vector3::new(51.778, 146.820, 55.467), NodeType::Junction);
@@ -2477,6 +2527,62 @@ fn logged_elevated_three_way_oblique_junction_emits_outer_boundary_vertices() {
     assert_material_triangles_do_not_overlap(piece);
     assert_outer_boundary_vertices_are_emitted_top_vertices(piece);
     assert_top_mesh_centroids_inside_outer_boundary(piece);
+
+    let center_patch_key = terrain
+        .render_patch_keys_for_world_bounds(51.778, 55.467, 51.778, 55.467)
+        .into_iter()
+        .next()
+        .expect("elevated junction center must map to a terrain render patch");
+    assert!(
+        surface
+            .terrain_render_patch_keys_with_visible_road(&terrain)
+            .contains(&center_patch_key),
+        "elevated junction patch must be road-locked by visible standard-road ownership"
+    );
+    let patch = terrain
+        .visual_patch_snapshot(center_patch_key.0, center_patch_key.1)
+        .expect("road-locked elevated junction patch must be resident in the test terrain");
+    let clip_polygons = surface.terrain_clip_polygons_for_world_bounds(
+        &graph,
+        patch.world_origin_x,
+        patch.world_origin_z,
+        patch.world_origin_x + patch.world_size_x,
+        patch.world_origin_z + patch.world_size_z,
+    );
+    assert!(
+        !clip_polygons.is_empty(),
+        "road-locked elevated JunctionN terrain patch must not degrade to clip_polys=0"
+    );
+    let road_loops = clip_polygons
+        .iter()
+        .enumerate()
+        .map(|(index, polygon)| {
+            TerrainCdtRoadLoop::new(
+                index as u64,
+                0,
+                polygon
+                    .points_world
+                    .iter()
+                    .map(|point| {
+                        TerrainCdtVertex::new(f64::from(point.x), point.y, f64::from(point.z))
+                    })
+                    .collect(),
+            )
+        })
+        .collect();
+    let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+        TerrainCdtPatch::new(
+            f64::from(patch.world_origin_x),
+            f64::from(patch.world_origin_z),
+            f64::from(patch.world_origin_x + patch.world_size_x),
+            f64::from(patch.world_origin_z + patch.world_size_z),
+            [0.0; 4],
+        ),
+        road_loops,
+        Vec::new(),
+    ))
+    .expect("elevated JunctionN terrain cutter must be accepted by the terrain CDT");
+    assert_eq!(mesh.stats.invalid_constraint_edges, 0);
 }
 
 #[test]

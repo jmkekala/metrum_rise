@@ -144,6 +144,11 @@ pub struct SimulationNode {
     base: Base<Node3D>,
 }
 
+struct RoadClipPolygonQuery {
+    polygons: Vec<crate::simulation::network::surface::RoadSurfaceVisualPolygon>,
+    source_count: usize,
+}
+
 impl SimulationNode {
     // ── Lifecycle ──
 
@@ -385,15 +390,20 @@ impl SimulationNode {
             height_data,
         };
         let mut dict = Self::terrain_patch_dict(&refined_patch);
-        let road_clip_polygons = Self::road_clip_polygons_for_bounds(
+        let road_clip_query = Self::road_clip_polygon_query_for_bounds(
             core,
             base_patch.world_origin_x,
             base_patch.world_origin_z,
             base_patch.world_origin_x + base_patch.world_size_x,
             base_patch.world_origin_z + base_patch.world_size_z,
         );
-        Self::append_road_clip_polygons(&mut dict, &road_clip_polygons);
-        Self::append_cdt_terrain_mesh(&mut dict, &refined_patch, &road_clip_polygons);
+        Self::append_road_clip_polygons(&mut dict, &road_clip_query.polygons);
+        Self::append_cdt_terrain_mesh(
+            &mut dict,
+            &refined_patch,
+            &road_clip_query.polygons,
+            road_clip_query.source_count > 0,
+        );
         dict
     }
 
@@ -417,9 +427,30 @@ impl SimulationNode {
         max_x: f32,
         max_z: f32,
     ) -> Vec<crate::simulation::network::surface::RoadSurfaceVisualPolygon> {
-        core.transit_network
+        Self::road_clip_polygon_query_for_bounds(core, min_x, min_z, max_x, max_z).polygons
+    }
+
+    fn road_clip_polygon_query_for_bounds(
+        core: &SimCore,
+        min_x: f32,
+        min_z: f32,
+        max_x: f32,
+        max_z: f32,
+    ) -> RoadClipPolygonQuery {
+        let (polygons, source_count) = core
+            .transit_network
             .road_surface
-            .terrain_clip_polygons_for_world_bounds(&core.region_graph, min_x, min_z, max_x, max_z)
+            .terrain_clip_polygons_and_source_count_for_world_bounds(
+                &core.region_graph,
+                min_x,
+                min_z,
+                max_x,
+                max_z,
+            );
+        RoadClipPolygonQuery {
+            polygons,
+            source_count,
+        }
     }
 
     fn append_road_clip_polygons(
@@ -450,8 +481,12 @@ impl SimulationNode {
         dict: &mut VarDictionary,
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
+        has_grounded_road_contributors: bool,
     ) {
         if road_clip_polygons.is_empty() {
+            if has_grounded_road_contributors {
+                Self::append_empty_cdt_failure(dict, "missing_road_clip_polygons");
+            }
             return;
         }
 
@@ -520,54 +555,55 @@ impl SimulationNode {
                 Self::append_cdt_mesh_buffers(dict, patch, &mesh);
             }
             Err(err) => {
-                dict.set("terrain_cdt_status", GString::from("failed"));
-                dict.set(
-                    "terrain_cdt_error",
-                    GString::from(Self::terrain_cdt_error_label(&err)),
-                );
-                dict.set("terrain_cdt_input_vertices", 0i64);
-                dict.set("terrain_cdt_constraint_edges", 0i64);
-                dict.set("terrain_cdt_road_constraint_edges", 0i64);
-                dict.set("terrain_cdt_accepted_faces", 0i64);
-                dict.set("terrain_cdt_rejected_road_faces", 0i64);
-                dict.set("terrain_cdt_preserved_road_constraint_edges", 0i64);
-                dict.set("terrain_cdt_invalid_constraints", 1i64);
-                dict.set("terrain_cdt_emitted_faces", 0i64);
-                dict.set("terrain_cdt_max_face_y_delta_m", 0.0f64);
-                dict.set("terrain_cdt_max_face_slope_ratio", 0.0f64);
-                dict.set("terrain_cdt_road_seam_faces", 0i64);
-                dict.set("terrain_cdt_road_seam_steep_faces", 0i64);
-                dict.set("terrain_cdt_road_seam_max_y_delta_m", 0.0f64);
-                dict.set("terrain_cdt_road_seam_max_slope_ratio", 0.0f64);
-                dict.set(
-                    "terrain_cdt_road_seam_sample_centroids",
-                    PackedVector3Array::new(),
-                );
-                dict.set(
-                    "terrain_cdt_road_seam_sample_bounds",
-                    PackedVector3Array::new(),
-                );
-                dict.set(
-                    "terrain_cdt_road_seam_sample_metrics",
-                    PackedFloat32Array::new(),
-                );
-                dict.set(
-                    "terrain_cdt_road_seam_sample_vertices",
-                    PackedVector3Array::new(),
-                );
-                dict.set(
-                    "terrain_cdt_invalid_constraint_sample_edges",
-                    PackedVector3Array::new(),
-                );
-                dict.set(
-                    "terrain_cdt_invalid_constraint_sample_metadata",
-                    PackedInt32Array::new(),
-                );
-                dict.set("terrain_mesh_vertices", PackedVector3Array::new());
-                dict.set("terrain_mesh_normals", PackedVector3Array::new());
-                dict.set("terrain_mesh_uvs", PackedVector2Array::new());
+                Self::append_empty_cdt_failure(dict, Self::terrain_cdt_error_label(&err));
             }
         }
+    }
+
+    fn append_empty_cdt_failure(dict: &mut VarDictionary, error_label: &'static str) {
+        dict.set("terrain_cdt_status", GString::from("failed"));
+        dict.set("terrain_cdt_error", GString::from(error_label));
+        dict.set("terrain_cdt_input_vertices", 0i64);
+        dict.set("terrain_cdt_constraint_edges", 0i64);
+        dict.set("terrain_cdt_road_constraint_edges", 0i64);
+        dict.set("terrain_cdt_accepted_faces", 0i64);
+        dict.set("terrain_cdt_rejected_road_faces", 0i64);
+        dict.set("terrain_cdt_preserved_road_constraint_edges", 0i64);
+        dict.set("terrain_cdt_invalid_constraints", 1i64);
+        dict.set("terrain_cdt_emitted_faces", 0i64);
+        dict.set("terrain_cdt_max_face_y_delta_m", 0.0f64);
+        dict.set("terrain_cdt_max_face_slope_ratio", 0.0f64);
+        dict.set("terrain_cdt_road_seam_faces", 0i64);
+        dict.set("terrain_cdt_road_seam_steep_faces", 0i64);
+        dict.set("terrain_cdt_road_seam_max_y_delta_m", 0.0f64);
+        dict.set("terrain_cdt_road_seam_max_slope_ratio", 0.0f64);
+        dict.set(
+            "terrain_cdt_road_seam_sample_centroids",
+            PackedVector3Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_sample_bounds",
+            PackedVector3Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_sample_metrics",
+            PackedFloat32Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_road_seam_sample_vertices",
+            PackedVector3Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_invalid_constraint_sample_edges",
+            PackedVector3Array::new(),
+        );
+        dict.set(
+            "terrain_cdt_invalid_constraint_sample_metadata",
+            PackedInt32Array::new(),
+        );
+        dict.set("terrain_mesh_vertices", PackedVector3Array::new());
+        dict.set("terrain_mesh_normals", PackedVector3Array::new());
+        dict.set("terrain_mesh_uvs", PackedVector2Array::new());
     }
 
     fn terrain_cdt_input(
