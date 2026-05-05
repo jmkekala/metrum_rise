@@ -90,6 +90,84 @@ fn terrain_clip_source_edge_for_test(
     }
 }
 
+fn terrain_cdt_source_samples_from_patch(
+    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+) -> Vec<TerrainCdtVertex> {
+    let mut source_samples =
+        Vec::with_capacity(patch.sample_width.saturating_mul(patch.sample_height));
+    for sample_z in 0..patch.sample_height {
+        let world_z = terrain_patch_sample_world_z(patch, sample_z);
+        for sample_x in 0..patch.sample_width {
+            source_samples.push(TerrainCdtVertex::new(
+                f64::from(terrain_patch_sample_world_x(patch, sample_x)),
+                terrain_patch_sample_height_m(patch, sample_x, sample_z),
+                f64::from(world_z),
+            ));
+        }
+    }
+    source_samples
+}
+
+fn terrain_cdt_patch_corner_heights(
+    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+) -> [f32; 4] {
+    [
+        terrain_patch_sample_height_m(patch, 0, 0),
+        terrain_patch_sample_height_m(patch, 0, patch.sample_height.saturating_sub(1)),
+        terrain_patch_sample_height_m(
+            patch,
+            patch.sample_width.saturating_sub(1),
+            patch.sample_height.saturating_sub(1),
+        ),
+        terrain_patch_sample_height_m(patch, patch.sample_width.saturating_sub(1), 0),
+    ]
+}
+
+fn terrain_patch_sample_world_x(
+    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+    sample_x: usize,
+) -> f32 {
+    if patch.sample_width <= 1 {
+        patch.world_origin_x
+    } else {
+        patch.world_origin_x
+            + patch.world_size_x * sample_x as f32 / patch.sample_width.saturating_sub(1) as f32
+    }
+}
+
+fn terrain_patch_sample_world_z(
+    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+    sample_z: usize,
+) -> f32 {
+    if patch.sample_height <= 1 {
+        patch.world_origin_z
+    } else {
+        patch.world_origin_z
+            + patch.world_size_z * sample_z as f32 / patch.sample_height.saturating_sub(1) as f32
+    }
+}
+
+fn terrain_patch_sample_height_m(
+    patch: &crate::simulation::terrain::TerrainPatchSnapshot,
+    sample_x: usize,
+    sample_z: usize,
+) -> f32 {
+    if patch.texture_width == 0 || patch.height_data.is_empty() {
+        return 0.0;
+    }
+    let texture_x = patch
+        .inner_offset_x
+        .saturating_add(sample_x.min(patch.sample_width.saturating_sub(1)));
+    let texture_z = patch
+        .inner_offset_z
+        .saturating_add(sample_z.min(patch.sample_height.saturating_sub(1)));
+    let index = texture_z
+        .saturating_mul(patch.texture_width)
+        .saturating_add(texture_x)
+        .min(patch.height_data.len().saturating_sub(1));
+    patch.height_data[index] * crate::config::HEIGHT_SCALE
+}
+
 fn ridge_terrain(width: usize, height: usize) -> TerrainSystem {
     let mut terrain = TerrainSystem::with_chunking(width, height, 1.0, 8, 0.0);
     let center_x = (width as f32 - 1.0) * 0.5;
@@ -2576,10 +2654,10 @@ fn logged_elevated_three_way_oblique_junction_emits_outer_boundary_vertices() {
             f64::from(patch.world_origin_z),
             f64::from(patch.world_origin_x + patch.world_size_x),
             f64::from(patch.world_origin_z + patch.world_size_z),
-            [0.0; 4],
+            terrain_cdt_patch_corner_heights(&patch),
         ),
         road_loops,
-        Vec::new(),
+        terrain_cdt_source_samples_from_patch(&patch),
     ))
     .expect("elevated JunctionN terrain cutter must be accepted by the terrain CDT");
     assert_eq!(mesh.stats.invalid_constraint_edges, 0);

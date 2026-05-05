@@ -290,6 +290,7 @@ fn canonicalize_input(
     let mut road_constraint_edges = Vec::new();
     let mut road_constraint_sources = BTreeMap::new();
     let mut road_loops = Vec::new();
+    let mut source_sample_vertex_indices = Vec::new();
 
     let patch_corners = input.patch.corners_cw();
     for &vertex in &patch_corners {
@@ -353,13 +354,18 @@ fn canonicalize_input(
         {
             continue;
         }
-        insert_vertex(sample, &mut vertices, &mut vertex_lookup);
+        let previous_vertex_count = vertices.len();
+        let vertex_index = insert_vertex(sample, &mut vertices, &mut vertex_lookup);
+        if vertices.len() > previous_vertex_count {
+            source_sample_vertex_indices.push(vertex_index);
+        }
     }
 
     node_road_constraint_edges(
         &mut vertices,
         &mut vertex_lookup,
         input.patch,
+        &source_sample_vertex_indices,
         &mut road_constraint_edges,
         &mut road_constraint_sources,
     );
@@ -484,18 +490,27 @@ fn insert_constraint(edge: [usize; 2], constraint_set: &mut BTreeSet<[usize; 2]>
 // constraints for us. i_overlay owns roadbed area union; this patch-local pass
 // only canonicalizes the final CDT constraint graph. Determinism comes from
 // sorted original road loops, quantized XZ vertex lookup, and BTreeSet edge
-// emission. Complexity is O(E^2) with bbox rejection over one dirty terrain
-// patch's roadbed constraints, outside the per-tick simulation hot path.
+// emission. Complexity is O(E^2 + E*S) with bbox rejection over one dirty
+// terrain patch's roadbed constraints and source samples, outside the per-tick
+// simulation hot path.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct TerrainCdtRoadConstraintSplit {
     t: f64,
     vertex_index: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct TerrainCdtSourceSampleConstraintHit {
+    edge_index: usize,
+    t: f64,
+    height_m: f32,
+}
+
 fn node_road_constraint_edges(
     vertices: &mut Vec<TerrainCdtVertex>,
     vertex_lookup: &mut BTreeMap<(i64, i64), usize>,
     patch: TerrainCdtPatch,
+    source_sample_vertex_indices: &[usize],
     road_constraint_edges: &mut Vec<[usize; 2]>,
     road_constraint_sources: &mut BTreeMap<[usize; 2], TerrainCdtRoadConstraintSource>,
 ) {
@@ -573,6 +588,13 @@ fn node_road_constraint_edges(
         }
     }
 
+    split_road_constraints_at_source_samples(
+        &original_edges,
+        vertices,
+        source_sample_vertex_indices,
+        &mut split_points,
+    );
+
     let original_sources = road_constraint_sources.clone();
     let mut noded_edges = BTreeSet::new();
     road_constraint_sources.clear();
@@ -602,6 +624,78 @@ fn node_road_constraint_edges(
     }
 
     *road_constraint_edges = noded_edges.into_iter().collect();
+}
+
+fn split_road_constraints_at_source_samples(
+    original_edges: &[[usize; 2]],
+    vertices: &mut [TerrainCdtVertex],
+    source_sample_vertex_indices: &[usize],
+    split_points: &mut [Vec<TerrainCdtRoadConstraintSplit>],
+) {
+    for &vertex_index in source_sample_vertex_indices {
+        let Some(vertex) = vertices.get(vertex_index).copied() else {
+            continue;
+        };
+        let mut hits = Vec::new();
+        for (edge_index, edge) in original_edges.iter().copied().enumerate() {
+            if vertex_index == edge[0] || vertex_index == edge[1] {
+                continue;
+            }
+            let start = vertices[edge[0]];
+            let end = vertices[edge[1]];
+            if !point_bounds_overlap_segment(vertex, start, end) {
+                continue;
+            }
+            let Some(t) = source_sample_parameter_on_road_constraint(start, end, vertex) else {
+                continue;
+            };
+            hits.push(TerrainCdtSourceSampleConstraintHit {
+                edge_index,
+                t,
+                height_m: interpolated_segment_height(start, end, t),
+            });
+        }
+
+        if hits.is_empty() {
+            continue;
+        }
+        let height_m = hits[0].height_m;
+        if !hits.iter().all(|hit| same_height(hit.height_m, height_m)) {
+            continue;
+        }
+        vertices[vertex_index].height_m = height_m;
+        for hit in hits {
+            split_points[hit.edge_index].push(TerrainCdtRoadConstraintSplit {
+                t: hit.t,
+                vertex_index,
+            });
+        }
+    }
+}
+
+fn source_sample_parameter_on_road_constraint(
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+    sample: TerrainCdtVertex,
+) -> Option<f64> {
+    let t = segment_parameter(start, end, sample.x, sample.z);
+    if !unit_interval_contains(t) {
+        return None;
+    }
+    let t = clamp_unit(t);
+    let closest = interpolate_vertex(start, end, t);
+    same_xz(closest, sample).then_some(t)
+}
+
+fn point_bounds_overlap_segment(
+    point: TerrainCdtVertex,
+    start: TerrainCdtVertex,
+    end: TerrainCdtVertex,
+) -> bool {
+    point.x >= start.x.min(end.x) - CDT_EPSILON_M
+        && point.x <= start.x.max(end.x) + CDT_EPSILON_M
+        && point.z >= start.z.min(end.z) - CDT_EPSILON_M
+        && point.z <= start.z.max(end.z) + CDT_EPSILON_M
 }
 
 fn insert_road_constraint_vertex(
@@ -1506,6 +1600,39 @@ mod tests {
         for vertex in &mesh.vertices {
             assert!(patch_contains(*vertex, patch));
         }
+    }
+
+    #[test]
+    fn source_sample_on_road_seam_splits_the_road_constraint() {
+        let patch = TerrainCdtPatch::new(0.0, 0.0, 20.0, 20.0, [0.0; 4]);
+        let road = vec![
+            TerrainCdtVertex::new(4.0, 1.0, 4.0),
+            TerrainCdtVertex::new(16.0, 1.0, 4.0),
+            TerrainCdtVertex::new(16.0, 1.0, 10.0),
+            TerrainCdtVertex::new(4.0, 1.0, 10.0),
+        ];
+
+        let mesh = build_road_touched_terrain_patch(TerrainCdtInput::new(
+            patch,
+            vec![TerrainCdtRoadLoop::new(41, 0, road)],
+            vec![TerrainCdtVertex::new(16.0, 1.0, 7.0)],
+        ))
+        .expect("terrain source samples on a road seam must not invalidate the CDT");
+
+        assert_eq!(mesh.stats.invalid_constraint_edges, 0);
+        assert!(
+            mesh.stats.road_constraint_edges > 4,
+            "the road seam constraint must be split at the existing source sample vertex"
+        );
+        assert_eq!(
+            mesh.stats.preserved_road_constraint_edges,
+            mesh.stats.road_constraint_edges
+        );
+        assert!(mesh.vertices.iter().any(|vertex| {
+            same_coord(vertex.x, 16.0)
+                && same_coord(vertex.z, 7.0)
+                && same_height(vertex.height_m, 1.0)
+        }));
     }
 
     #[test]
