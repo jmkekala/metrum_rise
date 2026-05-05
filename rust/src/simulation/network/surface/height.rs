@@ -1090,6 +1090,7 @@ fn noded_overlay_contour(
             .iter()
             .copied()
             .filter(|point| point_lies_strictly_inside_segment(*point, start, end))
+            .filter(|point| !point_is_numeric_endpoint_split(*point, start, end))
             .collect::<Vec<_>>();
         sort_segment_split_points(start, end, &mut split_points);
         noded.extend(split_points.into_iter().map(overlay_point_from_key));
@@ -1104,6 +1105,21 @@ fn noded_overlay_contour(
     }
     remove_overlay_spikes(&mut noded);
     noded
+}
+
+fn point_is_numeric_endpoint_split(
+    point: NodeOverlayPointKey,
+    start: NodeOverlayPointKey,
+    end: NodeOverlayPointKey,
+) -> bool {
+    let key_epsilon =
+        (HEIGHT_PARAMETER_BOUNDARY_EPS * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64;
+    point_key_linf_distance(point, start) <= key_epsilon
+        || point_key_linf_distance(point, end) <= key_epsilon
+}
+
+fn point_key_linf_distance(a: NodeOverlayPointKey, b: NodeOverlayPointKey) -> i64 {
+    (a.0 - b.0).abs().max((a.1 - b.1).abs())
 }
 
 fn remove_overlay_spikes(points: &mut NodeOverlayContour) {

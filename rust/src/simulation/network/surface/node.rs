@@ -53,24 +53,26 @@ struct ArrangementTerrainClipSourceSegment {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct ArrangementBoundaryPointKey {
-    x_mm: i64,
-    z_mm: i64,
+    x_key: i64,
+    z_key: i64,
     y_mm: i64,
 }
 
 impl ArrangementBoundaryPointKey {
     fn from_world(point: Vector3) -> Self {
         Self {
-            x_mm: (point.x * 1000.0).round() as i64,
-            z_mm: (point.z * 1000.0).round() as i64,
+            x_key: (f64::from(point.x) * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round()
+                as i64,
+            z_key: (f64::from(point.z) * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round()
+                as i64,
             y_mm: (point.y * 1000.0).round() as i64,
         }
     }
 
     fn xz_key(self) -> NodeArrangementKey {
         NodeArrangementKey::from_point(super::backend::RoadVec2::new(
-            self.x_mm as f64 / 1000.0,
-            self.z_mm as f64 / 1000.0,
+            self.x_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
+            self.z_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
         ))
     }
 }
@@ -282,7 +284,7 @@ impl RoadSurfaceSystem {
             let owner = face.owner();
             let Some(polygons) = Self::visual_polygons_from_arrangement_face(arrangement, face)
             else {
-                return Err(NodeBoundaryExportError::DegenerateOuterBoundaryLoop);
+                continue;
             };
             for polygon in polygons {
                 owned_regions.push(NodeOwnedRegion {
@@ -457,7 +459,7 @@ impl RoadSurfaceSystem {
             for simple_loop in split_boundary_segment_loop_at_repeated_xz(loop_segments) {
                 let points = boundary_points_from_segment_loop(&simple_loop);
                 let area_m2 = Self::signed_polygon_area_xz(&points).abs();
-                if area_m2 <= NODE_OVERLAY_MIN_AREA_M2 {
+                if area_m2 <= boundary_points_numeric_area_budget_m2(&points) {
                     continue;
                 }
                 loops.push(simple_loop);
@@ -476,12 +478,18 @@ impl RoadSurfaceSystem {
         for canonical_loop in canonical_loops {
             let points = boundary_points_from_segment_loop(canonical_loop);
             let area_m2 = Self::signed_polygon_area_xz(&points).abs();
-            if area_m2 <= NODE_OVERLAY_MIN_AREA_M2 {
+            if area_m2 <= boundary_points_numeric_area_budget_m2(&points) {
                 continue;
             }
             let Some(polygon) = Self::make_boundary_loop_polygon(points.clone())
                 .or_else(|| boundary_loop_polygon_after_uncrossing(points))
             else {
+                crate::debug_log!(
+                    "road",
+                    "node_outer_boundary_degenerate_loop segments={} area={:.6}",
+                    canonical_loop.len(),
+                    area_m2
+                );
                 return Err(NodeBoundaryExportError::DegenerateOuterBoundaryLoop);
             };
             polygons.push(polygon);
@@ -532,7 +540,16 @@ impl RoadSurfaceSystem {
             current.end.z - current.start.z,
         );
         if incoming.length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
-            return (candidates.len() == 1).then_some(candidates[0]);
+            return candidates.iter().copied().min_by(|a, b| {
+                let segment_a =
+                    oriented_arrangement_boundary_segment(segments[*a], current.end_key)
+                        .unwrap_or(segments[*a]);
+                let segment_b =
+                    oriented_arrangement_boundary_segment(segments[*b], current.end_key)
+                        .unwrap_or(segments[*b]);
+                arrangement_boundary_continuity_key(current, segment_a, *a)
+                    .cmp(&arrangement_boundary_continuity_key(current, segment_b, *b))
+            });
         }
         candidates.iter().copied().min_by(|a, b| {
             let segment_a = oriented_arrangement_boundary_segment(segments[*a], current.end_key)
@@ -1061,7 +1078,7 @@ fn arrangement_boundary_point_same_xz(
     a: ArrangementBoundaryPointKey,
     b: ArrangementBoundaryPointKey,
 ) -> bool {
-    a.x_mm == b.x_mm && a.z_mm == b.z_mm
+    a.x_key == b.x_key && a.z_key == b.z_key
 }
 
 fn terrain_clip_boundary_points_and_source_edges_from_segments(
@@ -1280,6 +1297,19 @@ fn boundary_points_from_segment_loop(segments: &[ArrangementBoundarySegment]) ->
     points
 }
 
+fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 {
+    if points.len() < 2 {
+        return NODE_OVERLAY_MIN_AREA_M2;
+    }
+    let perimeter_m = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(start, end)| Vector2::new(start.x - end.x, start.z - end.z).length())
+        .sum::<f32>();
+    RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, points.len())
+}
+
 fn uncross_boundary_loop_points(mut points: Vec<Vector3>) -> Vec<Vector3> {
     let len = points.len();
     if len < 4 {
@@ -1388,4 +1418,26 @@ fn arrangement_boundary_turn_abs(incoming: Vector2, candidate: ArrangementBounda
     let cross = incoming.x * outgoing.y - incoming.y * outgoing.x;
     let dot = incoming.dot(outgoing);
     cross.atan2(dot).abs()
+}
+
+fn arrangement_boundary_continuity_key(
+    current: ArrangementBoundarySegment,
+    candidate: ArrangementBoundarySegment,
+    candidate_index: usize,
+) -> (
+    bool,
+    bool,
+    ArrangementBoundaryPointKey,
+    RoadSurfaceBandKind,
+    usize,
+    usize,
+) {
+    (
+        candidate.owner != current.owner,
+        candidate.seam_source != current.seam_source,
+        candidate.end_key,
+        candidate.owner.kind(),
+        candidate.owner.owner_index(),
+        candidate_index,
+    )
 }

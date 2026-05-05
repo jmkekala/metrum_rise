@@ -2,13 +2,14 @@
 
 #![allow(dead_code)]
 
-use super::backend::RoadVec2;
+use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
 use super::{IncidentEdgeSide, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use std::collections::BTreeMap;
 
-const NODE_ARRANGEMENT_KEY_SCALE: f64 = 1000.0;
+const NODE_ARRANGEMENT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
+const NODE_ARRANGEMENT_MM_SCALE: f64 = 1000.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct NodeArrangementVertexId(usize);
@@ -24,8 +25,8 @@ pub(crate) struct NodeArrangementFaceId(usize);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct NodeArrangementKey {
-    x_mm: i64,
-    z_mm: i64,
+    x_key: i64,
+    z_key: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -207,17 +208,19 @@ pub(crate) enum NodeArrangementError {
 impl NodeArrangementKey {
     pub(crate) fn from_point(point: RoadVec2) -> Self {
         Self {
-            x_mm: quantize_m(point.x),
-            z_mm: quantize_m(point.y),
+            x_key: quantize_m(point.x),
+            z_key: quantize_m(point.y),
         }
     }
 
     pub(crate) fn x_mm(self) -> i64 {
-        self.x_mm
+        ((self.x_key as f64 / NODE_ARRANGEMENT_KEY_SCALE) * NODE_ARRANGEMENT_MM_SCALE).round()
+            as i64
     }
 
     pub(crate) fn z_mm(self) -> i64 {
-        self.z_mm
+        ((self.z_key as f64 / NODE_ARRANGEMENT_KEY_SCALE) * NODE_ARRANGEMENT_MM_SCALE).round()
+            as i64
     }
 }
 
@@ -837,22 +840,22 @@ fn point_key_lies_on_segment(
     if start == end {
         return false;
     }
-    let dx = i128::from(end.x_mm - start.x_mm);
-    let dz = i128::from(end.z_mm - start.z_mm);
-    let px = i128::from(point.x_mm - start.x_mm);
-    let pz = i128::from(point.z_mm - start.z_mm);
+    let dx = i128::from(end.x_key - start.x_key);
+    let dz = i128::from(end.z_key - start.z_key);
+    let px = i128::from(point.x_key - start.x_key);
+    let pz = i128::from(point.z_key - start.z_key);
     if px * dz - pz * dx != 0 {
         return false;
     }
-    let inside_x = if start.x_mm == end.x_mm {
-        point.x_mm == start.x_mm
+    let inside_x = if start.x_key == end.x_key {
+        point.x_key == start.x_key
     } else {
-        point.x_mm > start.x_mm.min(end.x_mm) && point.x_mm < start.x_mm.max(end.x_mm)
+        point.x_key > start.x_key.min(end.x_key) && point.x_key < start.x_key.max(end.x_key)
     };
-    let inside_z = if start.z_mm == end.z_mm {
-        point.z_mm == start.z_mm
+    let inside_z = if start.z_key == end.z_key {
+        point.z_key == start.z_key
     } else {
-        point.z_mm > start.z_mm.min(end.z_mm) && point.z_mm < start.z_mm.max(end.z_mm)
+        point.z_key > start.z_key.min(end.z_key) && point.z_key < start.z_key.max(end.z_key)
     };
     inside_x && inside_z
 }

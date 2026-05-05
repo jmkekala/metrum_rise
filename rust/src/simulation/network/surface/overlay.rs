@@ -447,7 +447,7 @@ impl RoadSurfaceSystem {
         Self::overlay_numeric_area_budget_m2(perimeter_m, vertex_count)
     }
 
-    fn overlay_numeric_area_budget_m2(perimeter_m: f32, vertex_count: usize) -> f32 {
+    pub(super) fn overlay_numeric_area_budget_m2(perimeter_m: f32, vertex_count: usize) -> f32 {
         let boundary_strip_m2 = perimeter_m * NODE_OVERLAY_NUMERIC_DUST_WIDTH_M;
         let vertex_floor_m2 = vertex_count.max(1) as f32 * NODE_OVERLAY_MIN_AREA_M2;
         (NODE_OVERLAY_NUMERIC_AREA_EPS_M2 + boundary_strip_m2 + vertex_floor_m2)
@@ -814,17 +814,18 @@ impl RoadSurfaceSystem {
             Self::terrain_clip_segment_heights_from_source_edges(previous, start, source_edges)?;
         let next_heights =
             Self::terrain_clip_segment_heights_from_source_edges(end, next, source_edges)?;
-        let start_sample = Self::consistent_terrain_clip_endpoint_sample(
+        let start_sample = Self::terrain_clip_endpoint_sample_matching_height(
             Self::terrain_clip_endpoint_samples(start, source_edges),
+            previous_heights.end_y,
         )?;
-        let end_sample = Self::consistent_terrain_clip_endpoint_sample(
+        let end_sample = Self::terrain_clip_endpoint_sample_matching_height(
             Self::terrain_clip_endpoint_samples(end, source_edges),
+            next_heights.start_y,
         )?;
 
         if start_sample.kind != end_sample.kind
             || !Self::overlay_heights_equal(previous_heights.end_y, start_sample.y)
             || !Self::overlay_heights_equal(next_heights.start_y, end_sample.y)
-            || !Self::overlay_heights_equal(start_sample.y, end_sample.y)
         {
             return None;
         }
@@ -957,11 +958,15 @@ impl RoadSurfaceSystem {
         samples
     }
 
-    fn consistent_terrain_clip_endpoint_sample<I>(heights: I) -> Option<TerrainClipEndpointSample>
+    fn terrain_clip_endpoint_sample_matching_height<I>(
+        heights: I,
+        expected_y: f32,
+    ) -> Option<TerrainClipEndpointSample>
     where
         I: IntoIterator<Item = TerrainClipEndpointSample>,
     {
         let mut heights = heights.into_iter().collect::<Vec<_>>();
+        heights.retain(|height| Self::overlay_heights_equal(height.y, expected_y));
         if heights.is_empty() {
             return None;
         }
@@ -984,14 +989,7 @@ impl RoadSurfaceSystem {
                 height.edge_index,
             )
         });
-        let first_y = heights[0].y;
-        if heights
-            .iter()
-            .all(|height| Self::overlay_heights_equal(height.y, first_y))
-        {
-            return Some(heights[0]);
-        }
-        None
+        Some(heights[0])
     }
 
     fn terrain_clip_missing_source_context_label(

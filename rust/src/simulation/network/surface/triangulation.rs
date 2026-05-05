@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use super::arrangement::{NodeBandOwner, NodeHeightSource};
-use super::backend::RoadVec3;
+use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
@@ -14,7 +14,8 @@ use i_overlay::core::overlay_rule::OverlayRule;
 use spade::{Point2, Triangulation};
 use std::collections::{BTreeMap, BTreeSet};
 
-const NODE_TRIANGULATION_KEY_SCALE: f64 = 1000.0;
+const NODE_TRIANGULATION_POINT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
+const NODE_TRIANGULATION_HEIGHT_KEY_SCALE: f64 = 1000.0;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeTriangulationSolution {
@@ -464,21 +465,25 @@ fn normalized_constraint(a: usize, b: usize) -> [usize; 2] {
 }
 
 fn quantize_m(value: f64) -> i64 {
-    (value * NODE_TRIANGULATION_KEY_SCALE).round() as i64
+    (value * NODE_TRIANGULATION_HEIGHT_KEY_SCALE).round() as i64
+}
+
+fn quantize_point(value: f64) -> i64 {
+    (value * NODE_TRIANGULATION_POINT_KEY_SCALE).round() as i64
 }
 
 impl NodeTriangulationPointKey {
     fn from_vertex(vertex: &NodeHeightedVertex) -> Self {
         Self {
-            x_mm: quantize_m(vertex.point_xz.x),
-            z_mm: quantize_m(vertex.point_xz.y),
+            x_mm: quantize_point(vertex.point_xz.x),
+            z_mm: quantize_point(vertex.point_xz.y),
         }
     }
 
     fn from_world(point: RoadVec3) -> Self {
         Self {
-            x_mm: quantize_m(point.x),
-            z_mm: quantize_m(point.z),
+            x_mm: quantize_point(point.x),
+            z_mm: quantize_point(point.z),
         }
     }
 }
@@ -619,6 +624,45 @@ mod tests {
                 centroid
             );
         }
+    }
+
+    #[test]
+    fn triangulation_vertex_pool_preserves_overlay_grid_distinct_points_inside_same_millimetre() {
+        let heights = NodeHeightSolution {
+            node_id: 93,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![NodeHeightedRegion {
+                kind: RoadSurfaceBandKind::Sidewalk,
+                owner: NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
+                source_mouth_order_index: 0,
+                source_band_index: 0,
+                shape: vec![vec![
+                    flat_vertex(0.00051, 0.0),
+                    flat_vertex(0.00149, 0.0),
+                    flat_vertex(1.0, 0.0),
+                    flat_vertex(1.0, 1.0),
+                    flat_vertex(0.0, 1.0),
+                ]],
+                area_m2: 1.0,
+                height_sources: Vec::new(),
+                seam_constraints: Vec::new(),
+            }],
+        };
+        let solution = NodeTriangulationSolution::from_height_solution(&heights)
+            .expect("overlay-grid-distinct boundary vertices must remain valid CDT input");
+        let region = &solution.regions[0];
+
+        assert_eq!(
+            region.vertices.len(),
+            5,
+            "triangulation must not collapse source-distinct canonical XZ vertices into a millimetre pool"
+        );
+        assert!(region.vertices.iter().any(|vertex| {
+            (vertex.point_world.x - 0.00051).abs() < 1.0e-9 && vertex.point_world.z == 0.0
+        }));
+        assert!(region.vertices.iter().any(|vertex| {
+            (vertex.point_world.x - 0.00149).abs() < 1.0e-9 && vertex.point_world.z == 0.0
+        }));
     }
 
     #[test]

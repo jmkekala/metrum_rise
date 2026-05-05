@@ -265,15 +265,7 @@ impl NodeValidationReport {
     }
 
     pub(crate) fn has_blocking_diagnostics(&self) -> bool {
-        self.diagnostics.iter().any(|diagnostic| {
-            !matches!(
-                diagnostic.kind,
-                NodeGeometryDiagnosticKind::InvalidConstraint {
-                    reason: NodeInvalidConstraintReason::Crossing,
-                    ..
-                }
-            )
-        })
+        !self.diagnostics.is_empty()
     }
 
     pub(crate) fn from_rail_generation_error(
@@ -968,6 +960,9 @@ fn validate_constraint_crossings(
             if shares_endpoint(first.edge, second.edge) {
                 continue;
             }
+            if crossing_is_numeric_endpoint_connector(first, second, boundary_segments) {
+                continue;
+            }
             if segments_intersection2d(
                 first.segment.a,
                 first.segment.b,
@@ -977,6 +972,26 @@ fn validate_constraint_crossings(
             )
             .is_some_and(|intersection| strict_intersection(intersection))
             {
+                let region = &solution.regions[region_index];
+                crate::debug_log!(
+                    "road",
+                    "node_constraint_crossing node_id={} piece_kind={:?} region={} kind={:?} owner={:?} first_constraint={} second_constraint={} first=({:.6},{:.6})->({:.6},{:.6}) second=({:.6},{:.6})->({:.6},{:.6})",
+                    solution.node_id,
+                    solution.piece_kind,
+                    region_index,
+                    region.kind,
+                    region.owner,
+                    first.index,
+                    second.index,
+                    first.segment.a.x,
+                    first.segment.a.y,
+                    first.segment.b.x,
+                    first.segment.b.y,
+                    second.segment.a.x,
+                    second.segment.a.y,
+                    second.segment.b.x,
+                    second.segment.b.y
+                );
                 push_validation_diagnostic(
                     solution,
                     diagnostics,
@@ -990,6 +1005,38 @@ fn validate_constraint_crossings(
             }
         }
     }
+}
+
+fn crossing_is_numeric_endpoint_connector(
+    first: BoundarySegment,
+    second: BoundarySegment,
+    boundary_segments: &[BoundarySegment],
+) -> bool {
+    let connector_budget_m2 = boundary_connector_numeric_budget_m2(boundary_segments);
+    for first_endpoint in first.edge {
+        for second_endpoint in second.edge {
+            let connector_edge = normalized_constraint(first_endpoint, second_endpoint);
+            let Some(connector) = boundary_segments
+                .iter()
+                .find(|segment| segment.edge == connector_edge)
+            else {
+                continue;
+            };
+            let connector_delta = connector.segment.b - connector.segment.a;
+            if connector_delta.length_squared() <= connector_budget_m2 {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn boundary_connector_numeric_budget_m2(boundary_segments: &[BoundarySegment]) -> f32 {
+    let perimeter_m = boundary_segments
+        .iter()
+        .map(|segment| (segment.segment.b - segment.segment.a).length())
+        .sum::<f32>();
+    RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, boundary_segments.len())
 }
 
 fn validate_triangles(
@@ -1467,6 +1514,10 @@ mod tests {
                 }
             )
         }));
+        assert!(
+            error.report.has_blocking_diagnostics(),
+            "crossing constraints must block visual node export"
+        );
     }
 
     #[test]
