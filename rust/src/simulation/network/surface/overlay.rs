@@ -5,17 +5,18 @@ use super::{
     NODE_OVERLAY_NUMERIC_DUST_WIDTH_M, NodeOverlayContour, NodeOverlayPoint, NodeOverlayPointKey,
     NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceTerrainClipEdgeKind, RoadSurfaceTerrainClipLoop, RoadSurfaceVisualPolygon,
-    SAMPLE_EPSILON_M,
+    WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
 };
 use godot::prelude::Vector3;
 use i_overlay::core::fill_rule::FillRule;
 use i_overlay::core::overlay::{IntOverlayOptions, Overlay};
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::i_float::int::point::IntPoint;
+use std::collections::BTreeMap;
 
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 
-// Overlay boolean operations quantize coordinates to millimetres for deterministic keys.
+// Overlay boolean operations quantize coordinates onto the project overlay grid.
 const NODE_OVERLAY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 type NodeIntContour = Vec<IntPoint>;
 type NodeIntShape = Vec<NodeIntContour>;
@@ -57,6 +58,25 @@ struct TerrainClipSourceInterval {
     end_t: f64,
     start_y: f32,
     end_y: f32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct OverlaySegmentParameter {
+    numerator: i128,
+    denominator: i128,
+}
+
+impl OverlaySegmentParameter {
+    fn new(numerator: i128, denominator: i128) -> Option<Self> {
+        (denominator > 0).then_some(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    fn as_f64(self) -> f64 {
+        self.numerator as f64 / self.denominator as f64
+    }
 }
 
 impl RoadSurfaceSystem {
@@ -575,24 +595,31 @@ impl RoadSurfaceSystem {
         for (source_index, boundary_loop) in boundary_loops.iter().enumerate() {
             for (edge_index, source_edge) in boundary_loop.source_edges.iter().copied().enumerate()
             {
-                if Self::overlay_point_key([
-                    f64::from(source_edge.start.x),
-                    f64::from(source_edge.start.z),
-                ]) == Self::overlay_point_key([
-                    f64::from(source_edge.end.x),
-                    f64::from(source_edge.end.z),
-                ]) {
+                let start = Self::terrain_clip_canonical_loop_point(
+                    source_edge.start,
+                    &boundary_loop.points_world,
+                );
+                let end = Self::terrain_clip_canonical_loop_point(
+                    source_edge.end,
+                    &boundary_loop.points_world,
+                );
+                if Self::overlay_point_key([f64::from(start.x), f64::from(start.z)])
+                    == Self::overlay_point_key([f64::from(end.x), f64::from(end.z)])
+                {
                     continue;
                 }
                 edges.push(TerrainClipSourceEdge {
-                    start: source_edge.start,
-                    end: source_edge.end,
+                    start,
+                    end,
                     kind: source_edge.kind,
                     source_index,
                     edge_index,
                 });
             }
         }
+        // Keep source endpoints on one canonical coordinate only when they are already the same
+        // solved-height seam endpoint after boundary-loop representation cleanup.
+        Self::canonicalize_terrain_clip_source_endpoint_groups(&mut edges);
 
         edges.sort_by_key(|edge| {
             let start_key =
@@ -609,6 +636,80 @@ impl RoadSurfaceSystem {
             )
         });
         edges
+    }
+
+    fn canonicalize_terrain_clip_source_endpoint_groups(edges: &mut [TerrainClipSourceEdge]) {
+        let mut groups: Vec<Vec<Vector3>> = Vec::new();
+        for point in edges.iter().flat_map(|edge| [edge.start, edge.end]) {
+            if let Some(group) = groups.iter_mut().find(|group| {
+                group.iter().any(|candidate| {
+                    Self::terrain_clip_source_points_share_canonical_endpoint(*candidate, point)
+                })
+            }) {
+                group.push(point);
+            } else {
+                groups.push(vec![point]);
+            }
+        }
+
+        let mut replacements = BTreeMap::new();
+        for group in groups {
+            if group.len() < 2 {
+                continue;
+            }
+            let mut point_counts = BTreeMap::<(i64, i64, i64), (usize, Vector3)>::new();
+            for point in group {
+                let key = Self::terrain_clip_source_point_group_key(point);
+                let entry = point_counts.entry(key).or_insert((0, point));
+                entry.0 += 1;
+            }
+            let mut counted_points = point_counts.into_iter().collect::<Vec<_>>();
+            counted_points.sort_by(|a, b| b.1.0.cmp(&a.1.0).then(a.0.cmp(&b.0)));
+            let Some((_, (_, replacement))) = counted_points.first().copied() else {
+                continue;
+            };
+            for (key, _) in counted_points {
+                replacements.insert(key, replacement);
+            }
+        }
+
+        for edge in edges {
+            if let Some(point) =
+                replacements.get(&Self::terrain_clip_source_point_group_key(edge.start))
+            {
+                edge.start = *point;
+            }
+            if let Some(point) =
+                replacements.get(&Self::terrain_clip_source_point_group_key(edge.end))
+            {
+                edge.end = *point;
+            }
+        }
+    }
+
+    fn terrain_clip_source_points_share_canonical_endpoint(a: Vector3, b: Vector3) -> bool {
+        let dx = a.x - b.x;
+        let dz = a.z - b.z;
+        dx * dx + dz * dz <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+            && Self::overlay_height_key(a.y) == Self::overlay_height_key(b.y)
+    }
+
+    fn terrain_clip_source_point_group_key(point: Vector3) -> (i64, i64, i64) {
+        let key = Self::overlay_point_key([f64::from(point.x), f64::from(point.z)]);
+        (key.0, key.1, Self::overlay_height_key(point.y))
+    }
+
+    fn terrain_clip_canonical_loop_point(point: Vector3, loop_points: &[Vector3]) -> Vector3 {
+        loop_points
+            .iter()
+            .copied()
+            .find(|candidate| {
+                let dx = candidate.x - point.x;
+                let dz = candidate.z - point.z;
+                dx * dx + dz * dz <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+                    && Self::overlay_height_key(candidate.y) == Self::overlay_height_key(point.y)
+            })
+            .unwrap_or(point)
     }
 
     fn terrain_clip_segment_heights_from_source_edges(
@@ -659,14 +760,14 @@ impl RoadSurfaceSystem {
         let mut breakpoints = Self::terrain_clip_interval_breakpoints(&intervals);
         Self::append_terrain_clip_height_crossings(&intervals, &mut breakpoints);
         breakpoints.sort_by(|a, b| a.total_cmp(b));
-        breakpoints.dedup_by(|a, b| (*a - *b).abs() <= f64::from(SAMPLE_EPSILON_M));
+        breakpoints.dedup_by(|a, b| *a == *b);
 
         let mut heights = vec![None; breakpoints.len()];
         let mut covered_any = false;
         for index in 0..breakpoints.len().saturating_sub(1) {
             let start_t = breakpoints[index];
             let end_t = breakpoints[index + 1];
-            if end_t - start_t <= f64::from(SAMPLE_EPSILON_M) {
+            if end_t <= start_t {
                 continue;
             }
 
@@ -722,30 +823,28 @@ impl RoadSurfaceSystem {
                 let second = intervals[second_index];
                 let start_t = first.start_t.max(second.start_t).max(0.0);
                 let end_t = first.end_t.min(second.end_t).min(1.0);
-                if end_t - start_t <= f64::from(SAMPLE_EPSILON_M) {
+                if end_t <= start_t {
                     continue;
                 }
                 let start_delta =
                     interval_height_at(first, start_t) - interval_height_at(second, start_t);
                 let end_delta =
                     interval_height_at(first, end_t) - interval_height_at(second, end_t);
-                if start_delta.abs() <= SAMPLE_EPSILON_M {
+                if Self::overlay_heights_equal(start_delta, 0.0) {
                     breakpoints.push(start_t);
                 }
-                if end_delta.abs() <= SAMPLE_EPSILON_M {
+                if Self::overlay_heights_equal(end_delta, 0.0) {
                     breakpoints.push(end_t);
                 }
                 if start_delta.signum() == end_delta.signum() {
                     continue;
                 }
                 let denominator = f64::from(start_delta - end_delta);
-                if denominator.abs() <= f64::from(SAMPLE_EPSILON_M) {
+                if denominator == 0.0 {
                     continue;
                 }
                 let crossing_t = start_t + (end_t - start_t) * f64::from(start_delta) / denominator;
-                if crossing_t > start_t + f64::from(SAMPLE_EPSILON_M)
-                    && crossing_t < end_t - f64::from(SAMPLE_EPSILON_M)
-                {
+                if crossing_t > start_t && crossing_t < end_t {
                     breakpoints.push(crossing_t);
                 }
             }
@@ -757,8 +856,7 @@ impl RoadSurfaceSystem {
         start_t: f64,
         end_t: f64,
     ) -> bool {
-        interval.start_t <= start_t + f64::from(SAMPLE_EPSILON_M)
-            && interval.end_t >= end_t - f64::from(SAMPLE_EPSILON_M)
+        interval.start_t <= start_t && interval.end_t >= end_t
     }
 
     fn terrain_clip_highest_source_height_at_t(
@@ -814,6 +912,12 @@ impl RoadSurfaceSystem {
             Self::terrain_clip_segment_heights_from_source_edges(previous, start, source_edges)?;
         let next_heights =
             Self::terrain_clip_segment_heights_from_source_edges(end, next, source_edges)?;
+        if Self::overlay_heights_equal(previous_heights.end_y, next_heights.start_y) {
+            return Some(TerrainClipSegmentHeights {
+                start_y: previous_heights.end_y,
+                end_y: next_heights.start_y,
+            });
+        }
         let start_sample = Self::terrain_clip_endpoint_sample_matching_height(
             Self::terrain_clip_endpoint_samples(start, source_edges),
             previous_heights.end_y,
@@ -901,6 +1005,12 @@ impl RoadSurfaceSystem {
         let end = contour[(segment_index + 1) % len];
         let connector_length_squared_m2 =
             (start[0] - end[0]) * (start[0] - end[0]) + (start[1] - end[1]) * (start[1] - end[1]);
+        if connector_length_squared_m2
+            <= f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M)
+                * f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M)
+        {
+            return true;
+        }
         let budget_m2 = f64::from(Self::overlay_numeric_area_budget_m2(
             Self::overlay_contour_perimeter_m(contour),
             contour.len(),
@@ -970,24 +1080,13 @@ impl RoadSurfaceSystem {
         if heights.is_empty() {
             return None;
         }
-        let best_priority = heights
-            .iter()
-            .map(|height| terrain_clip_edge_kind_priority(height.kind))
-            .min()?;
-        heights.retain(|height| terrain_clip_edge_kind_priority(height.kind) == best_priority);
-        let shortest_source = heights
-            .iter()
-            .map(|height| height.source_length_m)
-            .min_by(|a, b| a.total_cmp(b))?;
-        heights.retain(|height| {
-            (height.source_length_m - shortest_source).abs() <= f64::from(SAMPLE_EPSILON_M)
-        });
-        heights.sort_by_key(|height| {
-            (
-                Self::overlay_height_key(height.y),
-                height.source_index,
-                height.edge_index,
-            )
+        heights.sort_by(|a, b| {
+            terrain_clip_edge_kind_priority(a.kind)
+                .cmp(&terrain_clip_edge_kind_priority(b.kind))
+                .then(a.source_length_m.total_cmp(&b.source_length_m))
+                .then(Self::overlay_height_key(a.y).cmp(&Self::overlay_height_key(b.y)))
+                .then(a.source_index.cmp(&b.source_index))
+                .then(a.edge_index.cmp(&b.edge_index))
         });
         Some(heights[0])
     }
@@ -1038,9 +1137,16 @@ impl RoadSurfaceSystem {
         let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
         let source_start_t = Self::overlay_line_parameter(source_start, start, end)?;
         let source_end_t = Self::overlay_line_parameter(source_end, start, end)?;
-        let overlap_start_t = source_start_t.min(source_end_t).max(0.0);
-        let overlap_end_t = source_start_t.max(source_end_t).min(1.0);
-        if overlap_end_t - overlap_start_t <= f64::from(SAMPLE_EPSILON_M) {
+        let mut overlap_start_t = source_start_t.min(source_end_t).max(0.0);
+        let mut overlap_end_t = source_start_t.max(source_end_t).min(1.0);
+        let endpoint_dust_t = Self::overlay_endpoint_dust_parameter(start, end)?;
+        if overlap_start_t <= endpoint_dust_t {
+            overlap_start_t = 0.0;
+        }
+        if overlap_end_t >= 1.0 - endpoint_dust_t {
+            overlap_end_t = 1.0;
+        }
+        if overlap_end_t <= overlap_start_t {
             return None;
         }
 
@@ -1071,19 +1177,9 @@ impl RoadSurfaceSystem {
         start: NodeOverlayPoint,
         end: NodeOverlayPoint,
     ) -> Option<f64> {
-        let dx = end[0] - start[0];
-        let dz = end[1] - start[1];
-        let length_squared = dx * dx + dz * dz;
-        let epsilon = f64::from(SAMPLE_EPSILON_M);
-        if length_squared <= epsilon * epsilon {
-            return None;
-        }
-        let point_dx = point[0] - start[0];
-        let point_dz = point[1] - start[1];
-        if (point_dx * dz - point_dz * dx).abs() > epsilon * length_squared.sqrt() {
-            return None;
-        }
-        Some((point_dx * dx + point_dz * dz) / length_squared)
+        Self::overlay_segment_parameter_unbounded(point, start, end)
+            .map(OverlaySegmentParameter::as_f64)
+            .or_else(|| Self::overlay_numeric_dust_line_parameter(point, start, end))
     }
 
     fn overlay_segment_parameter(
@@ -1091,28 +1187,85 @@ impl RoadSurfaceSystem {
         start: NodeOverlayPoint,
         end: NodeOverlayPoint,
     ) -> Option<f64> {
+        if let Some(parameter) = Self::overlay_segment_parameter_unbounded(point, start, end) {
+            return Self::overlay_segment_parameter_with_endpoint_dust(
+                parameter.as_f64(),
+                start,
+                end,
+            );
+        }
+        let parameter = Self::overlay_numeric_dust_line_parameter(point, start, end)?;
+        Self::overlay_segment_parameter_with_endpoint_dust(parameter, start, end)
+    }
+
+    fn overlay_segment_parameter_unbounded(
+        point: NodeOverlayPoint,
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+    ) -> Option<OverlaySegmentParameter> {
+        let start_key = Self::overlay_point_key(start);
+        let end_key = Self::overlay_point_key(end);
+        let point_key = Self::overlay_point_key(point);
+        let dx = end_key.0 - start_key.0;
+        let dz = end_key.1 - start_key.1;
+        let px = point_key.0 - start_key.0;
+        let pz = point_key.1 - start_key.1;
+        let length_squared = i128::from(dx) * i128::from(dx) + i128::from(dz) * i128::from(dz);
+        if length_squared == 0
+            || i128::from(dx) * i128::from(pz) - i128::from(dz) * i128::from(px) != 0
+        {
+            return None;
+        }
+        OverlaySegmentParameter::new(
+            i128::from(px) * i128::from(dx) + i128::from(pz) * i128::from(dz),
+            length_squared,
+        )
+    }
+
+    fn overlay_numeric_dust_line_parameter(
+        point: NodeOverlayPoint,
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+    ) -> Option<f64> {
+        // `i_overlay` may emit split vertices microscopically off the source edge's integer line.
+        // The source edge still owns the height; this only recovers its interval parameter.
         let dx = end[0] - start[0];
         let dz = end[1] - start[1];
         let length_squared = dx * dx + dz * dz;
-        let epsilon = f64::from(SAMPLE_EPSILON_M);
-        if length_squared <= epsilon * epsilon {
+        if length_squared == 0.0 {
             return None;
         }
         let point_dx = point[0] - start[0];
         let point_dz = point[1] - start[1];
-        if (point_dx * dz - point_dz * dx).abs() > epsilon * length_squared.sqrt() {
+        let length = length_squared.sqrt();
+        let cross = point_dx * dz - point_dz * dx;
+        if cross.abs() > f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) * length {
             return None;
         }
-        let t = (point_dx * dx + point_dz * dz) / length_squared;
-        if !(-epsilon..=1.0 + epsilon).contains(&t) {
+        Some((point_dx * dx + point_dz * dz) / length_squared)
+    }
+
+    fn overlay_segment_parameter_with_endpoint_dust(
+        parameter: f64,
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+    ) -> Option<f64> {
+        let endpoint_dust = Self::overlay_endpoint_dust_parameter(start, end)?;
+        (parameter >= -endpoint_dust && parameter <= 1.0 + endpoint_dust)
+            .then_some(parameter.clamp(0.0, 1.0))
+    }
+
+    fn overlay_endpoint_dust_parameter(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+    ) -> Option<f64> {
+        let dx = end[0] - start[0];
+        let dz = end[1] - start[1];
+        let length = (dx * dx + dz * dz).sqrt();
+        if length == 0.0 {
             return None;
         }
-        let t = t.clamp(0.0, 1.0);
-        let closest_x = start[0] + dx * t;
-        let closest_z = start[1] + dz * t;
-        let distance_squared = (point[0] - closest_x) * (point[0] - closest_x)
-            + (point[1] - closest_z) * (point[1] - closest_z);
-        (distance_squared <= epsilon * epsilon).then_some(t)
+        Some(f64::from(NODE_OVERLAY_NUMERIC_DUST_WIDTH_M) / length)
     }
 
     fn overlay_height_key(height_m: f32) -> i64 {
@@ -1121,7 +1274,6 @@ impl RoadSurfaceSystem {
 
     fn overlay_heights_equal(a: f32, b: f32) -> bool {
         Self::overlay_height_key(a) == Self::overlay_height_key(b)
-            || (a - b).abs() <= SAMPLE_EPSILON_M
     }
 }
 
@@ -1208,7 +1360,7 @@ fn interpolate_overlay_point(
 
 fn interval_height_at(interval: TerrainClipSourceInterval, t: f64) -> f32 {
     let span = interval.end_t - interval.start_t;
-    if span.abs() <= f64::from(SAMPLE_EPSILON_M) {
+    if span == 0.0 {
         return interval.start_y;
     }
     interpolate_height_f64(

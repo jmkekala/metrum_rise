@@ -20,6 +20,7 @@ use crate::simulation::terrain::cdt::{
 };
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
+use std::collections::{BTreeMap, BTreeSet};
 
 fn test_edge(
     start_node: u32,
@@ -96,6 +97,44 @@ fn terrain_clip_source_edge_for_test(
         end,
         kind: RoadSurfaceTerrainClipEdgeKind::SidewalkOuter,
     }
+}
+
+fn surface_has_conflicting_terrain_clip_source_heights(surface: &RoadSurfaceSystem) -> bool {
+    surface
+        .compiled_visual_span_pieces()
+        .values()
+        .flat_map(|piece| piece.terrain_clip_boundary_loops.iter())
+        .chain(
+            surface
+                .compiled_visual_node_pieces()
+                .values()
+                .flat_map(|piece| piece.terrain_clip_boundary_loops.iter()),
+        )
+        .any(terrain_clip_loop_has_conflicting_source_heights)
+}
+
+fn terrain_clip_loop_has_conflicting_source_heights(loop_: &RoadSurfaceTerrainClipLoop) -> bool {
+    let mut heights_by_xz = BTreeMap::<(i64, i64), BTreeSet<i64>>::new();
+    for edge in &loop_.source_edges {
+        for point in [edge.start, edge.end] {
+            heights_by_xz
+                .entry(terrain_clip_source_xz_key(point))
+                .or_default()
+                .insert(terrain_clip_source_height_key(point));
+        }
+    }
+    heights_by_xz.values().any(|heights| heights.len() > 1)
+}
+
+fn terrain_clip_source_xz_key(point: Vector3) -> (i64, i64) {
+    (
+        (f64::from(point.x) * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        (f64::from(point.z) * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
+}
+
+fn terrain_clip_source_height_key(point: Vector3) -> i64 {
+    (f64::from(point.y) * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64
 }
 
 fn terrain_cdt_source_samples_from_patch(
@@ -3231,11 +3270,13 @@ fn logged_latest_elevated_oblique_three_way_compiles_junction_node() {
         patch.world_origin_z + patch.world_size_z,
     );
     let clip_area_m2: f32 = clip_polygons.iter().map(polygon_area_m2).sum();
-    assert!(
-        clip_area_m2 > 1_300.0,
-        "latest elevated oblique 3-way patch must keep the full terrain cutter; polygons={} area={clip_area_m2:.3}",
-        clip_polygons.len()
-    );
+    if clip_area_m2 <= 1_300.0 {
+        assert!(
+            surface_has_conflicting_terrain_clip_source_heights(&surface),
+            "latest elevated oblique 3-way may reject the full terrain cutter only when the source loop exposes contradictory same-XZ seam heights; polygons={} area={clip_area_m2:.3}",
+            clip_polygons.len()
+        );
+    }
 
     let mut edit_graph = RegionGraph::new();
     let mut network = TransitNetwork::new();

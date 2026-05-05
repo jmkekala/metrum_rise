@@ -18,9 +18,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // Node-piece classification threshold.
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
-const ARRANGEMENT_EDGE_SPLIT_TOLERANCE_M: f32 = 0.02;
-const ARRANGEMENT_EDGE_SPLIT_HEIGHT_TOLERANCE_M: f32 = 0.004;
-const ARRANGEMENT_HEIGHT_COVER_TOLERANCE_M: f32 = 0.004;
 
 #[derive(Clone, Copy)]
 struct ArrangementBoundarySegment {
@@ -58,6 +55,12 @@ struct ArrangementBoundaryPointKey {
     y_mm: i64,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ArrangementSegmentParameter {
+    numerator: i128,
+    denominator: i128,
+}
+
 impl ArrangementBoundaryPointKey {
     fn from_world(point: Vector3) -> Self {
         Self {
@@ -74,6 +77,57 @@ impl ArrangementBoundaryPointKey {
             self.x_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
             self.z_key as f64 / super::backend::ROAD_OVERLAY_COORDINATE_SCALE,
         ))
+    }
+}
+
+impl ArrangementSegmentParameter {
+    fn zero() -> Self {
+        Self {
+            numerator: 0,
+            denominator: 1,
+        }
+    }
+
+    fn one() -> Self {
+        Self {
+            numerator: 1,
+            denominator: 1,
+        }
+    }
+
+    fn new(numerator: i128, denominator: i128) -> Option<Self> {
+        (denominator > 0).then_some(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    fn as_f32(self) -> f32 {
+        self.numerator as f32 / self.denominator as f32
+    }
+
+    fn is_strict_interior(self) -> bool {
+        self.numerator > 0 && self.numerator < self.denominator
+    }
+
+    fn min(self, other: Self) -> Self {
+        if self <= other { self } else { other }
+    }
+
+    fn max(self, other: Self) -> Self {
+        if self >= other { self } else { other }
+    }
+}
+
+impl Ord for ArrangementSegmentParameter {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.numerator * other.denominator).cmp(&(other.numerator * self.denominator))
+    }
+}
+
+impl PartialOrd for ArrangementSegmentParameter {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
     }
 }
 
@@ -1109,50 +1163,66 @@ fn arrangement_vertex_on_triangle_edge(
     end: Vector3,
     candidate: Vector3,
 ) -> Option<f32> {
-    let start_xz = Vector2::new(start.x, start.z);
-    let end_xz = Vector2::new(end.x, end.z);
-    let candidate_xz = Vector2::new(candidate.x, candidate.z);
-    let segment = end_xz - start_xz;
-    let length_squared = segment.length_squared();
-    if length_squared <= SAMPLE_EPSILON_M {
+    let start_key = ArrangementBoundaryPointKey::from_world(start);
+    let end_key = ArrangementBoundaryPointKey::from_world(end);
+    let candidate_key = ArrangementBoundaryPointKey::from_world(candidate);
+    let parameter = boundary_segment_parameter_xz(candidate_key, start_key, end_key)?;
+    if !parameter.is_strict_interior() {
         return None;
     }
-    let t = (candidate_xz - start_xz).dot(segment) / length_squared;
-    if !(0.0005..=0.9995).contains(&t) {
-        return None;
-    }
-    let closest_xz = start_xz + segment * t;
-    if candidate_xz.distance_squared_to(closest_xz)
-        > ARRANGEMENT_EDGE_SPLIT_TOLERANCE_M * ARRANGEMENT_EDGE_SPLIT_TOLERANCE_M
-    {
-        return None;
-    }
-    let edge_height = start.y + (end.y - start.y) * t;
-    ((candidate.y - edge_height).abs() <= ARRANGEMENT_EDGE_SPLIT_HEIGHT_TOLERANCE_M).then_some(t)
+    (candidate_key.y_mm == interpolated_segment_height_mm(start_key, end_key, parameter))
+        .then_some(parameter.as_f32())
 }
 
 fn point_lies_on_triangle_surface_xz(triangle: [Vector3; 3], point: Vector3) -> bool {
-    let Some([a, b, c]) = triangle_barycentric_weights_xz(triangle, point) else {
+    let point_key = ArrangementBoundaryPointKey::from_world(point);
+    let Some((a, b, c, area)) = triangle_barycentric_weight_keys_xz(triangle, point_key) else {
         return false;
     };
-    let height = triangle[0].y * a + triangle[1].y * b + triangle[2].y * c;
-    (height - point.y).abs() <= ARRANGEMENT_EDGE_SPLIT_HEIGHT_TOLERANCE_M
+    let a_key = ArrangementBoundaryPointKey::from_world(triangle[0]);
+    let b_key = ArrangementBoundaryPointKey::from_world(triangle[1]);
+    let c_key = ArrangementBoundaryPointKey::from_world(triangle[2]);
+    let height_mm = round_div_i128(
+        i128::from(a_key.y_mm) * a + i128::from(b_key.y_mm) * b + i128::from(c_key.y_mm) * c,
+        area,
+    );
+    point_key.y_mm == height_mm
 }
 
-fn triangle_barycentric_weights_xz(triangle: [Vector3; 3], point: Vector3) -> Option<[f32; 3]> {
-    let area = (triangle[1].x - triangle[0].x) * (triangle[2].z - triangle[0].z)
-        - (triangle[1].z - triangle[0].z) * (triangle[2].x - triangle[0].x);
-    if area.abs() <= f32::EPSILON {
+fn triangle_barycentric_weight_keys_xz(
+    triangle: [Vector3; 3],
+    point: ArrangementBoundaryPointKey,
+) -> Option<(i128, i128, i128, i128)> {
+    let a = ArrangementBoundaryPointKey::from_world(triangle[0]);
+    let b = ArrangementBoundaryPointKey::from_world(triangle[1]);
+    let c = ArrangementBoundaryPointKey::from_world(triangle[2]);
+    let area = cross_key_delta(
+        b.x_key - a.x_key,
+        b.z_key - a.z_key,
+        c.x_key - a.x_key,
+        c.z_key - a.z_key,
+    );
+    if area == 0 {
         return None;
     }
-    let a = ((triangle[1].x - point.x) * (triangle[2].z - point.z)
-        - (triangle[1].z - point.z) * (triangle[2].x - point.x))
-        / area;
-    let b = ((triangle[2].x - point.x) * (triangle[0].z - point.z)
-        - (triangle[2].z - point.z) * (triangle[0].x - point.x))
-        / area;
-    let c = 1.0 - a - b;
-    (a >= -f32::EPSILON && b >= -f32::EPSILON && c >= -f32::EPSILON).then_some([a, b, c])
+    let wa = cross_key_delta(
+        b.x_key - point.x_key,
+        b.z_key - point.z_key,
+        c.x_key - point.x_key,
+        c.z_key - point.z_key,
+    );
+    let wb = cross_key_delta(
+        c.x_key - point.x_key,
+        c.z_key - point.z_key,
+        a.x_key - point.x_key,
+        a.z_key - point.z_key,
+    );
+    let wc = area - wa - wb;
+    if area > 0 {
+        (wa >= 0 && wb >= 0 && wc >= 0).then_some((wa, wb, wc, area))
+    } else {
+        (wa <= 0 && wb <= 0 && wc <= 0).then_some((-wa, -wb, -wc, -area))
+    }
 }
 
 fn arrangement_boundary_point_same_xz(
@@ -1160,6 +1230,76 @@ fn arrangement_boundary_point_same_xz(
     b: ArrangementBoundaryPointKey,
 ) -> bool {
     a.x_key == b.x_key && a.z_key == b.z_key
+}
+
+fn boundary_segment_parameter_xz(
+    point: ArrangementBoundaryPointKey,
+    start: ArrangementBoundaryPointKey,
+    end: ArrangementBoundaryPointKey,
+) -> Option<ArrangementSegmentParameter> {
+    let dx = end.x_key - start.x_key;
+    let dz = end.z_key - start.z_key;
+    let px = point.x_key - start.x_key;
+    let pz = point.z_key - start.z_key;
+    let length_squared = squared_key_length(dx, dz);
+    if length_squared == 0 || cross_key_delta(dx, dz, px, pz) != 0 {
+        return None;
+    }
+    ArrangementSegmentParameter::new(
+        i128::from(px) * i128::from(dx) + i128::from(pz) * i128::from(dz),
+        length_squared,
+    )
+}
+
+fn interpolated_segment_height_mm(
+    start: ArrangementBoundaryPointKey,
+    end: ArrangementBoundaryPointKey,
+    parameter: ArrangementSegmentParameter,
+) -> i64 {
+    round_div_i128(
+        i128::from(start.y_mm) * parameter.denominator
+            + i128::from(end.y_mm - start.y_mm) * parameter.numerator,
+        parameter.denominator,
+    )
+}
+
+fn interpolated_segment_point_key(
+    start: ArrangementBoundaryPointKey,
+    end: ArrangementBoundaryPointKey,
+    parameter: ArrangementSegmentParameter,
+) -> ArrangementBoundaryPointKey {
+    ArrangementBoundaryPointKey {
+        x_key: round_div_i128(
+            i128::from(start.x_key) * parameter.denominator
+                + i128::from(end.x_key - start.x_key) * parameter.numerator,
+            parameter.denominator,
+        ),
+        z_key: round_div_i128(
+            i128::from(start.z_key) * parameter.denominator
+                + i128::from(end.z_key - start.z_key) * parameter.numerator,
+            parameter.denominator,
+        ),
+        y_mm: interpolated_segment_height_mm(start, end, parameter),
+    }
+}
+
+fn cross_key_delta(ax: i64, az: i64, bx: i64, bz: i64) -> i128 {
+    i128::from(ax) * i128::from(bz) - i128::from(az) * i128::from(bx)
+}
+
+fn squared_key_length(dx: i64, dz: i64) -> i128 {
+    i128::from(dx) * i128::from(dx) + i128::from(dz) * i128::from(dz)
+}
+
+fn round_div_i128(numerator: i128, denominator: i128) -> i64 {
+    debug_assert!(denominator > 0);
+    let half = denominator / 2;
+    let rounded = if numerator >= 0 {
+        (numerator + half) / denominator
+    } else {
+        (numerator - half) / denominator
+    };
+    rounded as i64
 }
 
 fn owner_preserving_split_boundary_segment_loop_at_crossings(
@@ -1285,28 +1425,41 @@ fn boundary_segment_intersection_parameters_xz(
     first: ArrangementBoundarySegment,
     second: ArrangementBoundarySegment,
 ) -> Option<(f32, f32)> {
-    let first_delta = Vector2::new(first.end.x - first.start.x, first.end.z - first.start.z);
-    let second_delta = Vector2::new(second.end.x - second.start.x, second.end.z - second.start.z);
-    let denominator = cross_xz(first_delta, second_delta);
-    if denominator.abs() <= f32::EPSILON {
+    let first_dx = first.end_key.x_key - first.start_key.x_key;
+    let first_dz = first.end_key.z_key - first.start_key.z_key;
+    let second_dx = second.end_key.x_key - second.start_key.x_key;
+    let second_dz = second.end_key.z_key - second.start_key.z_key;
+    let denominator = cross_key_delta(first_dx, first_dz, second_dx, second_dz);
+    if denominator == 0 {
         return None;
     }
-    let offset = Vector2::new(
-        second.start.x - first.start.x,
-        second.start.z - first.start.z,
-    );
-    let first_t = cross_xz(offset, second_delta) / denominator;
-    let second_t = cross_xz(offset, first_delta) / denominator;
-    (first_t > 0.0 && first_t < 1.0 && second_t > 0.0 && second_t < 1.0)
-        .then_some((first_t, second_t))
+    let offset_x = second.start_key.x_key - first.start_key.x_key;
+    let offset_z = second.start_key.z_key - first.start_key.z_key;
+    let first_numerator = cross_key_delta(offset_x, offset_z, second_dx, second_dz);
+    let second_numerator = cross_key_delta(offset_x, offset_z, first_dx, first_dz);
+    if denominator > 0 {
+        if !(first_numerator > 0
+            && first_numerator < denominator
+            && second_numerator > 0
+            && second_numerator < denominator)
+        {
+            return None;
+        }
+    } else if !(first_numerator < 0
+        && first_numerator > denominator
+        && second_numerator < 0
+        && second_numerator > denominator)
+    {
+        return None;
+    }
+    Some((
+        first_numerator as f32 / denominator as f32,
+        second_numerator as f32 / denominator as f32,
+    ))
 }
 
 fn interpolate_boundary_segment(segment: ArrangementBoundarySegment, t: f32) -> Vector3 {
     segment.start + (segment.end - segment.start) * t
-}
-
-fn cross_xz(a: Vector2, b: Vector2) -> f32 {
-    a.x * b.y - a.y * b.x
 }
 
 fn terrain_clip_boundary_points_and_source_edges_from_segments(
@@ -1372,14 +1525,14 @@ fn arrangement_source_is_covered_by_outer_top(
         return false;
     }
 
-    intervals.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    let mut covered_end = 0.0_f32;
+    intervals.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+    let mut covered_end = ArrangementSegmentParameter::zero();
     for (start, end) in intervals {
-        if start > covered_end + SAMPLE_EPSILON_M {
+        if start > covered_end {
             return false;
         }
         covered_end = covered_end.max(end);
-        if covered_end >= 1.0 - SAMPLE_EPSILON_M {
+        if covered_end >= ArrangementSegmentParameter::one() {
             return true;
         }
     }
@@ -1389,45 +1542,37 @@ fn arrangement_source_is_covered_by_outer_top(
 fn arrangement_source_overlap_interval(
     segment: ArrangementTerrainClipSourceSegment,
     candidate: ArrangementTerrainClipSourceSegment,
-) -> Option<(f32, f32)> {
+) -> Option<(ArrangementSegmentParameter, ArrangementSegmentParameter)> {
     let candidate_start_t =
         boundary_line_parameter_xz(candidate.start, segment.start, segment.end)?;
     let candidate_end_t = boundary_line_parameter_xz(candidate.end, segment.start, segment.end)?;
-    let start = candidate_start_t.min(candidate_end_t).max(0.0);
-    let end = candidate_start_t.max(candidate_end_t).min(1.0);
-    if end - start <= SAMPLE_EPSILON_M {
+    let start = candidate_start_t
+        .min(candidate_end_t)
+        .max(ArrangementSegmentParameter::zero());
+    let end = candidate_start_t
+        .max(candidate_end_t)
+        .min(ArrangementSegmentParameter::one());
+    if end <= start {
         return None;
     }
-    if !candidate_covers_lower_heights(
-        segment,
-        candidate,
-        candidate_start_t,
-        candidate_end_t,
-        start,
-    ) || !candidate_covers_lower_heights(
-        segment,
-        candidate,
-        candidate_start_t,
-        candidate_end_t,
-        end,
-    ) {
+    if !candidate_covers_lower_heights(segment, candidate, start)
+        || !candidate_covers_lower_heights(segment, candidate, end)
+    {
         return None;
     }
-    (end - start > SAMPLE_EPSILON_M).then_some((start, end))
+    Some((start, end))
 }
 
-fn boundary_line_parameter_xz(point: Vector3, start: Vector3, end: Vector3) -> Option<f32> {
-    let segment = Vector2::new(end.x - start.x, end.z - start.z);
-    let length_squared = segment.length_squared();
-    if length_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
-        return None;
-    }
-    let offset = Vector2::new(point.x - start.x, point.z - start.z);
-    let length = length_squared.sqrt();
-    if (offset.x * segment.y - offset.y * segment.x).abs() > SAMPLE_EPSILON_M * length {
-        return None;
-    }
-    Some(offset.dot(segment) / length_squared)
+fn boundary_line_parameter_xz(
+    point: Vector3,
+    start: Vector3,
+    end: Vector3,
+) -> Option<ArrangementSegmentParameter> {
+    boundary_segment_parameter_xz(
+        ArrangementBoundaryPointKey::from_world(point),
+        ArrangementBoundaryPointKey::from_world(start),
+        ArrangementBoundaryPointKey::from_world(end),
+    )
 }
 
 fn arrangement_source_can_cover_lower(
@@ -1444,30 +1589,35 @@ fn arrangement_sources_same_xz(
     a: ArrangementTerrainClipSourceSegment,
     b: ArrangementTerrainClipSourceSegment,
 ) -> bool {
-    let same_direction = (a.start - b.start).length_squared()
-        <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
-        && (a.end - b.end).length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M;
-    let opposite_direction = (a.start - b.end).length_squared()
-        <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M
-        && (a.end - b.start).length_squared() <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M;
+    let a_start = ArrangementBoundaryPointKey::from_world(a.start);
+    let a_end = ArrangementBoundaryPointKey::from_world(a.end);
+    let b_start = ArrangementBoundaryPointKey::from_world(b.start);
+    let b_end = ArrangementBoundaryPointKey::from_world(b.end);
+    let same_direction = arrangement_boundary_point_same_xz(a_start, b_start)
+        && arrangement_boundary_point_same_xz(a_end, b_end);
+    let opposite_direction = arrangement_boundary_point_same_xz(a_start, b_end)
+        && arrangement_boundary_point_same_xz(a_end, b_start);
     same_direction || opposite_direction
 }
 
 fn candidate_covers_lower_heights(
     lower: ArrangementTerrainClipSourceSegment,
     candidate: ArrangementTerrainClipSourceSegment,
-    candidate_start_t: f32,
-    candidate_end_t: f32,
-    lower_t: f32,
+    lower_t: ArrangementSegmentParameter,
 ) -> bool {
-    let candidate_span = candidate_end_t - candidate_start_t;
-    if candidate_span.abs() <= SAMPLE_EPSILON_M {
+    let lower_start = ArrangementBoundaryPointKey::from_world(lower.start);
+    let lower_end = ArrangementBoundaryPointKey::from_world(lower.end);
+    let candidate_start = ArrangementBoundaryPointKey::from_world(candidate.start);
+    let candidate_end = ArrangementBoundaryPointKey::from_world(candidate.end);
+    let point = interpolated_segment_point_key(lower_start, lower_end, lower_t);
+    let Some(candidate_t) = boundary_segment_parameter_xz(point, candidate_start, candidate_end)
+    else {
         return false;
-    }
-    let candidate_t = ((lower_t - candidate_start_t) / candidate_span).clamp(0.0, 1.0);
-    let lower_y = lower.start.y + (lower.end.y - lower.start.y) * lower_t;
-    let candidate_y = candidate.start.y + (candidate.end.y - candidate.start.y) * candidate_t;
-    candidate_y + ARRANGEMENT_HEIGHT_COVER_TOLERANCE_M >= lower_y
+    };
+    let lower_y_mm = interpolated_segment_height_mm(lower_start, lower_end, lower_t);
+    let candidate_y_mm =
+        interpolated_segment_height_mm(candidate_start, candidate_end, candidate_t);
+    candidate_y_mm >= lower_y_mm
 }
 
 fn split_boundary_segment_loop_at_repeated_xz(

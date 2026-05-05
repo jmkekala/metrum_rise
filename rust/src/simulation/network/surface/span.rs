@@ -4,7 +4,8 @@ use super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, RoadSurfaceBandKind,
     RoadSurfaceSection, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualPolygon,
-    RoadSurfaceVisualSpanPiece, terrain_clip_edge_kind_for_band,
+    RoadSurfaceVisualSpanPiece, WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2,
+    terrain_clip_edge_kind_for_band,
 };
 use crate::simulation::network::graph::RegionGraph;
 use crate::simulation::terrain::TerrainSystem;
@@ -243,6 +244,10 @@ impl RoadSurfaceSystem {
                 end: left_points[0],
                 kind: RoadSurfaceTerrainClipEdgeKind::SpanHandoff,
             });
+            canonicalize_span_terrain_clip_source_edges(
+                &mut source_edges,
+                &loop_polygon.points_world,
+            );
             loops.push(RoadSurfaceTerrainClipLoop {
                 points_world: loop_polygon.points_world,
                 source_edges,
@@ -360,4 +365,24 @@ impl RoadSurfaceSystem {
             bands,
         })
     }
+}
+
+fn canonicalize_span_terrain_clip_source_edges(
+    source_edges: &mut [RoadSurfaceTerrainClipSourceEdge],
+    loop_points: &[Vector3],
+) {
+    for edge in source_edges {
+        if let Some(point) = matching_canonical_loop_point(edge.start, loop_points) {
+            edge.start = point;
+        }
+        if let Some(point) = matching_canonical_loop_point(edge.end, loop_points) {
+            edge.end = point;
+        }
+    }
+}
+
+fn matching_canonical_loop_point(point: Vector3, loop_points: &[Vector3]) -> Option<Vector3> {
+    loop_points.iter().copied().find(|candidate| {
+        (*candidate - point).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
+    })
 }
