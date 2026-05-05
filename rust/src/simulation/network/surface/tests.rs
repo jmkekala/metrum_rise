@@ -79,6 +79,14 @@ fn sloped_terrain(width: usize, height: usize) -> TerrainSystem {
     terrain
 }
 
+fn road_points_from_json(points_json: &str) -> Vec<Vector3> {
+    serde_json::from_str::<Vec<[f32; 3]>>(points_json)
+        .expect("logged road geometry points must parse")
+        .into_iter()
+        .map(|[x, y, z]| Vector3::new(x, y, z))
+        .collect()
+}
+
 fn terrain_clip_source_edge_for_test(
     start: Vector3,
     end: Vector3,
@@ -3081,6 +3089,187 @@ fn logged_current_elevated_oblique_three_way_compiles_junction_node() {
         raw_union_polygons.len(),
         clip_polygons.len()
     );
+}
+
+#[test]
+fn logged_latest_elevated_oblique_three_way_compiles_junction_node() {
+    let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
+    let edge0_points = road_points_from_json(
+        r#"[[-17.440,141.850,-16.419],[-17.571,141.942,-17.003],[-17.731,142.037,-17.711],[-17.870,142.135,-18.328],[-18.034,142.232,-19.056],[-18.221,142.323,-19.891],[-18.432,142.401,-20.829],[-18.546,142.465,-21.334],[-18.666,142.516,-21.864],[-18.790,142.561,-22.418],[-18.920,142.604,-22.994],[-19.055,142.651,-23.593],[-19.194,142.704,-24.214],[-19.339,142.762,-24.856],[-19.488,142.823,-25.520],[-19.642,142.883,-26.203],[-19.800,142.941,-26.907],[-19.963,142.999,-27.630],[-20.130,143.060,-28.372],[-20.301,143.131,-29.132],[-20.476,143.220,-29.910],[-20.655,143.330,-30.705],[-20.838,143.460,-31.517],[-21.024,143.607,-32.345],[-21.214,143.763,-33.189],[-21.407,143.923,-34.048],[-21.604,144.085,-34.921],[-21.803,144.250,-35.809],[-22.006,144.420,-36.710],[-22.212,144.595,-37.625],[-22.421,144.773,-38.552],[-22.632,144.947,-39.491],[-22.846,145.113,-40.441],[-22.954,145.266,-40.921],[-23.062,145.406,-41.403],[-23.171,145.536,-41.887],[-23.281,145.661,-42.375],[-23.391,145.786,-42.864],[-23.502,145.913,-43.357],[-23.613,146.044,-43.851],[-23.725,146.178,-44.348],[-23.837,146.313,-44.847],[-23.950,146.449,-45.348],[-24.063,146.587,-45.851],[-24.177,146.725,-46.357],[-24.291,146.863,-46.864],[-24.406,147.002,-47.373],[-24.521,147.140,-47.884],[-24.636,147.280,-48.397],[-24.752,147.425,-48.911],[-24.868,147.578,-49.427],[-24.985,147.739,-49.945],[-25.101,147.906,-50.464],[-25.219,148.069,-50.985],[-25.336,148.223,-51.507],[-25.454,148.365,-52.030],[-25.506,148.498,-52.262]]"#,
+    );
+    let edge1_points = road_points_from_json(
+        r#"[[-25.506,148.498,-52.262],[-25.233,148.688,-52.694],[-24.764,148.886,-53.436],[-24.449,149.097,-53.934],[-24.083,149.321,-54.512],[-23.668,149.553,-55.168],[-23.207,149.781,-55.897],[-22.700,149.996,-56.698],[-22.430,150.191,-57.125],[-22.150,150.366,-57.568],[-21.860,150.530,-58.027],[-21.559,150.688,-58.502],[-21.249,150.845,-58.992],[-20.929,150.996,-59.498],[-20.600,151.137,-60.018],[-20.262,151.262,-60.552],[-19.915,151.368,-61.101],[-19.559,151.461,-61.663],[-19.195,151.546,-62.238],[-18.823,151.630,-62.826],[-18.444,151.717,-63.426],[-18.056,151.808,-64.039],[-17.662,151.903,-64.663],[-17.260,152.001,-65.298],[-16.851,152.103,-65.944],[-16.436,152.209,-66.600],[-16.014,152.319,-67.267],[-15.587,152.431,-67.943],[-15.153,152.539,-68.628],[-14.714,152.634,-69.323],[-14.269,152.711,-70.025],[-13.819,152.766,-70.736],[-13.365,152.804,-71.455],[-12.905,152.832,-72.181],[-12.442,152.858,-72.914],[-11.974,152.889,-73.654],[-11.502,152.925,-74.400],[-11.026,152.966,-75.151],[-10.548,153.005,-75.908],[-10.065,153.039,-76.670],[-9.580,153.064,-77.437],[-9.093,153.076,-78.208],[-8.603,153.076,-78.983],[-8.110,153.061,-79.761],[-7.616,153.034,-80.542],[-7.120,152.995,-81.326],[-6.622,152.948,-82.113],[-6.124,152.896,-82.901],[-5.624,152.841,-83.691],[-5.124,152.786,-84.482],[-4.623,152.730,-85.274],[-4.122,152.673,-86.066],[-3.620,152.614,-86.858],[-3.119,152.554,-87.650],[-2.619,152.494,-88.441],[-2.119,152.438,-89.231],[-1.621,152.389,-90.019],[-1.123,152.349,-90.806],[-0.627,152.317,-91.590],[-0.133,152.293,-92.371],[0.360,152.273,-93.149],[0.850,152.255,-93.924],[1.337,152.239,-94.695],[1.822,152.222,-95.462],[2.304,152.205,-96.224],[2.783,152.187,-96.981],[3.259,152.171,-97.732],[3.731,152.157,-98.478],[4.199,152.149,-99.218],[4.662,152.147,-99.951],[5.122,152.152,-100.677],[5.576,152.163,-101.395],[6.026,152.178,-102.106],[6.471,152.195,-102.809],[6.910,152.211,-103.504],[7.343,152.225,-104.189],[7.771,152.238,-104.865],[8.193,152.251,-105.532],[8.608,152.263,-106.188],[9.017,152.274,-106.834],[9.419,152.285,-107.469],[9.813,152.294,-108.093],[10.201,152.299,-108.705],[10.580,152.299,-109.306],[10.952,152.294,-109.894],[11.316,152.285,-110.469],[11.672,152.274,-111.031],[12.019,152.262,-111.579],[12.357,152.252,-112.114],[12.686,152.243,-112.634],[13.006,152.237,-113.140],[13.316,152.232,-113.630],[13.617,152.229,-114.105],[13.907,152.227,-114.564],[14.187,152.227,-115.007],[14.457,152.228,-115.433],[14.964,152.232,-116.234],[15.425,152.238,-116.964],[15.840,152.245,-117.620],[16.206,152.255,-118.198],[16.521,152.267,-118.696],[16.990,152.279,-119.438],[17.263,152.292,-119.869]]"#,
+    );
+    let edge2_points = road_points_from_json(
+        r#"[[-25.506,148.498,-52.262],[-25.572,148.638,-52.555],[-25.690,148.786,-53.080],[-25.809,148.948,-53.607],[-25.928,149.122,-54.135],[-26.047,149.305,-54.664],[-26.166,149.491,-55.194],[-26.285,149.676,-55.724],[-26.405,149.861,-56.256],[-26.524,150.045,-56.788],[-26.644,150.231,-57.321],[-26.764,150.421,-57.854],[-26.885,150.612,-58.388],[-27.005,150.798,-58.922],[-27.125,150.974,-59.457],[-27.246,151.133,-59.992],[-27.366,151.274,-60.527],[-27.486,151.398,-61.063],[-27.607,151.511,-61.599],[-27.728,151.619,-62.134],[-27.848,151.727,-62.670],[-27.969,151.838,-63.206],[-28.089,151.952,-63.741],[-28.210,152.067,-64.277],[-28.330,152.183,-64.812],[-28.450,152.298,-65.346],[-28.571,152.413,-65.881],[-28.691,152.529,-66.415],[-28.811,152.647,-66.948],[-28.931,152.768,-67.481],[-29.050,152.891,-68.013],[-29.170,153.013,-68.544],[-29.289,153.127,-69.075],[-29.409,153.227,-69.605],[-29.528,153.307,-70.133],[-29.646,153.366,-70.661],[-29.765,153.406,-71.188],[-29.883,153.433,-71.714],[-30.001,153.455,-72.238],[-30.119,153.475,-72.762],[-30.237,153.496,-73.284],[-30.354,153.520,-73.804],[-30.471,153.546,-74.324],[-30.587,153.573,-74.841],[-30.703,153.601,-75.357],[-30.819,153.630,-75.872],[-30.934,153.661,-76.385],[-31.049,153.693,-76.896],[-31.164,153.726,-77.405],[-31.278,153.760,-77.912],[-31.392,153.795,-78.417],[-31.505,153.832,-78.921],[-31.618,153.869,-79.422],[-31.730,153.905,-79.921],[-31.842,153.940,-80.418],[-31.953,153.975,-80.912],[-32.064,154.009,-81.404],[-32.174,154.046,-81.894],[-32.284,154.087,-82.381],[-32.447,154.136,-83.107],[-32.609,154.192,-83.827],[-32.823,154.255,-84.778],[-33.034,154.322,-85.717],[-33.243,154.392,-86.644],[-33.449,154.461,-87.558],[-33.652,154.528,-88.460],[-33.851,154.592,-89.347],[-34.048,154.652,-90.221],[-34.241,154.708,-91.080],[-34.431,154.762,-91.924],[-34.618,154.813,-92.752],[-34.800,154.862,-93.564],[-34.979,154.909,-94.359],[-35.154,154.955,-95.137],[-35.325,154.999,-95.897],[-35.492,155.038,-96.639],[-35.655,155.075,-97.362],[-35.813,155.111,-98.065],[-35.967,155.150,-98.749],[-36.116,155.196,-99.412],[-36.261,155.253,-100.055],[-36.401,155.320,-100.676],[-36.535,155.397,-101.274],[-36.665,155.479,-101.851],[-36.790,155.568,-102.404],[-36.909,155.662,-102.934],[-37.023,155.764,-103.440],[-37.234,155.873,-104.377],[-37.422,155.986,-105.212],[-37.585,156.098,-105.940],[-37.724,156.204,-106.557],[-37.884,156.303,-107.266],[-38.015,156.397,-107.850]]"#,
+    );
+
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(edge0_points[0], NodeType::Junction);
+    let south = graph.add_node(edge2_points.last().copied().unwrap(), NodeType::Junction);
+    let center = graph.add_node(edge0_points.last().copied().unwrap(), NodeType::Junction);
+    let branch = graph.add_node(edge1_points.last().copied().unwrap(), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        center,
+        edge0_points.clone(),
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        branch,
+        edge1_points.clone(),
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        south,
+        edge2_points.clone(),
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+    assert!(
+        graph.edge(0).end_clip > 0.0,
+        "latest elevated edge 0 must be clipped into the junction; clip={:.3}",
+        graph.edge(0).end_clip
+    );
+    assert!(
+        graph.edge(1).start_clip > 0.0,
+        "latest elevated edge 1 must be clipped into the junction; clip={:.3}",
+        graph.edge(1).start_clip
+    );
+    assert!(
+        graph.edge(2).start_clip > 0.0,
+        "latest elevated edge 2 must be clipped into the junction; clip={:.3}",
+        graph.edge(2).start_clip
+    );
+
+    let mut edit_path_main_geometry = edge0_points.clone();
+    edit_path_main_geometry.extend(edge2_points.iter().skip(1).copied());
+
+    let mut stale_main_geometry = edge0_points;
+    stale_main_geometry.extend(edge2_points.iter().skip(1).copied());
+    let mut stale_graph = RegionGraph::new();
+    let stale_west = stale_graph.add_node(graph.node(west).pos, NodeType::Junction);
+    let stale_south = stale_graph.add_node(graph.node(south).pos, NodeType::Junction);
+    stale_graph.add_edge(test_edge(
+        stale_west,
+        stale_south,
+        stale_main_geometry,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    stale_graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&stale_graph, &terrain);
+    for edge_idx in 0..graph.edge_count() {
+        surface.mark_edge_dirty(&graph, edge_idx);
+    }
+    for node_id in [west, south, center, branch] {
+        surface.mark_node_dirty(&graph, node_id);
+    }
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("latest elevated oblique 3-way junction must compile a JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
+    assert_material_triangles_do_not_overlap(piece);
+
+    let center_pos = graph.node(center).pos;
+    let center_patch_key = terrain
+        .render_patch_keys_for_world_bounds(center_pos.x, center_pos.z, center_pos.x, center_pos.z)
+        .into_iter()
+        .next()
+        .expect("latest elevated junction center must map to a terrain render patch");
+    assert!(
+        surface
+            .terrain_render_patch_keys_with_visible_road(&terrain)
+            .contains(&center_patch_key),
+        "latest elevated junction patch must be road-locked by visible standard-road ownership"
+    );
+    let patch = terrain
+        .visual_patch_snapshot(center_patch_key.0, center_patch_key.1)
+        .expect("road-locked latest elevated junction patch must be resident in the test terrain");
+    let clip_polygons = surface.terrain_clip_polygons_for_world_bounds(
+        &graph,
+        patch.world_origin_x,
+        patch.world_origin_z,
+        patch.world_origin_x + patch.world_size_x,
+        patch.world_origin_z + patch.world_size_z,
+    );
+    let clip_area_m2: f32 = clip_polygons.iter().map(polygon_area_m2).sum();
+    assert!(
+        clip_area_m2 > 1_300.0,
+        "latest elevated oblique 3-way patch must keep the full terrain cutter; polygons={} area={clip_area_m2:.3}",
+        clip_polygons.len()
+    );
+
+    let mut edit_graph = RegionGraph::new();
+    let mut network = TransitNetwork::new();
+    let config = crate::simulation::core::config::WorldConfig::default();
+    let mut zoning = crate::simulation::grid::zoning::ZoningSystem::new(&config);
+    let mut allocator = crate::simulation::buildings::allocator::BuildingAllocator::new();
+    network.add_road(
+        &mut edit_graph,
+        edit_path_main_geometry,
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    network.road_surface.compile_dirty(&edit_graph, &terrain);
+    network.add_road(
+        &mut edit_graph,
+        edge1_points,
+        1,
+        1,
+        EdgeClass::Standard,
+        &mut zoning,
+        &mut allocator,
+    );
+    network.road_surface.compile_dirty(&edit_graph, &terrain);
+
+    let edit_center = (0..edit_graph.node_count() as u32)
+        .find(|&node_id| {
+            edit_graph
+                .node_adjacency(node_id)
+                .iter()
+                .filter(|&&edge_idx| !edit_graph.edge(edge_idx).deleted)
+                .count()
+                == 3
+        })
+        .expect("add_road edit path must create a 3-way junction node");
+    let edit_piece = network
+        .road_surface
+        .compiled_visual_node_pieces()
+        .get(&edit_center)
+        .expect("add_road edit path must compile the elevated oblique JunctionN");
+    assert_eq!(edit_piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!edit_piece.outer_boundary_loops.is_empty());
+    assert!(!edit_piece.road_surface_polygons.is_empty());
+    assert!(!edit_piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(edit_piece);
+    assert_material_triangles_do_not_overlap(edit_piece);
 }
 
 #[test]
