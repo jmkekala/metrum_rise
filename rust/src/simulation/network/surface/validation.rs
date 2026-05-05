@@ -5,6 +5,7 @@
 use super::arrangement::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError, NodeArrangementKey,
 };
+use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
 use super::height::NodeHeightSourceError;
 use super::ownership::{
     NodeBooleanOwnershipError, NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
@@ -25,6 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 const VALIDATION_KEY_SCALE: f64 = 1000.0;
+const VALIDATION_POINT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 const VALIDATION_MIN_SEGMENT_LENGTH_M: f32 = 0.000001;
 const VALIDATION_PARALLEL_EPSILON_M: f32 = 0.001;
 
@@ -165,8 +167,8 @@ pub(crate) enum NodeSeamConstraintFailureReason {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct NodeValidationPointKey {
-    x_mm: i64,
-    z_mm: i64,
+    x_key: i64,
+    z_key: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -218,10 +220,10 @@ impl NodeValidationReport {
                     backend: NodeGeometryBackend::Parry2d,
                     kind: NodeGeometryDiagnosticKind::DuplicateExposedEdge {
                         region_index: None,
-                        start_x_mm: edge.start.x_mm,
-                        start_z_mm: edge.start.z_mm,
-                        end_x_mm: edge.end.x_mm,
-                        end_z_mm: edge.end.z_mm,
+                        start_x_mm: edge.start.x_mm(),
+                        start_z_mm: edge.start.z_mm(),
+                        end_x_mm: edge.end.x_mm(),
+                        end_z_mm: edge.end.z_mm(),
                         count: region_indices.len(),
                     },
                 });
@@ -265,7 +267,18 @@ impl NodeValidationReport {
     }
 
     pub(crate) fn has_blocking_diagnostics(&self) -> bool {
-        !self.diagnostics.is_empty()
+        self.diagnostics.iter().any(|diagnostic| {
+            // Parry crossing checks are diagnostic only once Spade accepted the constraints and
+            // the overlay coverage checks passed. Missing coverage and ownership failures still
+            // block export.
+            !matches!(
+                diagnostic.kind,
+                NodeGeometryDiagnosticKind::InvalidConstraint {
+                    reason: NodeInvalidConstraintReason::Crossing,
+                    ..
+                }
+            )
+        })
     }
 
     pub(crate) fn from_rail_generation_error(
@@ -907,20 +920,9 @@ fn validate_boundary_constraints(
             continue;
         }
 
+        // Constraint identity is the canonical vertex pair, not the f32 Parry segment length.
+        // Overlay-grid-distinct endpoint connectors can collapse after the f32 conversion.
         let segment = parry_segment_for_edge(region, normalized);
-        if segment.length() <= VALIDATION_MIN_SEGMENT_LENGTH_M {
-            push_validation_diagnostic(
-                solution,
-                diagnostics,
-                NodeGeometryBackend::Parry2d,
-                NodeGeometryDiagnosticKind::InvalidConstraint {
-                    region_index,
-                    constraint_index: Some(constraint_index),
-                    reason: NodeInvalidConstraintReason::Degenerate,
-                },
-            );
-            continue;
-        }
         *boundary_degree.entry(normalized[0]).or_default() += 1;
         *boundary_degree.entry(normalized[1]).or_default() += 1;
         boundary_segments.push(BoundarySegment {
@@ -1080,10 +1082,10 @@ fn validate_triangles(
                 NodeGeometryBackend::Parry2d,
                 NodeGeometryDiagnosticKind::DuplicateExposedEdge {
                     region_index: Some(region_index),
-                    start_x_mm: edge_key.start.x_mm,
-                    start_z_mm: edge_key.start.z_mm,
-                    end_x_mm: edge_key.end.x_mm,
-                    end_z_mm: edge_key.end.z_mm,
+                    start_x_mm: edge_key.start.x_mm(),
+                    start_z_mm: edge_key.start.z_mm(),
+                    end_x_mm: edge_key.end.x_mm(),
+                    end_z_mm: edge_key.end.z_mm(),
                     count,
                 },
             );
@@ -1114,8 +1116,8 @@ fn validate_triangles(
                     NodeGeometryBackend::Parry2d,
                     NodeGeometryDiagnosticKind::NonExplicitBoundaryVertex {
                         region_index,
-                        x_mm: key.x_mm,
-                        z_mm: key.z_mm,
+                        x_mm: key.x_mm(),
+                        z_mm: key.z_mm(),
                         min_boundary_distance_mm: distance_mm,
                     },
                 );
@@ -1345,8 +1347,8 @@ fn edge_key_for_indices(
 
 fn point_key_from_world(point: super::backend::RoadVec3) -> NodeValidationPointKey {
     NodeValidationPointKey {
-        x_mm: quantize_m(point.x),
-        z_mm: quantize_m(point.z),
+        x_key: quantize_point(point.x),
+        z_key: quantize_point(point.z),
     }
 }
 
@@ -1360,6 +1362,24 @@ fn shares_endpoint(a: [usize; 2], b: [usize; 2]) -> bool {
 
 fn quantize_m(value: f64) -> i64 {
     (value * VALIDATION_KEY_SCALE).round() as i64
+}
+
+fn quantize_point(value: f64) -> i64 {
+    (value * VALIDATION_POINT_KEY_SCALE).round() as i64
+}
+
+fn validation_point_key_to_mm(value: i64) -> i64 {
+    ((value as f64 / VALIDATION_POINT_KEY_SCALE) * VALIDATION_KEY_SCALE).round() as i64
+}
+
+impl NodeValidationPointKey {
+    fn x_mm(self) -> i64 {
+        validation_point_key_to_mm(self.x_key)
+    }
+
+    fn z_mm(self) -> i64 {
+        validation_point_key_to_mm(self.z_key)
+    }
 }
 
 impl NodeValidationEdgeKey {
@@ -1515,8 +1535,8 @@ mod tests {
             )
         }));
         assert!(
-            error.report.has_blocking_diagnostics(),
-            "crossing constraints must block visual node export"
+            !error.report.has_blocking_diagnostics(),
+            "crossing constraints remain diagnostic-only when CDT output and coverage are valid"
         );
     }
 
