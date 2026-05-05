@@ -2664,6 +2664,426 @@ fn logged_elevated_three_way_oblique_junction_emits_outer_boundary_vertices() {
 }
 
 #[test]
+fn logged_current_elevated_oblique_three_way_compiles_junction_node() {
+    let terrain = TerrainSystem::with_chunking(1025, 1025, 1.0, 512, 0.0);
+    let mut graph = RegionGraph::new();
+    let west = graph.add_node(Vector3::new(-6.578, 141.206, -5.989), NodeType::Junction);
+    let south = graph.add_node(Vector3::new(-43.834, 158.291, -122.338), NodeType::Junction);
+    let center = graph.add_node(Vector3::new(-23.211, 150.463, -57.933), NodeType::Junction);
+    let branch = graph.add_node(Vector3::new(8.837, 153.266, -120.160), NodeType::Junction);
+
+    graph.add_edge(test_edge(
+        west,
+        center,
+        vec![
+            Vector3::new(-6.578, 141.206, -5.989),
+            Vector3::new(-6.816, 141.251, -6.732),
+            Vector3::new(-6.996, 141.296, -7.296),
+            Vector3::new(-7.224, 141.339, -8.008),
+            Vector3::new(-7.499, 141.380, -8.865),
+            Vector3::new(-7.653, 141.423, -9.346),
+            Vector3::new(-7.817, 141.469, -9.860),
+            Vector3::new(-7.993, 141.523, -10.408),
+            Vector3::new(-8.179, 141.586, -10.988),
+            Vector3::new(-8.375, 141.659, -11.601),
+            Vector3::new(-8.581, 141.740, -12.244),
+            Vector3::new(-8.797, 141.830, -12.919),
+            Vector3::new(-9.022, 141.925, -13.623),
+            Vector3::new(-9.257, 142.028, -14.356),
+            Vector3::new(-9.501, 142.138, -15.119),
+            Vector3::new(-9.754, 142.255, -15.909),
+            Vector3::new(-10.016, 142.377, -16.726),
+            Vector3::new(-10.286, 142.500, -17.570),
+            Vector3::new(-10.565, 142.617, -18.440),
+            Vector3::new(-10.851, 142.718, -19.336),
+            Vector3::new(-11.146, 142.798, -20.256),
+            Vector3::new(-11.372, 142.854, -20.961),
+            Vector3::new(-11.525, 142.890, -21.439),
+            Vector3::new(-11.680, 142.913, -21.923),
+            Vector3::new(-11.837, 142.930, -22.412),
+            Vector3::new(-11.995, 142.948, -22.907),
+            Vector3::new(-12.155, 142.970, -23.408),
+            Vector3::new(-12.317, 142.996, -23.913),
+            Vector3::new(-12.481, 143.025, -24.425),
+            Vector3::new(-12.646, 143.055, -24.941),
+            Vector3::new(-12.814, 143.086, -25.463),
+            Vector3::new(-12.982, 143.117, -25.990),
+            Vector3::new(-13.153, 143.149, -26.522),
+            Vector3::new(-13.325, 143.180, -27.059),
+            Vector3::new(-13.498, 143.211, -27.601),
+            Vector3::new(-13.673, 143.242, -28.147),
+            Vector3::new(-13.850, 143.277, -28.698),
+            Vector3::new(-14.028, 143.320, -29.254),
+            Vector3::new(-14.207, 143.376, -29.815),
+            Vector3::new(-14.388, 143.447, -30.380),
+            Vector3::new(-14.570, 143.534, -30.949),
+            Vector3::new(-14.754, 143.632, -31.522),
+            Vector3::new(-14.939, 143.737, -32.100),
+            Vector3::new(-15.125, 143.845, -32.682),
+            Vector3::new(-15.313, 143.954, -33.268),
+            Vector3::new(-15.502, 144.062, -33.857),
+            Vector3::new(-15.692, 144.170, -34.451),
+            Vector3::new(-15.883, 144.279, -35.049),
+            Vector3::new(-16.075, 144.390, -35.650),
+            Vector3::new(-16.269, 144.502, -36.255),
+            Vector3::new(-16.464, 144.614, -36.863),
+            Vector3::new(-16.660, 144.726, -37.475),
+            Vector3::new(-16.857, 144.839, -38.090),
+            Vector3::new(-17.055, 144.957, -38.708),
+            Vector3::new(-17.254, 145.083, -39.330),
+            Vector3::new(-17.454, 145.221, -39.955),
+            Vector3::new(-17.655, 145.372, -40.583),
+            Vector3::new(-17.857, 145.535, -41.213),
+            Vector3::new(-18.060, 145.706, -41.847),
+            Vector3::new(-18.264, 145.880, -42.483),
+            Vector3::new(-18.468, 146.056, -43.122),
+            Vector3::new(-18.674, 146.231, -43.764),
+            Vector3::new(-18.880, 146.405, -44.408),
+            Vector3::new(-19.087, 146.579, -45.055),
+            Vector3::new(-19.295, 146.753, -45.704),
+            Vector3::new(-19.504, 146.926, -46.356),
+            Vector3::new(-19.713, 147.097, -47.009),
+            Vector3::new(-19.923, 147.266, -47.665),
+            Vector3::new(-20.133, 147.434, -48.323),
+            Vector3::new(-20.345, 147.606, -48.983),
+            Vector3::new(-20.557, 147.786, -49.644),
+            Vector3::new(-20.769, 147.976, -50.307),
+            Vector3::new(-20.982, 148.177, -50.973),
+            Vector3::new(-21.195, 148.386, -51.639),
+            Vector3::new(-21.409, 148.602, -52.308),
+            Vector3::new(-21.624, 148.822, -52.977),
+            Vector3::new(-21.839, 149.046, -53.648),
+            Vector3::new(-22.054, 149.275, -54.321),
+            Vector3::new(-22.270, 149.506, -54.994),
+            Vector3::new(-22.486, 149.732, -55.669),
+            Vector3::new(-22.702, 149.946, -56.345),
+            Vector3::new(-22.919, 150.138, -57.021),
+            Vector3::new(-23.136, 150.308, -57.699),
+            Vector3::new(-23.211, 150.463, -57.933),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        branch,
+        vec![
+            Vector3::new(-23.211, 150.463, -57.933),
+            Vector3::new(-22.851, 150.678, -58.632),
+            Vector3::new(-22.541, 150.881, -59.233),
+            Vector3::new(-22.286, 151.062, -59.728),
+            Vector3::new(-21.994, 151.223, -60.296),
+            Vector3::new(-21.665, 151.370, -60.934),
+            Vector3::new(-21.302, 151.508, -61.639),
+            Vector3::new(-20.906, 151.642, -62.408),
+            Vector3::new(-20.478, 151.768, -63.239),
+            Vector3::new(-20.138, 151.883, -63.900),
+            Vector3::new(-19.902, 151.983, -64.358),
+            Vector3::new(-19.659, 152.069, -64.830),
+            Vector3::new(-19.409, 152.146, -65.316),
+            Vector3::new(-19.152, 152.220, -65.814),
+            Vector3::new(-18.889, 152.297, -66.326),
+            Vector3::new(-18.619, 152.380, -66.849),
+            Vector3::new(-18.343, 152.470, -67.384),
+            Vector3::new(-18.062, 152.565, -67.931),
+            Vector3::new(-17.774, 152.660, -68.489),
+            Vector3::new(-17.481, 152.749, -69.058),
+            Vector3::new(-17.183, 152.825, -69.638),
+            Vector3::new(-16.879, 152.883, -70.227),
+            Vector3::new(-16.571, 152.924, -70.827),
+            Vector3::new(-16.257, 152.950, -71.436),
+            Vector3::new(-15.939, 152.969, -72.054),
+            Vector3::new(-15.616, 152.986, -72.680),
+            Vector3::new(-15.289, 153.006, -73.315),
+            Vector3::new(-14.958, 153.030, -73.958),
+            Vector3::new(-14.623, 153.058, -74.609),
+            Vector3::new(-14.284, 153.089, -75.267),
+            Vector3::new(-13.941, 153.122, -75.932),
+            Vector3::new(-13.595, 153.159, -76.603),
+            Vector3::new(-13.246, 153.198, -77.281),
+            Vector3::new(-12.894, 153.239, -77.965),
+            Vector3::new(-12.539, 153.280, -78.654),
+            Vector3::new(-12.182, 153.318, -79.348),
+            Vector3::new(-11.822, 153.351, -80.047),
+            Vector3::new(-11.459, 153.377, -80.751),
+            Vector3::new(-11.095, 153.396, -81.458),
+            Vector3::new(-10.729, 153.405, -82.170),
+            Vector3::new(-10.360, 153.405, -82.885),
+            Vector3::new(-9.991, 153.396, -83.602),
+            Vector3::new(-9.620, 153.376, -84.323),
+            Vector3::new(-9.247, 153.348, -85.046),
+            Vector3::new(-8.874, 153.314, -85.770),
+            Vector3::new(-8.500, 153.275, -86.497),
+            Vector3::new(-8.125, 153.235, -87.224),
+            Vector3::new(-7.750, 153.195, -87.953),
+            Vector3::new(-7.375, 153.158, -88.682),
+            Vector3::new(-6.999, 153.124, -89.411),
+            Vector3::new(-6.624, 153.095, -90.140),
+            Vector3::new(-6.248, 153.071, -90.868),
+            Vector3::new(-5.874, 153.053, -91.596),
+            Vector3::new(-5.500, 153.038, -92.322),
+            Vector3::new(-5.126, 153.025, -93.047),
+            Vector3::new(-4.754, 153.012, -93.770),
+            Vector3::new(-4.383, 152.999, -94.490),
+            Vector3::new(-4.013, 152.986, -95.208),
+            Vector3::new(-3.645, 152.972, -95.923),
+            Vector3::new(-3.279, 152.958, -96.634),
+            Vector3::new(-2.914, 152.943, -97.342),
+            Vector3::new(-2.552, 152.930, -98.045),
+            Vector3::new(-2.192, 152.919, -98.744),
+            Vector3::new(-1.834, 152.913, -99.439),
+            Vector3::new(-1.479, 152.915, -100.128),
+            Vector3::new(-1.127, 152.926, -100.811),
+            Vector3::new(-0.778, 152.944, -101.489),
+            Vector3::new(-0.432, 152.968, -102.161),
+            Vector3::new(-0.090, 152.994, -102.826),
+            Vector3::new(0.249, 153.021, -103.484),
+            Vector3::new(0.584, 153.047, -104.134),
+            Vector3::new(0.915, 153.072, -104.777),
+            Vector3::new(1.242, 153.096, -105.412),
+            Vector3::new(1.565, 153.119, -106.039),
+            Vector3::new(1.883, 153.142, -106.657),
+            Vector3::new(2.197, 153.164, -107.266),
+            Vector3::new(2.506, 153.186, -107.865),
+            Vector3::new(2.809, 153.208, -108.455),
+            Vector3::new(3.108, 153.228, -109.034),
+            Vector3::new(3.401, 153.245, -109.603),
+            Vector3::new(3.688, 153.258, -110.161),
+            Vector3::new(3.970, 153.268, -110.708),
+            Vector3::new(4.246, 153.275, -111.244),
+            Vector3::new(4.515, 153.279, -111.767),
+            Vector3::new(4.778, 153.282, -112.278),
+            Vector3::new(5.035, 153.284, -112.777),
+            Vector3::new(5.285, 153.287, -113.262),
+            Vector3::new(5.528, 153.289, -113.734),
+            Vector3::new(5.764, 153.291, -114.193),
+            Vector3::new(6.105, 153.292, -114.854),
+            Vector3::new(6.532, 153.292, -115.684),
+            Vector3::new(6.928, 153.292, -116.453),
+            Vector3::new(7.291, 153.291, -117.158),
+            Vector3::new(7.620, 153.288, -117.796),
+            Vector3::new(7.912, 153.285, -118.364),
+            Vector3::new(8.168, 153.279, -118.860),
+            Vector3::new(8.477, 153.273, -119.461),
+            Vector3::new(8.837, 153.266, -120.160),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.add_edge(test_edge(
+        center,
+        south,
+        vec![
+            Vector3::new(-23.211, 150.463, -57.933),
+            Vector3::new(-23.353, 150.663, -58.377),
+            Vector3::new(-23.570, 150.859, -59.056),
+            Vector3::new(-23.788, 151.047, -59.736),
+            Vector3::new(-24.006, 151.223, -60.416),
+            Vector3::new(-24.224, 151.384, -61.097),
+            Vector3::new(-24.442, 151.532, -61.778),
+            Vector3::new(-24.660, 151.670, -62.459),
+            Vector3::new(-24.878, 151.805, -63.141),
+            Vector3::new(-25.097, 151.940, -63.823),
+            Vector3::new(-25.315, 152.078, -64.504),
+            Vector3::new(-25.533, 152.219, -65.186),
+            Vector3::new(-25.751, 152.364, -65.868),
+            Vector3::new(-25.970, 152.514, -66.549),
+            Vector3::new(-26.188, 152.667, -67.230),
+            Vector3::new(-26.406, 152.821, -67.911),
+            Vector3::new(-26.624, 152.968, -68.591),
+            Vector3::new(-26.841, 153.101, -69.271),
+            Vector3::new(-27.059, 153.210, -69.950),
+            Vector3::new(-27.276, 153.292, -70.628),
+            Vector3::new(-27.493, 153.351, -71.306),
+            Vector3::new(-27.709, 153.392, -71.982),
+            Vector3::new(-27.926, 153.425, -72.658),
+            Vector3::new(-28.142, 153.458, -73.333),
+            Vector3::new(-28.358, 153.494, -74.006),
+            Vector3::new(-28.573, 153.534, -74.679),
+            Vector3::new(-28.788, 153.576, -75.350),
+            Vector3::new(-29.002, 153.618, -76.020),
+            Vector3::new(-29.216, 153.660, -76.688),
+            Vector3::new(-29.430, 153.702, -77.355),
+            Vector3::new(-29.643, 153.743, -78.020),
+            Vector3::new(-29.855, 153.784, -78.683),
+            Vector3::new(-30.067, 153.827, -79.345),
+            Vector3::new(-30.278, 153.871, -80.004),
+            Vector3::new(-30.489, 153.918, -80.662),
+            Vector3::new(-30.699, 153.966, -81.318),
+            Vector3::new(-30.908, 154.015, -81.971),
+            Vector3::new(-31.117, 154.064, -82.623),
+            Vector3::new(-31.324, 154.113, -83.272),
+            Vector3::new(-31.532, 154.162, -83.919),
+            Vector3::new(-31.738, 154.211, -84.563),
+            Vector3::new(-31.943, 154.259, -85.205),
+            Vector3::new(-32.148, 154.307, -85.844),
+            Vector3::new(-32.352, 154.355, -86.480),
+            Vector3::new(-32.555, 154.403, -87.114),
+            Vector3::new(-32.757, 154.452, -87.745),
+            Vector3::new(-32.958, 154.500, -88.372),
+            Vector3::new(-33.158, 154.547, -88.997),
+            Vector3::new(-33.357, 154.593, -89.619),
+            Vector3::new(-33.555, 154.637, -90.237),
+            Vector3::new(-33.752, 154.680, -90.852),
+            Vector3::new(-33.948, 154.721, -91.464),
+            Vector3::new(-34.143, 154.761, -92.073),
+            Vector3::new(-34.336, 154.800, -92.677),
+            Vector3::new(-34.529, 154.838, -93.279),
+            Vector3::new(-34.720, 154.875, -93.876),
+            Vector3::new(-34.910, 154.912, -94.470),
+            Vector3::new(-35.099, 154.949, -95.059),
+            Vector3::new(-35.287, 154.984, -95.645),
+            Vector3::new(-35.473, 155.019, -96.227),
+            Vector3::new(-35.658, 155.052, -96.805),
+            Vector3::new(-35.841, 155.082, -97.378),
+            Vector3::new(-36.024, 155.110, -97.948),
+            Vector3::new(-36.205, 155.139, -98.512),
+            Vector3::new(-36.384, 155.172, -99.073),
+            Vector3::new(-36.562, 155.214, -99.629),
+            Vector3::new(-36.739, 155.267, -100.180),
+            Vector3::new(-36.914, 155.333, -100.726),
+            Vector3::new(-37.087, 155.409, -101.268),
+            Vector3::new(-37.259, 155.491, -101.805),
+            Vector3::new(-37.429, 155.575, -102.337),
+            Vector3::new(-37.598, 155.658, -102.864),
+            Vector3::new(-37.765, 155.739, -103.386),
+            Vector3::new(-37.931, 155.818, -103.902),
+            Vector3::new(-38.094, 155.895, -104.414),
+            Vector3::new(-38.256, 155.969, -104.920),
+            Vector3::new(-38.417, 156.041, -105.420),
+            Vector3::new(-38.575, 156.111, -105.915),
+            Vector3::new(-38.732, 156.184, -106.404),
+            Vector3::new(-38.887, 156.264, -106.888),
+            Vector3::new(-39.040, 156.358, -107.366),
+            Vector3::new(-39.266, 156.467, -108.072),
+            Vector3::new(-39.560, 156.591, -108.991),
+            Vector3::new(-39.847, 156.724, -109.887),
+            Vector3::new(-40.125, 156.860, -110.757),
+            Vector3::new(-40.396, 156.992, -111.601),
+            Vector3::new(-40.657, 157.117, -112.418),
+            Vector3::new(-40.910, 157.233, -113.208),
+            Vector3::new(-41.155, 157.341, -113.971),
+            Vector3::new(-41.389, 157.442, -114.704),
+            Vector3::new(-41.615, 157.537, -115.408),
+            Vector3::new(-41.831, 157.627, -116.083),
+            Vector3::new(-42.037, 157.710, -116.726),
+            Vector3::new(-42.233, 157.789, -117.339),
+            Vector3::new(-42.419, 157.863, -117.919),
+            Vector3::new(-42.594, 157.934, -118.467),
+            Vector3::new(-42.759, 158.002, -118.982),
+            Vector3::new(-42.913, 158.067, -119.462),
+            Vector3::new(-43.187, 158.129, -120.319),
+            Vector3::new(-43.415, 158.187, -121.032),
+            Vector3::new(-43.596, 158.240, -121.595),
+            Vector3::new(-43.834, 158.291, -122.338),
+        ],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    graph.rebuild_intersection_clips();
+    assert!((graph.edge(0).end_clip - 12.071).abs() <= 0.01);
+    assert!((graph.edge(1).start_clip - 12.071).abs() <= 0.01);
+    assert!((graph.edge(2).start_clip - 12.071).abs() <= 0.01);
+
+    let mut main_geometry = graph.edge(0).geometry.clone();
+    main_geometry.extend(graph.edge(2).geometry.iter().skip(1).copied());
+    let mut stale_graph = RegionGraph::new();
+    let stale_west = stale_graph.add_node(graph.node(west).pos, NodeType::Junction);
+    let stale_south = stale_graph.add_node(graph.node(south).pos, NodeType::Junction);
+    stale_graph.add_edge(test_edge(
+        stale_west,
+        stale_south,
+        main_geometry,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+    stale_graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&stale_graph, &terrain);
+    for edge_idx in 0..graph.edge_count() {
+        surface.mark_edge_dirty(&graph, edge_idx);
+    }
+    for node_id in [west, south, center, branch] {
+        surface.mark_node_dirty(&graph, node_id);
+    }
+    surface.compile_dirty(&graph, &terrain);
+
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("current elevated oblique 3-way junction must compile a JunctionN piece");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_material_triangles_do_not_overlap(piece);
+
+    let center_patch_key = terrain
+        .render_patch_keys_for_world_bounds(-23.211, -57.933, -23.211, -57.933)
+        .into_iter()
+        .next()
+        .expect("current elevated junction center must map to a terrain render patch");
+    assert!(
+        surface
+            .terrain_render_patch_keys_with_visible_road(&terrain)
+            .contains(&center_patch_key),
+        "current elevated junction patch must be road-locked by visible standard-road ownership"
+    );
+    let patch = terrain
+        .visual_patch_snapshot(center_patch_key.0, center_patch_key.1)
+        .expect("road-locked current elevated junction patch must be resident in the test terrain");
+    let (clip_polygons, source_count) = surface
+        .terrain_clip_polygons_and_source_count_for_world_bounds(
+            &graph,
+            patch.world_origin_x,
+            patch.world_origin_z,
+            patch.world_origin_x + patch.world_size_x,
+            patch.world_origin_z + patch.world_size_z,
+        );
+    let raw_clip_sources = surface
+        .compiled_visual_span_pieces()
+        .values()
+        .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned())
+        .chain(
+            surface
+                .compiled_visual_node_pieces()
+                .values()
+                .flat_map(|piece| piece.terrain_clip_boundary_loops.iter().cloned()),
+        )
+        .collect::<Vec<_>>();
+    let raw_clip_area_m2: f32 = raw_clip_sources
+        .iter()
+        .filter_map(|clip_loop| {
+            RoadSurfaceSystem::make_boundary_loop_polygon(clip_loop.points_world.clone())
+        })
+        .map(|polygon| polygon_area_m2(&polygon))
+        .sum();
+    let raw_union_polygons =
+        RoadSurfaceSystem::union_terrain_clip_boundary_loops(&raw_clip_sources);
+    let raw_union_area_m2: f32 = raw_union_polygons.iter().map(polygon_area_m2).sum();
+    assert!(
+        source_count > 0,
+        "current elevated oblique 3-way patch must collect road-owned terrain clip sources"
+    );
+    let clip_area_m2: f32 = clip_polygons.iter().map(polygon_area_m2).sum();
+    assert!(
+        clip_area_m2 > 1_000.0,
+        "current elevated oblique 3-way must keep the full terrain cutter instead of shrinking to the logged buried-road footprint; sources={source_count} raw_sources={} raw_area={raw_clip_area_m2:.3} raw_union_polygons={} raw_union_area={raw_union_area_m2:.3} polygons={} area={clip_area_m2:.3}",
+        raw_clip_sources.len(),
+        raw_union_polygons.len(),
+        clip_polygons.len()
+    );
+}
+
+#[test]
 fn logged_flat_oblique_t_junction_compiles_node_surface() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-140.162, 0.0, -60.230), NodeType::Junction);

@@ -403,6 +403,7 @@ impl SimulationNode {
             &refined_patch,
             &road_clip_query.polygons,
             road_clip_query.source_count > 0,
+            true,
         );
         dict
     }
@@ -482,9 +483,10 @@ impl SimulationNode {
         patch: &crate::simulation::terrain::TerrainPatchSnapshot,
         road_clip_polygons: &[crate::simulation::network::surface::RoadSurfaceVisualPolygon],
         has_grounded_road_contributors: bool,
+        requires_road_clip: bool,
     ) {
         if road_clip_polygons.is_empty() {
-            if has_grounded_road_contributors {
+            if has_grounded_road_contributors || requires_road_clip {
                 Self::append_empty_cdt_failure(dict, "missing_road_clip_polygons");
             }
             return;

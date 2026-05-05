@@ -7,7 +7,6 @@ use super::{
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
     arrangement::{NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeSeamSource},
-    edge::CURB_BAND_WIDTH_M,
     input::NodeInputExtractionError,
     terrain_clip_edge_kind_for_band,
     validation::NodeValidationReport,
@@ -21,7 +20,6 @@ use std::collections::{BTreeMap, BTreeSet};
 const PASS_THROUGH_DOT_THRESHOLD: f32 = 0.98;
 const ARRANGEMENT_EDGE_SPLIT_TOLERANCE_M: f32 = 0.02;
 const ARRANGEMENT_EDGE_SPLIT_HEIGHT_TOLERANCE_M: f32 = 0.004;
-const ARRANGEMENT_PARALLEL_COVER_TOLERANCE_M: f32 = 0.02;
 const ARRANGEMENT_HEIGHT_COVER_TOLERANCE_M: f32 = 0.004;
 
 #[derive(Clone, Copy)]
@@ -1181,8 +1179,7 @@ fn boundary_line_parameter_xz(point: Vector3, start: Vector3, end: Vector3) -> O
     }
     let offset = Vector2::new(point.x - start.x, point.z - start.z);
     let length = length_squared.sqrt();
-    let max_offset_m = CURB_BAND_WIDTH_M + ARRANGEMENT_PARALLEL_COVER_TOLERANCE_M;
-    if (offset.x * segment.y - offset.y * segment.x).abs() > max_offset_m * length {
+    if (offset.x * segment.y - offset.y * segment.x).abs() > SAMPLE_EPSILON_M * length {
         return None;
     }
     Some(offset.dot(segment) / length_squared)

@@ -43,20 +43,6 @@ struct TerrainClipSegmentHeights {
 }
 
 #[derive(Clone, Copy)]
-struct TerrainClipSegmentSample {
-    kind: RoadSurfaceTerrainClipEdgeKind,
-    source_span_t: f64,
-    heights: TerrainClipSegmentHeights,
-}
-
-#[derive(Clone, Copy)]
-struct TerrainClipVertexSample {
-    kind: RoadSurfaceTerrainClipEdgeKind,
-    source_length_m: f64,
-    y: f32,
-}
-
-#[derive(Clone, Copy)]
 struct TerrainClipEndpointSample {
     kind: RoadSurfaceTerrainClipEdgeKind,
     source_index: usize,
@@ -69,8 +55,6 @@ struct TerrainClipEndpointSample {
 struct TerrainClipSourceInterval {
     start_t: f64,
     end_t: f64,
-    kind: RoadSurfaceTerrainClipEdgeKind,
-    source_length_m: f64,
     start_y: f32,
     end_y: f32,
 }
@@ -530,22 +514,20 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        let mut segment_heights = Vec::with_capacity(contour.len());
+        let mut points = Vec::new();
         for index in 0..contour.len() {
             let start = contour[index];
             let end = contour[(index + 1) % contour.len()];
-            let Some(heights) = Self::terrain_clip_segment_heights_from_source_edges(
-                start,
-                end,
-                source_edges,
-            )
-            .or_else(|| {
-                Self::terrain_clip_dust_connector_heights_from_source_edges(
-                    &contour,
-                    index,
-                    source_edges,
-                )
-            }) else {
+            let Some(segment_points) =
+                Self::terrain_clip_segment_points_from_source_edges(start, end, source_edges)
+                    .or_else(|| {
+                        Self::terrain_clip_dust_connector_points_from_source_edges(
+                            &contour,
+                            index,
+                            source_edges,
+                        )
+                    })
+            else {
                 let context =
                     Self::terrain_clip_missing_source_context_label(start, end, source_edges);
                 crate::debug_log!(
@@ -560,38 +542,11 @@ impl RoadSurfaceSystem {
                 );
                 return None;
             };
-            segment_heights.push(heights);
+            Self::append_terrain_clip_segment_points(&mut points, segment_points);
         }
 
-        let mut points = Vec::with_capacity(contour.len());
-        for index in 0..contour.len() {
-            let incoming_y = segment_heights[(index + contour.len() - 1) % contour.len()].end_y;
-            let outgoing_y = segment_heights[index].start_y;
-            let vertex_y = if Self::overlay_heights_equal(incoming_y, outgoing_y) {
-                incoming_y
-            } else if let Some(source_y) =
-                Self::terrain_clip_vertex_height_from_source_edges(contour[index], source_edges)
-            {
-                source_y
-            } else {
-                crate::debug_log!(
-                    "road",
-                    "terrain_clip_conflicting_outer_boundary_owner shape={} xz=({:.3},{:.3}) incoming_y={:.3} outgoing_y={:.3}",
-                    shape_index,
-                    contour[index][0],
-                    contour[index][1],
-                    incoming_y,
-                    outgoing_y
-                );
-                return None;
-            };
-            points.push(Vector3::new(
-                contour[index][0] as f32,
-                vertex_y,
-                contour[index][1] as f32,
-            ));
-        }
-        Some(points)
+        Self::close_terrain_clip_contour_points(&mut points);
+        (points.len() >= 3).then_some(points)
     }
 
     fn compact_overlay_contour_by_key(contour: &NodeOverlayContour) -> NodeOverlayContour {
@@ -661,6 +616,18 @@ impl RoadSurfaceSystem {
         end: NodeOverlayPoint,
         source_edges: &[TerrainClipSourceEdge],
     ) -> Option<TerrainClipSegmentHeights> {
+        let points = Self::terrain_clip_segment_points_from_source_edges(start, end, source_edges)?;
+        Some(TerrainClipSegmentHeights {
+            start_y: points.first()?.y,
+            end_y: points.last()?.y,
+        })
+    }
+
+    fn terrain_clip_segment_points_from_source_edges(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<Vec<Vector3>> {
         if Self::overlay_point_key(start) == Self::overlay_point_key(end) {
             return None;
         }
@@ -673,32 +640,156 @@ impl RoadSurfaceSystem {
                 samples.push(interval);
             }
         }
-        Self::consistent_terrain_clip_interval_coverage(samples)
+        Self::terrain_clip_points_from_interval_coverage(start, end, samples)
     }
 
-    fn terrain_clip_vertex_height_from_source_edges(
-        point: NodeOverlayPoint,
-        source_edges: &[TerrainClipSourceEdge],
-    ) -> Option<f32> {
-        let mut samples = Vec::new();
-        for &source_edge in source_edges {
-            let source_start = [
-                f64::from(source_edge.start.x),
-                f64::from(source_edge.start.z),
-            ];
-            let source_end = [f64::from(source_edge.end.x), f64::from(source_edge.end.z)];
-            let Some(t) = Self::overlay_segment_parameter(point, source_start, source_end) else {
+    fn terrain_clip_points_from_interval_coverage<I>(
+        start: NodeOverlayPoint,
+        end: NodeOverlayPoint,
+        intervals: I,
+    ) -> Option<Vec<Vector3>>
+    where
+        I: IntoIterator<Item = TerrainClipSourceInterval>,
+    {
+        let intervals = intervals.into_iter().collect::<Vec<_>>();
+        if intervals.is_empty() {
+            return None;
+        }
+
+        let mut breakpoints = Self::terrain_clip_interval_breakpoints(&intervals);
+        Self::append_terrain_clip_height_crossings(&intervals, &mut breakpoints);
+        breakpoints.sort_by(|a, b| a.total_cmp(b));
+        breakpoints.dedup_by(|a, b| (*a - *b).abs() <= f64::from(SAMPLE_EPSILON_M));
+
+        let mut heights = vec![None; breakpoints.len()];
+        let mut covered_any = false;
+        for index in 0..breakpoints.len().saturating_sub(1) {
+            let start_t = breakpoints[index];
+            let end_t = breakpoints[index + 1];
+            if end_t - start_t <= f64::from(SAMPLE_EPSILON_M) {
+                continue;
+            }
+
+            let covering = intervals
+                .iter()
+                .copied()
+                .filter(|interval| Self::terrain_clip_interval_covers(*interval, start_t, end_t))
+                .collect::<Vec<_>>();
+            if covering.is_empty() {
+                return None;
+            }
+            covered_any = true;
+
+            let start_y = Self::terrain_clip_highest_source_height_at_t(&covering, start_t)?;
+            let end_y = Self::terrain_clip_highest_source_height_at_t(&covering, end_t)?;
+            Self::merge_terrain_clip_height(&mut heights[index], start_y);
+            Self::merge_terrain_clip_height(&mut heights[index + 1], end_y);
+        }
+        if !covered_any {
+            return None;
+        }
+
+        let mut points = Vec::new();
+        for (t, height) in breakpoints.into_iter().zip(heights) {
+            let Some(height) = height else {
                 continue;
             };
-            samples.push(TerrainClipVertexSample {
-                kind: source_edge.kind,
-                source_length_m: ((source_end[0] - source_start[0]).powi(2)
-                    + (source_end[1] - source_start[1]).powi(2))
-                .sqrt(),
-                y: interpolate_height_f64(source_edge.start.y, source_edge.end.y, t),
-            });
+            let point = interpolate_overlay_point(start, end, t);
+            points.push(Vector3::new(point[0] as f32, height, point[1] as f32));
         }
-        Self::consistent_terrain_clip_vertex_height(samples)
+        Self::dedup_terrain_clip_segment_points(&mut points);
+        (points.len() >= 2).then_some(points)
+    }
+
+    fn terrain_clip_interval_breakpoints(intervals: &[TerrainClipSourceInterval]) -> Vec<f64> {
+        let mut breakpoints = Vec::with_capacity(intervals.len() * 2 + 2);
+        breakpoints.push(0.0);
+        breakpoints.push(1.0);
+        for interval in intervals {
+            breakpoints.push(interval.start_t.clamp(0.0, 1.0));
+            breakpoints.push(interval.end_t.clamp(0.0, 1.0));
+        }
+        breakpoints
+    }
+
+    fn append_terrain_clip_height_crossings(
+        intervals: &[TerrainClipSourceInterval],
+        breakpoints: &mut Vec<f64>,
+    ) {
+        for first_index in 0..intervals.len() {
+            for second_index in first_index + 1..intervals.len() {
+                let first = intervals[first_index];
+                let second = intervals[second_index];
+                let start_t = first.start_t.max(second.start_t).max(0.0);
+                let end_t = first.end_t.min(second.end_t).min(1.0);
+                if end_t - start_t <= f64::from(SAMPLE_EPSILON_M) {
+                    continue;
+                }
+                let start_delta =
+                    interval_height_at(first, start_t) - interval_height_at(second, start_t);
+                let end_delta =
+                    interval_height_at(first, end_t) - interval_height_at(second, end_t);
+                if start_delta.abs() <= SAMPLE_EPSILON_M {
+                    breakpoints.push(start_t);
+                }
+                if end_delta.abs() <= SAMPLE_EPSILON_M {
+                    breakpoints.push(end_t);
+                }
+                if start_delta.signum() == end_delta.signum() {
+                    continue;
+                }
+                let denominator = f64::from(start_delta - end_delta);
+                if denominator.abs() <= f64::from(SAMPLE_EPSILON_M) {
+                    continue;
+                }
+                let crossing_t = start_t + (end_t - start_t) * f64::from(start_delta) / denominator;
+                if crossing_t > start_t + f64::from(SAMPLE_EPSILON_M)
+                    && crossing_t < end_t - f64::from(SAMPLE_EPSILON_M)
+                {
+                    breakpoints.push(crossing_t);
+                }
+            }
+        }
+    }
+
+    fn terrain_clip_interval_covers(
+        interval: TerrainClipSourceInterval,
+        start_t: f64,
+        end_t: f64,
+    ) -> bool {
+        interval.start_t <= start_t + f64::from(SAMPLE_EPSILON_M)
+            && interval.end_t >= end_t - f64::from(SAMPLE_EPSILON_M)
+    }
+
+    fn terrain_clip_highest_source_height_at_t(
+        intervals: &[TerrainClipSourceInterval],
+        t: f64,
+    ) -> Option<f32> {
+        intervals
+            .iter()
+            .copied()
+            .map(|interval| interval_height_at(interval, t))
+            .max_by(|a, b| a.total_cmp(b))
+    }
+
+    fn merge_terrain_clip_height(height: &mut Option<f32>, candidate: f32) {
+        *height = Some(height.map_or(candidate, |current| current.max(candidate)));
+    }
+
+    fn dedup_terrain_clip_segment_points(points: &mut Vec<Vector3>) {
+        let mut deduped = Vec::with_capacity(points.len());
+        for &point in points.iter() {
+            if let Some(last) = deduped.last_mut() {
+                if Self::world_points_same_for_boundary(*last, point) {
+                    if point.y > last.y {
+                        last.y = point.y;
+                    }
+                    continue;
+                }
+            }
+            deduped.push(point);
+        }
+        *points = deduped;
     }
 
     fn terrain_clip_dust_connector_heights_from_source_edges(
@@ -744,6 +835,58 @@ impl RoadSurfaceSystem {
         })
     }
 
+    fn terrain_clip_dust_connector_points_from_source_edges(
+        contour: &NodeOverlayContour,
+        segment_index: usize,
+        source_edges: &[TerrainClipSourceEdge],
+    ) -> Option<Vec<Vector3>> {
+        let len = contour.len();
+        let heights = Self::terrain_clip_dust_connector_heights_from_source_edges(
+            contour,
+            segment_index,
+            source_edges,
+        )?;
+        let start = contour[segment_index];
+        let end = contour[(segment_index + 1) % len];
+        Some(vec![
+            Vector3::new(start[0] as f32, heights.start_y, start[1] as f32),
+            Vector3::new(end[0] as f32, heights.end_y, end[1] as f32),
+        ])
+    }
+
+    fn append_terrain_clip_segment_points(out: &mut Vec<Vector3>, points: Vec<Vector3>) {
+        for point in points {
+            if let Some(last) = out.last_mut() {
+                if Self::world_points_same_for_boundary(*last, point) {
+                    if point.y > last.y {
+                        last.y = point.y;
+                    }
+                    continue;
+                }
+            }
+            out.push(point);
+        }
+    }
+
+    fn close_terrain_clip_contour_points(points: &mut Vec<Vector3>) {
+        while points.len() >= 2
+            && Self::world_points_same_for_boundary(
+                *points.first().unwrap(),
+                *points.last().unwrap(),
+            )
+        {
+            let last = points.pop().unwrap();
+            if last.y > points[0].y {
+                points[0].y = last.y;
+            }
+        }
+    }
+
+    fn world_points_same_for_boundary(a: Vector3, b: Vector3) -> bool {
+        Self::overlay_point_key([f64::from(a.x), f64::from(a.z)])
+            == Self::overlay_point_key([f64::from(b.x), f64::from(b.z)])
+    }
+
     fn terrain_clip_connector_is_numeric_dust(
         contour: &NodeOverlayContour,
         segment_index: usize,
@@ -756,8 +899,7 @@ impl RoadSurfaceSystem {
         let start = contour[segment_index];
         let end = contour[(segment_index + 1) % len];
         let connector_length_squared_m2 =
-            (start[0] - end[0]) * (start[0] - end[0])
-                + (start[1] - end[1]) * (start[1] - end[1]);
+            (start[0] - end[0]) * (start[0] - end[0]) + (start[1] - end[1]) * (start[1] - end[1]);
         let budget_m2 = f64::from(Self::overlay_numeric_area_budget_m2(
             Self::overlay_contour_perimeter_m(contour),
             contour.len(),
@@ -913,10 +1055,6 @@ impl RoadSurfaceSystem {
         Some(TerrainClipSourceInterval {
             start_t: overlap_start_t,
             end_t: overlap_end_t,
-            kind: source_edge.kind,
-            source_length_m: ((source_end[0] - source_start[0]).powi(2)
-                + (source_end[1] - source_start[1]).powi(2))
-            .sqrt(),
             start_y: interpolate_height_f64(
                 source_edge.start.y,
                 source_edge.end.y,
@@ -977,134 +1115,6 @@ impl RoadSurfaceSystem {
         let distance_squared = (point[0] - closest_x) * (point[0] - closest_x)
             + (point[1] - closest_z) * (point[1] - closest_z);
         (distance_squared <= epsilon * epsilon).then_some(t)
-    }
-
-    fn consistent_terrain_clip_interval_coverage<I>(
-        intervals: I,
-    ) -> Option<TerrainClipSegmentHeights>
-    where
-        I: IntoIterator<Item = TerrainClipSourceInterval>,
-    {
-        let intervals = intervals.into_iter().collect::<Vec<_>>();
-        if intervals.is_empty() {
-            return None;
-        }
-
-        let mut breakpoints = Vec::with_capacity(intervals.len() * 2 + 2);
-        breakpoints.push(0.0);
-        breakpoints.push(1.0);
-        for interval in &intervals {
-            breakpoints.push(interval.start_t.clamp(0.0, 1.0));
-            breakpoints.push(interval.end_t.clamp(0.0, 1.0));
-        }
-        breakpoints.sort_by(|a, b| a.total_cmp(b));
-        breakpoints.dedup_by(|a, b| (*a - *b).abs() <= f64::from(SAMPLE_EPSILON_M));
-
-        let mut covered_segments = Vec::new();
-        for pair in breakpoints.windows(2) {
-            let start_t = pair[0];
-            let end_t = pair[1];
-            if end_t - start_t <= f64::from(SAMPLE_EPSILON_M) {
-                continue;
-            }
-            let segment_samples = intervals
-                .iter()
-                .filter_map(|interval| {
-                    if interval.start_t > start_t + f64::from(SAMPLE_EPSILON_M)
-                        || interval.end_t < end_t - f64::from(SAMPLE_EPSILON_M)
-                    {
-                        return None;
-                    }
-                    Some(TerrainClipSegmentSample {
-                        kind: interval.kind,
-                        source_span_t: interval.source_length_m,
-                        heights: TerrainClipSegmentHeights {
-                            start_y: interval_height_at(*interval, start_t),
-                            end_y: interval_height_at(*interval, end_t),
-                        },
-                    })
-                })
-                .collect::<Vec<_>>();
-            let segment = Self::consistent_terrain_clip_segment_heights(segment_samples)?;
-            covered_segments.push(segment);
-        }
-
-        let first = covered_segments.first()?;
-        let previous = *covered_segments.last()?;
-        Some(TerrainClipSegmentHeights {
-            start_y: first.start_y,
-            end_y: previous.end_y,
-        })
-    }
-
-    fn consistent_terrain_clip_segment_heights<I>(heights: I) -> Option<TerrainClipSegmentHeights>
-    where
-        I: IntoIterator<Item = TerrainClipSegmentSample>,
-    {
-        let mut heights = heights.into_iter().collect::<Vec<_>>();
-        if heights.is_empty() {
-            return None;
-        }
-        let best_priority = heights
-            .iter()
-            .map(|height| terrain_clip_edge_kind_priority(height.kind))
-            .min()?;
-        heights.retain(|height| terrain_clip_edge_kind_priority(height.kind) == best_priority);
-        let shortest_span = heights
-            .iter()
-            .map(|height| height.source_span_t)
-            .min_by(|a, b| a.total_cmp(b))?;
-        heights.retain(|height| {
-            (height.source_span_t - shortest_span).abs() <= f64::from(SAMPLE_EPSILON_M)
-        });
-        heights.sort_by_key(|height| {
-            (
-                Self::overlay_height_key(height.heights.start_y),
-                Self::overlay_height_key(height.heights.end_y),
-            )
-        });
-        let first_start_key = Self::overlay_height_key(heights[0].heights.start_y);
-        let first_end_key = Self::overlay_height_key(heights[0].heights.end_y);
-        if heights.iter().all(|height| {
-            (Self::overlay_height_key(height.heights.start_y) == first_start_key
-                || (height.heights.start_y - heights[0].heights.start_y).abs() <= SAMPLE_EPSILON_M)
-                && (Self::overlay_height_key(height.heights.end_y) == first_end_key
-                    || (height.heights.end_y - heights[0].heights.end_y).abs() <= SAMPLE_EPSILON_M)
-        }) {
-            return Some(heights[0].heights);
-        }
-        None
-    }
-
-    fn consistent_terrain_clip_vertex_height<I>(heights: I) -> Option<f32>
-    where
-        I: IntoIterator<Item = TerrainClipVertexSample>,
-    {
-        let mut heights = heights.into_iter().collect::<Vec<_>>();
-        if heights.is_empty() {
-            return None;
-        }
-        let best_priority = heights
-            .iter()
-            .map(|height| terrain_clip_edge_kind_priority(height.kind))
-            .min()?;
-        heights.retain(|height| terrain_clip_edge_kind_priority(height.kind) == best_priority);
-        let shortest_source = heights
-            .iter()
-            .map(|height| height.source_length_m)
-            .min_by(|a, b| a.total_cmp(b))?;
-        heights.retain(|height| {
-            (height.source_length_m - shortest_source).abs() <= f64::from(SAMPLE_EPSILON_M)
-        });
-        heights.sort_by_key(|height| Self::overlay_height_key(height.y));
-        let first_y = heights[0].y;
-        if heights
-            .iter()
-            .all(|height| Self::overlay_heights_equal(height.y, first_y))
-        {
-            return Some(first_y);
-        }
-        None
     }
 
     fn overlay_height_key(height_m: f32) -> i64 {
