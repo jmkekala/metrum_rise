@@ -565,7 +565,14 @@ impl NodeGeometryDiagnostic {
                     reason: "height_evaluation_failed",
                 }
             }
-            NodeHeightFieldError::SharedSourceHeightConflict {
+            NodeHeightFieldError::SourceHeightFieldConflict {
+                point_x_mm,
+                point_z_mm,
+                existing_height_mm,
+                incoming_height_mm,
+                ..
+            }
+            | NodeHeightFieldError::SharedSourceHeightConflict {
                 point_x_mm,
                 point_z_mm,
                 existing_height_mm,

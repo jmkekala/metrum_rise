@@ -15,6 +15,7 @@ use super::{
     RoadSurfaceVisualNodePieceKind,
 };
 use cavalier_contours::polyline::{PlineCreation, PlineSource, PlineSourceMut};
+use std::collections::BTreeMap;
 
 const RAIL_CONTOUR_POINT_EQUAL_EPS_M: f64 = 1.0e-6;
 
@@ -61,8 +62,16 @@ pub(crate) struct NodeGeneratedContour {
     pub(crate) source_mouth_order_index: usize,
     pub(crate) source_band_index: Option<usize>,
     pub(crate) owner: Option<NodeBandOwner>,
+    pub(crate) claim_priority: NodeGeneratedContourClaimPriority,
     pub(crate) points_xz: Vec<RoadVec2>,
     pub(crate) backend_polyline: RoadPolyline,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) enum NodeGeneratedContourClaimPriority {
+    MouthBand,
+    JoinOrCap,
+    Footprint,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -207,6 +216,7 @@ fn push_full_roadbed_contour(
         source_mouth_order_index: mouth.order_index,
         source_band_index: None,
         owner: None,
+        claim_priority: NodeGeneratedContourClaimPriority::Footprint,
         points_xz: points_xz.clone(),
         backend_polyline: contour,
     });
@@ -246,6 +256,7 @@ fn push_band_contour(
         source_mouth_order_index: mouth.order_index,
         source_band_index: Some(interval.band_index),
         owner: Some(owner),
+        claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
         points_xz: points_xz.clone(),
         backend_polyline: contour,
     });
@@ -288,6 +299,7 @@ fn push_terminal_end_band_contour(
         source_mouth_order_index: mouth.order_index,
         source_band_index: None,
         owner: None,
+        claim_priority: NodeGeneratedContourClaimPriority::Footprint,
         points_xz: footprint_points_xz.clone(),
         backend_polyline: footprint,
     });
@@ -317,6 +329,7 @@ fn push_terminal_end_band_contour(
         source_mouth_order_index: mouth.order_index,
         source_band_index: Some(end_band.source_band_index),
         owner: Some(owner),
+        claim_priority: NodeGeneratedContourClaimPriority::JoinOrCap,
         points_xz: points_xz.clone(),
         backend_polyline: contour,
     });
@@ -468,13 +481,21 @@ fn owners_by_mouth(input: &NodeArrangementInput) -> Vec<MouthOwners> {
                     owner
                 })
                 .collect();
+            let mut terminal_owner_by_source =
+                BTreeMap::<(RoadSurfaceBandKind, usize), NodeBandOwner>::new();
             let terminal_end_band_owners = mouth
                 .terminal_end_bands
                 .iter()
                 .map(|end_band| {
-                    let owner = NodeBandOwner::new(end_band.band_kind, next_owner_index);
-                    next_owner_index += 1;
-                    owner
+                    let key = (end_band.band_kind, end_band.source_band_index);
+                    if let Some(owner) = terminal_owner_by_source.get(&key).copied() {
+                        owner
+                    } else {
+                        let owner = NodeBandOwner::new(end_band.band_kind, next_owner_index);
+                        next_owner_index += 1;
+                        terminal_owner_by_source.insert(key, owner);
+                        owner
+                    }
                 })
                 .collect();
             MouthOwners {

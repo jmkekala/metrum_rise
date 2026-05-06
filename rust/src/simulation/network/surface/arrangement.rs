@@ -372,7 +372,8 @@ impl NodeArrangement {
                 vertex.key == key
                     && vertex.height_key != height_key
                     && (vertex.height_field_id == height_field_id
-                        || owners_share_band_kind(&vertex.owners, owners))
+                        || owners_overlap(&vertex.owners, owners)
+                        || owners_share_non_curb_band_kind(&vertex.owners, owners))
             })
             .map(|vertex| vertex.height_key)
     }
@@ -1173,6 +1174,18 @@ fn owners_share_band_kind(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
         .any(|a_owner| b.iter().any(|b_owner| a_owner.kind == b_owner.kind))
 }
 
+fn owners_share_non_curb_band_kind(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
+    a.iter().any(|a_owner| {
+        a_owner.kind != RoadSurfaceBandKind::CurbOrShoulder
+            && b.iter().any(|b_owner| a_owner.kind == b_owner.kind)
+    })
+}
+
+fn owners_overlap(a: &[NodeBandOwner], b: &[NodeBandOwner]) -> bool {
+    a.iter()
+        .any(|a_owner| b.iter().any(|b_owner| a_owner == b_owner))
+}
+
 fn owner_sets_match_edge(
     left_owners: &[NodeBandOwner],
     right_owners: &[NodeBandOwner],
@@ -1372,6 +1385,34 @@ mod tests {
             result,
             Err(NodeArrangementError::DuplicateVertexHeightConflict { .. })
         ));
+    }
+
+    #[test]
+    fn duplicate_arrangement_vertex_key_keeps_distinct_curb_rail_height_contexts() {
+        let mut arrangement = NodeArrangement::new(7, RoadSurfaceVisualNodePieceKind::JunctionN);
+        let point = RoadVec2::new(0.0, 0.0);
+
+        let lower = arrangement
+            .insert_vertex(
+                point,
+                0.0,
+                [owner(RoadSurfaceBandKind::CurbOrShoulder, 0)],
+                height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 0),
+                [NodeSeamSource::AsphaltCurbContact { owner_index: 0 }],
+            )
+            .expect("lower curb rail vertex should insert");
+        let raised = arrangement
+            .insert_vertex(
+                point,
+                0.12,
+                [owner(RoadSurfaceBandKind::CurbOrShoulder, 1)],
+                height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1),
+                [NodeSeamSource::CurbSidewalkContact { owner_index: 1 }],
+            )
+            .expect("raised curb rail vertex should keep separate owner-height context");
+
+        assert_ne!(lower, raised);
+        assert_eq!(arrangement.vertices().len(), 2);
     }
 
     #[test]

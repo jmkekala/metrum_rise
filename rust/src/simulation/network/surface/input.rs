@@ -412,7 +412,8 @@ fn add_node_corner_join_bands(
 ) {
     match piece_kind {
         RoadSurfaceVisualNodePieceKind::Bend => add_bend_corner_join_bands(mouths),
-        RoadSurfaceVisualNodePieceKind::JunctionN | RoadSurfaceVisualNodePieceKind::Terminal => {}
+        RoadSurfaceVisualNodePieceKind::JunctionN => add_junction_corner_join_bands(mouths),
+        RoadSurfaceVisualNodePieceKind::Terminal => {}
     }
 }
 
@@ -429,6 +430,21 @@ fn add_bend_corner_join_bands(mouths: &mut [NodeInputMouth]) {
         (1, 0)
     };
     append_adjacent_corner_join_bands(mouths, from_index, to_index);
+}
+
+fn add_junction_corner_join_bands(mouths: &mut [NodeInputMouth]) {
+    if mouths.len() < 2 {
+        return;
+    }
+
+    for from_index in 0..mouths.len() {
+        let to_index = if from_index + 1 == mouths.len() {
+            0
+        } else {
+            from_index + 1
+        };
+        append_adjacent_corner_join_bands(mouths, from_index, to_index);
+    }
 }
 
 fn append_adjacent_corner_join_bands(
@@ -568,13 +584,14 @@ fn bend_corner_end_bands(
                 next_source_band_index,
             );
         } else {
+            let source_band_index = next_source_band_index + end_bands.len();
             push_bend_corner_chord_band(
                 &mut end_bands,
                 from_mouth,
                 from_layer,
                 to_mouth,
                 to_layer,
-                next_source_band_index,
+                source_band_index,
             );
             push_bend_corner_miter_cap(
                 &mut end_bands,
@@ -582,7 +599,7 @@ fn bend_corner_end_bands(
                 from_layer,
                 to_mouth,
                 to_layer,
-                next_source_band_index,
+                source_band_index,
             );
         }
     }
@@ -595,7 +612,7 @@ fn push_bend_corner_chord_band(
     from_layer: &BendCornerLayer,
     to_mouth: &NodeInputMouth,
     to_layer: &BendCornerLayer,
-    next_source_band_index: usize,
+    source_band_index: usize,
 ) {
     let Some(inner_start_world) =
         endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
@@ -635,7 +652,7 @@ fn push_bend_corner_chord_band(
         ]
     };
     end_bands.push(NodeInputTerminalEndBand {
-        source_band_index: next_source_band_index + end_bands.len(),
+        source_band_index,
         band_kind: from_layer.band_kind,
         inner_start_world: height_inner_start_world,
         inner_end_world: height_inner_end_world,
@@ -740,7 +757,7 @@ fn push_bend_corner_miter_cap(
     from_layer: &BendCornerLayer,
     to_mouth: &NodeInputMouth,
     to_layer: &BendCornerLayer,
-    next_source_band_index: usize,
+    source_band_index: usize,
 ) {
     let Some(from_outer_world) =
         endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
@@ -779,7 +796,7 @@ fn push_bend_corner_miter_cap(
         miter_xz.y + miter_axis.y,
     );
     end_bands.push(NodeInputTerminalEndBand {
-        source_band_index: next_source_band_index + end_bands.len(),
+        source_band_index,
         band_kind: from_layer.band_kind,
         inner_start_world: from_outer_world,
         inner_end_world: to_outer_world,

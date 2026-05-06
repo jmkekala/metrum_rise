@@ -2309,7 +2309,7 @@ fn logged_flat_three_way_oblique_junction_rejects_implicit_height_repair() {
 }
 
 #[test]
-fn logged_current_flat_three_way_oblique_junction_rejects_same_band_height_conflict() {
+fn logged_current_flat_three_way_oblique_junction_compiles_with_canonical_join_ownership() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-82.716, 0.0, -14.881), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-25.618, 0.0, -14.881), NodeType::Junction);
@@ -2357,125 +2357,20 @@ fn logged_current_flat_three_way_oblique_junction_rejects_same_band_height_confl
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let incidents = [
-        super::IncidentSurfaceEdge {
-            edge_idx: 0,
-            side: super::IncidentEdgeSide::End,
-            direction_xz: surface
-                .compiled_visual_span_pieces()
-                .get(&0)
-                .and_then(|piece| piece.end_mouth_profile.as_ref())
-                .expect("west span must expose an end mouth")
-                .inward_direction_xz,
-        },
-        super::IncidentSurfaceEdge {
-            edge_idx: 1,
-            side: super::IncidentEdgeSide::Start,
-            direction_xz: surface
-                .compiled_visual_span_pieces()
-                .get(&1)
-                .and_then(|piece| piece.start_mouth_profile.as_ref())
-                .expect("oblique span must expose a start mouth")
-                .inward_direction_xz,
-        },
-        super::IncidentSurfaceEdge {
-            edge_idx: 2,
-            side: super::IncidentEdgeSide::Start,
-            direction_xz: surface
-                .compiled_visual_span_pieces()
-                .get(&2)
-                .and_then(|piece| piece.start_mouth_profile.as_ref())
-                .expect("east span must expose a start mouth")
-                .inward_direction_xz,
-        },
-    ];
-    let mut mouths = incidents
-        .iter()
-        .map(|incident| {
-            let span_piece = surface
-                .compiled_visual_span_pieces()
-                .get(&incident.edge_idx)
-                .expect("incident span piece must be compiled");
-            let profile = match incident.side {
-                super::IncidentEdgeSide::Start => span_piece.start_mouth_profile.clone(),
-                super::IncidentEdgeSide::End => span_piece.end_mouth_profile.clone(),
-            }
-            .expect("incident span piece must expose a mouth profile");
-            let sections = surface
-                .compiled_sections()
-                .get(&incident.edge_idx)
-                .expect("incident sections must be compiled");
-            let section = match incident.side {
-                super::IncidentEdgeSide::Start => sections.first(),
-                super::IncidentEdgeSide::End => sections.last(),
-            }
-            .expect("incident endpoint section must exist");
-            let endpoint_profile =
-                RoadSurfaceSystem::build_mouth_profile_from_section(section, incident.side)
-                    .expect("incident endpoint profile must compile");
-            super::OrderedIncidentPieceMouth {
-                profile,
-                endpoint_profile,
-                direction_angle_ccw: {
-                    let angle = incident.direction_xz.y.atan2(incident.direction_xz.x);
-                    if angle < 0.0 {
-                        angle + std::f32::consts::TAU
-                    } else {
-                        angle
-                    }
-                },
-                direction_xz: incident.direction_xz,
-                edge_idx: incident.edge_idx,
-                side: incident.side,
-            }
-        })
-        .collect::<Vec<_>>();
-    mouths.sort_by(|a, b| {
-        a.direction_angle_ccw
-            .total_cmp(&b.direction_angle_ccw)
-            .then(a.edge_idx.cmp(&b.edge_idx))
-            .then(a.side.cmp(&b.side))
-    });
-    let input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
-        center,
-        RoadSurfaceVisualNodePieceKind::JunctionN,
-        &mouths,
-    )
-    .expect("current flat oblique 3-way input must compile");
-    let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&input)
-        .expect("current flat oblique 3-way rails must compile");
-    let mut ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
-        .expect("current flat oblique 3-way ownership must compile");
-    ownership.resolve_canonical_contact_ownership();
-    assert!(
-        ownership.owned_region_arrangement.diagnostics().is_empty(),
-        "current flat oblique 3-way ownership diagnostics: {:?}",
-        ownership.owned_region_arrangement.diagnostics()
-    );
-    let height_error =
-        RoadSurfaceSystem::build_node_height_solution_from_ownership(&input, &ownership)
-            .expect_err(
-                "current flat oblique 3-way must reject contradictory explicit seam height",
-            );
-    assert!(
-        matches!(
-            height_error,
-            super::height::NodeHeightFieldError::SharedSourceHeightConflict {
-                constraint_index: Some(_),
-                ..
-            }
-        ),
-        "current flat oblique 3-way height error: {:?}",
-        height_error
-    );
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "current flat oblique 3-way must reject contradictory explicit seam height until canonical join ownership creates a legal transition"
-    );
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("current flat oblique 3-way must compile after canonical join ownership");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]
-fn logged_flat_three_way_oblique_variant_rejects_contradictory_explicit_corner_seam() {
+fn logged_flat_three_way_oblique_variant_compiles_with_canonical_join_ownership() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-74.754, 0.0, -4.117), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-20.950, 0.0, -6.649), NodeType::Junction);
@@ -2523,121 +2418,16 @@ fn logged_flat_three_way_oblique_variant_rejects_contradictory_explicit_corner_s
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let incidents = [
-        super::IncidentSurfaceEdge {
-            edge_idx: 0,
-            side: super::IncidentEdgeSide::End,
-            direction_xz: surface
-                .compiled_visual_span_pieces()
-                .get(&0)
-                .and_then(|piece| piece.end_mouth_profile.as_ref())
-                .expect("west span must expose an end mouth")
-                .inward_direction_xz,
-        },
-        super::IncidentSurfaceEdge {
-            edge_idx: 1,
-            side: super::IncidentEdgeSide::Start,
-            direction_xz: surface
-                .compiled_visual_span_pieces()
-                .get(&1)
-                .and_then(|piece| piece.start_mouth_profile.as_ref())
-                .expect("branch span must expose a start mouth")
-                .inward_direction_xz,
-        },
-        super::IncidentSurfaceEdge {
-            edge_idx: 2,
-            side: super::IncidentEdgeSide::Start,
-            direction_xz: surface
-                .compiled_visual_span_pieces()
-                .get(&2)
-                .and_then(|piece| piece.start_mouth_profile.as_ref())
-                .expect("east span must expose a start mouth")
-                .inward_direction_xz,
-        },
-    ];
-    let mut mouths = incidents
-        .iter()
-        .map(|incident| {
-            let span_piece = surface
-                .compiled_visual_span_pieces()
-                .get(&incident.edge_idx)
-                .expect("incident span piece must be compiled");
-            let profile = match incident.side {
-                super::IncidentEdgeSide::Start => span_piece.start_mouth_profile.clone(),
-                super::IncidentEdgeSide::End => span_piece.end_mouth_profile.clone(),
-            }
-            .expect("incident span piece must expose a mouth profile");
-            let sections = surface
-                .compiled_sections()
-                .get(&incident.edge_idx)
-                .expect("incident sections must be compiled");
-            let section = match incident.side {
-                super::IncidentEdgeSide::Start => sections.first(),
-                super::IncidentEdgeSide::End => sections.last(),
-            }
-            .expect("incident endpoint section must exist");
-            let endpoint_profile =
-                RoadSurfaceSystem::build_mouth_profile_from_section(section, incident.side)
-                    .expect("incident endpoint profile must compile");
-            super::OrderedIncidentPieceMouth {
-                profile,
-                endpoint_profile,
-                direction_angle_ccw: {
-                    let angle = incident.direction_xz.y.atan2(incident.direction_xz.x);
-                    if angle < 0.0 {
-                        angle + std::f32::consts::TAU
-                    } else {
-                        angle
-                    }
-                },
-                direction_xz: incident.direction_xz,
-                edge_idx: incident.edge_idx,
-                side: incident.side,
-            }
-        })
-        .collect::<Vec<_>>();
-    mouths.sort_by(|a, b| {
-        a.direction_angle_ccw
-            .total_cmp(&b.direction_angle_ccw)
-            .then(a.edge_idx.cmp(&b.edge_idx))
-            .then(a.side.cmp(&b.side))
-    });
-    let input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
-        center,
-        RoadSurfaceVisualNodePieceKind::JunctionN,
-        &mouths,
-    )
-    .expect("logged flat oblique 3-way variant input must compile");
-    let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&input)
-        .expect("logged flat oblique 3-way variant rails must compile");
-    let mut ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
-        .expect("logged flat oblique 3-way variant ownership must compile");
-    ownership.resolve_canonical_contact_ownership();
-    assert!(
-        ownership.owned_region_arrangement.diagnostics().is_empty(),
-        "logged flat oblique 3-way variant ownership diagnostics: {:?}",
-        ownership.owned_region_arrangement.diagnostics()
-    );
-    let height_error =
-        RoadSurfaceSystem::build_node_height_solution_from_ownership(&input, &ownership)
-            .expect_err(
-                "logged flat oblique 3-way variant must reject contradictory explicit seam height",
-            );
-    assert!(
-        matches!(
-            height_error,
-            super::height::NodeHeightFieldError::SharedSourceHeightConflict {
-                constraint_index: Some(_),
-                ..
-            }
-        ),
-        "logged flat oblique 3-way variant height error: {:?}",
-        height_error
-    );
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "logged flat oblique 3-way variant must not emit cracked JunctionN geometry"
-    );
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("logged flat oblique 3-way variant must compile after canonical join ownership");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]
@@ -3199,7 +2989,7 @@ fn logged_latest_elevated_oblique_three_way_rejects_contradictory_junction_node(
 }
 
 #[test]
-fn logged_flat_oblique_t_junction_rejects_contradictory_explicit_corner_seam() {
+fn logged_flat_oblique_t_junction_compiles_with_canonical_join_ownership() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-140.162, 0.0, -60.230), NodeType::Junction);
     let north = graph.add_node(Vector3::new(-75.827, 0.0, 89.838), NodeType::Junction);
@@ -3247,115 +3037,16 @@ fn logged_flat_oblique_t_junction_rejects_contradictory_explicit_corner_seam() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let incidents = [
-        super::IncidentSurfaceEdge {
-            edge_idx: 0,
-            side: super::IncidentEdgeSide::End,
-            direction_xz: surface
-                .compiled_visual_span_pieces()
-                .get(&0)
-                .and_then(|piece| piece.end_mouth_profile.as_ref())
-                .expect("west span must expose an end mouth")
-                .inward_direction_xz,
-        },
-        super::IncidentSurfaceEdge {
-            edge_idx: 1,
-            side: super::IncidentEdgeSide::Start,
-            direction_xz: surface
-                .compiled_visual_span_pieces()
-                .get(&1)
-                .and_then(|piece| piece.start_mouth_profile.as_ref())
-                .expect("north span must expose a start mouth")
-                .inward_direction_xz,
-        },
-        super::IncidentSurfaceEdge {
-            edge_idx: 2,
-            side: super::IncidentEdgeSide::Start,
-            direction_xz: surface
-                .compiled_visual_span_pieces()
-                .get(&2)
-                .and_then(|piece| piece.start_mouth_profile.as_ref())
-                .expect("east span must expose a start mouth")
-                .inward_direction_xz,
-        },
-    ];
-    let mut mouths = incidents
-        .iter()
-        .map(|incident| {
-            let span_piece = surface
-                .compiled_visual_span_pieces()
-                .get(&incident.edge_idx)
-                .expect("incident span piece must be compiled");
-            let profile = match incident.side {
-                super::IncidentEdgeSide::Start => span_piece.start_mouth_profile.clone(),
-                super::IncidentEdgeSide::End => span_piece.end_mouth_profile.clone(),
-            }
-            .expect("incident span piece must expose a mouth profile");
-            let sections = surface
-                .compiled_sections()
-                .get(&incident.edge_idx)
-                .expect("incident sections must be compiled");
-            let section = match incident.side {
-                super::IncidentEdgeSide::Start => sections.first(),
-                super::IncidentEdgeSide::End => sections.last(),
-            }
-            .expect("incident endpoint section must exist");
-            let endpoint_profile =
-                RoadSurfaceSystem::build_mouth_profile_from_section(section, incident.side)
-                    .expect("incident endpoint profile must compile");
-            super::OrderedIncidentPieceMouth {
-                profile,
-                endpoint_profile,
-                direction_angle_ccw: {
-                    let angle = incident.direction_xz.y.atan2(incident.direction_xz.x);
-                    if angle < 0.0 {
-                        angle + std::f32::consts::TAU
-                    } else {
-                        angle
-                    }
-                },
-                direction_xz: incident.direction_xz,
-                edge_idx: incident.edge_idx,
-                side: incident.side,
-            }
-        })
-        .collect::<Vec<_>>();
-    mouths.sort_by(|a, b| {
-        a.direction_angle_ccw
-            .total_cmp(&b.direction_angle_ccw)
-            .then(a.edge_idx.cmp(&b.edge_idx))
-            .then(a.side.cmp(&b.side))
-    });
-    let input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
-        center,
-        RoadSurfaceVisualNodePieceKind::JunctionN,
-        &mouths,
-    )
-    .expect("logged flat oblique T input must compile");
-    let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&input)
-        .expect("logged flat oblique T rails must compile");
-    let mut ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
-        .expect("logged flat oblique T ownership must compile");
-    ownership.resolve_canonical_contact_ownership();
-    assert!(
-        ownership.owned_region_arrangement.diagnostics().is_empty(),
-        "logged flat oblique T ownership diagnostics: {:?}",
-        ownership.owned_region_arrangement.diagnostics()
-    );
-    let height_error =
-        RoadSurfaceSystem::build_node_height_solution_from_ownership(&input, &ownership)
-            .expect_err("logged flat oblique T must reject contradictory explicit seam height");
-    assert!(matches!(
-        height_error,
-        super::height::NodeHeightFieldError::SharedSourceHeightConflict {
-            constraint_index: Some(_),
-            ..
-        }
-    ));
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&center),
-        "logged flat oblique T must not emit cracked JunctionN geometry"
-    );
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&center)
+        .expect("logged flat oblique T must compile after canonical join ownership");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
+    assert!(!piece.outer_boundary_loops.is_empty());
+    assert!(!piece.road_surface_polygons.is_empty());
+    assert!(!piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(piece);
+    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]

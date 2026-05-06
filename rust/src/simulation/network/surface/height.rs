@@ -97,6 +97,14 @@ pub(crate) enum NodeHeightFieldError {
         axis: &'static str,
         parameter: f64,
     },
+    SourceHeightFieldConflict {
+        mouth_order_index: usize,
+        band_index: usize,
+        point_x_mm: i64,
+        point_z_mm: i64,
+        existing_height_mm: i64,
+        incoming_height_mm: i64,
+    },
     SharedSourceHeightConflict {
         point_x_mm: i64,
         point_z_mm: i64,
@@ -130,6 +138,10 @@ struct NodeHeightVertexContextKey {
 struct NodeBandHeightField {
     id: NodeBandHeightFieldId,
     kind: RoadSurfaceBandKind,
+    patches: Vec<NodeBandHeightPatch>,
+}
+
+struct NodeBandHeightPatch {
     endpoint_start_xz: RoadVec2,
     endpoint_end_xz: RoadVec2,
     mouth_start_xz: RoadVec2,
@@ -144,6 +156,11 @@ struct NodeContourHeightEdge {
     end_key: NodeOverlayPointKey,
     start_height_m: f64,
     end_height_m: f64,
+}
+
+enum NodeHeightPatchEvaluation {
+    Inside(f64),
+    Outside(NodeHeightFieldError),
 }
 
 impl RoadSurfaceSystem {
@@ -187,6 +204,123 @@ impl NodeBandHeightField {
     fn from_interval(mouth_order_index: usize, interval: &NodeInputBandInterval) -> Self {
         let id =
             NodeBandHeightFieldId::new(mouth_order_index, interval.band_index, interval.band_kind);
+        Self {
+            id,
+            kind: interval.band_kind,
+            patches: vec![NodeBandHeightPatch::from_interval(interval)],
+        }
+    }
+
+    fn from_terminal_end_band(
+        mouth_order_index: usize,
+        end_band: &NodeInputTerminalEndBand,
+    ) -> Self {
+        let id = NodeBandHeightFieldId::new(
+            mouth_order_index,
+            end_band.source_band_index,
+            end_band.band_kind,
+        );
+        Self {
+            id,
+            kind: end_band.band_kind,
+            patches: vec![NodeBandHeightPatch::from_terminal_end_band(end_band)],
+        }
+    }
+
+    fn extend_with_terminal_end_band(
+        &mut self,
+        mouth_order_index: usize,
+        end_band: &NodeInputTerminalEndBand,
+    ) -> Result<(), NodeHeightFieldError> {
+        let extension = Self::from_terminal_end_band(mouth_order_index, end_band);
+        if extension.kind != self.kind {
+            return Err(NodeHeightFieldError::SourceBandKindMismatch {
+                mouth_order_index: extension.id.mouth_order_index(),
+                band_index: extension.id.band_index(),
+                region_kind: self.kind,
+                source_kind: extension.kind,
+            });
+        }
+        self.patches.extend(extension.patches);
+        Ok(())
+    }
+
+    fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
+        let mut candidates = Vec::new();
+        for patch in &self.patches {
+            if let Some(height_m) = patch.evaluate_contour_height(point_xz) {
+                candidates.push(height_m);
+            }
+        }
+        if !candidates.is_empty() {
+            return self.agreed_height(point_xz, candidates);
+        }
+
+        let mut outside_error = None;
+        for patch in &self.patches {
+            match patch.evaluate_surface_height(self.id, point_xz)? {
+                NodeHeightPatchEvaluation::Inside(height_m) => candidates.push(height_m),
+                NodeHeightPatchEvaluation::Outside(error) => {
+                    if outside_error.is_none() {
+                        outside_error = Some(error);
+                    }
+                }
+            }
+        }
+        if candidates.is_empty() {
+            return Err(outside_error.unwrap_or_else(|| {
+                let key = NodeHeightPointKey::from_point(point_xz);
+                NodeHeightFieldError::VertexOutsideHeightField {
+                    mouth_order_index: self.id.mouth_order_index(),
+                    band_index: self.id.band_index(),
+                    point_x_mm: key.x_mm(),
+                    point_z_mm: key.z_mm(),
+                    axis: "patch",
+                    raw_parameter: f64::NAN,
+                }
+            }));
+        }
+
+        self.agreed_height(point_xz, candidates)
+    }
+
+    fn agreed_height(
+        &self,
+        point_xz: RoadVec2,
+        heights_m: Vec<f64>,
+    ) -> Result<f64, NodeHeightFieldError> {
+        let Some(first_height_m) = heights_m.first().copied() else {
+            let key = NodeHeightPointKey::from_point(point_xz);
+            return Err(NodeHeightFieldError::VertexOutsideHeightField {
+                mouth_order_index: self.id.mouth_order_index(),
+                band_index: self.id.band_index(),
+                point_x_mm: key.x_mm(),
+                point_z_mm: key.z_mm(),
+                axis: "patch",
+                raw_parameter: f64::NAN,
+            });
+        };
+        let first_height_mm = quantize_m(first_height_m);
+        for height_m in heights_m.iter().copied().skip(1) {
+            let height_mm = quantize_m(height_m);
+            if height_mm != first_height_mm {
+                let key = NodeHeightPointKey::from_point(point_xz);
+                return Err(NodeHeightFieldError::SourceHeightFieldConflict {
+                    mouth_order_index: self.id.mouth_order_index(),
+                    band_index: self.id.band_index(),
+                    point_x_mm: key.x_mm(),
+                    point_z_mm: key.z_mm(),
+                    existing_height_mm: first_height_mm,
+                    incoming_height_mm: height_mm,
+                });
+            }
+        }
+        Ok(first_height_m)
+    }
+}
+
+impl NodeBandHeightPatch {
+    fn from_interval(interval: &NodeInputBandInterval) -> Self {
         let endpoint_start_xz =
             quantize_road_vec2_to_overlay_grid(xz(interval.endpoint_start_world));
         let endpoint_end_xz = quantize_road_vec2_to_overlay_grid(xz(interval.endpoint_end_world));
@@ -194,8 +328,6 @@ impl NodeBandHeightField {
         let mouth_end_xz = quantize_road_vec2_to_overlay_grid(xz(interval.mouth_end_world));
 
         Self {
-            id,
-            kind: interval.band_kind,
             endpoint_start_xz,
             endpoint_end_xz,
             mouth_start_xz,
@@ -212,23 +344,13 @@ impl NodeBandHeightField {
         }
     }
 
-    fn from_terminal_end_band(
-        mouth_order_index: usize,
-        end_band: &NodeInputTerminalEndBand,
-    ) -> Self {
-        let id = NodeBandHeightFieldId::new(
-            mouth_order_index,
-            end_band.source_band_index,
-            end_band.band_kind,
-        );
+    fn from_terminal_end_band(end_band: &NodeInputTerminalEndBand) -> Self {
         let endpoint_start_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.inner_start_world));
         let endpoint_end_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.inner_end_world));
         let mouth_start_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.outer_start_world));
         let mouth_end_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.outer_end_world));
 
         Self {
-            id,
-            kind: end_band.band_kind,
             endpoint_start_xz,
             endpoint_end_xz,
             mouth_start_xz,
@@ -245,27 +367,30 @@ impl NodeBandHeightField {
         }
     }
 
-    fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
-        if let Some(height_m) = self.evaluate_contour_height(point_xz) {
-            return Ok(height_m);
-        }
-
+    fn evaluate_surface_height(
+        &self,
+        id: NodeBandHeightFieldId,
+        point_xz: RoadVec2,
+    ) -> Result<NodeHeightPatchEvaluation, NodeHeightFieldError> {
         let endpoint_center = midpoint(self.endpoint_start_xz, self.endpoint_end_xz);
         let mouth_center = midpoint(self.mouth_start_xz, self.mouth_end_xz);
         let longitudinal_axis = mouth_center - endpoint_center;
         let longitudinal_len2 = longitudinal_axis.length_squared();
         if longitudinal_len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
             return Err(NodeHeightFieldError::DegenerateHeightField {
-                mouth_order_index: self.id.mouth_order_index(),
-                band_index: self.id.band_index(),
+                mouth_order_index: id.mouth_order_index(),
+                band_index: id.band_index(),
                 axis: "longitudinal",
             });
         }
         let longitudinal_len_m = longitudinal_len2.sqrt();
 
         let raw_t = (point_xz - endpoint_center).dot(longitudinal_axis) / longitudinal_len2;
-        let t = canonical_unit_parameter(raw_t, longitudinal_len_m)
-            .ok_or_else(|| self.outside_field_error(point_xz, "longitudinal", raw_t))?;
+        let Some(t) = canonical_unit_parameter(raw_t, longitudinal_len_m) else {
+            return Ok(NodeHeightPatchEvaluation::Outside(
+                self.outside_field_error(id, point_xz, "longitudinal", raw_t),
+            ));
+        };
 
         let start_xz = interpolate(self.endpoint_start_xz, self.mouth_start_xz, t);
         let end_xz = interpolate(self.endpoint_end_xz, self.mouth_end_xz, t);
@@ -273,46 +398,52 @@ impl NodeBandHeightField {
         let lateral_len2 = lateral_axis.length_squared();
         if lateral_len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
             return Err(NodeHeightFieldError::DegenerateHeightField {
-                mouth_order_index: self.id.mouth_order_index(),
-                band_index: self.id.band_index(),
+                mouth_order_index: id.mouth_order_index(),
+                band_index: id.band_index(),
                 axis: "lateral",
             });
         }
         let lateral_len_m = lateral_len2.sqrt();
 
         let raw_u = (point_xz - start_xz).dot(lateral_axis) / lateral_len2;
-        let u = canonical_unit_parameter(raw_u, lateral_len_m)
-            .ok_or_else(|| self.outside_field_error(point_xz, "lateral", raw_u))?;
+        let Some(u) = canonical_unit_parameter(raw_u, lateral_len_m) else {
+            return Ok(NodeHeightPatchEvaluation::Outside(
+                self.outside_field_error(id, point_xz, "lateral", raw_u),
+            ));
+        };
         let start_height = self.start_height_profile.clamped_sample(t).ok_or(
             NodeHeightFieldError::HeightSampleFailed {
-                mouth_order_index: self.id.mouth_order_index(),
-                band_index: self.id.band_index(),
+                mouth_order_index: id.mouth_order_index(),
+                band_index: id.band_index(),
                 axis: "start",
                 parameter: t,
             },
         )?;
         let end_height = self.end_height_profile.clamped_sample(t).ok_or(
             NodeHeightFieldError::HeightSampleFailed {
-                mouth_order_index: self.id.mouth_order_index(),
-                band_index: self.id.band_index(),
+                mouth_order_index: id.mouth_order_index(),
+                band_index: id.band_index(),
                 axis: "end",
                 parameter: t,
             },
         )?;
 
-        Ok(start_height + (end_height - start_height) * u)
+        Ok(NodeHeightPatchEvaluation::Inside(
+            start_height + (end_height - start_height) * u,
+        ))
     }
 
     fn outside_field_error(
         &self,
+        id: NodeBandHeightFieldId,
         point_xz: RoadVec2,
         axis: &'static str,
         raw_parameter: f64,
     ) -> NodeHeightFieldError {
         let key = NodeHeightPointKey::from_point(point_xz);
         NodeHeightFieldError::VertexOutsideHeightField {
-            mouth_order_index: self.id.mouth_order_index(),
-            band_index: self.id.band_index(),
+            mouth_order_index: id.mouth_order_index(),
+            band_index: id.band_index(),
             point_x_mm: key.x_mm(),
             point_z_mm: key.z_mm(),
             axis,
@@ -377,11 +508,10 @@ fn height_fields_by_source(
                 mouth_order_index: mouth.order_index,
                 band_index: end_band.source_band_index,
             };
-            if fields.insert(key, field).is_some() {
-                return Err(NodeHeightFieldError::DuplicateSourceBand {
-                    mouth_order_index: mouth.order_index,
-                    band_index: end_band.source_band_index,
-                });
+            if let Some(existing) = fields.get_mut(&key) {
+                existing.extend_with_terminal_end_band(mouth.order_index, end_band)?;
+            } else {
+                fields.insert(key, field);
             }
         }
     }
