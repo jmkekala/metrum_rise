@@ -36,13 +36,20 @@ struct NodeArrangementHeightKey(i64);
 struct NodeArrangementVertexContextKey {
     position: NodeArrangementKey,
     owners: Vec<NodeBandOwner>,
-    height_source: NodeHeightSource,
+    height_field_id: NodeBandHeightFieldId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) struct NodeBandOwner {
     kind: RoadSurfaceBandKind,
     owner_index: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub(crate) struct NodeBandHeightFieldId {
+    mouth_order_index: usize,
+    band_index: usize,
+    kind: RoadSurfaceBandKind,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -108,6 +115,7 @@ pub(crate) struct NodeArrangementVertex {
     height_m: f64,
     height_key: NodeArrangementHeightKey,
     owners: Vec<NodeBandOwner>,
+    height_field_id: NodeBandHeightFieldId,
     height_source: NodeHeightSource,
     seam_sources: Vec<NodeSeamSource>,
 }
@@ -118,7 +126,9 @@ pub(crate) struct NodeArrangementEdge {
     start: NodeArrangementVertexId,
     end: NodeArrangementVertexId,
     owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
     opposite_owner: Option<NodeBandOwner>,
+    opposite_height_field_id: Option<NodeBandHeightFieldId>,
     exposed_boundary: bool,
     seam_source: NodeSeamSource,
     source_constraint_indices: Vec<usize>,
@@ -128,6 +138,7 @@ pub(crate) struct NodeArrangementEdge {
 pub(crate) struct NodeOwnedRegion {
     id: NodeOwnedRegionId,
     owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
     source_mouth_order_index: usize,
     source_band_index: usize,
     outer_loop: Vec<NodeArrangementVertexId>,
@@ -245,6 +256,32 @@ impl NodeBandOwner {
     }
 }
 
+impl NodeBandHeightFieldId {
+    pub(crate) fn new(
+        mouth_order_index: usize,
+        band_index: usize,
+        kind: RoadSurfaceBandKind,
+    ) -> Self {
+        Self {
+            mouth_order_index,
+            band_index,
+            kind,
+        }
+    }
+
+    pub(crate) fn mouth_order_index(self) -> usize {
+        self.mouth_order_index
+    }
+
+    pub(crate) fn band_index(self) -> usize {
+        self.band_index
+    }
+
+    pub(crate) fn kind(self) -> RoadSurfaceBandKind {
+        self.kind
+    }
+}
+
 impl NodeArrangement {
     pub(crate) fn new(node_id: u32, piece_kind: RoadSurfaceVisualNodePieceKind) -> Self {
         Self {
@@ -292,6 +329,7 @@ impl NodeArrangement {
         point_xz: RoadVec2,
         height_m: f64,
         owners: impl IntoIterator<Item = NodeBandOwner>,
+        height_field_id: NodeBandHeightFieldId,
         height_source: NodeHeightSource,
         seam_sources: impl IntoIterator<Item = NodeSeamSource>,
     ) -> Result<NodeArrangementVertexId, NodeArrangementError> {
@@ -302,10 +340,12 @@ impl NodeArrangement {
         let context_key = NodeArrangementVertexContextKey {
             position: key,
             owners: owners.clone(),
-            height_source: height_source.clone(),
+            height_field_id,
         };
 
-        if let Some(conflict) = self.same_band_height_conflict_at_key(key, height_key, &owners) {
+        if let Some(conflict) =
+            self.height_owner_conflict_at_key(key, height_key, &owners, height_field_id)
+        {
             return Err(NodeArrangementError::DuplicateVertexHeightConflict {
                 key,
                 existing_height_mm: conflict.0,
@@ -334,23 +374,26 @@ impl NodeArrangement {
             height_m,
             height_key,
             owners,
+            height_field_id,
             height_source,
             seam_sources,
         ))
     }
 
-    fn same_band_height_conflict_at_key(
+    fn height_owner_conflict_at_key(
         &self,
         key: NodeArrangementKey,
         height_key: NodeArrangementHeightKey,
         owners: &[NodeBandOwner],
+        height_field_id: NodeBandHeightFieldId,
     ) -> Option<NodeArrangementHeightKey> {
         self.vertices
             .iter()
             .find(|vertex| {
                 vertex.key == key
                     && vertex.height_key != height_key
-                    && owners_share_band_kind(&vertex.owners, owners)
+                    && (vertex.height_field_id == height_field_id
+                        || owners_share_band_kind(&vertex.owners, owners))
             })
             .map(|vertex| vertex.height_key)
     }
@@ -363,6 +406,7 @@ impl NodeArrangement {
         height_m: f64,
         height_key: NodeArrangementHeightKey,
         owners: Vec<NodeBandOwner>,
+        height_field_id: NodeBandHeightFieldId,
         height_source: NodeHeightSource,
         seam_sources: Vec<NodeSeamSource>,
     ) -> NodeArrangementVertexId {
@@ -374,6 +418,7 @@ impl NodeArrangement {
             height_m,
             height_key,
             owners,
+            height_field_id,
             height_source,
             seam_sources,
         });
@@ -386,7 +431,9 @@ impl NodeArrangement {
         start: NodeArrangementVertexId,
         end: NodeArrangementVertexId,
         owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
         opposite_owner: Option<NodeBandOwner>,
+        opposite_height_field_id: Option<NodeBandHeightFieldId>,
         exposed_boundary: bool,
         seam_source: NodeSeamSource,
         source_constraint_indices: Vec<usize>,
@@ -397,7 +444,9 @@ impl NodeArrangement {
             start,
             end,
             owner,
+            height_field_id,
             opposite_owner,
+            opposite_height_field_id,
             exposed_boundary,
             seam_source,
             source_constraint_indices,
@@ -408,6 +457,7 @@ impl NodeArrangement {
     pub(crate) fn push_region(
         &mut self,
         owner: NodeBandOwner,
+        height_field_id: NodeBandHeightFieldId,
         source_mouth_order_index: usize,
         source_band_index: usize,
         outer_loop: Vec<NodeArrangementVertexId>,
@@ -421,6 +471,7 @@ impl NodeArrangement {
         self.regions.push(NodeOwnedRegion {
             id,
             owner,
+            height_field_id,
             source_mouth_order_index,
             source_band_index,
             outer_loop,
@@ -454,17 +505,22 @@ impl NodeArrangement {
     ) -> Result<Self, NodeArrangementError> {
         let mut arrangement = Self::new(heights.node_id, heights.piece_kind);
         let mut pending_regions = Vec::with_capacity(heights.regions.len());
-        let mut edge_owners = BTreeMap::<NodeArrangementEdgeKey, Vec<NodeBandOwner>>::new();
+        let mut edge_owners =
+            BTreeMap::<NodeArrangementEdgeKey, Vec<NodeArrangementEdgeOwner>>::new();
         let mut edge_use_counts = BTreeMap::<NodeArrangementEdgeKey, usize>::new();
 
         for (region_index, height_region) in heights.regions.iter().enumerate() {
             let pending = arrangement.pending_region(region_index, height_region)?;
+            let pending_edge_owner = NodeArrangementEdgeOwner {
+                owner: pending.owner,
+                height_field_id: pending.height_field_id,
+            };
             for edge in pending.loop_edges(&arrangement.vertices) {
                 *edge_use_counts.entry(edge.key).or_default() += 1;
                 edge_owners
                     .entry(edge.key)
-                    .and_modify(|owners| merge_sorted_unique(owners, vec![pending.owner]))
-                    .or_insert_with(|| vec![pending.owner]);
+                    .and_modify(|owners| merge_sorted_unique(owners, vec![pending_edge_owner]))
+                    .or_insert_with(|| vec![pending_edge_owner]);
             }
             pending_regions.push(pending);
         }
@@ -472,9 +528,14 @@ impl NodeArrangement {
         for pending in pending_regions {
             let mut boundary_edges = Vec::with_capacity(pending.edge_count());
             for edge in pending.loop_edges(&arrangement.vertices) {
-                let opposite_owner = edge_owners.get(&edge.key).and_then(|owners| {
-                    owners.iter().copied().find(|owner| *owner != pending.owner)
+                let opposite = edge_owners.get(&edge.key).and_then(|owners| {
+                    owners
+                        .iter()
+                        .copied()
+                        .find(|owner| owner.owner != pending.owner)
                 });
+                let opposite_owner = opposite.map(|owner| owner.owner);
+                let opposite_height_field_id = opposite.map(|owner| owner.height_field_id);
                 let source_constraints = source_constraints_for_edge(
                     edge,
                     &pending.seam_constraints,
@@ -516,7 +577,9 @@ impl NodeArrangement {
                     edge.start,
                     edge.end,
                     pending.owner,
+                    pending.height_field_id,
                     opposite_owner,
+                    opposite_height_field_id,
                     edge_use_counts.get(&edge.key).copied() == Some(1),
                     seam_source,
                     source_constraint_indices,
@@ -524,6 +587,7 @@ impl NodeArrangement {
             }
             arrangement.push_region(
                 pending.owner,
+                pending.height_field_id,
                 pending.source_mouth_order_index,
                 pending.source_band_index,
                 pending.outer_loop,
@@ -625,6 +689,7 @@ impl NodeArrangement {
             owner: region.owner,
             source_mouth_order_index: region.source_mouth_order_index,
             source_band_index: region.source_band_index,
+            height_field_id: region.height_field_id,
             outer_loop,
             holes,
             area_m2: region.area_m2,
@@ -654,6 +719,7 @@ impl NodeArrangement {
                     vertex.point_xz,
                     vertex.height_m,
                     [region.owner],
+                    vertex.height_field_id,
                     primary_height_source(&vertex.height_sources),
                     [seam_source_for_owner(region.owner)],
                 )
@@ -677,6 +743,7 @@ impl NodeArrangement {
             RoadVec2::new(vertex.point_world.x, vertex.point_world.z),
             vertex.point_world.y,
             [region.owner],
+            vertex.height_field_id,
             primary_height_source(&vertex.height_sources),
             [seam_source_for_owner(region.owner)],
         )
@@ -707,11 +774,19 @@ impl NodeArrangementVertex {
     pub(crate) fn height_source(&self) -> &NodeHeightSource {
         &self.height_source
     }
+
+    pub(crate) fn height_field_id(&self) -> NodeBandHeightFieldId {
+        self.height_field_id
+    }
 }
 
 impl NodeOwnedRegion {
     pub(crate) fn owner(&self) -> NodeBandOwner {
         self.owner
+    }
+
+    pub(crate) fn height_field_id(&self) -> NodeBandHeightFieldId {
+        self.height_field_id
     }
 
     pub(crate) fn source_mouth_order_index(&self) -> usize {
@@ -752,8 +827,16 @@ impl NodeArrangementEdge {
         self.owner
     }
 
+    pub(crate) fn height_field_id(&self) -> NodeBandHeightFieldId {
+        self.height_field_id
+    }
+
     pub(crate) fn opposite_owner(&self) -> Option<NodeBandOwner> {
         self.opposite_owner
+    }
+
+    pub(crate) fn opposite_height_field_id(&self) -> Option<NodeBandHeightFieldId> {
+        self.opposite_height_field_id
     }
 
     pub(crate) fn is_exposed_boundary(&self) -> bool {
@@ -787,6 +870,7 @@ fn quantize_m(value_m: f64) -> i64 {
 struct PendingArrangementRegion {
     region_index: usize,
     owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
     source_mouth_order_index: usize,
     source_band_index: usize,
     outer_loop: Vec<NodeArrangementVertexId>,
@@ -794,6 +878,12 @@ struct PendingArrangementRegion {
     area_m2: f32,
     height_sources: Vec<NodeHeightSource>,
     seam_constraints: Vec<NodeRegionSeamConstraint>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct NodeArrangementEdgeOwner {
+    owner: NodeBandOwner,
+    height_field_id: NodeBandHeightFieldId,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -1053,6 +1143,10 @@ mod tests {
         NodeBandOwner::new(kind, owner_index)
     }
 
+    fn height_field_id(kind: RoadSurfaceBandKind, band_index: usize) -> NodeBandHeightFieldId {
+        NodeBandHeightFieldId::new(0, band_index, kind)
+    }
+
     fn height_source() -> NodeHeightSource {
         NodeHeightSource::IncidentMouthBand {
             edge_idx: 7,
@@ -1083,6 +1177,7 @@ mod tests {
                 point,
                 3.25,
                 [owner(RoadSurfaceBandKind::Sidewalk, 2)],
+                height_field_id(RoadSurfaceBandKind::Sidewalk, 2),
                 height_source(),
                 [seam_source(2)],
             )
@@ -1092,6 +1187,7 @@ mod tests {
                 point,
                 3.25,
                 [owner(RoadSurfaceBandKind::Sidewalk, 2)],
+                height_field_id(RoadSurfaceBandKind::Sidewalk, 2),
                 height_source(),
                 [seam_source(2)],
             )
@@ -1104,7 +1200,46 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_arrangement_vertex_key_keeps_distinct_height_source_contexts() {
+    fn duplicate_arrangement_vertex_key_merges_same_height_field_and_quantized_height() {
+        let mut arrangement = NodeArrangement::new(42, RoadSurfaceVisualNodePieceKind::JunctionN);
+        let point = RoadVec2::new(12.345, -6.789);
+        let field_id = height_field_id(RoadSurfaceBandKind::Sidewalk, 2);
+
+        let first = arrangement
+            .insert_vertex(
+                point,
+                3.25,
+                [owner(RoadSurfaceBandKind::Sidewalk, 2)],
+                field_id,
+                height_source(),
+                [seam_source(2)],
+            )
+            .expect("first vertex should insert");
+        let second = arrangement
+            .insert_vertex(
+                point,
+                3.25,
+                [owner(RoadSurfaceBandKind::Sidewalk, 2)],
+                field_id,
+                other_height_source(),
+                [NodeSeamSource::SidewalkOuter { owner_index: 2 }],
+            )
+            .expect("same height-field and solved height should share the canonical vertex");
+
+        assert_eq!(first, second);
+        let vertex = &arrangement.vertices()[first.0];
+        assert_eq!(vertex.height_field_id(), field_id);
+        assert_eq!(
+            vertex.seam_sources,
+            vec![
+                NodeSeamSource::SidewalkOuter { owner_index: 2 },
+                seam_source(2)
+            ]
+        );
+    }
+
+    #[test]
+    fn duplicate_arrangement_vertex_key_keeps_distinct_material_height_field_contexts() {
         let mut arrangement = NodeArrangement::new(42, RoadSurfaceVisualNodePieceKind::JunctionN);
         let point = RoadVec2::new(12.345, -6.789);
 
@@ -1113,6 +1248,7 @@ mod tests {
                 point,
                 3.25,
                 [owner(RoadSurfaceBandKind::Sidewalk, 2)],
+                height_field_id(RoadSurfaceBandKind::Sidewalk, 2),
                 height_source(),
                 [seam_source(2)],
             )
@@ -1122,6 +1258,7 @@ mod tests {
                 point,
                 3.25,
                 [owner(RoadSurfaceBandKind::CurbOrShoulder, 1)],
+                height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1),
                 other_height_source(),
                 [seam_source(1)],
             )
@@ -1141,6 +1278,7 @@ mod tests {
                 point,
                 1.0,
                 [owner(RoadSurfaceBandKind::Sidewalk, 0)],
+                height_field_id(RoadSurfaceBandKind::Sidewalk, 0),
                 height_source(),
                 [seam_source(0)],
             )
@@ -1150,6 +1288,7 @@ mod tests {
             point,
             1.01,
             [owner(RoadSurfaceBandKind::Sidewalk, 0)],
+            height_field_id(RoadSurfaceBandKind::Sidewalk, 0),
             height_source(),
             [seam_source(0)],
         );
@@ -1170,6 +1309,7 @@ mod tests {
                 point,
                 1.0,
                 [owner(RoadSurfaceBandKind::Sidewalk, 0)],
+                height_field_id(RoadSurfaceBandKind::Sidewalk, 0),
                 height_source(),
                 [seam_source(0)],
             )
@@ -1179,6 +1319,7 @@ mod tests {
             point,
             2.0,
             [owner(RoadSurfaceBandKind::Sidewalk, 1)],
+            height_field_id(RoadSurfaceBandKind::Sidewalk, 1),
             other_height_source(),
             [seam_source(1)],
         );
@@ -1199,6 +1340,7 @@ mod tests {
                 point,
                 1.0,
                 [owner(RoadSurfaceBandKind::Carriageway, 0)],
+                height_field_id(RoadSurfaceBandKind::Carriageway, 0),
                 height_source(),
                 [seam_source(0)],
             )
@@ -1208,6 +1350,7 @@ mod tests {
                 point,
                 2.0,
                 [owner(RoadSurfaceBandKind::Sidewalk, 1)],
+                height_field_id(RoadSurfaceBandKind::Sidewalk, 1),
                 other_height_source(),
                 [seam_source(1)],
             )
@@ -1348,6 +1491,7 @@ mod tests {
             RoadVec2::new(1.0, 2.0),
             0.0,
             [],
+            height_field_id(RoadSurfaceBandKind::Sidewalk, 0),
             height_source(),
             [seam_source(0)],
         );
@@ -1408,9 +1552,19 @@ mod tests {
         contour: Vec<NodeHeightedVertex>,
         seam_constraints: Vec<NodeRegionSeamConstraint>,
     ) -> NodeHeightedRegion {
+        let height_field_id =
+            NodeBandHeightFieldId::new(owner.owner_index(), owner.owner_index(), kind);
+        let contour = contour
+            .into_iter()
+            .map(|mut vertex| {
+                vertex.height_field_id = height_field_id;
+                vertex
+            })
+            .collect();
         NodeHeightedRegion {
             kind,
             owner,
+            height_field_id,
             source_mouth_order_index: owner.owner_index(),
             source_band_index: owner.owner_index(),
             shape: vec![contour],
@@ -1424,6 +1578,7 @@ mod tests {
         NodeHeightedVertex {
             point_xz: RoadVec2::new(x, z),
             height_m,
+            height_field_id: height_field_id(RoadSurfaceBandKind::Sidewalk, 0),
             height_sources: vec![height_source()],
         }
     }

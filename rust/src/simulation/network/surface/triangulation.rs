@@ -3,8 +3,8 @@
 #![allow(dead_code)]
 
 use super::arrangement::{
-    NodeArrangement, NodeArrangementVertex, NodeArrangementVertexId, NodeBandOwner,
-    NodeHeightSource, NodeOwnedRegion,
+    NodeArrangement, NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId,
+    NodeBandOwner, NodeHeightSource, NodeOwnedRegion,
 };
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
 use super::{
@@ -30,6 +30,7 @@ pub(crate) struct NodeTriangulationSolution {
 pub(crate) struct NodeTriangulatedRegion {
     pub(crate) kind: RoadSurfaceBandKind,
     pub(crate) owner: NodeBandOwner,
+    pub(crate) height_field_id: NodeBandHeightFieldId,
     pub(crate) source_mouth_order_index: usize,
     pub(crate) source_band_index: usize,
     pub(crate) vertices: Vec<NodeTriangulatedVertex>,
@@ -42,6 +43,7 @@ pub(crate) struct NodeTriangulatedRegion {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeTriangulatedVertex {
     pub(crate) point_world: RoadVec3,
+    pub(crate) height_field_id: NodeBandHeightFieldId,
     pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
@@ -234,6 +236,7 @@ fn triangulate_arrangement_region(
     Ok(NodeTriangulatedRegion {
         kind: owner.kind(),
         owner,
+        height_field_id: region.height_field_id(),
         source_mouth_order_index: region.source_mouth_order_index(),
         source_band_index: region.source_band_index(),
         vertices,
@@ -314,6 +317,7 @@ fn insert_arrangement_vertex(
     let point_xz = vertex.point_xz();
     vertices.push(NodeTriangulatedVertex {
         point_world: RoadVec3::new(point_xz.x, vertex.height_m(), point_xz.y),
+        height_field_id: vertex.height_field_id(),
         height_sources: vec![vertex.height_source().clone()],
     });
     vertex_lookup.insert(point_key, (index, height_key));
@@ -678,12 +682,14 @@ mod tests {
 
     #[test]
     fn triangulation_vertex_pool_preserves_overlay_grid_distinct_points_inside_same_millimetre() {
+        let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk);
         let heights = NodeHeightSolution {
             node_id: 93,
             piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
             regions: vec![NodeHeightedRegion {
                 kind: RoadSurfaceBandKind::Sidewalk,
                 owner: NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
+                height_field_id,
                 source_mouth_order_index: 0,
                 source_band_index: 0,
                 shape: vec![vec![
@@ -724,6 +730,7 @@ mod tests {
                 super::super::backend::RoadVec2::new(0.0, 0.0),
                 2.0,
                 [owner],
+                NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway),
                 NodeHeightSource::ArrangementConstraint {
                     constraint_index: 0,
                 },
@@ -735,6 +742,7 @@ mod tests {
                 super::super::backend::RoadVec2::new(1.0, 0.0),
                 2.0,
                 [owner],
+                NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway),
                 NodeHeightSource::ArrangementConstraint {
                     constraint_index: 1,
                 },
@@ -743,6 +751,7 @@ mod tests {
             .expect("test vertex should enter arrangement");
         arrangement.push_region(
             owner,
+            NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway),
             0,
             0,
             vec![first, second],
@@ -767,9 +776,11 @@ mod tests {
     }
 
     fn flat_region_with_hole() -> NodeHeightedRegion {
+        let height_field_id = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk);
         NodeHeightedRegion {
             kind: RoadSurfaceBandKind::Sidewalk,
             owner: NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
+            height_field_id,
             source_mouth_order_index: 0,
             source_band_index: 0,
             shape: vec![
@@ -796,6 +807,7 @@ mod tests {
         NodeHeightedVertex {
             point_xz: super::super::backend::RoadVec2::new(x, z),
             height_m: 2.0,
+            height_field_id: NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk),
             height_sources: Vec::new(),
         }
     }

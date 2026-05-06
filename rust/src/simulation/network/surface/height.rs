@@ -3,7 +3,8 @@
 #![allow(dead_code)]
 
 use super::arrangement::{
-    NodeBandOwner, NodeHeightSource, NodeRegionSeamConstraint, seam_source_priority,
+    NodeBandHeightFieldId, NodeBandOwner, NodeHeightSource, NodeRegionSeamConstraint,
+    seam_source_priority,
 };
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
@@ -26,9 +27,6 @@ const HEIGHT_PARAMETER_KEY_SCALE: f64 = 1_000_000.0;
 const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 32.0 / ROAD_OVERLAY_COORDINATE_SCALE;
 const HEIGHT_PARAMETER_BOUNDARY_DISTANCE_EPS_M: f64 = 0.002;
 const HEIGHT_FIELD_MIN_AXIS_LEN2_M2: f64 = 1.0e-12;
-const NON_BEND_SHARED_RAIL_CONSTRAINT_LIMIT_M: f64 = 0.36;
-const NON_BEND_NON_ROAD_SHARED_RAIL_CONSTRAINT_LIMIT_M: f64 = 0.5;
-
 type NodeHeightedContour = Vec<NodeHeightedVertex>;
 type NodeHeightedShape = Vec<NodeHeightedContour>;
 
@@ -43,6 +41,7 @@ pub(crate) struct NodeHeightSolution {
 pub(crate) struct NodeHeightedRegion {
     pub(crate) kind: RoadSurfaceBandKind,
     pub(crate) owner: NodeBandOwner,
+    pub(crate) height_field_id: NodeBandHeightFieldId,
     pub(crate) source_mouth_order_index: usize,
     pub(crate) source_band_index: usize,
     pub(crate) shape: NodeHeightedShape,
@@ -55,6 +54,7 @@ pub(crate) struct NodeHeightedRegion {
 pub(crate) struct NodeHeightedVertex {
     pub(crate) point_xz: RoadVec2,
     pub(crate) height_m: f64,
+    pub(crate) height_field_id: NodeBandHeightFieldId,
     pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
@@ -115,8 +115,8 @@ pub(crate) enum NodeHeightSourceError {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct NodeHeightPointKey {
-    x_mm: i64,
-    z_mm: i64,
+    x_key: i64,
+    z_key: i64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -129,27 +129,11 @@ struct NodeSourceBandKey {
 struct NodeHeightVertexContextKey {
     point: NodeHeightPointKey,
     owner: NodeBandOwner,
-    height_sources: Vec<NodeHeightSource>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct SharedRailConstraintKey {
-    point: NodeHeightPointKey,
-    constraint_index: usize,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct SharedRailHeightStats {
-    count: usize,
-    min_height_m: f64,
-    max_height_m: f64,
-    has_carriageway: bool,
-    has_curb_or_shoulder: bool,
-    has_sidewalk: bool,
+    height_field_id: NodeBandHeightFieldId,
 }
 
 struct NodeBandHeightField {
-    key: NodeSourceBandKey,
+    id: NodeBandHeightFieldId,
     kind: RoadSurfaceBandKind,
     endpoint_start_xz: RoadVec2,
     endpoint_end_xz: RoadVec2,
@@ -192,20 +176,12 @@ impl NodeHeightSolution {
         let global_points = global_ownership_points(ownership);
 
         for region in &ownership.owned_regions {
-            let region = heighted_region(
-                region,
-                &fields,
-                &boundary_fields,
-                &global_points,
-            )?;
+            let region = heighted_region(region, &fields, &boundary_fields, &global_points)?;
             if !region.shape.is_empty() {
                 regions.push(region);
             }
         }
-        if ownership.piece_kind == RoadSurfaceVisualNodePieceKind::Bend {
-            constrain_explicit_material_seam_heights(&mut regions, ownership.piece_kind);
-        }
-        constrain_unresolved_shared_material_rail_heights(&mut regions, ownership.piece_kind);
+        validate_explicit_material_seam_heights(&regions)?;
         validate_shared_source_height_agreement(&regions)?;
 
         Ok(Self {
@@ -218,10 +194,8 @@ impl NodeHeightSolution {
 
 impl NodeBandHeightField {
     fn from_interval(mouth_order_index: usize, interval: &NodeInputBandInterval) -> Self {
-        let key = NodeSourceBandKey {
-            mouth_order_index,
-            band_index: interval.band_index,
-        };
+        let id =
+            NodeBandHeightFieldId::new(mouth_order_index, interval.band_index, interval.band_kind);
         let endpoint_start_xz =
             quantize_road_vec2_to_overlay_grid(xz(interval.endpoint_start_world));
         let endpoint_end_xz = quantize_road_vec2_to_overlay_grid(xz(interval.endpoint_end_world));
@@ -229,7 +203,7 @@ impl NodeBandHeightField {
         let mouth_end_xz = quantize_road_vec2_to_overlay_grid(xz(interval.mouth_end_world));
 
         Self {
-            key,
+            id,
             kind: interval.band_kind,
             endpoint_start_xz,
             endpoint_end_xz,
@@ -254,17 +228,18 @@ impl NodeBandHeightField {
         mouth_order_index: usize,
         end_band: &NodeInputTerminalEndBand,
     ) -> Self {
-        let key = NodeSourceBandKey {
+        let id = NodeBandHeightFieldId::new(
             mouth_order_index,
-            band_index: end_band.source_band_index,
-        };
+            end_band.source_band_index,
+            end_band.band_kind,
+        );
         let endpoint_start_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.inner_start_world));
         let endpoint_end_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.inner_end_world));
         let mouth_start_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.outer_start_world));
         let mouth_end_xz = quantize_road_vec2_to_overlay_grid(xz(end_band.outer_end_world));
 
         Self {
-            key,
+            id,
             kind: end_band.band_kind,
             endpoint_start_xz,
             endpoint_end_xz,
@@ -289,8 +264,8 @@ impl NodeBandHeightField {
         let longitudinal_len2 = longitudinal_axis.length_squared();
         if longitudinal_len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
             return Err(NodeHeightSourceError::DegenerateHeightField {
-                mouth_order_index: self.key.mouth_order_index,
-                band_index: self.key.band_index,
+                mouth_order_index: self.id.mouth_order_index(),
+                band_index: self.id.band_index(),
                 axis: "longitudinal",
             });
         }
@@ -306,8 +281,8 @@ impl NodeBandHeightField {
         let lateral_len2 = lateral_axis.length_squared();
         if lateral_len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
             return Err(NodeHeightSourceError::DegenerateHeightField {
-                mouth_order_index: self.key.mouth_order_index,
-                band_index: self.key.band_index,
+                mouth_order_index: self.id.mouth_order_index(),
+                band_index: self.id.band_index(),
                 axis: "lateral",
             });
         }
@@ -318,16 +293,16 @@ impl NodeBandHeightField {
             .ok_or_else(|| self.outside_field_error(point_xz, "lateral", raw_u))?;
         let start_height = self.start_height_profile.clamped_sample(t).ok_or(
             NodeHeightSourceError::HeightSampleFailed {
-                mouth_order_index: self.key.mouth_order_index,
-                band_index: self.key.band_index,
+                mouth_order_index: self.id.mouth_order_index(),
+                band_index: self.id.band_index(),
                 axis: "start",
                 parameter: t,
             },
         )?;
         let end_height = self.end_height_profile.clamped_sample(t).ok_or(
             NodeHeightSourceError::HeightSampleFailed {
-                mouth_order_index: self.key.mouth_order_index,
-                band_index: self.key.band_index,
+                mouth_order_index: self.id.mouth_order_index(),
+                band_index: self.id.band_index(),
                 axis: "end",
                 parameter: t,
             },
@@ -344,10 +319,10 @@ impl NodeBandHeightField {
     ) -> NodeHeightSourceError {
         let key = NodeHeightPointKey::from_point(point_xz);
         NodeHeightSourceError::VertexOutsideHeightField {
-            mouth_order_index: self.key.mouth_order_index,
-            band_index: self.key.band_index,
-            point_x_mm: key.x_mm,
-            point_z_mm: key.z_mm,
+            mouth_order_index: self.id.mouth_order_index(),
+            band_index: self.id.band_index(),
+            point_x_mm: key.x_mm(),
+            point_z_mm: key.z_mm(),
             axis,
             raw_parameter,
         }
@@ -487,7 +462,11 @@ fn height_fields_by_source(
     for mouth in &input.mouths {
         for interval in &mouth.band_intervals {
             let field = NodeBandHeightField::from_interval(mouth.order_index, interval);
-            if fields.insert(field.key, field).is_some() {
+            let key = NodeSourceBandKey {
+                mouth_order_index: mouth.order_index,
+                band_index: interval.band_index,
+            };
+            if fields.insert(key, field).is_some() {
                 return Err(NodeHeightSourceError::DuplicateSourceBand {
                     mouth_order_index: mouth.order_index,
                     band_index: interval.band_index,
@@ -496,7 +475,11 @@ fn height_fields_by_source(
         }
         for end_band in &mouth.terminal_end_bands {
             let field = NodeBandHeightField::from_terminal_end_band(mouth.order_index, end_band);
-            if fields.insert(field.key, field).is_some() {
+            let key = NodeSourceBandKey {
+                mouth_order_index: mouth.order_index,
+                band_index: end_band.source_band_index,
+            };
+            if fields.insert(key, field).is_some() {
                 return Err(NodeHeightSourceError::DuplicateSourceBand {
                     mouth_order_index: mouth.order_index,
                     band_index: end_band.source_band_index,
@@ -608,7 +591,6 @@ fn heighted_region(
     let shape = heighted_shape(
         &region.shape,
         region.kind,
-        region.source_mouth_order_index,
         field,
         boundary_fields,
         &height_sources,
@@ -618,6 +600,7 @@ fn heighted_region(
     Ok(NodeHeightedRegion {
         kind: region.kind,
         owner: region.owner,
+        height_field_id: field.id,
         source_mouth_order_index: region.source_mouth_order_index,
         source_band_index: band_index,
         shape,
@@ -630,7 +613,6 @@ fn heighted_region(
 fn heighted_shape(
     shape: &NodeOverlayShape,
     kind: RoadSurfaceBandKind,
-    source_mouth_order_index: usize,
     field: &NodeBandHeightField,
     boundary_fields: &[NodeBoundaryHeightField],
     height_sources: &[NodeHeightSource],
@@ -641,7 +623,6 @@ fn heighted_shape(
         let contour = heighted_contour(
             contour,
             kind,
-            source_mouth_order_index,
             field,
             boundary_fields,
             height_sources,
@@ -657,7 +638,6 @@ fn heighted_shape(
 fn heighted_contour(
     contour: &NodeOverlayContour,
     kind: RoadSurfaceBandKind,
-    source_mouth_order_index: usize,
     field: &NodeBandHeightField,
     boundary_fields: &[NodeBoundaryHeightField],
     height_sources: &[NodeHeightSource],
@@ -666,34 +646,28 @@ fn heighted_contour(
     let contour = noded_overlay_contour(contour, global_points);
     contour
         .into_iter()
-        .map(|point| {
-            heighted_vertex(
-                point,
-                kind,
-                source_mouth_order_index,
-                field,
-                boundary_fields,
-                height_sources,
-            )
-        })
+        .map(|point| heighted_vertex(point, kind, field, boundary_fields, height_sources))
         .collect()
 }
 
 fn heighted_vertex(
     point: NodeOverlayPoint,
     kind: RoadSurfaceBandKind,
-    source_mouth_order_index: usize,
     field: &NodeBandHeightField,
     boundary_fields: &[NodeBoundaryHeightField],
     height_sources: &[NodeHeightSource],
 ) -> Result<NodeHeightedVertex, NodeHeightSourceError> {
     let point_xz = overlay_point_to_road(point);
-    let mut vertex = if let Some((height_m, sources)) =
-        boundary_height_at_point(kind, source_mouth_order_index, point_xz, boundary_fields)
-    {
+    let mut vertex = if let Some((height_m, sources)) = boundary_height_at_point(
+        kind,
+        field.id.mouth_order_index(),
+        point_xz,
+        boundary_fields,
+    ) {
         NodeHeightedVertex {
             point_xz,
             height_m,
+            height_field_id: field.id,
             height_sources: canonical_height_sources(
                 height_sources
                     .iter()
@@ -705,6 +679,7 @@ fn heighted_vertex(
         NodeHeightedVertex {
             point_xz,
             height_m: field.evaluate_height(point_xz)?,
+            height_field_id: field.id,
             height_sources: height_sources.to_vec(),
         }
     };
@@ -762,63 +737,40 @@ fn road_overlay_point_key(point: RoadVec2) -> NodeOverlayPointKey {
     )
 }
 
-fn constrain_explicit_material_seam_heights(
-    regions: &mut [NodeHeightedRegion],
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-) {
-    let mut shared_heights = BTreeMap::<SharedRailConstraintKey, SharedRailHeightStats>::new();
+fn validate_explicit_material_seam_heights(
+    regions: &[NodeHeightedRegion],
+) -> Result<(), NodeHeightSourceError> {
+    let mut shared_heights = BTreeMap::<(NodeHeightPointKey, usize), ExplicitSeamHeight>::new();
     for region in regions.iter() {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
             for constraint in
                 material_height_constraints_for_vertex(vertex.point_xz, &region.seam_constraints)
             {
-                let key = SharedRailConstraintKey {
-                    point: NodeHeightPointKey::from_point(vertex.point_xz),
-                    constraint_index: constraint.constraint_index,
-                };
-                shared_heights
-                    .entry(key)
-                    .and_modify(|stats| stats.record(region.kind, vertex.height_m))
-                    .or_insert_with(|| SharedRailHeightStats::new(region.kind, vertex.height_m));
+                let point = NodeHeightPointKey::from_point(vertex.point_xz);
+                let key = (point, constraint.constraint_index);
+                let height_mm = quantize_m(vertex.height_m);
+                if let Some(existing) = shared_heights.insert(key, ExplicitSeamHeight { height_mm })
+                {
+                    if existing.height_mm != height_mm {
+                        return Err(NodeHeightSourceError::SharedSourceHeightConflict {
+                            point_x_mm: point.x_mm(),
+                            point_z_mm: point.z_mm(),
+                            kind: region.kind,
+                            owner_index: region.owner.owner_index(),
+                            existing_height_mm: existing.height_mm,
+                            incoming_height_mm: height_mm,
+                        });
+                    }
+                }
             }
         }
     }
+    Ok(())
+}
 
-    for region in regions.iter_mut() {
-        let seam_constraints = &region.seam_constraints;
-        let kind = region.kind;
-        for vertex in region
-            .shape
-            .iter_mut()
-            .flat_map(|contour| contour.iter_mut())
-        {
-            if let Some((_, stats)) =
-                material_height_constraints_for_vertex(vertex.point_xz, seam_constraints)
-                    .into_iter()
-                    .filter_map(|constraint| {
-                        let key = SharedRailConstraintKey {
-                            point: NodeHeightPointKey::from_point(vertex.point_xz),
-                            constraint_index: constraint.constraint_index,
-                        };
-                        shared_heights.get(&key).map(|stats| (constraint, stats))
-                    })
-                    .filter(|(_, stats)| {
-                        stats.count > 1
-                            && shared_material_rail_constraint_allowed(stats, piece_kind)
-                    })
-                    .min_by_key(|(constraint, _)| {
-                        (
-                            !constraint.is_material_transition,
-                            seam_source_priority(&constraint.seam_source),
-                            constraint.constraint_index,
-                        )
-                    })
-            {
-                vertex.height_m =
-                    stats.constrained_height_for_kind(kind, piece_kind, vertex.height_m);
-            }
-        }
-    }
+#[derive(Clone, Copy, Debug)]
+struct ExplicitSeamHeight {
+    height_mm: i64,
 }
 
 fn material_height_constraints_for_vertex<'a>(
@@ -853,120 +805,24 @@ fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2)
     if start == end {
         return false;
     }
-    let dx = i128::from(end.x_mm - start.x_mm);
-    let dz = i128::from(end.z_mm - start.z_mm);
-    let px = i128::from(point.x_mm - start.x_mm);
-    let pz = i128::from(point.z_mm - start.z_mm);
+    let dx = i128::from(end.x_key - start.x_key);
+    let dz = i128::from(end.z_key - start.z_key);
+    let px = i128::from(point.x_key - start.x_key);
+    let pz = i128::from(point.z_key - start.z_key);
     if px * dz - pz * dx != 0 {
         return false;
     }
-    let inside_x = if start.x_mm == end.x_mm {
-        point.x_mm == start.x_mm
+    let inside_x = if start.x_key == end.x_key {
+        point.x_key == start.x_key
     } else {
-        point.x_mm > start.x_mm.min(end.x_mm) && point.x_mm < start.x_mm.max(end.x_mm)
+        point.x_key > start.x_key.min(end.x_key) && point.x_key < start.x_key.max(end.x_key)
     };
-    let inside_z = if start.z_mm == end.z_mm {
-        point.z_mm == start.z_mm
+    let inside_z = if start.z_key == end.z_key {
+        point.z_key == start.z_key
     } else {
-        point.z_mm > start.z_mm.min(end.z_mm) && point.z_mm < start.z_mm.max(end.z_mm)
+        point.z_key > start.z_key.min(end.z_key) && point.z_key < start.z_key.max(end.z_key)
     };
     inside_x && inside_z
-}
-
-fn constrain_unresolved_shared_material_rail_heights(
-    regions: &mut [NodeHeightedRegion],
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-) {
-    let mut shared_heights = BTreeMap::<NodeHeightPointKey, SharedRailHeightStats>::new();
-    for region in regions.iter() {
-        for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
-            let key = NodeHeightPointKey::from_point(vertex.point_xz);
-            shared_heights
-                .entry(key)
-                .and_modify(|stats| stats.record(region.kind, vertex.height_m))
-                .or_insert_with(|| SharedRailHeightStats::new(region.kind, vertex.height_m));
-        }
-    }
-
-    for region in regions.iter_mut() {
-        for vertex in region
-            .shape
-            .iter_mut()
-            .flat_map(|contour| contour.iter_mut())
-        {
-            let key = NodeHeightPointKey::from_point(vertex.point_xz);
-            if let Some(stats) = shared_heights.get(&key)
-                && stats.count > 1
-                && shared_material_rail_constraint_allowed(stats, piece_kind)
-            {
-                vertex.height_m =
-                    stats.constrained_height_for_kind(region.kind, piece_kind, vertex.height_m);
-            }
-        }
-    }
-}
-
-fn shared_material_rail_constraint_allowed(
-    stats: &SharedRailHeightStats,
-    piece_kind: RoadSurfaceVisualNodePieceKind,
-) -> bool {
-    piece_kind == RoadSurfaceVisualNodePieceKind::Bend
-        || stats.height_delta_m()
-            <= if stats.has_carriageway {
-                NON_BEND_SHARED_RAIL_CONSTRAINT_LIMIT_M
-            } else {
-                NON_BEND_NON_ROAD_SHARED_RAIL_CONSTRAINT_LIMIT_M
-            }
-}
-
-impl SharedRailHeightStats {
-    fn new(kind: RoadSurfaceBandKind, height_m: f64) -> Self {
-        Self {
-            count: 1,
-            min_height_m: height_m,
-            max_height_m: height_m,
-            has_carriageway: kind == RoadSurfaceBandKind::Carriageway,
-            has_curb_or_shoulder: kind == RoadSurfaceBandKind::CurbOrShoulder,
-            has_sidewalk: kind == RoadSurfaceBandKind::Sidewalk,
-        }
-    }
-
-    fn record(&mut self, kind: RoadSurfaceBandKind, height_m: f64) {
-        self.count += 1;
-        self.min_height_m = self.min_height_m.min(height_m);
-        self.max_height_m = self.max_height_m.max(height_m);
-        self.has_carriageway |= kind == RoadSurfaceBandKind::Carriageway;
-        self.has_curb_or_shoulder |= kind == RoadSurfaceBandKind::CurbOrShoulder;
-        self.has_sidewalk |= kind == RoadSurfaceBandKind::Sidewalk;
-    }
-
-    fn height_delta_m(&self) -> f64 {
-        self.max_height_m - self.min_height_m
-    }
-
-    fn constrained_height_for_kind(
-        &self,
-        kind: RoadSurfaceBandKind,
-        piece_kind: RoadSurfaceVisualNodePieceKind,
-        current_height_m: f64,
-    ) -> f64 {
-        if self.has_carriageway {
-            return self.min_height_m;
-        }
-        if self.has_curb_or_shoulder {
-            if self.has_sidewalk || kind == RoadSurfaceBandKind::Sidewalk {
-                return self.max_height_m;
-            }
-            if piece_kind == RoadSurfaceVisualNodePieceKind::Bend {
-                return self.min_height_m;
-            }
-            return self.max_height_m;
-        }
-        if self.has_sidewalk {
-            return self.max_height_m;
-        }
-        current_height_m
-    }
 }
 
 fn validate_shared_source_height_agreement(
@@ -979,21 +835,15 @@ fn validate_shared_source_height_agreement(
             let key = NodeHeightVertexContextKey {
                 point,
                 owner: region.owner,
-                height_sources: canonical_height_sources(
-                    region
-                        .height_sources
-                        .iter()
-                        .cloned()
-                        .chain(vertex.height_sources.iter().cloned()),
-                ),
+                height_field_id: vertex.height_field_id,
             };
             let height_mm = quantize_m(vertex.height_m);
             if let Some(existing_height_mm) = heights.insert(key, height_mm)
                 && existing_height_mm != height_mm
             {
                 return Err(NodeHeightSourceError::SharedSourceHeightConflict {
-                    point_x_mm: point.x_mm,
-                    point_z_mm: point.z_mm,
+                    point_x_mm: point.x_mm(),
+                    point_z_mm: point.z_mm(),
                     kind: region.kind,
                     owner_index: region.owner.owner_index(),
                     existing_height_mm,
@@ -1231,9 +1081,17 @@ fn quantize_m(value: f64) -> i64 {
 impl NodeHeightPointKey {
     fn from_point(point: RoadVec2) -> Self {
         Self {
-            x_mm: quantize_m(point.x),
-            z_mm: quantize_m(point.y),
+            x_key: (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            z_key: (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
         }
+    }
+
+    fn x_mm(self) -> i64 {
+        ((self.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) * HEIGHT_KEY_SCALE).round() as i64
+    }
+
+    fn z_mm(self) -> i64 {
+        ((self.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) * HEIGHT_KEY_SCALE).round() as i64
     }
 }
 
@@ -1396,7 +1254,7 @@ mod tests {
 
     #[test]
     fn shared_xz_vertices_without_explicit_seam_are_not_height_constrained() {
-        let mut regions = vec![
+        let regions = vec![
             manual_heighted_region(
                 RoadSurfaceBandKind::CurbOrShoulder,
                 0,
@@ -1411,24 +1269,22 @@ mod tests {
             ),
         ];
 
-        constrain_explicit_material_seam_heights(
-            &mut regions,
-            RoadSurfaceVisualNodePieceKind::Bend,
-        );
+        validate_explicit_material_seam_heights(&regions)
+            .expect("missing explicit seam must not trigger coincident-XZ height repair");
 
         assert_eq!(regions[0].shape[0][0].height_m, 0.0);
         assert_eq!(regions[1].shape[0][0].height_m, 0.25);
     }
 
     #[test]
-    fn explicit_curb_sidewalk_seam_constrains_shared_height() {
+    fn explicit_curb_sidewalk_seam_rejects_shared_height_disagreement() {
         let seam = manual_seam_constraint(
             12,
             NodeSeamSource::CurbSidewalkContact { owner_index: 0 },
             true,
             true,
         );
-        let mut regions = vec![
+        let regions = vec![
             manual_heighted_region_with_seams(
                 RoadSurfaceBandKind::CurbOrShoulder,
                 0,
@@ -1445,24 +1301,50 @@ mod tests {
             ),
         ];
 
-        constrain_explicit_material_seam_heights(
-            &mut regions,
-            RoadSurfaceVisualNodePieceKind::Bend,
-        );
-
-        assert_eq!(regions[0].shape[0][0].height_m, 0.25);
-        assert_eq!(regions[1].shape[0][0].height_m, 0.25);
+        assert!(matches!(
+            validate_explicit_material_seam_heights(&regions),
+            Err(NodeHeightSourceError::SharedSourceHeightConflict { .. })
+        ));
     }
 
     #[test]
-    fn generic_contour_seams_constrain_as_explicit_fallback() {
+    fn explicit_curb_sidewalk_seam_accepts_matching_shared_height() {
+        let seam = manual_seam_constraint(
+            12,
+            NodeSeamSource::CurbSidewalkContact { owner_index: 0 },
+            true,
+            true,
+        );
+        let regions = vec![
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                0,
+                0.0,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+                vec![seam.clone()],
+            ),
+            manual_heighted_region_with_seams(
+                RoadSurfaceBandKind::Sidewalk,
+                1,
+                0.25,
+                vec![manual_heighted_vertex(0.0, 0.0, 0.25)],
+                vec![seam],
+            ),
+        ];
+
+        validate_explicit_material_seam_heights(&regions)
+            .expect("explicit seam authority may only accept already matching heights");
+    }
+
+    #[test]
+    fn generic_contour_seams_reject_shared_height_disagreement() {
         let seam = manual_seam_constraint(
             3,
             NodeSeamSource::AsphaltCurbContact { owner_index: 0 },
             true,
             false,
         );
-        let mut regions = vec![
+        let regions = vec![
             manual_heighted_region_with_seams(
                 RoadSurfaceBandKind::Carriageway,
                 0,
@@ -1479,13 +1361,10 @@ mod tests {
             ),
         ];
 
-        constrain_explicit_material_seam_heights(
-            &mut regions,
-            RoadSurfaceVisualNodePieceKind::Bend,
-        );
-
-        assert_eq!(regions[0].shape[0][0].height_m, 0.0);
-        assert_eq!(regions[1].shape[0][0].height_m, 0.0);
+        assert!(matches!(
+            validate_explicit_material_seam_heights(&regions),
+            Err(NodeHeightSourceError::SharedSourceHeightConflict { .. })
+        ));
     }
 
     #[test]
@@ -1607,9 +1486,18 @@ mod tests {
         contour: NodeHeightedContour,
         seam_constraints: Vec<NodeRegionSeamConstraint>,
     ) -> NodeHeightedRegion {
+        let height_field_id = NodeBandHeightFieldId::new(owner_index, owner_index, kind);
+        let contour = contour
+            .into_iter()
+            .map(|mut vertex| {
+                vertex.height_field_id = height_field_id;
+                vertex
+            })
+            .collect();
         NodeHeightedRegion {
             kind,
             owner: NodeBandOwner::new(kind, owner_index),
+            height_field_id,
             source_mouth_order_index: owner_index,
             source_band_index: owner_index,
             shape: vec![contour],
@@ -1641,6 +1529,7 @@ mod tests {
         NodeHeightedVertex {
             point_xz: RoadVec2::new(x, z),
             height_m,
+            height_field_id: NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk),
             height_sources: Vec::new(),
         }
     }

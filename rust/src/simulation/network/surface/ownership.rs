@@ -907,7 +907,7 @@ fn append_shared_constraint_for_refs(
             .push(NodeRegionSeamConstraint {
                 constraint_index,
                 seam_source: shared_region_seam_source(edge_ref.owner, opposite_owner),
-                constrains_shared_height: true,
+                constrains_shared_height: start != end,
                 is_material_transition: true,
                 start_xz: road_point_from_key(start),
                 end_xz: road_point_from_key(end),
@@ -1566,6 +1566,41 @@ mod tests {
                 && edge.end == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(3.0, 0.0))
                 && !edge.source_constraint_indices.is_empty()
         }));
+    }
+
+    #[test]
+    fn shared_point_constraints_preserve_endpoint_context_without_height_continuity() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::Sidewalk,
+                sidewalk,
+                vec![[1.0, 1.0], [2.0, 1.0], [2.0, 2.0], [1.0, 2.0]],
+            ),
+        ];
+        let footprint_shapes = Vec::new();
+
+        append_shared_region_seam_constraints(&mut regions, &footprint_shapes, 0);
+
+        for region in &regions {
+            assert!(
+                region.seam_constraints.iter().any(|constraint| {
+                    let start = road_point_key(constraint.start_xz);
+                    let end = road_point_key(constraint.end_xz);
+                    start == road_point_key(RoadVec2::new(1.0, 1.0))
+                        && end == start
+                        && constraint.is_material_transition
+                        && !constraint.constrains_shared_height
+                }),
+                "point-only material contacts must remain explicit seam endpoints without asserting one shared height"
+            );
+        }
     }
 
     #[test]

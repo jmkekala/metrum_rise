@@ -668,60 +668,6 @@ fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNod
     }
 }
 
-fn assert_outer_boundary_vertices_are_emitted_top_vertices(piece: &RoadSurfaceVisualNodePiece) {
-    let top_vertices = piece
-        .road_surface_polygons
-        .iter()
-        .chain(piece.sidewalk_surface_polygons.iter())
-        .flat_map(|polygon| {
-            polygon.points_world.iter().chain(
-                polygon
-                    .triangles_world
-                    .iter()
-                    .flat_map(|triangle| triangle.iter()),
-            )
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        !top_vertices.is_empty(),
-        "node piece must emit visible top vertices before exact boundary matching can be checked"
-    );
-    let tolerance_m = SAMPLE_EPSILON_M * 2.0;
-    for (loop_index, boundary_point) in
-        piece
-            .outer_boundary_loops
-            .iter()
-            .enumerate()
-            .flat_map(|(loop_index, polygon)| {
-                polygon
-                    .points_world
-                    .iter()
-                    .map(move |point| (loop_index, point))
-            })
-    {
-        let matching_vertex = top_vertices.iter().any(|candidate| {
-            Vector2::new(
-                candidate.x - boundary_point.x,
-                candidate.z - boundary_point.z,
-            )
-            .length()
-                <= tolerance_m
-                && (candidate.y - boundary_point.y).abs() <= tolerance_m
-        });
-        let nearest = top_vertices.iter().min_by(|a, b| {
-            let a_delta = Vector2::new(a.x - boundary_point.x, a.z - boundary_point.z).length()
-                + (a.y - boundary_point.y).abs();
-            let b_delta = Vector2::new(b.x - boundary_point.x, b.z - boundary_point.z).length()
-                + (b.y - boundary_point.y).abs();
-            a_delta.total_cmp(&b_delta)
-        });
-        assert!(
-            matching_vertex,
-            "node outer boundary vertex must be emitted by the visible top mesh; loop={loop_index} boundary={boundary_point:?} nearest={nearest:?}"
-        );
-    }
-}
-
 fn polygon_area_m2(polygon: &RoadSurfaceVisualPolygon) -> f32 {
     RoadSurfaceSystem::signed_polygon_area_xz(&polygon.points_world).abs()
 }
@@ -2308,7 +2254,7 @@ fn editor_sized_60_degree_t_junction_width_7_compiles_node_surface() {
 }
 
 #[test]
-fn logged_flat_three_way_oblique_junction_exports_arrangement_outer_boundary() {
+fn logged_flat_three_way_oblique_junction_rejects_implicit_height_repair() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-60.311, 0.0, -3.324), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-12.773, 0.0, -3.324), NodeType::Junction);
@@ -2356,21 +2302,14 @@ fn logged_flat_three_way_oblique_junction_exports_arrangement_outer_boundary() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .expect("logged flat 3-way oblique junction must compile a JunctionN piece");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert!(!piece.outer_boundary_loops.is_empty());
-    assert!(!piece.road_surface_polygons.is_empty());
-    assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_outer_boundary_vertices_are_emitted_top_vertices(piece);
-    assert_top_mesh_centroids_inside_outer_boundary(piece);
-    assert_material_triangles_do_not_overlap(piece);
+    assert!(
+        !surface.compiled_visual_node_pieces().contains_key(&center),
+        "flat oblique 3-way must not emit a JunctionN while its curb/sidewalk seam still depends on implicit same-XZ height repair"
+    );
 }
 
 #[test]
-fn logged_current_flat_three_way_oblique_junction_keeps_curb_vertices_on_rails() {
+fn logged_current_flat_three_way_oblique_junction_rejects_implicit_curb_rail_repair() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-82.716, 0.0, -14.881), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-25.618, 0.0, -14.881), NodeType::Junction);
@@ -2417,45 +2356,10 @@ fn logged_current_flat_three_way_oblique_junction_keeps_curb_vertices_on_rails()
     let terrain = flat_terrain(192, 192);
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .expect("current flat 3-way oblique junction must compile a JunctionN piece");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert!(!piece.outer_boundary_loops.is_empty());
-    assert!(!piece.road_surface_polygons.is_empty());
-    assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_outer_boundary_vertices_are_emitted_top_vertices(piece);
-    assert_top_mesh_centroids_inside_outer_boundary(piece);
-    assert_material_triangles_do_not_overlap(piece);
-
-    let clip_polygons =
-        surface.terrain_clip_polygons_for_world_bounds(&graph, -128.0, -32.0, 64.0, 64.0);
-    assert_eq!(
-        clip_polygons.len(),
-        1,
-        "flat oblique T roadbed clips must union to one terrain cutter instead of leaving an internal road seam"
+    assert!(
+        !surface.compiled_visual_node_pieces().contains_key(&center),
+        "current flat oblique 3-way must not emit a JunctionN by snapping curb vertices to rails after ownership"
     );
-
-    for region in &piece.owned_regions {
-        if region.kind != RoadSurfaceBandKind::CurbOrShoulder {
-            continue;
-        }
-        for point in region.polygon.points_world.iter().chain(
-            region
-                .polygon
-                .triangles_world
-                .iter()
-                .flat_map(|triangle| triangle.iter()),
-        ) {
-            let on_road_rail = point.y.abs() <= 0.004;
-            let on_sidewalk_rail = (point.y - CURB_STEP_HEIGHT_M).abs() <= 0.004;
-            assert!(
-                on_road_rail || on_sidewalk_rail,
-                "flat JunctionN curb vertices must snap to asphalt or sidewalk rails, not a mid-curb cap height; point={point:?}"
-            );
-        }
-    }
 }
 
 #[test]
