@@ -1194,11 +1194,13 @@ fn same_band_role_point_rewrite_candidate(
                 continue;
             }
             for key in shared_region_points(left, right) {
-                let Some(left_role) = same_band_boundary_role_at_key(left, rail_constraints, key)
+                let Some(left_role) =
+                    same_band_boundary_role_at_region_vertex(left, rail_constraints, key)
                 else {
                     continue;
                 };
-                let Some(right_role) = same_band_boundary_role_at_key(right, rail_constraints, key)
+                let Some(right_role) =
+                    same_band_boundary_role_at_region_vertex(right, rail_constraints, key)
                 else {
                     continue;
                 };
@@ -1299,8 +1301,9 @@ fn removable_role_crossing_point(
                 continue;
             }
             let previous_role =
-                same_band_boundary_role_at_key(region, rail_constraints, previous_key);
-            let next_role = same_band_boundary_role_at_key(region, rail_constraints, next_key);
+                same_band_boundary_role_at_region_vertex(region, rail_constraints, previous_key);
+            let next_role =
+                same_band_boundary_role_at_region_vertex(region, rail_constraints, next_key);
             if previous_role == Some(opposite_role) || next_role == Some(opposite_role) {
                 return Some((previous_key, next_key));
             }
@@ -1436,9 +1439,157 @@ fn same_band_endpoint_roles_match(
     rail_constraints: &[NodeRailConstraint],
     key: NodeOwnershipPointKey,
 ) -> Option<bool> {
-    let left_role = same_band_boundary_role_at_key(left, rail_constraints, key)?;
-    let right_role = same_band_boundary_role_at_key(right, rail_constraints, key)?;
+    let left_role = same_band_boundary_role_at_region_vertex(left, rail_constraints, key)?;
+    let right_role = same_band_boundary_role_at_region_vertex(right, rail_constraints, key)?;
     Some(left_role == right_role)
+}
+
+fn same_band_boundary_role_at_region_vertex(
+    region: &NodeBooleanOwnedRegion,
+    rail_constraints: &[NodeRailConstraint],
+    key: NodeOwnershipPointKey,
+) -> Option<SameBandBoundaryRole> {
+    if region.kind != RoadSurfaceBandKind::CurbOrShoulder {
+        return None;
+    }
+
+    let mut roles = Vec::new();
+    for contour in &region.shape {
+        if contour.len() < 2 {
+            continue;
+        }
+        let keys = contour
+            .iter()
+            .copied()
+            .map(overlay_point_key)
+            .collect::<Vec<_>>();
+        for index in 0..keys.len() {
+            if keys[index] != key {
+                continue;
+            }
+            let previous_key = keys[if index == 0 {
+                keys.len() - 1
+            } else {
+                index - 1
+            }];
+            let next_key = keys[(index + 1) % keys.len()];
+            collect_same_band_boundary_role_on_segment(
+                region,
+                rail_constraints,
+                previous_key,
+                key,
+                &mut roles,
+            );
+            collect_same_band_boundary_role_on_segment(
+                region,
+                rail_constraints,
+                key,
+                next_key,
+                &mut roles,
+            );
+        }
+    }
+    roles.sort_unstable();
+    roles.dedup();
+    if roles.len() == 1 {
+        return roles.first().copied();
+    }
+
+    same_band_boundary_role_at_key(region, rail_constraints, key)
+}
+
+fn collect_same_band_boundary_role_on_segment(
+    region: &NodeBooleanOwnedRegion,
+    rail_constraints: &[NodeRailConstraint],
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    roles: &mut Vec<SameBandBoundaryRole>,
+) {
+    if start == end {
+        return;
+    }
+    for constraint in rail_constraints
+        .iter()
+        .filter(|constraint| constraint_applies_to_owner(constraint, region.owner))
+        .filter(|constraint| rail_constraint_contains_key_segment(constraint, start, end))
+    {
+        if let Some(role) = same_band_boundary_role_from_rail_kind(constraint.kind) {
+            roles.push(role);
+        }
+    }
+    for constraint in &region.seam_constraints {
+        if !constraint.is_material_transition
+            || !seam_constraint_contains_key_segment(constraint, start, end)
+        {
+            continue;
+        }
+        if let Some(role) = same_band_boundary_role_from_seam_source(constraint.seam_source) {
+            roles.push(role);
+        }
+    }
+}
+
+fn rail_constraint_contains_key_segment(
+    constraint: &NodeRailConstraint,
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+) -> bool {
+    let Some(first) = constraint.points_xz.first().copied() else {
+        return false;
+    };
+    let mut previous_key = road_point_key(first);
+    for point in constraint.points_xz.iter().copied().skip(1) {
+        let next_key = road_point_key(point);
+        if point_key_lies_on_segment(start, previous_key, next_key)
+            && point_key_lies_on_segment(end, previous_key, next_key)
+        {
+            return true;
+        }
+        previous_key = next_key;
+    }
+    false
+}
+
+fn seam_constraint_contains_key_segment(
+    constraint: &NodeRegionSeamConstraint,
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+) -> bool {
+    let constraint_start = road_point_key(constraint.start_xz);
+    let constraint_end = road_point_key(constraint.end_xz);
+    point_key_lies_on_segment(start, constraint_start, constraint_end)
+        && point_key_lies_on_segment(end, constraint_start, constraint_end)
+}
+
+fn same_band_boundary_role_from_rail_kind(
+    kind: NodeRailConstraintKind,
+) -> Option<SameBandBoundaryRole> {
+    match kind {
+        NodeRailConstraintKind::AsphaltCurbContact
+        | NodeRailConstraintKind::AsphaltBoundary { .. } => Some(SameBandBoundaryRole::LowerSide),
+        NodeRailConstraintKind::CurbSidewalkContact => Some(SameBandBoundaryRole::RaisedSide),
+        NodeRailConstraintKind::FootprintSeam { .. }
+        | NodeRailConstraintKind::FullRoadbedContour
+        | NodeRailConstraintKind::BandContour { .. }
+        | NodeRailConstraintKind::SpanHandoff { .. }
+        | NodeRailConstraintKind::BandBoundary { .. } => None,
+    }
+}
+
+fn same_band_boundary_role_from_seam_source(
+    seam_source: NodeSeamSource,
+) -> Option<SameBandBoundaryRole> {
+    match seam_source {
+        NodeSeamSource::AsphaltCurbContact { .. } | NodeSeamSource::AsphaltBoundary { .. } => {
+            Some(SameBandBoundaryRole::LowerSide)
+        }
+        NodeSeamSource::CurbSidewalkContact { .. } | NodeSeamSource::SidewalkOuter { .. } => {
+            Some(SameBandBoundaryRole::RaisedSide)
+        }
+        NodeSeamSource::SpanHandoff { .. }
+        | NodeSeamSource::FootprintBoundary { .. }
+        | NodeSeamSource::TerminalEndBand { .. } => None,
+    }
 }
 
 fn same_band_boundary_role_at_key(
@@ -1457,31 +1608,20 @@ fn same_band_boundary_role_at_key(
         .filter(|constraint| constraint_applies_to_owner(constraint, region.owner))
         .filter(|constraint| rail_constraint_touches_key(constraint, key))
     {
-        match constraint.kind {
-            NodeRailConstraintKind::AsphaltCurbContact
-            | NodeRailConstraintKind::AsphaltBoundary { .. } => has_lower_side = true,
-            NodeRailConstraintKind::CurbSidewalkContact => has_raised_side = true,
-            NodeRailConstraintKind::FootprintSeam { .. }
-            | NodeRailConstraintKind::FullRoadbedContour
-            | NodeRailConstraintKind::BandContour { .. }
-            | NodeRailConstraintKind::SpanHandoff { .. }
-            | NodeRailConstraintKind::BandBoundary { .. } => {}
+        match same_band_boundary_role_from_rail_kind(constraint.kind) {
+            Some(SameBandBoundaryRole::LowerSide) => has_lower_side = true,
+            Some(SameBandBoundaryRole::RaisedSide) => has_raised_side = true,
+            None => {}
         }
     }
     for constraint in &region.seam_constraints {
         if !constraint.is_material_transition || !seam_constraint_touches_key(constraint, key) {
             continue;
         }
-        match constraint.seam_source {
-            NodeSeamSource::AsphaltCurbContact { .. } | NodeSeamSource::AsphaltBoundary { .. } => {
-                has_lower_side = true
-            }
-            NodeSeamSource::CurbSidewalkContact { .. } | NodeSeamSource::SidewalkOuter { .. } => {
-                has_raised_side = true
-            }
-            NodeSeamSource::SpanHandoff { .. }
-            | NodeSeamSource::FootprintBoundary { .. }
-            | NodeSeamSource::TerminalEndBand { .. } => {}
+        match same_band_boundary_role_from_seam_source(constraint.seam_source) {
+            Some(SameBandBoundaryRole::LowerSide) => has_lower_side = true,
+            Some(SameBandBoundaryRole::RaisedSide) => has_raised_side = true,
+            None => {}
         }
     }
 
@@ -1593,7 +1733,7 @@ fn role_matching_join_candidate(
                 {
                     continue;
                 }
-                if same_band_boundary_role_at_key(donor, rail_constraints, candidate)
+                if same_band_boundary_role_at_region_vertex(donor, rail_constraints, candidate)
                     == Some(receiver_conflict_role)
                 {
                     candidates.push(candidate);

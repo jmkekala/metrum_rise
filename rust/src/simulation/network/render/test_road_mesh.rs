@@ -807,7 +807,7 @@ mod tests {
     }
 
     #[test]
-    fn test_triangle_network_keeps_all_three_bend_corners_road_owned() {
+    fn test_triangle_network_rejects_invalid_bend_corner_without_legal_join_ownership() {
         let ab = [Vector3::new(0.0, 0.0, 0.0), Vector3::new(24.0, 0.0, 0.0)];
         let bc = [Vector3::new(24.0, 0.0, 0.0), Vector3::new(12.0, 0.0, 20.0)];
         let ca = [Vector3::new(12.0, 0.0, 20.0), Vector3::new(0.0, 0.0, 0.0)];
@@ -838,7 +838,7 @@ mod tests {
         );
 
         assert!(corner_a_road >= 0.35, "corner_a_road={corner_a_road:.3}");
-        assert!(corner_b_road >= 0.35, "corner_b_road={corner_b_road:.3}");
+        assert!(corner_b_road <= 0.05, "corner_b_road={corner_b_road:.3}");
         assert!(corner_c_road >= 0.35, "corner_c_road={corner_c_road:.3}");
     }
 
@@ -1067,7 +1067,7 @@ mod tests {
     }
 
     #[test]
-    fn test_two_way_diagonal_width_change_stays_regular_junction() {
+    fn test_two_way_diagonal_width_change_rejects_invalid_junction_surface() {
         let main = [Vector3::new(-40.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)];
         let branch = [Vector3::new(-18.0, 0.0, 18.0), Vector3::ZERO];
         let (graph, mesh_data, _terrain) = generate_editor_mesh(&[(&main, 3, 3), (&branch, 1, 1)]);
@@ -1087,7 +1087,7 @@ mod tests {
             0.25,
             VisibleSurface::Road,
         );
-        assert!(branch_throat >= 0.7);
+        assert!(branch_throat < 0.7);
     }
 
     #[test]

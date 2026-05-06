@@ -184,12 +184,125 @@ struct BoundarySegment {
     segment: Segment,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct HeightedTriangleEdge {
+    region_index: usize,
+    start_height_mm: i64,
+    end_height_mm: i64,
+}
+
 impl RoadSurfaceSystem {
     pub(super) fn validate_node_triangulation_solution(
         solution: &NodeTriangulationSolution,
     ) -> Result<NodeValidationReport, NodeValidationError> {
         NodeValidationReport::from_triangulation_solution(solution)
     }
+}
+
+fn validate_cross_region_triangle_edge_heights(
+    solution: &NodeTriangulationSolution,
+    diagnostics: &mut Vec<NodeGeometryDiagnostic>,
+) {
+    let mut edges = BTreeMap::<NodeValidationEdgeKey, Vec<HeightedTriangleEdge>>::new();
+    for (region_index, region) in solution.regions.iter().enumerate() {
+        for triangle in &region.triangles {
+            if !triangle_indices_valid(triangle, region.vertices.len()) {
+                continue;
+            }
+            for edge in triangle_edges(triangle) {
+                let (edge_key, heighted_edge) =
+                    heighted_triangle_edge_for_indices(region_index, region, edge);
+                edges.entry(edge_key).or_default().push(heighted_edge);
+            }
+        }
+    }
+
+    for (edge_key, mut heighted_edges) in edges {
+        heighted_edges.sort_unstable();
+        heighted_edges.dedup();
+        'edge: for left_index in 0..heighted_edges.len() {
+            for right_index in left_index + 1..heighted_edges.len() {
+                let left = heighted_edges[left_index];
+                let right = heighted_edges[right_index];
+                if left.region_index == right.region_index
+                    || (left.start_height_mm == right.start_height_mm
+                        && left.end_height_mm == right.end_height_mm)
+                {
+                    continue;
+                }
+                push_triangle_edge_height_conflict(solution, diagnostics, edge_key, left, right);
+                break 'edge;
+            }
+        }
+    }
+}
+
+fn heighted_triangle_edge_for_indices(
+    region_index: usize,
+    region: &NodeTriangulatedRegion,
+    edge: [usize; 2],
+) -> (NodeValidationEdgeKey, HeightedTriangleEdge) {
+    let start = region.vertices[edge[0]].point_world;
+    let end = region.vertices[edge[1]].point_world;
+    let start_key = point_key_from_world(start);
+    let end_key = point_key_from_world(end);
+    let start_height_mm = quantize_m(start.y);
+    let end_height_mm = quantize_m(end.y);
+    if start_key <= end_key {
+        (
+            NodeValidationEdgeKey {
+                start: start_key,
+                end: end_key,
+            },
+            HeightedTriangleEdge {
+                region_index,
+                start_height_mm,
+                end_height_mm,
+            },
+        )
+    } else {
+        (
+            NodeValidationEdgeKey {
+                start: end_key,
+                end: start_key,
+            },
+            HeightedTriangleEdge {
+                region_index,
+                start_height_mm: end_height_mm,
+                end_height_mm: start_height_mm,
+            },
+        )
+    }
+}
+
+fn push_triangle_edge_height_conflict(
+    solution: &NodeTriangulationSolution,
+    diagnostics: &mut Vec<NodeGeometryDiagnostic>,
+    edge: NodeValidationEdgeKey,
+    existing: HeightedTriangleEdge,
+    incoming: HeightedTriangleEdge,
+) {
+    let (point, existing_height_mm, incoming_height_mm) =
+        if existing.start_height_mm != incoming.start_height_mm {
+            (
+                edge.start,
+                existing.start_height_mm,
+                incoming.start_height_mm,
+            )
+        } else {
+            (edge.end, existing.end_height_mm, incoming.end_height_mm)
+        };
+    push_validation_diagnostic(
+        solution,
+        diagnostics,
+        NodeGeometryBackend::Spade,
+        NodeGeometryDiagnosticKind::HeightConflict {
+            x_mm: point.x_mm(),
+            z_mm: point.z_mm(),
+            existing_height_mm,
+            incoming_height_mm,
+        },
+    );
 }
 
 impl NodeValidationReport {
@@ -229,6 +342,7 @@ impl NodeValidationReport {
                 });
             }
         }
+        validate_cross_region_triangle_edge_heights(solution, &mut diagnostics);
 
         let report = Self {
             node_id: solution.node_id,
@@ -1427,9 +1541,10 @@ impl NodeValidationEdgeKey {
 mod tests {
     use super::*;
     use crate::simulation::network::surface::arrangement::{
-        NodeArrangement, NodeArrangementDiagnostic, NodeArrangementKey, NodeBandOwner,
+        NodeArrangement, NodeArrangementDiagnostic, NodeArrangementKey, NodeBandHeightFieldId,
+        NodeBandOwner,
     };
-    use crate::simulation::network::surface::backend::RoadVec2;
+    use crate::simulation::network::surface::backend::{RoadVec2, RoadVec3};
     use crate::simulation::network::surface::height::NodeHeightSolution;
     use crate::simulation::network::surface::input::NodeArrangementInput;
     use crate::simulation::network::surface::ownership::{
@@ -1513,6 +1628,30 @@ mod tests {
             .expect("test arrangement should triangulate")
     }
 
+    fn manual_region(
+        owner_index: usize,
+        height_field_id: NodeBandHeightFieldId,
+        vertices: Vec<RoadVec3>,
+    ) -> NodeTriangulatedRegion {
+        NodeTriangulatedRegion {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+            owner: NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, owner_index),
+            height_field_id,
+            vertices: vertices
+                .into_iter()
+                .map(|point_world| NodeTriangulatedVertex {
+                    point_world,
+                    height_field_id,
+                })
+                .collect(),
+            boundary_constraints: vec![[0, 1], [1, 2], [0, 2]],
+            triangles: vec![NodeTriangulatedTriangle {
+                vertices: [0, 1, 2],
+            }],
+            area_m2: 0.5,
+        }
+    }
+
     #[test]
     fn validates_clean_triangulated_solution() {
         let solution = solved_triangulation();
@@ -1525,6 +1664,58 @@ mod tests {
         assert!(report.triangle_count > 0);
         assert!(report.exposed_edge_count > 0);
         assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn rejects_cross_region_cdt_edge_height_conflict() {
+        let left_field = NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::CurbOrShoulder);
+        let right_field = NodeBandHeightFieldId::new(1, 1, RoadSurfaceBandKind::CurbOrShoulder);
+        let solution = NodeTriangulationSolution {
+            node_id: 99,
+            piece_kind: RoadSurfaceVisualNodePieceKind::Bend,
+            regions: vec![
+                manual_region(
+                    0,
+                    left_field,
+                    vec![
+                        RoadVec3::new(0.0, 0.0, 0.0),
+                        RoadVec3::new(1.0, 0.12, 0.0),
+                        RoadVec3::new(0.0, 0.0, 1.0),
+                    ],
+                ),
+                manual_region(
+                    1,
+                    right_field,
+                    vec![
+                        RoadVec3::new(0.0, 0.12, 0.0),
+                        RoadVec3::new(1.0, 0.12, 0.0),
+                        RoadVec3::new(1.0, 0.12, -1.0),
+                    ],
+                ),
+            ],
+        };
+
+        let error = NodeValidationReport::from_triangulation_solution(&solution)
+            .expect_err("same XZ CDT edge with different endpoint heights must reject");
+
+        assert!(error.report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.stage == NodeGeometryStage::Validation
+                && diagnostic.backend == NodeGeometryBackend::Spade
+                && matches!(
+                    diagnostic.kind,
+                    NodeGeometryDiagnosticKind::HeightConflict {
+                        x_mm: 0,
+                        z_mm: 0,
+                        existing_height_mm: 0,
+                        incoming_height_mm: 120,
+                    } | NodeGeometryDiagnosticKind::HeightConflict {
+                        x_mm: 0,
+                        z_mm: 0,
+                        existing_height_mm: 120,
+                        incoming_height_mm: 0,
+                    }
+                )
+        }));
     }
 
     #[test]
