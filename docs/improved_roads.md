@@ -114,10 +114,10 @@ Live behavior:
 - bend / junction non-road ownership starts from the resolved `footprint - asphalt` remainder, then
   splits into explicit curb / shoulder and sidewalk band-owned regions before height sampling or
   triangulation
-- shared node-surface heights no longer average curb / sidewalk rail values. If a shared XZ point
-  touches asphalt it snaps to the asphalt rail height; if curb touches sidewalk it snaps to the
-  sidewalk rail height; curb-only shared vertices snap to a curb rail endpoint instead of a
-  mid-curb cap height.
+- node top-surface heights no longer use shared rail snapping, source-vector selection, or
+  post-overlay repair. Each rendered node vertex samples exactly one `NodeBandHeightField`, and
+  explicit seam constraints either prove same-height agreement after project quantization or
+  reject the node with a deterministic diagnostic.
 - visual edge-to-node handoff extends far enough to cover deterministic material conflicts between
   incident road arms; shallow-angle roads therefore create a longer shared ownership region instead
   of allowing independent sidewalk strips to cross asphalt before they reach the graph node
@@ -129,11 +129,12 @@ Live behavior:
   collinear overlap endpoints are split into shared XZ vertices, with inserted roadbed heights
   sampled as the maximum incident top height. This keeps `cdt_invalid_constraints=0` from being
   dependent on whether the roadbed union exported one loop or several touching loops.
-- known debt: the post-overlay boundary snapping, seam welding, shared grade sampler, and
-  hand-written terminal / bend helper path have been removed. The remaining blocker is that the
-  current rail / contour generation still does not create enough canonical curb / sidewalk join
-  ownership for oblique and sharp `Bend` / `JunctionN` cases, so boolean ownership can correctly
-  reject real band residuals instead of silently patching them.
+- known debt: the post-overlay boundary snapping, seam welding, shared grade sampler, source-vector
+  height plumbing, and hand-written terminal / bend helper path have been removed. The remaining
+  blocker is that the current rail / contour generation still does not create enough canonical
+  curb / sidewalk join ownership for oblique and sharp `Terminal`, `Bend`, and `JunctionN` cases,
+  so boolean ownership and height-field validation now reject real band residuals instead of
+  silently patching them.
 - `Terminal`, `Bend`, and `JunctionN` node footprints must be exported from the canonical
   boolean-owned `node_footprint`. Any footprint vertex that also belongs to a rendered owned region
   must be inserted before height evaluation / CDT. A boundary vertex that survives only because a
@@ -194,7 +195,7 @@ Not accepted as the final target:
 - paired adjacent-mouth strip candidates as the authoritative node footprint or sidewalk source
 - additional sliver cleanup as the primary answer to malformed node candidates
 - nearest-polygon, nearest-segment, terrain, asphalt, or full-roadbed fallback as a rendered node
-  sidewalk / curb / shoulder height source
+  sidewalk / curb / shoulder height field
 - using float vector equality as canonical topology identity. Canonical node arrangement identity
   must use explicit quantized keys / stable IDs; `glam` values are numeric working values only.
 - carrying Godot vector types through core road-surface geometry after the data has crossed into
@@ -608,7 +609,7 @@ Required reuse semantics:
 - reuse means "same canonical arrangement vertex", not "copy coordinates from whichever road was
   older"
 - spans and nodes share vertices only at explicit handoff constraints
-- same-material internal seams may share vertices when their height source agrees exactly after
+- same-material internal seams may share vertices when their height field agrees exactly after
   quantization
 - different-material seams share endpoints but keep explicit seam-edge ownership on both sides
 - terrain, water, zoning overlays, and Godot renderers consume exported node topology; they never
@@ -717,11 +718,13 @@ Minimum private data model:
   visible throat profile and the graph-endpoint profile
 - `NodeOwnedRegion`: one resolved material region with band kind, deterministic owner index,
   canonical rings, seam constraints, and final triangulated source-sampled polygon
-- `NodeArrangementVertex`: one canonical XZ key, one material-owner context, one height source, and
-  one solved height. A vertex may be shared by several final regions only when those regions agree
-  on the same source height exactly after project quantization.
+- `NodeArrangementVertex`: one canonical XZ key, one material-owner context, one
+  `NodeBandHeightFieldId`, and one solved height. A vertex may be shared by several final regions
+  only when those regions agree on the same height field and solved height exactly after project
+  quantization.
 - `NodeArrangementEdge`: one explicit seam segment with owner(s), material transition kind, and
-  source constraint IDs
+  source constraint IDs plus the height-field owner context for each side where height continuity
+  is required
 - numeric epsilon / quantization keys are representation tools only. They may deduplicate identical
   coordinates produced by a backend, but they must not average heights, choose the nearest owner,
   weld contradictory seams, or hide a missing band owner.
@@ -834,15 +837,16 @@ node_non_road  = node_footprint - node_asphalt
 5. Split `node_non_road` into explicit `CurbOrShoulder` and `Sidewalk` owned regions. A residual
    non-road area without a deterministic band owner is a geometry error, not a fallback sidewalk.
 6. Clip solved mouth and endpoint band carrier surfaces to their owned regions while preserving
-   owner metadata: incident edge ordering, band kind, deterministic owner index, and source height
-   surface.
+   owner metadata: incident edge ordering, band kind, deterministic owner index, and
+   `NodeBandHeightFieldId`.
 7. Discard owned material regions whose area is inside the deterministic overlay numeric area
    budget before height evaluation and CDT, while still counting their shapes as claimed for
    residual accounting. These regions are backend dust, not renderable road or sidewalk polygons.
 8. Reject unowned residuals. A full-roadbed closure carrier is not a rendered fallback for missing
    curb, sidewalk, or shoulder ownership.
 9. Build the canonical node arrangement from every accepted region. Every seam vertex and outer
-   footprint vertex is inserted before triangulation and receives one owner and one height source.
+   footprint vertex is inserted before triangulation and receives one owner and one
+   `NodeBandHeightFieldId`.
 10. Triangulate owned regions with Spade CDT using the arrangement vertices and seam constraints as
    input.
 11. Sample each emitted triangle vertex from that triangle's owning `NodeOwnedRegion`. Cross-region
@@ -1011,18 +1015,18 @@ actual clipped throat boundary segments, plus local side joins around the graph 
   non-road ownership carrier
 - build one carriageway mouth corridor from each carriageway throat segment to its node-side
   segment as the asphalt ownership carrier
-- build non-road height candidates from the solved curb / shoulder / sidewalk / footpath bands
+- build non-road height fields from the solved curb / shoulder / sidewalk / footpath bands
 - classify each throat segment into left and right endpoints relative to its local travel
   direction; start travel is throat-to-node, end travel is node-to-throat
 - build local full-roadbed side joins and local carriageway side joins for ownership
 - build local non-road band joins as explicit canonical arrangement edges with owner-preserving
-  height sources
+  height fields
 - side joins are generated as explicit backend-produced contour segments around the graph node using
-  only the real side offset radius and owner-preserving height sources; they must not use the
+  only the real side offset radius and owner-preserving height fields; they must not use the
   throat distance as radius
 - final bend asphalt is the `i_overlay` union of carriageway corridors and carriageway side joins
 - final bend sidewalk / curb / shoulder shape is `full_roadbed_candidates - carriageway_candidates`
-  split by explicit band seam rails; its vertices use only their owning non-road band height source
+  split by explicit band seam rails; its vertices use only their owning non-road band height field
 - no single bend candidate may contain crossing throat caps; if two cap segments would cross, they
   must remain separate overlay candidates
 - a bend with sidewalks must not expose terrain or world background between the two incident
@@ -1550,8 +1554,8 @@ Implementation phases:
 2. Canonical identity and data model:
    - introduce `NodeArrangement`, `NodeArrangementVertex`, `NodeArrangementEdge`, and
      `NodeOwnedRegion` records backed by quantized keys / stable IDs
-   - represent material owner, band owner, seam source, and height source explicitly on every
-     arrangement vertex / edge / face
+   - represent material owner, band owner, seam source, and `NodeBandHeightFieldId` explicitly on
+     every arrangement vertex / edge / face
    - reject float-vector equality as topology identity; `glam` values are working coordinates only
 
 3. Input extraction:
@@ -1575,9 +1579,11 @@ Implementation phases:
      rails; reject unowned residuals
    - preserve owner metadata through every clipping operation
 
-6. Height sources:
+6. Height fields:
    - use `splines` for longitudinal grade profiles where an edge or rail height profile is a spline
      / piecewise curve
+   - assign every accepted owned region, arrangement vertex, arrangement edge, and triangulated
+     vertex to exactly one `NodeBandHeightFieldId`
    - evaluate heights only at already-known canonical arrangement vertices
    - reject same-XZ height conflicts instead of welding, averaging, nearest sampling, owner-priority
      selection, or min/max selection

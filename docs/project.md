@@ -148,14 +148,12 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   The paired adjacent-mouth strip candidate model has been hard-cut out of node-piece ownership.
   Conflict-bounded full-roadbed corridor unions now define node footprints, conflict-bounded
   carriageway corridor unions define asphalt, and non-road ownership is split into explicit curb /
-  shoulder and sidewalk owned regions. Elevated `Bend` and `JunctionN` top-surface heights now use
-  owner-local `NodeGradeCarrier` surfaces built from throat and graph-endpoint profiles; the old
-  shared post-overlay grade sampler and derived curb-transition fallback have been removed. The
-  terminal spec now requires an explicit U-shaped sidewalk / curb end-band built from the same
-  side-aware profile rails as the incident road, with carriageway ownership stopping at the graph
-  endpoint and no grounded-road render-only closure workaround. The remaining blocking work is
-  in-game validation of that conflict-first node model plus clipped terrain topology hardening,
-  followed by retaining, wall, and material variants.
+  shoulder and sidewalk owned regions. `Terminal`, `Bend`, and `JunctionN` top-surface heights now
+  use owner-local `NodeBandHeightField` surfaces identified by `NodeBandHeightFieldId`; the old
+  source-vector plumbing, boundary rail snapping, shared post-overlay grade sampler, and derived
+  curb-transition fallback have been removed. The remaining blocking work is legal canonical
+  curb / sidewalk join ownership for oblique and sharp nodes, plus clipped terrain topology
+  hardening, followed by retaining, wall, and material variants.
   The shared engineered-ground contract now lives in
   [`earthworks.md`](earthworks.md), with road-specific rules staying in
   [`improved_roads.md`](improved_roads.md) and terrain storage / chunking rules staying in
@@ -208,8 +206,8 @@ For active tracked work, use [`roadmap.md`](roadmap.md).
   must stop treating the logical graph as the visible-shape carrier and instead compile a separate
   deterministic piece/profile geometry layer with `Span`, `Bend`, `Terminal`, and `JunctionN`
   pieces, while the elevated `Bend` / `JunctionN` hardcut replaces post-overlay height sampling
-  with band-owned regions and a `NodeGradeCarrier`. The existing graph / clip / lane ownership
-  layers stay intact. See
+  with band-owned regions and `NodeBandHeightField` surfaces identified by
+  `NodeBandHeightFieldId`. The existing graph / clip / lane ownership layers stay intact. See
   [`improved_roads.md`](improved_roads.md).
 - The retired annulus/corridor prototype still produced useful conclusions that remain valid after
   the code revert: arbitrary-angle bends and multi-arm junctions need explicit road and sidewalk
