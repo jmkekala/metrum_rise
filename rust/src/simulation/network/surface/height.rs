@@ -3,17 +3,13 @@
 #![allow(dead_code)]
 
 use super::arrangement::{
-    NodeBandHeightFieldId, NodeBandOwner, NodeHeightSource, NodeRegionSeamConstraint,
-    seam_source_priority,
+    NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, seam_source_priority,
 };
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
     quantize_road_vec2_to_overlay_grid,
 };
-use super::input::{
-    NodeArrangementInput, NodeInputBandInterval, NodeInputBoundaryRail, NodeInputBoundaryRailRole,
-    NodeInputMouth, NodeInputTerminalEndBand,
-};
+use super::input::{NodeArrangementInput, NodeInputBandInterval, NodeInputTerminalEndBand};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
@@ -42,11 +38,8 @@ pub(crate) struct NodeHeightedRegion {
     pub(crate) kind: RoadSurfaceBandKind,
     pub(crate) owner: NodeBandOwner,
     pub(crate) height_field_id: NodeBandHeightFieldId,
-    pub(crate) source_mouth_order_index: usize,
-    pub(crate) source_band_index: usize,
     pub(crate) shape: NodeHeightedShape,
     pub(crate) area_m2: f32,
-    pub(crate) height_sources: Vec<NodeHeightSource>,
     pub(crate) seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
 
@@ -55,11 +48,10 @@ pub(crate) struct NodeHeightedVertex {
     pub(crate) point_xz: RoadVec2,
     pub(crate) height_m: f64,
     pub(crate) height_field_id: NodeBandHeightFieldId,
-    pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) enum NodeHeightSourceError {
+pub(crate) enum NodeHeightFieldError {
     InputOwnershipMismatch {
         input_node_id: u32,
         ownership_node_id: u32,
@@ -141,25 +133,13 @@ struct NodeBandHeightField {
     mouth_end_xz: RoadVec2,
     start_height_profile: Spline<f64, f64>,
     end_height_profile: Spline<f64, f64>,
-    height_sources: Vec<NodeHeightSource>,
-}
-
-struct NodeBoundaryHeightField {
-    mouth_order_index: usize,
-    boundary_index: usize,
-    role: NodeInputBoundaryRailRole,
-    endpoint_xz: RoadVec2,
-    mouth_xz: RoadVec2,
-    endpoint_height_m: f64,
-    mouth_height_m: f64,
-    height_sources: Vec<NodeHeightSource>,
 }
 
 impl RoadSurfaceSystem {
     pub(super) fn build_node_height_solution_from_ownership(
         input: &NodeArrangementInput,
         ownership: &NodeBooleanOwnership,
-    ) -> Result<NodeHeightSolution, NodeHeightSourceError> {
+    ) -> Result<NodeHeightSolution, NodeHeightFieldError> {
         NodeHeightSolution::from_ownership_and_input(input, ownership)
     }
 }
@@ -168,15 +148,14 @@ impl NodeHeightSolution {
     pub(crate) fn from_ownership_and_input(
         input: &NodeArrangementInput,
         ownership: &NodeBooleanOwnership,
-    ) -> Result<Self, NodeHeightSourceError> {
+    ) -> Result<Self, NodeHeightFieldError> {
         validate_input_ownership_pair(input, ownership)?;
         let fields = height_fields_by_source(input)?;
-        let boundary_fields = boundary_height_fields(input);
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
         let global_points = global_ownership_points(ownership);
 
         for region in &ownership.owned_regions {
-            let region = heighted_region(region, &fields, &boundary_fields, &global_points)?;
+            let region = heighted_region(region, &fields, &global_points)?;
             if !region.shape.is_empty() {
                 regions.push(region);
             }
@@ -217,10 +196,6 @@ impl NodeBandHeightField {
                 interval.endpoint_end_world.y,
                 interval.mouth_end_world.y,
             ),
-            height_sources: canonical_height_sources([
-                interval.endpoint_height_source.clone(),
-                interval.mouth_height_source.clone(),
-            ]),
         }
     }
 
@@ -253,17 +228,16 @@ impl NodeBandHeightField {
                 end_band.inner_end_world.y,
                 end_band.outer_end_world.y,
             ),
-            height_sources: canonical_height_sources(end_band.height_sources.iter().cloned()),
         }
     }
 
-    fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightSourceError> {
+    fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
         let endpoint_center = midpoint(self.endpoint_start_xz, self.endpoint_end_xz);
         let mouth_center = midpoint(self.mouth_start_xz, self.mouth_end_xz);
         let longitudinal_axis = mouth_center - endpoint_center;
         let longitudinal_len2 = longitudinal_axis.length_squared();
         if longitudinal_len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
-            return Err(NodeHeightSourceError::DegenerateHeightField {
+            return Err(NodeHeightFieldError::DegenerateHeightField {
                 mouth_order_index: self.id.mouth_order_index(),
                 band_index: self.id.band_index(),
                 axis: "longitudinal",
@@ -280,7 +254,7 @@ impl NodeBandHeightField {
         let lateral_axis = end_xz - start_xz;
         let lateral_len2 = lateral_axis.length_squared();
         if lateral_len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
-            return Err(NodeHeightSourceError::DegenerateHeightField {
+            return Err(NodeHeightFieldError::DegenerateHeightField {
                 mouth_order_index: self.id.mouth_order_index(),
                 band_index: self.id.band_index(),
                 axis: "lateral",
@@ -292,7 +266,7 @@ impl NodeBandHeightField {
         let u = canonical_unit_parameter(raw_u, lateral_len_m)
             .ok_or_else(|| self.outside_field_error(point_xz, "lateral", raw_u))?;
         let start_height = self.start_height_profile.clamped_sample(t).ok_or(
-            NodeHeightSourceError::HeightSampleFailed {
+            NodeHeightFieldError::HeightSampleFailed {
                 mouth_order_index: self.id.mouth_order_index(),
                 band_index: self.id.band_index(),
                 axis: "start",
@@ -300,7 +274,7 @@ impl NodeBandHeightField {
             },
         )?;
         let end_height = self.end_height_profile.clamped_sample(t).ok_or(
-            NodeHeightSourceError::HeightSampleFailed {
+            NodeHeightFieldError::HeightSampleFailed {
                 mouth_order_index: self.id.mouth_order_index(),
                 band_index: self.id.band_index(),
                 axis: "end",
@@ -316,9 +290,9 @@ impl NodeBandHeightField {
         point_xz: RoadVec2,
         axis: &'static str,
         raw_parameter: f64,
-    ) -> NodeHeightSourceError {
+    ) -> NodeHeightFieldError {
         let key = NodeHeightPointKey::from_point(point_xz);
-        NodeHeightSourceError::VertexOutsideHeightField {
+        NodeHeightFieldError::VertexOutsideHeightField {
             mouth_order_index: self.id.mouth_order_index(),
             band_index: self.id.band_index(),
             point_x_mm: key.x_mm(),
@@ -329,125 +303,15 @@ impl NodeBandHeightField {
     }
 }
 
-impl NodeBoundaryHeightField {
-    fn from_boundary_rail(mouth: &NodeInputMouth, rail: &NodeInputBoundaryRail) -> Self {
-        Self {
-            mouth_order_index: mouth.order_index,
-            boundary_index: rail.boundary_index,
-            role: rail.role,
-            endpoint_xz: quantize_road_vec2_to_overlay_grid(xz(rail.endpoint_world)),
-            mouth_xz: quantize_road_vec2_to_overlay_grid(xz(rail.mouth_world)),
-            endpoint_height_m: rail.endpoint_world.y,
-            mouth_height_m: rail.mouth_world.y,
-            height_sources: canonical_height_sources(
-                mouth
-                    .boundary_heights
-                    .iter()
-                    .filter(|height| height.boundary_index == rail.boundary_index)
-                    .flat_map(|height| height.height_sources.iter().cloned()),
-            ),
-        }
-    }
-
-    fn from_terminal_end_band_edges(
-        mouth_order_index: usize,
-        end_band: &NodeInputTerminalEndBand,
-    ) -> [Self; 2] {
-        let inner_role = terminal_inner_boundary_role(end_band.band_kind);
-        let outer_role = terminal_outer_boundary_role(end_band.band_kind);
-        [
-            Self {
-                mouth_order_index,
-                boundary_index: end_band.source_band_index * 2,
-                role: inner_role,
-                endpoint_xz: quantize_road_vec2_to_overlay_grid(xz(end_band.inner_start_world)),
-                mouth_xz: quantize_road_vec2_to_overlay_grid(xz(end_band.inner_end_world)),
-                endpoint_height_m: end_band.inner_start_world.y,
-                mouth_height_m: end_band.inner_end_world.y,
-                height_sources: canonical_height_sources(end_band.height_sources.iter().cloned()),
-            },
-            Self {
-                mouth_order_index,
-                boundary_index: end_band.source_band_index * 2 + 1,
-                role: outer_role,
-                endpoint_xz: quantize_road_vec2_to_overlay_grid(xz(end_band.outer_start_world)),
-                mouth_xz: quantize_road_vec2_to_overlay_grid(xz(end_band.outer_end_world)),
-                endpoint_height_m: end_band.outer_start_world.y,
-                mouth_height_m: end_band.outer_end_world.y,
-                height_sources: canonical_height_sources(end_band.height_sources.iter().cloned()),
-            },
-        ]
-    }
-
-    fn applies_to_kind(&self, kind: RoadSurfaceBandKind) -> bool {
-        match self.role {
-            NodeInputBoundaryRailRole::OuterFootprint { adjacent_kind } => adjacent_kind == kind,
-            NodeInputBoundaryRailRole::InteriorBandBoundary {
-                left_kind,
-                right_kind,
-            } => left_kind == kind || right_kind == kind,
-        }
-    }
-
-    fn role_priority_for_kind(&self, kind: RoadSurfaceBandKind) -> usize {
-        match (kind, self.role) {
-            (
-                RoadSurfaceBandKind::Carriageway,
-                NodeInputBoundaryRailRole::InteriorBandBoundary {
-                    left_kind,
-                    right_kind,
-                },
-            ) if is_carriageway(left_kind) || is_carriageway(right_kind) => 0,
-            (
-                RoadSurfaceBandKind::CurbOrShoulder,
-                NodeInputBoundaryRailRole::InteriorBandBoundary {
-                    left_kind,
-                    right_kind,
-                },
-            ) if is_carriageway(left_kind) || is_carriageway(right_kind) => 0,
-            (
-                RoadSurfaceBandKind::CurbOrShoulder,
-                NodeInputBoundaryRailRole::InteriorBandBoundary {
-                    left_kind,
-                    right_kind,
-                },
-            ) if is_sidewalk(left_kind) || is_sidewalk(right_kind) => 1,
-            (
-                RoadSurfaceBandKind::Sidewalk,
-                NodeInputBoundaryRailRole::InteriorBandBoundary {
-                    left_kind,
-                    right_kind,
-                },
-            ) if is_sidewalk(left_kind) || is_sidewalk(right_kind) => 0,
-            (RoadSurfaceBandKind::Sidewalk, NodeInputBoundaryRailRole::OuterFootprint { .. }) => 1,
-            (_, NodeInputBoundaryRailRole::OuterFootprint { .. }) => 2,
-            _ => 3,
-        }
-    }
-
-    fn sample_height(&self, point_xz: RoadVec2) -> Option<f64> {
-        if !point_lies_on_road_segment(point_xz, self.endpoint_xz, self.mouth_xz) {
-            return None;
-        }
-        let axis = self.mouth_xz - self.endpoint_xz;
-        let len2 = axis.length_squared();
-        if len2 <= HEIGHT_FIELD_MIN_AXIS_LEN2_M2 {
-            return None;
-        }
-        let t = ((point_xz - self.endpoint_xz).dot(axis) / len2).clamp(0.0, 1.0);
-        Some(self.endpoint_height_m + (self.mouth_height_m - self.endpoint_height_m) * t)
-    }
-}
-
 fn validate_input_ownership_pair(
     input: &NodeArrangementInput,
     ownership: &NodeBooleanOwnership,
-) -> Result<(), NodeHeightSourceError> {
+) -> Result<(), NodeHeightFieldError> {
     if input.node_id == ownership.node_id && input.piece_kind == ownership.piece_kind {
         return Ok(());
     }
 
-    Err(NodeHeightSourceError::InputOwnershipMismatch {
+    Err(NodeHeightFieldError::InputOwnershipMismatch {
         input_node_id: input.node_id,
         ownership_node_id: ownership.node_id,
         input_piece_kind: input.piece_kind,
@@ -457,7 +321,7 @@ fn validate_input_ownership_pair(
 
 fn height_fields_by_source(
     input: &NodeArrangementInput,
-) -> Result<BTreeMap<NodeSourceBandKey, NodeBandHeightField>, NodeHeightSourceError> {
+) -> Result<BTreeMap<NodeSourceBandKey, NodeBandHeightField>, NodeHeightFieldError> {
     let mut fields = BTreeMap::new();
     for mouth in &input.mouths {
         for interval in &mouth.band_intervals {
@@ -467,7 +331,7 @@ fn height_fields_by_source(
                 band_index: interval.band_index,
             };
             if fields.insert(key, field).is_some() {
-                return Err(NodeHeightSourceError::DuplicateSourceBand {
+                return Err(NodeHeightFieldError::DuplicateSourceBand {
                     mouth_order_index: mouth.order_index,
                     band_index: interval.band_index,
                 });
@@ -480,7 +344,7 @@ fn height_fields_by_source(
                 band_index: end_band.source_band_index,
             };
             if fields.insert(key, field).is_some() {
-                return Err(NodeHeightSourceError::DuplicateSourceBand {
+                return Err(NodeHeightFieldError::DuplicateSourceBand {
                     mouth_order_index: mouth.order_index,
                     band_index: end_band.source_band_index,
                 });
@@ -490,75 +354,15 @@ fn height_fields_by_source(
     Ok(fields)
 }
 
-fn boundary_height_fields(input: &NodeArrangementInput) -> Vec<NodeBoundaryHeightField> {
-    let mut fields = input
-        .mouths
-        .iter()
-        .flat_map(|mouth| {
-            let boundary_fields = mouth
-                .boundary_rails
-                .iter()
-                .map(move |rail| NodeBoundaryHeightField::from_boundary_rail(mouth, rail));
-            let terminal_fields = mouth.terminal_end_bands.iter().flat_map(move |end_band| {
-                NodeBoundaryHeightField::from_terminal_end_band_edges(mouth.order_index, end_band)
-            });
-            boundary_fields.chain(terminal_fields)
-        })
-        .collect::<Vec<_>>();
-    fields.sort_by(|a, b| {
-        a.mouth_order_index
-            .cmp(&b.mouth_order_index)
-            .then(a.boundary_index.cmp(&b.boundary_index))
-    });
-    fields
-}
-
-fn terminal_inner_boundary_role(kind: RoadSurfaceBandKind) -> NodeInputBoundaryRailRole {
-    match kind {
-        RoadSurfaceBandKind::Carriageway => NodeInputBoundaryRailRole::InteriorBandBoundary {
-            left_kind: RoadSurfaceBandKind::Carriageway,
-            right_kind: RoadSurfaceBandKind::CurbOrShoulder,
-        },
-        RoadSurfaceBandKind::CurbOrShoulder => NodeInputBoundaryRailRole::InteriorBandBoundary {
-            left_kind: RoadSurfaceBandKind::Carriageway,
-            right_kind: RoadSurfaceBandKind::CurbOrShoulder,
-        },
-        RoadSurfaceBandKind::Sidewalk => NodeInputBoundaryRailRole::InteriorBandBoundary {
-            left_kind: RoadSurfaceBandKind::CurbOrShoulder,
-            right_kind: RoadSurfaceBandKind::Sidewalk,
-        },
-        _ => NodeInputBoundaryRailRole::OuterFootprint {
-            adjacent_kind: kind,
-        },
-    }
-}
-
-fn terminal_outer_boundary_role(kind: RoadSurfaceBandKind) -> NodeInputBoundaryRailRole {
-    match kind {
-        RoadSurfaceBandKind::Carriageway => NodeInputBoundaryRailRole::InteriorBandBoundary {
-            left_kind: RoadSurfaceBandKind::Carriageway,
-            right_kind: RoadSurfaceBandKind::CurbOrShoulder,
-        },
-        RoadSurfaceBandKind::CurbOrShoulder => NodeInputBoundaryRailRole::InteriorBandBoundary {
-            left_kind: RoadSurfaceBandKind::CurbOrShoulder,
-            right_kind: RoadSurfaceBandKind::Sidewalk,
-        },
-        _ => NodeInputBoundaryRailRole::OuterFootprint {
-            adjacent_kind: kind,
-        },
-    }
-}
-
 fn heighted_region(
     region: &NodeBooleanOwnedRegion,
     fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
-    boundary_fields: &[NodeBoundaryHeightField],
     global_points: &[NodeOverlayPointKey],
-) -> Result<NodeHeightedRegion, NodeHeightSourceError> {
+) -> Result<NodeHeightedRegion, NodeHeightFieldError> {
     let band_index =
         region
             .source_band_index
-            .ok_or(NodeHeightSourceError::MissingRegionBandIndex {
+            .ok_or(NodeHeightFieldError::MissingRegionBandIndex {
                 mouth_order_index: region.source_mouth_order_index,
                 kind: region.kind,
             })?;
@@ -568,12 +372,12 @@ fn heighted_region(
     };
     let field = fields
         .get(&key)
-        .ok_or(NodeHeightSourceError::MissingSourceBand {
+        .ok_or(NodeHeightFieldError::MissingSourceBand {
             mouth_order_index: key.mouth_order_index,
             band_index: key.band_index,
         })?;
     if field.kind != region.kind {
-        return Err(NodeHeightSourceError::SourceBandKindMismatch {
+        return Err(NodeHeightFieldError::SourceBandKindMismatch {
             mouth_order_index: key.mouth_order_index,
             band_index: key.band_index,
             region_kind: region.kind,
@@ -581,53 +385,26 @@ fn heighted_region(
         });
     }
 
-    let height_sources = canonical_height_sources(
-        region
-            .height_sources
-            .iter()
-            .cloned()
-            .chain(field.height_sources.iter().cloned()),
-    );
-    let shape = heighted_shape(
-        &region.shape,
-        region.kind,
-        field,
-        boundary_fields,
-        &height_sources,
-        global_points,
-    )?;
+    let shape = heighted_shape(&region.shape, field, global_points)?;
 
     Ok(NodeHeightedRegion {
         kind: region.kind,
         owner: region.owner,
         height_field_id: field.id,
-        source_mouth_order_index: region.source_mouth_order_index,
-        source_band_index: band_index,
         shape,
         area_m2: region.area_m2,
-        height_sources,
         seam_constraints: region.seam_constraints.clone(),
     })
 }
 
 fn heighted_shape(
     shape: &NodeOverlayShape,
-    kind: RoadSurfaceBandKind,
     field: &NodeBandHeightField,
-    boundary_fields: &[NodeBoundaryHeightField],
-    height_sources: &[NodeHeightSource],
     global_points: &[NodeOverlayPointKey],
-) -> Result<NodeHeightedShape, NodeHeightSourceError> {
+) -> Result<NodeHeightedShape, NodeHeightFieldError> {
     let mut heighted = Vec::with_capacity(shape.len());
     for contour in shape {
-        let contour = heighted_contour(
-            contour,
-            kind,
-            field,
-            boundary_fields,
-            height_sources,
-            global_points,
-        )?;
+        let contour = heighted_contour(contour, field, global_points)?;
         if contour.len() >= 3 {
             heighted.push(contour);
         }
@@ -637,109 +414,31 @@ fn heighted_shape(
 
 fn heighted_contour(
     contour: &NodeOverlayContour,
-    kind: RoadSurfaceBandKind,
     field: &NodeBandHeightField,
-    boundary_fields: &[NodeBoundaryHeightField],
-    height_sources: &[NodeHeightSource],
     global_points: &[NodeOverlayPointKey],
-) -> Result<NodeHeightedContour, NodeHeightSourceError> {
+) -> Result<NodeHeightedContour, NodeHeightFieldError> {
     let contour = noded_overlay_contour(contour, global_points);
     contour
         .into_iter()
-        .map(|point| heighted_vertex(point, kind, field, boundary_fields, height_sources))
+        .map(|point| heighted_vertex(point, field))
         .collect()
 }
 
 fn heighted_vertex(
     point: NodeOverlayPoint,
-    kind: RoadSurfaceBandKind,
     field: &NodeBandHeightField,
-    boundary_fields: &[NodeBoundaryHeightField],
-    height_sources: &[NodeHeightSource],
-) -> Result<NodeHeightedVertex, NodeHeightSourceError> {
+) -> Result<NodeHeightedVertex, NodeHeightFieldError> {
     let point_xz = overlay_point_to_road(point);
-    let mut vertex = if let Some((height_m, sources)) = boundary_height_at_point(
-        kind,
-        field.id.mouth_order_index(),
+    Ok(NodeHeightedVertex {
         point_xz,
-        boundary_fields,
-    ) {
-        NodeHeightedVertex {
-            point_xz,
-            height_m,
-            height_field_id: field.id,
-            height_sources: canonical_height_sources(
-                height_sources
-                    .iter()
-                    .cloned()
-                    .chain(sources.iter().cloned()),
-            ),
-        }
-    } else {
-        NodeHeightedVertex {
-            point_xz,
-            height_m: field.evaluate_height(point_xz)?,
-            height_field_id: field.id,
-            height_sources: height_sources.to_vec(),
-        }
-    };
-    vertex.height_sources = canonical_height_sources(vertex.height_sources);
-    Ok(vertex)
-}
-
-fn boundary_height_at_point(
-    kind: RoadSurfaceBandKind,
-    source_mouth_order_index: usize,
-    point_xz: RoadVec2,
-    fields: &[NodeBoundaryHeightField],
-) -> Option<(f64, Vec<NodeHeightSource>)> {
-    fields
-        .iter()
-        .filter(|field| field.mouth_order_index == source_mouth_order_index)
-        .filter(|field| field.applies_to_kind(kind))
-        .filter_map(|field| {
-            field.sample_height(point_xz).map(|height_m| {
-                (
-                    field.role_priority_for_kind(kind),
-                    field.mouth_order_index,
-                    field.boundary_index,
-                    height_m,
-                    field.height_sources.clone(),
-                )
-            })
-        })
-        .min_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)))
-        .map(|(_, _, _, height_m, sources)| (height_m, sources))
-}
-
-fn is_carriageway(kind: RoadSurfaceBandKind) -> bool {
-    kind == RoadSurfaceBandKind::Carriageway
-}
-
-fn is_sidewalk(kind: RoadSurfaceBandKind) -> bool {
-    kind == RoadSurfaceBandKind::Sidewalk
-}
-
-fn point_lies_on_road_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2) -> bool {
-    let point = road_overlay_point_key(point);
-    let start = road_overlay_point_key(start);
-    let end = road_overlay_point_key(end);
-    if point == start || point == end {
-        return true;
-    }
-    point_lies_strictly_inside_segment(point, start, end)
-}
-
-fn road_overlay_point_key(point: RoadVec2) -> NodeOverlayPointKey {
-    (
-        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-    )
+        height_m: field.evaluate_height(point_xz)?,
+        height_field_id: field.id,
+    })
 }
 
 fn validate_explicit_material_seam_heights(
     regions: &[NodeHeightedRegion],
-) -> Result<(), NodeHeightSourceError> {
+) -> Result<(), NodeHeightFieldError> {
     let mut shared_heights = BTreeMap::<(NodeHeightPointKey, usize), ExplicitSeamHeight>::new();
     for region in regions.iter() {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
@@ -752,7 +451,7 @@ fn validate_explicit_material_seam_heights(
                 if let Some(existing) = shared_heights.insert(key, ExplicitSeamHeight { height_mm })
                 {
                     if existing.height_mm != height_mm {
-                        return Err(NodeHeightSourceError::SharedSourceHeightConflict {
+                        return Err(NodeHeightFieldError::SharedSourceHeightConflict {
                             point_x_mm: point.x_mm(),
                             point_z_mm: point.z_mm(),
                             kind: region.kind,
@@ -827,7 +526,7 @@ fn point_lies_on_height_segment(point: RoadVec2, start: RoadVec2, end: RoadVec2)
 
 fn validate_shared_source_height_agreement(
     regions: &[NodeHeightedRegion],
-) -> Result<(), NodeHeightSourceError> {
+) -> Result<(), NodeHeightFieldError> {
     let mut heights = BTreeMap::<NodeHeightVertexContextKey, i64>::new();
     for region in regions {
         for vertex in region.shape.iter().flat_map(|contour| contour.iter()) {
@@ -841,7 +540,7 @@ fn validate_shared_source_height_agreement(
             if let Some(existing_height_mm) = heights.insert(key, height_mm)
                 && existing_height_mm != height_mm
             {
-                return Err(NodeHeightSourceError::SharedSourceHeightConflict {
+                return Err(NodeHeightFieldError::SharedSourceHeightConflict {
                     point_x_mm: point.x_mm(),
                     point_z_mm: point.z_mm(),
                     kind: region.kind,
@@ -877,15 +576,6 @@ fn canonical_unit_parameter(raw_parameter: f64, axis_length_m: f64) -> Option<f6
     (-boundary_eps..=1.0 + boundary_eps)
         .contains(&parameter)
         .then_some(parameter.clamp(0.0, 1.0))
-}
-
-fn canonical_height_sources(
-    sources: impl IntoIterator<Item = NodeHeightSource>,
-) -> Vec<NodeHeightSource> {
-    let mut sources = sources.into_iter().collect::<Vec<_>>();
-    sources.sort();
-    sources.dedup();
-    sources
 }
 
 fn xz(point: RoadVec3) -> RoadVec2 {
@@ -1197,7 +887,6 @@ mod tests {
             .expect("test input has a carriageway band");
         assert!(has_vertex_height(carriageway, 0.0, 0.0, 2.2));
         assert!(has_vertex_height(carriageway, 10.0, 2.0, 4.3));
-        assert!(!carriageway.height_sources.is_empty());
     }
 
     #[test]
@@ -1221,7 +910,7 @@ mod tests {
 
         assert_eq!(
             NodeHeightSolution::from_ownership_and_input(&input, &ownership),
-            Err(NodeHeightSourceError::MissingSourceBand {
+            Err(NodeHeightFieldError::MissingSourceBand {
                 mouth_order_index: 0,
                 band_index: 99,
             })
@@ -1303,7 +992,7 @@ mod tests {
 
         assert!(matches!(
             validate_explicit_material_seam_heights(&regions),
-            Err(NodeHeightSourceError::SharedSourceHeightConflict { .. })
+            Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
         ));
     }
 
@@ -1363,7 +1052,7 @@ mod tests {
 
         assert!(matches!(
             validate_explicit_material_seam_heights(&regions),
-            Err(NodeHeightSourceError::SharedSourceHeightConflict { .. })
+            Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
         ));
     }
 
@@ -1386,7 +1075,7 @@ mod tests {
 
         assert!(matches!(
             validate_shared_source_height_agreement(&regions),
-            Err(NodeHeightSourceError::SharedSourceHeightConflict { .. })
+            Err(NodeHeightFieldError::SharedSourceHeightConflict { .. })
         ));
     }
 
@@ -1440,16 +1129,6 @@ mod tests {
             mouth_end_world: RoadVec3::new(10.0, mouth_height, 2.0),
             endpoint_start_world: RoadVec3::new(0.0, endpoint_height, 0.0),
             endpoint_end_world: RoadVec3::new(0.0, endpoint_height, 2.0),
-            mouth_height_source: NodeHeightSource::IncidentMouthBand {
-                edge_idx: 9,
-                side: IncidentEdgeSide::Start,
-                band_index,
-            },
-            endpoint_height_source: NodeHeightSource::EndpointBand {
-                edge_idx: 9,
-                side: IncidentEdgeSide::Start,
-                band_index,
-            },
         }
     }
 
@@ -1465,7 +1144,6 @@ mod tests {
             source_band_index: Some(band_index),
             shape: vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 2.0], [0.0, 2.0]]],
             area_m2,
-            height_sources: Vec::new(),
             seam_constraints: Vec::new(),
         }
     }
@@ -1498,13 +1176,8 @@ mod tests {
             kind,
             owner: NodeBandOwner::new(kind, owner_index),
             height_field_id,
-            source_mouth_order_index: owner_index,
-            source_band_index: owner_index,
             shape: vec![contour],
             area_m2,
-            height_sources: vec![NodeHeightSource::ArrangementConstraint {
-                constraint_index: owner_index,
-            }],
             seam_constraints,
         }
     }
@@ -1530,7 +1203,6 @@ mod tests {
             point_xz: RoadVec2::new(x, z),
             height_m,
             height_field_id: NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk),
-            height_sources: Vec::new(),
         }
     }
 }

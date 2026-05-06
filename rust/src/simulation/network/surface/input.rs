@@ -2,7 +2,6 @@
 
 #![allow(dead_code)]
 
-use super::arrangement::NodeHeightSource;
 use super::backend::{
     RoadVec2, RoadVec3, godot_vec2_to_road, godot_vec3_to_road, godot_vec3_xz_to_road,
 };
@@ -58,7 +57,6 @@ pub(crate) struct NodeInputProfileRail {
     pub(crate) band_kind: RoadSurfaceBandKind,
     pub(crate) start_world: RoadVec3,
     pub(crate) end_world: RoadVec3,
-    pub(crate) height_source: NodeHeightSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,8 +75,6 @@ pub(crate) struct NodeInputBandInterval {
     pub(crate) mouth_end_world: RoadVec3,
     pub(crate) endpoint_start_world: RoadVec3,
     pub(crate) endpoint_end_world: RoadVec3,
-    pub(crate) mouth_height_source: NodeHeightSource,
-    pub(crate) endpoint_height_source: NodeHeightSource,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -90,7 +86,6 @@ pub(crate) struct NodeInputTerminalEndBand {
     pub(crate) outer_start_world: RoadVec3,
     pub(crate) outer_end_world: RoadVec3,
     pub(crate) contour_world: Vec<RoadVec3>,
-    pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -99,7 +94,6 @@ pub(crate) struct NodeInputBoundaryHeight {
     pub(crate) boundary_index: usize,
     pub(crate) point_xz: RoadVec2,
     pub(crate) height_m: f64,
-    pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -203,30 +197,14 @@ impl NodeInputMouth {
 
         let direction_xz = normalized_direction(mouth)?;
         let conflict_handoff_distance_m = conflict_handoff_distance_m(mouth, direction_xz)?;
-        let mouth_rails = profile_rails(
-            mouth.edge_idx,
-            mouth.side,
-            NodeInputProfileKind::Mouth,
-            &mouth.profile,
-        );
-        let endpoint_rails = profile_rails(
-            mouth.edge_idx,
-            mouth.side,
-            NodeInputProfileKind::Endpoint,
-            &mouth.endpoint_profile,
-        );
+        let mouth_rails = profile_rails(NodeInputProfileKind::Mouth, &mouth.profile);
+        let endpoint_rails = profile_rails(NodeInputProfileKind::Endpoint, &mouth.endpoint_profile);
         let boundary_rails = boundary_rails(mouth);
         let band_intervals = band_intervals(mouth);
         let terminal_end_bands = terminal_end_bands(piece_kind, mouth, band_intervals.len());
-        let mut solved_boundary_heights = boundary_heights(
-            mouth.edge_idx,
-            mouth.side,
-            NodeInputProfileKind::Mouth,
-            &mouth.profile,
-        );
+        let mut solved_boundary_heights =
+            boundary_heights(NodeInputProfileKind::Mouth, &mouth.profile);
         solved_boundary_heights.extend(boundary_heights(
-            mouth.edge_idx,
-            mouth.side,
             NodeInputProfileKind::Endpoint,
             &mouth.endpoint_profile,
         ));
@@ -353,8 +331,6 @@ fn conflict_handoff_distance_m(
 }
 
 fn profile_rails(
-    edge_idx: usize,
-    side: IncidentEdgeSide,
     profile_kind: NodeInputProfileKind,
     profile: &IncidentMouthProfile,
 ) -> Vec<NodeInputProfileRail> {
@@ -368,7 +344,6 @@ fn profile_rails(
             band_kind: band.kind,
             start_world: godot_vec3_to_road(band.start_point_world),
             end_world: godot_vec3_to_road(band.end_point_world),
-            height_source: band_height_source(profile_kind, edge_idx, side, band_index),
         })
         .collect()
 }
@@ -406,18 +381,6 @@ fn band_intervals(mouth: &OrderedIncidentPieceMouth) -> Vec<NodeInputBandInterva
                 mouth_end_world: godot_vec3_to_road(mouth_band.end_point_world),
                 endpoint_start_world: godot_vec3_to_road(endpoint_band.start_point_world),
                 endpoint_end_world: godot_vec3_to_road(endpoint_band.end_point_world),
-                mouth_height_source: band_height_source(
-                    NodeInputProfileKind::Mouth,
-                    mouth.edge_idx,
-                    mouth.side,
-                    band_index,
-                ),
-                endpoint_height_source: band_height_source(
-                    NodeInputProfileKind::Endpoint,
-                    mouth.edge_idx,
-                    mouth.side,
-                    band_index,
-                ),
             },
         )
         .collect()
@@ -621,8 +584,6 @@ fn push_bend_corner_chord_band(
             outer_start_world,
         ]
     };
-    let height_sources = bend_corner_height_sources(from_mouth, from_layer, to_mouth, to_layer);
-
     end_bands.push(NodeInputTerminalEndBand {
         source_band_index: next_source_band_index + end_bands.len(),
         band_kind: from_layer.band_kind,
@@ -631,7 +592,6 @@ fn push_bend_corner_chord_band(
         outer_start_world,
         outer_end_world,
         contour_world,
-        height_sources,
     });
 }
 
@@ -688,8 +648,6 @@ fn push_bend_corner_curve_strips(
         (from_outer_world.y + to_outer_world.y) * 0.5,
         outer_control_xz.y,
     );
-    let height_sources = bend_corner_height_sources(from_mouth, from_layer, to_mouth, to_layer);
-
     let mut previous_inner = from_inner_world;
     let mut previous_outer = from_outer_world;
     for step in 1..=BEND_CORNER_CURVE_SEGMENTS {
@@ -720,7 +678,6 @@ fn push_bend_corner_curve_strips(
             outer_start_world: height_mouth_start_world,
             outer_end_world: height_mouth_end_world,
             contour_world,
-            height_sources: height_sources.clone(),
         });
         previous_inner = next_inner;
         previous_outer = next_outer;
@@ -771,8 +728,6 @@ fn push_bend_corner_miter_cap(
         miter_height_m,
         miter_xz.y + miter_axis.y,
     );
-    let height_sources = bend_corner_height_sources(from_mouth, from_layer, to_mouth, to_layer);
-
     end_bands.push(NodeInputTerminalEndBand {
         source_band_index: next_source_band_index + end_bands.len(),
         band_kind: from_layer.band_kind,
@@ -781,31 +736,7 @@ fn push_bend_corner_miter_cap(
         outer_start_world,
         outer_end_world,
         contour_world: bend_corner_curve_cap_contour(from_outer_world, to_outer_world, miter_world),
-        height_sources,
     });
-}
-
-fn bend_corner_height_sources(
-    from_mouth: &NodeInputMouth,
-    from_layer: &BendCornerLayer,
-    to_mouth: &NodeInputMouth,
-    to_layer: &BendCornerLayer,
-) -> Vec<NodeHeightSource> {
-    let mut height_sources = vec![
-        NodeHeightSource::EndpointBand {
-            edge_idx: from_mouth.edge_idx,
-            side: from_mouth.side,
-            band_index: from_layer.band_index,
-        },
-        NodeHeightSource::EndpointBand {
-            edge_idx: to_mouth.edge_idx,
-            side: to_mouth.side,
-            band_index: to_layer.band_index,
-        },
-    ];
-    height_sources.sort();
-    height_sources.dedup();
-    height_sources
 }
 
 fn bend_corner_strip_height_edges(
@@ -1039,7 +970,6 @@ fn terminal_end_bands(
             mouth,
             next_source_band_index,
             left_band.kind,
-            [left_band_index, right_band_index],
             offset_endpoint_boundary_point(
                 &mouth.endpoint_profile,
                 inner_start_boundary,
@@ -1090,7 +1020,6 @@ fn push_terminal_curb_end_bands(
         mouth,
         next_source_band_index,
         RoadSurfaceBandKind::CurbOrShoulder,
-        [left_band_index],
         offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index, outward, 0.0),
         offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index + 1, outward, 0.0),
         offset_endpoint_boundary_point(
@@ -1112,7 +1041,6 @@ fn push_terminal_curb_end_bands(
         mouth,
         next_source_band_index,
         RoadSurfaceBandKind::CurbOrShoulder,
-        [left_band_index, right_band_index],
         offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index + 1, outward, 0.0),
         offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index, outward, 0.0),
         offset_endpoint_boundary_point_with_height(
@@ -1135,7 +1063,6 @@ fn push_terminal_curb_end_bands(
         mouth,
         next_source_band_index,
         RoadSurfaceBandKind::CurbOrShoulder,
-        [right_band_index],
         offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index, outward, 0.0),
         offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index + 1, outward, 0.0),
         offset_endpoint_boundary_point_with_height(
@@ -1154,28 +1081,16 @@ fn push_terminal_curb_end_bands(
     );
 }
 
-fn push_terminal_end_band<const N: usize>(
+fn push_terminal_end_band(
     end_bands: &mut Vec<NodeInputTerminalEndBand>,
-    mouth: &OrderedIncidentPieceMouth,
+    _mouth: &OrderedIncidentPieceMouth,
     next_source_band_index: usize,
     band_kind: RoadSurfaceBandKind,
-    source_band_indices: [usize; N],
     inner_start_world: RoadVec3,
     inner_end_world: RoadVec3,
     outer_start_world: RoadVec3,
     outer_end_world: RoadVec3,
 ) {
-    let mut height_sources = source_band_indices
-        .into_iter()
-        .map(|band_index| NodeHeightSource::EndpointBand {
-            edge_idx: mouth.edge_idx,
-            side: mouth.side,
-            band_index,
-        })
-        .collect::<Vec<_>>();
-    height_sources.sort();
-    height_sources.dedup();
-
     end_bands.push(NodeInputTerminalEndBand {
         source_band_index: next_source_band_index + end_bands.len(),
         band_kind,
@@ -1189,7 +1104,6 @@ fn push_terminal_end_band<const N: usize>(
             outer_end_world,
             outer_start_world,
         ],
-        height_sources,
     });
 }
 
@@ -1229,8 +1143,6 @@ fn band_width_m(band: &IncidentMouthBand) -> f64 {
 }
 
 fn boundary_heights(
-    edge_idx: usize,
-    side: IncidentEdgeSide,
     profile_kind: NodeInputProfileKind,
     profile: &IncidentMouthProfile,
 ) -> Vec<NodeInputBoundaryHeight> {
@@ -1243,64 +1155,8 @@ fn boundary_heights(
             boundary_index,
             point_xz: godot_vec3_xz_to_road(*point),
             height_m: f64::from(point.y),
-            height_sources: boundary_height_sources(
-                profile_kind,
-                edge_idx,
-                side,
-                boundary_index,
-                profile.bands.len(),
-            ),
         })
         .collect()
-}
-
-fn boundary_height_sources(
-    profile_kind: NodeInputProfileKind,
-    edge_idx: usize,
-    side: IncidentEdgeSide,
-    boundary_index: usize,
-    band_count: usize,
-) -> Vec<NodeHeightSource> {
-    let mut sources = Vec::with_capacity(2);
-    if boundary_index > 0 {
-        sources.push(band_height_source(
-            profile_kind,
-            edge_idx,
-            side,
-            boundary_index - 1,
-        ));
-    }
-    if boundary_index < band_count {
-        sources.push(band_height_source(
-            profile_kind,
-            edge_idx,
-            side,
-            boundary_index,
-        ));
-    }
-    sources.sort();
-    sources.dedup();
-    sources
-}
-
-fn band_height_source(
-    profile_kind: NodeInputProfileKind,
-    edge_idx: usize,
-    side: IncidentEdgeSide,
-    band_index: usize,
-) -> NodeHeightSource {
-    match profile_kind {
-        NodeInputProfileKind::Mouth => NodeHeightSource::IncidentMouthBand {
-            edge_idx,
-            side,
-            band_index,
-        },
-        NodeInputProfileKind::Endpoint => NodeHeightSource::EndpointBand {
-            edge_idx,
-            side,
-            band_index,
-        },
-    }
 }
 
 fn boundary_rail_role(
@@ -1424,21 +1280,7 @@ mod tests {
                 right_kind: RoadSurfaceBandKind::Carriageway,
             }
         );
-        assert_eq!(
-            mouth.boundary_heights[2].height_sources,
-            vec![
-                NodeHeightSource::IncidentMouthBand {
-                    edge_idx: 7,
-                    side: IncidentEdgeSide::Start,
-                    band_index: 1,
-                },
-                NodeHeightSource::IncidentMouthBand {
-                    edge_idx: 7,
-                    side: IncidentEdgeSide::Start,
-                    band_index: 2,
-                },
-            ]
-        );
+        assert!((mouth.boundary_heights[2].height_m - 4.2).abs() <= 1.0e-6);
     }
 
     #[test]

@@ -288,7 +288,7 @@ impl RoadSurfaceSystem {
         let heights = match Self::build_node_height_solution_from_ownership(&input, &ownership) {
             Ok(heights) => heights,
             Err(error) => {
-                Self::log_node_validation_report(&NodeValidationReport::from_height_source_error(
+                Self::log_node_validation_report(&NodeValidationReport::from_height_field_error(
                     node_id, kind, &error,
                 ));
                 return None;

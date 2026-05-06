@@ -2,13 +2,13 @@
 
 #![allow(dead_code)]
 
-use super::arrangement::{NodeBandOwner, NodeHeightSource};
+use super::arrangement::NodeBandOwner;
 use super::backend::{
     RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points, road_points_to_polyline,
 };
 use super::input::{
     NodeArrangementInput, NodeInputBandInterval, NodeInputBoundaryRailRole, NodeInputMouth,
-    NodeInputProfileKind, NodeInputProfileRail, NodeInputTerminalEndBand,
+    NodeInputProfileRail, NodeInputTerminalEndBand,
 };
 use super::{
     NODE_OVERLAY_MIN_AREA_M2, RoadSurfaceBandKind, RoadSurfaceSystem,
@@ -63,7 +63,6 @@ pub(crate) struct NodeGeneratedContour {
     pub(crate) owner: Option<NodeBandOwner>,
     pub(crate) points_xz: Vec<RoadVec2>,
     pub(crate) backend_polyline: RoadPolyline,
-    pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -76,7 +75,6 @@ pub(crate) struct NodeRailConstraint {
     pub(crate) owner: Option<NodeBandOwner>,
     pub(crate) opposite_owner: Option<NodeBandOwner>,
     pub(crate) points_xz: Vec<RoadVec2>,
-    pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -204,7 +202,6 @@ fn push_full_roadbed_contour(
         points,
     )?;
     let points_xz = polyline_to_road_points(&contour);
-    let height_sources = all_boundary_height_sources(mouth);
     contours.push(NodeGeneratedContour {
         kind: NodeGeneratedContourKind::FullRoadbed,
         source_mouth_order_index: mouth.order_index,
@@ -212,7 +209,6 @@ fn push_full_roadbed_contour(
         owner: None,
         points_xz: points_xz.clone(),
         backend_polyline: contour,
-        height_sources: height_sources.clone(),
     });
     push_constraint(
         constraints,
@@ -223,7 +219,6 @@ fn push_full_roadbed_contour(
         None,
         None,
         points_xz,
-        height_sources,
     )
 }
 
@@ -246,10 +241,6 @@ fn push_band_contour(
     let contour =
         cleaned_closed_contour(kind, mouth.order_index, Some(interval.band_index), points)?;
     let points_xz = polyline_to_road_points(&contour);
-    let height_sources = vec![
-        interval.mouth_height_source.clone(),
-        interval.endpoint_height_source.clone(),
-    ];
     contours.push(NodeGeneratedContour {
         kind,
         source_mouth_order_index: mouth.order_index,
@@ -257,7 +248,6 @@ fn push_band_contour(
         owner: Some(owner),
         points_xz: points_xz.clone(),
         backend_polyline: contour,
-        height_sources: height_sources.clone(),
     });
     push_constraint(
         constraints,
@@ -270,7 +260,6 @@ fn push_band_contour(
         Some(owner),
         None,
         points_xz,
-        height_sources,
     )
 }
 
@@ -294,7 +283,6 @@ fn push_terminal_end_band_contour(
         points.clone(),
     )?;
     let footprint_points_xz = polyline_to_road_points(&footprint);
-    let height_sources = canonical_height_sources(end_band.height_sources.iter().cloned());
     contours.push(NodeGeneratedContour {
         kind: NodeGeneratedContourKind::FullRoadbed,
         source_mouth_order_index: mouth.order_index,
@@ -302,7 +290,6 @@ fn push_terminal_end_band_contour(
         owner: None,
         points_xz: footprint_points_xz.clone(),
         backend_polyline: footprint,
-        height_sources: height_sources.clone(),
     });
     push_constraint(
         constraints,
@@ -313,7 +300,6 @@ fn push_terminal_end_band_contour(
         None,
         None,
         footprint_points_xz,
-        height_sources.clone(),
     )?;
 
     let kind = NodeGeneratedContourKind::Band {
@@ -333,7 +319,6 @@ fn push_terminal_end_band_contour(
         owner: Some(owner),
         points_xz: points_xz.clone(),
         backend_polyline: contour,
-        height_sources: height_sources.clone(),
     });
     push_constraint(
         constraints,
@@ -346,7 +331,6 @@ fn push_terminal_end_band_contour(
         Some(owner),
         None,
         points_xz,
-        height_sources,
     )
 }
 
@@ -368,7 +352,6 @@ fn push_boundary_constraint(
         owner,
         opposite_owner,
         vec![xz(rail.mouth_world), xz(rail.endpoint_world)],
-        boundary_height_sources(mouth, boundary_index),
     )
 }
 
@@ -389,7 +372,6 @@ fn push_span_handoff_constraint(
         Some(owner),
         None,
         vec![xz(profile_rail.start_world), xz(profile_rail.end_world)],
-        vec![profile_rail.height_source.clone()],
     )
 }
 
@@ -402,7 +384,6 @@ fn push_constraint(
     owner: Option<NodeBandOwner>,
     opposite_owner: Option<NodeBandOwner>,
     points: Vec<RoadVec2>,
-    height_sources: Vec<NodeHeightSource>,
 ) -> Result<(), NodeRailGenerationError> {
     let polyline = cleaned_open_rail(
         kind,
@@ -421,7 +402,6 @@ fn push_constraint(
         owner,
         opposite_owner,
         points_xz: polyline_to_road_points(&polyline),
-        height_sources: canonical_height_sources(height_sources),
     });
     Ok(())
 }
@@ -555,40 +535,6 @@ fn boundary_constraint_kind(role: NodeInputBoundaryRailRole) -> NodeRailConstrai
     }
 }
 
-fn boundary_height_sources(mouth: &NodeInputMouth, boundary_index: usize) -> Vec<NodeHeightSource> {
-    canonical_height_sources(
-        mouth
-            .boundary_heights
-            .iter()
-            .filter(|height| {
-                height.boundary_index == boundary_index
-                    && matches!(
-                        height.profile_kind,
-                        NodeInputProfileKind::Mouth | NodeInputProfileKind::Endpoint
-                    )
-            })
-            .flat_map(|height| height.height_sources.iter().cloned()),
-    )
-}
-
-fn all_boundary_height_sources(mouth: &NodeInputMouth) -> Vec<NodeHeightSource> {
-    canonical_height_sources(
-        mouth
-            .boundary_heights
-            .iter()
-            .flat_map(|height| height.height_sources.iter().cloned()),
-    )
-}
-
-fn canonical_height_sources(
-    sources: impl IntoIterator<Item = NodeHeightSource>,
-) -> Vec<NodeHeightSource> {
-    let mut sources = sources.into_iter().collect::<Vec<_>>();
-    sources.sort();
-    sources.dedup();
-    sources
-}
-
 fn xz(point: RoadVec3) -> RoadVec2 {
     RoadVec2::new(point.x, point.z)
 }
@@ -713,7 +659,6 @@ mod tests {
             NodeRailConstraintKind::FullRoadbedContour
         );
         assert_eq!(contours.constraints[0].constraint_index, 0);
-        assert!(!contours.constraints[0].height_sources.is_empty());
     }
 
     #[test]

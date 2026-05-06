@@ -6,7 +6,7 @@ use super::arrangement::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError, NodeArrangementKey,
 };
 use super::backend::ROAD_OVERLAY_COORDINATE_SCALE;
-use super::height::NodeHeightSourceError;
+use super::height::NodeHeightFieldError;
 use super::ownership::{
     NodeBooleanOwnershipError, NodeOwnedRegionArrangement, NodeOwnedRegionArrangementDiagnostic,
 };
@@ -301,12 +301,12 @@ impl NodeValidationReport {
         ))
     }
 
-    pub(crate) fn from_height_source_error(
+    pub(crate) fn from_height_field_error(
         node_id: u32,
         piece_kind: RoadSurfaceVisualNodePieceKind,
-        error: &NodeHeightSourceError,
+        error: &NodeHeightFieldError,
     ) -> Self {
-        Self::single_diagnostic(NodeGeometryDiagnostic::from_height_source_error(
+        Self::single_diagnostic(NodeGeometryDiagnostic::from_height_field_error(
             node_id, piece_kind, error,
         ))
     }
@@ -543,29 +543,29 @@ impl NodeGeometryDiagnostic {
         }
     }
 
-    fn from_height_source_error(
+    fn from_height_field_error(
         node_id: u32,
         piece_kind: RoadSurfaceVisualNodePieceKind,
-        error: &NodeHeightSourceError,
+        error: &NodeHeightFieldError,
     ) -> Self {
         let kind = match error {
-            NodeHeightSourceError::MissingSourceBand { .. }
-            | NodeHeightSourceError::MissingRegionBandIndex { .. }
-            | NodeHeightSourceError::SourceBandKindMismatch { .. }
-            | NodeHeightSourceError::InputOwnershipMismatch { .. } => {
+            NodeHeightFieldError::MissingSourceBand { .. }
+            | NodeHeightFieldError::MissingRegionBandIndex { .. }
+            | NodeHeightFieldError::SourceBandKindMismatch { .. }
+            | NodeHeightFieldError::InputOwnershipMismatch { .. } => {
                 NodeGeometryDiagnosticKind::BackendFailure {
-                    reason: "invalid_height_source",
+                    reason: "invalid_height_field",
                 }
             }
-            NodeHeightSourceError::DegenerateHeightField { .. }
-            | NodeHeightSourceError::VertexOutsideHeightField { .. }
-            | NodeHeightSourceError::HeightSampleFailed { .. }
-            | NodeHeightSourceError::DuplicateSourceBand { .. } => {
+            NodeHeightFieldError::DegenerateHeightField { .. }
+            | NodeHeightFieldError::VertexOutsideHeightField { .. }
+            | NodeHeightFieldError::HeightSampleFailed { .. }
+            | NodeHeightFieldError::DuplicateSourceBand { .. } => {
                 NodeGeometryDiagnosticKind::BackendFailure {
                     reason: "height_evaluation_failed",
                 }
             }
-            NodeHeightSourceError::SharedSourceHeightConflict {
+            NodeHeightFieldError::SharedSourceHeightConflict {
                 point_x_mm,
                 point_z_mm,
                 existing_height_mm,

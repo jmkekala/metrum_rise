@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use super::arrangement::{
-    NodeBandOwner, NodeHeightSource, NodeRegionSeamConstraint, NodeSeamSource, seam_source_priority,
+    NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_source_priority,
 };
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, overlay_point_to_road, road_vec2_to_overlay_point,
@@ -82,7 +82,6 @@ pub(crate) struct NodeBooleanOwnedRegion {
     pub(crate) source_band_index: Option<usize>,
     pub(crate) shape: NodeOverlayShape,
     pub(crate) area_m2: f32,
-    pub(crate) height_sources: Vec<NodeHeightSource>,
     pub(crate) seam_constraints: Vec<NodeRegionSeamConstraint>,
 }
 
@@ -422,7 +421,6 @@ fn owned_regions_from_domains(
                 source_band_index: domain.source_band_index,
                 shape: shape.clone(),
                 area_m2,
-                height_sources: canonical_height_sources(domain.height_sources.iter().cloned()),
                 seam_constraints: seam_constraints_for_shape(shape, owner, rail_constraints),
             });
         }
@@ -490,7 +488,6 @@ fn residual_regions_from_domains(
                 source_band_index: domain.source_band_index,
                 shape: shape.clone(),
                 area_m2,
-                height_sources: canonical_height_sources(domain.height_sources.iter().cloned()),
                 seam_constraints: seam_constraints_for_shape(shape, owner, rail_constraints),
             });
         }
@@ -1310,15 +1307,6 @@ fn sort_boolean_owned_regions(regions: &mut [NodeBooleanOwnedRegion]) {
     });
 }
 
-fn canonical_height_sources(
-    sources: impl IntoIterator<Item = NodeHeightSource>,
-) -> Vec<NodeHeightSource> {
-    let mut sources = sources.into_iter().collect::<Vec<_>>();
-    sources.sort();
-    sources.dedup();
-    sources
-}
-
 #[derive(Clone, Copy)]
 enum ResidualKind {
     Asphalt,
@@ -1416,11 +1404,14 @@ mod tests {
         assert_eq!(ownership.owned_region_arrangement.region_count(), 4);
         assert!(ownership.owned_region_arrangement.diagnostics().is_empty());
         assert!(!ownership.owned_region_arrangement.edges().is_empty());
-        assert!(ownership.owned_regions.iter().any(|region| region.kind
-            == RoadSurfaceBandKind::Carriageway
-            && region.owner == NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2)
-            && !region.height_sources.is_empty()
-            && !region.seam_constraints.is_empty()));
+        assert!(
+            ownership
+                .owned_regions
+                .iter()
+                .any(|region| region.kind == RoadSurfaceBandKind::Carriageway
+                    && region.owner == NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 2)
+                    && !region.seam_constraints.is_empty())
+        );
         assert!(
             ownership.owned_regions.iter().any(|region| {
                 region.seam_constraints.iter().any(|constraint| {
@@ -1479,7 +1470,6 @@ mod tests {
             owner: Some(owner),
             opposite_owner: None,
             points_xz: vec![RoadVec2::new(0.0, 0.0), RoadVec2::new(0.0001, 0.0)],
-            height_sources: Vec::new(),
         }];
 
         assert!(
@@ -1654,9 +1644,6 @@ mod tests {
             source_band_index: Some(owner.owner_index()),
             shape: vec![contour],
             area_m2: 1.0,
-            height_sources: vec![NodeHeightSource::ArrangementConstraint {
-                constraint_index: owner.owner_index(),
-            }],
             seam_constraints: Vec::new(),
         }
     }

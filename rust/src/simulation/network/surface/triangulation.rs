@@ -4,7 +4,7 @@
 
 use super::arrangement::{
     NodeArrangement, NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId,
-    NodeBandOwner, NodeHeightSource, NodeOwnedRegion,
+    NodeBandOwner, NodeOwnedRegion,
 };
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec3};
 use super::{
@@ -31,20 +31,16 @@ pub(crate) struct NodeTriangulatedRegion {
     pub(crate) kind: RoadSurfaceBandKind,
     pub(crate) owner: NodeBandOwner,
     pub(crate) height_field_id: NodeBandHeightFieldId,
-    pub(crate) source_mouth_order_index: usize,
-    pub(crate) source_band_index: usize,
     pub(crate) vertices: Vec<NodeTriangulatedVertex>,
     pub(crate) boundary_constraints: Vec<[usize; 2]>,
     pub(crate) triangles: Vec<NodeTriangulatedTriangle>,
     pub(crate) area_m2: f32,
-    pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeTriangulatedVertex {
     pub(crate) point_world: RoadVec3,
     pub(crate) height_field_id: NodeBandHeightFieldId,
-    pub(crate) height_sources: Vec<NodeHeightSource>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -237,13 +233,10 @@ fn triangulate_arrangement_region(
         kind: owner.kind(),
         owner,
         height_field_id: region.height_field_id(),
-        source_mouth_order_index: region.source_mouth_order_index(),
-        source_band_index: region.source_band_index(),
         vertices,
         boundary_constraints: constraints.into_iter().collect(),
         triangles,
         area_m2: region.area_m2(),
-        height_sources: region.height_sources().to_vec(),
     })
 }
 
@@ -318,7 +311,6 @@ fn insert_arrangement_vertex(
     vertices.push(NodeTriangulatedVertex {
         point_world: RoadVec3::new(point_xz.x, vertex.height_m(), point_xz.y),
         height_field_id: vertex.height_field_id(),
-        height_sources: vec![vertex.height_source().clone()],
     });
     vertex_lookup.insert(point_key, (index, height_key));
     Ok(index)
@@ -644,7 +636,6 @@ mod tests {
             !region.vertices.is_empty()
                 && !region.boundary_constraints.is_empty()
                 && !region.triangles.is_empty()
-                && !region.height_sources.is_empty()
         }));
         assert!(
             solution
@@ -690,8 +681,6 @@ mod tests {
                 kind: RoadSurfaceBandKind::Sidewalk,
                 owner: NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
                 height_field_id,
-                source_mouth_order_index: 0,
-                source_band_index: 0,
                 shape: vec![vec![
                     flat_vertex(0.00051, 0.0),
                     flat_vertex(0.00149, 0.0),
@@ -700,7 +689,6 @@ mod tests {
                     flat_vertex(0.0, 1.0),
                 ]],
                 area_m2: 1.0,
-                height_sources: Vec::new(),
                 seam_constraints: Vec::new(),
             }],
         };
@@ -731,9 +719,6 @@ mod tests {
                 2.0,
                 [owner],
                 NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway),
-                NodeHeightSource::ArrangementConstraint {
-                    constraint_index: 0,
-                },
                 [NodeSeamSource::FootprintBoundary { owner_index: 0 }],
             )
             .expect("test vertex should enter arrangement");
@@ -743,24 +728,16 @@ mod tests {
                 2.0,
                 [owner],
                 NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway),
-                NodeHeightSource::ArrangementConstraint {
-                    constraint_index: 1,
-                },
                 [NodeSeamSource::FootprintBoundary { owner_index: 0 }],
             )
             .expect("test vertex should enter arrangement");
         arrangement.push_region(
             owner,
             NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Carriageway),
-            0,
-            0,
             vec![first, second],
             Vec::new(),
             Vec::new(),
             0.0,
-            vec![NodeHeightSource::ArrangementConstraint {
-                constraint_index: 0,
-            }],
             Vec::new(),
         );
 
@@ -781,8 +758,6 @@ mod tests {
             kind: RoadSurfaceBandKind::Sidewalk,
             owner: NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0),
             height_field_id,
-            source_mouth_order_index: 0,
-            source_band_index: 0,
             shape: vec![
                 vec![
                     flat_vertex(0.0, 0.0),
@@ -798,7 +773,6 @@ mod tests {
                 ],
             ],
             area_m2: 12.0,
-            height_sources: Vec::new(),
             seam_constraints: Vec::new(),
         }
     }
@@ -808,7 +782,6 @@ mod tests {
             point_xz: super::super::backend::RoadVec2::new(x, z),
             height_m: 2.0,
             height_field_id: NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::Sidewalk),
-            height_sources: Vec::new(),
         }
     }
 
