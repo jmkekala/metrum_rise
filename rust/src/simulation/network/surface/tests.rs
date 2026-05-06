@@ -1036,9 +1036,14 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
         terminal_piece.kind,
         RoadSurfaceVisualNodePieceKind::Terminal
     );
-    assert_eq!(terminal_piece.outer_boundary_loops.len(), 1);
+    assert_node_piece_uses_band_owned_regions(terminal_piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(terminal_piece);
+    assert_material_triangles_do_not_overlap(terminal_piece);
+    assert!(!terminal_piece.outer_boundary_loops.is_empty());
     assert!(!terminal_piece.road_surface_polygons.is_empty());
     assert!(!terminal_piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(terminal_piece);
+    assert_outer_boundary_vertices_match_visible_top(terminal_piece);
     assert!(
         terminal_piece
             .road_surface_polygons
@@ -1128,7 +1133,7 @@ fn flat_logged_curve_bend_rejects_implicit_cross_owner_cdt_height_edge() {
 }
 
 #[test]
-fn logged_sixty_degree_bend_rejects_implicit_cross_owner_cdt_height_edge() {
+fn logged_sixty_degree_bend_generates_curb_transition_ownership() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-131.350, 0.0, -31.215), NodeType::Junction);
@@ -1164,14 +1169,18 @@ fn logged_sixty_degree_bend_rejects_implicit_cross_owner_cdt_height_edge() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&bend),
-        "sixty-degree bend must reject the cross-owner CDT edge height conflict instead of rendering a cracked curb join"
-    );
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("sixty-degree bend should compile after curb transition ownership is resolved before heighting");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_material_triangles_do_not_overlap(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
 }
 
 #[test]
-fn logged_flat_sixty_degree_bend_rejects_implicit_cross_owner_cdt_height_edge() {
+fn logged_flat_sixty_degree_bend_generates_curb_transition_ownership() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-104.032, 0.0, -0.181), NodeType::Junction);
@@ -1207,10 +1216,14 @@ fn logged_flat_sixty_degree_bend_rejects_implicit_cross_owner_cdt_height_edge() 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&bend),
-        "flat logged bend must reject until same-XZ curb CDT edges have explicit height authority"
-    );
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("flat logged bend should compile after curb transition ownership is resolved before heighting");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_material_triangles_do_not_overlap(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
 }
 
 #[test]
