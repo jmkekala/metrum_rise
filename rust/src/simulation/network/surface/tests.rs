@@ -1227,7 +1227,7 @@ fn logged_flat_sixty_degree_bend_generates_curb_transition_ownership() {
 }
 
 #[test]
-fn logged_inside_bend_curb_anchor_stays_at_asphalt_height() {
+fn logged_inside_bend_rejects_implicit_curb_anchor_height_repair() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-82.047, 0.0, -9.463), NodeType::Junction);
@@ -1262,34 +1262,9 @@ fn logged_inside_bend_curb_anchor_stays_at_asphalt_height() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&bend)
-        .expect("logged inside bend should compile");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
-    assert_node_piece_uses_band_owned_regions(piece);
-    assert_material_triangles_do_not_overlap(piece);
-    assert_outer_boundary_vertices_match_visible_top(piece);
-
-    let inner_anchor_point = Vector2::new(26.635197, -11.424565);
-    let (_, anchor_height) = piece
-        .owned_regions
-        .iter()
-        .filter(|region| region.kind == RoadSurfaceBandKind::CurbOrShoulder)
-        .flat_map(|region| region.polygon.points_world.iter())
-        .filter_map(|point| {
-            let distance_m = Vector2::new(
-                point.x - inner_anchor_point.x,
-                point.z - inner_anchor_point.y,
-            )
-            .length();
-            (distance_m <= 0.01).then_some((distance_m, point.y))
-        })
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .expect("logged inner bend must keep a curb vertex at the road-edge anchor");
     assert!(
-        anchor_height <= 0.005,
-        "inside bend curb skirt must anchor to asphalt height; point={inner_anchor_point:?} height={anchor_height:.4}"
+        !surface.compiled_visual_node_pieces().contains_key(&bend),
+        "logged inside bend must reject until curb-anchor ownership is generated before heighting instead of repaired by height transfer"
     );
 }
 
@@ -1383,7 +1358,7 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
 }
 
 #[test]
-fn steep_standard_terminal_rejects_cross_owner_cdt_height_edge() {
+fn steep_standard_terminal_compiles_with_source_boundary_height_edges() {
     let terrain = flat_terrain(64, 64);
     let mut graph = RegionGraph::new();
     let points = vec![
@@ -1414,10 +1389,14 @@ fn steep_standard_terminal_rejects_cross_owner_cdt_height_edge() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&start),
-        "steep start terminal must reject implicit cross-owner CDT height sharing"
-    );
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&start)
+        .expect("steep start terminal should compile from source boundary height edges");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Terminal);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_material_triangles_do_not_overlap(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
 }
 
 #[test]

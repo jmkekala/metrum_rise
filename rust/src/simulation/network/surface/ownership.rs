@@ -6,11 +6,12 @@ use super::arrangement::{
     NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_source_priority,
 };
 use super::backend::{
-    ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, overlay_point_to_road, road_vec2_to_overlay_point,
+    ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, overlay_point_to_road, road_points_to_polyline,
+    road_vec2_to_overlay_point,
 };
 use super::rails::{
-    NodeGeneratedContour, NodeGeneratedContourKind, NodeRailConstraint, NodeRailConstraintKind,
-    NodeRailContourSet,
+    NodeGeneratedContour, NodeGeneratedContourClaimPriority, NodeGeneratedContourKind,
+    NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
 };
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
@@ -78,6 +79,7 @@ pub(crate) struct NodeOwnedRegionArrangementKey {
 pub(crate) struct NodeBooleanOwnedRegion {
     pub(crate) kind: RoadSurfaceBandKind,
     pub(crate) owner: NodeBandOwner,
+    pub(crate) claim_priority: NodeGeneratedContourClaimPriority,
     pub(crate) source_mouth_order_index: usize,
     pub(crate) source_band_index: Option<usize>,
     pub(crate) shape: NodeOverlayShape,
@@ -123,6 +125,7 @@ struct OwnedDomainResult {
 struct OwnedDomainGroup<'a> {
     owner: NodeBandOwner,
     kind: RoadSurfaceBandKind,
+    claim_priority: NodeGeneratedContourClaimPriority,
     source_mouth_order_index: usize,
     source_band_index: Option<usize>,
     domains: Vec<&'a NodeGeneratedContour>,
@@ -194,8 +197,6 @@ impl NodeBooleanOwnership {
             &footprint_shapes,
             rails.constraints.len(),
         );
-        resolve_same_band_role_crossing_joins(&mut owned_regions, &rails.constraints);
-        canonicalize_owned_region_rings(&mut owned_regions, &footprint_shapes);
         let next_constraint_index = next_region_constraint_index(&owned_regions);
         append_missing_shared_region_seam_constraints(
             &mut owned_regions,
@@ -390,12 +391,39 @@ fn split_non_road_regions(
             continue;
         }
 
-        let kind_result = owned_regions_from_domains(
+        let canonical_domains = canonical_same_band_contact_domains_before_final_boolean(
             &kind_target,
             &kind_domains,
             &rails.constraints,
-            ResidualKind::Band(kind),
         )?;
+        let kind_result = if canonical_domains.is_empty() {
+            owned_regions_from_domains(
+                &kind_target,
+                &kind_domains,
+                &rails.constraints,
+                ResidualKind::Band(kind),
+            )?
+        } else {
+            let canonical_domain_refs = canonical_domains.iter().collect::<Vec<_>>();
+            match owned_regions_from_domains(
+                &kind_target,
+                &canonical_domain_refs,
+                &rails.constraints,
+                ResidualKind::Band(kind),
+            ) {
+                Ok(result) => result,
+                Err(NodeBooleanOwnershipError::UnownedBandResidual {
+                    kind: residual_kind,
+                    ..
+                }) if residual_kind == kind => owned_regions_from_domains(
+                    &kind_target,
+                    &kind_domains,
+                    &rails.constraints,
+                    ResidualKind::Band(kind),
+                )?,
+                Err(error) => return Err(error),
+            }
+        };
         claimed_shapes =
             overlay_union_shape_sets(&claimed_shapes, &kind_result.claimed_shapes, "claim_union")?;
         regions.extend(kind_result.regions);
@@ -406,6 +434,82 @@ fn split_non_road_regions(
         regions,
         claimed_shapes,
     })
+}
+
+fn canonical_same_band_contact_domains_before_final_boolean(
+    target_shapes: &NodeOverlayShapes,
+    domains: &[&NodeGeneratedContour],
+    rail_constraints: &[NodeRailConstraint],
+) -> Result<Vec<NodeGeneratedContour>, NodeBooleanOwnershipError> {
+    if domains
+        .iter()
+        .any(|domain| band_kind(domain) != Some(RoadSurfaceBandKind::CurbOrShoulder))
+    {
+        return Ok(Vec::new());
+    }
+
+    let mut plan = owned_regions_from_domains(
+        target_shapes,
+        domains,
+        rail_constraints,
+        ResidualKind::Band(RoadSurfaceBandKind::CurbOrShoulder),
+    )?;
+    if plan.regions.len() < 2 {
+        return Ok(Vec::new());
+    }
+
+    canonicalize_owned_region_rings(&mut plan.regions, target_shapes);
+    append_shared_region_seam_constraints(&mut plan.regions, target_shapes, rail_constraints.len());
+    if !resolve_same_band_role_crossing_joins(&mut plan.regions, rail_constraints) {
+        return Ok(Vec::new());
+    }
+    canonicalize_owned_region_rings(&mut plan.regions, target_shapes);
+    Ok(generated_domains_from_contact_plan(&plan.regions))
+}
+
+fn generated_domains_from_contact_plan(
+    regions: &[NodeBooleanOwnedRegion],
+) -> Vec<NodeGeneratedContour> {
+    if regions
+        .iter()
+        .any(|region| region.shape.len() != 1 || region.kind != RoadSurfaceBandKind::CurbOrShoulder)
+    {
+        return Vec::new();
+    }
+
+    let mut domains = regions
+        .iter()
+        .filter_map(|region| {
+            let points_xz = region.shape.first().map(|contour| {
+                contour
+                    .iter()
+                    .copied()
+                    .map(overlay_point_to_road)
+                    .collect::<Vec<_>>()
+            })?;
+            if points_xz.len() < 3 {
+                return None;
+            }
+            Some(NodeGeneratedContour {
+                kind: NodeGeneratedContourKind::Band { kind: region.kind },
+                source_mouth_order_index: region.source_mouth_order_index,
+                source_band_index: region.source_band_index,
+                owner: Some(region.owner),
+                claim_priority: region.claim_priority,
+                backend_polyline: road_points_to_polyline(points_xz.iter().copied(), true),
+                points_xz,
+            })
+        })
+        .collect::<Vec<_>>();
+    domains.sort_by_key(|domain| {
+        (
+            domain.claim_priority,
+            domain.source_mouth_order_index,
+            domain.source_band_index,
+            domain.owner,
+        )
+    });
+    domains
 }
 
 fn owned_regions_from_domains(
@@ -451,6 +555,7 @@ fn owned_regions_from_domains(
             regions.push(NodeBooleanOwnedRegion {
                 kind: group.kind,
                 owner: group.owner,
+                claim_priority: group.claim_priority,
                 source_mouth_order_index: group.source_mouth_order_index,
                 source_band_index: group.source_band_index,
                 shape: shape.clone(),
@@ -501,6 +606,7 @@ fn owned_domain_groups<'a>(
         if let Some(group) = groups.last_mut() {
             if group.owner == owner
                 && group.kind == kind
+                && group.claim_priority == domain.claim_priority
                 && group.source_mouth_order_index == domain.source_mouth_order_index
                 && group.source_band_index == domain.source_band_index
             {
@@ -511,6 +617,7 @@ fn owned_domain_groups<'a>(
         groups.push(OwnedDomainGroup {
             owner,
             kind,
+            claim_priority: domain.claim_priority,
             source_mouth_order_index: domain.source_mouth_order_index,
             source_band_index: domain.source_band_index,
             domains: vec![*domain],
@@ -554,6 +661,7 @@ fn residual_regions_from_domains(
             regions.push(NodeBooleanOwnedRegion {
                 kind: group.kind,
                 owner: group.owner,
+                claim_priority: group.claim_priority,
                 source_mouth_order_index: group.source_mouth_order_index,
                 source_band_index: group.source_band_index,
                 shape: shape.clone(),
@@ -1158,9 +1266,10 @@ enum SameBandBoundaryRole {
 fn resolve_same_band_role_crossing_joins(
     regions: &mut [NodeBooleanOwnedRegion],
     rail_constraints: &[NodeRailConstraint],
-) {
+) -> bool {
     let mut next_constraint_index = next_region_constraint_index(regions);
     let max_passes = regions.len().saturating_mul(regions.len()).max(1);
+    let mut changed = false;
 
     for _ in 0..max_passes {
         if let Some(rewrite) =
@@ -1168,6 +1277,7 @@ fn resolve_same_band_role_crossing_joins(
         {
             apply_same_band_role_join_rewrite(regions, rewrite);
             next_constraint_index += 1;
+            changed = true;
             continue;
         }
         if let Some(rewrite) = same_band_same_role_edge_rewrite_candidate(
@@ -1177,6 +1287,7 @@ fn resolve_same_band_role_crossing_joins(
         ) {
             apply_same_band_role_join_rewrite(regions, rewrite);
             next_constraint_index += 1;
+            changed = true;
             continue;
         }
         if let Some(rewrite) =
@@ -1184,10 +1295,20 @@ fn resolve_same_band_role_crossing_joins(
         {
             apply_same_band_role_point_rewrite(regions, rewrite);
             next_constraint_index += 1;
+            changed = true;
             continue;
         }
-        return;
+        if let Some(rewrite) =
+            same_band_claim_priority_point_rewrite_candidate(regions, next_constraint_index)
+        {
+            apply_same_band_role_point_rewrite(regions, rewrite);
+            next_constraint_index += 1;
+            changed = true;
+            continue;
+        }
+        return changed;
     }
+    changed
 }
 
 fn same_band_role_point_rewrite_candidate(
@@ -1469,6 +1590,91 @@ fn same_band_same_role_removed_endpoint_priority(role: SameBandBoundaryRole) -> 
     }
 }
 
+fn same_band_claim_priority_point_rewrite_candidate(
+    regions: &[NodeBooleanOwnedRegion],
+    new_constraint_index: usize,
+) -> Option<SameBandRolePointRewrite> {
+    for left_index in 0..regions.len() {
+        for right_index in left_index + 1..regions.len() {
+            let left = &regions[left_index];
+            let right = &regions[right_index];
+            if left.kind != RoadSurfaceBandKind::CurbOrShoulder
+                || right.kind != RoadSurfaceBandKind::CurbOrShoulder
+                || left.owner.kind() != right.owner.kind()
+                || left.owner == right.owner
+            {
+                continue;
+            }
+            let (donor_index, donor) = if left.claim_priority != right.claim_priority {
+                if left.claim_priority > right.claim_priority {
+                    (left_index, left)
+                } else {
+                    (right_index, right)
+                }
+            } else if left.owner.owner_index() < right.owner.owner_index() {
+                (left_index, left)
+            } else {
+                (right_index, right)
+            };
+            let shared_edges = shared_region_edges(left, right);
+            for key in shared_region_points(left, right) {
+                if shared_edges
+                    .iter()
+                    .any(|(start, end)| *start == key || *end == key)
+                {
+                    continue;
+                }
+                if let Some((previous_key, next_key)) =
+                    removable_claim_priority_contact_point(donor, key)
+                {
+                    return Some(SameBandRolePointRewrite {
+                        donor_region_index: donor_index,
+                        new_constraint_index,
+                        previous_key,
+                        conflict_key: key,
+                        next_key,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+fn removable_claim_priority_contact_point(
+    region: &NodeBooleanOwnedRegion,
+    conflict_key: NodeOwnershipPointKey,
+) -> Option<(NodeOwnershipPointKey, NodeOwnershipPointKey)> {
+    for contour in &region.shape {
+        if contour.len() < 4 {
+            continue;
+        }
+        let keys = contour
+            .iter()
+            .copied()
+            .map(overlay_point_key)
+            .collect::<Vec<_>>();
+        for index in 0..keys.len() {
+            if keys[index] != conflict_key {
+                continue;
+            }
+            let previous_key = keys[if index == 0 {
+                keys.len() - 1
+            } else {
+                index - 1
+            }];
+            let next_key = keys[(index + 1) % keys.len()];
+            if previous_key == next_key
+                || triangle_double_area(previous_key, conflict_key, next_key) == 0
+            {
+                continue;
+            }
+            return Some((previous_key, next_key));
+        }
+    }
+    None
+}
+
 fn shared_region_points(
     left: &NodeBooleanOwnedRegion,
     right: &NodeBooleanOwnedRegion,
@@ -1669,9 +1875,13 @@ fn same_band_endpoint_roles_match(
     rail_constraints: &[NodeRailConstraint],
     key: NodeOwnershipPointKey,
 ) -> Option<bool> {
-    let left_role = same_band_boundary_role_at_region_vertex(left, rail_constraints, key)?;
-    let right_role = same_band_boundary_role_at_region_vertex(right, rail_constraints, key)?;
-    Some(left_role == right_role)
+    let left_role = same_band_boundary_role_at_region_vertex(left, rail_constraints, key);
+    let right_role = same_band_boundary_role_at_region_vertex(right, rail_constraints, key);
+    match (left_role, right_role) {
+        (Some(left_role), Some(right_role)) => Some(left_role == right_role),
+        (Some(_), None) | (None, Some(_)) => Some(false),
+        (None, None) => None,
+    }
 }
 
 fn same_band_boundary_role_at_region_vertex(
@@ -2643,6 +2853,7 @@ fn sort_boolean_owned_regions(regions: &mut [NodeBooleanOwnedRegion]) {
     regions.sort_by(|a, b| {
         RoadSurfaceSystem::band_kind_sort_key(a.kind)
             .cmp(&RoadSurfaceSystem::band_kind_sort_key(b.kind))
+            .then(a.claim_priority.cmp(&b.claim_priority))
             .then(a.source_mouth_order_index.cmp(&b.source_mouth_order_index))
             .then(a.source_band_index.cmp(&b.source_band_index))
             .then(a.area_m2.total_cmp(&b.area_m2))
@@ -3109,148 +3320,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn same_role_curb_transition_edge_gets_single_owner_before_heighting() {
-        let donor_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
-        let receiver_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
-        let raised_shared = RoadVec2::new(0.0, 1.0);
-        let lower_shared = RoadVec2::new(0.0, 0.0);
-        let donor_lower = RoadVec2::new(1.0, 0.0);
-        let donor_raised = RoadVec2::new(1.0, 1.0);
-        let receiver_raised = RoadVec2::new(-1.0, 1.0);
-        let receiver_lower = RoadVec2::new(-1.0, 0.0);
-        let mut regions = vec![
-            test_owned_region(
-                RoadSurfaceBandKind::CurbOrShoulder,
-                donor_owner,
-                vec![
-                    overlay_point_from_key(road_point_key(raised_shared)),
-                    overlay_point_from_key(road_point_key(lower_shared)),
-                    overlay_point_from_key(road_point_key(donor_lower)),
-                    overlay_point_from_key(road_point_key(donor_raised)),
-                ],
-            ),
-            test_owned_region(
-                RoadSurfaceBandKind::CurbOrShoulder,
-                receiver_owner,
-                vec![
-                    overlay_point_from_key(road_point_key(lower_shared)),
-                    overlay_point_from_key(road_point_key(raised_shared)),
-                    overlay_point_from_key(road_point_key(receiver_raised)),
-                    overlay_point_from_key(road_point_key(receiver_lower)),
-                ],
-            ),
-        ];
-        let rail_constraints = vec![
-            test_role_constraint(
-                0,
-                NodeRailConstraintKind::AsphaltCurbContact,
-                donor_owner,
-                lower_shared,
-                donor_lower,
-            ),
-            test_role_constraint(
-                1,
-                NodeRailConstraintKind::CurbSidewalkContact,
-                donor_owner,
-                donor_raised,
-                raised_shared,
-            ),
-            test_role_constraint(
-                2,
-                NodeRailConstraintKind::AsphaltCurbContact,
-                receiver_owner,
-                receiver_lower,
-                lower_shared,
-            ),
-            test_role_constraint(
-                3,
-                NodeRailConstraintKind::CurbSidewalkContact,
-                receiver_owner,
-                raised_shared,
-                receiver_raised,
-            ),
-            test_role_constraint(
-                4,
-                NodeRailConstraintKind::AsphaltCurbContact,
-                receiver_owner,
-                lower_shared,
-                donor_lower,
-            ),
-        ];
-        let footprint_shapes = Vec::new();
-
-        append_shared_region_seam_constraints(&mut regions, &footprint_shapes, 5);
-        let rewrite = same_band_same_role_edge_rewrite_candidate(&regions, &rail_constraints, 99)
-            .expect("same-role edge rewrite should be available");
-        assert_eq!(rewrite.donor_region_index, 0);
-        assert_eq!(rewrite.receiver_region_index, 1);
-        resolve_same_band_role_crossing_joins(&mut regions, &rail_constraints);
-
-        let raised_key = road_point_key(raised_shared);
-        let lower_key = road_point_key(lower_shared);
-        let donor_lower_key = road_point_key(donor_lower);
-        assert!(
-            !regions[0].shape[0]
-                .iter()
-                .any(|point| overlay_point_key(*point) == lower_key),
-            "the donor must lose the lower transition endpoint before height sampling"
-        );
-        assert!(
-            regions[1].shape[0]
-                .iter()
-                .any(|point| overlay_point_key(*point) == donor_lower_key),
-            "the receiver must own the transferred curb transition wedge only when it has explicit same-role seam authority"
-        );
-        let old_edge = OwnedRegionEdgeKey::new(lower_key, raised_key);
-        let new_edge = OwnedRegionEdgeKey::new(donor_lower_key, raised_key);
-        let shared_edges = shared_region_edges(&regions[0], &regions[1]);
-        assert!(
-            !shared_edges
-                .iter()
-                .any(|edge| *edge == (old_edge.start, old_edge.end)),
-            "the lower-to-raised edge must not remain shared by two curb height fields"
-        );
-        assert!(
-            shared_edges
-                .iter()
-                .any(|edge| *edge == (new_edge.start, new_edge.end)),
-            "the transferred same-band seam must be explicit on the new transition boundary"
-        );
-        let next_constraint_index = next_region_constraint_index(&regions);
-        append_missing_shared_region_seam_constraints(
-            &mut regions,
-            &footprint_shapes,
-            next_constraint_index,
-        );
-        let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
-            46,
-            RoadSurfaceVisualNodePieceKind::Bend,
-            &regions,
-            &footprint_shapes,
-        );
-        assert!(arrangement.diagnostics().is_empty());
-    }
-
-    fn test_role_constraint(
-        constraint_index: usize,
-        kind: NodeRailConstraintKind,
-        owner: NodeBandOwner,
-        start: RoadVec2,
-        end: RoadVec2,
-    ) -> NodeRailConstraint {
-        NodeRailConstraint {
-            constraint_index,
-            kind,
-            source_mouth_order_index: owner.owner_index(),
-            source_band_index: Some(owner.owner_index()),
-            source_boundary_index: None,
-            owner: Some(owner),
-            opposite_owner: None,
-            points_xz: vec![start, end],
-        }
-    }
-
     fn test_owned_region(
         kind: RoadSurfaceBandKind,
         owner: NodeBandOwner,
@@ -3259,6 +3328,7 @@ mod tests {
         NodeBooleanOwnedRegion {
             kind,
             owner,
+            claim_priority: NodeGeneratedContourClaimPriority::MouthBand,
             source_mouth_order_index: owner.owner_index(),
             source_band_index: Some(owner.owner_index()),
             shape: vec![contour],

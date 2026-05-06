@@ -340,7 +340,12 @@ impl NodeBandHeightPatch {
                 interval.endpoint_end_world.y,
                 interval.mouth_end_world.y,
             ),
-            contour_height_edges: Vec::new(),
+            contour_height_edges: contour_height_edges(&[
+                interval.mouth_start_world,
+                interval.mouth_end_world,
+                interval.endpoint_end_world,
+                interval.endpoint_start_world,
+            ]),
         }
     }
 
@@ -1385,6 +1390,8 @@ mod tests {
         NodeBooleanOwnedRegion {
             kind,
             owner: NodeBandOwner::new(kind, band_index),
+            claim_priority:
+                crate::simulation::network::surface::rails::NodeGeneratedContourClaimPriority::MouthBand,
             source_mouth_order_index: 0,
             source_band_index: Some(band_index),
             shape: vec![vec![[0.0, 0.0], [10.0, 0.0], [10.0, 2.0], [0.0, 2.0]]],
