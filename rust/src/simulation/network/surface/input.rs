@@ -3,11 +3,13 @@
 #![allow(dead_code)]
 
 use super::backend::{
-    RoadVec2, RoadVec3, godot_vec2_to_road, godot_vec3_to_road, godot_vec3_xz_to_road,
+    ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, godot_vec2_to_road, godot_vec3_to_road,
+    godot_vec3_xz_to_road,
 };
 use super::{
-    IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, OrderedIncidentPieceMouth,
-    RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
+    IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, NODE_OVERLAY_MIN_AREA_M2,
+    OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePieceKind,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -165,7 +167,7 @@ impl NodeArrangementInput {
                 mouth,
             )?);
         }
-        add_bend_corner_end_bands(piece_kind, &mut input_mouths);
+        add_node_corner_join_bands(piece_kind, &mut input_mouths);
 
         Ok(Self {
             node_id,
@@ -404,11 +406,18 @@ struct BendCornerLayer {
     outer_boundary_index: usize,
 }
 
-fn add_bend_corner_end_bands(
+fn add_node_corner_join_bands(
     piece_kind: RoadSurfaceVisualNodePieceKind,
     mouths: &mut [NodeInputMouth],
 ) {
-    if piece_kind != RoadSurfaceVisualNodePieceKind::Bend || mouths.len() != 2 {
+    match piece_kind {
+        RoadSurfaceVisualNodePieceKind::Bend => add_bend_corner_join_bands(mouths),
+        RoadSurfaceVisualNodePieceKind::JunctionN | RoadSurfaceVisualNodePieceKind::Terminal => {}
+    }
+}
+
+fn add_bend_corner_join_bands(mouths: &mut [NodeInputMouth]) {
+    if mouths.len() != 2 {
         return;
     }
 
@@ -419,10 +428,18 @@ fn add_bend_corner_end_bands(
     } else {
         (1, 0)
     };
+    append_adjacent_corner_join_bands(mouths, from_index, to_index);
+}
+
+fn append_adjacent_corner_join_bands(
+    mouths: &mut [NodeInputMouth],
+    from_index: usize,
+    to_index: usize,
+) {
     let from_mouth = mouths[from_index].clone();
     let to_mouth = mouths[to_index].clone();
-    // Bend outside corners need explicit curved ownership bands; span-mouth rectangles alone leave
-    // the wide-gap slice unowned.
+    // Adjacent mouth gaps need explicit owner-preserving bands before heighting; the canonical
+    // topology must not repair same-band joins by moving vertices after ownership is solved.
     let from_layers = bend_corner_layers(&from_mouth, BendCornerProfileSide::End);
     let to_layers = bend_corner_layers(&to_mouth, BendCornerProfileSide::Start);
     if from_layers.is_empty() || to_layers.is_empty() {
@@ -431,14 +448,47 @@ fn add_bend_corner_end_bands(
 
     let next_source_band_index =
         mouths[from_index].band_intervals.len() + mouths[from_index].terminal_end_bands.len();
-    let end_bands = bend_corner_end_bands(
+    let mut end_bands = bend_corner_end_bands(
         &from_mouth,
         &from_layers,
         &to_mouth,
         &to_layers,
         next_source_band_index,
     );
+    end_bands.retain(|end_band| terminal_end_band_has_quantized_area(end_band));
     mouths[from_index].terminal_end_bands.extend(end_bands);
+}
+
+fn terminal_end_band_has_quantized_area(end_band: &NodeInputTerminalEndBand) -> bool {
+    let mut keys = Vec::with_capacity(end_band.contour_world.len());
+    for point in &end_band.contour_world {
+        let key = quantized_xz_key(xz_from_road_vec3(*point));
+        if keys.last().copied() != Some(key) {
+            keys.push(key);
+        }
+    }
+    if keys.len() > 1 && keys.first() == keys.last() {
+        keys.pop();
+    }
+    if keys.len() < 3 {
+        return false;
+    }
+
+    let mut double_area: i128 = 0;
+    for index in 0..keys.len() {
+        let (x0, z0) = keys[index];
+        let (x1, z1) = keys[(index + 1) % keys.len()];
+        double_area += i128::from(x0) * i128::from(z1) - i128::from(x1) * i128::from(z0);
+    }
+    let area_m2 = double_area.unsigned_abs() as f64 * 0.5 / ROAD_OVERLAY_COORDINATE_SCALE.powi(2);
+    area_m2 > f64::from(NODE_OVERLAY_MIN_AREA_M2)
+}
+
+fn quantized_xz_key(point: RoadVec2) -> (i64, i64) {
+    (
+        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
 }
 
 fn ccw_angle_delta(from_angle: f64, to_angle: f64) -> f64 {

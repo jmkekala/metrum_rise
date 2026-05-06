@@ -203,15 +203,7 @@ impl NodeBooleanOwnership {
         })
     }
 
-    pub(crate) fn resolve_same_band_join_ownership<E>(
-        &mut self,
-        mut fields_match: impl FnMut(
-            NodeOwnershipPointKey,
-            &NodeBooleanOwnedRegion,
-            &NodeBooleanOwnedRegion,
-        ) -> Result<bool, E>,
-    ) -> Result<(), E> {
-        resolve_same_band_join_boundaries(&mut self.owned_regions, &mut fields_match)?;
+    pub(crate) fn resolve_canonical_contact_ownership(&mut self) {
         let next_constraint_index = next_region_constraint_index(&self.owned_regions);
         append_missing_shared_region_seam_constraints(
             &mut self.owned_regions,
@@ -224,7 +216,6 @@ impl NodeBooleanOwnership {
             &self.owned_regions,
             &self.footprint_shapes,
         );
-        Ok(())
     }
 }
 
@@ -807,40 +798,6 @@ pub(crate) fn append_missing_shared_region_seam_constraints(
     }
 }
 
-#[derive(Clone, Copy)]
-struct SameBandJoinOwnershipTransfer {
-    donor_region_index: usize,
-    receiver_region_index: usize,
-    old_constraint_index: usize,
-    new_constraint_index: usize,
-    equal_key: NodeOwnershipPointKey,
-    conflict_key: NodeOwnershipPointKey,
-    candidate_key: NodeOwnershipPointKey,
-}
-
-fn resolve_same_band_join_boundaries<E>(
-    regions: &mut [NodeBooleanOwnedRegion],
-    fields_match: &mut impl FnMut(
-        NodeOwnershipPointKey,
-        &NodeBooleanOwnedRegion,
-        &NodeBooleanOwnedRegion,
-    ) -> Result<bool, E>,
-) -> Result<(), E> {
-    let mut next_constraint_index = next_region_constraint_index(regions);
-    let max_passes = regions.len().saturating_mul(regions.len()).max(1);
-
-    for _ in 0..max_passes {
-        let Some(transfer) =
-            same_band_join_transfer_candidate(regions, next_constraint_index, fields_match)?
-        else {
-            return Ok(());
-        };
-        apply_same_band_join_transfer(regions, transfer);
-        next_constraint_index += 1;
-    }
-    Ok(())
-}
-
 fn next_region_constraint_index(regions: &[NodeBooleanOwnedRegion]) -> usize {
     regions
         .iter()
@@ -848,402 +805,6 @@ fn next_region_constraint_index(regions: &[NodeBooleanOwnedRegion]) -> usize {
         .map(|constraint| constraint.constraint_index)
         .max()
         .map_or(0, |index| index + 1)
-}
-
-fn same_band_join_transfer_candidate<E>(
-    regions: &[NodeBooleanOwnedRegion],
-    new_constraint_index: usize,
-    fields_match: &mut impl FnMut(
-        NodeOwnershipPointKey,
-        &NodeBooleanOwnedRegion,
-        &NodeBooleanOwnedRegion,
-    ) -> Result<bool, E>,
-) -> Result<Option<SameBandJoinOwnershipTransfer>, E> {
-    for left_index in 0..regions.len() {
-        for right_index in left_index + 1..regions.len() {
-            let left = &regions[left_index];
-            let right = &regions[right_index];
-            if left.kind != right.kind || left.owner.kind() != right.owner.kind() {
-                continue;
-            }
-            for (constraint_index, start, end) in shared_same_band_height_constraints(left, right) {
-                let start_matches = fields_match(start, left, right)?;
-                let end_matches = fields_match(end, left, right)?;
-                if start_matches && end_matches {
-                    continue;
-                }
-                let Some((equal_key, conflict_key)) =
-                    one_matching_endpoint(start, end, start_matches, end_matches)
-                else {
-                    continue;
-                };
-                if let Some(candidate_key) = adjacent_matching_join_candidate(
-                    left,
-                    right,
-                    equal_key,
-                    conflict_key,
-                    fields_match,
-                )? {
-                    return Ok(Some(SameBandJoinOwnershipTransfer {
-                        donor_region_index: left_index,
-                        receiver_region_index: right_index,
-                        old_constraint_index: constraint_index,
-                        new_constraint_index,
-                        equal_key,
-                        conflict_key,
-                        candidate_key,
-                    }));
-                }
-                if let Some(candidate_key) = adjacent_matching_join_candidate(
-                    right,
-                    left,
-                    equal_key,
-                    conflict_key,
-                    fields_match,
-                )? {
-                    return Ok(Some(SameBandJoinOwnershipTransfer {
-                        donor_region_index: right_index,
-                        receiver_region_index: left_index,
-                        old_constraint_index: constraint_index,
-                        new_constraint_index,
-                        equal_key,
-                        conflict_key,
-                        candidate_key,
-                    }));
-                }
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn shared_same_band_height_constraints(
-    left: &NodeBooleanOwnedRegion,
-    right: &NodeBooleanOwnedRegion,
-) -> Vec<(usize, NodeOwnershipPointKey, NodeOwnershipPointKey)> {
-    let mut constraints = Vec::new();
-    for left_constraint in &left.seam_constraints {
-        if !same_band_generated_join_constraint(left_constraint) {
-            continue;
-        }
-        for right_constraint in &right.seam_constraints {
-            if left_constraint.constraint_index != right_constraint.constraint_index
-                || !same_band_generated_join_constraint(right_constraint)
-            {
-                continue;
-            }
-            let left_start = road_point_key(left_constraint.start_xz);
-            let left_end = road_point_key(left_constraint.end_xz);
-            let right_start = road_point_key(right_constraint.start_xz);
-            let right_end = road_point_key(right_constraint.end_xz);
-            if same_undirected_edge(left_start, left_end, right_start, right_end) {
-                constraints.push((left_constraint.constraint_index, left_start, left_end));
-            }
-        }
-    }
-    constraints.sort_unstable();
-    constraints.dedup();
-    constraints
-}
-
-fn same_band_generated_join_constraint(constraint: &NodeRegionSeamConstraint) -> bool {
-    constraint.constrains_shared_height
-        && constraint.is_material_transition
-        && matches!(
-            constraint.seam_source,
-            NodeSeamSource::FootprintBoundary { .. }
-        )
-        && road_point_key(constraint.start_xz) != road_point_key(constraint.end_xz)
-}
-
-fn one_matching_endpoint(
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-    start_matches: bool,
-    end_matches: bool,
-) -> Option<(NodeOwnershipPointKey, NodeOwnershipPointKey)> {
-    match (start_matches, end_matches) {
-        (true, false) => Some((start, end)),
-        (false, true) => Some((end, start)),
-        _ => None,
-    }
-}
-
-fn same_undirected_edge(
-    left_start: NodeOwnershipPointKey,
-    left_end: NodeOwnershipPointKey,
-    right_start: NodeOwnershipPointKey,
-    right_end: NodeOwnershipPointKey,
-) -> bool {
-    (left_start == right_start && left_end == right_end)
-        || (left_start == right_end && left_end == right_start)
-}
-
-fn adjacent_matching_join_candidate<E>(
-    region: &NodeBooleanOwnedRegion,
-    opposite: &NodeBooleanOwnedRegion,
-    equal_key: NodeOwnershipPointKey,
-    conflict_key: NodeOwnershipPointKey,
-    fields_match: &mut impl FnMut(
-        NodeOwnershipPointKey,
-        &NodeBooleanOwnedRegion,
-        &NodeBooleanOwnedRegion,
-    ) -> Result<bool, E>,
-) -> Result<Option<NodeOwnershipPointKey>, E> {
-    let mut candidates = Vec::new();
-    for contour in &region.shape {
-        if contour.len() < 3 {
-            continue;
-        }
-        let keys = contour
-            .iter()
-            .copied()
-            .map(overlay_point_key)
-            .collect::<Vec<_>>();
-        for index in 0..keys.len() {
-            if keys[index] != conflict_key {
-                continue;
-            }
-            let prev = if index == 0 {
-                keys.len() - 1
-            } else {
-                index - 1
-            };
-            let next = if index + 1 == keys.len() {
-                0
-            } else {
-                index + 1
-            };
-            for candidate in [keys[prev], keys[next]] {
-                if candidate == equal_key || candidate == conflict_key {
-                    continue;
-                }
-                if !edge_exists_in_keys(&keys, equal_key, conflict_key) {
-                    continue;
-                }
-                if fields_match(candidate, region, opposite)? {
-                    candidates.push(candidate);
-                }
-            }
-        }
-    }
-    candidates.sort_unstable();
-    candidates.dedup();
-    Ok(candidates.into_iter().next())
-}
-
-fn edge_exists_in_keys(
-    keys: &[NodeOwnershipPointKey],
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-) -> bool {
-    keys.iter().enumerate().any(|(index, key)| {
-        let next = keys[(index + 1) % keys.len()];
-        (*key == start && next == end) || (*key == end && next == start)
-    })
-}
-
-fn apply_same_band_join_transfer(
-    regions: &mut [NodeBooleanOwnedRegion],
-    transfer: SameBandJoinOwnershipTransfer,
-) {
-    if transfer.donor_region_index == transfer.receiver_region_index {
-        return;
-    }
-    if transfer.donor_region_index < transfer.receiver_region_index {
-        let (left, right) = regions.split_at_mut(transfer.receiver_region_index);
-        apply_same_band_join_transfer_to_regions(
-            &mut left[transfer.donor_region_index],
-            &mut right[0],
-            transfer,
-        );
-    } else {
-        let (left, right) = regions.split_at_mut(transfer.donor_region_index);
-        apply_same_band_join_transfer_to_regions(
-            &mut right[0],
-            &mut left[transfer.receiver_region_index],
-            transfer,
-        );
-    }
-}
-
-fn apply_same_band_join_transfer_to_regions(
-    donor: &mut NodeBooleanOwnedRegion,
-    receiver: &mut NodeBooleanOwnedRegion,
-    transfer: SameBandJoinOwnershipTransfer,
-) {
-    remove_join_triangle_from_donor(
-        donor,
-        transfer.equal_key,
-        transfer.conflict_key,
-        transfer.candidate_key,
-    );
-    add_join_triangle_to_receiver(
-        receiver,
-        transfer.equal_key,
-        transfer.conflict_key,
-        transfer.candidate_key,
-    );
-    donor
-        .seam_constraints
-        .retain(|constraint| constraint.constraint_index != transfer.old_constraint_index);
-    receiver
-        .seam_constraints
-        .retain(|constraint| constraint.constraint_index != transfer.old_constraint_index);
-    donor.seam_constraints.push(same_band_join_constraint(
-        transfer.new_constraint_index,
-        donor.owner.owner_index(),
-        transfer.equal_key,
-        transfer.candidate_key,
-    ));
-    receiver.seam_constraints.push(same_band_join_constraint(
-        transfer.new_constraint_index,
-        receiver.owner.owner_index(),
-        transfer.equal_key,
-        transfer.candidate_key,
-    ));
-    donor.area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&donor.shape);
-    receiver.area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&receiver.shape);
-    canonicalize_seam_constraints(&mut donor.seam_constraints);
-    canonicalize_seam_constraints(&mut receiver.seam_constraints);
-}
-
-fn remove_join_triangle_from_donor(
-    region: &mut NodeBooleanOwnedRegion,
-    equal_key: NodeOwnershipPointKey,
-    conflict_key: NodeOwnershipPointKey,
-    candidate_key: NodeOwnershipPointKey,
-) {
-    for contour in &mut region.shape {
-        if remove_middle_key_from_contour(contour, equal_key, conflict_key, candidate_key) {
-            return;
-        }
-    }
-}
-
-fn add_join_triangle_to_receiver(
-    region: &mut NodeBooleanOwnedRegion,
-    equal_key: NodeOwnershipPointKey,
-    conflict_key: NodeOwnershipPointKey,
-    candidate_key: NodeOwnershipPointKey,
-) {
-    for contour in &mut region.shape {
-        if insert_key_on_contour_edge(contour, conflict_key, equal_key, candidate_key)
-            || insert_key_on_contour_edge(contour, equal_key, conflict_key, candidate_key)
-        {
-            return;
-        }
-    }
-}
-
-fn remove_middle_key_from_contour(
-    contour: &mut NodeOverlayContour,
-    first_key: NodeOwnershipPointKey,
-    middle_key: NodeOwnershipPointKey,
-    third_key: NodeOwnershipPointKey,
-) -> bool {
-    if contour.len() < 3 {
-        return false;
-    }
-    for index in 0..contour.len() {
-        if overlay_point_key(contour[index]) != middle_key {
-            continue;
-        }
-        let prev = if index == 0 {
-            contour.len() - 1
-        } else {
-            index - 1
-        };
-        let next = if index + 1 == contour.len() {
-            0
-        } else {
-            index + 1
-        };
-        let prev_key = overlay_point_key(contour[prev]);
-        let next_key = overlay_point_key(contour[next]);
-        if (prev_key == first_key && next_key == third_key)
-            || (prev_key == third_key && next_key == first_key)
-        {
-            contour.remove(index);
-            dedup_consecutive_overlay_points(contour);
-            remove_overlay_spikes(contour);
-            return true;
-        }
-    }
-    false
-}
-
-fn insert_key_on_contour_edge(
-    contour: &mut NodeOverlayContour,
-    start_key: NodeOwnershipPointKey,
-    end_key: NodeOwnershipPointKey,
-    insert_key: NodeOwnershipPointKey,
-) -> bool {
-    if contour.len() < 2 {
-        return false;
-    }
-    for index in 0..contour.len() {
-        let next = if index + 1 == contour.len() {
-            0
-        } else {
-            index + 1
-        };
-        if overlay_point_key(contour[index]) == start_key
-            && overlay_point_key(contour[next]) == end_key
-        {
-            contour.insert(next, overlay_point_from_key(insert_key));
-            dedup_consecutive_overlay_points(contour);
-            remove_overlay_spikes(contour);
-            return true;
-        }
-    }
-    false
-}
-
-fn same_band_join_constraint(
-    constraint_index: usize,
-    owner_index: usize,
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-) -> NodeRegionSeamConstraint {
-    NodeRegionSeamConstraint {
-        constraint_index,
-        seam_source: NodeSeamSource::FootprintBoundary { owner_index },
-        constrains_shared_height: true,
-        is_material_transition: false,
-        start_xz: road_point_from_key(start),
-        end_xz: road_point_from_key(end),
-    }
-}
-
-fn remove_overlay_spikes(points: &mut NodeOverlayContour) {
-    loop {
-        if points.len() < 3 {
-            return;
-        }
-        let mut removed = false;
-        for index in 0..points.len() {
-            let prev = if index == 0 {
-                points.len() - 1
-            } else {
-                index - 1
-            };
-            let next = if index + 1 == points.len() {
-                0
-            } else {
-                index + 1
-            };
-            if overlay_point_key(points[prev]) == overlay_point_key(points[next]) {
-                points.remove(index);
-                dedup_consecutive_overlay_points(points);
-                removed = true;
-                break;
-            }
-        }
-        if !removed {
-            return;
-        }
-    }
 }
 
 struct OwnedRegionBoundaryRefs {
@@ -2316,7 +1877,7 @@ mod tests {
     }
 
     #[test]
-    fn same_band_join_ownership_flips_only_when_replacement_endpoint_heights_match() {
+    fn canonical_contact_ownership_does_not_transfer_same_band_geometry() {
         let curb_a = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
         let curb_b = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
         let mut regions = vec![
@@ -2349,33 +1910,18 @@ mod tests {
             owned_regions: regions,
         };
 
-        ownership
-            .resolve_same_band_join_ownership(|key, _left, _right| {
-                Ok::<bool, ()>(
-                    key == overlay_point_key([0.0, 0.0]) || key == overlay_point_key([0.0, 1.0]),
-                )
-            })
-            .expect("matching replacement endpoint should make ownership resolvable");
+        ownership.resolve_canonical_contact_ownership();
 
         assert!(
             ownership.owned_region_arrangement.diagnostics().is_empty(),
-            "same-band ownership rewrite must keep explicit seam constraints"
+            "canonical contact ownership must keep explicit seam constraints"
         );
         assert!(
-            !ownership.owned_regions[0].shape[0]
+            ownership.owned_regions[0].shape[0]
                 .iter()
                 .any(|point| overlay_point_key(*point) == overlay_point_key([1.0, 0.0])),
-            "conflicting endpoint must leave the donor region"
+            "same-band contact finalization must not move region geometry"
         );
-        assert!(ownership.owned_regions.iter().any(|region| {
-            region.seam_constraints.iter().any(|constraint| {
-                constraint.constrains_shared_height
-                    && !constraint.is_material_transition
-                    && road_point_key(constraint.start_xz)
-                        == road_point_key(RoadVec2::new(0.0, 0.0))
-                    && road_point_key(constraint.end_xz) == road_point_key(RoadVec2::new(0.0, 1.0))
-            })
-        }));
     }
 
     fn test_owned_region(

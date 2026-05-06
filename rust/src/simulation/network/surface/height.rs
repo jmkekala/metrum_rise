@@ -10,7 +10,7 @@ use super::backend::{
     quantize_road_vec2_to_overlay_grid,
 };
 use super::input::{NodeArrangementInput, NodeInputBandInterval, NodeInputTerminalEndBand};
-use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership, NodeOwnershipPointKey};
+use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
     RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
@@ -136,22 +136,17 @@ struct NodeBandHeightField {
     mouth_end_xz: RoadVec2,
     start_height_profile: Spline<f64, f64>,
     end_height_profile: Spline<f64, f64>,
+    contour_height_edges: Vec<NodeContourHeightEdge>,
+}
+
+struct NodeContourHeightEdge {
+    start_key: NodeOverlayPointKey,
+    end_key: NodeOverlayPointKey,
+    start_height_m: f64,
+    end_height_m: f64,
 }
 
 impl RoadSurfaceSystem {
-    pub(super) fn resolve_node_same_band_join_ownership(
-        input: &NodeArrangementInput,
-        ownership: &mut NodeBooleanOwnership,
-    ) -> Result<(), NodeHeightFieldError> {
-        validate_input_ownership_pair(input, ownership)?;
-        let fields = height_fields_by_source(input)?;
-        ownership.resolve_same_band_join_ownership(|key, left, right| {
-            let left_field = field_for_region(left, &fields)?;
-            let right_field = field_for_region(right, &fields)?;
-            fields_match_at_ownership_key(key, left_field, right_field)
-        })
-    }
-
     pub(super) fn build_node_height_solution_from_ownership(
         input: &NodeArrangementInput,
         ownership: &NodeBooleanOwnership,
@@ -213,6 +208,7 @@ impl NodeBandHeightField {
                 interval.endpoint_end_world.y,
                 interval.mouth_end_world.y,
             ),
+            contour_height_edges: Vec::new(),
         }
     }
 
@@ -245,10 +241,15 @@ impl NodeBandHeightField {
                 end_band.inner_end_world.y,
                 end_band.outer_end_world.y,
             ),
+            contour_height_edges: contour_height_edges(&end_band.contour_world),
         }
     }
 
     fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
+        if let Some(height_m) = self.evaluate_contour_height(point_xz) {
+            return Ok(height_m);
+        }
+
         let endpoint_center = midpoint(self.endpoint_start_xz, self.endpoint_end_xz);
         let mouth_center = midpoint(self.mouth_start_xz, self.mouth_end_xz);
         let longitudinal_axis = mouth_center - endpoint_center;
@@ -317,6 +318,22 @@ impl NodeBandHeightField {
             axis,
             raw_parameter,
         }
+    }
+
+    fn evaluate_contour_height(&self, point_xz: RoadVec2) -> Option<f64> {
+        let point_key = road_vec2_key(point_xz);
+        self.contour_height_edges
+            .iter()
+            .find_map(|edge| edge.sample_height(point_key))
+    }
+}
+
+impl NodeContourHeightEdge {
+    fn sample_height(&self, point_key: NodeOverlayPointKey) -> Option<f64> {
+        let t = segment_parameter_for_key(point_key, self.start_key, self.end_key)?;
+        Some(quantize_source_height_m(
+            self.start_height_m + (self.end_height_m - self.start_height_m) * t,
+        ))
     }
 }
 
@@ -451,38 +468,6 @@ fn heighted_vertex(
         height_m: field.evaluate_height(point_xz)?,
         height_field_id: field.id,
     })
-}
-
-fn field_for_region<'a>(
-    region: &NodeBooleanOwnedRegion,
-    fields: &'a BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
-) -> Result<&'a NodeBandHeightField, NodeHeightFieldError> {
-    let band_index =
-        region
-            .source_band_index
-            .ok_or(NodeHeightFieldError::MissingRegionBandIndex {
-                mouth_order_index: region.source_mouth_order_index,
-                kind: region.kind,
-            })?;
-    fields
-        .get(&NodeSourceBandKey {
-            mouth_order_index: region.source_mouth_order_index,
-            band_index,
-        })
-        .ok_or(NodeHeightFieldError::MissingSourceBand {
-            mouth_order_index: region.source_mouth_order_index,
-            band_index,
-        })
-}
-
-fn fields_match_at_ownership_key(
-    key: NodeOwnershipPointKey,
-    left_field: &NodeBandHeightField,
-    right_field: &NodeBandHeightField,
-) -> Result<bool, NodeHeightFieldError> {
-    let point = road_vec2_from_overlay_key(key);
-    Ok(quantize_m(left_field.evaluate_height(point)?)
-        == quantize_m(right_field.evaluate_height(point)?))
 }
 
 fn validate_explicit_material_seam_heights(
@@ -654,6 +639,30 @@ fn xz(point: RoadVec3) -> RoadVec2 {
     RoadVec2::new(point.x, point.z)
 }
 
+fn contour_height_edges(contour_world: &[RoadVec3]) -> Vec<NodeContourHeightEdge> {
+    if contour_world.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut edges = Vec::with_capacity(contour_world.len());
+    for edge_index in 0..contour_world.len() {
+        let start = contour_world[edge_index];
+        let end = contour_world[(edge_index + 1) % contour_world.len()];
+        let start_key = road_vec2_key(xz(start));
+        let end_key = road_vec2_key(xz(end));
+        if start_key == end_key {
+            continue;
+        }
+        edges.push(NodeContourHeightEdge {
+            start_key,
+            end_key,
+            start_height_m: quantize_source_height_m(start.y),
+            end_height_m: quantize_source_height_m(end.y),
+        });
+    }
+    edges
+}
+
 fn midpoint(start: RoadVec2, end: RoadVec2) -> RoadVec2 {
     (start + end) * 0.5
 }
@@ -663,6 +672,37 @@ fn interpolate(start: RoadVec2, end: RoadVec2, t: f64) -> RoadVec2 {
 }
 
 type NodeOverlayPointKey = (i64, i64);
+
+fn road_vec2_key(point: RoadVec2) -> NodeOverlayPointKey {
+    (
+        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
+}
+
+fn segment_parameter_for_key(
+    point: NodeOverlayPointKey,
+    start: NodeOverlayPointKey,
+    end: NodeOverlayPointKey,
+) -> Option<f64> {
+    if point == start {
+        return Some(0.0);
+    }
+    if point == end {
+        return Some(1.0);
+    }
+    if !point_lies_strictly_inside_segment(point, start, end) {
+        return None;
+    }
+
+    let dx = end.0 - start.0;
+    let dz = end.1 - start.1;
+    if dx.abs() >= dz.abs() {
+        Some((point.0 - start.0) as f64 / dx as f64)
+    } else {
+        Some((point.1 - start.1) as f64 / dz as f64)
+    }
+}
 
 fn global_region_points(
     regions: &[NodeBooleanOwnedRegion],
@@ -835,13 +875,6 @@ fn overlay_point_from_key(point: NodeOverlayPointKey) -> NodeOverlayPoint {
         point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
         point.1 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
     ]
-}
-
-fn road_vec2_from_overlay_key(point: NodeOverlayPointKey) -> RoadVec2 {
-    RoadVec2::new(
-        point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
-        point.1 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
-    )
 }
 
 fn quantize_m(value: f64) -> i64 {

@@ -279,12 +279,7 @@ impl RoadSurfaceSystem {
                 return None;
             }
         };
-        if let Err(error) = Self::resolve_node_same_band_join_ownership(&input, &mut ownership) {
-            Self::log_node_validation_report(&NodeValidationReport::from_height_field_error(
-                node_id, kind, &error,
-            ));
-            return None;
-        }
+        ownership.resolve_canonical_contact_ownership();
         if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
             &ownership.owned_region_arrangement,
         ) {
