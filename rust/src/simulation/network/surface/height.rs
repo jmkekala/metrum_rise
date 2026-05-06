@@ -10,15 +10,19 @@ use super::backend::{
     quantize_road_vec2_to_overlay_grid,
 };
 use super::input::{NodeArrangementInput, NodeInputBandInterval, NodeInputTerminalEndBand};
-use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
+use super::ownership::{
+    NodeBooleanOwnedRegion, NodeBooleanOwnership, append_missing_shared_region_seam_constraints,
+};
 use super::{
-    NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
-    RoadSurfaceVisualNodePieceKind,
+    NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
+    RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
 };
 use splines::{Interpolation, Key, Spline};
 use std::collections::BTreeMap;
 
-const HEIGHT_KEY_SCALE: f64 = 1000.0;
+const HEIGHT_POINT_KEY_SCALE: f64 = 1000.0;
+const HEIGHT_SHARED_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
+const HEIGHT_SOURCE_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 const HEIGHT_PARAMETER_KEY_SCALE: f64 = 1_000_000.0;
 const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 32.0 / ROAD_OVERLAY_COORDINATE_SCALE;
 const HEIGHT_PARAMETER_BOUNDARY_DISTANCE_EPS_M: f64 = 0.002;
@@ -100,6 +104,7 @@ pub(crate) enum NodeHeightFieldError {
         point_z_mm: i64,
         kind: RoadSurfaceBandKind,
         owner_index: usize,
+        constraint_index: Option<usize>,
         existing_height_mm: i64,
         incoming_height_mm: i64,
     },
@@ -151,10 +156,18 @@ impl NodeHeightSolution {
     ) -> Result<Self, NodeHeightFieldError> {
         validate_input_ownership_pair(input, ownership)?;
         let fields = height_fields_by_source(input)?;
-        let mut regions = Vec::with_capacity(ownership.owned_regions.len());
-        let global_points = global_ownership_points(ownership);
+        let mut owned_regions = ownership.owned_regions.clone();
+        split_same_band_height_compatible_joins(&mut owned_regions, &fields)?;
+        let next_constraint_index = next_region_constraint_index(&owned_regions);
+        append_missing_shared_region_seam_constraints(
+            &mut owned_regions,
+            &ownership.footprint_shapes,
+            next_constraint_index,
+        );
+        let mut regions = Vec::with_capacity(owned_regions.len());
+        let global_points = global_region_points(&owned_regions, &ownership.footprint_shapes);
 
-        for region in &ownership.owned_regions {
+        for region in &owned_regions {
             let region = heighted_region(region, &fields, &global_points)?;
             if !region.shape.is_empty() {
                 regions.push(region);
@@ -436,6 +449,447 @@ fn heighted_vertex(
     })
 }
 
+#[derive(Clone, Copy)]
+struct SameBandJoinFlip {
+    donor_region_index: usize,
+    receiver_region_index: usize,
+    old_constraint_index: usize,
+    new_constraint_index: usize,
+    equal_key: NodeOverlayPointKey,
+    conflict_key: NodeOverlayPointKey,
+    candidate_key: NodeOverlayPointKey,
+}
+
+fn split_same_band_height_compatible_joins(
+    regions: &mut [NodeBooleanOwnedRegion],
+    fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+) -> Result<(), NodeHeightFieldError> {
+    // Same-material curb joins must meet on a seam whose source fields already agree. When boolean
+    // splitting chooses the other diagonal of a tiny overlap, flip that triangle before heighting.
+    let mut next_constraint_index = next_region_constraint_index(regions);
+    let max_passes = regions.len().saturating_mul(regions.len()).max(1);
+
+    for _ in 0..max_passes {
+        let Some(flip) = same_band_join_flip_candidate(regions, fields, next_constraint_index)?
+        else {
+            return Ok(());
+        };
+        apply_same_band_join_flip(regions, flip);
+        next_constraint_index += 1;
+    }
+    Ok(())
+}
+
+fn next_region_constraint_index(regions: &[NodeBooleanOwnedRegion]) -> usize {
+    regions
+        .iter()
+        .flat_map(|region| region.seam_constraints.iter())
+        .map(|constraint| constraint.constraint_index)
+        .max()
+        .map_or(0, |index| index + 1)
+}
+
+fn same_band_join_flip_candidate(
+    regions: &[NodeBooleanOwnedRegion],
+    fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+    new_constraint_index: usize,
+) -> Result<Option<SameBandJoinFlip>, NodeHeightFieldError> {
+    for left_index in 0..regions.len() {
+        for right_index in left_index + 1..regions.len() {
+            let left = &regions[left_index];
+            let right = &regions[right_index];
+            if left.kind != right.kind || left.owner.kind() != right.owner.kind() {
+                continue;
+            }
+            let left_field = field_for_region(left, fields)?;
+            let right_field = field_for_region(right, fields)?;
+            for (constraint_index, start, end) in shared_same_band_height_constraints(left, right) {
+                let start_matches = fields_match_at_key(start, left_field, right_field)?;
+                let end_matches = fields_match_at_key(end, left_field, right_field)?;
+                if start_matches && end_matches {
+                    continue;
+                }
+                let Some((equal_key, conflict_key)) =
+                    one_matching_endpoint(start, end, start_matches, end_matches)
+                else {
+                    continue;
+                };
+                if let Some(candidate_key) = adjacent_matching_join_candidate(
+                    left,
+                    equal_key,
+                    conflict_key,
+                    left_field,
+                    right_field,
+                )? {
+                    return Ok(Some(SameBandJoinFlip {
+                        donor_region_index: left_index,
+                        receiver_region_index: right_index,
+                        old_constraint_index: constraint_index,
+                        new_constraint_index,
+                        equal_key,
+                        conflict_key,
+                        candidate_key,
+                    }));
+                }
+                if let Some(candidate_key) = adjacent_matching_join_candidate(
+                    right,
+                    equal_key,
+                    conflict_key,
+                    left_field,
+                    right_field,
+                )? {
+                    return Ok(Some(SameBandJoinFlip {
+                        donor_region_index: right_index,
+                        receiver_region_index: left_index,
+                        old_constraint_index: constraint_index,
+                        new_constraint_index,
+                        equal_key,
+                        conflict_key,
+                        candidate_key,
+                    }));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn field_for_region<'a>(
+    region: &NodeBooleanOwnedRegion,
+    fields: &'a BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
+) -> Result<&'a NodeBandHeightField, NodeHeightFieldError> {
+    let band_index =
+        region
+            .source_band_index
+            .ok_or(NodeHeightFieldError::MissingRegionBandIndex {
+                mouth_order_index: region.source_mouth_order_index,
+                kind: region.kind,
+            })?;
+    fields
+        .get(&NodeSourceBandKey {
+            mouth_order_index: region.source_mouth_order_index,
+            band_index,
+        })
+        .ok_or(NodeHeightFieldError::MissingSourceBand {
+            mouth_order_index: region.source_mouth_order_index,
+            band_index,
+        })
+}
+
+fn shared_same_band_height_constraints(
+    left: &NodeBooleanOwnedRegion,
+    right: &NodeBooleanOwnedRegion,
+) -> Vec<(usize, NodeOverlayPointKey, NodeOverlayPointKey)> {
+    let mut constraints = Vec::new();
+    for left_constraint in &left.seam_constraints {
+        if !same_band_generated_join_constraint(left_constraint) {
+            continue;
+        }
+        for right_constraint in &right.seam_constraints {
+            if left_constraint.constraint_index != right_constraint.constraint_index
+                || !same_band_generated_join_constraint(right_constraint)
+            {
+                continue;
+            }
+            let left_start = road_vec2_overlay_key(left_constraint.start_xz);
+            let left_end = road_vec2_overlay_key(left_constraint.end_xz);
+            let right_start = road_vec2_overlay_key(right_constraint.start_xz);
+            let right_end = road_vec2_overlay_key(right_constraint.end_xz);
+            if same_undirected_edge(left_start, left_end, right_start, right_end) {
+                constraints.push((left_constraint.constraint_index, left_start, left_end));
+            }
+        }
+    }
+    constraints.sort_unstable();
+    constraints.dedup();
+    constraints
+}
+
+fn same_band_generated_join_constraint(constraint: &NodeRegionSeamConstraint) -> bool {
+    constraint.constrains_shared_height
+        && constraint.is_material_transition
+        && matches!(
+            constraint.seam_source,
+            super::arrangement::NodeSeamSource::FootprintBoundary { .. }
+        )
+        && road_vec2_overlay_key(constraint.start_xz) != road_vec2_overlay_key(constraint.end_xz)
+}
+
+fn one_matching_endpoint(
+    start: NodeOverlayPointKey,
+    end: NodeOverlayPointKey,
+    start_matches: bool,
+    end_matches: bool,
+) -> Option<(NodeOverlayPointKey, NodeOverlayPointKey)> {
+    match (start_matches, end_matches) {
+        (true, false) => Some((start, end)),
+        (false, true) => Some((end, start)),
+        _ => None,
+    }
+}
+
+fn same_undirected_edge(
+    left_start: NodeOverlayPointKey,
+    left_end: NodeOverlayPointKey,
+    right_start: NodeOverlayPointKey,
+    right_end: NodeOverlayPointKey,
+) -> bool {
+    (left_start == right_start && left_end == right_end)
+        || (left_start == right_end && left_end == right_start)
+}
+
+fn adjacent_matching_join_candidate(
+    region: &NodeBooleanOwnedRegion,
+    equal_key: NodeOverlayPointKey,
+    conflict_key: NodeOverlayPointKey,
+    left_field: &NodeBandHeightField,
+    right_field: &NodeBandHeightField,
+) -> Result<Option<NodeOverlayPointKey>, NodeHeightFieldError> {
+    let mut candidates = Vec::new();
+    for contour in &region.shape {
+        if contour.len() < 3 {
+            continue;
+        }
+        let keys = contour
+            .iter()
+            .copied()
+            .map(overlay_point_key)
+            .collect::<Vec<_>>();
+        for index in 0..keys.len() {
+            if keys[index] != conflict_key {
+                continue;
+            }
+            let prev = if index == 0 {
+                keys.len() - 1
+            } else {
+                index - 1
+            };
+            let next = if index + 1 == keys.len() {
+                0
+            } else {
+                index + 1
+            };
+            for candidate in [keys[prev], keys[next]] {
+                if candidate == equal_key || candidate == conflict_key {
+                    continue;
+                }
+                if !edge_exists_in_keys(&keys, equal_key, conflict_key) {
+                    continue;
+                }
+                if fields_match_at_key(candidate, left_field, right_field)? {
+                    candidates.push(candidate);
+                }
+            }
+        }
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    Ok(candidates.into_iter().next())
+}
+
+fn edge_exists_in_keys(
+    keys: &[NodeOverlayPointKey],
+    start: NodeOverlayPointKey,
+    end: NodeOverlayPointKey,
+) -> bool {
+    keys.iter().enumerate().any(|(index, key)| {
+        let next = keys[(index + 1) % keys.len()];
+        (*key == start && next == end) || (*key == end && next == start)
+    })
+}
+
+fn fields_match_at_key(
+    key: NodeOverlayPointKey,
+    left_field: &NodeBandHeightField,
+    right_field: &NodeBandHeightField,
+) -> Result<bool, NodeHeightFieldError> {
+    let point = road_vec2_from_overlay_key(key);
+    Ok(quantize_m(left_field.evaluate_height(point)?)
+        == quantize_m(right_field.evaluate_height(point)?))
+}
+
+fn apply_same_band_join_flip(regions: &mut [NodeBooleanOwnedRegion], flip: SameBandJoinFlip) {
+    if flip.donor_region_index == flip.receiver_region_index {
+        return;
+    }
+    if flip.donor_region_index < flip.receiver_region_index {
+        let (left, right) = regions.split_at_mut(flip.receiver_region_index);
+        apply_same_band_join_flip_to_regions(
+            &mut left[flip.donor_region_index],
+            &mut right[0],
+            flip,
+        );
+    } else {
+        let (left, right) = regions.split_at_mut(flip.donor_region_index);
+        apply_same_band_join_flip_to_regions(
+            &mut right[0],
+            &mut left[flip.receiver_region_index],
+            flip,
+        );
+    }
+}
+
+fn apply_same_band_join_flip_to_regions(
+    donor: &mut NodeBooleanOwnedRegion,
+    receiver: &mut NodeBooleanOwnedRegion,
+    flip: SameBandJoinFlip,
+) {
+    remove_join_triangle_from_donor(donor, flip.equal_key, flip.conflict_key, flip.candidate_key);
+    add_join_triangle_to_receiver(
+        receiver,
+        flip.equal_key,
+        flip.conflict_key,
+        flip.candidate_key,
+    );
+    donor
+        .seam_constraints
+        .retain(|constraint| constraint.constraint_index != flip.old_constraint_index);
+    receiver
+        .seam_constraints
+        .retain(|constraint| constraint.constraint_index != flip.old_constraint_index);
+    donor.seam_constraints.push(same_band_join_constraint(
+        flip.new_constraint_index,
+        donor.owner.owner_index(),
+        flip.equal_key,
+        flip.candidate_key,
+    ));
+    receiver.seam_constraints.push(same_band_join_constraint(
+        flip.new_constraint_index,
+        receiver.owner.owner_index(),
+        flip.equal_key,
+        flip.candidate_key,
+    ));
+    donor.area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&donor.shape);
+    receiver.area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&receiver.shape);
+    canonicalize_region_seam_constraints(&mut donor.seam_constraints);
+    canonicalize_region_seam_constraints(&mut receiver.seam_constraints);
+}
+
+fn remove_join_triangle_from_donor(
+    region: &mut NodeBooleanOwnedRegion,
+    equal_key: NodeOverlayPointKey,
+    conflict_key: NodeOverlayPointKey,
+    candidate_key: NodeOverlayPointKey,
+) {
+    for contour in &mut region.shape {
+        if remove_middle_key_from_contour(contour, equal_key, conflict_key, candidate_key) {
+            return;
+        }
+    }
+}
+
+fn add_join_triangle_to_receiver(
+    region: &mut NodeBooleanOwnedRegion,
+    equal_key: NodeOverlayPointKey,
+    conflict_key: NodeOverlayPointKey,
+    candidate_key: NodeOverlayPointKey,
+) {
+    for contour in &mut region.shape {
+        if insert_key_on_contour_edge(contour, conflict_key, equal_key, candidate_key)
+            || insert_key_on_contour_edge(contour, equal_key, conflict_key, candidate_key)
+        {
+            return;
+        }
+    }
+}
+
+fn remove_middle_key_from_contour(
+    contour: &mut NodeOverlayContour,
+    first_key: NodeOverlayPointKey,
+    middle_key: NodeOverlayPointKey,
+    third_key: NodeOverlayPointKey,
+) -> bool {
+    if contour.len() < 3 {
+        return false;
+    }
+    for index in 0..contour.len() {
+        if overlay_point_key(contour[index]) != middle_key {
+            continue;
+        }
+        let prev = if index == 0 {
+            contour.len() - 1
+        } else {
+            index - 1
+        };
+        let next = if index + 1 == contour.len() {
+            0
+        } else {
+            index + 1
+        };
+        let prev_key = overlay_point_key(contour[prev]);
+        let next_key = overlay_point_key(contour[next]);
+        if (prev_key == first_key && next_key == third_key)
+            || (prev_key == third_key && next_key == first_key)
+        {
+            contour.remove(index);
+            dedup_consecutive_overlay_points(contour);
+            remove_overlay_spikes(contour);
+            return true;
+        }
+    }
+    false
+}
+
+fn insert_key_on_contour_edge(
+    contour: &mut NodeOverlayContour,
+    start_key: NodeOverlayPointKey,
+    end_key: NodeOverlayPointKey,
+    insert_key: NodeOverlayPointKey,
+) -> bool {
+    if contour.len() < 2 {
+        return false;
+    }
+    for index in 0..contour.len() {
+        let next = if index + 1 == contour.len() {
+            0
+        } else {
+            index + 1
+        };
+        if overlay_point_key(contour[index]) == start_key
+            && overlay_point_key(contour[next]) == end_key
+        {
+            contour.insert(next, overlay_point_from_key(insert_key));
+            dedup_consecutive_overlay_points(contour);
+            remove_overlay_spikes(contour);
+            return true;
+        }
+    }
+    false
+}
+
+fn same_band_join_constraint(
+    constraint_index: usize,
+    owner_index: usize,
+    start: NodeOverlayPointKey,
+    end: NodeOverlayPointKey,
+) -> NodeRegionSeamConstraint {
+    NodeRegionSeamConstraint {
+        constraint_index,
+        seam_source: super::arrangement::NodeSeamSource::FootprintBoundary { owner_index },
+        constrains_shared_height: true,
+        is_material_transition: false,
+        start_xz: road_vec2_from_overlay_key(start),
+        end_xz: road_vec2_from_overlay_key(end),
+    }
+}
+
+fn canonicalize_region_seam_constraints(seams: &mut Vec<NodeRegionSeamConstraint>) {
+    seams.sort_by_key(|constraint| {
+        (
+            constraint.constraint_index,
+            road_vec2_overlay_key(constraint.start_xz),
+            road_vec2_overlay_key(constraint.end_xz),
+        )
+    });
+    seams.dedup_by_key(|constraint| {
+        (
+            constraint.constraint_index,
+            road_vec2_overlay_key(constraint.start_xz),
+            road_vec2_overlay_key(constraint.end_xz),
+        )
+    });
+}
+
 fn validate_explicit_material_seam_heights(
     regions: &[NodeHeightedRegion],
 ) -> Result<(), NodeHeightFieldError> {
@@ -456,6 +910,7 @@ fn validate_explicit_material_seam_heights(
                             point_z_mm: point.z_mm(),
                             kind: region.kind,
                             owner_index: region.owner.owner_index(),
+                            constraint_index: Some(constraint.constraint_index),
                             existing_height_mm: existing.height_mm,
                             incoming_height_mm: height_mm,
                         });
@@ -545,6 +1000,7 @@ fn validate_shared_source_height_agreement(
                     point_z_mm: point.z_mm(),
                     kind: region.kind,
                     owner_index: region.owner.owner_index(),
+                    constraint_index: None,
                     existing_height_mm,
                     incoming_height_mm: height_mm,
                 });
@@ -556,9 +1012,21 @@ fn validate_shared_source_height_agreement(
 
 fn linear_height_profile(endpoint_height_m: f64, mouth_height_m: f64) -> Spline<f64, f64> {
     Spline::from_vec(vec![
-        Key::new(0.0, endpoint_height_m, Interpolation::Linear),
-        Key::new(1.0, mouth_height_m, Interpolation::Linear),
+        Key::new(
+            0.0,
+            quantize_source_height_m(endpoint_height_m),
+            Interpolation::Linear,
+        ),
+        Key::new(
+            1.0,
+            quantize_source_height_m(mouth_height_m),
+            Interpolation::Linear,
+        ),
     ])
+}
+
+fn quantize_source_height_m(value_m: f64) -> f64 {
+    (value_m * HEIGHT_SOURCE_KEY_SCALE).round() / HEIGHT_SOURCE_KEY_SCALE
 }
 
 fn canonical_unit_parameter(raw_parameter: f64, axis_length_m: f64) -> Option<f64> {
@@ -575,7 +1043,16 @@ fn canonical_unit_parameter(raw_parameter: f64, axis_length_m: f64) -> Option<f6
     };
     (-boundary_eps..=1.0 + boundary_eps)
         .contains(&parameter)
-        .then_some(parameter.clamp(0.0, 1.0))
+        .then(|| {
+            let parameter = parameter.clamp(0.0, 1.0);
+            if parameter <= HEIGHT_PARAMETER_BOUNDARY_EPS {
+                0.0
+            } else if 1.0 - parameter <= HEIGHT_PARAMETER_BOUNDARY_EPS {
+                1.0
+            } else {
+                parameter
+            }
+        })
 }
 
 fn xz(point: RoadVec3) -> RoadVec2 {
@@ -592,17 +1069,18 @@ fn interpolate(start: RoadVec2, end: RoadVec2, t: f64) -> RoadVec2 {
 
 type NodeOverlayPointKey = (i64, i64);
 
-fn global_ownership_points(ownership: &NodeBooleanOwnership) -> Vec<NodeOverlayPointKey> {
-    let mut points = ownership
-        .owned_regions
+fn global_region_points(
+    regions: &[NodeBooleanOwnedRegion],
+    footprint_shapes: &NodeOverlayShapes,
+) -> Vec<NodeOverlayPointKey> {
+    let mut points = regions
         .iter()
         .flat_map(|region| region.shape.iter())
         .flat_map(|contour| contour.iter().copied())
         .map(overlay_point_key)
         .collect::<Vec<_>>();
     points.extend(
-        ownership
-            .footprint_shapes
+        footprint_shapes
             .iter()
             .flat_map(|shape| shape.iter())
             .flat_map(|contour| contour.iter().copied())
@@ -750,10 +1228,17 @@ fn overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
     )
 }
 
+fn road_vec2_overlay_key(point: RoadVec2) -> NodeOverlayPointKey {
+    (
+        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
+}
+
 fn height_overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
     (
-        (point[0] * HEIGHT_KEY_SCALE).round() as i64,
-        (point[1] * HEIGHT_KEY_SCALE).round() as i64,
+        (point[0] * HEIGHT_POINT_KEY_SCALE).round() as i64,
+        (point[1] * HEIGHT_POINT_KEY_SCALE).round() as i64,
     )
 }
 
@@ -764,8 +1249,15 @@ fn overlay_point_from_key(point: NodeOverlayPointKey) -> NodeOverlayPoint {
     ]
 }
 
+fn road_vec2_from_overlay_key(point: NodeOverlayPointKey) -> RoadVec2 {
+    RoadVec2::new(
+        point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+        point.1 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
+    )
+}
+
 fn quantize_m(value: f64) -> i64 {
-    (value * HEIGHT_KEY_SCALE).round() as i64
+    (value * HEIGHT_SHARED_KEY_SCALE).round() as i64
 }
 
 impl NodeHeightPointKey {
@@ -777,11 +1269,13 @@ impl NodeHeightPointKey {
     }
 
     fn x_mm(self) -> i64 {
-        ((self.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) * HEIGHT_KEY_SCALE).round() as i64
+        ((self.x_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) * HEIGHT_POINT_KEY_SCALE).round()
+            as i64
     }
 
     fn z_mm(self) -> i64 {
-        ((self.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) * HEIGHT_KEY_SCALE).round() as i64
+        ((self.z_key as f64 / ROAD_OVERLAY_COORDINATE_SCALE) * HEIGHT_POINT_KEY_SCALE).round()
+            as i64
     }
 }
 

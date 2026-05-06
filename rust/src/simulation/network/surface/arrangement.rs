@@ -751,6 +751,10 @@ impl NodeArrangement {
                         key,
                         &left.owners,
                         &right.owners,
+                    ) && !self.has_explicit_material_seam_endpoint_at_key_between(
+                        key,
+                        &left.owners,
+                        &right.owners,
                     ) {
                         return Err(NodeArrangementError::DuplicateVertexHeightConflict {
                             key,
@@ -762,6 +766,40 @@ impl NodeArrangement {
             }
         }
         Ok(())
+    }
+
+    fn has_explicit_material_seam_endpoint_at_key_between(
+        &self,
+        key: NodeArrangementKey,
+        left_owners: &[NodeBandOwner],
+        right_owners: &[NodeBandOwner],
+    ) -> bool {
+        let left_sources = self.material_seam_constraint_indices_at_key(key, left_owners);
+        if left_sources.is_empty() {
+            return false;
+        }
+        let right_sources = self.material_seam_constraint_indices_at_key(key, right_owners);
+        left_sources
+            .iter()
+            .any(|source| right_sources.binary_search(source).is_ok())
+    }
+
+    fn material_seam_constraint_indices_at_key(
+        &self,
+        key: NodeArrangementKey,
+        owners: &[NodeBandOwner],
+    ) -> Vec<usize> {
+        canonical_sources(
+            self.regions
+                .iter()
+                .filter(|region| owners.contains(&region.owner))
+                .flat_map(|region| region.seam_constraints.iter())
+                .filter(|constraint| {
+                    constraint.is_material_transition
+                        && seam_constraint_touches_key(constraint, key)
+                })
+                .map(|constraint| constraint.constraint_index),
+        )
     }
 
     fn has_explicit_material_seam_at_key_between(
@@ -789,6 +827,15 @@ impl NodeArrangement {
         };
         start.key == key || end.key == key
     }
+}
+
+fn seam_constraint_touches_key(
+    constraint: &NodeRegionSeamConstraint,
+    key: NodeArrangementKey,
+) -> bool {
+    let start = NodeArrangementKey::from_point(constraint.start_xz);
+    let end = NodeArrangementKey::from_point(constraint.end_xz);
+    point_key_lies_on_segment(key, start, end)
 }
 
 impl NodeArrangementVertexId {
@@ -1404,6 +1451,56 @@ mod tests {
                 && edge.opposite_owner == Some(sidewalk)
                 && edge.is_material_transition
                 && edge.source_constraint_indices == vec![31]
+        }));
+    }
+
+    #[test]
+    fn arrangement_accepts_different_material_height_context_at_explicit_point_seam() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
+        let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
+        let seam = NodeRegionSeamConstraint {
+            constraint_index: 32,
+            seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 0 },
+            constrains_shared_height: false,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(1.0, 1.0),
+            end_xz: RoadVec2::new(1.0, 1.0),
+        };
+        let heights = NodeHeightSolution {
+            node_id: 11,
+            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
+            regions: vec![
+                test_height_region_with_seams(
+                    RoadSurfaceBandKind::Carriageway,
+                    carriageway,
+                    vec![
+                        height_vertex(0.0, 0.0, 0.0),
+                        height_vertex(1.0, 0.0, 0.0),
+                        height_vertex(1.0, 1.0, 0.0),
+                        height_vertex(0.0, 1.0, 0.0),
+                    ],
+                    vec![seam.clone()],
+                ),
+                test_height_region_with_seams(
+                    RoadSurfaceBandKind::Sidewalk,
+                    sidewalk,
+                    vec![
+                        height_vertex(1.0, 1.0, 1.0),
+                        height_vertex(2.0, 1.0, 1.0),
+                        height_vertex(2.0, 2.0, 1.0),
+                        height_vertex(1.0, 2.0, 1.0),
+                    ],
+                    vec![seam],
+                ),
+            ],
+        };
+
+        let arrangement = NodeArrangement::from_height_solution(&heights)
+            .expect("explicit material point seam may carry distinct field heights");
+
+        assert_eq!(arrangement.vertices().len(), 8);
+        assert!(arrangement.edges().iter().all(|edge| {
+            edge.opposite_owner != Some(sidewalk) || edge.source_constraint_indices != vec![32]
         }));
     }
 

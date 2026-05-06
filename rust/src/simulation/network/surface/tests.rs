@@ -2309,7 +2309,7 @@ fn logged_flat_three_way_oblique_junction_rejects_implicit_height_repair() {
 }
 
 #[test]
-fn logged_current_flat_three_way_oblique_junction_rejects_implicit_curb_rail_repair() {
+fn logged_current_flat_three_way_oblique_junction_rejects_same_band_height_conflict() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-82.716, 0.0, -14.881), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-25.618, 0.0, -14.881), NodeType::Junction);
@@ -2356,9 +2356,110 @@ fn logged_current_flat_three_way_oblique_junction_rejects_implicit_curb_rail_rep
     let terrain = flat_terrain(192, 192);
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
+
+    let incidents = [
+        super::IncidentSurfaceEdge {
+            edge_idx: 0,
+            side: super::IncidentEdgeSide::End,
+            direction_xz: surface
+                .compiled_visual_span_pieces()
+                .get(&0)
+                .and_then(|piece| piece.end_mouth_profile.as_ref())
+                .expect("west span must expose an end mouth")
+                .inward_direction_xz,
+        },
+        super::IncidentSurfaceEdge {
+            edge_idx: 1,
+            side: super::IncidentEdgeSide::Start,
+            direction_xz: surface
+                .compiled_visual_span_pieces()
+                .get(&1)
+                .and_then(|piece| piece.start_mouth_profile.as_ref())
+                .expect("oblique span must expose a start mouth")
+                .inward_direction_xz,
+        },
+        super::IncidentSurfaceEdge {
+            edge_idx: 2,
+            side: super::IncidentEdgeSide::Start,
+            direction_xz: surface
+                .compiled_visual_span_pieces()
+                .get(&2)
+                .and_then(|piece| piece.start_mouth_profile.as_ref())
+                .expect("east span must expose a start mouth")
+                .inward_direction_xz,
+        },
+    ];
+    let mut mouths = incidents
+        .iter()
+        .map(|incident| {
+            let span_piece = surface
+                .compiled_visual_span_pieces()
+                .get(&incident.edge_idx)
+                .expect("incident span piece must be compiled");
+            let profile = match incident.side {
+                super::IncidentEdgeSide::Start => span_piece.start_mouth_profile.clone(),
+                super::IncidentEdgeSide::End => span_piece.end_mouth_profile.clone(),
+            }
+            .expect("incident span piece must expose a mouth profile");
+            let sections = surface
+                .compiled_sections()
+                .get(&incident.edge_idx)
+                .expect("incident sections must be compiled");
+            let section = match incident.side {
+                super::IncidentEdgeSide::Start => sections.first(),
+                super::IncidentEdgeSide::End => sections.last(),
+            }
+            .expect("incident endpoint section must exist");
+            let endpoint_profile =
+                RoadSurfaceSystem::build_mouth_profile_from_section(section, incident.side)
+                    .expect("incident endpoint profile must compile");
+            super::OrderedIncidentPieceMouth {
+                profile,
+                endpoint_profile,
+                direction_angle_ccw: {
+                    let angle = incident.direction_xz.y.atan2(incident.direction_xz.x);
+                    if angle < 0.0 {
+                        angle + std::f32::consts::TAU
+                    } else {
+                        angle
+                    }
+                },
+                direction_xz: incident.direction_xz,
+                edge_idx: incident.edge_idx,
+                side: incident.side,
+            }
+        })
+        .collect::<Vec<_>>();
+    mouths.sort_by(|a, b| {
+        a.direction_angle_ccw
+            .total_cmp(&b.direction_angle_ccw)
+            .then(a.edge_idx.cmp(&b.edge_idx))
+            .then(a.side.cmp(&b.side))
+    });
+    let input = RoadSurfaceSystem::build_node_arrangement_input_from_mouths(
+        center,
+        RoadSurfaceVisualNodePieceKind::JunctionN,
+        &mouths,
+    )
+    .expect("current flat oblique 3-way input must compile");
+    let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&input)
+        .expect("current flat oblique 3-way rails must compile");
+    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+        .expect("current flat oblique 3-way ownership must compile");
+    assert!(
+        ownership.owned_region_arrangement.diagnostics().is_empty(),
+        "current flat oblique 3-way ownership diagnostics: {:?}",
+        ownership.owned_region_arrangement.diagnostics()
+    );
+    let heights = RoadSurfaceSystem::build_node_height_solution_from_ownership(&input, &ownership)
+        .expect("current flat oblique 3-way heights must compile");
+    assert!(matches!(
+        super::arrangement::NodeArrangement::from_height_solution(&heights),
+        Err(super::arrangement::NodeArrangementError::DuplicateVertexHeightConflict { .. })
+    ));
     assert!(
         !surface.compiled_visual_node_pieces().contains_key(&center),
-        "current flat oblique 3-way must not emit a JunctionN by snapping curb vertices to rails after ownership"
+        "current flat oblique 3-way must reject same-band height conflict until canonical join ownership creates a legal transition"
     );
 }
 
@@ -3058,17 +3159,37 @@ fn logged_flat_oblique_t_junction_compiles_node_surface() {
         .expect("logged flat oblique T rails must compile");
     let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
         .expect("logged flat oblique T ownership must compile");
+    assert!(
+        ownership.owned_region_arrangement.diagnostics().is_empty(),
+        "logged flat oblique T ownership diagnostics: {:?}",
+        ownership.owned_region_arrangement.diagnostics()
+    );
     let heights = RoadSurfaceSystem::build_node_height_solution_from_ownership(&input, &ownership)
         .expect("logged flat oblique T heights must compile");
-    let arrangement = super::arrangement::NodeArrangement::from_height_solution(&heights)
+    let mut arrangement = super::arrangement::NodeArrangement::from_height_solution(&heights)
         .expect("logged flat oblique T heights must produce canonical arrangement");
-    RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement)
+    let triangulation = RoadSurfaceSystem::build_node_triangulation_from_arrangement(&arrangement)
         .expect("logged flat oblique T arrangement regions must triangulate");
+    if let Err(error) = RoadSurfaceSystem::validate_node_triangulation_solution(&triangulation) {
+        assert!(
+            !error.report.has_blocking_diagnostics(),
+            "logged flat oblique T triangulation validation must not block: {}",
+            error.report.debug_dump()
+        );
+    }
+    arrangement
+        .attach_triangulation(&triangulation)
+        .expect("logged flat oblique T triangulation must attach");
 
     let piece = surface
         .compiled_visual_node_pieces()
         .get(&center)
-        .expect("logged flat oblique T junction must compile a JunctionN piece");
+        .unwrap_or_else(|| {
+            panic!(
+                "logged flat oblique T junction must compile a JunctionN piece, compiled nodes: {:?}",
+                surface.compiled_visual_node_pieces().keys().collect::<Vec<_>>()
+            )
+        });
     assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
     assert!(!piece.outer_boundary_loops.is_empty());
     assert!(!piece.road_surface_polygons.is_empty());

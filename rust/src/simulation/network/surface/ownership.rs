@@ -748,6 +748,41 @@ fn append_shared_region_seam_constraints(
     }
 }
 
+pub(crate) fn append_missing_shared_region_seam_constraints(
+    regions: &mut [NodeBooleanOwnedRegion],
+    footprint_shapes: &NodeOverlayShapes,
+    first_constraint_index: usize,
+) {
+    let boundary_refs = owned_region_boundary_refs(regions, footprint_shapes);
+    let mut next_constraint_index = first_constraint_index;
+    for (edge, refs) in boundary_refs.edges {
+        if append_missing_shared_constraint_for_refs(
+            regions,
+            &refs,
+            next_constraint_index,
+            edge.start,
+            edge.end,
+        ) {
+            next_constraint_index += 1;
+        }
+    }
+    for (point, refs) in boundary_refs.points_by_region {
+        if append_missing_shared_constraint_for_refs(
+            regions,
+            &refs,
+            next_constraint_index,
+            point,
+            point,
+        ) {
+            next_constraint_index += 1;
+        }
+    }
+
+    for region in regions {
+        canonicalize_seam_constraints(&mut region.seam_constraints);
+    }
+}
+
 struct OwnedRegionBoundaryRefs {
     edges: BTreeMap<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>,
     points_by_region: BTreeMap<NodeOwnershipPointKey, Vec<OwnedRegionEdgeRef>>,
@@ -904,13 +939,107 @@ fn append_shared_constraint_for_refs(
             .push(NodeRegionSeamConstraint {
                 constraint_index,
                 seam_source: shared_region_seam_source(edge_ref.owner, opposite_owner),
-                constrains_shared_height: start != end,
+                constrains_shared_height: generated_shared_constraint_constrains_height(
+                    edge_ref.owner,
+                    opposite_owner,
+                    start,
+                    end,
+                ),
                 is_material_transition: true,
                 start_xz: road_point_from_key(start),
                 end_xz: road_point_from_key(end),
             });
     }
     true
+}
+
+fn append_missing_shared_constraint_for_refs(
+    regions: &mut [NodeBooleanOwnedRegion],
+    refs: &[OwnedRegionEdgeRef],
+    constraint_index: usize,
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+) -> bool {
+    let mut refs = refs.to_vec();
+    refs.sort_unstable();
+    refs.dedup();
+
+    let mut owners = refs
+        .iter()
+        .map(|edge_ref| edge_ref.owner)
+        .collect::<Vec<_>>();
+    owners.sort_unstable();
+    owners.dedup();
+    if owners.len() < 2 {
+        return false;
+    }
+
+    let mut missing_refs = Vec::new();
+    let mut existing_template = None;
+    for edge_ref in &refs {
+        let Some(region) = regions.get(edge_ref.region_index) else {
+            continue;
+        };
+        let source_constraints =
+            owned_source_constraints_for_edge(start, end, &region.seam_constraints);
+        if source_constraints.is_empty() {
+            missing_refs.push(*edge_ref);
+        } else if existing_template.is_none() {
+            existing_template = source_constraints.first().map(|constraint| {
+                (
+                    constraint.constraint_index,
+                    constraint.constrains_shared_height,
+                    constraint.is_material_transition,
+                )
+            });
+        }
+    }
+    if missing_refs.is_empty() {
+        return false;
+    }
+
+    let uses_new_index = existing_template.is_none();
+
+    for edge_ref in missing_refs {
+        let Some(opposite_owner) = owners
+            .iter()
+            .copied()
+            .find(|owner| *owner != edge_ref.owner)
+        else {
+            continue;
+        };
+        let (assigned_index, constrains_shared_height, is_material_transition) = existing_template
+            .unwrap_or((
+                constraint_index,
+                generated_shared_constraint_constrains_height(
+                    edge_ref.owner,
+                    opposite_owner,
+                    start,
+                    end,
+                ),
+                true,
+            ));
+        regions[edge_ref.region_index]
+            .seam_constraints
+            .push(NodeRegionSeamConstraint {
+                constraint_index: assigned_index,
+                seam_source: shared_region_seam_source(edge_ref.owner, opposite_owner),
+                constrains_shared_height,
+                is_material_transition,
+                start_xz: road_point_from_key(start),
+                end_xz: road_point_from_key(end),
+            });
+    }
+    uses_new_index
+}
+
+fn generated_shared_constraint_constrains_height(
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+) -> bool {
+    start != end && owner.kind() == opposite_owner.kind()
 }
 
 fn canonical_owned_region_edge_refs(refs: &[OwnedRegionEdgeRef]) -> Vec<OwnedRegionEdgeRef> {
@@ -1107,9 +1236,13 @@ fn overlay_point_from_key(point: NodeOwnershipPointKey) -> NodeOverlayPoint {
 }
 
 fn constraint_constrains_shared_height(constraint: &NodeRailConstraint) -> bool {
-    !matches!(
+    matches!(
         constraint.kind,
-        NodeRailConstraintKind::FootprintSeam { .. }
+        NodeRailConstraintKind::SpanHandoff { .. }
+            | NodeRailConstraintKind::AsphaltBoundary { .. }
+            | NodeRailConstraintKind::AsphaltCurbContact
+            | NodeRailConstraintKind::CurbSidewalkContact
+            | NodeRailConstraintKind::BandBoundary { .. }
     )
 }
 
@@ -1125,8 +1258,8 @@ fn constraint_is_material_transition(constraint: &NodeRailConstraint) -> bool {
 }
 
 fn constraint_applies_to_owner(constraint: &NodeRailConstraint, owner: NodeBandOwner) -> bool {
-    if constraint.owner == Some(owner) || constraint.opposite_owner == Some(owner) {
-        return true;
+    if constraint.owner.is_some() || constraint.opposite_owner.is_some() {
+        return constraint.owner == Some(owner) || constraint.opposite_owner == Some(owner);
     }
     match constraint.kind {
         NodeRailConstraintKind::FullRoadbedContour => true,
@@ -1535,10 +1668,10 @@ mod tests {
                     let end = road_point_key(constraint.end_xz);
                     start == road_point_key(RoadVec2::new(1.0, 0.0))
                         && end == road_point_key(RoadVec2::new(3.0, 0.0))
-                        && constraint.constrains_shared_height
                         && constraint.is_material_transition
+                        && !constraint.constrains_shared_height
                 }),
-                "region {:?} must own the exact shared sub-edge seam before height/CDT",
+                "region {:?} must own the exact shared sub-edge seam before height/CDT without inventing height authority",
                 region.owner
             );
         }
@@ -1630,6 +1763,93 @@ mod tests {
                 && *start == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 0.0))
                 && *end == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 2.0))
         )));
+    }
+
+    #[test]
+    fn missing_shared_seam_constraints_are_generated_after_boundary_mutation() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![[2.0, 0.0], [3.0, 0.0], [3.0, 1.0], [2.0, 1.0]],
+            ),
+        ];
+        let footprint_shapes = Vec::new();
+
+        append_missing_shared_region_seam_constraints(&mut regions, &footprint_shapes, 17);
+
+        let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
+            44,
+            RoadSurfaceVisualNodePieceKind::JunctionN,
+            &regions,
+            &footprint_shapes,
+        );
+        assert!(arrangement.diagnostics().is_empty());
+        for region in &regions {
+            assert!(
+                region.seam_constraints.iter().any(|constraint| {
+                    constraint.constraint_index == 17
+                        && constraint.is_material_transition
+                        && !constraint.constrains_shared_height
+                        && road_point_key(constraint.start_xz)
+                            == road_point_key(RoadVec2::new(2.0, 0.0))
+                        && road_point_key(constraint.end_xz)
+                            == road_point_key(RoadVec2::new(2.0, 1.0))
+                }),
+                "region {:?} must receive an explicit seam on the final shared edge",
+                region.owner
+            );
+        }
+    }
+
+    #[test]
+    fn missing_shared_seam_constraint_reuses_existing_source_index() {
+        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::Carriageway,
+                carriageway,
+                vec![[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![[2.0, 0.0], [3.0, 0.0], [3.0, 1.0], [2.0, 1.0]],
+            ),
+        ];
+        regions[0].seam_constraints.push(NodeRegionSeamConstraint {
+            constraint_index: 6,
+            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 0 },
+            constrains_shared_height: true,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(2.0, 0.0),
+            end_xz: RoadVec2::new(2.0, 1.0),
+        });
+        let footprint_shapes = Vec::new();
+
+        append_missing_shared_region_seam_constraints(&mut regions, &footprint_shapes, 18);
+
+        assert!(regions[1].seam_constraints.iter().any(|constraint| {
+            constraint.constraint_index == 6
+                && constraint.constrains_shared_height
+                && constraint.is_material_transition
+                && road_point_key(constraint.start_xz) == road_point_key(RoadVec2::new(2.0, 0.0))
+                && road_point_key(constraint.end_xz) == road_point_key(RoadVec2::new(2.0, 1.0))
+        }));
+        assert!(
+            regions[1]
+                .seam_constraints
+                .iter()
+                .all(|constraint| constraint.constraint_index != 18)
+        );
     }
 
     fn test_owned_region(
