@@ -270,7 +270,7 @@ impl RoadSurfaceSystem {
                 return None;
             }
         };
-        let ownership = match Self::build_node_boolean_ownership_from_rails(&rails) {
+        let mut ownership = match Self::build_node_boolean_ownership_from_rails(&rails) {
             Ok(ownership) => ownership,
             Err(error) => {
                 Self::log_node_validation_report(
@@ -279,6 +279,12 @@ impl RoadSurfaceSystem {
                 return None;
             }
         };
+        if let Err(error) = Self::resolve_node_same_band_join_ownership(&input, &mut ownership) {
+            Self::log_node_validation_report(&NodeValidationReport::from_height_field_error(
+                node_id, kind, &error,
+            ));
+            return None;
+        }
         if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
             &ownership.owned_region_arrangement,
         ) {

@@ -2444,8 +2444,10 @@ fn logged_current_flat_three_way_oblique_junction_rejects_same_band_height_confl
     .expect("current flat oblique 3-way input must compile");
     let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&input)
         .expect("current flat oblique 3-way rails must compile");
-    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+    let mut ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
         .expect("current flat oblique 3-way ownership must compile");
+    RoadSurfaceSystem::resolve_node_same_band_join_ownership(&input, &mut ownership)
+        .expect("current flat oblique 3-way same-band join ownership must resolve");
     assert!(
         ownership.owned_region_arrangement.diagnostics().is_empty(),
         "current flat oblique 3-way ownership diagnostics: {:?}",
@@ -3157,8 +3159,10 @@ fn logged_flat_oblique_t_junction_compiles_node_surface() {
     .expect("logged flat oblique T input must compile");
     let rails = RoadSurfaceSystem::build_node_rail_contours_from_input(&input)
         .expect("logged flat oblique T rails must compile");
-    let ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
+    let mut ownership = RoadSurfaceSystem::build_node_boolean_ownership_from_rails(&rails)
         .expect("logged flat oblique T ownership must compile");
+    RoadSurfaceSystem::resolve_node_same_band_join_ownership(&input, &mut ownership)
+        .expect("logged flat oblique T same-band join ownership must resolve");
     assert!(
         ownership.owned_region_arrangement.diagnostics().is_empty(),
         "logged flat oblique T ownership diagnostics: {:?}",
