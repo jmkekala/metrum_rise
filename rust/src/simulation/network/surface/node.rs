@@ -102,14 +102,6 @@ impl ArrangementSegmentParameter {
         })
     }
 
-    fn as_f32(self) -> f32 {
-        self.numerator as f32 / self.denominator as f32
-    }
-
-    fn is_strict_interior(self) -> bool {
-        self.numerator > 0 && self.numerator < self.denominator
-    }
-
     fn min(self, other: Self) -> Self {
         if self <= other { self } else { other }
     }
@@ -211,7 +203,9 @@ impl RoadSurfaceSystem {
         if incidents.len() < 3 {
             return None;
         }
-        let mouths = self.build_ordered_piece_mouths(incidents)?;
+        let Some(mouths) = self.build_ordered_piece_mouths(incidents) else {
+            return None;
+        };
         self.build_canonical_visual_node_piece(
             terrain,
             node_id,
@@ -270,7 +264,7 @@ impl RoadSurfaceSystem {
                 return None;
             }
         };
-        let mut ownership = match Self::build_node_boolean_ownership_from_rails(&rails) {
+        let ownership = match Self::build_node_boolean_ownership_from_rails(&rails) {
             Ok(ownership) => ownership,
             Err(error) => {
                 Self::log_node_validation_report(
@@ -279,7 +273,6 @@ impl RoadSurfaceSystem {
                 return None;
             }
         };
-        ownership.finalize_shared_region_seam_constraints();
         if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
             &ownership.owned_region_arrangement,
         ) {
@@ -350,20 +343,14 @@ impl RoadSurfaceSystem {
         let canonical_segments = Self::arrangement_outer_boundary_segments(arrangement)?;
         let canonical_loops =
             Self::outer_boundary_segment_loops_from_arrangement_segments(&canonical_segments)?;
-        let canonical_loops =
-            Self::owner_preserving_boundary_loops_without_strict_crossings(canonical_loops);
         validate_outer_boundary_loop_height_consistency(&canonical_loops)?;
-        let boundary_split_points = boundary_points_from_segment_loops_unique(&canonical_loops);
 
         let mut owned_regions = Vec::new();
 
         for face in arrangement.faces() {
             let owner = face.owner();
-            let Some(polygons) = Self::visual_polygons_from_arrangement_face(
-                arrangement,
-                face,
-                &boundary_split_points,
-            ) else {
+            let Some(polygons) = Self::visual_polygons_from_arrangement_face(arrangement, face)
+            else {
                 continue;
             };
             for polygon in polygons {
@@ -549,23 +536,6 @@ impl RoadSurfaceSystem {
             .ok_or(NodeBoundaryExportError::EmptyOuterBoundary)
     }
 
-    fn owner_preserving_boundary_loops_without_strict_crossings(
-        loops: Vec<Vec<ArrangementBoundarySegment>>,
-    ) -> Vec<Vec<ArrangementBoundarySegment>> {
-        let mut resolved = Vec::new();
-        for boundary_loop in loops {
-            let points = boundary_points_from_segment_loop(&boundary_loop);
-            if Self::make_boundary_loop_polygon(points).is_some() {
-                resolved.push(boundary_loop);
-                continue;
-            }
-            resolved.extend(owner_preserving_split_boundary_segment_loop_at_crossings(
-                boundary_loop,
-            ));
-        }
-        resolved
-    }
-
     fn outer_boundary_polygons_from_segment_loops(
         canonical_loops: &[Vec<ArrangementBoundarySegment>],
     ) -> Result<Vec<RoadSurfaceVisualPolygon>, NodeBoundaryExportError> {
@@ -662,81 +632,36 @@ impl RoadSurfaceSystem {
     fn visual_polygons_from_arrangement_face(
         arrangement: &NodeArrangement,
         face: &super::arrangement::NodeArrangementFace,
-        edge_split_points_world: &[Vector3],
     ) -> Option<Vec<RoadSurfaceVisualPolygon>> {
-        let mut points_world =
-            Self::noded_arrangement_face_boundary(arrangement, face, edge_split_points_world)?;
-        points_world.dedup_by(|a, b| {
-            (*a - *b).length_squared() <= super::WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
-        });
-        if points_world.len() < 3 {
+        let vertices = face.vertices();
+        let mut triangle = [
+            Self::arrangement_vertex_world(arrangement, vertices[0])?,
+            Self::arrangement_vertex_world(arrangement, vertices[1])?,
+            Self::arrangement_vertex_world(arrangement, vertices[2])?,
+        ];
+        let has_area = if face.owner().kind() == RoadSurfaceBandKind::Carriageway {
+            Self::triangle_has_area_xz(triangle)
+        } else {
+            Self::signed_polygon_area_xz(&triangle).abs() > NODE_OVERLAY_MIN_AREA_M2
+        };
+        let area_3d_m2 = (triangle[1] - triangle[0])
+            .cross(triangle[2] - triangle[0])
+            .length()
+            * 0.5;
+        if !has_area || area_3d_m2 < NODE_OVERLAY_MIN_AREA_M2 {
             return None;
         }
-        if Self::signed_polygon_area_xz(&points_world) < 0.0 {
-            points_world.reverse();
+        if Self::signed_polygon_area_xz(&triangle) < 0.0 {
+            triangle.swap(1, 2);
         }
-        let mut triangles_world =
-            Self::triangulate_noded_arrangement_face(&points_world, face.owner().kind());
-        Self::split_arrangement_face_triangles_at_points(
-            &mut triangles_world,
-            edge_split_points_world,
-            face.owner().kind(),
-        );
         Some(
-            triangles_world
-                .into_iter()
-                .map(|triangle| RoadSurfaceVisualPolygon {
-                    points_world: triangle.to_vec(),
-                    triangles_world: vec![triangle],
-                })
-                .collect(),
+            [RoadSurfaceVisualPolygon {
+                points_world: triangle.to_vec(),
+                triangles_world: vec![triangle],
+            }]
+            .into_iter()
+            .collect(),
         )
-    }
-
-    fn noded_arrangement_face_boundary(
-        arrangement: &NodeArrangement,
-        face: &super::arrangement::NodeArrangementFace,
-        edge_split_points_world: &[Vector3],
-    ) -> Option<Vec<Vector3>> {
-        let vertices = face.vertices();
-        let mut boundary = Vec::new();
-        for edge_index in 0..3 {
-            let start_id = vertices[edge_index];
-            let end_id = vertices[(edge_index + 1) % 3];
-            let start = Self::arrangement_vertex_world(arrangement, start_id)?;
-            let end = Self::arrangement_vertex_world(arrangement, end_id)?;
-            boundary.push(start);
-            let mut split_points = arrangement
-                .vertices()
-                .iter()
-                .enumerate()
-                .filter_map(|(candidate_index, candidate)| {
-                    if candidate_index == start_id.index() || candidate_index == end_id.index() {
-                        return None;
-                    }
-                    let candidate_world = super::backend::road_xz_with_height_to_godot(
-                        candidate.point_xz(),
-                        candidate.height_m(),
-                    );
-                    arrangement_vertex_on_triangle_edge(start, end, candidate_world)
-                        .map(|t| (t, candidate_world))
-                })
-                .collect::<Vec<_>>();
-            split_points.extend(
-                edge_split_points_world
-                    .iter()
-                    .filter_map(|candidate_world| {
-                        arrangement_vertex_on_triangle_edge(start, end, *candidate_world)
-                            .map(|t| (t, *candidate_world))
-                    }),
-            );
-            split_points.sort_by(|a, b| a.0.total_cmp(&b.0));
-            split_points.dedup_by(|a, b| {
-                (a.1 - b.1).length_squared() <= super::WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
-            });
-            boundary.extend(split_points.into_iter().map(|(_, point)| point));
-        }
-        Some(boundary)
     }
 
     fn arrangement_vertex_world(
@@ -748,74 +673,6 @@ impl RoadSurfaceSystem {
             vertex.point_xz(),
             vertex.height_m(),
         ))
-    }
-
-    fn triangulate_noded_arrangement_face(
-        points_world: &[Vector3],
-        kind: RoadSurfaceBandKind,
-    ) -> Vec<[Vector3; 3]> {
-        if points_world.len() < 3 {
-            return Vec::new();
-        }
-        let anchor = points_world[0];
-        let mut triangles = Vec::with_capacity(points_world.len().saturating_sub(2));
-        for index in 1..points_world.len() - 1 {
-            let triangle = [anchor, points_world[index], points_world[index + 1]];
-            let has_area = if kind == RoadSurfaceBandKind::Carriageway {
-                Self::triangle_has_area_xz(triangle)
-            } else {
-                Self::signed_polygon_area_xz(&triangle).abs() > NODE_OVERLAY_MIN_AREA_M2
-            };
-            let area_3d_m2 = (triangle[1] - triangle[0])
-                .cross(triangle[2] - triangle[0])
-                .length()
-                * 0.5;
-            if has_area && area_3d_m2 >= NODE_OVERLAY_MIN_AREA_M2 {
-                triangles.push(triangle);
-            }
-        }
-        triangles
-    }
-
-    fn split_arrangement_face_triangles_at_points(
-        triangles: &mut Vec<[Vector3; 3]>,
-        points_world: &[Vector3],
-        kind: RoadSurfaceBandKind,
-    ) {
-        for &point in points_world {
-            if triangles
-                .iter()
-                .flat_map(|triangle| triangle.iter())
-                .any(|vertex| {
-                    (*vertex - point).length_squared()
-                        <= super::WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
-                })
-            {
-                continue;
-            }
-            let Some(triangle_index) = triangles
-                .iter()
-                .position(|triangle| point_lies_on_triangle_surface_xz(*triangle, point))
-            else {
-                continue;
-            };
-            let triangle = triangles.swap_remove(triangle_index);
-            for split in [
-                [triangle[0], triangle[1], point],
-                [triangle[1], triangle[2], point],
-                [triangle[2], triangle[0], point],
-            ] {
-                let has_area = if kind == RoadSurfaceBandKind::Carriageway {
-                    Self::triangle_has_area_xz(split)
-                } else {
-                    Self::signed_polygon_area_xz(&split).abs() > NODE_OVERLAY_MIN_AREA_M2
-                };
-                let area_3d_m2 = (split[1] - split[0]).cross(split[2] - split[0]).length() * 0.5;
-                if has_area && area_3d_m2 >= NODE_OVERLAY_MIN_AREA_M2 {
-                    triangles.push(split);
-                }
-            }
-        }
     }
 
     fn log_node_input_extraction_error(
@@ -1180,73 +1037,6 @@ impl RoadSurfaceSystem {
     }
 }
 
-fn arrangement_vertex_on_triangle_edge(
-    start: Vector3,
-    end: Vector3,
-    candidate: Vector3,
-) -> Option<f32> {
-    let start_key = ArrangementBoundaryPointKey::from_world(start);
-    let end_key = ArrangementBoundaryPointKey::from_world(end);
-    let candidate_key = ArrangementBoundaryPointKey::from_world(candidate);
-    let parameter = boundary_segment_parameter_xz(candidate_key, start_key, end_key)?;
-    if !parameter.is_strict_interior() {
-        return None;
-    }
-    (candidate_key.y_mm == interpolated_segment_height_mm(start_key, end_key, parameter))
-        .then_some(parameter.as_f32())
-}
-
-fn point_lies_on_triangle_surface_xz(triangle: [Vector3; 3], point: Vector3) -> bool {
-    let point_key = ArrangementBoundaryPointKey::from_world(point);
-    let Some((a, b, c, area)) = triangle_barycentric_weight_keys_xz(triangle, point_key) else {
-        return false;
-    };
-    let a_key = ArrangementBoundaryPointKey::from_world(triangle[0]);
-    let b_key = ArrangementBoundaryPointKey::from_world(triangle[1]);
-    let c_key = ArrangementBoundaryPointKey::from_world(triangle[2]);
-    let height_mm = round_div_i128(
-        i128::from(a_key.y_mm) * a + i128::from(b_key.y_mm) * b + i128::from(c_key.y_mm) * c,
-        area,
-    );
-    point_key.y_mm == height_mm
-}
-
-fn triangle_barycentric_weight_keys_xz(
-    triangle: [Vector3; 3],
-    point: ArrangementBoundaryPointKey,
-) -> Option<(i128, i128, i128, i128)> {
-    let a = ArrangementBoundaryPointKey::from_world(triangle[0]);
-    let b = ArrangementBoundaryPointKey::from_world(triangle[1]);
-    let c = ArrangementBoundaryPointKey::from_world(triangle[2]);
-    let area = cross_key_delta(
-        b.x_key - a.x_key,
-        b.z_key - a.z_key,
-        c.x_key - a.x_key,
-        c.z_key - a.z_key,
-    );
-    if area == 0 {
-        return None;
-    }
-    let wa = cross_key_delta(
-        b.x_key - point.x_key,
-        b.z_key - point.z_key,
-        c.x_key - point.x_key,
-        c.z_key - point.z_key,
-    );
-    let wb = cross_key_delta(
-        c.x_key - point.x_key,
-        c.z_key - point.z_key,
-        a.x_key - point.x_key,
-        a.z_key - point.z_key,
-    );
-    let wc = area - wa - wb;
-    if area > 0 {
-        (wa >= 0 && wb >= 0 && wc >= 0).then_some((wa, wb, wc, area))
-    } else {
-        (wa <= 0 && wb <= 0 && wc <= 0).then_some((-wa, -wb, -wc, -area))
-    }
-}
-
 fn arrangement_boundary_point_same_xz(
     a: ArrangementBoundaryPointKey,
     b: ArrangementBoundaryPointKey,
@@ -1364,166 +1154,6 @@ fn round_div_i128(numerator: i128, denominator: i128) -> i64 {
         (numerator - half) / denominator
     };
     rounded as i64
-}
-
-fn owner_preserving_split_boundary_segment_loop_at_crossings(
-    segments: Vec<ArrangementBoundarySegment>,
-) -> Vec<Vec<ArrangementBoundarySegment>> {
-    let mut pending = vec![segments];
-    let mut simple_loops = Vec::new();
-    while let Some(candidate) = pending.pop() {
-        if !boundary_segment_loop_has_strict_crossing(&candidate) {
-            simple_loops.push(candidate);
-            continue;
-        }
-
-        let noded = owner_preserving_noded_boundary_segments_at_crossings(&candidate);
-        if boundary_segment_loops_same_xz(&candidate, &noded) {
-            simple_loops.push(candidate);
-            continue;
-        }
-
-        let split = split_boundary_segment_loop_at_repeated_xz(noded);
-        if split.is_empty() {
-            continue;
-        }
-        pending.extend(split);
-    }
-    simple_loops
-}
-
-fn boundary_segment_loop_has_strict_crossing(segments: &[ArrangementBoundarySegment]) -> bool {
-    if segments.len() < 4 {
-        return false;
-    }
-    for first_index in 0..segments.len() {
-        for second_index in first_index + 1..segments.len() {
-            if first_index + 1 == second_index
-                || (first_index == 0 && second_index + 1 == segments.len())
-            {
-                continue;
-            }
-            if boundary_segments_share_xz_endpoint(segments[first_index], segments[second_index]) {
-                continue;
-            }
-            if boundary_segment_intersection_parameters_xz(
-                segments[first_index],
-                segments[second_index],
-            )
-            .is_some()
-            {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-fn boundary_segment_loops_same_xz(
-    first: &[ArrangementBoundarySegment],
-    second: &[ArrangementBoundarySegment],
-) -> bool {
-    first.len() == second.len()
-        && first.iter().zip(second).all(|(a, b)| {
-            arrangement_boundary_point_same_xz(a.start_key, b.start_key)
-                && arrangement_boundary_point_same_xz(a.end_key, b.end_key)
-        })
-}
-
-fn owner_preserving_noded_boundary_segments_at_crossings(
-    segments: &[ArrangementBoundarySegment],
-) -> Vec<ArrangementBoundarySegment> {
-    let mut cuts = vec![vec![0.0_f32, 1.0_f32]; segments.len()];
-    for first_index in 0..segments.len() {
-        for second_index in first_index + 1..segments.len() {
-            if boundary_segments_share_xz_endpoint(segments[first_index], segments[second_index]) {
-                continue;
-            }
-            let Some((first_t, second_t)) = boundary_segment_intersection_parameters_xz(
-                segments[first_index],
-                segments[second_index],
-            ) else {
-                continue;
-            };
-            cuts[first_index].push(first_t);
-            cuts[second_index].push(second_t);
-        }
-    }
-
-    let mut noded = Vec::new();
-    for (segment, mut segment_cuts) in segments.iter().copied().zip(cuts) {
-        segment_cuts.sort_by(f32::total_cmp);
-        segment_cuts.dedup_by(|a, b| (*a - *b).abs() <= f32::EPSILON);
-        for cut in segment_cuts.windows(2) {
-            let start = interpolate_boundary_segment(segment, cut[0]);
-            let end = interpolate_boundary_segment(segment, cut[1]);
-            let start_key = ArrangementBoundaryPointKey::from_world(start);
-            let end_key = ArrangementBoundaryPointKey::from_world(end);
-            if arrangement_boundary_point_same_xz(start_key, end_key) {
-                continue;
-            }
-            noded.push(ArrangementBoundarySegment {
-                start_key,
-                end_key,
-                start,
-                end,
-                owner: segment.owner,
-                seam_source: segment.seam_source,
-            });
-        }
-    }
-    noded
-}
-
-fn boundary_segments_share_xz_endpoint(
-    first: ArrangementBoundarySegment,
-    second: ArrangementBoundarySegment,
-) -> bool {
-    arrangement_boundary_point_same_xz(first.start_key, second.start_key)
-        || arrangement_boundary_point_same_xz(first.start_key, second.end_key)
-        || arrangement_boundary_point_same_xz(first.end_key, second.start_key)
-        || arrangement_boundary_point_same_xz(first.end_key, second.end_key)
-}
-
-fn boundary_segment_intersection_parameters_xz(
-    first: ArrangementBoundarySegment,
-    second: ArrangementBoundarySegment,
-) -> Option<(f32, f32)> {
-    let first_dx = first.end_key.x_key - first.start_key.x_key;
-    let first_dz = first.end_key.z_key - first.start_key.z_key;
-    let second_dx = second.end_key.x_key - second.start_key.x_key;
-    let second_dz = second.end_key.z_key - second.start_key.z_key;
-    let denominator = cross_key_delta(first_dx, first_dz, second_dx, second_dz);
-    if denominator == 0 {
-        return None;
-    }
-    let offset_x = second.start_key.x_key - first.start_key.x_key;
-    let offset_z = second.start_key.z_key - first.start_key.z_key;
-    let first_numerator = cross_key_delta(offset_x, offset_z, second_dx, second_dz);
-    let second_numerator = cross_key_delta(offset_x, offset_z, first_dx, first_dz);
-    if denominator > 0 {
-        if !(first_numerator > 0
-            && first_numerator < denominator
-            && second_numerator > 0
-            && second_numerator < denominator)
-        {
-            return None;
-        }
-    } else if !(first_numerator < 0
-        && first_numerator > denominator
-        && second_numerator < 0
-        && second_numerator > denominator)
-    {
-        return None;
-    }
-    Some((
-        first_numerator as f32 / denominator as f32,
-        second_numerator as f32 / denominator as f32,
-    ))
-}
-
-fn interpolate_boundary_segment(segment: ArrangementBoundarySegment, t: f32) -> Vector3 {
-    segment.start + (segment.end - segment.start) * t
 }
 
 fn terrain_clip_boundary_points_and_source_edges_from_segments(
@@ -1737,21 +1367,6 @@ fn boundary_points_from_segment_loop(segments: &[ArrangementBoundarySegment]) ->
         points.push(segment.end);
     }
     points
-}
-
-fn boundary_points_from_segment_loops_unique(
-    loops: &[Vec<ArrangementBoundarySegment>],
-) -> Vec<Vector3> {
-    let mut points_by_key = BTreeMap::<ArrangementBoundaryPointKey, Vector3>::new();
-    for boundary_loop in loops {
-        for segment in boundary_loop {
-            points_by_key
-                .entry(segment.start_key)
-                .or_insert(segment.start);
-            points_by_key.entry(segment.end_key).or_insert(segment.end);
-        }
-    }
-    points_by_key.into_values().collect()
 }
 
 fn boundary_points_numeric_area_budget_m2(points: &[Vector3]) -> f32 {

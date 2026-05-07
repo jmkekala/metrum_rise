@@ -6,9 +6,10 @@ use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
 use super::{IncidentEdgeSide, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const NODE_ARRANGEMENT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
+const NODE_ARRANGEMENT_HEIGHT_SCALE: f64 = 1000.0;
 const NODE_ARRANGEMENT_MM_SCALE: f64 = 1000.0;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -314,7 +315,7 @@ impl NodeArrangement {
         seam_sources: impl IntoIterator<Item = NodeSeamSource>,
     ) -> Result<NodeArrangementVertexId, NodeArrangementError> {
         let key = NodeArrangementKey::from_point(point_xz);
-        let height_key = NodeArrangementHeightKey(quantize_m(height_m));
+        let height_key = NodeArrangementHeightKey(quantize_height_m(height_m));
         let owners = canonical_non_empty_owners(key, owners)?;
         let seam_sources = canonical_sources(seam_sources);
         let context_key = NodeArrangementVertexContextKey {
@@ -543,7 +544,7 @@ impl NodeArrangement {
                 let seam_source = source_constraints
                     .first()
                     .map(|constraint| constraint.seam_source.clone())
-                    .unwrap_or_else(|| seam_source_for_edge(pending.owner, opposite_owner));
+                    .unwrap_or_else(|| seam_source_for_owner(pending.owner));
                 let constrains_shared_height = source_constraints
                     .first()
                     .is_some_and(|constraint| constraint.constrains_shared_height);
@@ -752,7 +753,7 @@ impl NodeArrangement {
                         key,
                         &left.owners,
                         &right.owners,
-                    ) && !self.has_explicit_material_seam_endpoint_at_key_between(
+                    ) && !self.has_explicit_material_seam_endpoint_path_at_key_between(
                         key,
                         &left.owners,
                         &right.owners,
@@ -769,20 +770,65 @@ impl NodeArrangement {
         Ok(())
     }
 
-    fn has_explicit_material_seam_endpoint_at_key_between(
+    fn has_explicit_material_seam_endpoint_path_at_key_between(
         &self,
         key: NodeArrangementKey,
         left_owners: &[NodeBandOwner],
         right_owners: &[NodeBandOwner],
     ) -> bool {
-        let left_sources = self.material_seam_constraint_indices_at_key(key, left_owners);
-        if left_sources.is_empty() {
+        let adjacency = self.material_seam_endpoint_owner_adjacency_at_key(key);
+        if adjacency.is_empty() {
             return false;
         }
-        let right_sources = self.material_seam_constraint_indices_at_key(key, right_owners);
-        left_sources
-            .iter()
-            .any(|source| right_sources.binary_search(source).is_ok())
+
+        let right_owners = right_owners.iter().copied().collect::<BTreeSet<_>>();
+        let mut visited = BTreeSet::new();
+        let mut pending = left_owners.to_vec();
+        while let Some(owner) = pending.pop() {
+            if !visited.insert(owner) {
+                continue;
+            }
+            if right_owners.contains(&owner) {
+                return true;
+            }
+            if let Some(neighbors) = adjacency.get(&owner) {
+                pending.extend(neighbors.iter().copied());
+            }
+        }
+        false
+    }
+
+    fn material_seam_endpoint_owner_adjacency_at_key(
+        &self,
+        key: NodeArrangementKey,
+    ) -> BTreeMap<NodeBandOwner, BTreeSet<NodeBandOwner>> {
+        let mut owners_by_constraint = BTreeMap::<usize, Vec<NodeBandOwner>>::new();
+        for region in &self.regions {
+            for constraint in &region.seam_constraints {
+                if constraint.is_material_transition && seam_constraint_touches_key(constraint, key)
+                {
+                    owners_by_constraint
+                        .entry(constraint.constraint_index)
+                        .or_default()
+                        .push(region.owner);
+                }
+            }
+        }
+
+        let mut adjacency = BTreeMap::<NodeBandOwner, BTreeSet<NodeBandOwner>>::new();
+        for mut owners in owners_by_constraint.into_values() {
+            owners.sort_unstable();
+            owners.dedup();
+            for left_index in 0..owners.len() {
+                for right_index in left_index + 1..owners.len() {
+                    let left = owners[left_index];
+                    let right = owners[right_index];
+                    adjacency.entry(left).or_default().insert(right);
+                    adjacency.entry(right).or_default().insert(left);
+                }
+            }
+        }
+        adjacency
     }
 
     fn material_seam_constraint_indices_at_key(
@@ -937,6 +983,10 @@ impl NodeArrangementFace {
 
 fn quantize_m(value_m: f64) -> i64 {
     (value_m * NODE_ARRANGEMENT_KEY_SCALE).round() as i64
+}
+
+fn quantize_height_m(value_m: f64) -> i64 {
+    (value_m * NODE_ARRANGEMENT_HEIGHT_SCALE).round() as i64
 }
 
 #[derive(Clone)]
@@ -1121,37 +1171,6 @@ fn seam_source_for_owner(owner: NodeBandOwner) -> NodeSeamSource {
         RoadSurfaceBandKind::Sidewalk => NodeSeamSource::SidewalkOuter {
             owner_index: owner.owner_index,
         },
-        _ => NodeSeamSource::FootprintBoundary {
-            owner_index: owner.owner_index,
-        },
-    }
-}
-
-fn seam_source_for_edge(
-    owner: NodeBandOwner,
-    opposite_owner: Option<NodeBandOwner>,
-) -> NodeSeamSource {
-    let Some(opposite_owner) = opposite_owner else {
-        return seam_source_for_owner(owner);
-    };
-    match (owner.kind, opposite_owner.kind) {
-        (RoadSurfaceBandKind::Carriageway, RoadSurfaceBandKind::CurbOrShoulder)
-        | (RoadSurfaceBandKind::CurbOrShoulder, RoadSurfaceBandKind::Carriageway) => {
-            NodeSeamSource::AsphaltCurbContact {
-                owner_index: owner.owner_index,
-            }
-        }
-        (RoadSurfaceBandKind::Carriageway, _) | (_, RoadSurfaceBandKind::Carriageway) => {
-            NodeSeamSource::AsphaltBoundary {
-                owner_index: owner.owner_index,
-            }
-        }
-        (RoadSurfaceBandKind::CurbOrShoulder, RoadSurfaceBandKind::Sidewalk)
-        | (RoadSurfaceBandKind::Sidewalk, RoadSurfaceBandKind::CurbOrShoulder) => {
-            NodeSeamSource::CurbSidewalkContact {
-                owner_index: owner.owner_index,
-            }
-        }
         _ => NodeSeamSource::FootprintBoundary {
             owner_index: owner.owner_index,
         },

@@ -12,14 +12,14 @@ use super::backend::{
 use super::input::{NodeArrangementInput, NodeInputBandInterval, NodeInputTerminalEndBand};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::{
-    NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
-    RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
+    NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
+    RoadSurfaceVisualNodePieceKind,
 };
 use splines::{Interpolation, Key, Spline};
 use std::collections::BTreeMap;
 
 const HEIGHT_POINT_KEY_SCALE: f64 = 1000.0;
-const HEIGHT_SHARED_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
+const HEIGHT_SHARED_KEY_SCALE: f64 = 1000.0;
 const HEIGHT_SOURCE_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 const HEIGHT_PARAMETER_KEY_SCALE: f64 = 1_000_000.0;
 const HEIGHT_PARAMETER_BOUNDARY_EPS: f64 = 32.0 / ROAD_OVERLAY_COORDINATE_SCALE;
@@ -148,14 +148,6 @@ struct NodeBandHeightPatch {
     mouth_end_xz: RoadVec2,
     start_height_profile: Spline<f64, f64>,
     end_height_profile: Spline<f64, f64>,
-    contour_height_edges: Vec<NodeContourHeightEdge>,
-}
-
-struct NodeContourHeightEdge {
-    start_key: NodeOverlayPointKey,
-    end_key: NodeOverlayPointKey,
-    start_height_m: f64,
-    end_height_m: f64,
 }
 
 enum NodeHeightPatchEvaluation {
@@ -180,11 +172,9 @@ impl NodeHeightSolution {
         validate_input_ownership_pair(input, ownership)?;
         let fields = height_fields_by_source(input)?;
         let mut regions = Vec::with_capacity(ownership.owned_regions.len());
-        let global_points =
-            global_region_points(&ownership.owned_regions, &ownership.footprint_shapes);
 
         for region in &ownership.owned_regions {
-            let region = heighted_region(region, &fields, &global_points)?;
+            let region = heighted_region(region, &fields)?;
             if !region.shape.is_empty() {
                 regions.push(region);
             }
@@ -247,15 +237,6 @@ impl NodeBandHeightField {
 
     fn evaluate_height(&self, point_xz: RoadVec2) -> Result<f64, NodeHeightFieldError> {
         let mut candidates = Vec::new();
-        for patch in &self.patches {
-            if let Some(height_m) = patch.evaluate_contour_height(point_xz) {
-                candidates.push(height_m);
-            }
-        }
-        if !candidates.is_empty() {
-            return self.agreed_height(point_xz, candidates);
-        }
-
         let mut outside_error = None;
         for patch in &self.patches {
             match patch.evaluate_surface_height(self.id, point_xz)? {
@@ -340,12 +321,6 @@ impl NodeBandHeightPatch {
                 interval.endpoint_end_world.y,
                 interval.mouth_end_world.y,
             ),
-            contour_height_edges: contour_height_edges(&[
-                interval.mouth_start_world,
-                interval.mouth_end_world,
-                interval.endpoint_end_world,
-                interval.endpoint_start_world,
-            ]),
         }
     }
 
@@ -368,7 +343,6 @@ impl NodeBandHeightPatch {
                 end_band.inner_end_world.y,
                 end_band.outer_end_world.y,
             ),
-            contour_height_edges: contour_height_edges(&end_band.contour_world),
         }
     }
 
@@ -455,22 +429,6 @@ impl NodeBandHeightPatch {
             raw_parameter,
         }
     }
-
-    fn evaluate_contour_height(&self, point_xz: RoadVec2) -> Option<f64> {
-        let point_key = road_vec2_key(point_xz);
-        self.contour_height_edges
-            .iter()
-            .find_map(|edge| edge.sample_height(point_key))
-    }
-}
-
-impl NodeContourHeightEdge {
-    fn sample_height(&self, point_key: NodeOverlayPointKey) -> Option<f64> {
-        let t = segment_parameter_for_key(point_key, self.start_key, self.end_key)?;
-        Some(quantize_source_height_m(
-            self.start_height_m + (self.end_height_m - self.start_height_m) * t,
-        ))
-    }
 }
 
 fn validate_input_ownership_pair(
@@ -526,7 +484,6 @@ fn height_fields_by_source(
 fn heighted_region(
     region: &NodeBooleanOwnedRegion,
     fields: &BTreeMap<NodeSourceBandKey, NodeBandHeightField>,
-    global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedRegion, NodeHeightFieldError> {
     let band_index =
         region
@@ -554,7 +511,7 @@ fn heighted_region(
         });
     }
 
-    let shape = heighted_shape(&region.shape, field, global_points)?;
+    let shape = heighted_shape(&region.shape, field)?;
 
     Ok(NodeHeightedRegion {
         kind: region.kind,
@@ -569,11 +526,10 @@ fn heighted_region(
 fn heighted_shape(
     shape: &NodeOverlayShape,
     field: &NodeBandHeightField,
-    global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedShape, NodeHeightFieldError> {
     let mut heighted = Vec::with_capacity(shape.len());
     for contour in shape {
-        let contour = heighted_contour(contour, field, global_points)?;
+        let contour = heighted_contour(contour, field)?;
         if contour.len() >= 3 {
             heighted.push(contour);
         }
@@ -584,11 +540,10 @@ fn heighted_shape(
 fn heighted_contour(
     contour: &NodeOverlayContour,
     field: &NodeBandHeightField,
-    global_points: &[NodeOverlayPointKey],
 ) -> Result<NodeHeightedContour, NodeHeightFieldError> {
-    let contour = noded_overlay_contour(contour, global_points);
     contour
-        .into_iter()
+        .iter()
+        .copied()
         .map(|point| heighted_vertex(point, field))
         .collect()
 }
@@ -597,7 +552,7 @@ fn heighted_vertex(
     point: NodeOverlayPoint,
     field: &NodeBandHeightField,
 ) -> Result<NodeHeightedVertex, NodeHeightFieldError> {
-    let point_xz = overlay_point_to_road(point);
+    let point_xz = quantize_road_vec2_to_overlay_grid(overlay_point_to_road(point));
     Ok(NodeHeightedVertex {
         point_xz,
         height_m: field.evaluate_height(point_xz)?,
@@ -774,30 +729,6 @@ fn xz(point: RoadVec3) -> RoadVec2 {
     RoadVec2::new(point.x, point.z)
 }
 
-fn contour_height_edges(contour_world: &[RoadVec3]) -> Vec<NodeContourHeightEdge> {
-    if contour_world.len() < 2 {
-        return Vec::new();
-    }
-
-    let mut edges = Vec::with_capacity(contour_world.len());
-    for edge_index in 0..contour_world.len() {
-        let start = contour_world[edge_index];
-        let end = contour_world[(edge_index + 1) % contour_world.len()];
-        let start_key = road_vec2_key(xz(start));
-        let end_key = road_vec2_key(xz(end));
-        if start_key == end_key {
-            continue;
-        }
-        edges.push(NodeContourHeightEdge {
-            start_key,
-            end_key,
-            start_height_m: quantize_source_height_m(start.y),
-            end_height_m: quantize_source_height_m(end.y),
-        });
-    }
-    edges
-}
-
 fn midpoint(start: RoadVec2, end: RoadVec2) -> RoadVec2 {
     (start + end) * 0.5
 }
@@ -815,201 +746,11 @@ fn road_vec2_key(point: RoadVec2) -> NodeOverlayPointKey {
     )
 }
 
-fn segment_parameter_for_key(
-    point: NodeOverlayPointKey,
-    start: NodeOverlayPointKey,
-    end: NodeOverlayPointKey,
-) -> Option<f64> {
-    if point == start {
-        return Some(0.0);
-    }
-    if point == end {
-        return Some(1.0);
-    }
-    if !point_lies_strictly_inside_segment(point, start, end) {
-        return None;
-    }
-
-    let dx = end.0 - start.0;
-    let dz = end.1 - start.1;
-    if dx.abs() >= dz.abs() {
-        Some((point.0 - start.0) as f64 / dx as f64)
-    } else {
-        Some((point.1 - start.1) as f64 / dz as f64)
-    }
-}
-
-fn global_region_points(
-    regions: &[NodeBooleanOwnedRegion],
-    footprint_shapes: &NodeOverlayShapes,
-) -> Vec<NodeOverlayPointKey> {
-    let mut points = regions
-        .iter()
-        .flat_map(|region| region.shape.iter())
-        .flat_map(|contour| contour.iter().copied())
-        .map(overlay_point_key)
-        .collect::<Vec<_>>();
-    points.extend(
-        footprint_shapes
-            .iter()
-            .flat_map(|shape| shape.iter())
-            .flat_map(|contour| contour.iter().copied())
-            .map(overlay_point_key),
-    );
-    points.sort_unstable();
-    points.dedup();
-    points
-}
-
-fn noded_overlay_contour(
-    contour: &NodeOverlayContour,
-    global_points: &[NodeOverlayPointKey],
-) -> NodeOverlayContour {
-    if contour.len() < 2 {
-        return contour.clone();
-    }
-
-    let mut noded = Vec::with_capacity(contour.len());
-    for edge_index in 0..contour.len() {
-        let start = overlay_point_key(contour[edge_index]);
-        let end = overlay_point_key(contour[(edge_index + 1) % contour.len()]);
-        noded.push(overlay_point_from_key(start));
-        let mut split_points = global_points
-            .iter()
-            .copied()
-            .filter(|point| point_lies_strictly_inside_segment(*point, start, end))
-            .filter(|point| !point_is_numeric_endpoint_split(*point, start, end))
-            .collect::<Vec<_>>();
-        sort_segment_split_points(start, end, &mut split_points);
-        noded.extend(split_points.into_iter().map(overlay_point_from_key));
-    }
-
-    dedup_consecutive_overlay_points(&mut noded);
-    if noded.len() >= 2
-        && overlay_point_key(*noded.first().expect("noded contour has first point"))
-            == overlay_point_key(*noded.last().expect("noded contour has last point"))
-    {
-        noded.pop();
-    }
-    remove_overlay_spikes(&mut noded);
-    noded
-}
-
-fn point_is_numeric_endpoint_split(
-    point: NodeOverlayPointKey,
-    start: NodeOverlayPointKey,
-    end: NodeOverlayPointKey,
-) -> bool {
-    let key_epsilon =
-        (HEIGHT_PARAMETER_BOUNDARY_EPS * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64;
-    point_key_linf_distance(point, start) <= key_epsilon
-        || point_key_linf_distance(point, end) <= key_epsilon
-}
-
-fn point_key_linf_distance(a: NodeOverlayPointKey, b: NodeOverlayPointKey) -> i64 {
-    (a.0 - b.0).abs().max((a.1 - b.1).abs())
-}
-
-fn remove_overlay_spikes(points: &mut NodeOverlayContour) {
-    if points.len() < 3 {
-        return;
-    }
-
-    let mut changed = true;
-    while changed && points.len() >= 3 {
-        changed = false;
-        let len = points.len();
-        for index in 0..len {
-            let prev = if index == 0 { len - 1 } else { index - 1 };
-            let next = if index + 1 == len { 0 } else { index + 1 };
-            if height_overlay_point_key(points[prev]) == height_overlay_point_key(points[next]) {
-                points.remove(index);
-                dedup_consecutive_overlay_points(points);
-                changed = true;
-                break;
-            }
-        }
-    }
-}
-
-fn point_lies_strictly_inside_segment(
-    point: NodeOverlayPointKey,
-    start: NodeOverlayPointKey,
-    end: NodeOverlayPointKey,
-) -> bool {
-    if point == start || point == end || start == end {
-        return false;
-    }
-    let dx = i128::from(end.0 - start.0);
-    let dz = i128::from(end.1 - start.1);
-    let px = i128::from(point.0 - start.0);
-    let pz = i128::from(point.1 - start.1);
-    if px * dz - pz * dx != 0 {
-        return false;
-    }
-    let inside_x = if start.0 == end.0 {
-        point.0 == start.0
-    } else {
-        point.0 > start.0.min(end.0) && point.0 < start.0.max(end.0)
-    };
-    let inside_z = if start.1 == end.1 {
-        point.1 == start.1
-    } else {
-        point.1 > start.1.min(end.1) && point.1 < start.1.max(end.1)
-    };
-    inside_x && inside_z
-}
-
-fn sort_segment_split_points(
-    start: NodeOverlayPointKey,
-    end: NodeOverlayPointKey,
-    points: &mut Vec<NodeOverlayPointKey>,
-) {
-    let dx = end.0 - start.0;
-    let dz = end.1 - start.1;
-    if dx.abs() >= dz.abs() {
-        points.sort_by_key(|point| {
-            if dx >= 0 {
-                point.0 - start.0
-            } else {
-                start.0 - point.0
-            }
-        });
-    } else {
-        points.sort_by_key(|point| {
-            if dz >= 0 {
-                point.1 - start.1
-            } else {
-                start.1 - point.1
-            }
-        });
-    }
-    points.dedup();
-}
-
-fn dedup_consecutive_overlay_points(points: &mut NodeOverlayContour) {
-    points.dedup_by(|a, b| overlay_point_key(*a) == overlay_point_key(*b));
-}
-
 fn overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
     (
         (point[0] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
         (point[1] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
     )
-}
-
-fn height_overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
-    (
-        (point[0] * HEIGHT_POINT_KEY_SCALE).round() as i64,
-        (point[1] * HEIGHT_POINT_KEY_SCALE).round() as i64,
-    )
-}
-
-fn overlay_point_from_key(point: NodeOverlayPointKey) -> NodeOverlayPoint {
-    [
-        point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
-        point.1 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
-    ]
 }
 
 fn quantize_m(value: f64) -> i64 {
@@ -1361,7 +1102,6 @@ mod tests {
                     manual_interval(1, RoadSurfaceBandKind::Sidewalk, 5.0, 7.0),
                 ],
                 terminal_end_bands: Vec::new(),
-                boundary_heights: Vec::new(),
             }],
         }
     }

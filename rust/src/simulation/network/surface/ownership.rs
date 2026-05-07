@@ -192,17 +192,6 @@ impl NodeBooleanOwnership {
         sort_boolean_owned_regions(&mut owned_regions);
         canonicalize_owned_region_rings(&mut owned_regions, &footprint_shapes);
         clean_canonical_owned_region_shapes(&mut owned_regions, &rails.constraints)?;
-        append_shared_region_seam_constraints(
-            &mut owned_regions,
-            &footprint_shapes,
-            rails.constraints.len(),
-        );
-        let next_constraint_index = next_region_constraint_index(&owned_regions);
-        append_missing_shared_region_seam_constraints(
-            &mut owned_regions,
-            &footprint_shapes,
-            next_constraint_index,
-        );
         let owned_region_arrangement = NodeOwnedRegionArrangement::from_owned_regions(
             rails.node_id,
             rails.piece_kind,
@@ -218,21 +207,6 @@ impl NodeBooleanOwnership {
             owned_regions,
             owned_region_arrangement,
         })
-    }
-
-    pub(crate) fn finalize_shared_region_seam_constraints(&mut self) {
-        let next_constraint_index = next_region_constraint_index(&self.owned_regions);
-        append_missing_shared_region_seam_constraints(
-            &mut self.owned_regions,
-            &self.footprint_shapes,
-            next_constraint_index,
-        );
-        self.owned_region_arrangement = NodeOwnedRegionArrangement::from_owned_regions(
-            self.node_id,
-            self.piece_kind,
-            &self.owned_regions,
-            &self.footprint_shapes,
-        );
     }
 }
 
@@ -287,13 +261,7 @@ impl NodeOwnedRegionArrangement {
                 let seam_source = source_constraints
                     .first()
                     .map(|constraint| constraint.seam_source.clone())
-                    .unwrap_or_else(|| {
-                        opposite_owner
-                            .map(|opposite_owner| {
-                                shared_region_seam_source(edge_ref.owner, opposite_owner)
-                            })
-                            .unwrap_or_else(|| seam_source_for_owner(edge_ref.owner))
-                    });
+                    .unwrap_or_else(|| seam_source_for_owner(edge_ref.owner));
                 let source_constraint_indices = canonical_source_indices(
                     source_constraints
                         .iter()
@@ -464,22 +432,6 @@ fn owned_regions_from_domains(
             overlay_union_shape_sets(&claimed_shapes, &domain_shapes, "domain_claim_union")?;
     }
 
-    let residual = overlay_difference(target_shapes, &claimed_shapes, "domain_residual")?;
-    if !residual.is_empty() {
-        let residual_result = residual_regions_from_domains(
-            &residual,
-            domains,
-            rail_constraints,
-            "domain_residual_reclaim",
-        )?;
-        regions.extend(residual_result.regions);
-        claimed_shapes = overlay_union_shape_sets(
-            &claimed_shapes,
-            &residual_result.claimed_shapes,
-            "domain_residual_claim_union",
-        )?;
-    }
-
     let residual = overlay_difference(target_shapes, &claimed_shapes, "domain_residual_final")?;
     reject_residual(residual, residual_kind)?;
     Ok(OwnedDomainResult {
@@ -521,57 +473,6 @@ fn owned_domain_groups<'a>(
         });
     }
     Ok(groups)
-}
-
-fn residual_regions_from_domains(
-    residual_shapes: &NodeOverlayShapes,
-    domains: &[&NodeGeneratedContour],
-    rail_constraints: &[NodeRailConstraint],
-    stage: &'static str,
-) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
-    let mut regions = Vec::new();
-    let mut claimed_shapes = Vec::new();
-    for group in owned_domain_groups(domains)? {
-        let domain_contours = group
-            .domains
-            .iter()
-            .map(|domain| overlay_contour_from_domain(domain))
-            .collect::<Vec<_>>();
-        let mut domain_shapes = overlay_union(&domain_contours, stage)?;
-        domain_shapes = overlay_intersect(&domain_shapes, residual_shapes, stage)?;
-        domain_shapes = overlay_difference(&domain_shapes, &claimed_shapes, stage)?;
-        RoadSurfaceSystem::sort_overlay_shapes(&mut domain_shapes);
-        if domain_shapes.is_empty() {
-            continue;
-        }
-
-        for shape in &domain_shapes {
-            let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
-            if owned_shape_is_discardable_numeric_dust(
-                shape,
-                area_m2,
-                group.owner,
-                rail_constraints,
-            ) {
-                continue;
-            }
-            regions.push(NodeBooleanOwnedRegion {
-                kind: group.kind,
-                owner: group.owner,
-                claim_priority: group.claim_priority,
-                source_mouth_order_index: group.source_mouth_order_index,
-                source_band_index: group.source_band_index,
-                shape: shape.clone(),
-                area_m2,
-                seam_constraints: seam_constraints_for_shape(shape, group.owner, rail_constraints),
-            });
-        }
-        claimed_shapes = overlay_union_shape_sets(&claimed_shapes, &domain_shapes, stage)?;
-    }
-    Ok(OwnedDomainResult {
-        regions,
-        claimed_shapes,
-    })
 }
 
 fn overlay_contours_for_domains(
@@ -796,83 +697,27 @@ fn seam_constraints_for_shape(
                 });
             }
         }
+        for point in contour.iter().copied() {
+            for constraint in rail_constraints
+                .iter()
+                .filter(|constraint| constraint_applies_to_owner(constraint, owner))
+                .filter(|constraint| point_lies_on_point_constraint(point, constraint))
+            {
+                let point_xz = overlay_point_to_road(point);
+                seams.push(NodeRegionSeamConstraint {
+                    constraint_index: constraint.constraint_index,
+                    seam_source: seam_source_from_constraint(constraint, owner),
+                    constrains_shared_height: constraint_constrains_shared_height(constraint),
+                    is_material_transition: constraint_is_material_transition(constraint),
+                    start_xz: point_xz,
+                    end_xz: point_xz,
+                });
+            }
+        }
     }
     seams.sort_by(|a, b| seam_constraint_sort_key(a).cmp(&seam_constraint_sort_key(b)));
     seams.dedup_by(|a, b| seam_constraint_sort_key(a) == seam_constraint_sort_key(b));
     seams
-}
-
-fn append_shared_region_seam_constraints(
-    regions: &mut [NodeBooleanOwnedRegion],
-    footprint_shapes: &NodeOverlayShapes,
-    first_constraint_index: usize,
-) {
-    let boundary_refs = owned_region_boundary_refs(regions, footprint_shapes);
-    let mut next_constraint_index = first_constraint_index;
-    for (edge, refs) in boundary_refs.edges {
-        if append_shared_constraint_for_refs(
-            regions,
-            &refs,
-            next_constraint_index,
-            edge.start,
-            edge.end,
-        ) {
-            next_constraint_index += 1;
-        }
-    }
-    for (point, refs) in boundary_refs.points_by_region {
-        if append_shared_constraint_for_refs(regions, &refs, next_constraint_index, point, point) {
-            next_constraint_index += 1;
-        }
-    }
-
-    for region in regions {
-        canonicalize_seam_constraints(&mut region.seam_constraints);
-    }
-}
-
-pub(crate) fn append_missing_shared_region_seam_constraints(
-    regions: &mut [NodeBooleanOwnedRegion],
-    footprint_shapes: &NodeOverlayShapes,
-    first_constraint_index: usize,
-) {
-    let boundary_refs = owned_region_boundary_refs(regions, footprint_shapes);
-    let mut next_constraint_index = first_constraint_index;
-    for (edge, refs) in boundary_refs.edges {
-        if append_missing_shared_constraint_for_refs(
-            regions,
-            &refs,
-            next_constraint_index,
-            edge.start,
-            edge.end,
-        ) {
-            next_constraint_index += 1;
-        }
-    }
-    for (point, refs) in boundary_refs.points_by_region {
-        if append_missing_shared_constraint_for_refs(
-            regions,
-            &refs,
-            next_constraint_index,
-            point,
-            point,
-        ) {
-            next_constraint_index += 1;
-        }
-    }
-
-    for region in regions {
-        canonicalize_seam_constraints(&mut region.seam_constraints);
-    }
-}
-
-fn next_region_constraint_index(regions: &[NodeBooleanOwnedRegion]) -> usize {
-    regions
-        .iter()
-        .flat_map(|region| region.seam_constraints.iter())
-        .map(|constraint| constraint.constraint_index)
-        .max()
-        .map_or(0, |index| index + 1)
 }
 
 struct OwnedRegionBoundaryRefs {
@@ -950,7 +795,7 @@ fn clean_canonical_owned_region_shapes(
     for region in regions.drain(..) {
         let mut shapes = overlay_union(&region.shape, "owned_region_ring_clean")?;
         RoadSurfaceSystem::sort_overlay_shapes(&mut shapes);
-        for shape in shapes {
+        for shape in shapes.into_iter().flat_map(split_self_touching_owned_shape) {
             let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&shape);
             if owned_shape_is_discardable_numeric_dust(
                 &shape,
@@ -978,6 +823,86 @@ fn clean_canonical_owned_region_shapes(
     }
     *regions = cleaned_regions;
     Ok(())
+}
+
+fn split_self_touching_owned_shape(shape: NodeOverlayShape) -> Vec<NodeOverlayShape> {
+    if shape.len() != 1 {
+        return vec![shape];
+    }
+    let mut pending = vec![shape[0].clone()];
+    let mut split_contours = Vec::new();
+    while let Some(contour) = pending.pop() {
+        let Some((first, second)) = first_repeated_owned_contour_point_pair(&contour) else {
+            split_contours.push(contour);
+            continue;
+        };
+
+        let first_cycle = contour[first..second].to_vec();
+        let mut second_cycle = Vec::with_capacity(contour.len() - (second - first));
+        second_cycle.extend_from_slice(&contour[second..]);
+        second_cycle.extend_from_slice(&contour[..first]);
+
+        for cycle in [first_cycle, second_cycle] {
+            if let Some(cycle) = cleaned_self_touch_split_contour(cycle) {
+                pending.push(cycle);
+            }
+        }
+    }
+
+    if split_contours.is_empty() {
+        Vec::new()
+    } else {
+        split_contours
+            .into_iter()
+            .map(|contour| vec![contour])
+            .collect()
+    }
+}
+
+fn first_repeated_owned_contour_point_pair(contour: &NodeOverlayContour) -> Option<(usize, usize)> {
+    for first in 0..contour.len() {
+        for second in first + 2..contour.len() {
+            if first == 0 && second + 1 == contour.len() {
+                continue;
+            }
+            if overlay_point_key(contour[first]) == overlay_point_key(contour[second]) {
+                return Some((first, second));
+            }
+        }
+    }
+    None
+}
+
+fn cleaned_self_touch_split_contour(mut contour: NodeOverlayContour) -> Option<NodeOverlayContour> {
+    dedup_consecutive_overlay_points(&mut contour);
+    if contour.len() >= 2
+        && overlay_point_key(contour[0])
+            == overlay_point_key(*contour.last().expect("split contour has last point"))
+    {
+        contour.pop();
+    }
+    if contour.len() < 3 {
+        return None;
+    }
+    if signed_overlay_contour_area_m2(&contour) < 0.0 {
+        contour.reverse();
+    }
+    let shape = vec![contour.clone()];
+    let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&shape);
+    (area_m2 > RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(&shape)).then_some(contour)
+}
+
+fn signed_overlay_contour_area_m2(contour: &NodeOverlayContour) -> f32 {
+    if contour.len() < 3 {
+        return 0.0;
+    }
+    let mut area = 0.0;
+    for index in 0..contour.len() {
+        let start = contour[index];
+        let end = contour[(index + 1) % contour.len()];
+        area += start[0] * end[1] - end[0] * start[1];
+    }
+    (area * 0.5) as f32
 }
 
 fn owned_region_global_points(
@@ -1033,143 +958,6 @@ fn noded_owned_region_contour(
 
 fn dedup_consecutive_overlay_points(points: &mut NodeOverlayContour) {
     points.dedup_by(|a, b| overlay_point_key(*a) == overlay_point_key(*b));
-}
-
-fn append_shared_constraint_for_refs(
-    regions: &mut [NodeBooleanOwnedRegion],
-    refs: &[OwnedRegionEdgeRef],
-    constraint_index: usize,
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-) -> bool {
-    let mut refs = refs.to_vec();
-    refs.sort_unstable();
-    refs.dedup();
-
-    let mut owners = refs
-        .iter()
-        .map(|edge_ref| edge_ref.owner)
-        .collect::<Vec<_>>();
-    owners.sort_unstable();
-    owners.dedup();
-    if owners.len() < 2 {
-        return false;
-    }
-
-    for edge_ref in refs {
-        let Some(opposite_owner) = owners
-            .iter()
-            .copied()
-            .find(|owner| *owner != edge_ref.owner)
-        else {
-            continue;
-        };
-        regions[edge_ref.region_index]
-            .seam_constraints
-            .push(NodeRegionSeamConstraint {
-                constraint_index,
-                seam_source: shared_region_seam_source(edge_ref.owner, opposite_owner),
-                constrains_shared_height: generated_shared_constraint_constrains_height(
-                    edge_ref.owner,
-                    opposite_owner,
-                    start,
-                    end,
-                ),
-                is_material_transition: true,
-                start_xz: road_point_from_key(start),
-                end_xz: road_point_from_key(end),
-            });
-    }
-    true
-}
-
-fn append_missing_shared_constraint_for_refs(
-    regions: &mut [NodeBooleanOwnedRegion],
-    refs: &[OwnedRegionEdgeRef],
-    constraint_index: usize,
-    start: NodeOwnershipPointKey,
-    end: NodeOwnershipPointKey,
-) -> bool {
-    let mut refs = refs.to_vec();
-    refs.sort_unstable();
-    refs.dedup();
-
-    let mut owners = refs
-        .iter()
-        .map(|edge_ref| edge_ref.owner)
-        .collect::<Vec<_>>();
-    owners.sort_unstable();
-    owners.dedup();
-    if owners.len() < 2 {
-        return false;
-    }
-
-    let mut missing_refs = Vec::new();
-    let mut existing_template = None;
-    for edge_ref in &refs {
-        let Some(region) = regions.get(edge_ref.region_index) else {
-            continue;
-        };
-        let source_constraints =
-            owned_source_constraints_for_edge(start, end, &region.seam_constraints);
-        if source_constraints.is_empty() {
-            missing_refs.push(*edge_ref);
-        } else if existing_template.is_none() {
-            existing_template = source_constraints.first().map(|constraint| {
-                (
-                    constraint.constraint_index,
-                    constraint.constrains_shared_height,
-                    constraint.is_material_transition,
-                )
-            });
-        }
-    }
-    if missing_refs.is_empty() {
-        return false;
-    }
-
-    let uses_new_index = existing_template.is_none();
-
-    for edge_ref in missing_refs {
-        let Some(opposite_owner) = owners
-            .iter()
-            .copied()
-            .find(|owner| *owner != edge_ref.owner)
-        else {
-            continue;
-        };
-        let (assigned_index, constrains_shared_height, is_material_transition) = existing_template
-            .unwrap_or((
-                constraint_index,
-                generated_shared_constraint_constrains_height(
-                    edge_ref.owner,
-                    opposite_owner,
-                    start,
-                    end,
-                ),
-                true,
-            ));
-        regions[edge_ref.region_index]
-            .seam_constraints
-            .push(NodeRegionSeamConstraint {
-                constraint_index: assigned_index,
-                seam_source: shared_region_seam_source(edge_ref.owner, opposite_owner),
-                constrains_shared_height,
-                is_material_transition,
-                start_xz: road_point_from_key(start),
-                end_xz: road_point_from_key(end),
-            });
-    }
-    uses_new_index
-}
-
-fn generated_shared_constraint_constrains_height(
-    _owner: NodeBandOwner,
-    _opposite_owner: NodeBandOwner,
-    _start: NodeOwnershipPointKey,
-    _end: NodeOwnershipPointKey,
-) -> bool {
-    false
 }
 
 fn canonical_owned_region_edge_refs(refs: &[OwnedRegionEdgeRef]) -> Vec<OwnedRegionEdgeRef> {
@@ -1316,41 +1104,6 @@ fn seam_constraint_sort_key(
     )
 }
 
-fn shared_region_seam_source(
-    owner: NodeBandOwner,
-    opposite_owner: NodeBandOwner,
-) -> NodeSeamSource {
-    let owner_kind = owner.kind();
-    let opposite_kind = opposite_owner.kind();
-    if (is_carriageway(owner_kind) && is_curb_or_shoulder(opposite_kind))
-        || (is_curb_or_shoulder(owner_kind) && is_carriageway(opposite_kind))
-    {
-        return NodeSeamSource::AsphaltCurbContact {
-            owner_index: owner.owner_index(),
-        };
-    }
-    if (is_curb_or_shoulder(owner_kind) && is_sidewalk(opposite_kind))
-        || (is_sidewalk(owner_kind) && is_curb_or_shoulder(opposite_kind))
-    {
-        return NodeSeamSource::CurbSidewalkContact {
-            owner_index: owner.owner_index(),
-        };
-    }
-    if is_carriageway(owner_kind) || is_carriageway(opposite_kind) {
-        return NodeSeamSource::AsphaltBoundary {
-            owner_index: owner.owner_index(),
-        };
-    }
-    if is_sidewalk(owner_kind) || is_sidewalk(opposite_kind) {
-        return NodeSeamSource::SidewalkOuter {
-            owner_index: owner.owner_index(),
-        };
-    }
-    NodeSeamSource::FootprintBoundary {
-        owner_index: owner.owner_index(),
-    }
-}
-
 fn road_point_from_key(point: NodeOwnershipPointKey) -> RoadVec2 {
     RoadVec2::new(
         point.0 as f64 / ROAD_OVERLAY_COORDINATE_SCALE,
@@ -1366,14 +1119,28 @@ fn overlay_point_from_key(point: NodeOwnershipPointKey) -> NodeOverlayPoint {
 }
 
 fn constraint_constrains_shared_height(constraint: &NodeRailConstraint) -> bool {
+    if constraint_is_point_contact(constraint) {
+        return false;
+    }
     matches!(
         constraint.kind,
         NodeRailConstraintKind::SpanHandoff { .. }
             | NodeRailConstraintKind::AsphaltBoundary { .. }
             | NodeRailConstraintKind::AsphaltCurbContact
             | NodeRailConstraintKind::CurbSidewalkContact
-            | NodeRailConstraintKind::BandBoundary { .. }
     )
+}
+
+fn constraint_is_point_contact(constraint: &NodeRailConstraint) -> bool {
+    let Some(first) = constraint.points_xz.first().copied().map(road_point_key) else {
+        return false;
+    };
+    constraint
+        .points_xz
+        .iter()
+        .copied()
+        .map(road_point_key)
+        .all(|point| point == first)
 }
 
 fn constraint_is_material_transition(constraint: &NodeRailConstraint) -> bool {
@@ -1389,7 +1156,9 @@ fn constraint_is_material_transition(constraint: &NodeRailConstraint) -> bool {
 
 fn constraint_applies_to_owner(constraint: &NodeRailConstraint, owner: NodeBandOwner) -> bool {
     if constraint.owner.is_some() || constraint.opposite_owner.is_some() {
-        return constraint.owner == Some(owner) || constraint.opposite_owner == Some(owner);
+        return constraint.owner == Some(owner)
+            || constraint.opposite_owner == Some(owner)
+            || one_sided_material_constraint_applies_to_owner(constraint, owner);
     }
     match constraint.kind {
         NodeRailConstraintKind::FullRoadbedContour => true,
@@ -1414,6 +1183,43 @@ fn constraint_applies_to_owner(constraint: &NodeRailConstraint, owner: NodeBandO
     }
 }
 
+fn one_sided_material_constraint_applies_to_owner(
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+) -> bool {
+    if constraint.opposite_owner.is_some() || constraint.owner == Some(owner) {
+        return false;
+    }
+    let Some(source_owner) = constraint.owner else {
+        return false;
+    };
+    match constraint.kind {
+        NodeRailConstraintKind::AsphaltBoundary { adjacent_kind } => {
+            is_carriageway(source_owner.kind()) && adjacent_kind == owner.kind()
+                || is_carriageway(owner.kind()) && adjacent_kind == source_owner.kind()
+        }
+        NodeRailConstraintKind::AsphaltCurbContact => {
+            is_carriageway(source_owner.kind()) && is_curb_or_shoulder(owner.kind())
+                || is_curb_or_shoulder(source_owner.kind()) && is_carriageway(owner.kind())
+        }
+        NodeRailConstraintKind::CurbSidewalkContact => {
+            is_curb_or_shoulder(source_owner.kind()) && is_sidewalk(owner.kind())
+                || is_sidewalk(source_owner.kind()) && is_curb_or_shoulder(owner.kind())
+        }
+        NodeRailConstraintKind::BandBoundary {
+            left_kind,
+            right_kind,
+        } => {
+            (source_owner.kind() == left_kind && owner.kind() == right_kind)
+                || (source_owner.kind() == right_kind && owner.kind() == left_kind)
+        }
+        NodeRailConstraintKind::FullRoadbedContour
+        | NodeRailConstraintKind::BandContour { .. }
+        | NodeRailConstraintKind::SpanHandoff { .. }
+        | NodeRailConstraintKind::FootprintSeam { .. } => false,
+    }
+}
+
 fn edge_lies_on_constraint(
     edge_start: NodeOverlayPoint,
     edge_end: NodeOverlayPoint,
@@ -1429,6 +1235,156 @@ fn edge_lies_on_constraint(
         let end = road_point_key(segment[1]);
         point_key_lies_on_segment(edge_start, start, end)
             && point_key_lies_on_segment(edge_end, start, end)
+    }) || edge_lies_on_constraint_polyline(edge_start, edge_end, constraint)
+        || edge_endpoints_lie_on_constraint_path(edge_start, edge_end, constraint)
+}
+
+fn edge_lies_on_constraint_polyline(
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    if edge_start == edge_end || constraint.points_xz.len() < 2 {
+        return false;
+    }
+    let edge_end_parameter = segment_parameter_key(edge_start, edge_end, edge_end);
+    if edge_end_parameter <= 0 {
+        return false;
+    }
+    let mut intervals = Vec::new();
+    for segment in constraint.points_xz.windows(2) {
+        let start = road_point_key(segment[0]);
+        let end = road_point_key(segment[1]);
+        if start == end
+            || !point_key_collinear_with_edge(start, edge_start, edge_end)
+            || !point_key_collinear_with_edge(end, edge_start, edge_end)
+        {
+            continue;
+        }
+        let start_parameter = segment_parameter_key(edge_start, edge_end, start);
+        let end_parameter = segment_parameter_key(edge_start, edge_end, end);
+        let overlap_start = start_parameter.min(end_parameter).max(0);
+        let overlap_end = start_parameter.max(end_parameter).min(edge_end_parameter);
+        if overlap_start < overlap_end {
+            intervals.push((overlap_start, overlap_end));
+        }
+    }
+    if intervals.is_empty() {
+        return false;
+    }
+    intervals.sort_unstable();
+    let mut covered_end = 0;
+    for (start, end) in intervals {
+        if start > covered_end {
+            return false;
+        }
+        covered_end = covered_end.max(end);
+        if covered_end >= edge_end_parameter {
+            return true;
+        }
+    }
+    false
+}
+
+fn edge_endpoints_lie_on_constraint_path(
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    if edge_start == edge_end
+        || constraint.points_xz.len() < 2
+        || !constraint_allows_path_chord(constraint)
+    {
+        return false;
+    }
+    constraint_path_contains_ordered_endpoints(edge_start, edge_end, constraint)
+        || constraint_path_contains_ordered_endpoints(edge_end, edge_start, constraint)
+        || constraint_path_contains_ordered_project_endpoints(edge_start, edge_end, constraint)
+        || constraint_path_contains_ordered_project_endpoints(edge_end, edge_start, constraint)
+}
+
+fn constraint_path_contains_ordered_endpoints(
+    first: NodeOwnershipPointKey,
+    second: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    let mut first_seen = false;
+    for segment in constraint.points_xz.windows(2) {
+        let start = road_point_key(segment[0]);
+        let end = road_point_key(segment[1]);
+        if point_key_lies_on_segment(first, start, end) {
+            first_seen = true;
+        }
+        if first_seen && point_key_lies_on_segment(second, start, end) {
+            return true;
+        }
+    }
+    false
+}
+
+fn constraint_path_contains_ordered_project_endpoints(
+    first: NodeOwnershipPointKey,
+    second: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    let first = project_ownership_key(first);
+    let second = project_ownership_key(second);
+    let mut first_seen = false;
+    for segment in constraint.points_xz.windows(2) {
+        let start = project_ownership_key(road_point_key(segment[0]));
+        let end = project_ownership_key(road_point_key(segment[1]));
+        if point_key_lies_on_segment(first, start, end) {
+            first_seen = true;
+        }
+        if first_seen && point_key_lies_on_segment(second, start, end) {
+            return true;
+        }
+    }
+    false
+}
+
+fn project_ownership_key(point: NodeOwnershipPointKey) -> NodeOwnershipPointKey {
+    (
+        ownership_coordinate_key_to_mm(point.0),
+        ownership_coordinate_key_to_mm(point.1),
+    )
+}
+
+fn constraint_allows_path_chord(constraint: &NodeRailConstraint) -> bool {
+    matches!(
+        constraint.kind,
+        NodeRailConstraintKind::SpanHandoff { .. }
+            | NodeRailConstraintKind::AsphaltBoundary { .. }
+            | NodeRailConstraintKind::AsphaltCurbContact
+            | NodeRailConstraintKind::CurbSidewalkContact
+            | NodeRailConstraintKind::BandBoundary { .. }
+    )
+}
+
+fn point_key_collinear_with_edge(
+    point: NodeOwnershipPointKey,
+    edge_start: NodeOwnershipPointKey,
+    edge_end: NodeOwnershipPointKey,
+) -> bool {
+    let dx = i128::from(edge_end.0 - edge_start.0);
+    let dz = i128::from(edge_end.1 - edge_start.1);
+    let px = i128::from(point.0 - edge_start.0);
+    let pz = i128::from(point.1 - edge_start.1);
+    px * dz - pz * dx == 0
+}
+
+fn point_lies_on_point_constraint(
+    point: NodeOverlayPoint,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    if constraint.points_xz.len() < 2 {
+        return false;
+    }
+    let point = overlay_point_key(point);
+    constraint.points_xz.windows(2).any(|segment| {
+        let start = road_point_key(segment[0]);
+        let end = road_point_key(segment[1]);
+        start == end && point == start
     })
 }
 
@@ -1447,7 +1403,8 @@ fn point_key_lies_on_segment(
     let dz = i128::from(end.1 - start.1);
     let px = i128::from(point.0 - start.0);
     let pz = i128::from(point.1 - start.1);
-    if px * dz - pz * dx != 0 {
+    let cross = px * dz - pz * dx;
+    if cross != 0 && cross.abs() > overlay_grid_collinearity_error_bound(dx, dz) {
         return false;
     }
     let inside_x = if start.0 == end.0 {
@@ -1461,6 +1418,14 @@ fn point_key_lies_on_segment(
         point.1 > start.1.min(end.1) && point.1 < start.1.max(end.1)
     };
     inside_x && inside_z
+}
+
+fn overlay_grid_collinearity_error_bound(dx: i128, dz: i128) -> i128 {
+    // Source contours and backend-owned shapes are both projected to the overlay integer grid.
+    // A point that is exactly on a source segment before projection can land within this
+    // determinant envelope after independent endpoint rounding; this is representation noding,
+    // not owner or height repair.
+    (dx.abs() + dz.abs()) * 2
 }
 
 fn seam_source_from_constraint(
@@ -1761,7 +1726,7 @@ mod tests {
     }
 
     #[test]
-    fn owned_region_rings_are_noded_before_shared_seam_constraints() {
+    fn owned_region_rings_are_noded_before_explicit_seam_validation() {
         let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
         let mut regions = vec![
@@ -1779,7 +1744,19 @@ mod tests {
         let footprint_shapes = Vec::new();
 
         canonicalize_owned_region_rings(&mut regions, &footprint_shapes);
-        append_shared_region_seam_constraints(&mut regions, &footprint_shapes, 0);
+        for region in &mut regions {
+            region.seam_constraints.push(NodeRegionSeamConstraint {
+                constraint_index: 0,
+                seam_source: NodeSeamSource::AsphaltBoundary {
+                    owner_index: region.owner.owner_index(),
+                },
+                constrains_shared_height: false,
+                is_material_transition: true,
+                start_xz: RoadVec2::new(1.0, 0.0),
+                end_xz: RoadVec2::new(3.0, 0.0),
+            });
+            canonicalize_seam_constraints(&mut region.seam_constraints);
+        }
 
         let carriageway_contour = &regions[0].shape[0];
         assert!(
@@ -1823,7 +1800,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_point_constraints_preserve_endpoint_context_without_height_continuity() {
+    fn explicit_shared_point_constraints_preserve_endpoint_context_without_height_continuity() {
         let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
         let mut regions = vec![
@@ -1838,9 +1815,20 @@ mod tests {
                 vec![[1.0, 1.0], [2.0, 1.0], [2.0, 2.0], [1.0, 2.0]],
             ),
         ];
-        let footprint_shapes = Vec::new();
 
-        append_shared_region_seam_constraints(&mut regions, &footprint_shapes, 0);
+        for region in &mut regions {
+            region.seam_constraints.push(NodeRegionSeamConstraint {
+                constraint_index: 0,
+                seam_source: NodeSeamSource::AsphaltBoundary {
+                    owner_index: region.owner.owner_index(),
+                },
+                constrains_shared_height: false,
+                is_material_transition: true,
+                start_xz: RoadVec2::new(1.0, 1.0),
+                end_xz: RoadVec2::new(1.0, 1.0),
+            });
+            canonicalize_seam_constraints(&mut region.seam_constraints);
+        }
 
         for region in &regions {
             assert!(
@@ -1894,141 +1882,6 @@ mod tests {
                 && *start == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 0.0))
                 && *end == NodeOwnedRegionArrangementKey::from_point(RoadVec2::new(4.0, 2.0))
         )));
-    }
-
-    #[test]
-    fn missing_shared_seam_constraints_are_generated_after_boundary_mutation() {
-        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
-        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
-        let mut regions = vec![
-            test_owned_region(
-                RoadSurfaceBandKind::Carriageway,
-                carriageway,
-                vec![[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]],
-            ),
-            test_owned_region(
-                RoadSurfaceBandKind::CurbOrShoulder,
-                curb,
-                vec![[2.0, 0.0], [3.0, 0.0], [3.0, 1.0], [2.0, 1.0]],
-            ),
-        ];
-        let footprint_shapes = Vec::new();
-
-        append_missing_shared_region_seam_constraints(&mut regions, &footprint_shapes, 17);
-
-        let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
-            44,
-            RoadSurfaceVisualNodePieceKind::JunctionN,
-            &regions,
-            &footprint_shapes,
-        );
-        assert!(arrangement.diagnostics().is_empty());
-        for region in &regions {
-            assert!(
-                region.seam_constraints.iter().any(|constraint| {
-                    constraint.constraint_index == 17
-                        && constraint.is_material_transition
-                        && !constraint.constrains_shared_height
-                        && road_point_key(constraint.start_xz)
-                            == road_point_key(RoadVec2::new(2.0, 0.0))
-                        && road_point_key(constraint.end_xz)
-                            == road_point_key(RoadVec2::new(2.0, 1.0))
-                }),
-                "region {:?} must receive an explicit seam on the final shared edge",
-                region.owner
-            );
-        }
-    }
-
-    #[test]
-    fn missing_shared_seam_constraint_reuses_existing_source_index() {
-        let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
-        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
-        let mut regions = vec![
-            test_owned_region(
-                RoadSurfaceBandKind::Carriageway,
-                carriageway,
-                vec![[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]],
-            ),
-            test_owned_region(
-                RoadSurfaceBandKind::CurbOrShoulder,
-                curb,
-                vec![[2.0, 0.0], [3.0, 0.0], [3.0, 1.0], [2.0, 1.0]],
-            ),
-        ];
-        regions[0].seam_constraints.push(NodeRegionSeamConstraint {
-            constraint_index: 6,
-            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 0 },
-            constrains_shared_height: true,
-            is_material_transition: true,
-            start_xz: RoadVec2::new(2.0, 0.0),
-            end_xz: RoadVec2::new(2.0, 1.0),
-        });
-        let footprint_shapes = Vec::new();
-
-        append_missing_shared_region_seam_constraints(&mut regions, &footprint_shapes, 18);
-
-        assert!(regions[1].seam_constraints.iter().any(|constraint| {
-            constraint.constraint_index == 6
-                && constraint.constrains_shared_height
-                && constraint.is_material_transition
-                && road_point_key(constraint.start_xz) == road_point_key(RoadVec2::new(2.0, 0.0))
-                && road_point_key(constraint.end_xz) == road_point_key(RoadVec2::new(2.0, 1.0))
-        }));
-        assert!(
-            regions[1]
-                .seam_constraints
-                .iter()
-                .all(|constraint| constraint.constraint_index != 18)
-        );
-    }
-
-    #[test]
-    fn shared_seam_finalization_does_not_move_same_band_geometry() {
-        let curb_a = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
-        let curb_b = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
-        let mut regions = vec![
-            test_owned_region(
-                RoadSurfaceBandKind::CurbOrShoulder,
-                curb_a,
-                vec![[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 1.0]],
-            ),
-            test_owned_region(
-                RoadSurfaceBandKind::CurbOrShoulder,
-                curb_b,
-                vec![[1.0, 0.0], [0.0, 0.0], [1.0, -1.0]],
-            ),
-        ];
-        let footprint_shapes = Vec::new();
-        append_shared_region_seam_constraints(&mut regions, &footprint_shapes, 0);
-        let owned_region_arrangement = NodeOwnedRegionArrangement::from_owned_regions(
-            45,
-            RoadSurfaceVisualNodePieceKind::JunctionN,
-            &regions,
-            &footprint_shapes,
-        );
-        let mut ownership = NodeBooleanOwnership {
-            node_id: 45,
-            piece_kind: RoadSurfaceVisualNodePieceKind::JunctionN,
-            footprint_shapes,
-            asphalt_shapes: Vec::new(),
-            non_road_shapes: Vec::new(),
-            owned_region_arrangement,
-            owned_regions: regions,
-        };
-
-        ownership.finalize_shared_region_seam_constraints();
-
-        assert!(
-            ownership.owned_region_arrangement.diagnostics().is_empty(),
-            "shared seam finalization must keep explicit seam constraints"
-        );
-        assert!(
-            ownership.owned_regions[0].shape[0]
-                .iter()
-                .any(|point| overlay_point_key(*point) == overlay_point_key([1.0, 0.0])),
-            "shared seam finalization must not move same-band region geometry"
-        );
     }
 
     fn test_owned_region(

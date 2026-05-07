@@ -1083,7 +1083,7 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
 }
 
 #[test]
-fn flat_logged_curve_bend_rejects_implicit_cross_owner_cdt_height_edge() {
+fn flat_logged_curve_bend_rejects_missing_explicit_point_contact_curb_ownership() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-17.539, 0.0, 12.635), NodeType::Junction);
@@ -1128,12 +1128,12 @@ fn flat_logged_curve_bend_rejects_implicit_cross_owner_cdt_height_edge() {
 
     assert!(
         !surface.compiled_visual_node_pieces().contains_key(&bend),
-        "logged curve bend must reject until curb/sidewalk join ownership is explicit before CDT"
+        "logged curve bend must reject until rails emit explicit point-contact curb ownership before heighting"
     );
 }
 
 #[test]
-fn logged_sixty_degree_bend_generates_curb_transition_ownership() {
+fn logged_sixty_degree_bend_rejects_missing_explicit_curb_sidewalk_endpoint_authority() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-131.350, 0.0, -31.215), NodeType::Junction);
@@ -1169,18 +1169,14 @@ fn logged_sixty_degree_bend_generates_curb_transition_ownership() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&bend)
-        .expect("sixty-degree bend should compile after curb transition ownership is resolved before heighting");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
-    assert_node_piece_uses_band_owned_regions(piece);
-    assert_material_triangles_do_not_overlap(piece);
-    assert_outer_boundary_vertices_match_visible_top(piece);
+    assert!(
+        !surface.compiled_visual_node_pieces().contains_key(&bend),
+        "sixty-degree bend must reject until rails emit explicit curb/sidewalk endpoint authority before heighting"
+    );
 }
 
 #[test]
-fn logged_flat_sixty_degree_bend_generates_curb_transition_ownership() {
+fn logged_flat_sixty_degree_bend_rejects_missing_explicit_curb_sidewalk_endpoint_authority() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-104.032, 0.0, -0.181), NodeType::Junction);
@@ -1216,18 +1212,14 @@ fn logged_flat_sixty_degree_bend_generates_curb_transition_ownership() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&bend)
-        .expect("flat logged bend should compile after curb transition ownership is resolved before heighting");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
-    assert_node_piece_uses_band_owned_regions(piece);
-    assert_material_triangles_do_not_overlap(piece);
-    assert_outer_boundary_vertices_match_visible_top(piece);
+    assert!(
+        !surface.compiled_visual_node_pieces().contains_key(&bend),
+        "flat logged bend must reject until rails emit explicit curb/sidewalk endpoint authority for every same-key material contact"
+    );
 }
 
 #[test]
-fn logged_inside_bend_generates_point_contact_curb_ownership() {
+fn logged_inside_bend_rejects_missing_explicit_point_contact_curb_ownership() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-82.047, 0.0, -9.463), NodeType::Junction);
@@ -1262,14 +1254,10 @@ fn logged_inside_bend_generates_point_contact_curb_ownership() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&bend)
-        .expect("inside bend should compile after point-contact curb ownership is generated before heighting");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
-    assert_node_piece_uses_band_owned_regions(piece);
-    assert_material_triangles_do_not_overlap(piece);
-    assert_outer_boundary_vertices_match_visible_top(piece);
+    assert!(
+        !surface.compiled_visual_node_pieces().contains_key(&bend),
+        "inside bend must reject until rails emit explicit point-contact curb ownership before heighting"
+    );
 }
 
 #[test]
@@ -2090,7 +2078,7 @@ fn logged_current_flat_three_way_oblique_junction_rejects_cross_owner_cdt_height
 }
 
 #[test]
-fn logged_flat_three_way_oblique_variant_compiles_with_canonical_join_ownership() {
+fn logged_flat_three_way_oblique_variant_rejects_implicit_same_band_curb_height_edge() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-74.754, 0.0, -4.117), NodeType::Junction);
     let center = graph.add_node(Vector3::new(-20.950, 0.0, -6.649), NodeType::Junction);
@@ -2138,16 +2126,10 @@ fn logged_flat_three_way_oblique_variant_compiles_with_canonical_join_ownership(
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .expect("logged flat oblique 3-way variant must compile after canonical join ownership");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert!(!piece.outer_boundary_loops.is_empty());
-    assert!(!piece.road_surface_polygons.is_empty());
-    assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_top_mesh_centroids_inside_outer_boundary(piece);
-    assert_material_triangles_do_not_overlap(piece);
+    assert!(
+        !surface.compiled_visual_node_pieces().contains_key(&center),
+        "flat oblique 3-way variant must reject until same-band curb transition ownership removes the 0-to-120 mm implicit shared edge"
+    );
 }
 
 #[test]
@@ -2709,7 +2691,7 @@ fn logged_latest_elevated_oblique_three_way_rejects_contradictory_junction_node(
 }
 
 #[test]
-fn logged_flat_oblique_t_junction_compiles_with_canonical_join_ownership() {
+fn logged_flat_oblique_t_junction_rejects_missing_explicit_curb_sidewalk_endpoint_authority() {
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-140.162, 0.0, -60.230), NodeType::Junction);
     let north = graph.add_node(Vector3::new(-75.827, 0.0, 89.838), NodeType::Junction);
@@ -2757,16 +2739,10 @@ fn logged_flat_oblique_t_junction_compiles_with_canonical_join_ownership() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&center)
-        .expect("logged flat oblique T must compile after canonical join ownership");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::JunctionN);
-    assert!(!piece.outer_boundary_loops.is_empty());
-    assert!(!piece.road_surface_polygons.is_empty());
-    assert!(!piece.sidewalk_surface_polygons.is_empty());
-    assert_top_mesh_centroids_inside_outer_boundary(piece);
-    assert_material_triangles_do_not_overlap(piece);
+    assert!(
+        !surface.compiled_visual_node_pieces().contains_key(&center),
+        "logged flat oblique T must reject same-key carriageway/sidewalk height contact until rails emit the explicit curb/sidewalk endpoint path"
+    );
 }
 
 #[test]

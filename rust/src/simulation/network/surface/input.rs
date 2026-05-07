@@ -49,7 +49,6 @@ pub(crate) struct NodeInputMouth {
     pub(crate) boundary_rails: Vec<NodeInputBoundaryRail>,
     pub(crate) band_intervals: Vec<NodeInputBandInterval>,
     pub(crate) terminal_end_bands: Vec<NodeInputTerminalEndBand>,
-    pub(crate) boundary_heights: Vec<NodeInputBoundaryHeight>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -96,14 +95,6 @@ pub(crate) enum NodeInputTerminalEndBandBoundaryMode {
     MaterialBand,
     MaterialBandWithSameOwnerOuterCap,
     SameOwnerOuterCap,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct NodeInputBoundaryHeight {
-    pub(crate) profile_kind: NodeInputProfileKind,
-    pub(crate) boundary_index: usize,
-    pub(crate) point_xz: RoadVec2,
-    pub(crate) height_m: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -212,12 +203,6 @@ impl NodeInputMouth {
         let boundary_rails = boundary_rails(mouth);
         let band_intervals = band_intervals(mouth);
         let terminal_end_bands = terminal_end_bands(piece_kind, mouth, band_intervals.len());
-        let mut solved_boundary_heights =
-            boundary_heights(NodeInputProfileKind::Mouth, &mouth.profile);
-        solved_boundary_heights.extend(boundary_heights(
-            NodeInputProfileKind::Endpoint,
-            &mouth.endpoint_profile,
-        ));
 
         Ok(Self {
             order_index,
@@ -231,7 +216,6 @@ impl NodeInputMouth {
             boundary_rails,
             band_intervals,
             terminal_end_bands,
-            boundary_heights: solved_boundary_heights,
         })
     }
 }
@@ -569,6 +553,14 @@ fn bend_corner_end_bands(
         }
         let source_band_index = from_layer.band_index;
         if from_layer.band_kind == RoadSurfaceBandKind::CurbOrShoulder {
+            push_bend_corner_curb_hardcut_band(
+                &mut end_bands,
+                from_mouth,
+                from_layer,
+                to_mouth,
+                to_layer,
+                source_band_index,
+            );
             push_bend_corner_curve_strips(
                 &mut end_bands,
                 from_mouth,
@@ -606,6 +598,62 @@ fn bend_corner_end_bands(
         }
     }
     end_bands
+}
+
+fn push_bend_corner_curb_hardcut_band(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+    source_band_index: usize,
+) {
+    let Some(inner_start_world) =
+        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(inner_end_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(outer_start_world) =
+        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(outer_end_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
+    else {
+        return;
+    };
+
+    let (height_inner_start_world, height_inner_end_world) = nondegenerate_height_edge(
+        inner_start_world,
+        inner_end_world,
+        outer_start_world,
+        outer_end_world,
+    );
+    let (height_outer_start_world, height_outer_end_world) = nondegenerate_height_edge(
+        outer_start_world,
+        outer_end_world,
+        inner_start_world,
+        inner_end_world,
+    );
+    end_bands.push(NodeInputTerminalEndBand {
+        source_band_index,
+        band_kind: RoadSurfaceBandKind::CurbOrShoulder,
+        boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBand,
+        inner_start_world: height_inner_start_world,
+        inner_end_world: height_inner_end_world,
+        outer_start_world: height_outer_start_world,
+        outer_end_world: height_outer_end_world,
+        contour_world: vec![
+            inner_start_world,
+            inner_end_world,
+            outer_end_world,
+            outer_start_world,
+        ],
+    });
 }
 
 fn push_bend_corner_chord_band(
@@ -1284,23 +1332,6 @@ fn band_width_m(band: &IncidentMouthBand) -> f64 {
     (dx * dx + dz * dz).sqrt()
 }
 
-fn boundary_heights(
-    profile_kind: NodeInputProfileKind,
-    profile: &IncidentMouthProfile,
-) -> Vec<NodeInputBoundaryHeight> {
-    profile
-        .boundary_points_world
-        .iter()
-        .enumerate()
-        .map(|(boundary_index, point)| NodeInputBoundaryHeight {
-            profile_kind,
-            boundary_index,
-            point_xz: godot_vec3_xz_to_road(*point),
-            height_m: f64::from(point.y),
-        })
-        .collect()
-}
-
 fn boundary_rail_role(
     boundary_index: usize,
     bands: &[IncidentMouthBand],
@@ -1387,7 +1418,7 @@ mod tests {
     }
 
     #[test]
-    fn extracts_profile_rails_intervals_boundary_heights_and_handoff() {
+    fn extracts_profile_rails_intervals_and_handoff() {
         let input = NodeArrangementInput::from_ordered_mouths(
             42,
             RoadSurfaceVisualNodePieceKind::JunctionN,
@@ -1407,7 +1438,6 @@ mod tests {
         assert_eq!(mouth.endpoint_rails.len(), 4);
         assert_eq!(mouth.boundary_rails.len(), 5);
         assert_eq!(mouth.band_intervals.len(), 4);
-        assert_eq!(mouth.boundary_heights.len(), 10);
         assert!((mouth.conflict_handoff_distance_m - 10.0).abs() <= f64::EPSILON);
         assert_eq!(
             mouth.boundary_rails[0].role,
@@ -1422,7 +1452,6 @@ mod tests {
                 right_kind: RoadSurfaceBandKind::Carriageway,
             }
         );
-        assert!((mouth.boundary_heights[2].height_m - 4.2).abs() <= 1.0e-6);
     }
 
     #[test]
