@@ -894,7 +894,7 @@ fn node_piece_classification_matches_surface_profiles() {
             .compiled_visual_node_pieces()
             .get(&jb)
             .is_none(),
-        "right-angle bend must reject until same-XZ curb join ownership is explicit before CDT"
+        "short right-angle bend remains rejected until its full curb/sidewalk ownership is generated before heighting"
     );
 
     let mut terminal_graph = RegionGraph::new();
@@ -950,12 +950,19 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
     bend_graph.rebuild_intersection_clips();
     let mut bend_surface = RoadSurfaceSystem::new(16.0);
     bend_surface.compile_dirty(&bend_graph, &terrain);
-    assert!(
-        !bend_surface
-            .compiled_visual_node_pieces()
-            .contains_key(&bend_center),
-        "bend must reject until generated curb/sidewalk transition ownership carries one legal height source at shared XZ"
-    );
+    let bend_piece = bend_surface
+        .compiled_visual_node_pieces()
+        .get(&bend_center)
+        .expect("bend should compile once generated curb join ownership is explicit");
+    assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(bend_piece);
+    assert_node_piece_has_curb_and_sidewalk_owners(bend_piece);
+    assert_material_triangles_do_not_overlap(bend_piece);
+    assert!(!bend_piece.outer_boundary_loops.is_empty());
+    assert!(!bend_piece.road_surface_polygons.is_empty());
+    assert!(!bend_piece.sidewalk_surface_polygons.is_empty());
+    assert_top_mesh_centroids_inside_outer_boundary(bend_piece);
+    assert_outer_boundary_vertices_match_visible_top(bend_piece);
 
     let mut terminal_graph = RegionGraph::new();
     let terminal_center = terminal_graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);

@@ -413,8 +413,8 @@ fn add_bend_corner_join_bands(mouths: &mut [NodeInputMouth]) {
         return;
     }
 
-    append_adjacent_corner_join_bands(mouths, 0, 1);
-    append_adjacent_corner_join_bands(mouths, 1, 0);
+    append_adjacent_corner_join_bands(mouths, 0, 1, true);
+    append_adjacent_corner_join_bands(mouths, 1, 0, true);
 }
 
 fn add_junction_corner_join_bands(mouths: &mut [NodeInputMouth]) {
@@ -428,7 +428,7 @@ fn add_junction_corner_join_bands(mouths: &mut [NodeInputMouth]) {
         } else {
             from_index + 1
         };
-        append_adjacent_corner_join_bands(mouths, from_index, to_index);
+        append_adjacent_corner_join_bands(mouths, from_index, to_index, false);
     }
 }
 
@@ -436,6 +436,7 @@ fn append_adjacent_corner_join_bands(
     mouths: &mut [NodeInputMouth],
     from_index: usize,
     to_index: usize,
+    include_curb_miter_caps: bool,
 ) {
     let from_mouth = mouths[from_index].clone();
     let to_mouth = mouths[to_index].clone();
@@ -447,9 +448,24 @@ fn append_adjacent_corner_join_bands(
         return;
     }
 
-    let mut end_bands = bend_corner_end_bands(&from_mouth, &from_layers, &to_mouth, &to_layers);
+    let mut end_bands = bend_corner_end_bands(
+        &from_mouth,
+        &from_layers,
+        &to_mouth,
+        &to_layers,
+        include_curb_miter_caps,
+    );
     end_bands.retain(|end_band| terminal_end_band_has_quantized_area(end_band));
     mouths[from_index].terminal_end_bands.extend(end_bands);
+
+    if include_curb_miter_caps {
+        let mut counterpart_end_bands =
+            bend_corner_counterpart_end_bands(&from_mouth, &from_layers, &to_mouth, &to_layers);
+        counterpart_end_bands.retain(|end_band| terminal_end_band_has_quantized_area(end_band));
+        mouths[to_index]
+            .terminal_end_bands
+            .extend(counterpart_end_bands);
+    }
 }
 
 fn terminal_end_band_has_quantized_area(end_band: &NodeInputTerminalEndBand) -> bool {
@@ -544,6 +560,7 @@ fn bend_corner_end_bands(
     from_layers: &[BendCornerLayer],
     to_mouth: &NodeInputMouth,
     to_layers: &[BendCornerLayer],
+    include_curb_miter_caps: bool,
 ) -> Vec<NodeInputTerminalEndBand> {
     let mut end_bands = Vec::new();
     for (from_layer, to_layer) in from_layers.iter().zip(to_layers) {
@@ -568,6 +585,16 @@ fn bend_corner_end_bands(
                 to_layer,
                 source_band_index,
             );
+            if include_curb_miter_caps {
+                push_bend_corner_curb_miter_cap(
+                    &mut end_bands,
+                    from_mouth,
+                    from_layer,
+                    to_mouth,
+                    to_layer,
+                    source_band_index,
+                );
+            }
         } else if from_layer.band_kind == RoadSurfaceBandKind::Sidewalk {
             push_bend_corner_curved_outer_band(
                 &mut end_bands,
@@ -593,6 +620,31 @@ fn bend_corner_end_bands(
                 to_mouth,
                 to_layer,
                 source_band_index,
+            );
+        }
+    }
+    end_bands
+}
+
+fn bend_corner_counterpart_end_bands(
+    from_mouth: &NodeInputMouth,
+    from_layers: &[BendCornerLayer],
+    to_mouth: &NodeInputMouth,
+    to_layers: &[BendCornerLayer],
+) -> Vec<NodeInputTerminalEndBand> {
+    let mut end_bands = Vec::new();
+    for (from_layer, to_layer) in from_layers.iter().zip(to_layers) {
+        if from_layer.band_kind != to_layer.band_kind {
+            break;
+        }
+        if from_layer.band_kind == RoadSurfaceBandKind::CurbOrShoulder {
+            push_bend_corner_curb_counterpart_miter_cap(
+                &mut end_bands,
+                from_mouth,
+                from_layer,
+                to_mouth,
+                to_layer,
+                to_layer.band_index,
             );
         }
     }
@@ -652,6 +704,128 @@ fn push_bend_corner_curb_hardcut_band(
             outer_end_world,
             outer_start_world,
         ],
+    });
+}
+
+fn push_bend_corner_curb_miter_cap(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+    source_band_index: usize,
+) {
+    let Some(from_inner_world) =
+        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(to_inner_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(from_outer_world) =
+        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(to_outer_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(inner_miter_xz) = line_intersection_xz(
+        xz_from_road_vec3(from_inner_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(to_inner_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+    let Some(outer_miter_xz) = line_intersection_xz(
+        xz_from_road_vec3(from_outer_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(to_outer_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+
+    let to_raise_xz =
+        inner_miter_xz + (xz_from_road_vec3(to_outer_world) - xz_from_road_vec3(to_inner_world));
+    let inner_miter_world = RoadVec3::new(inner_miter_xz.x, from_inner_world.y, inner_miter_xz.y);
+    let to_raise_world = RoadVec3::new(to_raise_xz.x, to_inner_world.y, to_raise_xz.y);
+    let outer_miter_world = RoadVec3::new(outer_miter_xz.x, from_outer_world.y, outer_miter_xz.y);
+
+    end_bands.push(NodeInputTerminalEndBand {
+        source_band_index,
+        band_kind: RoadSurfaceBandKind::CurbOrShoulder,
+        boundary_mode: NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap,
+        inner_start_world: inner_miter_world,
+        inner_end_world: to_raise_world,
+        outer_start_world: outer_miter_world,
+        outer_end_world: outer_miter_world,
+        contour_world: vec![inner_miter_world, to_raise_world, outer_miter_world],
+    });
+}
+
+fn push_bend_corner_curb_counterpart_miter_cap(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+    source_band_index: usize,
+) {
+    let Some(from_inner_world) =
+        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(to_inner_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(from_outer_world) =
+        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(to_outer_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(inner_miter_xz) = line_intersection_xz(
+        xz_from_road_vec3(from_inner_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(to_inner_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+    let Some(outer_miter_xz) = line_intersection_xz(
+        xz_from_road_vec3(from_outer_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(to_outer_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+
+    let from_raise_xz = inner_miter_xz
+        + (xz_from_road_vec3(from_outer_world) - xz_from_road_vec3(from_inner_world));
+    let inner_miter_world = RoadVec3::new(inner_miter_xz.x, to_inner_world.y, inner_miter_xz.y);
+    let outer_miter_world = RoadVec3::new(outer_miter_xz.x, to_outer_world.y, outer_miter_xz.y);
+    let from_raise_world = RoadVec3::new(from_raise_xz.x, from_inner_world.y, from_raise_xz.y);
+
+    end_bands.push(NodeInputTerminalEndBand {
+        source_band_index,
+        band_kind: RoadSurfaceBandKind::CurbOrShoulder,
+        boundary_mode: NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap,
+        inner_start_world: inner_miter_world,
+        inner_end_world: outer_miter_world,
+        outer_start_world: from_raise_world,
+        outer_end_world: outer_miter_world,
+        contour_world: vec![inner_miter_world, outer_miter_world, from_raise_world],
     });
 }
 

@@ -334,6 +334,16 @@ fn split_non_road_regions(
     non_road_shapes: &NodeOverlayShapes,
     rails: &NodeRailContourSet,
 ) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
+    if rails.piece_kind != RoadSurfaceVisualNodePieceKind::Bend {
+        return split_non_road_regions_by_band_order(non_road_shapes, rails);
+    }
+    split_bend_non_road_regions_by_generated_domain(non_road_shapes, rails)
+}
+
+fn split_non_road_regions_by_band_order(
+    non_road_shapes: &NodeOverlayShapes,
+    rails: &NodeRailContourSet,
+) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
     let mut regions = Vec::new();
     let mut claimed_shapes = Vec::new();
 
@@ -375,6 +385,92 @@ fn split_non_road_regions(
         regions,
         claimed_shapes,
     })
+}
+
+fn split_bend_non_road_regions_by_generated_domain(
+    non_road_shapes: &NodeOverlayShapes,
+    rails: &NodeRailContourSet,
+) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
+    let mut regions = Vec::new();
+    let mut claimed_shapes = Vec::new();
+
+    for group in non_road_domain_groups(rails)? {
+        let domain_contours = group
+            .domains
+            .iter()
+            .map(|domain| overlay_contour_from_domain(domain))
+            .collect::<Vec<_>>();
+        let mut domain_shapes = overlay_union(&domain_contours, "non_road_domain_union")?;
+        domain_shapes = overlay_intersect(
+            &domain_shapes,
+            non_road_shapes,
+            "non_road_domain_clip_to_target",
+        )?;
+        domain_shapes =
+            overlay_difference(&domain_shapes, &claimed_shapes, "non_road_domain_unclaimed")?;
+        RoadSurfaceSystem::sort_overlay_shapes(&mut domain_shapes);
+        if domain_shapes.is_empty() {
+            continue;
+        }
+
+        for shape in &domain_shapes {
+            let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(shape);
+            if owned_shape_is_discardable_numeric_dust(
+                shape,
+                area_m2,
+                group.owner,
+                &rails.constraints,
+            ) {
+                continue;
+            }
+            regions.push(NodeBooleanOwnedRegion {
+                kind: group.kind,
+                owner: group.owner,
+                claim_priority: group.claim_priority,
+                source_mouth_order_index: group.source_mouth_order_index,
+                source_band_index: group.source_band_index,
+                shape: shape.clone(),
+                area_m2,
+                seam_constraints: seam_constraints_for_shape(
+                    shape,
+                    group.owner,
+                    &rails.constraints,
+                ),
+            });
+        }
+        claimed_shapes = overlay_union_shape_sets(
+            &claimed_shapes,
+            &domain_shapes,
+            "non_road_domain_claim_union",
+        )?;
+    }
+
+    RoadSurfaceSystem::sort_overlay_shapes(&mut claimed_shapes);
+    Ok(OwnedDomainResult {
+        regions,
+        claimed_shapes,
+    })
+}
+
+fn non_road_domain_groups<'a>(
+    rails: &'a NodeRailContourSet,
+) -> Result<Vec<OwnedDomainGroup<'a>>, NodeBooleanOwnershipError> {
+    let mut domains = rails
+        .contours
+        .iter()
+        .filter(|contour| band_kind(contour).is_some_and(is_non_road_band))
+        .collect::<Vec<_>>();
+    domains.sort_by_key(|contour| {
+        let kind = band_kind(contour).expect("non-road domain must have a band kind");
+        (
+            contour.claim_priority,
+            RoadSurfaceSystem::band_kind_sort_key(kind),
+            contour.source_mouth_order_index,
+            contour.source_band_index,
+            contour.owner,
+        )
+    });
+    owned_domain_groups(&domains)
 }
 
 fn owned_regions_from_domains(
@@ -1546,6 +1642,10 @@ fn non_road_band_order() -> [RoadSurfaceBandKind; 7] {
         RoadSurfaceBandKind::Parking,
         RoadSurfaceBandKind::TramReservation,
     ]
+}
+
+fn is_non_road_band(kind: RoadSurfaceBandKind) -> bool {
+    non_road_band_order().contains(&kind)
 }
 
 fn sort_boolean_owned_regions(regions: &mut [NodeBooleanOwnedRegion]) {
