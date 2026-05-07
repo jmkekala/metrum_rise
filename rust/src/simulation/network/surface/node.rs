@@ -279,7 +279,7 @@ impl RoadSurfaceSystem {
                 return None;
             }
         };
-        ownership.resolve_canonical_contact_ownership();
+        ownership.finalize_shared_region_seam_constraints();
         if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
             &ownership.owned_region_arrangement,
         ) {
