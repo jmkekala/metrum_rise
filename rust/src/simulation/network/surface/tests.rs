@@ -1227,7 +1227,7 @@ fn logged_flat_sixty_degree_bend_generates_curb_transition_ownership() {
 }
 
 #[test]
-fn logged_inside_bend_rejects_implicit_curb_anchor_height_repair() {
+fn logged_inside_bend_generates_point_contact_curb_ownership() {
     let terrain = flat_terrain(384, 384);
     let mut graph = RegionGraph::new();
     let west = graph.add_node(Vector3::new(-82.047, 0.0, -9.463), NodeType::Junction);
@@ -1262,10 +1262,14 @@ fn logged_inside_bend_rejects_implicit_curb_anchor_height_repair() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&bend),
-        "logged inside bend must reject until curb-anchor ownership is generated before heighting instead of repaired by height transfer"
-    );
+    let piece = surface
+        .compiled_visual_node_pieces()
+        .get(&bend)
+        .expect("inside bend should compile after point-contact curb ownership is generated before heighting");
+    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
+    assert_node_piece_uses_band_owned_regions(piece);
+    assert_material_triangles_do_not_overlap(piece);
+    assert_outer_boundary_vertices_match_visible_top(piece);
 }
 
 #[test]

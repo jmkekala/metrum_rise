@@ -422,14 +422,8 @@ fn add_bend_corner_join_bands(mouths: &mut [NodeInputMouth]) {
         return;
     }
 
-    let gap_0_to_1 = ccw_angle_delta(mouths[0].direction_angle_ccw, mouths[1].direction_angle_ccw);
-    let gap_1_to_0 = ccw_angle_delta(mouths[1].direction_angle_ccw, mouths[0].direction_angle_ccw);
-    let (from_index, to_index) = if gap_0_to_1 >= gap_1_to_0 {
-        (0, 1)
-    } else {
-        (1, 0)
-    };
-    append_adjacent_corner_join_bands(mouths, from_index, to_index);
+    append_adjacent_corner_join_bands(mouths, 0, 1);
+    append_adjacent_corner_join_bands(mouths, 1, 0);
 }
 
 fn add_junction_corner_join_bands(mouths: &mut [NodeInputMouth]) {
