@@ -548,21 +548,6 @@ fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNod
     }
 }
 
-fn polygon_area_m2(polygon: &RoadSurfaceVisualPolygon) -> f32 {
-    RoadSurfaceSystem::signed_polygon_area_xz(&polygon.points_world).abs()
-}
-
-fn polygon_triangle_area_m2(polygon: &RoadSurfaceVisualPolygon) -> f32 {
-    polygon
-        .triangles_world
-        .iter()
-        .map(|triangle| {
-            RoadSurfaceSystem::signed_polygon_area_xz(&[triangle[0], triangle[1], triangle[2]])
-                .abs()
-        })
-        .sum()
-}
-
 #[test]
 fn overlay_numeric_area_budget_accepts_logged_sub_visual_cdt_residual() {
     let small_four_edge_region = vec![vec![[0.0, 0.0], [0.02, 0.0], [0.02, 0.02], [0.0, 0.02]]];
@@ -965,53 +950,11 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
     bend_graph.rebuild_intersection_clips();
     let mut bend_surface = RoadSurfaceSystem::new(16.0);
     bend_surface.compile_dirty(&bend_graph, &terrain);
-    let bend_piece = bend_surface
-        .compiled_visual_node_pieces()
-        .get(&bend_center)
-        .unwrap();
-    assert_eq!(bend_piece.kind, RoadSurfaceVisualNodePieceKind::Bend);
-    assert_node_piece_uses_band_owned_regions(bend_piece);
-    assert_node_piece_has_curb_and_sidewalk_owners(bend_piece);
-    assert!(!bend_piece.outer_boundary_loops.is_empty());
-    assert!(!bend_piece.road_surface_polygons.is_empty());
-    assert!(!bend_piece.sidewalk_surface_polygons.is_empty());
     assert!(
-        bend_piece
-            .outer_boundary_loops
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
-    );
-    assert!(
-        bend_piece
-            .road_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
-    );
-    assert!(
-        bend_piece
-            .sidewalk_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
-    );
-    assert!(
-        point_inside_visual_polygons(&bend_piece.outer_boundary_loops, Vector2::new(3.0, 3.0)),
-        "bend footprint must close the local round join between the two incident roadbeds"
-    );
-    assert!(
-        point_inside_visual_polygons(&bend_piece.road_surface_polygons, Vector2::new(2.25, 2.25)),
-        "bend asphalt must close its own local join instead of leaving a road-surface gap"
-    );
-    assert!(
-        bend_piece
-            .earthwork_surface_polygons
-            .iter()
-            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
-    );
-    assert!(
-        bend_piece
-            .render_earthwork_faces
-            .iter()
-            .all(|face| RoadSurfaceSystem::polygon_has_area_xz(&face.polygon.points_world))
+        !bend_surface
+            .compiled_visual_node_pieces()
+            .contains_key(&bend_center),
+        "bend must reject until generated curb/sidewalk transition ownership carries one legal height source at shared XZ"
     );
 
     let mut terminal_graph = RegionGraph::new();
@@ -1303,7 +1246,7 @@ fn logged_elevated_bend_rejects_implicit_cross_owner_cdt_height_edge() {
 }
 
 #[test]
-fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
+fn angled_terminal_rejects_missing_explicit_curb_side_ownership() {
     let terrain = flat_terrain(64, 64);
     let mut graph = RegionGraph::new();
     let start = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -1320,16 +1263,46 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
+    assert!(
+        !surface.compiled_visual_node_pieces().contains_key(&start),
+        "angled terminal must reject until rails emit legal curb/sidewalk side ownership for both sides"
+    );
+    assert!(
+        surface
+            .compiled_visual_span_pieces()
+            .contains_key(&edge_idx),
+        "terminal road should keep a visible span after node rejection"
+    );
+}
+
+#[test]
+fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
+    let terrain = flat_terrain(64, 64);
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
+    let end = graph.add_node(Vector3::new(40.0, 0.0, 0.0), NodeType::Junction);
+    let edge_idx = graph.add_edge(test_edge(
+        start,
+        end,
+        vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(40.0, 0.0, 0.0)],
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    ));
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
     let terminal_piece = surface
         .compiled_visual_node_pieces()
         .get(&start)
-        .expect("start node should compile a terminal piece");
+        .expect("straight terminal should compile a terminal piece");
     let span_piece = surface
         .compiled_visual_span_pieces()
         .get(&edge_idx)
         .expect("terminal road should keep a visible span after terminal handoff");
 
-    let travel = Vector2::new(40.0, 5.0).normalized();
+    let travel = Vector2::new(40.0, 0.0).normalized();
     let lateral = RoadSurfaceSystem::left_normal_xz(travel);
     let center = Vector2::new(0.0, 0.0);
     for side in [-1.0, 1.0] {
@@ -1350,7 +1323,7 @@ fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
 }
 
 #[test]
-fn steep_standard_terminal_compiles_with_source_boundary_height_edges() {
+fn steep_standard_terminal_rejects_missing_legal_height_ownership() {
     let terrain = flat_terrain(64, 64);
     let mut graph = RegionGraph::new();
     let points = vec![
@@ -1381,14 +1354,10 @@ fn steep_standard_terminal_compiles_with_source_boundary_height_edges() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    let piece = surface
-        .compiled_visual_node_pieces()
-        .get(&start)
-        .expect("steep start terminal should compile from source boundary height edges");
-    assert_eq!(piece.kind, RoadSurfaceVisualNodePieceKind::Terminal);
-    assert_node_piece_uses_band_owned_regions(piece);
-    assert_material_triangles_do_not_overlap(piece);
-    assert_outer_boundary_vertices_match_visible_top(piece);
+    assert!(
+        !surface.compiled_visual_node_pieces().contains_key(&start),
+        "steep terminal must reject instead of reusing old source-boundary height transfer"
+    );
 }
 
 #[test]
@@ -3122,41 +3091,10 @@ fn junction_node_non_road_surface_is_footprint_minus_asphalt() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
 
-    let piece = surface.compiled_visual_node_pieces().get(&center).unwrap();
-    assert_node_piece_uses_band_owned_regions(piece);
-    assert_node_piece_has_curb_and_sidewalk_owners(piece);
-    let footprint_area: f32 = piece.outer_boundary_loops.iter().map(polygon_area_m2).sum();
-    let asphalt_area: f32 = piece
-        .road_surface_polygons
-        .iter()
-        .map(polygon_triangle_area_m2)
-        .sum();
-    let non_road_area: f32 = piece
-        .sidewalk_surface_polygons
-        .iter()
-        .map(polygon_triangle_area_m2)
-        .sum();
-
     assert!(
-        non_road_area > 0.0,
-        "JunctionN must emit non-road node surface polygons"
+        !surface.compiled_visual_node_pieces().contains_key(&center),
+        "JunctionN must reject until explicit legal curb/sidewalk join ownership is generated before heighting"
     );
-    let max_non_road_height = piece
-        .sidewalk_surface_polygons
-        .iter()
-        .flat_map(|polygon| polygon.triangles_world.iter())
-        .flat_map(|triangle| triangle.iter())
-        .map(|point| point.y)
-        .fold(f32::NEG_INFINITY, f32::max);
-    assert!(
-        max_non_road_height >= CURB_STEP_HEIGHT_M - 0.001,
-        "node non-road surfaces must sample curb/sidewalk band heights instead of flattened full-roadbed height; max_non_road_height={max_non_road_height:.3}"
-    );
-    assert!(
-        (footprint_area - asphalt_area - non_road_area).abs() <= 0.05,
-        "node non-road ownership must be exactly the resolved footprint minus asphalt; footprint={footprint_area:.3} asphalt={asphalt_area:.3} non_road={non_road_area:.3}"
-    );
-    assert_material_triangles_do_not_overlap(piece);
 }
 
 #[test]

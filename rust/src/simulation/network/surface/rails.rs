@@ -115,58 +115,6 @@ struct MouthOwners {
     terminal_end_band_owners: Vec<NodeBandOwner>,
 }
 
-#[derive(Clone, Copy)]
-struct GeneratedSameBandRoleJoinRewrite {
-    donor_contour_index: usize,
-    receiver_contour_index: usize,
-    equal_key: NodeRailPointKey,
-    conflict_key: NodeRailPointKey,
-    candidate_key: NodeRailPointKey,
-}
-
-#[derive(Clone, Copy)]
-struct GeneratedSameBandRolePointRewrite {
-    donor_contour_index: usize,
-    previous_key: NodeRailPointKey,
-    conflict_key: NodeRailPointKey,
-    next_key: NodeRailPointKey,
-}
-
-#[derive(Clone, Copy)]
-struct GeneratedSameBandRoleChordRewrite {
-    donor_contour_index: usize,
-    receiver_contour_index: usize,
-    lower_key: NodeRailPointKey,
-    raised_key: NodeRailPointKey,
-    conflict_key: NodeRailPointKey,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct GeneratedSameBandRoleJoinRewriteOrder {
-    removed_role_priority: u8,
-    donor_contour_index: usize,
-    receiver_contour_index: usize,
-    removed_key: NodeRailPointKey,
-    kept_key: NodeRailPointKey,
-    candidate_key: NodeRailPointKey,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct GeneratedSameBandRolePointRewriteOrder {
-    removed_role_priority: u8,
-    donor_contour_index: usize,
-    conflict_key: NodeRailPointKey,
-    previous_key: NodeRailPointKey,
-    next_key: NodeRailPointKey,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct GeneratedSameBandTransitionKey {
-    kept_key: NodeRailPointKey,
-    side_a: NodeRailPointKey,
-    side_b: NodeRailPointKey,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 enum GeneratedSameBandBoundaryRole {
     LowerSide,
@@ -183,39 +131,6 @@ struct GeneratedContourEdgeKey {
 struct GeneratedContourDirectedEdge {
     start: NodeRailPointKey,
     end: NodeRailPointKey,
-}
-
-#[derive(Clone, Copy)]
-struct GeneratedSameBandContourIntersection {
-    left_contour_index: usize,
-    right_contour_index: usize,
-    left_edge: GeneratedContourDirectedEdge,
-    right_edge: GeneratedContourDirectedEdge,
-    intersection_key: NodeRailPointKey,
-}
-
-#[derive(Clone, Copy)]
-struct GeneratedCurbSidewalkRaisedReroute {
-    sidewalk_contour_index: usize,
-    curb_owner: NodeBandOwner,
-    sidewalk_owner: NodeBandOwner,
-    edge_start: NodeRailPointKey,
-    edge_end: NodeRailPointKey,
-    crossing_key: NodeRailPointKey,
-    raised_edge_start: NodeRailPointKey,
-    raised_edge_end: NodeRailPointKey,
-    raised_key: NodeRailPointKey,
-    source_mouth_order_index: usize,
-    source_band_index: Option<usize>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
-struct GeneratedCurbSidewalkRaisedRerouteOrder {
-    sidewalk_contour_index: usize,
-    curb_owner: NodeBandOwner,
-    sidewalk_owner: NodeBandOwner,
-    crossing_key: NodeRailPointKey,
-    raised_key: NodeRailPointKey,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -314,13 +229,6 @@ impl NodeRailContourSet {
                     &mut constraints,
                 )?;
             }
-            push_terminal_end_band_contact_constraints(
-                mouth,
-                &mouth_owners.band_owners,
-                &mouth_owners.terminal_end_band_owners,
-                &mut constraints,
-            )?;
-
             for boundary_rail in &mouth.boundary_rails {
                 let (owner, opposite_owner) =
                     boundary_owners(boundary_rail.boundary_index, &mouth_owners.band_owners);
@@ -339,6 +247,7 @@ impl NodeRailContourSet {
                 push_span_handoff_constraint(mouth, profile_rail, owner, &mut constraints)?;
             }
         }
+        append_generated_role_material_contact_constraints(&contours, &mut constraints);
         node_generated_contact_contours(&mut contours, &mut constraints)?;
         append_generated_material_point_contact_constraints(&contours, &mut constraints);
         append_generated_same_band_contact_constraints(&contours, &mut constraints);
@@ -551,6 +460,19 @@ fn push_terminal_end_band_boundary_constraints(
                     points,
                 )?;
             }
+            if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::MaterialBand {
+                for (start, end) in terminal_curb_sidewalk_side_edges(end_band) {
+                    push_terminal_end_band_constraint(
+                        constraints,
+                        NodeRailConstraintKind::CurbSidewalkContact,
+                        mouth.order_index,
+                        end_band.source_band_index,
+                        owner,
+                        xz(start),
+                        xz(end),
+                    )?;
+                }
+            }
             Ok(())
         }
         RoadSurfaceBandKind::Sidewalk => {
@@ -601,109 +523,6 @@ fn push_terminal_end_band_boundary_constraints(
     }
 }
 
-fn push_terminal_end_band_contact_constraints(
-    mouth: &NodeInputMouth,
-    band_owners: &[NodeBandOwner],
-    owners: &[NodeBandOwner],
-    constraints: &mut Vec<NodeRailConstraint>,
-) -> Result<(), NodeRailGenerationError> {
-    for (curb_index, curb) in mouth.terminal_end_bands.iter().enumerate() {
-        if curb.band_kind != RoadSurfaceBandKind::CurbOrShoulder {
-            continue;
-        }
-        let Some(&curb_owner) = owners.get(curb_index) else {
-            continue;
-        };
-        for (start, end) in terminal_curb_sidewalk_side_edges(curb) {
-            for (sidewalk_index, sidewalk) in mouth.terminal_end_bands.iter().enumerate() {
-                if sidewalk.band_kind != RoadSurfaceBandKind::Sidewalk
-                    || !terminal_end_band_contains_edge_midpoint(sidewalk, start, end)
-                {
-                    continue;
-                }
-                let Some(&sidewalk_owner) = owners.get(sidewalk_index) else {
-                    continue;
-                };
-                push_terminal_end_band_contact_constraint(
-                    constraints,
-                    mouth.order_index,
-                    curb.source_band_index,
-                    curb_owner,
-                    sidewalk_owner,
-                    start,
-                    end,
-                )?;
-            }
-            for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
-                if interval.band_kind != RoadSurfaceBandKind::Sidewalk
-                    || !node_input_band_interval_contains_edge_midpoint(interval, start, end)
-                {
-                    continue;
-                }
-                let Some(&sidewalk_owner) = band_owners.get(band_index) else {
-                    continue;
-                };
-                push_terminal_end_band_contact_constraint(
-                    constraints,
-                    mouth.order_index,
-                    curb.source_band_index,
-                    curb_owner,
-                    sidewalk_owner,
-                    start,
-                    end,
-                )?;
-            }
-        }
-        if curb.boundary_mode == NodeInputTerminalEndBandBoundaryMode::MaterialBand
-            && let Some(outer_path) = terminal_end_band_outer_contour_path(curb)
-        {
-            for segment in outer_path.windows(2) {
-                let start = segment[0];
-                let end = segment[1];
-                for (sidewalk_index, sidewalk) in mouth.terminal_end_bands.iter().enumerate() {
-                    if sidewalk.band_kind != RoadSurfaceBandKind::Sidewalk
-                        || !terminal_end_band_contains_edge_midpoint_xz(sidewalk, start, end)
-                    {
-                        continue;
-                    }
-                    let Some(&sidewalk_owner) = owners.get(sidewalk_index) else {
-                        continue;
-                    };
-                    push_terminal_end_band_contact_constraint_xz(
-                        constraints,
-                        mouth.order_index,
-                        curb.source_band_index,
-                        curb_owner,
-                        sidewalk_owner,
-                        start,
-                        end,
-                    )?;
-                }
-                for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
-                    if interval.band_kind != RoadSurfaceBandKind::Sidewalk
-                        || !node_input_band_interval_contains_edge_midpoint_xz(interval, start, end)
-                    {
-                        continue;
-                    }
-                    let Some(&sidewalk_owner) = band_owners.get(band_index) else {
-                        continue;
-                    };
-                    push_terminal_end_band_contact_constraint_xz(
-                        constraints,
-                        mouth.order_index,
-                        curb.source_band_index,
-                        curb_owner,
-                        sidewalk_owner,
-                        start,
-                        end,
-                    )?;
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 fn terminal_curb_sidewalk_side_edges(
     end_band: &NodeInputTerminalEndBand,
 ) -> Vec<(RoadVec3, RoadVec3)> {
@@ -714,127 +533,6 @@ fn terminal_curb_sidewalk_side_edges(
     .into_iter()
     .filter(|(start, end)| road_point_key(xz(*start)) != road_point_key(xz(*end)))
     .collect()
-}
-
-fn terminal_end_band_contains_edge_midpoint(
-    end_band: &NodeInputTerminalEndBand,
-    start: RoadVec3,
-    end: RoadVec3,
-) -> bool {
-    terminal_end_band_contains_edge_midpoint_xz(end_band, xz(start), xz(end))
-}
-
-fn terminal_end_band_contains_edge_midpoint_xz(
-    end_band: &NodeInputTerminalEndBand,
-    start: RoadVec2,
-    end: RoadVec2,
-) -> bool {
-    let point_x2 = i128::from(road_point_key(start).0) + i128::from(road_point_key(end).0);
-    let point_z2 = i128::from(road_point_key(start).1) + i128::from(road_point_key(end).1);
-    doubled_point_inside_or_on_generated_keys(
-        point_x2,
-        point_z2,
-        &end_band
-            .contour_world
-            .iter()
-            .copied()
-            .map(xz)
-            .map(road_point_key)
-            .collect::<Vec<_>>(),
-    )
-}
-
-fn node_input_band_interval_contains_edge_midpoint(
-    interval: &NodeInputBandInterval,
-    start: RoadVec3,
-    end: RoadVec3,
-) -> bool {
-    node_input_band_interval_contains_edge_midpoint_xz(interval, xz(start), xz(end))
-}
-
-fn node_input_band_interval_contains_edge_midpoint_xz(
-    interval: &NodeInputBandInterval,
-    start: RoadVec2,
-    end: RoadVec2,
-) -> bool {
-    let point_x2 = i128::from(road_point_key(start).0) + i128::from(road_point_key(end).0);
-    let point_z2 = i128::from(road_point_key(start).1) + i128::from(road_point_key(end).1);
-    doubled_point_inside_or_on_generated_keys(
-        point_x2,
-        point_z2,
-        &[
-            interval.mouth_start_world,
-            interval.mouth_end_world,
-            interval.endpoint_end_world,
-            interval.endpoint_start_world,
-        ]
-        .into_iter()
-        .map(xz)
-        .map(road_point_key)
-        .collect::<Vec<_>>(),
-    )
-}
-
-fn push_terminal_end_band_contact_constraint(
-    constraints: &mut Vec<NodeRailConstraint>,
-    source_mouth_order_index: usize,
-    source_band_index: usize,
-    owner: NodeBandOwner,
-    opposite_owner: NodeBandOwner,
-    start: RoadVec3,
-    end: RoadVec3,
-) -> Result<(), NodeRailGenerationError> {
-    if road_point_key(xz(start)) == road_point_key(xz(end)) {
-        return Ok(());
-    }
-    push_constraint(
-        constraints,
-        NodeRailConstraintKind::CurbSidewalkContact,
-        source_mouth_order_index,
-        Some(source_band_index),
-        None,
-        Some(owner),
-        Some(opposite_owner),
-        vec![xz(start), xz(end)],
-    )
-}
-
-fn push_terminal_end_band_contact_constraint_xz(
-    constraints: &mut Vec<NodeRailConstraint>,
-    source_mouth_order_index: usize,
-    source_band_index: usize,
-    owner: NodeBandOwner,
-    opposite_owner: NodeBandOwner,
-    start: RoadVec2,
-    end: RoadVec2,
-) -> Result<(), NodeRailGenerationError> {
-    let start_key = road_point_key(start);
-    let end_key = road_point_key(end);
-    if start_key == end_key {
-        return Ok(());
-    }
-    if constraints.iter().any(|constraint| {
-        constraint.kind == NodeRailConstraintKind::CurbSidewalkContact
-            && owners_match_unordered(
-                constraint.owner,
-                constraint.opposite_owner,
-                owner,
-                opposite_owner,
-            )
-            && generated_constraint_contains_key_segment(constraint, start_key, end_key)
-    }) {
-        return Ok(());
-    }
-    push_constraint(
-        constraints,
-        NodeRailConstraintKind::CurbSidewalkContact,
-        source_mouth_order_index,
-        Some(source_band_index),
-        None,
-        Some(owner),
-        Some(opposite_owner),
-        vec![start, end],
-    )
 }
 
 fn terminal_end_band_inner_contour_edge(
@@ -1011,401 +709,6 @@ fn push_constraint(
     Ok(())
 }
 
-fn resolve_generated_same_band_curb_transition_ownership(
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut [NodeRailConstraint],
-) -> Result<(), NodeRailGenerationError> {
-    let max_passes = contours.len().saturating_mul(contours.len()).max(1);
-    let mut resolved_transitions = BTreeSet::new();
-    let mut resolved_chord_pairs = BTreeSet::new();
-    for _ in 0..max_passes {
-        if let Some(intersection) = generated_same_band_contour_intersection_candidate(contours) {
-            apply_generated_same_band_contour_intersection_node(
-                contours,
-                constraints,
-                intersection,
-            )?;
-            continue;
-        }
-        if let Some(touch) = generated_same_band_contour_touch_candidate(contours) {
-            apply_generated_same_band_contour_intersection_node(contours, constraints, touch)?;
-            continue;
-        }
-        if let Some(rewrite) = generated_same_band_role_chord_rewrite_candidate(
-            contours,
-            constraints,
-            &resolved_chord_pairs,
-        ) {
-            resolved_chord_pairs.insert(generated_same_band_contour_pair_key(
-                rewrite.donor_contour_index,
-                rewrite.receiver_contour_index,
-            ));
-            apply_generated_same_band_role_chord_rewrite(contours, constraints, rewrite)?;
-            continue;
-        }
-        if let Some(rewrite) = generated_same_band_role_crossing_join_rewrite_candidate(
-            contours,
-            constraints,
-            &resolved_transitions,
-        ) {
-            resolved_transitions.insert(generated_same_band_transition_key(
-                rewrite.equal_key,
-                rewrite.conflict_key,
-                rewrite.candidate_key,
-            ));
-            apply_generated_same_band_role_join_rewrite(contours, constraints, rewrite)?;
-            continue;
-        }
-        if let Some(rewrite) = generated_same_band_role_join_rewrite_candidate(
-            contours,
-            constraints,
-            &resolved_transitions,
-        ) {
-            resolved_transitions.insert(generated_same_band_transition_key(
-                rewrite.equal_key,
-                rewrite.conflict_key,
-                rewrite.candidate_key,
-            ));
-            apply_generated_same_band_role_join_rewrite(contours, constraints, rewrite)?;
-            continue;
-        }
-        if let Some(rewrite) =
-            generated_same_band_role_point_rewrite_candidate(contours, constraints)
-        {
-            apply_generated_same_band_role_point_rewrite(contours, constraints, rewrite)?;
-            continue;
-        }
-        return Ok(());
-    }
-    Ok(())
-}
-
-fn resolve_generated_curb_sidewalk_transition_ownership(
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut Vec<NodeRailConstraint>,
-) -> Result<(), NodeRailGenerationError> {
-    let max_passes = contours.len().saturating_mul(constraints.len()).max(1);
-    let mut resolved = BTreeSet::new();
-    for _ in 0..max_passes {
-        let Some(reroute) =
-            generated_curb_sidewalk_raised_reroute_candidates(contours, constraints, &resolved)
-                .into_iter()
-                .next()
-        else {
-            return Ok(());
-        };
-        resolved.insert(generated_curb_sidewalk_reroute_key(reroute));
-        apply_generated_curb_sidewalk_raised_reroute(contours, constraints, reroute)?;
-    }
-    Ok(())
-}
-
-fn generated_curb_sidewalk_raised_reroute_candidates(
-    contours: &[NodeGeneratedContour],
-    constraints: &[NodeRailConstraint],
-    resolved: &BTreeSet<GeneratedCurbSidewalkRaisedRerouteOrder>,
-) -> Vec<GeneratedCurbSidewalkRaisedReroute> {
-    let mut candidates = Vec::new();
-    for (sidewalk_contour_index, sidewalk) in contours.iter().enumerate() {
-        if generated_contour_band_kind(sidewalk) != Some(RoadSurfaceBandKind::Sidewalk) {
-            continue;
-        }
-        let Some(sidewalk_owner) = sidewalk.owner else {
-            continue;
-        };
-        for edge in generated_contour_directed_edges(sidewalk) {
-            if generated_contact_role_on_edge(
-                sidewalk,
-                constraints,
-                GeneratedContourEdgeKey::new(edge.start, edge.end),
-            ) != Some(GeneratedSameBandBoundaryRole::RaisedSide)
-            {
-                continue;
-            }
-            for lower_constraint in constraints {
-                if !matches!(
-                    lower_constraint.kind,
-                    NodeRailConstraintKind::AsphaltCurbContact
-                ) {
-                    continue;
-                }
-                let Some(curb_owner) = constraint_curb_owner(lower_constraint) else {
-                    continue;
-                };
-                if curb_owner == sidewalk_owner {
-                    continue;
-                }
-                for lower_edge in generated_constraint_directed_edges(lower_constraint) {
-                    let Some(crossing_key) = quantized_proper_segment_intersection(
-                        edge.start,
-                        edge.end,
-                        lower_edge.start,
-                        lower_edge.end,
-                    ) else {
-                        continue;
-                    };
-                    let Some((raised_key, raised_constraint, raised_edge)) =
-                        raised_curb_contact_key_for_lower_contact(
-                            curb_owner,
-                            lower_constraint,
-                            lower_edge,
-                            crossing_key,
-                            constraints,
-                        )
-                    else {
-                        continue;
-                    };
-                    if raised_key == edge.start
-                        || raised_key == edge.end
-                        || generated_triangle_double_area(edge.start, raised_key, edge.end) == 0
-                    {
-                        continue;
-                    }
-                    let order = GeneratedCurbSidewalkRaisedRerouteOrder {
-                        sidewalk_contour_index,
-                        curb_owner,
-                        sidewalk_owner,
-                        crossing_key,
-                        raised_key,
-                    };
-                    if resolved.contains(&order) {
-                        continue;
-                    }
-                    candidates.push((
-                        order,
-                        GeneratedCurbSidewalkRaisedReroute {
-                            sidewalk_contour_index,
-                            curb_owner,
-                            sidewalk_owner,
-                            edge_start: edge.start,
-                            edge_end: edge.end,
-                            crossing_key,
-                            raised_edge_start: raised_edge.start,
-                            raised_edge_end: raised_edge.end,
-                            raised_key,
-                            source_mouth_order_index: raised_constraint.source_mouth_order_index,
-                            source_band_index: raised_constraint.source_band_index,
-                        },
-                    ));
-                }
-            }
-        }
-    }
-    candidates.sort_by_key(|(order, _)| *order);
-    candidates
-        .into_iter()
-        .map(|(_, candidate)| candidate)
-        .collect()
-}
-
-fn generated_curb_sidewalk_reroute_key(
-    reroute: GeneratedCurbSidewalkRaisedReroute,
-) -> GeneratedCurbSidewalkRaisedRerouteOrder {
-    GeneratedCurbSidewalkRaisedRerouteOrder {
-        sidewalk_contour_index: reroute.sidewalk_contour_index,
-        curb_owner: reroute.curb_owner,
-        sidewalk_owner: reroute.sidewalk_owner,
-        crossing_key: reroute.crossing_key,
-        raised_key: reroute.raised_key,
-    }
-}
-
-fn raised_curb_contact_key_for_lower_contact<'a>(
-    curb_owner: NodeBandOwner,
-    lower_constraint: &NodeRailConstraint,
-    lower_edge: GeneratedContourDirectedEdge,
-    lower_key: NodeRailPointKey,
-    constraints: &'a [NodeRailConstraint],
-) -> Option<(
-    NodeRailPointKey,
-    &'a NodeRailConstraint,
-    GeneratedContourDirectedEdge,
-)> {
-    let lower_boundary_index = lower_constraint.source_boundary_index?;
-    let mut candidates = Vec::new();
-    for raised_constraint in constraints {
-        if raised_constraint.kind != NodeRailConstraintKind::CurbSidewalkContact
-            || !generated_constraint_applies_to_owner(raised_constraint, curb_owner)
-            || raised_constraint.source_mouth_order_index
-                != lower_constraint.source_mouth_order_index
-            || raised_constraint
-                .source_boundary_index
-                .is_none_or(|boundary_index| boundary_index.abs_diff(lower_boundary_index) != 1)
-        {
-            continue;
-        }
-        for raised_edge in generated_constraint_directed_edges(raised_constraint) {
-            let Some(raised_key) =
-                corresponding_segment_key(lower_edge.start, lower_edge.end, raised_edge, lower_key)
-            else {
-                continue;
-            };
-            candidates.push((raised_key, raised_constraint, raised_edge));
-        }
-    }
-    candidates.sort_by_key(|(raised_key, constraint, raised_edge)| {
-        (
-            *raised_key,
-            raised_edge.start,
-            raised_edge.end,
-            constraint.source_mouth_order_index,
-            constraint.source_boundary_index,
-            constraint.source_band_index,
-            constraint.constraint_index,
-        )
-    });
-    candidates.into_iter().next()
-}
-
-fn corresponding_segment_key(
-    lower_start: NodeRailPointKey,
-    lower_end: NodeRailPointKey,
-    raised_edge: GeneratedContourDirectedEdge,
-    lower_key: NodeRailPointKey,
-) -> Option<NodeRailPointKey> {
-    let dx = lower_end.0 - lower_start.0;
-    let dz = lower_end.1 - lower_start.1;
-    let (numerator, denominator) = if dx.abs() >= dz.abs() {
-        (lower_key.0 - lower_start.0, dx)
-    } else {
-        (lower_key.1 - lower_start.1, dz)
-    };
-    if denominator == 0 {
-        return None;
-    }
-    let raised_dx = raised_edge.end.0 - raised_edge.start.0;
-    let raised_dz = raised_edge.end.1 - raised_edge.start.1;
-    Some((
-        div_round_nearest_i128(
-            i128::from(raised_edge.start.0) * i128::from(denominator)
-                + i128::from(raised_dx) * i128::from(numerator),
-            i128::from(denominator),
-        )?,
-        div_round_nearest_i128(
-            i128::from(raised_edge.start.1) * i128::from(denominator)
-                + i128::from(raised_dz) * i128::from(numerator),
-            i128::from(denominator),
-        )?,
-    ))
-}
-
-fn apply_generated_curb_sidewalk_raised_reroute(
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut Vec<NodeRailConstraint>,
-    reroute: GeneratedCurbSidewalkRaisedReroute,
-) -> Result<bool, NodeRailGenerationError> {
-    let Some(sidewalk) = contours.get_mut(reroute.sidewalk_contour_index) else {
-        return Ok(false);
-    };
-    let mut sidewalk_keys = generated_contour_keys(sidewalk);
-    if !replace_generated_contour_edge_with_key(
-        &mut sidewalk_keys,
-        reroute.edge_start,
-        reroute.edge_end,
-        reroute.raised_key,
-    ) {
-        return Ok(false);
-    }
-    set_generated_contour_from_keys(sidewalk, constraints, sidewalk_keys)?;
-    replace_generated_constraint_edge_with_key(
-        constraints,
-        reroute.sidewalk_owner,
-        reroute.edge_start,
-        reroute.edge_end,
-        reroute.raised_key,
-    );
-
-    let curb_insertions = contours
-        .iter()
-        .enumerate()
-        .filter(|(_, contour)| {
-            contour.owner == Some(reroute.curb_owner)
-                && generated_contour_band_kind(contour) == Some(RoadSurfaceBandKind::CurbOrShoulder)
-        })
-        .filter_map(|(contour_index, contour)| {
-            generated_contour_directed_edges(contour)
-                .into_iter()
-                .find(|edge| {
-                    (edge.start == reroute.raised_edge_start && edge.end == reroute.raised_edge_end)
-                        || (edge.start == reroute.raised_edge_end
-                            && edge.end == reroute.raised_edge_start)
-                })
-                .map(|edge| (contour_index, edge))
-        })
-        .collect::<Vec<_>>();
-    for (contour_index, edge) in curb_insertions {
-        insert_key_on_generated_contour(
-            contours,
-            constraints,
-            contour_index,
-            edge,
-            reroute.raised_key,
-        )?;
-    }
-    replace_generated_constraint_edge_with_key(
-        constraints,
-        reroute.curb_owner,
-        reroute.raised_edge_start,
-        reroute.raised_edge_end,
-        reroute.raised_key,
-    );
-    insert_generated_material_point_constraint(
-        constraints,
-        NodeRailConstraintKind::CurbSidewalkContact,
-        reroute.curb_owner,
-        reroute.sidewalk_owner,
-        reroute.raised_key,
-        reroute.source_mouth_order_index,
-        reroute.source_band_index,
-    );
-    Ok(true)
-}
-
-fn replace_generated_contour_edge_with_key(
-    keys: &mut Vec<NodeRailPointKey>,
-    start_key: NodeRailPointKey,
-    end_key: NodeRailPointKey,
-    insert_key: NodeRailPointKey,
-) -> bool {
-    if keys.len() < 3 || insert_key == start_key || insert_key == end_key {
-        return false;
-    }
-    for index in 0..keys.len() {
-        let next_index = (index + 1) % keys.len();
-        if keys[index] == start_key && keys[next_index] == end_key {
-            keys.insert(next_index, insert_key);
-            remove_generated_contour_spikes(keys);
-            return true;
-        }
-        if keys[index] == end_key && keys[next_index] == start_key {
-            keys.insert(next_index, insert_key);
-            remove_generated_contour_spikes(keys);
-            return true;
-        }
-    }
-    false
-}
-
-fn replace_generated_constraint_edge_with_key(
-    constraints: &mut [NodeRailConstraint],
-    owner: NodeBandOwner,
-    start_key: NodeRailPointKey,
-    end_key: NodeRailPointKey,
-    insert_key: NodeRailPointKey,
-) {
-    for constraint in constraints {
-        if !generated_constraint_applies_to_owner(constraint, owner) {
-            continue;
-        }
-        insert_key_on_generated_constraint_segment(
-            &mut constraint.points_xz,
-            start_key,
-            end_key,
-            insert_key,
-        );
-    }
-}
-
 fn insert_generated_material_point_constraint(
     constraints: &mut Vec<NodeRailConstraint>,
     kind: NodeRailConstraintKind,
@@ -1440,6 +743,306 @@ fn insert_generated_material_point_constraint(
         opposite_owner: Some(opposite_owner),
         points_xz: edge.to_vec(),
     });
+}
+
+fn append_generated_role_material_contact_constraints(
+    contours: &[NodeGeneratedContour],
+    constraints: &mut Vec<NodeRailConstraint>,
+) {
+    let role_constraints = constraints.to_vec();
+    let mut contacts = constraints
+        .iter()
+        .filter_map(generated_same_band_contact_constraint)
+        .collect::<BTreeSet<_>>();
+    append_generated_role_pair_material_contacts(&role_constraints, &mut contacts);
+
+    for role in role_constraints
+        .iter()
+        .filter(|constraint| generated_material_role_constraint_kind(constraint.kind).is_some())
+    {
+        let Some(source_owner) = role.owner else {
+            continue;
+        };
+        if !is_curb_or_shoulder(source_owner.kind()) {
+            continue;
+        }
+        if role.opposite_owner.is_some() {
+            continue;
+        }
+        let Some(contact_kind) = generated_material_role_constraint_kind(role.kind) else {
+            continue;
+        };
+        for target in contours {
+            let Some(target_owner) = target.owner else {
+                continue;
+            };
+            if target_owner == source_owner
+                || generated_contact_constraint_kind(source_owner.kind(), target_owner.kind())
+                    != Some(contact_kind)
+            {
+                continue;
+            }
+            for contact in generated_role_material_contacts_for_contour(
+                role,
+                contact_kind,
+                source_owner,
+                target_owner,
+                target,
+            ) {
+                contacts.insert(contact);
+            }
+        }
+    }
+
+    let mut existing = constraints
+        .iter()
+        .filter_map(generated_same_band_contact_constraint_key)
+        .collect::<BTreeSet<_>>();
+    for contact in contacts {
+        let key = contact.key();
+        if !existing.insert(key) {
+            continue;
+        }
+        constraints.push(NodeRailConstraint {
+            constraint_index: constraints.len(),
+            kind: contact.kind,
+            source_mouth_order_index: contact.source_mouth_order_index,
+            source_band_index: contact.source_band_index,
+            source_boundary_index: None,
+            owner: Some(contact.owner),
+            opposite_owner: Some(contact.opposite_owner),
+            points_xz: vec![
+                road_point_from_key(contact.start),
+                road_point_from_key(contact.end),
+            ],
+        });
+    }
+}
+
+fn append_generated_role_pair_material_contacts(
+    constraints: &[NodeRailConstraint],
+    contacts: &mut BTreeSet<GeneratedSameBandContactConstraint>,
+) {
+    let roles = constraints
+        .iter()
+        .filter_map(generated_one_sided_material_role_constraint)
+        .collect::<Vec<_>>();
+    for left_index in 0..roles.len() {
+        let left = roles[left_index];
+        for right in roles.iter().copied().skip(left_index + 1) {
+            if left.kind != right.kind || left.owner == right.owner {
+                continue;
+            }
+            if generated_contact_constraint_kind(left.owner.kind(), right.owner.kind())
+                != Some(left.kind)
+            {
+                continue;
+            }
+            let source = if left.constraint.constraint_index <= right.constraint.constraint_index {
+                left.constraint
+            } else {
+                right.constraint
+            };
+            for left_edge in generated_constraint_directed_edges(left.constraint) {
+                for right_edge in generated_constraint_directed_edges(right.constraint) {
+                    if let Some(edge) = generated_segment_overlap_edge(
+                        left_edge.start,
+                        left_edge.end,
+                        right_edge.start,
+                        right_edge.end,
+                    ) {
+                        contacts.insert(generated_material_contact_constraint(
+                            left.kind,
+                            left.owner,
+                            right.owner,
+                            edge.start,
+                            edge.end,
+                            source,
+                        ));
+                        continue;
+                    }
+                    for point in generated_segment_touch_points(
+                        left_edge.start,
+                        left_edge.end,
+                        right_edge.start,
+                        right_edge.end,
+                    ) {
+                        contacts.insert(generated_material_contact_constraint(
+                            left.kind,
+                            left.owner,
+                            right.owner,
+                            point,
+                            point,
+                            source,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct GeneratedOneSidedMaterialRoleConstraint<'a> {
+    constraint: &'a NodeRailConstraint,
+    kind: NodeRailConstraintKind,
+    owner: NodeBandOwner,
+}
+
+fn generated_one_sided_material_role_constraint(
+    constraint: &NodeRailConstraint,
+) -> Option<GeneratedOneSidedMaterialRoleConstraint<'_>> {
+    if constraint.opposite_owner.is_some() {
+        return None;
+    }
+    Some(GeneratedOneSidedMaterialRoleConstraint {
+        constraint,
+        kind: generated_material_role_constraint_kind(constraint.kind)?,
+        owner: constraint.owner?,
+    })
+}
+
+fn generated_role_material_contacts_for_contour(
+    role: &NodeRailConstraint,
+    kind: NodeRailConstraintKind,
+    source_owner: NodeBandOwner,
+    target_owner: NodeBandOwner,
+    target: &NodeGeneratedContour,
+) -> Vec<GeneratedSameBandContactConstraint> {
+    let mut contacts = BTreeSet::new();
+    for role_edge in generated_constraint_directed_edges(role) {
+        if is_curb_or_shoulder(source_owner.kind()) {
+            for edge in generated_role_edge_segments_inside_contour(role_edge, target) {
+                contacts.insert(generated_material_contact_constraint(
+                    kind,
+                    source_owner,
+                    target_owner,
+                    edge.start,
+                    edge.end,
+                    role,
+                ));
+            }
+        }
+        for target_edge in generated_contour_directed_edges(target) {
+            if let Some(edge) = generated_segment_overlap_edge(
+                role_edge.start,
+                role_edge.end,
+                target_edge.start,
+                target_edge.end,
+            ) {
+                contacts.insert(generated_material_contact_constraint(
+                    kind,
+                    source_owner,
+                    target_owner,
+                    edge.start,
+                    edge.end,
+                    role,
+                ));
+                continue;
+            }
+            for point in generated_segment_touch_points(
+                role_edge.start,
+                role_edge.end,
+                target_edge.start,
+                target_edge.end,
+            ) {
+                contacts.insert(generated_material_contact_constraint(
+                    kind,
+                    source_owner,
+                    target_owner,
+                    point,
+                    point,
+                    role,
+                ));
+            }
+        }
+    }
+    contacts.into_iter().collect()
+}
+
+fn generated_role_edge_segments_inside_contour(
+    role_edge: GeneratedContourDirectedEdge,
+    target: &NodeGeneratedContour,
+) -> Vec<GeneratedContourEdgeKey> {
+    let mut keys = vec![role_edge.start, role_edge.end];
+    for target_edge in generated_contour_directed_edges(target) {
+        if let Some(point) = quantized_proper_segment_intersection(
+            role_edge.start,
+            role_edge.end,
+            target_edge.start,
+            target_edge.end,
+        ) {
+            keys.push(point);
+        }
+        for point in [target_edge.start, target_edge.end] {
+            if generated_point_key_lies_on_segment(point, role_edge.start, role_edge.end) {
+                keys.push(point);
+            }
+        }
+        for point in [role_edge.start, role_edge.end] {
+            if generated_point_key_lies_on_segment(point, target_edge.start, target_edge.end) {
+                keys.push(point);
+            }
+        }
+    }
+    keys.sort_by_key(|point| {
+        generated_segment_parameter_key(role_edge.start, role_edge.end, *point)
+    });
+    keys.dedup();
+
+    let mut edges = BTreeSet::new();
+    for segment in keys.windows(2) {
+        let start = segment[0];
+        let end = segment[1];
+        if start == end {
+            continue;
+        }
+        let point_x2 = i128::from(start.0) + i128::from(end.0);
+        let point_z2 = i128::from(start.1) + i128::from(end.1);
+        if doubled_point_inside_or_on_generated_contour(point_x2, point_z2, target) {
+            edges.insert(GeneratedContourEdgeKey::new(start, end));
+        }
+    }
+    edges.into_iter().collect()
+}
+
+fn generated_material_contact_constraint(
+    kind: NodeRailConstraintKind,
+    left_owner: NodeBandOwner,
+    right_owner: NodeBandOwner,
+    start: NodeRailPointKey,
+    end: NodeRailPointKey,
+    source: &NodeRailConstraint,
+) -> GeneratedSameBandContactConstraint {
+    let (owner, opposite_owner) = if left_owner <= right_owner {
+        (left_owner, right_owner)
+    } else {
+        (right_owner, left_owner)
+    };
+    GeneratedSameBandContactConstraint {
+        kind,
+        owner,
+        opposite_owner,
+        start,
+        end,
+        source_mouth_order_index: source.source_mouth_order_index,
+        source_band_index: source.source_band_index,
+    }
+}
+
+fn generated_material_role_constraint_kind(
+    kind: NodeRailConstraintKind,
+) -> Option<NodeRailConstraintKind> {
+    match kind {
+        NodeRailConstraintKind::AsphaltCurbContact
+        | NodeRailConstraintKind::CurbSidewalkContact => Some(kind),
+        NodeRailConstraintKind::FullRoadbedContour
+        | NodeRailConstraintKind::BandContour { .. }
+        | NodeRailConstraintKind::SpanHandoff { .. }
+        | NodeRailConstraintKind::FootprintSeam { .. }
+        | NodeRailConstraintKind::AsphaltBoundary { .. }
+        | NodeRailConstraintKind::BandBoundary { .. } => None,
+    }
 }
 
 fn append_generated_material_point_contact_constraints(
@@ -2453,6 +2056,12 @@ fn generated_sidewalk_contact_role_at_point(
 fn generated_same_band_contact_constraint_key(
     constraint: &NodeRailConstraint,
 ) -> Option<GeneratedSameBandContactConstraintKey> {
+    generated_same_band_contact_constraint(constraint).map(GeneratedSameBandContactConstraint::key)
+}
+
+fn generated_same_band_contact_constraint(
+    constraint: &NodeRailConstraint,
+) -> Option<GeneratedSameBandContactConstraint> {
     let Some(kind) = generated_contact_constraint_kind_from_constraint(constraint.kind) else {
         return None;
     };
@@ -2465,18 +2074,15 @@ fn generated_same_band_contact_constraint_key(
     if points.len() != 2 {
         return None;
     }
-    Some(
-        GeneratedSameBandContactConstraint {
-            kind,
-            owner: owner.min(opposite_owner),
-            opposite_owner: owner.max(opposite_owner),
-            start: road_point_key(points[0]),
-            end: road_point_key(points[1]),
-            source_mouth_order_index: constraint.source_mouth_order_index,
-            source_band_index: constraint.source_band_index,
-        }
-        .key(),
-    )
+    Some(GeneratedSameBandContactConstraint {
+        kind,
+        owner: owner.min(opposite_owner),
+        opposite_owner: owner.max(opposite_owner),
+        start: road_point_key(points[0]),
+        end: road_point_key(points[1]),
+        source_mouth_order_index: constraint.source_mouth_order_index,
+        source_band_index: constraint.source_band_index,
+    })
 }
 
 fn generated_contact_constraint_kind_from_constraint(
@@ -2497,395 +2103,6 @@ fn generated_contact_constraint_kind_from_constraint(
         | NodeRailConstraintKind::SpanHandoff { .. }
         | NodeRailConstraintKind::FootprintSeam { .. } => None,
     }
-}
-
-fn generated_same_band_contour_intersection_candidate(
-    contours: &[NodeGeneratedContour],
-) -> Option<GeneratedSameBandContourIntersection> {
-    let mut candidates = Vec::new();
-    for left_index in 0..contours.len() {
-        for right_index in left_index + 1..contours.len() {
-            let left = &contours[left_index];
-            let right = &contours[right_index];
-            let Some(kind) = generated_contour_band_kind(left) else {
-                continue;
-            };
-            if generated_contour_band_kind(right) != Some(kind)
-                || !generated_contour_supports_same_band_noding(kind)
-                || left.owner.is_none()
-                || right.owner.is_none()
-                || left.owner == right.owner
-            {
-                continue;
-            }
-            for left_edge in generated_contour_directed_edges(left) {
-                for right_edge in generated_contour_directed_edges(right) {
-                    if left_edge.start == right_edge.start
-                        || left_edge.start == right_edge.end
-                        || left_edge.end == right_edge.start
-                        || left_edge.end == right_edge.end
-                    {
-                        continue;
-                    }
-                    let Some(intersection_key) = quantized_proper_segment_intersection(
-                        left_edge.start,
-                        left_edge.end,
-                        right_edge.start,
-                        right_edge.end,
-                    ) else {
-                        continue;
-                    };
-                    candidates.push((
-                        (
-                            left_index,
-                            right_index,
-                            intersection_key,
-                            left_edge,
-                            right_edge,
-                        ),
-                        GeneratedSameBandContourIntersection {
-                            left_contour_index: left_index,
-                            right_contour_index: right_index,
-                            left_edge,
-                            right_edge,
-                            intersection_key,
-                        },
-                    ));
-                }
-            }
-        }
-    }
-    candidates.sort_by_key(|(order, _)| *order);
-    candidates
-        .into_iter()
-        .map(|(_, candidate)| candidate)
-        .next()
-}
-
-fn generated_same_band_contour_touch_candidate(
-    contours: &[NodeGeneratedContour],
-) -> Option<GeneratedSameBandContourIntersection> {
-    let mut candidates = Vec::new();
-    for left_index in 0..contours.len() {
-        for right_index in left_index + 1..contours.len() {
-            let left = &contours[left_index];
-            let right = &contours[right_index];
-            let Some(kind) = generated_contour_band_kind(left) else {
-                continue;
-            };
-            if generated_contour_band_kind(right) != Some(kind)
-                || !generated_contour_supports_same_band_noding(kind)
-                || left.owner.is_none()
-                || right.owner.is_none()
-                || left.owner == right.owner
-            {
-                continue;
-            }
-            collect_generated_same_band_contour_touch_candidates(
-                &mut candidates,
-                left_index,
-                right_index,
-                left,
-                right,
-            );
-            collect_generated_same_band_contour_touch_candidates(
-                &mut candidates,
-                right_index,
-                left_index,
-                right,
-                left,
-            );
-        }
-    }
-    candidates.sort_by_key(|(order, _)| *order);
-    candidates
-        .into_iter()
-        .map(|(_, candidate)| candidate)
-        .next()
-}
-
-fn collect_generated_same_band_contour_touch_candidates(
-    candidates: &mut Vec<(
-        (
-            usize,
-            usize,
-            NodeRailPointKey,
-            GeneratedContourDirectedEdge,
-            GeneratedContourDirectedEdge,
-        ),
-        GeneratedSameBandContourIntersection,
-    )>,
-    edge_contour_index: usize,
-    point_contour_index: usize,
-    edge_contour: &NodeGeneratedContour,
-    point_contour: &NodeGeneratedContour,
-) {
-    let edge_keys = generated_contour_keys(edge_contour);
-    for edge in generated_contour_directed_edges(edge_contour) {
-        for point_key in generated_contour_keys(point_contour) {
-            if edge_keys.contains(&point_key)
-                || !generated_point_key_lies_on_segment(point_key, edge.start, edge.end)
-            {
-                continue;
-            }
-            candidates.push((
-                (
-                    edge_contour_index,
-                    point_contour_index,
-                    point_key,
-                    edge,
-                    GeneratedContourDirectedEdge {
-                        start: point_key,
-                        end: point_key,
-                    },
-                ),
-                GeneratedSameBandContourIntersection {
-                    left_contour_index: edge_contour_index,
-                    right_contour_index: point_contour_index,
-                    left_edge: edge,
-                    right_edge: GeneratedContourDirectedEdge {
-                        start: point_key,
-                        end: point_key,
-                    },
-                    intersection_key: point_key,
-                },
-            ));
-        }
-    }
-}
-
-fn apply_generated_same_band_contour_intersection_node(
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut [NodeRailConstraint],
-    intersection: GeneratedSameBandContourIntersection,
-) -> Result<(), NodeRailGenerationError> {
-    let Some(left_owner) = contours
-        .get(intersection.left_contour_index)
-        .and_then(|contour| contour.owner)
-    else {
-        return Ok(());
-    };
-    let Some(right_owner) = contours
-        .get(intersection.right_contour_index)
-        .and_then(|contour| contour.owner)
-    else {
-        return Ok(());
-    };
-    insert_key_on_generated_constraints(
-        constraints,
-        left_owner,
-        intersection.left_edge,
-        intersection.intersection_key,
-    );
-    insert_key_on_generated_constraints(
-        constraints,
-        right_owner,
-        intersection.right_edge,
-        intersection.intersection_key,
-    );
-    insert_key_on_generated_contour(
-        contours,
-        constraints,
-        intersection.left_contour_index,
-        intersection.left_edge,
-        intersection.intersection_key,
-    )?;
-    insert_key_on_generated_contour(
-        contours,
-        constraints,
-        intersection.right_contour_index,
-        intersection.right_edge,
-        intersection.intersection_key,
-    )?;
-    Ok(())
-}
-
-fn generated_same_band_role_chord_rewrite_candidate(
-    contours: &[NodeGeneratedContour],
-    constraints: &[NodeRailConstraint],
-    resolved_pairs: &BTreeSet<(usize, usize)>,
-) -> Option<GeneratedSameBandRoleChordRewrite> {
-    let mut candidates = Vec::new();
-    for donor_index in 0..contours.len() {
-        for receiver_index in 0..contours.len() {
-            if donor_index == receiver_index {
-                continue;
-            }
-            if resolved_pairs.contains(&generated_same_band_contour_pair_key(
-                donor_index,
-                receiver_index,
-            )) {
-                continue;
-            }
-            let donor = &contours[donor_index];
-            let receiver = &contours[receiver_index];
-            let Some(kind) = generated_contour_band_kind(donor) else {
-                continue;
-            };
-            if generated_contour_band_kind(receiver) != Some(kind)
-                || kind != RoadSurfaceBandKind::CurbOrShoulder
-                || donor.owner.is_none()
-                || receiver.owner.is_none()
-                || donor.owner == receiver.owner
-            {
-                continue;
-            }
-            for donor_edge in generated_contour_directed_edges(donor) {
-                collect_generated_same_band_role_chord_candidates_for_edge(
-                    &mut candidates,
-                    donor_index,
-                    receiver_index,
-                    donor,
-                    receiver,
-                    constraints,
-                    donor_edge.start,
-                    donor_edge.end,
-                );
-                collect_generated_same_band_role_chord_candidates_for_edge(
-                    &mut candidates,
-                    donor_index,
-                    receiver_index,
-                    donor,
-                    receiver,
-                    constraints,
-                    donor_edge.end,
-                    donor_edge.start,
-                );
-            }
-        }
-    }
-    candidates.sort_by_key(|(order, _)| *order);
-    candidates.dedup_by_key(|(_, rewrite)| {
-        (
-            rewrite.donor_contour_index,
-            rewrite.receiver_contour_index,
-            rewrite.lower_key,
-            rewrite.raised_key,
-            rewrite.conflict_key,
-        )
-    });
-    candidates.into_iter().map(|(_, rewrite)| rewrite).next()
-}
-
-fn generated_same_band_contour_pair_key(left: usize, right: usize) -> (usize, usize) {
-    if left <= right {
-        (left, right)
-    } else {
-        (right, left)
-    }
-}
-
-fn collect_generated_same_band_role_chord_candidates_for_edge(
-    candidates: &mut Vec<(
-        (
-            usize,
-            usize,
-            NodeRailPointKey,
-            NodeRailPointKey,
-            NodeRailPointKey,
-        ),
-        GeneratedSameBandRoleChordRewrite,
-    )>,
-    donor_contour_index: usize,
-    receiver_contour_index: usize,
-    donor: &NodeGeneratedContour,
-    receiver: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    raised_key: NodeRailPointKey,
-    conflict_key: NodeRailPointKey,
-) {
-    if generated_same_band_boundary_role_at_key(donor, constraints, raised_key)
-        != Some(GeneratedSameBandBoundaryRole::RaisedSide)
-        || generated_same_band_boundary_role_at_key(receiver, constraints, raised_key)
-            != Some(GeneratedSameBandBoundaryRole::RaisedSide)
-        || generated_same_band_boundary_role_at_key(donor, constraints, conflict_key)
-            != Some(GeneratedSameBandBoundaryRole::RaisedSide)
-        || generated_same_band_boundary_role_at_key(receiver, constraints, conflict_key)
-            != Some(GeneratedSameBandBoundaryRole::LowerSide)
-    {
-        return;
-    }
-
-    for lower_key in generated_contour_neighbors(receiver, conflict_key) {
-        if lower_key == raised_key
-            || generated_triangle_double_area(lower_key, raised_key, conflict_key) == 0
-            || generated_same_band_boundary_role_at_key(donor, constraints, lower_key)
-                != Some(GeneratedSameBandBoundaryRole::LowerSide)
-            || generated_same_band_boundary_role_at_key(receiver, constraints, lower_key)
-                != Some(GeneratedSameBandBoundaryRole::LowerSide)
-        {
-            continue;
-        }
-        if !generated_contour_arc_contains_key(donor, raised_key, lower_key, conflict_key)
-            || generated_contour_arc_contains_key(receiver, lower_key, raised_key, conflict_key)
-        {
-            continue;
-        }
-        candidates.push((
-            (
-                donor_contour_index,
-                receiver_contour_index,
-                lower_key,
-                raised_key,
-                conflict_key,
-            ),
-            GeneratedSameBandRoleChordRewrite {
-                donor_contour_index,
-                receiver_contour_index,
-                lower_key,
-                raised_key,
-                conflict_key,
-            },
-        ));
-    }
-}
-
-fn apply_generated_same_band_role_chord_rewrite(
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut [NodeRailConstraint],
-    rewrite: GeneratedSameBandRoleChordRewrite,
-) -> Result<(), NodeRailGenerationError> {
-    if rewrite.donor_contour_index == rewrite.receiver_contour_index {
-        return Ok(());
-    }
-    if rewrite.donor_contour_index < rewrite.receiver_contour_index {
-        let (left, right) = contours.split_at_mut(rewrite.receiver_contour_index);
-        apply_generated_same_band_role_chord_rewrite_to_contours(
-            &mut left[rewrite.donor_contour_index],
-            &mut right[0],
-            constraints,
-            rewrite,
-        )
-    } else {
-        let (left, right) = contours.split_at_mut(rewrite.donor_contour_index);
-        apply_generated_same_band_role_chord_rewrite_to_contours(
-            &mut right[0],
-            &mut left[rewrite.receiver_contour_index],
-            constraints,
-            rewrite,
-        )
-    }
-}
-
-fn apply_generated_same_band_role_chord_rewrite_to_contours(
-    donor: &mut NodeGeneratedContour,
-    receiver: &mut NodeGeneratedContour,
-    constraints: &mut [NodeRailConstraint],
-    rewrite: GeneratedSameBandRoleChordRewrite,
-) -> Result<(), NodeRailGenerationError> {
-    let mut donor_keys = generated_contour_keys(donor);
-    if replace_generated_contour_arc_with_edge(
-        &mut donor_keys,
-        rewrite.raised_key,
-        rewrite.lower_key,
-        rewrite.conflict_key,
-        true,
-    ) {
-        set_generated_contour_from_keys(donor, constraints, donor_keys)?;
-    }
-
-    let _ = receiver;
-    Ok(())
 }
 
 fn insert_key_on_generated_contour(
@@ -2949,697 +2166,6 @@ fn insert_key_on_generated_constraint_segment(
         }
         if current_key == end_key && next_key == start_key {
             points.insert(index + 1, road_point_from_key(insert_key));
-            return true;
-        }
-    }
-    false
-}
-
-fn generated_same_band_role_crossing_join_rewrite_candidate(
-    contours: &[NodeGeneratedContour],
-    constraints: &[NodeRailConstraint],
-    resolved_transitions: &BTreeSet<GeneratedSameBandTransitionKey>,
-) -> Option<GeneratedSameBandRoleJoinRewrite> {
-    let mut candidates = Vec::new();
-    for left_index in 0..contours.len() {
-        for right_index in left_index + 1..contours.len() {
-            let left = &contours[left_index];
-            let right = &contours[right_index];
-            let Some(kind) = generated_contour_band_kind(left) else {
-                continue;
-            };
-            if generated_contour_band_kind(right) != Some(kind)
-                || !generated_contour_supports_same_band_role(kind)
-                || left.owner.is_none()
-                || right.owner.is_none()
-                || left.owner == right.owner
-            {
-                continue;
-            }
-            for edge in shared_generated_contour_edges(left, right) {
-                let start_roles_match =
-                    generated_same_band_endpoint_roles_match(left, right, constraints, edge.start);
-                let end_roles_match =
-                    generated_same_band_endpoint_roles_match(left, right, constraints, edge.end);
-                let Some((equal_key, conflict_key)) = generated_one_matching_role_endpoint(
-                    edge.start,
-                    edge.end,
-                    start_roles_match,
-                    end_roles_match,
-                ) else {
-                    continue;
-                };
-                collect_generated_same_band_role_crossing_join_rewrite_candidates(
-                    &mut candidates,
-                    left_index,
-                    right_index,
-                    left,
-                    right,
-                    equal_key,
-                    conflict_key,
-                    constraints,
-                    resolved_transitions,
-                );
-                collect_generated_same_band_role_crossing_join_rewrite_candidates(
-                    &mut candidates,
-                    right_index,
-                    left_index,
-                    right,
-                    left,
-                    equal_key,
-                    conflict_key,
-                    constraints,
-                    resolved_transitions,
-                );
-            }
-        }
-    }
-
-    candidates.sort_by_key(|(order, _)| *order);
-    candidates.dedup_by_key(|(_, rewrite)| {
-        (
-            rewrite.donor_contour_index,
-            rewrite.receiver_contour_index,
-            rewrite.equal_key,
-            rewrite.conflict_key,
-            rewrite.candidate_key,
-        )
-    });
-    candidates.into_iter().map(|(_, rewrite)| rewrite).next()
-}
-
-fn collect_generated_same_band_role_crossing_join_rewrite_candidates(
-    candidates: &mut Vec<(
-        GeneratedSameBandRoleJoinRewriteOrder,
-        GeneratedSameBandRoleJoinRewrite,
-    )>,
-    donor_contour_index: usize,
-    receiver_contour_index: usize,
-    donor: &NodeGeneratedContour,
-    receiver: &NodeGeneratedContour,
-    equal_key: NodeRailPointKey,
-    conflict_key: NodeRailPointKey,
-    constraints: &[NodeRailConstraint],
-    resolved_transitions: &BTreeSet<GeneratedSameBandTransitionKey>,
-) {
-    let Some((candidate_key, candidate_role)) = generated_role_matching_join_candidate(
-        donor,
-        receiver,
-        constraints,
-        equal_key,
-        conflict_key,
-    ) else {
-        return;
-    };
-    if resolved_transitions.contains(&generated_same_band_transition_key(
-        equal_key,
-        conflict_key,
-        candidate_key,
-    )) {
-        return;
-    }
-    candidates.push((
-        GeneratedSameBandRoleJoinRewriteOrder {
-            removed_role_priority: generated_removed_endpoint_priority(candidate_role),
-            donor_contour_index,
-            receiver_contour_index,
-            removed_key: conflict_key,
-            kept_key: equal_key,
-            candidate_key,
-        },
-        GeneratedSameBandRoleJoinRewrite {
-            donor_contour_index,
-            receiver_contour_index,
-            equal_key,
-            conflict_key,
-            candidate_key,
-        },
-    ));
-}
-
-fn generated_same_band_role_join_rewrite_candidate(
-    contours: &[NodeGeneratedContour],
-    constraints: &[NodeRailConstraint],
-    resolved_transitions: &BTreeSet<GeneratedSameBandTransitionKey>,
-) -> Option<GeneratedSameBandRoleJoinRewrite> {
-    let mut candidates = Vec::new();
-    for left_index in 0..contours.len() {
-        for right_index in left_index + 1..contours.len() {
-            let left = &contours[left_index];
-            let right = &contours[right_index];
-            let Some(kind) = generated_contour_band_kind(left) else {
-                continue;
-            };
-            if generated_contour_band_kind(right) != Some(kind)
-                || !generated_contour_supports_same_band_role(kind)
-                || left.owner.is_none()
-                || right.owner.is_none()
-                || left.owner == right.owner
-            {
-                continue;
-            }
-            for edge in shared_generated_contour_edges(left, right) {
-                let Some(left_start_role) = generated_same_band_boundary_role_at_contour_vertex(
-                    left,
-                    constraints,
-                    edge.start,
-                ) else {
-                    continue;
-                };
-                let Some(right_start_role) = generated_same_band_boundary_role_at_contour_vertex(
-                    right,
-                    constraints,
-                    edge.start,
-                ) else {
-                    continue;
-                };
-                let Some(left_end_role) = generated_same_band_boundary_role_at_contour_vertex(
-                    left,
-                    constraints,
-                    edge.end,
-                ) else {
-                    continue;
-                };
-                let Some(right_end_role) = generated_same_band_boundary_role_at_contour_vertex(
-                    right,
-                    constraints,
-                    edge.end,
-                ) else {
-                    continue;
-                };
-                if left_start_role != right_start_role
-                    || left_end_role != right_end_role
-                    || left_start_role == left_end_role
-                {
-                    continue;
-                }
-                collect_generated_same_band_role_join_rewrite_candidates(
-                    &mut candidates,
-                    left_index,
-                    right_index,
-                    left,
-                    right,
-                    (edge.start, left_start_role),
-                    (edge.end, left_end_role),
-                    constraints,
-                    resolved_transitions,
-                );
-                collect_generated_same_band_role_join_rewrite_candidates(
-                    &mut candidates,
-                    right_index,
-                    left_index,
-                    right,
-                    left,
-                    (edge.start, right_start_role),
-                    (edge.end, right_end_role),
-                    constraints,
-                    resolved_transitions,
-                );
-            }
-        }
-    }
-
-    candidates.sort_by_key(|(order, _)| *order);
-    candidates.dedup_by_key(|(_, rewrite)| {
-        (
-            rewrite.donor_contour_index,
-            rewrite.receiver_contour_index,
-            rewrite.equal_key,
-            rewrite.conflict_key,
-            rewrite.candidate_key,
-        )
-    });
-    candidates.into_iter().map(|(_, rewrite)| rewrite).next()
-}
-
-fn collect_generated_same_band_role_join_rewrite_candidates(
-    candidates: &mut Vec<(
-        GeneratedSameBandRoleJoinRewriteOrder,
-        GeneratedSameBandRoleJoinRewrite,
-    )>,
-    donor_contour_index: usize,
-    receiver_contour_index: usize,
-    donor: &NodeGeneratedContour,
-    receiver: &NodeGeneratedContour,
-    start: (NodeRailPointKey, GeneratedSameBandBoundaryRole),
-    end: (NodeRailPointKey, GeneratedSameBandBoundaryRole),
-    constraints: &[NodeRailConstraint],
-    resolved_transitions: &BTreeSet<GeneratedSameBandTransitionKey>,
-) {
-    for (removed, kept) in [(start, end), (end, start)] {
-        let Some(candidate_key) = generated_same_role_endpoint_removal_candidate(
-            donor,
-            constraints,
-            removed.0,
-            kept.0,
-            removed.1,
-        ) else {
-            continue;
-        };
-        if generated_same_band_boundary_role_at_key(receiver, constraints, candidate_key)
-            != Some(removed.1)
-        {
-            continue;
-        }
-        if resolved_transitions.contains(&generated_same_band_transition_key(
-            kept.0,
-            removed.0,
-            candidate_key,
-        )) {
-            continue;
-        }
-        candidates.push((
-            GeneratedSameBandRoleJoinRewriteOrder {
-                removed_role_priority: generated_removed_endpoint_priority(removed.1),
-                donor_contour_index,
-                receiver_contour_index,
-                removed_key: removed.0,
-                kept_key: kept.0,
-                candidate_key,
-            },
-            GeneratedSameBandRoleJoinRewrite {
-                donor_contour_index,
-                receiver_contour_index,
-                equal_key: kept.0,
-                conflict_key: removed.0,
-                candidate_key,
-            },
-        ));
-    }
-}
-
-fn generated_same_band_transition_key(
-    kept_key: NodeRailPointKey,
-    side_a: NodeRailPointKey,
-    side_b: NodeRailPointKey,
-) -> GeneratedSameBandTransitionKey {
-    if side_a <= side_b {
-        GeneratedSameBandTransitionKey {
-            kept_key,
-            side_a,
-            side_b,
-        }
-    } else {
-        GeneratedSameBandTransitionKey {
-            kept_key,
-            side_a: side_b,
-            side_b: side_a,
-        }
-    }
-}
-
-fn generated_same_band_role_point_rewrite_candidate(
-    contours: &[NodeGeneratedContour],
-    constraints: &[NodeRailConstraint],
-) -> Option<GeneratedSameBandRolePointRewrite> {
-    let mut candidates = Vec::new();
-    for left_index in 0..contours.len() {
-        for right_index in left_index + 1..contours.len() {
-            let left = &contours[left_index];
-            let right = &contours[right_index];
-            let Some(kind) = generated_contour_band_kind(left) else {
-                continue;
-            };
-            if generated_contour_band_kind(right) != Some(kind)
-                || !generated_contour_supports_same_band_role(kind)
-                || left.owner.is_none()
-                || right.owner.is_none()
-                || left.owner == right.owner
-            {
-                continue;
-            }
-            let shared_edges = shared_generated_contour_edges(left, right);
-            for key in shared_generated_contour_points(left, right) {
-                if shared_edges
-                    .iter()
-                    .any(|edge| edge.start == key || edge.end == key)
-                {
-                    continue;
-                }
-                let Some(left_role) =
-                    generated_same_band_boundary_role_at_contour_vertex(left, constraints, key)
-                else {
-                    continue;
-                };
-                let Some(right_role) =
-                    generated_same_band_boundary_role_at_contour_vertex(right, constraints, key)
-                else {
-                    continue;
-                };
-                if left_role == right_role {
-                    continue;
-                }
-                if left_role == GeneratedSameBandBoundaryRole::RaisedSide {
-                    collect_generated_same_band_role_point_rewrite_candidate(
-                        &mut candidates,
-                        contours,
-                        left_index,
-                        left,
-                        constraints,
-                        key,
-                        right_role,
-                    );
-                }
-                if right_role == GeneratedSameBandBoundaryRole::RaisedSide {
-                    collect_generated_same_band_role_point_rewrite_candidate(
-                        &mut candidates,
-                        contours,
-                        right_index,
-                        right,
-                        constraints,
-                        key,
-                        left_role,
-                    );
-                }
-            }
-        }
-    }
-
-    candidates.sort_by_key(|(order, _)| *order);
-    candidates.dedup_by_key(|(_, rewrite)| {
-        (
-            rewrite.donor_contour_index,
-            rewrite.previous_key,
-            rewrite.conflict_key,
-            rewrite.next_key,
-        )
-    });
-    candidates.into_iter().map(|(_, rewrite)| rewrite).next()
-}
-
-fn collect_generated_same_band_role_point_rewrite_candidate(
-    candidates: &mut Vec<(
-        GeneratedSameBandRolePointRewriteOrder,
-        GeneratedSameBandRolePointRewrite,
-    )>,
-    contours: &[NodeGeneratedContour],
-    donor_contour_index: usize,
-    donor: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    conflict_key: NodeRailPointKey,
-    opposite_role: GeneratedSameBandBoundaryRole,
-) {
-    let Some((previous_key, next_key)) =
-        generated_removable_role_crossing_point(donor, constraints, conflict_key, opposite_role)
-    else {
-        return;
-    };
-    if !generated_point_removal_preserves_same_band_topology(
-        contours,
-        donor_contour_index,
-        previous_key,
-        conflict_key,
-        next_key,
-    ) {
-        return;
-    }
-    candidates.push((
-        GeneratedSameBandRolePointRewriteOrder {
-            removed_role_priority: generated_removed_endpoint_priority(
-                GeneratedSameBandBoundaryRole::RaisedSide,
-            ),
-            donor_contour_index,
-            conflict_key,
-            previous_key,
-            next_key,
-        },
-        GeneratedSameBandRolePointRewrite {
-            donor_contour_index,
-            previous_key,
-            conflict_key,
-            next_key,
-        },
-    ));
-}
-
-fn generated_point_removal_preserves_same_band_topology(
-    contours: &[NodeGeneratedContour],
-    donor_contour_index: usize,
-    previous_key: NodeRailPointKey,
-    removed_key: NodeRailPointKey,
-    next_key: NodeRailPointKey,
-) -> bool {
-    if previous_key == next_key {
-        return false;
-    }
-    let Some(donor) = contours.get(donor_contour_index) else {
-        return false;
-    };
-    let Some(kind) = generated_contour_band_kind(donor) else {
-        return false;
-    };
-    for (contour_index, contour) in contours.iter().enumerate() {
-        if contour_index == donor_contour_index
-            || generated_contour_band_kind(contour) != Some(kind)
-        {
-            continue;
-        }
-        for key in generated_contour_keys(contour) {
-            if key != previous_key
-                && key != removed_key
-                && key != next_key
-                && generated_point_key_lies_on_segment(key, previous_key, next_key)
-            {
-                return false;
-            }
-        }
-        for edge in generated_contour_directed_edges(contour) {
-            if edge.start == previous_key
-                || edge.start == removed_key
-                || edge.start == next_key
-                || edge.end == previous_key
-                || edge.end == removed_key
-                || edge.end == next_key
-            {
-                continue;
-            }
-            if quantized_proper_segment_intersection(previous_key, next_key, edge.start, edge.end)
-                .is_some()
-            {
-                return false;
-            }
-        }
-    }
-    true
-}
-
-fn generated_removable_role_crossing_point(
-    contour: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    conflict_key: NodeRailPointKey,
-    opposite_role: GeneratedSameBandBoundaryRole,
-) -> Option<(NodeRailPointKey, NodeRailPointKey)> {
-    let keys = generated_contour_keys(contour);
-    if keys.len() < 4 {
-        return None;
-    }
-    let mut candidates = Vec::new();
-    for index in 0..keys.len() {
-        if keys[index] != conflict_key {
-            continue;
-        }
-        let previous_key = keys[if index == 0 {
-            keys.len() - 1
-        } else {
-            index - 1
-        }];
-        let next_key = keys[(index + 1) % keys.len()];
-        if previous_key == next_key
-            || generated_triangle_double_area(previous_key, conflict_key, next_key) == 0
-        {
-            continue;
-        }
-        let previous_role =
-            generated_same_band_boundary_role_at_contour_vertex(contour, constraints, previous_key);
-        let next_role =
-            generated_same_band_boundary_role_at_contour_vertex(contour, constraints, next_key);
-        if previous_role == Some(opposite_role) || next_role == Some(opposite_role) {
-            candidates.push((previous_key, next_key));
-        }
-    }
-    candidates.sort_unstable();
-    candidates.dedup();
-    candidates.into_iter().next()
-}
-
-fn generated_same_role_endpoint_removal_candidate(
-    contour: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    removed_key: NodeRailPointKey,
-    kept_key: NodeRailPointKey,
-    expected_role: GeneratedSameBandBoundaryRole,
-) -> Option<NodeRailPointKey> {
-    if generated_same_band_boundary_role_at_contour_vertex(contour, constraints, removed_key)
-        != Some(expected_role)
-    {
-        return None;
-    }
-    let keys = generated_contour_keys(contour);
-    if keys.len() < 4 {
-        return None;
-    }
-    let mut candidates = Vec::new();
-    for index in 0..keys.len() {
-        if keys[index] != removed_key {
-            continue;
-        }
-        let previous_key = keys[if index == 0 {
-            keys.len() - 1
-        } else {
-            index - 1
-        }];
-        let next_key = keys[(index + 1) % keys.len()];
-        let candidate_key = if previous_key == kept_key {
-            next_key
-        } else if next_key == kept_key {
-            previous_key
-        } else {
-            continue;
-        };
-        if candidate_key == removed_key
-            || candidate_key == kept_key
-            || generated_triangle_double_area(kept_key, removed_key, candidate_key) == 0
-        {
-            continue;
-        }
-        if generated_same_band_boundary_role_at_contour_vertex(contour, constraints, candidate_key)
-            == Some(expected_role)
-        {
-            candidates.push(candidate_key);
-        }
-    }
-    candidates.sort_unstable();
-    candidates.dedup();
-    candidates.into_iter().next()
-}
-
-fn apply_generated_same_band_role_join_rewrite(
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut [NodeRailConstraint],
-    rewrite: GeneratedSameBandRoleJoinRewrite,
-) -> Result<(), NodeRailGenerationError> {
-    if rewrite.donor_contour_index == rewrite.receiver_contour_index {
-        return Ok(());
-    }
-    if rewrite.donor_contour_index < rewrite.receiver_contour_index {
-        let (left, right) = contours.split_at_mut(rewrite.receiver_contour_index);
-        apply_generated_same_band_role_join_rewrite_to_contours(
-            &mut left[rewrite.donor_contour_index],
-            &mut right[0],
-            constraints,
-            rewrite,
-        )
-    } else {
-        let (left, right) = contours.split_at_mut(rewrite.donor_contour_index);
-        apply_generated_same_band_role_join_rewrite_to_contours(
-            &mut right[0],
-            &mut left[rewrite.receiver_contour_index],
-            constraints,
-            rewrite,
-        )
-    }
-}
-
-fn apply_generated_same_band_role_join_rewrite_to_contours(
-    donor: &mut NodeGeneratedContour,
-    receiver: &mut NodeGeneratedContour,
-    constraints: &mut [NodeRailConstraint],
-    rewrite: GeneratedSameBandRoleJoinRewrite,
-) -> Result<(), NodeRailGenerationError> {
-    let mut donor_keys = generated_contour_keys(donor);
-    if remove_middle_key_from_generated_contour(
-        &mut donor_keys,
-        rewrite.equal_key,
-        rewrite.conflict_key,
-        rewrite.candidate_key,
-    ) {
-        set_generated_contour_from_keys(donor, constraints, donor_keys)?;
-    }
-
-    let mut receiver_keys = generated_contour_keys(receiver);
-    if insert_key_on_generated_contour_edge(
-        &mut receiver_keys,
-        rewrite.conflict_key,
-        rewrite.equal_key,
-        rewrite.candidate_key,
-    ) || insert_key_on_generated_contour_edge(
-        &mut receiver_keys,
-        rewrite.equal_key,
-        rewrite.conflict_key,
-        rewrite.candidate_key,
-    ) {
-        set_generated_contour_from_keys(receiver, constraints, receiver_keys)?;
-    }
-    Ok(())
-}
-
-fn apply_generated_same_band_role_point_rewrite(
-    contours: &mut [NodeGeneratedContour],
-    constraints: &mut [NodeRailConstraint],
-    rewrite: GeneratedSameBandRolePointRewrite,
-) -> Result<(), NodeRailGenerationError> {
-    let Some(donor) = contours.get_mut(rewrite.donor_contour_index) else {
-        return Ok(());
-    };
-    let owner = donor.owner;
-    let mut donor_keys = generated_contour_keys(donor);
-    if remove_middle_key_from_generated_contour(
-        &mut donor_keys,
-        rewrite.previous_key,
-        rewrite.conflict_key,
-        rewrite.next_key,
-    ) {
-        if let Some(owner) = owner {
-            remove_key_from_generated_constraints(
-                constraints,
-                owner,
-                rewrite.previous_key,
-                rewrite.conflict_key,
-                rewrite.next_key,
-            );
-        }
-        set_generated_contour_from_keys(donor, constraints, donor_keys)?;
-    }
-    Ok(())
-}
-
-fn remove_key_from_generated_constraints(
-    constraints: &mut [NodeRailConstraint],
-    owner: NodeBandOwner,
-    previous_key: NodeRailPointKey,
-    removed_key: NodeRailPointKey,
-    next_key: NodeRailPointKey,
-) {
-    for constraint in constraints {
-        if generated_constraint_applies_to_owner(constraint, owner) {
-            remove_middle_key_from_generated_constraint(
-                &mut constraint.points_xz,
-                previous_key,
-                removed_key,
-                next_key,
-            );
-        }
-    }
-}
-
-fn remove_middle_key_from_generated_constraint(
-    points: &mut Vec<RoadVec2>,
-    previous_key: NodeRailPointKey,
-    removed_key: NodeRailPointKey,
-    next_key: NodeRailPointKey,
-) -> bool {
-    if points.len() < 3 {
-        return false;
-    }
-    for index in 1..points.len() - 1 {
-        if road_point_key(points[index]) != removed_key {
-            continue;
-        }
-        let prev = road_point_key(points[index - 1]);
-        let next = road_point_key(points[index + 1]);
-        if (prev == previous_key && next == next_key) || (prev == next_key && next == previous_key)
-        {
-            points.remove(index);
             return true;
         }
     }
@@ -3757,44 +2283,6 @@ fn generated_contour_keys(contour: &NodeGeneratedContour) -> Vec<NodeRailPointKe
         .collect()
 }
 
-fn generated_contour_neighbors(
-    contour: &NodeGeneratedContour,
-    key: NodeRailPointKey,
-) -> Vec<NodeRailPointKey> {
-    let keys = generated_contour_keys(contour);
-    if keys.len() < 2 {
-        return Vec::new();
-    }
-    let mut neighbors = Vec::new();
-    for index in 0..keys.len() {
-        if keys[index] != key {
-            continue;
-        }
-        neighbors.push(
-            keys[if index == 0 {
-                keys.len() - 1
-            } else {
-                index - 1
-            }],
-        );
-        neighbors.push(keys[(index + 1) % keys.len()]);
-    }
-    neighbors.sort_unstable();
-    neighbors.dedup();
-    neighbors
-}
-
-fn generated_contour_arc_contains_key(
-    contour: &NodeGeneratedContour,
-    start_key: NodeRailPointKey,
-    end_key: NodeRailPointKey,
-    contained_key: NodeRailPointKey,
-) -> bool {
-    let keys = generated_contour_keys(contour);
-    generated_key_arc(&keys, start_key, end_key)
-        .is_some_and(|arc| arc.iter().copied().any(|key| key == contained_key))
-}
-
 fn generated_same_band_boundary_role_at_contour_vertex(
     contour: &NodeGeneratedContour,
     constraints: &[NodeRailConstraint],
@@ -3851,13 +2339,6 @@ fn generated_contour_supports_same_band_role(kind: RoadSurfaceBandKind) -> bool 
     )
 }
 
-fn generated_contour_supports_same_band_noding(kind: RoadSurfaceBandKind) -> bool {
-    matches!(
-        kind,
-        RoadSurfaceBandKind::CurbOrShoulder | RoadSurfaceBandKind::Sidewalk
-    )
-}
-
 fn generated_contour_supports_same_band_contact(kind: RoadSurfaceBandKind) -> bool {
     matches!(
         kind,
@@ -3865,94 +2346,6 @@ fn generated_contour_supports_same_band_contact(kind: RoadSurfaceBandKind) -> bo
             | RoadSurfaceBandKind::CurbOrShoulder
             | RoadSurfaceBandKind::Sidewalk
     )
-}
-
-fn generated_same_band_endpoint_roles_match(
-    left: &NodeGeneratedContour,
-    right: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    key: NodeRailPointKey,
-) -> Option<bool> {
-    let left_role = generated_same_band_boundary_role_at_contour_vertex(left, constraints, key);
-    let right_role = generated_same_band_boundary_role_at_contour_vertex(right, constraints, key);
-    match (left_role, right_role) {
-        (Some(left_role), Some(right_role)) => Some(left_role == right_role),
-        (Some(_), None) | (None, Some(_)) => Some(false),
-        (None, None) => None,
-    }
-}
-
-fn generated_one_matching_role_endpoint(
-    start: NodeRailPointKey,
-    end: NodeRailPointKey,
-    start_matches: Option<bool>,
-    end_matches: Option<bool>,
-) -> Option<(NodeRailPointKey, NodeRailPointKey)> {
-    match (start_matches, end_matches) {
-        (Some(true), Some(false)) => Some((start, end)),
-        (Some(false), Some(true)) => Some((end, start)),
-        _ => None,
-    }
-}
-
-fn generated_role_matching_join_candidate(
-    donor: &NodeGeneratedContour,
-    receiver: &NodeGeneratedContour,
-    constraints: &[NodeRailConstraint],
-    equal_key: NodeRailPointKey,
-    conflict_key: NodeRailPointKey,
-) -> Option<(NodeRailPointKey, GeneratedSameBandBoundaryRole)> {
-    let receiver_conflict_role =
-        generated_same_band_boundary_role_at_key(receiver, constraints, conflict_key)?;
-    let keys = generated_contour_keys(donor);
-    if !generated_edge_exists_in_keys(&keys, equal_key, conflict_key) {
-        return None;
-    }
-    let mut candidates = Vec::new();
-    for index in 0..keys.len() {
-        if keys[index] != conflict_key {
-            continue;
-        }
-        let previous_key = keys[if index == 0 {
-            keys.len() - 1
-        } else {
-            index - 1
-        }];
-        let next_key = keys[(index + 1) % keys.len()];
-        for candidate_key in [previous_key, next_key] {
-            if candidate_key == equal_key
-                || candidate_key == conflict_key
-                || generated_triangle_double_area(equal_key, conflict_key, candidate_key) == 0
-            {
-                continue;
-            }
-            if generated_same_band_boundary_role_at_contour_vertex(
-                donor,
-                constraints,
-                candidate_key,
-            ) == Some(receiver_conflict_role)
-            {
-                candidates.push(candidate_key);
-            }
-        }
-    }
-    candidates.sort_unstable();
-    candidates.dedup();
-    candidates
-        .into_iter()
-        .next()
-        .map(|candidate_key| (candidate_key, receiver_conflict_role))
-}
-
-fn generated_edge_exists_in_keys(
-    keys: &[NodeRailPointKey],
-    start: NodeRailPointKey,
-    end: NodeRailPointKey,
-) -> bool {
-    keys.iter().enumerate().any(|(index, key)| {
-        let next = keys[(index + 1) % keys.len()];
-        (*key == start && next == end) || (*key == end && next == start)
-    })
 }
 
 fn collect_generated_same_band_role_on_segment(
@@ -4182,99 +2575,6 @@ fn generated_point_key_lies_on_segment(
     inside_x && inside_z
 }
 
-fn remove_middle_key_from_generated_contour(
-    keys: &mut Vec<NodeRailPointKey>,
-    first_key: NodeRailPointKey,
-    middle_key: NodeRailPointKey,
-    third_key: NodeRailPointKey,
-) -> bool {
-    if keys.len() < 3 {
-        return false;
-    }
-    for index in 0..keys.len() {
-        if keys[index] != middle_key {
-            continue;
-        }
-        let previous_key = keys[if index == 0 {
-            keys.len() - 1
-        } else {
-            index - 1
-        }];
-        let next_key = keys[(index + 1) % keys.len()];
-        if (previous_key == first_key && next_key == third_key)
-            || (previous_key == third_key && next_key == first_key)
-        {
-            keys.remove(index);
-            remove_generated_contour_spikes(keys);
-            return true;
-        }
-    }
-    false
-}
-
-fn replace_generated_contour_arc_with_edge(
-    keys: &mut Vec<NodeRailPointKey>,
-    start_key: NodeRailPointKey,
-    end_key: NodeRailPointKey,
-    contained_key: NodeRailPointKey,
-    remove_containing_arc: bool,
-) -> bool {
-    if keys.len() < 4 || start_key == end_key {
-        return false;
-    }
-    let Some(forward_arc) = generated_key_arc(keys, start_key, end_key) else {
-        return false;
-    };
-    let Some(reverse_arc) = generated_key_arc(keys, end_key, start_key) else {
-        return false;
-    };
-    let forward_contains = forward_arc.iter().copied().any(|key| key == contained_key);
-    let reverse_contains = reverse_arc.iter().copied().any(|key| key == contained_key);
-    if forward_contains == reverse_contains {
-        return false;
-    }
-    let remove_forward = if remove_containing_arc {
-        forward_contains
-    } else {
-        !forward_contains
-    };
-    let kept_arc = if remove_forward {
-        let mut kept = reverse_arc;
-        kept.reverse();
-        kept
-    } else {
-        forward_arc
-    };
-    if kept_arc.len() < 3 {
-        return false;
-    }
-    *keys = kept_arc;
-    remove_generated_contour_spikes(keys);
-    true
-}
-
-fn generated_key_arc(
-    keys: &[NodeRailPointKey],
-    start_key: NodeRailPointKey,
-    end_key: NodeRailPointKey,
-) -> Option<Vec<NodeRailPointKey>> {
-    if keys.len() < 2 {
-        return None;
-    }
-    let start_index = keys.iter().position(|key| *key == start_key)?;
-    let mut arc = Vec::new();
-    let mut index = start_index;
-    for _ in 0..=keys.len() {
-        let key = keys[index];
-        arc.push(key);
-        if key == end_key && index != start_index {
-            return Some(arc);
-        }
-        index = (index + 1) % keys.len();
-    }
-    None
-}
-
 fn insert_key_on_generated_contour_edge(
     keys: &mut Vec<NodeRailPointKey>,
     start_key: NodeRailPointKey,
@@ -4329,13 +2629,6 @@ fn remove_generated_contour_spikes(keys: &mut Vec<NodeRailPointKey>) {
     }
 }
 
-fn generated_removed_endpoint_priority(role: GeneratedSameBandBoundaryRole) -> u8 {
-    match role {
-        GeneratedSameBandBoundaryRole::LowerSide => 0,
-        GeneratedSameBandBoundaryRole::RaisedSide => 1,
-    }
-}
-
 fn generated_triangle_double_area(
     a: NodeRailPointKey,
     b: NodeRailPointKey,
@@ -4346,6 +2639,71 @@ fn generated_triangle_double_area(
     let ac_x = i128::from(c.0 - a.0);
     let ac_z = i128::from(c.1 - a.1);
     ab_x * ac_z - ab_z * ac_x
+}
+
+fn generated_segment_overlap_edge(
+    a: NodeRailPointKey,
+    b: NodeRailPointKey,
+    c: NodeRailPointKey,
+    d: NodeRailPointKey,
+) -> Option<GeneratedContourEdgeKey> {
+    if a == b
+        || c == d
+        || generated_triangle_double_area(a, b, c) != 0
+        || generated_triangle_double_area(a, b, d) != 0
+    {
+        return None;
+    }
+    let mut points = [a, b, c, d]
+        .into_iter()
+        .filter(|point| {
+            generated_point_key_lies_on_segment(*point, a, b)
+                && generated_point_key_lies_on_segment(*point, c, d)
+        })
+        .collect::<Vec<_>>();
+    points.sort_by_key(|point| generated_segment_parameter_key(a, b, *point));
+    points.dedup();
+    match (points.first().copied(), points.last().copied()) {
+        (Some(start), Some(end)) if start != end => Some(GeneratedContourEdgeKey::new(start, end)),
+        _ => None,
+    }
+}
+
+fn generated_segment_touch_points(
+    a: NodeRailPointKey,
+    b: NodeRailPointKey,
+    c: NodeRailPointKey,
+    d: NodeRailPointKey,
+) -> Vec<NodeRailPointKey> {
+    let mut points = Vec::new();
+    if let Some(point) = quantized_proper_segment_intersection(a, b, c, d) {
+        points.push(point);
+    }
+    for point in [a, b] {
+        if generated_point_key_lies_on_segment(point, c, d) {
+            points.push(point);
+        }
+    }
+    for point in [c, d] {
+        if generated_point_key_lies_on_segment(point, a, b) {
+            points.push(point);
+        }
+    }
+    points.sort_unstable();
+    points.dedup();
+    points
+}
+
+fn generated_segment_parameter_key(
+    start: NodeRailPointKey,
+    end: NodeRailPointKey,
+    point: NodeRailPointKey,
+) -> i128 {
+    let dx = i128::from(end.0 - start.0);
+    let dz = i128::from(end.1 - start.1);
+    let px = i128::from(point.0 - start.0);
+    let pz = i128::from(point.1 - start.1);
+    px * dx + pz * dz
 }
 
 fn quantized_proper_segment_intersection(
@@ -4667,7 +3025,7 @@ mod tests {
             RoadSurfaceVisualNodePieceKind::JunctionN
         );
         assert_eq!(contours.contours.len(), 5);
-        assert_eq!(contours.constraints.len(), 14);
+        assert_eq!(contours.constraints.len(), 18);
         assert_eq!(
             contours.contours[0].kind,
             NodeGeneratedContourKind::FullRoadbed
@@ -4694,120 +3052,6 @@ mod tests {
             NodeRailConstraintKind::FullRoadbedContour
         );
         assert_eq!(contours.constraints[0].constraint_index, 0);
-    }
-
-    #[test]
-    fn generated_curb_transition_ownership_is_resolved_before_boolean() {
-        let donor_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 0);
-        let receiver_owner = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
-        let raised_shared = RoadVec2::new(0.0, 1.0);
-        let lower_shared = RoadVec2::new(0.0, 0.0);
-        let donor_lower = RoadVec2::new(1.0, 0.0);
-        let donor_raised = RoadVec2::new(1.0, 1.0);
-        let receiver_raised = RoadVec2::new(-1.0, 1.0);
-        let receiver_lower = RoadVec2::new(-1.0, 0.0);
-        let mut contours = vec![
-            test_generated_band_contour(
-                0,
-                donor_owner,
-                vec![raised_shared, lower_shared, donor_lower, donor_raised],
-            ),
-            test_generated_band_contour(
-                1,
-                receiver_owner,
-                vec![lower_shared, raised_shared, receiver_raised, receiver_lower],
-            ),
-        ];
-        let mut constraints = vec![
-            test_role_constraint(
-                0,
-                NodeRailConstraintKind::BandContour {
-                    kind: RoadSurfaceBandKind::CurbOrShoulder,
-                },
-                donor_owner,
-                vec![raised_shared, lower_shared, donor_lower, donor_raised],
-            ),
-            test_role_constraint(
-                1,
-                NodeRailConstraintKind::BandContour {
-                    kind: RoadSurfaceBandKind::CurbOrShoulder,
-                },
-                receiver_owner,
-                vec![lower_shared, raised_shared, receiver_raised, receiver_lower],
-            ),
-            test_role_constraint(
-                2,
-                NodeRailConstraintKind::AsphaltCurbContact,
-                donor_owner,
-                vec![lower_shared, donor_lower],
-            ),
-            test_role_constraint(
-                3,
-                NodeRailConstraintKind::CurbSidewalkContact,
-                donor_owner,
-                vec![donor_raised, raised_shared],
-            ),
-            test_role_constraint(
-                4,
-                NodeRailConstraintKind::AsphaltCurbContact,
-                receiver_owner,
-                vec![receiver_lower, lower_shared],
-            ),
-            test_role_constraint(
-                5,
-                NodeRailConstraintKind::CurbSidewalkContact,
-                receiver_owner,
-                vec![raised_shared, receiver_raised],
-            ),
-            test_role_constraint(
-                6,
-                NodeRailConstraintKind::AsphaltCurbContact,
-                receiver_owner,
-                vec![lower_shared, donor_lower],
-            ),
-        ];
-
-        let rewrite = generated_same_band_role_join_rewrite_candidate(
-            &contours,
-            &constraints,
-            &BTreeSet::new(),
-        )
-        .expect("generated same-band rewrite should be available before boolean");
-        assert_eq!(rewrite.donor_contour_index, 0);
-        assert_eq!(rewrite.receiver_contour_index, 1);
-        resolve_generated_same_band_curb_transition_ownership(&mut contours, &mut constraints)
-            .expect("same-role generated curb transition should resolve before boolean ownership");
-
-        let raised_key = road_point_key(raised_shared);
-        let lower_key = road_point_key(lower_shared);
-        let donor_lower_key = road_point_key(donor_lower);
-        assert!(
-            !generated_contour_keys(&contours[0]).contains(&lower_key),
-            "donor contour must not carry the receiver-owned lower transition endpoint into boolean"
-        );
-        assert!(
-            generated_contour_keys(&contours[1]).contains(&donor_lower_key),
-            "receiver contour must carry the inserted transition vertex before boolean"
-        );
-        let old_edge = GeneratedContourEdgeKey::new(lower_key, raised_key);
-        let new_edge = GeneratedContourEdgeKey::new(donor_lower_key, raised_key);
-        let shared_edges = shared_generated_contour_edges(&contours[0], &contours[1]);
-        assert!(
-            !shared_edges.contains(&old_edge),
-            "the generated contour graph must not retain the old lower-to-raised shared edge"
-        );
-        assert!(
-            shared_edges.contains(&new_edge),
-            "the generated contour graph must expose the new same-band transition edge"
-        );
-        assert_eq!(
-            constraints[0].points_xz, contours[0].points_xz,
-            "donor band contour constraint must be updated with the canonicalized contour"
-        );
-        assert_eq!(
-            constraints[1].points_xz, contours[1].points_xz,
-            "receiver band contour constraint must be updated with the canonicalized contour"
-        );
     }
 
     fn test_generated_band_contour(

@@ -387,7 +387,6 @@ enum BendCornerProfileSide {
 }
 
 const BEND_CORNER_HEIGHT_EDGE_EPS_M: f64 = 0.001;
-const BEND_CORNER_HEIGHT_FIELD_PAD_M: f64 = 0.1;
 const BEND_CORNER_CURVE_SEGMENTS: usize = 4;
 
 #[derive(Clone, Copy)]
@@ -934,36 +933,18 @@ fn bend_corner_strip_height_edges(
     mouth_start_world: RoadVec3,
     mouth_end_world: RoadVec3,
 ) -> (RoadVec3, RoadVec3, RoadVec3, RoadVec3) {
-    let (mut endpoint_start_world, mut endpoint_end_world) = nondegenerate_height_edge(
+    let (endpoint_start_world, endpoint_end_world) = nondegenerate_height_edge(
         endpoint_start_world,
         endpoint_end_world,
         mouth_start_world,
         mouth_end_world,
     );
-    let (mut mouth_start_world, mut mouth_end_world) = nondegenerate_height_edge(
+    let (mouth_start_world, mouth_end_world) = nondegenerate_height_edge(
         mouth_start_world,
         mouth_end_world,
         endpoint_start_world,
         endpoint_end_world,
     );
-    let endpoint_center = midpoint_xz(
-        xz_from_road_vec3(endpoint_start_world),
-        xz_from_road_vec3(endpoint_end_world),
-    );
-    let mouth_center = midpoint_xz(
-        xz_from_road_vec3(mouth_start_world),
-        xz_from_road_vec3(mouth_end_world),
-    );
-    let axis = mouth_center - endpoint_center;
-    let axis_len = axis.length();
-    if axis_len > f64::EPSILON {
-        let pad = BEND_CORNER_HEIGHT_FIELD_PAD_M.min(axis_len * 0.25);
-        let offset = axis / axis_len * pad;
-        endpoint_start_world = offset_road_vec3_xz(endpoint_start_world, -offset);
-        endpoint_end_world = offset_road_vec3_xz(endpoint_end_world, -offset);
-        mouth_start_world = offset_road_vec3_xz(mouth_start_world, offset);
-        mouth_end_world = offset_road_vec3_xz(mouth_end_world, offset);
-    }
     (
         endpoint_start_world,
         endpoint_end_world,

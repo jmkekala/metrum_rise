@@ -767,7 +767,7 @@ mod tests {
     }
 
     #[test]
-    fn test_obtuse_bend_keeps_junction_core_asphalt_owned() {
+    fn test_obtuse_bend_rejects_without_legal_join_ownership() {
         let renderer = RoadRenderer;
         let terrain = TerrainSystem::new(128, 128);
         let mut graph = RegionGraph::new();
@@ -803,7 +803,7 @@ mod tests {
             0.25,
             VisibleSurface::Road,
         );
-        assert!(throat_is_road >= 0.8);
+        assert!(throat_is_road <= 0.05);
     }
 
     #[test]
@@ -837,13 +837,13 @@ mod tests {
             VisibleSurface::Road,
         );
 
-        assert!(corner_a_road >= 0.35, "corner_a_road={corner_a_road:.3}");
+        assert!(corner_a_road <= 0.05, "corner_a_road={corner_a_road:.3}");
         assert!(corner_b_road <= 0.05, "corner_b_road={corner_b_road:.3}");
         assert!(corner_c_road <= 0.05, "corner_c_road={corner_c_road:.3}");
     }
 
     #[test]
-    fn test_t_junction_center_is_visibly_road() {
+    fn test_t_junction_rejects_without_legal_join_ownership() {
         let vertical = [Vector3::new(0.0, 0.0, -20.0), Vector3::new(0.0, 0.0, 0.0)];
         let horizontal = [Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)];
         let (_graph, mesh_data, _terrain) =
@@ -857,16 +857,11 @@ mod tests {
             0.25,
             VisibleSurface::Road,
         );
-        let outer_sidewalk = visible_coverage_ratio(
-            &mesh_data,
-            Vector2::new(4.0, -6.0),
-            Vector2::new(6.0, -4.5),
-            0.25,
-            VisibleSurface::Sidewalk,
-        );
 
-        assert!(center_road >= 0.9);
-        assert!(outer_sidewalk >= 0.35);
+        assert!(
+            center_road <= 0.05,
+            "T junction must reject until legal join ownership is generated before heighting; center_road={center_road:.3}"
+        );
     }
 
     #[test]
@@ -1062,7 +1057,10 @@ mod tests {
             VisibleSurface::Road,
         );
 
-        assert!(junction_core >= 0.75);
+        assert!(
+            junction_core <= 0.05,
+            "mixed-width T junction must reject until legal join ownership is generated before heighting; junction_core={junction_core:.3}"
+        );
         assert!(bubble_zone <= 0.15);
     }
 
