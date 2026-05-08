@@ -1,11 +1,9 @@
 //! Canonical node-arrangement identity and ownership data model.
 
-#![allow(dead_code)]
-
 use super::backend::{ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2};
 use super::height::{NodeHeightSolution, NodeHeightedRegion, NodeHeightedVertex};
 use super::triangulation::{NodeTriangulatedRegion, NodeTriangulationSolution};
-use super::{IncidentEdgeSide, RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
+use super::{RoadSurfaceBandKind, RoadSurfaceVisualNodePieceKind};
 use std::collections::{BTreeMap, BTreeSet};
 
 const NODE_ARRANGEMENT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
@@ -55,30 +53,11 @@ pub(crate) struct NodeBandHeightFieldId {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum NodeSeamSource {
-    SpanHandoff {
-        edge_idx: usize,
-        side: IncidentEdgeSide,
-    },
-    AsphaltBoundary {
-        owner_index: usize,
-    },
-    AsphaltCurbContact {
-        owner_index: usize,
-    },
-    CurbSidewalkContact {
-        owner_index: usize,
-    },
-    SidewalkOuter {
-        owner_index: usize,
-    },
-    FootprintBoundary {
-        owner_index: usize,
-    },
-    TerminalEndBand {
-        edge_idx: usize,
-        side: IncidentEdgeSide,
-        band_index: usize,
-    },
+    AsphaltBoundary { owner_index: usize },
+    AsphaltCurbContact { owner_index: usize },
+    CurbSidewalkContact { owner_index: usize },
+    SidewalkOuter { owner_index: usize },
+    FootprintBoundary { owner_index: usize },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -257,10 +236,6 @@ impl NodeBandHeightFieldId {
 
     pub(crate) fn band_index(self) -> usize {
         self.band_index
-    }
-
-    pub(crate) fn kind(self) -> RoadSurfaceBandKind {
-        self.kind
     }
 }
 
@@ -831,24 +806,6 @@ impl NodeArrangement {
         adjacency
     }
 
-    fn material_seam_constraint_indices_at_key(
-        &self,
-        key: NodeArrangementKey,
-        owners: &[NodeBandOwner],
-    ) -> Vec<usize> {
-        canonical_sources(
-            self.regions
-                .iter()
-                .filter(|region| owners.contains(&region.owner))
-                .flat_map(|region| region.seam_constraints.iter())
-                .filter(|constraint| {
-                    constraint.is_material_transition
-                        && seam_constraint_touches_key(constraint, key)
-                })
-                .map(|constraint| constraint.constraint_index),
-        )
-    }
-
     fn has_explicit_material_seam_at_key_between(
         &self,
         key: NodeArrangementKey,
@@ -886,12 +843,6 @@ fn seam_constraint_touches_key(
 }
 
 impl NodeArrangementVertexId {
-    pub(crate) fn index(self) -> usize {
-        self.0
-    }
-}
-
-impl NodeOwnedRegionId {
     pub(crate) fn index(self) -> usize {
         self.0
     }
@@ -946,18 +897,6 @@ impl NodeArrangementEdge {
         self.owner
     }
 
-    pub(crate) fn height_field_id(&self) -> NodeBandHeightFieldId {
-        self.height_field_id
-    }
-
-    pub(crate) fn opposite_owner(&self) -> Option<NodeBandOwner> {
-        self.opposite_owner
-    }
-
-    pub(crate) fn opposite_height_field_id(&self) -> Option<NodeBandHeightFieldId> {
-        self.opposite_height_field_id
-    }
-
     pub(crate) fn is_exposed_boundary(&self) -> bool {
         self.exposed_boundary
     }
@@ -968,10 +907,6 @@ impl NodeArrangementEdge {
 }
 
 impl NodeArrangementFace {
-    pub(crate) fn region(&self) -> NodeOwnedRegionId {
-        self.region
-    }
-
     pub(crate) fn owner(&self) -> NodeBandOwner {
         self.owner
     }
@@ -1119,13 +1054,11 @@ fn seam_constraint_priority(constraint: &NodeRegionSeamConstraint) -> (bool, boo
 
 pub(crate) fn seam_source_priority(source: &NodeSeamSource) -> usize {
     match source {
-        NodeSeamSource::SpanHandoff { .. } => 0,
-        NodeSeamSource::AsphaltCurbContact { .. } => 1,
-        NodeSeamSource::CurbSidewalkContact { .. } => 2,
-        NodeSeamSource::AsphaltBoundary { .. } => 3,
-        NodeSeamSource::TerminalEndBand { .. } => 4,
-        NodeSeamSource::SidewalkOuter { .. } => 5,
-        NodeSeamSource::FootprintBoundary { .. } => 6,
+        NodeSeamSource::AsphaltCurbContact { .. } => 0,
+        NodeSeamSource::CurbSidewalkContact { .. } => 1,
+        NodeSeamSource::AsphaltBoundary { .. } => 2,
+        NodeSeamSource::SidewalkOuter { .. } => 3,
+        NodeSeamSource::FootprintBoundary { .. } => 4,
     }
 }
 
@@ -1703,14 +1636,6 @@ mod tests {
             result,
             Err(NodeArrangementError::EmptyOwnerSet { .. })
         ));
-    }
-
-    fn test_height_region(
-        kind: RoadSurfaceBandKind,
-        owner: NodeBandOwner,
-        contour: Vec<NodeHeightedVertex>,
-    ) -> NodeHeightedRegion {
-        test_height_region_with_seams(kind, owner, contour, Vec::new())
     }
 
     fn two_region_height_solution(

@@ -1,7 +1,5 @@
 //! Spline-backed height evaluation for canonical node-owned regions.
 
-#![allow(dead_code)]
-
 use super::arrangement::{
     NodeBandHeightFieldId, NodeBandOwner, NodeRegionSeamConstraint, seam_source_priority,
 };
@@ -1055,22 +1053,6 @@ fn midpoint(start: RoadVec2, end: RoadVec2) -> RoadVec2 {
 
 fn interpolate(start: RoadVec2, end: RoadVec2, t: f64) -> RoadVec2 {
     start + (end - start) * t
-}
-
-type NodeOverlayPointKey = (i64, i64);
-
-fn road_vec2_key(point: RoadVec2) -> NodeOverlayPointKey {
-    (
-        (point.x * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-        (point.y * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-    )
-}
-
-fn overlay_point_key(point: NodeOverlayPoint) -> NodeOverlayPointKey {
-    (
-        (point[0] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-        (point[1] * ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
-    )
 }
 
 fn quantize_m(value: f64) -> i64 {

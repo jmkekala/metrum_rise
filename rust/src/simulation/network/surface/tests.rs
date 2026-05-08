@@ -111,7 +111,6 @@ fn ridge_terrain(width: usize, height: usize) -> TerrainSystem {
     terrain
 }
 
-#[allow(dead_code)]
 fn planar_world_terrain(
     width: usize,
     height: usize,
@@ -166,14 +165,9 @@ fn grounded_polyline_points_from_terrain(
         .collect()
 }
 
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 struct FootprintOverflowMetrics {
     max_overflow_m: f32,
-    section_s_m: f32,
-    lateral_offset_m: f32,
-    road_height_m: f32,
-    visual_height_m: f32,
 }
 
 fn footprint_sample_offsets(section: &RoadSurfaceSection) -> Vec<f32> {
@@ -205,10 +199,6 @@ fn measure_max_footprint_overflow(
 ) -> FootprintOverflowMetrics {
     let mut best = FootprintOverflowMetrics {
         max_overflow_m: f32::NEG_INFINITY,
-        section_s_m: 0.0,
-        lateral_offset_m: 0.0,
-        road_height_m: 0.0,
-        visual_height_m: 0.0,
     };
 
     let sections = surface.compiled_sections().get(&edge_idx).unwrap();
@@ -230,10 +220,6 @@ fn measure_max_footprint_overflow(
             if overflow_m > best.max_overflow_m {
                 best = FootprintOverflowMetrics {
                     max_overflow_m: overflow_m,
-                    section_s_m: section.s_m,
-                    lateral_offset_m,
-                    road_height_m,
-                    visual_height_m,
                 };
             }
         }

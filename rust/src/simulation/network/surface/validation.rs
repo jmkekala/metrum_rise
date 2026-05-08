@@ -1,7 +1,5 @@
 //! Structured validation and diagnostics for canonical node surface compilation.
 
-#![allow(dead_code)]
-
 use super::arrangement::{
     NodeArrangement, NodeArrangementDiagnostic, NodeArrangementError, NodeArrangementKey,
 };

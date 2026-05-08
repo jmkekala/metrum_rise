@@ -1,7 +1,5 @@
 //! Boolean ownership solve for canonical node-arrangement contours.
 
-#![allow(dead_code)]
-
 use super::arrangement::{
     NodeBandOwner, NodeRegionSeamConstraint, NodeSeamSource, seam_source_priority,
 };
@@ -310,6 +308,7 @@ impl NodeOwnedRegionArrangement {
 }
 
 impl NodeOwnedRegionArrangementKey {
+    #[cfg(test)]
     pub(crate) fn from_point(point: RoadVec2) -> Self {
         Self::from_ownership_key(road_point_key(point))
     }
@@ -880,7 +879,6 @@ fn constraint_overlaps_shape_edge(
 
 struct OwnedRegionBoundaryRefs {
     edges: BTreeMap<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>,
-    points_by_region: BTreeMap<NodeOwnershipPointKey, Vec<OwnedRegionEdgeRef>>,
 }
 
 fn owned_region_boundary_refs(
@@ -889,7 +887,6 @@ fn owned_region_boundary_refs(
 ) -> OwnedRegionBoundaryRefs {
     let global_points = owned_region_global_points(regions, footprint_shapes);
     let mut edges = BTreeMap::<OwnedRegionEdgeKey, Vec<OwnedRegionEdgeRef>>::new();
-    let mut points_by_region = BTreeMap::<NodeOwnershipPointKey, Vec<OwnedRegionEdgeRef>>::new();
     for (region_index, region) in regions.iter().enumerate() {
         for contour in &region.shape {
             if contour.len() < 2 {
@@ -914,23 +911,12 @@ fn owned_region_boundary_refs(
                         .entry(OwnedRegionEdgeKey::new(segment[0], segment[1]))
                         .or_default()
                         .push(edge_ref);
-                    points_by_region
-                        .entry(segment[0])
-                        .or_default()
-                        .push(edge_ref);
-                    points_by_region
-                        .entry(segment[1])
-                        .or_default()
-                        .push(edge_ref);
                 }
             }
         }
     }
 
-    OwnedRegionBoundaryRefs {
-        edges,
-        points_by_region,
-    }
+    OwnedRegionBoundaryRefs { edges }
 }
 
 fn canonicalize_owned_region_rings(

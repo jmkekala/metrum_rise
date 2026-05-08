@@ -1,7 +1,5 @@
 //! Spade-backed triangulation for canonical node-owned height regions.
 
-#![allow(dead_code)]
-
 use super::arrangement::{
     NodeArrangement, NodeArrangementVertex, NodeArrangementVertexId, NodeBandHeightFieldId,
     NodeBandOwner, NodeOwnedRegion,

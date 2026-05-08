@@ -1,7 +1,5 @@
 //! Library-backed rail and contour generation for canonical node arrangements.
 
-#![allow(dead_code)]
-
 use super::arrangement::NodeBandOwner;
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadPolyline, RoadVec2, RoadVec3, polyline_to_road_points,
@@ -2197,56 +2195,6 @@ fn insert_key_on_generated_contour(
     Ok(())
 }
 
-fn insert_key_on_generated_constraints(
-    constraints: &mut [NodeRailConstraint],
-    owner: NodeBandOwner,
-    edge: GeneratedContourDirectedEdge,
-    insert_key: NodeRailPointKey,
-) {
-    for constraint in constraints {
-        if !generated_constraint_applies_to_owner(constraint, owner) {
-            continue;
-        }
-        insert_key_on_generated_constraint_segment(
-            &mut constraint.points_xz,
-            edge.start,
-            edge.end,
-            insert_key,
-        );
-    }
-}
-
-fn insert_key_on_generated_constraint_segment(
-    points: &mut Vec<RoadVec2>,
-    start_key: NodeRailPointKey,
-    end_key: NodeRailPointKey,
-    insert_key: NodeRailPointKey,
-) -> bool {
-    if points.len() < 2
-        || insert_key == start_key
-        || insert_key == end_key
-        || points
-            .iter()
-            .copied()
-            .any(|point| road_point_key(point) == insert_key)
-    {
-        return false;
-    }
-    for index in 0..points.len() - 1 {
-        let current_key = road_point_key(points[index]);
-        let next_key = road_point_key(points[index + 1]);
-        if current_key == start_key && next_key == end_key {
-            points.insert(index + 1, road_point_from_key(insert_key));
-            return true;
-        }
-        if current_key == end_key && next_key == start_key {
-            points.insert(index + 1, road_point_from_key(insert_key));
-            return true;
-        }
-    }
-    false
-}
-
 fn set_generated_contour_from_keys(
     contour: &mut NodeGeneratedContour,
     constraints: &mut [NodeRailConstraint],
@@ -2600,13 +2548,6 @@ fn generated_constraint_directed_edges(
             (start != end).then_some(GeneratedContourDirectedEdge { start, end })
         })
         .collect()
-}
-
-fn constraint_curb_owner(constraint: &NodeRailConstraint) -> Option<NodeBandOwner> {
-    [constraint.owner, constraint.opposite_owner]
-        .into_iter()
-        .flatten()
-        .find(|owner| is_curb_or_shoulder(owner.kind()))
 }
 
 fn owners_match_unordered(
@@ -3127,46 +3068,6 @@ mod tests {
             NodeRailConstraintKind::FullRoadbedContour
         );
         assert_eq!(contours.constraints[0].constraint_index, 0);
-    }
-
-    fn test_generated_band_contour(
-        source_band_index: usize,
-        owner: NodeBandOwner,
-        points: Vec<RoadVec2>,
-    ) -> NodeGeneratedContour {
-        let kind = NodeGeneratedContourKind::Band {
-            kind: RoadSurfaceBandKind::CurbOrShoulder,
-        };
-        let backend_polyline = cleaned_closed_contour(kind, 0, Some(source_band_index), points)
-            .expect("test contour should be non-degenerate");
-        let points_xz = polyline_to_road_points(&backend_polyline);
-        NodeGeneratedContour {
-            kind,
-            source_mouth_order_index: 0,
-            source_band_index: Some(source_band_index),
-            owner: Some(owner),
-            claim_priority: NodeGeneratedContourClaimPriority::JoinOrCap,
-            points_xz,
-            backend_polyline,
-        }
-    }
-
-    fn test_role_constraint(
-        constraint_index: usize,
-        kind: NodeRailConstraintKind,
-        owner: NodeBandOwner,
-        points_xz: Vec<RoadVec2>,
-    ) -> NodeRailConstraint {
-        NodeRailConstraint {
-            constraint_index,
-            kind,
-            source_mouth_order_index: 0,
-            source_band_index: Some(owner.owner_index()),
-            source_boundary_index: None,
-            owner: Some(owner),
-            opposite_owner: None,
-            points_xz,
-        }
     }
 
     #[test]
