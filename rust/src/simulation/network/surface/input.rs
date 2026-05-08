@@ -4,7 +4,7 @@
 
 use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, godot_vec2_to_road, godot_vec3_to_road,
-    godot_vec3_xz_to_road,
+    godot_vec3_xz_to_road, quantize_road_vec2_to_overlay_grid,
 };
 use super::{
     IncidentEdgeSide, IncidentMouthBand, IncidentMouthProfile, NODE_OVERLAY_MIN_AREA_M2,
@@ -93,6 +93,7 @@ pub(crate) struct NodeInputTerminalEndBand {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NodeInputTerminalEndBandBoundaryMode {
     MaterialBand,
+    MaterialBandWithinFootprint,
     MaterialBandWithSameOwnerOuterCap,
     SameOwnerOuterCap,
 }
@@ -455,17 +456,38 @@ fn append_adjacent_corner_join_bands(
         &to_layers,
         include_curb_miter_caps,
     );
+    for end_band in &mut end_bands {
+        quantize_terminal_end_band_xz(end_band);
+    }
     end_bands.retain(|end_band| terminal_end_band_has_quantized_area(end_band));
     mouths[from_index].terminal_end_bands.extend(end_bands);
 
     if include_curb_miter_caps {
         let mut counterpart_end_bands =
             bend_corner_counterpart_end_bands(&from_mouth, &from_layers, &to_mouth, &to_layers);
+        for end_band in &mut counterpart_end_bands {
+            quantize_terminal_end_band_xz(end_band);
+        }
         counterpart_end_bands.retain(|end_band| terminal_end_band_has_quantized_area(end_band));
         mouths[to_index]
             .terminal_end_bands
             .extend(counterpart_end_bands);
     }
+}
+
+fn quantize_terminal_end_band_xz(end_band: &mut NodeInputTerminalEndBand) {
+    end_band.inner_start_world = quantize_road_vec3_xz(end_band.inner_start_world);
+    end_band.inner_end_world = quantize_road_vec3_xz(end_band.inner_end_world);
+    end_band.outer_start_world = quantize_road_vec3_xz(end_band.outer_start_world);
+    end_band.outer_end_world = quantize_road_vec3_xz(end_band.outer_end_world);
+    for point in &mut end_band.contour_world {
+        *point = quantize_road_vec3_xz(*point);
+    }
+}
+
+fn quantize_road_vec3_xz(point: RoadVec3) -> RoadVec3 {
+    let point_xz = quantize_road_vec2_to_overlay_grid(xz_from_road_vec3(point));
+    RoadVec3::new(point_xz.x, point.y, point_xz.y)
 }
 
 fn terminal_end_band_has_quantized_area(end_band: &NodeInputTerminalEndBand) -> bool {
@@ -563,20 +585,14 @@ fn bend_corner_end_bands(
     include_curb_miter_caps: bool,
 ) -> Vec<NodeInputTerminalEndBand> {
     let mut end_bands = Vec::new();
+    let mut last_curb_layers = None;
     for (from_layer, to_layer) in from_layers.iter().zip(to_layers) {
         if from_layer.band_kind != to_layer.band_kind {
             break;
         }
         let source_band_index = from_layer.band_index;
         if from_layer.band_kind == RoadSurfaceBandKind::CurbOrShoulder {
-            push_bend_corner_curb_hardcut_band(
-                &mut end_bands,
-                from_mouth,
-                from_layer,
-                to_mouth,
-                to_layer,
-                source_band_index,
-            );
+            last_curb_layers = Some((*from_layer, *to_layer));
             push_bend_corner_curve_strips(
                 &mut end_bands,
                 from_mouth,
@@ -584,6 +600,7 @@ fn bend_corner_end_bands(
                 to_mouth,
                 to_layer,
                 source_band_index,
+                include_curb_miter_caps,
             );
             if include_curb_miter_caps {
                 push_bend_corner_curb_miter_cap(
@@ -596,14 +613,40 @@ fn bend_corner_end_bands(
                 );
             }
         } else if from_layer.band_kind == RoadSurfaceBandKind::Sidewalk {
-            push_bend_corner_curved_outer_band(
-                &mut end_bands,
-                from_mouth,
-                from_layer,
-                to_mouth,
-                to_layer,
-                source_band_index,
-            );
+            if let Some((from_curb_layer, to_curb_layer)) = last_curb_layers {
+                push_bend_corner_curb_curve_guard_bands(
+                    &mut end_bands,
+                    from_mouth,
+                    &from_curb_layer,
+                    from_mouth,
+                    from_layer,
+                    to_mouth,
+                    to_layer,
+                    from_curb_layer.band_index,
+                    include_curb_miter_caps,
+                );
+                push_bend_corner_sidewalk_curved_outer_band(
+                    &mut end_bands,
+                    from_mouth,
+                    from_layer,
+                    &from_curb_layer,
+                    to_mouth,
+                    to_layer,
+                    &to_curb_layer,
+                    source_band_index,
+                    false,
+                );
+            } else {
+                push_bend_corner_curved_outer_band(
+                    &mut end_bands,
+                    from_mouth,
+                    from_layer,
+                    to_mouth,
+                    to_layer,
+                    source_band_index,
+                    false,
+                );
+            }
         } else {
             push_bend_corner_chord_band(
                 &mut end_bands,
@@ -633,11 +676,13 @@ fn bend_corner_counterpart_end_bands(
     to_layers: &[BendCornerLayer],
 ) -> Vec<NodeInputTerminalEndBand> {
     let mut end_bands = Vec::new();
+    let mut last_curb_layers = None;
     for (from_layer, to_layer) in from_layers.iter().zip(to_layers) {
         if from_layer.band_kind != to_layer.band_kind {
             break;
         }
         if from_layer.band_kind == RoadSurfaceBandKind::CurbOrShoulder {
+            last_curb_layers = Some((*from_layer, *to_layer));
             push_bend_corner_curb_counterpart_miter_cap(
                 &mut end_bands,
                 from_mouth,
@@ -646,9 +691,448 @@ fn bend_corner_counterpart_end_bands(
                 to_layer,
                 to_layer.band_index,
             );
+        } else if from_layer.band_kind == RoadSurfaceBandKind::Sidewalk {
+            if let Some((_, to_curb_layer)) = last_curb_layers {
+                push_bend_corner_curb_curve_guard_bands(
+                    &mut end_bands,
+                    to_mouth,
+                    &to_curb_layer,
+                    from_mouth,
+                    from_layer,
+                    to_mouth,
+                    to_layer,
+                    to_curb_layer.band_index,
+                    true,
+                );
+            }
         }
     }
     end_bands
+}
+
+#[derive(Clone, Copy)]
+enum BendCurbGuardBoundary {
+    Lower,
+    Raised,
+}
+
+#[derive(Clone, Copy)]
+struct BendCurbGuardPoint {
+    xz: RoadVec2,
+    boundary: Option<BendCurbGuardBoundary>,
+}
+
+fn push_bend_corner_curb_curve_guard_bands(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    mouth: &NodeInputMouth,
+    curb_layer: &BendCornerLayer,
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+    source_band_index: usize,
+    miter_prefix_owned_by_cap: bool,
+) {
+    let Some(lower_world) = endpoint_boundary_world(mouth, curb_layer.inner_boundary_index) else {
+        return;
+    };
+    let Some(raised_world) = endpoint_boundary_world(mouth, curb_layer.outer_boundary_index) else {
+        return;
+    };
+    let Some(inner_start_world) =
+        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(inner_end_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(outer_start_world) =
+        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(outer_end_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(inner_control_xz) = line_intersection_xz(
+        xz_from_road_vec3(inner_start_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(inner_end_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+    let Some(outer_control_xz) = line_intersection_xz(
+        xz_from_road_vec3(outer_start_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(outer_end_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+
+    let inner_control_world = RoadVec3::new(
+        inner_control_xz.x,
+        (inner_start_world.y + inner_end_world.y) * 0.5,
+        inner_control_xz.y,
+    );
+    let outer_control_world = RoadVec3::new(
+        outer_control_xz.x,
+        (outer_start_world.y + outer_end_world.y) * 0.5,
+        outer_control_xz.y,
+    );
+
+    let first_step = if miter_prefix_owned_by_cap {
+        BEND_CORNER_CURVE_SEGMENTS / 2 + 1
+    } else {
+        1
+    };
+    let previous_t = (first_step - 1) as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
+    let mut previous_inner = if first_step == 1 {
+        inner_start_world
+    } else {
+        quadratic_bezier_world(
+            inner_start_world,
+            inner_control_world,
+            inner_end_world,
+            previous_t,
+        )
+    };
+    let mut previous_outer = if first_step == 1 {
+        outer_start_world
+    } else {
+        quadratic_bezier_world(
+            outer_start_world,
+            outer_control_world,
+            outer_end_world,
+            previous_t,
+        )
+    };
+    for step in first_step..=BEND_CORNER_CURVE_SEGMENTS {
+        let t = step as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
+        let next_inner =
+            quadratic_bezier_world(inner_start_world, inner_control_world, inner_end_world, t);
+        let next_outer =
+            quadratic_bezier_world(outer_start_world, outer_control_world, outer_end_world, t);
+        if let Some(contour_world) = bend_curb_guard_contour_for_strip(
+            previous_inner,
+            next_inner,
+            next_outer,
+            previous_outer,
+            lower_world,
+            raised_world,
+            mouth.direction_xz,
+        ) {
+            let inner_start_world = contour_world[0];
+            let inner_end_world = contour_world[1];
+            let outer_start_world = *contour_world
+                .last()
+                .expect("guard contour has at least 3 points");
+            let outer_end_world = contour_world[2];
+            end_bands.push(NodeInputTerminalEndBand {
+                source_band_index,
+                band_kind: RoadSurfaceBandKind::CurbOrShoulder,
+                boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint,
+                inner_start_world,
+                inner_end_world,
+                outer_start_world,
+                outer_end_world,
+                contour_world,
+            });
+        }
+        previous_inner = next_inner;
+        previous_outer = next_outer;
+    }
+}
+
+fn bend_corner_curve_points(
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+    inner: bool,
+) -> Option<(RoadVec3, RoadVec3, RoadVec3)> {
+    let from_boundary = if inner {
+        from_layer.inner_boundary_index
+    } else {
+        from_layer.outer_boundary_index
+    };
+    let to_boundary = if inner {
+        to_layer.inner_boundary_index
+    } else {
+        to_layer.outer_boundary_index
+    };
+    let start_world = endpoint_boundary_world(from_mouth, from_boundary)?;
+    let end_world = endpoint_boundary_world(to_mouth, to_boundary)?;
+    let control_xz = line_intersection_xz(
+        xz_from_road_vec3(start_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(end_world),
+        to_mouth.direction_xz,
+    )?;
+    let control_world = RoadVec3::new(
+        control_xz.x,
+        (start_world.y + end_world.y) * 0.5,
+        control_xz.y,
+    );
+    Some((start_world, control_world, end_world))
+}
+
+fn bend_corner_curve_line_intersection_after_projection(
+    curve_start_world: RoadVec3,
+    curve_control_world: RoadVec3,
+    curve_end_world: RoadVec3,
+    line_start_xz: RoadVec2,
+    line_direction_xz: RoadVec2,
+    after_projection_m: f64,
+) -> Option<RoadVec2> {
+    let p0 = xz_from_road_vec3(curve_start_world);
+    let p1 = xz_from_road_vec3(curve_control_world);
+    let p2 = xz_from_road_vec3(curve_end_world);
+    let a_point = p0 - p1 * 2.0 + p2;
+    let b_point = (p1 - p0) * 2.0;
+    let c_point = p0 - line_start_xz;
+    let a = cross_xz(line_direction_xz, a_point);
+    let b = cross_xz(line_direction_xz, b_point);
+    let c = cross_xz(line_direction_xz, c_point);
+    let mut candidates = Vec::new();
+    if a.abs() <= f64::EPSILON {
+        if b.abs() > f64::EPSILON {
+            candidates.push(-c / b);
+        }
+    } else {
+        let discriminant = b * b - 4.0 * a * c;
+        if discriminant >= 0.0 {
+            let sqrt_discriminant = discriminant.sqrt();
+            candidates.push((-b - sqrt_discriminant) / (2.0 * a));
+            candidates.push((-b + sqrt_discriminant) / (2.0 * a));
+        }
+    }
+
+    candidates
+        .into_iter()
+        .filter(|t| t.is_finite() && *t >= 0.0 && *t <= 1.0)
+        .map(|t| {
+            let point =
+                quadratic_bezier_world(curve_start_world, curve_control_world, curve_end_world, t);
+            xz_from_road_vec3(point)
+        })
+        .filter(|point| {
+            (*point - line_start_xz).dot(line_direction_xz)
+                > after_projection_m + BEND_CORNER_HEIGHT_EDGE_EPS_M
+        })
+        .min_by(|a, b| {
+            let a_projection = (*a - line_start_xz).dot(line_direction_xz);
+            let b_projection = (*b - line_start_xz).dot(line_direction_xz);
+            a_projection.total_cmp(&b_projection)
+        })
+}
+
+fn bend_curb_guard_contour_for_strip(
+    previous_inner: RoadVec3,
+    next_inner: RoadVec3,
+    next_outer: RoadVec3,
+    previous_outer: RoadVec3,
+    lower_world: RoadVec3,
+    raised_world: RoadVec3,
+    direction_xz: RoadVec2,
+) -> Option<Vec<RoadVec3>> {
+    let lower_xz = xz_from_road_vec3(lower_world);
+    let raised_xz = xz_from_road_vec3(raised_world);
+    let signed_width = cross_xz(direction_xz, raised_xz - lower_xz);
+    if signed_width.abs() <= f64::EPSILON {
+        return None;
+    }
+    let side_sign = signed_width.signum();
+    let mut points = vec![
+        BendCurbGuardPoint {
+            xz: xz_from_road_vec3(previous_inner),
+            boundary: None,
+        },
+        BendCurbGuardPoint {
+            xz: xz_from_road_vec3(next_inner),
+            boundary: None,
+        },
+        BendCurbGuardPoint {
+            xz: xz_from_road_vec3(next_outer),
+            boundary: None,
+        },
+        BendCurbGuardPoint {
+            xz: xz_from_road_vec3(previous_outer),
+            boundary: None,
+        },
+    ];
+    points = clip_bend_curb_guard_points(
+        points,
+        lower_xz,
+        direction_xz,
+        side_sign,
+        BendCurbGuardBoundary::Lower,
+    );
+    points = clip_bend_curb_guard_points(
+        points,
+        raised_xz,
+        direction_xz,
+        -side_sign,
+        BendCurbGuardBoundary::Raised,
+    );
+    rotate_bend_curb_guard_contour_to_lower_edge(
+        points,
+        lower_world,
+        raised_world,
+        direction_xz,
+        side_sign,
+        signed_width,
+    )
+}
+
+fn clip_bend_curb_guard_points(
+    points: Vec<BendCurbGuardPoint>,
+    boundary_xz: RoadVec2,
+    boundary_direction_xz: RoadVec2,
+    inside_sign: f64,
+    boundary: BendCurbGuardBoundary,
+) -> Vec<BendCurbGuardPoint> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+
+    let mut clipped = Vec::new();
+    let mut previous = *points.last().expect("points are non-empty");
+    let mut previous_inside =
+        bend_curb_guard_point_inside(previous.xz, boundary_xz, boundary_direction_xz, inside_sign);
+    for current in points {
+        let current_inside = bend_curb_guard_point_inside(
+            current.xz,
+            boundary_xz,
+            boundary_direction_xz,
+            inside_sign,
+        );
+        if current_inside {
+            if !previous_inside
+                && let Some(intersection) = line_intersection_xz(
+                    previous.xz,
+                    current.xz - previous.xz,
+                    boundary_xz,
+                    boundary_direction_xz,
+                )
+            {
+                clipped.push(BendCurbGuardPoint {
+                    xz: intersection,
+                    boundary: Some(boundary),
+                });
+            }
+            clipped.push(current);
+        } else if previous_inside
+            && let Some(intersection) = line_intersection_xz(
+                previous.xz,
+                current.xz - previous.xz,
+                boundary_xz,
+                boundary_direction_xz,
+            )
+        {
+            clipped.push(BendCurbGuardPoint {
+                xz: intersection,
+                boundary: Some(boundary),
+            });
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    remove_repeated_bend_curb_guard_points(&mut clipped);
+    clipped
+}
+
+fn bend_curb_guard_point_inside(
+    point: RoadVec2,
+    boundary_xz: RoadVec2,
+    boundary_direction_xz: RoadVec2,
+    inside_sign: f64,
+) -> bool {
+    cross_xz(boundary_direction_xz, point - boundary_xz) * inside_sign >= 0.0
+}
+
+fn remove_repeated_bend_curb_guard_points(points: &mut Vec<BendCurbGuardPoint>) {
+    points.dedup_by(|a, b| quantized_xz_key(a.xz) == quantized_xz_key(b.xz));
+    if points.len() > 1
+        && quantized_xz_key(points[0].xz)
+            == quantized_xz_key(points.last().expect("points are non-empty").xz)
+    {
+        points.pop();
+    }
+}
+
+fn rotate_bend_curb_guard_contour_to_lower_edge(
+    points: Vec<BendCurbGuardPoint>,
+    lower_world: RoadVec3,
+    raised_world: RoadVec3,
+    direction_xz: RoadVec2,
+    side_sign: f64,
+    signed_width: f64,
+) -> Option<Vec<RoadVec3>> {
+    if points.len() < 3 {
+        return None;
+    }
+    if !points
+        .iter()
+        .any(|point| matches!(point.boundary, Some(BendCurbGuardBoundary::Raised)))
+    {
+        return None;
+    }
+    let lower_edge_index = points.iter().enumerate().find_map(|(index, point)| {
+        let next_index = (index + 1) % points.len();
+        let next = points[next_index];
+        if matches!(point.boundary, Some(BendCurbGuardBoundary::Lower))
+            && matches!(next.boundary, Some(BendCurbGuardBoundary::Lower))
+            && quantized_xz_key(point.xz) != quantized_xz_key(next.xz)
+        {
+            Some(index)
+        } else {
+            None
+        }
+    })?;
+
+    let mut contour_world = Vec::with_capacity(points.len());
+    for offset in 0..points.len() {
+        let point = points[(lower_edge_index + offset) % points.len()];
+        contour_world.push(bend_curb_guard_world_point(
+            point,
+            lower_world,
+            raised_world,
+            direction_xz,
+            side_sign,
+            signed_width,
+        ));
+    }
+    if contour_world.len() >= 3 {
+        Some(contour_world)
+    } else {
+        None
+    }
+}
+
+fn bend_curb_guard_world_point(
+    point: BendCurbGuardPoint,
+    lower_world: RoadVec3,
+    raised_world: RoadVec3,
+    direction_xz: RoadVec2,
+    side_sign: f64,
+    signed_width: f64,
+) -> RoadVec3 {
+    let lower_xz = xz_from_road_vec3(lower_world);
+    let ratio = match point.boundary {
+        Some(BendCurbGuardBoundary::Lower) => 0.0,
+        Some(BendCurbGuardBoundary::Raised) => 1.0,
+        None => cross_xz(direction_xz, point.xz - lower_xz) * side_sign / signed_width.abs(),
+    };
+    RoadVec3::new(
+        point.xz.x,
+        lower_world.y + (raised_world.y - lower_world.y) * ratio,
+        point.xz.y,
+    )
 }
 
 fn push_bend_corner_curb_hardcut_band(
@@ -750,21 +1234,35 @@ fn push_bend_corner_curb_miter_cap(
         return;
     };
 
-    let to_raise_xz =
-        inner_miter_xz + (xz_from_road_vec3(to_outer_world) - xz_from_road_vec3(to_inner_world));
     let inner_miter_world = RoadVec3::new(inner_miter_xz.x, from_inner_world.y, inner_miter_xz.y);
-    let to_raise_world = RoadVec3::new(to_raise_xz.x, to_inner_world.y, to_raise_xz.y);
     let outer_miter_world = RoadVec3::new(outer_miter_xz.x, from_outer_world.y, outer_miter_xz.y);
+    let (height_inner_start_world, height_inner_end_world) = nondegenerate_height_edge(
+        from_inner_world,
+        inner_miter_world,
+        from_outer_world,
+        outer_miter_world,
+    );
+    let (height_outer_start_world, height_outer_end_world) = nondegenerate_height_edge(
+        from_outer_world,
+        outer_miter_world,
+        from_inner_world,
+        inner_miter_world,
+    );
 
     end_bands.push(NodeInputTerminalEndBand {
         source_band_index,
         band_kind: RoadSurfaceBandKind::CurbOrShoulder,
-        boundary_mode: NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap,
-        inner_start_world: inner_miter_world,
-        inner_end_world: to_raise_world,
-        outer_start_world: outer_miter_world,
-        outer_end_world: outer_miter_world,
-        contour_world: vec![inner_miter_world, to_raise_world, outer_miter_world],
+        boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBand,
+        inner_start_world: height_inner_start_world,
+        inner_end_world: height_inner_end_world,
+        outer_start_world: height_outer_start_world,
+        outer_end_world: height_outer_end_world,
+        contour_world: vec![
+            from_inner_world,
+            inner_miter_world,
+            outer_miter_world,
+            from_outer_world,
+        ],
     });
 }
 
@@ -811,21 +1309,35 @@ fn push_bend_corner_curb_counterpart_miter_cap(
         return;
     };
 
-    let from_raise_xz = inner_miter_xz
-        + (xz_from_road_vec3(from_outer_world) - xz_from_road_vec3(from_inner_world));
     let inner_miter_world = RoadVec3::new(inner_miter_xz.x, to_inner_world.y, inner_miter_xz.y);
     let outer_miter_world = RoadVec3::new(outer_miter_xz.x, to_outer_world.y, outer_miter_xz.y);
-    let from_raise_world = RoadVec3::new(from_raise_xz.x, from_inner_world.y, from_raise_xz.y);
+    let (height_inner_start_world, height_inner_end_world) = nondegenerate_height_edge(
+        inner_miter_world,
+        to_inner_world,
+        outer_miter_world,
+        to_outer_world,
+    );
+    let (height_outer_start_world, height_outer_end_world) = nondegenerate_height_edge(
+        outer_miter_world,
+        to_outer_world,
+        inner_miter_world,
+        to_inner_world,
+    );
 
     end_bands.push(NodeInputTerminalEndBand {
         source_band_index,
         band_kind: RoadSurfaceBandKind::CurbOrShoulder,
-        boundary_mode: NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap,
-        inner_start_world: inner_miter_world,
-        inner_end_world: outer_miter_world,
-        outer_start_world: from_raise_world,
-        outer_end_world: outer_miter_world,
-        contour_world: vec![inner_miter_world, outer_miter_world, from_raise_world],
+        boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBand,
+        inner_start_world: height_inner_start_world,
+        inner_end_world: height_inner_end_world,
+        outer_start_world: height_outer_start_world,
+        outer_end_world: height_outer_end_world,
+        contour_world: vec![
+            inner_miter_world,
+            to_inner_world,
+            to_outer_world,
+            outer_miter_world,
+        ],
     });
 }
 
@@ -893,6 +1405,7 @@ fn push_bend_corner_curved_outer_band(
     to_mouth: &NodeInputMouth,
     to_layer: &BendCornerLayer,
     source_band_index: usize,
+    miter_prefix_owned_by_cap: bool,
 ) {
     let Some(inner_start_world) =
         endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
@@ -912,6 +1425,14 @@ fn push_bend_corner_curved_outer_band(
     else {
         return;
     };
+    let Some(inner_miter_xz) = line_intersection_xz(
+        xz_from_road_vec3(inner_start_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(inner_end_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
     let Some(miter_xz) = line_intersection_xz(
         xz_from_road_vec3(outer_start_world),
         from_mouth.direction_xz,
@@ -921,38 +1442,371 @@ fn push_bend_corner_curved_outer_band(
         return;
     };
 
+    let inner_miter_world = RoadVec3::new(
+        inner_miter_xz.x,
+        (inner_start_world.y + inner_end_world.y) * 0.5,
+        inner_miter_xz.y,
+    );
     let miter_height_m = (outer_start_world.y + outer_end_world.y) * 0.5;
     let miter_world = RoadVec3::new(miter_xz.x, miter_height_m, miter_xz.y);
-    let (height_inner_start_world, height_inner_end_world) = nondegenerate_height_edge(
-        inner_start_world,
-        inner_end_world,
-        outer_start_world,
-        outer_end_world,
-    );
-    let mut contour_world = Vec::with_capacity(BEND_CORNER_CURVE_SEGMENTS + 3);
-    contour_world.push(inner_start_world);
-    contour_world.push(inner_end_world);
-    contour_world.push(outer_end_world);
-    for step in 1..BEND_CORNER_CURVE_SEGMENTS {
+
+    let first_step = if miter_prefix_owned_by_cap {
+        BEND_CORNER_CURVE_SEGMENTS / 2 + 1
+    } else {
+        1
+    };
+    let previous_t = (first_step - 1) as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
+    let mut previous_inner = if first_step == 1 {
+        inner_start_world
+    } else {
+        quadratic_bezier_world(
+            inner_start_world,
+            inner_miter_world,
+            inner_end_world,
+            previous_t,
+        )
+    };
+    let mut previous_outer = if first_step == 1 {
+        outer_start_world
+    } else {
+        quadratic_bezier_world(outer_start_world, miter_world, outer_end_world, previous_t)
+    };
+    for step in first_step..=BEND_CORNER_CURVE_SEGMENTS {
         let t = step as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
-        contour_world.push(quadratic_bezier_world(
-            outer_end_world,
-            miter_world,
-            outer_start_world,
-            t,
-        ));
+        let next_inner =
+            quadratic_bezier_world(inner_start_world, inner_miter_world, inner_end_world, t);
+        let next_outer = quadratic_bezier_world(outer_start_world, miter_world, outer_end_world, t);
+        let (
+            height_endpoint_start_world,
+            height_endpoint_end_world,
+            height_mouth_start_world,
+            height_mouth_end_world,
+        ) = bend_corner_strip_height_edges(previous_inner, next_inner, previous_outer, next_outer);
+        let contour_world = if xz_from_road_vec3(previous_inner)
+            .distance_squared(xz_from_road_vec3(next_inner))
+            <= BEND_CORNER_HEIGHT_EDGE_EPS_M * BEND_CORNER_HEIGHT_EDGE_EPS_M
+        {
+            vec![previous_inner, next_outer, previous_outer]
+        } else {
+            vec![previous_inner, next_inner, next_outer, previous_outer]
+        };
+        end_bands.push(NodeInputTerminalEndBand {
+            source_band_index,
+            band_kind: from_layer.band_kind,
+            boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBand,
+            inner_start_world: height_endpoint_start_world,
+            inner_end_world: height_endpoint_end_world,
+            outer_start_world: height_mouth_start_world,
+            outer_end_world: height_mouth_end_world,
+            contour_world,
+        });
+        previous_inner = next_inner;
+        previous_outer = next_outer;
     }
-    contour_world.push(outer_start_world);
-    end_bands.push(NodeInputTerminalEndBand {
-        source_band_index,
-        band_kind: from_layer.band_kind,
-        boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBand,
-        inner_start_world: height_inner_start_world,
-        inner_end_world: height_inner_end_world,
-        outer_start_world,
-        outer_end_world,
-        contour_world,
+}
+
+fn push_bend_corner_sidewalk_curved_outer_band(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    from_mouth: &NodeInputMouth,
+    from_layer: &BendCornerLayer,
+    from_curb_layer: &BendCornerLayer,
+    to_mouth: &NodeInputMouth,
+    to_layer: &BendCornerLayer,
+    to_curb_layer: &BendCornerLayer,
+    source_band_index: usize,
+    miter_prefix_owned_by_cap: bool,
+) {
+    let Some(inner_start_world) =
+        endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(inner_end_world) = endpoint_boundary_world(to_mouth, to_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(outer_start_world) =
+        endpoint_boundary_world(from_mouth, from_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(outer_end_world) = endpoint_boundary_world(to_mouth, to_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(inner_miter_xz) = line_intersection_xz(
+        xz_from_road_vec3(inner_start_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(inner_end_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+    let Some(outer_miter_xz) = line_intersection_xz(
+        xz_from_road_vec3(outer_start_world),
+        from_mouth.direction_xz,
+        xz_from_road_vec3(outer_end_world),
+        to_mouth.direction_xz,
+    ) else {
+        return;
+    };
+    let Some(from_lower_world) =
+        endpoint_boundary_world(from_mouth, from_curb_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(from_raised_world) =
+        endpoint_boundary_world(from_mouth, from_curb_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(to_lower_world) =
+        endpoint_boundary_world(to_mouth, to_curb_layer.inner_boundary_index)
+    else {
+        return;
+    };
+    let Some(to_raised_world) =
+        endpoint_boundary_world(to_mouth, to_curb_layer.outer_boundary_index)
+    else {
+        return;
+    };
+    let Some(from_raised_inside_sign) =
+        sidewalk_raised_boundary_inside_sign(from_mouth, from_lower_world, from_raised_world)
+    else {
+        return;
+    };
+    let Some(to_raised_inside_sign) =
+        sidewalk_raised_boundary_inside_sign(to_mouth, to_lower_world, to_raised_world)
+    else {
+        return;
+    };
+
+    let inner_miter_world = RoadVec3::new(
+        inner_miter_xz.x,
+        (inner_start_world.y + inner_end_world.y) * 0.5,
+        inner_miter_xz.y,
+    );
+    let outer_miter_world = RoadVec3::new(
+        outer_miter_xz.x,
+        (outer_start_world.y + outer_end_world.y) * 0.5,
+        outer_miter_xz.y,
+    );
+    let first_step = if miter_prefix_owned_by_cap {
+        BEND_CORNER_CURVE_SEGMENTS / 2 + 1
+    } else {
+        1
+    };
+    let previous_t = (first_step - 1) as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
+    let mut previous_inner = if first_step == 1 {
+        inner_start_world
+    } else {
+        quadratic_bezier_world(
+            inner_start_world,
+            inner_miter_world,
+            inner_end_world,
+            previous_t,
+        )
+    };
+    let mut previous_outer = if first_step == 1 {
+        outer_start_world
+    } else {
+        quadratic_bezier_world(
+            outer_start_world,
+            outer_miter_world,
+            outer_end_world,
+            previous_t,
+        )
+    };
+    for step in first_step..=BEND_CORNER_CURVE_SEGMENTS {
+        let t = step as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
+        let next_inner =
+            quadratic_bezier_world(inner_start_world, inner_miter_world, inner_end_world, t);
+        let next_outer =
+            quadratic_bezier_world(outer_start_world, outer_miter_world, outer_end_world, t);
+        let mut contour_world = vec![previous_inner, next_inner, next_outer, previous_outer];
+        contour_world = clip_bend_world_contour_to_half_plane(
+            contour_world,
+            xz_from_road_vec3(from_raised_world),
+            from_mouth.direction_xz,
+            from_raised_inside_sign,
+        );
+        contour_world = clip_bend_world_contour_to_half_plane(
+            contour_world,
+            xz_from_road_vec3(to_raised_world),
+            to_mouth.direction_xz,
+            to_raised_inside_sign,
+        );
+        if contour_world.len() >= 3 && road_vec3_contour_has_quantized_area(&contour_world) {
+            let (height_inner_start_world, height_inner_end_world) = nondegenerate_height_edge(
+                contour_world[0],
+                contour_world[1],
+                next_outer,
+                previous_outer,
+            );
+            let outer_start_world = *contour_world
+                .last()
+                .expect("sidewalk contour has at least 3 points");
+            let outer_end_world = contour_world[2];
+            let (height_outer_start_world, height_outer_end_world) = nondegenerate_height_edge(
+                outer_start_world,
+                outer_end_world,
+                contour_world[0],
+                contour_world[1],
+            );
+            end_bands.push(NodeInputTerminalEndBand {
+                source_band_index,
+                band_kind: from_layer.band_kind,
+                boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBand,
+                inner_start_world: height_inner_start_world,
+                inner_end_world: height_inner_end_world,
+                outer_start_world: height_outer_start_world,
+                outer_end_world: height_outer_end_world,
+                contour_world,
+            });
+        }
+        previous_inner = next_inner;
+        previous_outer = next_outer;
+    }
+}
+
+fn sidewalk_raised_boundary_inside_sign(
+    mouth: &NodeInputMouth,
+    lower_world: RoadVec3,
+    raised_world: RoadVec3,
+) -> Option<f64> {
+    let signed_width = cross_xz(
+        mouth.direction_xz,
+        xz_from_road_vec3(raised_world) - xz_from_road_vec3(lower_world),
+    );
+    (signed_width.abs() > f64::EPSILON).then_some(signed_width.signum())
+}
+
+fn clip_bend_world_contour_to_half_plane(
+    points: Vec<RoadVec3>,
+    boundary_xz: RoadVec2,
+    boundary_direction_xz: RoadVec2,
+    inside_sign: f64,
+) -> Vec<RoadVec3> {
+    if points.is_empty() {
+        return Vec::new();
+    }
+
+    let mut clipped = Vec::new();
+    let mut previous = *points.last().expect("points are non-empty");
+    let mut previous_inside = bend_curb_guard_point_inside(
+        xz_from_road_vec3(previous),
+        boundary_xz,
+        boundary_direction_xz,
+        inside_sign,
+    );
+    for current in points {
+        let current_inside = bend_curb_guard_point_inside(
+            xz_from_road_vec3(current),
+            boundary_xz,
+            boundary_direction_xz,
+            inside_sign,
+        );
+        if current_inside {
+            if !previous_inside
+                && let Some(intersection) = bend_world_segment_line_intersection(
+                    previous,
+                    current,
+                    boundary_xz,
+                    boundary_direction_xz,
+                )
+            {
+                clipped.push(intersection);
+            }
+            clipped.push(current);
+        } else if previous_inside
+            && let Some(intersection) = bend_world_segment_line_intersection(
+                previous,
+                current,
+                boundary_xz,
+                boundary_direction_xz,
+            )
+        {
+            clipped.push(intersection);
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    remove_repeated_road_vec3_points(&mut clipped);
+    clipped
+}
+
+fn bend_world_segment_line_intersection(
+    start_world: RoadVec3,
+    end_world: RoadVec3,
+    line_start_xz: RoadVec2,
+    line_direction_xz: RoadVec2,
+) -> Option<RoadVec3> {
+    let start_xz = xz_from_road_vec3(start_world);
+    let end_xz = xz_from_road_vec3(end_world);
+    let intersection_xz = line_intersection_xz(
+        start_xz,
+        end_xz - start_xz,
+        line_start_xz,
+        line_direction_xz,
+    )?;
+    let axis = end_xz - start_xz;
+    let denominator = if axis.x.abs() >= axis.y.abs() {
+        axis.x
+    } else {
+        axis.y
+    };
+    if denominator.abs() <= f64::EPSILON {
+        return None;
+    }
+    let numerator = if axis.x.abs() >= axis.y.abs() {
+        intersection_xz.x - start_xz.x
+    } else {
+        intersection_xz.y - start_xz.y
+    };
+    let t = numerator / denominator;
+    Some(RoadVec3::new(
+        intersection_xz.x,
+        start_world.y + (end_world.y - start_world.y) * t,
+        intersection_xz.y,
+    ))
+}
+
+fn remove_repeated_road_vec3_points(points: &mut Vec<RoadVec3>) {
+    points.dedup_by(|a, b| {
+        quantized_xz_key(xz_from_road_vec3(*a)) == quantized_xz_key(xz_from_road_vec3(*b))
     });
+    if points.len() > 1
+        && quantized_xz_key(xz_from_road_vec3(points[0]))
+            == quantized_xz_key(xz_from_road_vec3(
+                *points.last().expect("points are non-empty"),
+            ))
+    {
+        points.pop();
+    }
+}
+
+fn road_vec3_contour_has_quantized_area(contour_world: &[RoadVec3]) -> bool {
+    let mut keys = Vec::with_capacity(contour_world.len());
+    for point in contour_world {
+        let key = quantized_xz_key(xz_from_road_vec3(*point));
+        if keys.last().copied() != Some(key) {
+            keys.push(key);
+        }
+    }
+    if keys.len() > 1 && keys.first() == keys.last() {
+        keys.pop();
+    }
+    if keys.len() < 3 {
+        return false;
+    }
+    let mut double_area = 0_i128;
+    for index in 0..keys.len() {
+        let (x0, z0) = keys[index];
+        let (x1, z1) = keys[(index + 1) % keys.len()];
+        double_area += x0 as i128 * z1 as i128 - x1 as i128 * z0 as i128;
+    }
+    let area_m2 = double_area.unsigned_abs() as f64 * 0.5 / ROAD_OVERLAY_COORDINATE_SCALE.powi(2);
+    area_m2 > NODE_OVERLAY_MIN_AREA_M2 as f64
 }
 
 fn push_bend_corner_curve_strips(
@@ -962,6 +1816,7 @@ fn push_bend_corner_curve_strips(
     to_mouth: &NodeInputMouth,
     to_layer: &BendCornerLayer,
     source_band_index: usize,
+    miter_prefix_owned_by_cap: bool,
 ) {
     let Some(from_inner_world) =
         endpoint_boundary_world(from_mouth, from_layer.inner_boundary_index)
@@ -1008,9 +1863,33 @@ fn push_bend_corner_curve_strips(
         (from_outer_world.y + to_outer_world.y) * 0.5,
         outer_control_xz.y,
     );
-    let mut previous_inner = from_inner_world;
-    let mut previous_outer = from_outer_world;
-    for step in 1..=BEND_CORNER_CURVE_SEGMENTS {
+    let first_step = if miter_prefix_owned_by_cap {
+        BEND_CORNER_CURVE_SEGMENTS / 2 + 1
+    } else {
+        1
+    };
+    let previous_t = (first_step - 1) as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
+    let mut previous_inner = if first_step == 1 {
+        from_inner_world
+    } else {
+        quadratic_bezier_world(
+            from_inner_world,
+            inner_control_world,
+            to_inner_world,
+            previous_t,
+        )
+    };
+    let mut previous_outer = if first_step == 1 {
+        from_outer_world
+    } else {
+        quadratic_bezier_world(
+            from_outer_world,
+            outer_control_world,
+            to_outer_world,
+            previous_t,
+        )
+    };
+    for step in first_step..=BEND_CORNER_CURVE_SEGMENTS {
         let t = step as f64 / BEND_CORNER_CURVE_SEGMENTS as f64;
         let next_inner =
             quadratic_bezier_world(from_inner_world, inner_control_world, to_inner_world, t);
@@ -1021,7 +1900,7 @@ fn push_bend_corner_curve_strips(
             height_endpoint_end_world,
             height_mouth_start_world,
             height_mouth_end_world,
-        ) = bend_corner_strip_height_edges(previous_inner, previous_outer, next_inner, next_outer);
+        ) = bend_corner_strip_height_edges(previous_inner, next_inner, previous_outer, next_outer);
         let contour_world = if xz_from_road_vec3(previous_inner)
             .distance_squared(xz_from_road_vec3(next_inner))
             <= BEND_CORNER_HEIGHT_EDGE_EPS_M * BEND_CORNER_HEIGHT_EDGE_EPS_M

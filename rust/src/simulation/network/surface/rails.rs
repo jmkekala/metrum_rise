@@ -363,32 +363,34 @@ fn push_terminal_end_band_contour(
         .copied()
         .map(xz)
         .collect::<Vec<_>>();
-    let footprint = cleaned_closed_contour(
-        NodeGeneratedContourKind::FullRoadbed,
-        mouth.order_index,
-        None,
-        points.clone(),
-    )?;
-    let footprint_points_xz = polyline_to_road_points(&footprint);
-    contours.push(NodeGeneratedContour {
-        kind: NodeGeneratedContourKind::FullRoadbed,
-        source_mouth_order_index: mouth.order_index,
-        source_band_index: None,
-        owner: None,
-        claim_priority: NodeGeneratedContourClaimPriority::Footprint,
-        points_xz: footprint_points_xz.clone(),
-        backend_polyline: footprint,
-    });
-    push_constraint(
-        constraints,
-        NodeRailConstraintKind::FullRoadbedContour,
-        mouth.order_index,
-        None,
-        None,
-        None,
-        None,
-        footprint_points_xz,
-    )?;
+    if terminal_end_band_contributes_footprint(end_band) {
+        let footprint = cleaned_closed_contour(
+            NodeGeneratedContourKind::FullRoadbed,
+            mouth.order_index,
+            None,
+            points.clone(),
+        )?;
+        let footprint_points_xz = polyline_to_road_points(&footprint);
+        contours.push(NodeGeneratedContour {
+            kind: NodeGeneratedContourKind::FullRoadbed,
+            source_mouth_order_index: mouth.order_index,
+            source_band_index: None,
+            owner: None,
+            claim_priority: NodeGeneratedContourClaimPriority::Footprint,
+            points_xz: footprint_points_xz.clone(),
+            backend_polyline: footprint,
+        });
+        push_constraint(
+            constraints,
+            NodeRailConstraintKind::FullRoadbedContour,
+            mouth.order_index,
+            None,
+            None,
+            None,
+            None,
+            footprint_points_xz,
+        )?;
+    }
 
     let kind = NodeGeneratedContourKind::Band {
         kind: end_band.band_kind,
@@ -448,7 +450,7 @@ fn push_terminal_end_band_boundary_constraints(
                     end,
                 )?;
             }
-            if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            if terminal_end_band_has_material_boundary(end_band)
                 && let Some(points) = outer_path.clone()
             {
                 push_terminal_end_band_path_constraint(
@@ -460,7 +462,7 @@ fn push_terminal_end_band_boundary_constraints(
                     points,
                 )?;
             }
-            if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::MaterialBand {
+            if terminal_end_band_has_material_boundary(end_band) {
                 for (start, end) in terminal_curb_sidewalk_side_edges(end_band) {
                     push_terminal_end_band_constraint(
                         constraints,
@@ -472,6 +474,9 @@ fn push_terminal_end_band_boundary_constraints(
                         xz(end),
                     )?;
                 }
+            }
+            if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap {
+                push_terminal_end_band_cap_role_constraints(mouth, end_band, owner, constraints)?;
             }
             Ok(())
         }
@@ -489,7 +494,7 @@ fn push_terminal_end_band_boundary_constraints(
                     end,
                 )?;
             }
-            if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            if terminal_end_band_has_material_boundary(end_band)
                 && let Some(points) = outer_path
             {
                 push_terminal_end_band_path_constraint(
@@ -523,6 +528,39 @@ fn push_terminal_end_band_boundary_constraints(
     }
 }
 
+fn terminal_end_band_contributes_footprint(end_band: &NodeInputTerminalEndBand) -> bool {
+    end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
+}
+
+fn terminal_end_band_has_material_boundary(end_band: &NodeInputTerminalEndBand) -> bool {
+    matches!(
+        end_band.boundary_mode,
+        NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
+    )
+}
+
+fn push_terminal_end_band_cap_role_constraints(
+    mouth: &NodeInputMouth,
+    end_band: &NodeInputTerminalEndBand,
+    owner: NodeBandOwner,
+    constraints: &mut Vec<NodeRailConstraint>,
+) -> Result<(), NodeRailGenerationError> {
+    for (start, end) in terminal_curb_sidewalk_side_edges(end_band) {
+        push_terminal_end_band_constraint(
+            constraints,
+            NodeRailConstraintKind::CurbSidewalkContact,
+            mouth.order_index,
+            end_band.source_band_index,
+            owner,
+            xz(start),
+            xz(end),
+        )?;
+    }
+
+    Ok(())
+}
+
 fn terminal_curb_sidewalk_side_edges(
     end_band: &NodeInputTerminalEndBand,
 ) -> Vec<(RoadVec3, RoadVec3)> {
@@ -538,7 +576,7 @@ fn terminal_curb_sidewalk_side_edges(
 fn terminal_end_band_inner_contour_edge(
     end_band: &NodeInputTerminalEndBand,
 ) -> Option<(RoadVec2, RoadVec2)> {
-    if end_band.contour_world.len() < 4 {
+    if end_band.contour_world.len() < 3 {
         return None;
     }
     Some((xz(end_band.contour_world[0]), xz(end_band.contour_world[1])))

@@ -9,7 +9,10 @@ use super::backend::{
     ROAD_OVERLAY_COORDINATE_SCALE, RoadVec2, RoadVec3, overlay_point_to_road,
     quantize_road_vec2_to_overlay_grid,
 };
-use super::input::{NodeArrangementInput, NodeInputBandInterval, NodeInputTerminalEndBand};
+use super::input::{
+    NodeArrangementInput, NodeInputBandInterval, NodeInputTerminalEndBand,
+    NodeInputTerminalEndBandBoundaryMode,
+};
 use super::ownership::{NodeBooleanOwnedRegion, NodeBooleanOwnership};
 use super::{
     NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, RoadSurfaceBandKind, RoadSurfaceSystem,
@@ -150,6 +153,7 @@ struct NodeBandHeightPatch {
     start_height_profile: Spline<f64, f64>,
     end_height_profile: Spline<f64, f64>,
     triangles: Option<Vec<NodeBandHeightTriangle>>,
+    contour_edges: Option<Vec<NodeBandHeightEdge>>,
 }
 
 struct NodeBandHeightTriangle {
@@ -159,6 +163,13 @@ struct NodeBandHeightTriangle {
     a_height_m: f64,
     b_height_m: f64,
     c_height_m: f64,
+}
+
+struct NodeBandHeightEdge {
+    start_xz: RoadVec2,
+    end_xz: RoadVec2,
+    start_height_m: f64,
+    end_height_m: f64,
 }
 
 enum NodeHeightPatchEvaluation {
@@ -333,6 +344,7 @@ impl NodeBandHeightPatch {
                 interval.mouth_end_world.y,
             ),
             triangles: None,
+            contour_edges: None,
         }
     }
 
@@ -356,6 +368,7 @@ impl NodeBandHeightPatch {
                 end_band.outer_end_world.y,
             ),
             triangles: Some(terminal_end_band_height_triangles(end_band)),
+            contour_edges: Some(terminal_end_band_height_edges(end_band)),
         }
     }
 
@@ -364,8 +377,28 @@ impl NodeBandHeightPatch {
         id: NodeBandHeightFieldId,
         point_xz: RoadVec2,
     ) -> Result<NodeHeightPatchEvaluation, NodeHeightFieldError> {
+        let mut triangle_outside_error = None;
         if let Some(triangles) = &self.triangles {
-            return self.evaluate_triangle_surface_height(id, point_xz, triangles);
+            match self.evaluate_triangle_surface_height(id, point_xz, triangles)? {
+                NodeHeightPatchEvaluation::Inside(height_m) => {
+                    return Ok(NodeHeightPatchEvaluation::Inside(height_m));
+                }
+                NodeHeightPatchEvaluation::Outside(error) => {
+                    triangle_outside_error = Some(error);
+                }
+            }
+        }
+        if let Some(edges) = &self.contour_edges
+            && let Some(height_m) = terminal_edge_height_at(point_xz, edges)
+        {
+            return Ok(NodeHeightPatchEvaluation::Inside(height_m));
+        }
+        if self.triangles.is_some() {
+            return Ok(NodeHeightPatchEvaluation::Outside(
+                triangle_outside_error.unwrap_or_else(|| {
+                    self.outside_field_error(id, point_xz, "terminal_contour", f64::NAN)
+                }),
+            ));
         }
 
         let endpoint_center = midpoint(self.endpoint_start_xz, self.endpoint_end_xz);
@@ -589,7 +622,6 @@ fn heighted_region(
             source_kind: field.kind,
         });
     }
-
     let shape = heighted_shape(&region.shape, field)?;
 
     Ok(NodeHeightedRegion {
@@ -825,7 +857,116 @@ fn terminal_end_band_height_triangles(
             c_height_m,
         });
     }
+    if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
+        && end_band.contour_world.len() >= 3
+    {
+        let a_world = end_band.contour_world[0];
+        let b_world = end_band.contour_world[1];
+        let c_world = (end_band.outer_start_world + end_band.outer_end_world) * 0.5;
+        let a_xz = quantize_road_vec2_to_overlay_grid(xz(a_world));
+        let b_xz = quantize_road_vec2_to_overlay_grid(xz(b_world));
+        let c_xz = quantize_road_vec2_to_overlay_grid(xz(c_world));
+        if height_triangle_area2(
+            height_source_point_key(a_xz),
+            height_source_point_key(b_xz),
+            height_source_point_key(c_xz),
+        ) != 0
+        {
+            triangles.push(NodeBandHeightTriangle {
+                a_xz,
+                b_xz,
+                c_xz,
+                a_height_m: quantize_source_height_m(a_world.y),
+                b_height_m: quantize_source_height_m(b_world.y),
+                c_height_m: quantize_source_height_m(c_world.y),
+            });
+        }
+    }
     triangles
+}
+
+fn terminal_end_band_height_edges(end_band: &NodeInputTerminalEndBand) -> Vec<NodeBandHeightEdge> {
+    let mut vertices = Vec::with_capacity(end_band.contour_world.len());
+    for point in &end_band.contour_world {
+        let point_xz = quantize_road_vec2_to_overlay_grid(xz(*point));
+        let key = height_source_point_key(point_xz);
+        if vertices
+            .last()
+            .is_some_and(|(last_xz, _)| height_source_point_key(*last_xz) == key)
+        {
+            continue;
+        }
+        vertices.push((point_xz, quantize_source_height_m(point.y)));
+    }
+    if vertices.len() > 1
+        && height_source_point_key(vertices[0].0)
+            == height_source_point_key(vertices.last().expect("height vertices are non-empty").0)
+    {
+        vertices.pop();
+    }
+    if vertices.len() < 2 {
+        return Vec::new();
+    }
+
+    let mut edges = Vec::with_capacity(vertices.len());
+    for index in 0..vertices.len() {
+        let (start_xz, start_height_m) = vertices[index];
+        let (end_xz, end_height_m) = vertices[(index + 1) % vertices.len()];
+        if height_source_point_key(start_xz) == height_source_point_key(end_xz) {
+            continue;
+        }
+        edges.push(NodeBandHeightEdge {
+            start_xz,
+            end_xz,
+            start_height_m,
+            end_height_m,
+        });
+    }
+    edges
+}
+
+fn terminal_edge_height_at(point_xz: RoadVec2, edges: &[NodeBandHeightEdge]) -> Option<f64> {
+    let point = height_source_point_key(point_xz);
+    for edge in edges {
+        let start = height_source_point_key(edge.start_xz);
+        let end = height_source_point_key(edge.end_xz);
+        if height_source_point_key_lies_on_segment(point, start, end) {
+            let dx = end.0 - start.0;
+            let dz = end.1 - start.1;
+            let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
+            if denominator == 0 {
+                continue;
+            }
+            let numerator = if dx.abs() >= dz.abs() {
+                point.0 - start.0
+            } else {
+                point.1 - start.1
+            };
+            let t = numerator as f64 / denominator as f64;
+            return Some(edge.start_height_m + (edge.end_height_m - edge.start_height_m) * t);
+        }
+
+        let point = NodeHeightPointKey::from_point(point_xz);
+        let start = NodeHeightPointKey::from_point(edge.start_xz);
+        let end = NodeHeightPointKey::from_point(edge.end_xz);
+        if !height_point_key_lies_on_segment(point, start, end) {
+            continue;
+        }
+        let dx = end.x_key - start.x_key;
+        let dz = end.z_key - start.z_key;
+        let denominator = if dx.abs() >= dz.abs() { dx } else { dz };
+        if denominator == 0 {
+            continue;
+        }
+        let numerator = if dx.abs() >= dz.abs() {
+            point.x_key - start.x_key
+        } else {
+            point.z_key - start.z_key
+        };
+        let t = numerator as f64 / denominator as f64;
+        return Some(edge.start_height_m + (edge.end_height_m - edge.start_height_m) * t);
+    }
+    None
 }
 
 fn height_source_point_key(point: RoadVec2) -> NodeHeightSourcePointKey {
@@ -845,6 +986,33 @@ fn height_triangle_area2(
     let ac_x = i128::from(c.0 - a.0);
     let ac_z = i128::from(c.1 - a.1);
     ab_x * ac_z - ab_z * ac_x
+}
+
+fn height_source_point_key_lies_on_segment(
+    point: NodeHeightSourcePointKey,
+    start: NodeHeightSourcePointKey,
+    end: NodeHeightSourcePointKey,
+) -> bool {
+    height_triangle_area2(start, end, point) == 0
+        && point.0 >= start.0.min(end.0)
+        && point.0 <= start.0.max(end.0)
+        && point.1 >= start.1.min(end.1)
+        && point.1 <= start.1.max(end.1)
+}
+
+fn height_point_key_lies_on_segment(
+    point: NodeHeightPointKey,
+    start: NodeHeightPointKey,
+    end: NodeHeightPointKey,
+) -> bool {
+    let point = (point.x_key, point.z_key);
+    let start = (start.x_key, start.z_key);
+    let end = (end.x_key, end.z_key);
+    height_triangle_area2(start, end, point) == 0
+        && point.0 >= start.0.min(end.0)
+        && point.0 <= start.0.max(end.0)
+        && point.1 >= start.1.min(end.1)
+        && point.1 <= start.1.max(end.1)
 }
 
 fn canonical_unit_parameter(raw_parameter: f64, axis_length_m: f64) -> Option<f64> {
