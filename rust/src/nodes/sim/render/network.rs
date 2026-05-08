@@ -31,6 +31,22 @@ impl SimCore {
             PackedColorArray::from_iter(mesh_data.earthwork_colors),
         );
         dict.set(
+            "curb_vertices",
+            PackedVector3Array::from_iter(mesh_data.curb_vertices),
+        );
+        dict.set(
+            "curb_normals",
+            PackedVector3Array::from_iter(mesh_data.curb_normals),
+        );
+        dict.set(
+            "curb_uvs",
+            PackedVector2Array::from_iter(mesh_data.curb_uvs),
+        );
+        dict.set(
+            "curb_colors",
+            PackedColorArray::from_iter(mesh_data.curb_colors),
+        );
+        dict.set(
             "sidewalk_vertices",
             PackedVector3Array::from_iter(mesh_data.sidewalk_vertices),
         );

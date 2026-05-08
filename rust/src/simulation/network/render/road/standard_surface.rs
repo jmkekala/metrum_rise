@@ -13,7 +13,7 @@ use std::collections::HashSet;
 
 use super::{
     MARKING_RENDER_Z_BIAS_M, MARKING_WIDTH, MIN_SEGMENT_LEN, MeshLayer, NetworkMeshData,
-    concrete_color, earthwork_color, road_color, sidewalk_color,
+    concrete_color, curb_color, earthwork_color, road_color, sidewalk_color,
 };
 
 const BAND_EPSILON_M: f32 = 0.001;
@@ -78,6 +78,9 @@ pub(super) fn emit_compiled_surface_mesh(
         let Some(piece) = road_surface.compiled_visual_span_pieces().get(&edge_idx) else {
             continue;
         };
+        for polygon in &piece.curb_surface_polygons {
+            emit_surface_polygon(mesh, MeshLayer::Curb, polygon, curb_color());
+        }
         for polygon in &piece.sidewalk_surface_polygons {
             emit_surface_polygon(mesh, MeshLayer::Sidewalk, polygon, sidewalk_color());
         }
@@ -105,6 +108,9 @@ pub(super) fn emit_compiled_surface_mesh(
         let Some(piece) = road_surface.compiled_visual_node_pieces().get(&node_id) else {
             continue;
         };
+        for polygon in &piece.curb_surface_polygons {
+            emit_surface_polygon(mesh, MeshLayer::Curb, polygon, curb_color());
+        }
         for polygon in &piece.sidewalk_surface_polygons {
             emit_surface_polygon(mesh, MeshLayer::Sidewalk, polygon, sidewalk_color());
         }
@@ -437,6 +443,7 @@ fn apply_render_z_bias(point: Vector3, render_z_bias_m: f32) -> Vector3 {
 fn render_z_bias_for_layer(layer: MeshLayer) -> f32 {
     match layer {
         MeshLayer::Earthwork => EARTHWORK_RENDER_Z_BIAS_M,
+        MeshLayer::Curb => SIDEWALK_RENDER_Z_BIAS_M,
         MeshLayer::Sidewalk => SIDEWALK_RENDER_Z_BIAS_M,
         MeshLayer::Road => ROAD_RENDER_SURFACE_Z_BIAS_M,
         MeshLayer::Marking | MeshLayer::Concrete => 0.0,

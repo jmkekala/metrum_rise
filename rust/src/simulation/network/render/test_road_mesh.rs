@@ -22,7 +22,9 @@ mod tests {
     enum VisibleSurface {
         None,
         Road,
+        Curb,
         Sidewalk,
+        CurbOrSidewalk,
     }
 
     fn create_test_edge(n1: u32, n2: u32, p1: Vector3, p2: Vector3, width: f32) -> Edge {
@@ -116,6 +118,7 @@ mod tests {
         }
 
         validate_triangles(&mesh_data.sidewalk_vertices, max_dist, "sidewalk");
+        validate_triangles(&mesh_data.curb_vertices, max_dist, "curb");
         validate_triangles(&mesh_data.road_vertices, max_dist, "road");
         validate_triangles(&mesh_data.marking_vertices, max_dist, "marking");
         validate_triangles(&mesh_data.concrete_vertices, max_dist, "concrete");
@@ -125,7 +128,9 @@ mod tests {
     fn main_triangles(mesh_data: &NetworkMeshData, surface: VisibleSurface) -> Vec<[Vector3; 3]> {
         match surface {
             VisibleSurface::Road => triangles_from_vertices(&mesh_data.road_vertices),
+            VisibleSurface::Curb => triangles_from_vertices(&mesh_data.curb_vertices),
             VisibleSurface::Sidewalk => triangles_from_vertices(&mesh_data.sidewalk_vertices),
+            VisibleSurface::CurbOrSidewalk => Vec::new(),
             VisibleSurface::None => Vec::new(),
         }
     }
@@ -151,6 +156,7 @@ mod tests {
 
     fn visible_surface_at_point(
         road_triangles: &[[Vector3; 3]],
+        curb_triangles: &[[Vector3; 3]],
         sidewalk_triangles: &[[Vector3; 3]],
         point: Vector2,
     ) -> VisibleSurface {
@@ -160,6 +166,12 @@ mod tests {
             .any(|triangle| triangle_contains_point_xz(triangle, point))
         {
             VisibleSurface::Road
+        } else if curb_triangles
+            .iter()
+            .copied()
+            .any(|triangle| triangle_contains_point_xz(triangle, point))
+        {
+            VisibleSurface::Curb
         } else if sidewalk_triangles
             .iter()
             .copied()
@@ -179,6 +191,7 @@ mod tests {
         target: VisibleSurface,
     ) -> f32 {
         let road_triangles = main_triangles(mesh_data, VisibleSurface::Road);
+        let curb_triangles = main_triangles(mesh_data, VisibleSurface::Curb);
         let sidewalk_triangles = main_triangles(mesh_data, VisibleSurface::Sidewalk);
         let mut covered = 0usize;
         let mut total = 0usize;
@@ -187,11 +200,18 @@ mod tests {
             let mut x = min.x;
             while x <= max.x {
                 total += 1;
-                if visible_surface_at_point(
+                let visible_surface = visible_surface_at_point(
                     &road_triangles,
+                    &curb_triangles,
                     &sidewalk_triangles,
                     Vector2::new(x, z),
-                ) == target
+                );
+                if visible_surface == target
+                    || (target == VisibleSurface::CurbOrSidewalk
+                        && matches!(
+                            visible_surface,
+                            VisibleSurface::Curb | VisibleSurface::Sidewalk
+                        ))
                 {
                     covered += 1;
                 }
@@ -570,11 +590,23 @@ mod tests {
                     - terrain.sample_visual_height_world(vertex.x, vertex.z) * config::HEIGHT_SCALE
             })
             .fold(f32::INFINITY, f32::min);
+        let curb_clearance = mesh_data
+            .curb_vertices
+            .iter()
+            .map(|vertex| {
+                vertex.y
+                    - terrain.sample_visual_height_world(vertex.x, vertex.z) * config::HEIGHT_SCALE
+            })
+            .fold(f32::INFINITY, f32::min);
 
         assert!(road_clearance.abs() <= 0.001);
         assert!(
-            sidewalk_clearance.abs() <= 0.001,
-            "expected compiled sidewalk/curb surface to use solved physical height, got clearance={sidewalk_clearance:.4}"
+            curb_clearance.abs() <= 0.001,
+            "expected compiled curb surface to use solved physical height, got clearance={curb_clearance:.4}"
+        );
+        assert!(
+            (sidewalk_clearance - 0.12).abs() <= 0.001,
+            "expected compiled sidewalk surface to use solved raised height, got clearance={sidewalk_clearance:.4}"
         );
     }
 
@@ -618,35 +650,35 @@ mod tests {
             Vector2::new(-4.75, -4.75),
             Vector2::new(-1.75, -3.5),
             0.25,
-            VisibleSurface::Sidewalk,
+            VisibleSurface::CurbOrSidewalk,
         );
         let right_shoulder = visible_coverage_ratio(
             &mesh_data,
             Vector2::new(1.75, -4.75),
             Vector2::new(4.75, -3.5),
             0.25,
-            VisibleSurface::Sidewalk,
+            VisibleSurface::CurbOrSidewalk,
         );
         let left_apron = visible_coverage_ratio(
             &mesh_data,
             Vector2::new(-3.0, -4.9),
             Vector2::new(-1.0, -3.6),
             0.2,
-            VisibleSurface::Sidewalk,
+            VisibleSurface::CurbOrSidewalk,
         );
         let right_apron = visible_coverage_ratio(
             &mesh_data,
             Vector2::new(1.0, -4.9),
             Vector2::new(3.0, -3.6),
             0.2,
-            VisibleSurface::Sidewalk,
+            VisibleSurface::CurbOrSidewalk,
         );
         let opposite_shoulder = visible_coverage_ratio(
             &mesh_data,
             Vector2::new(-2.0, 3.6),
             Vector2::new(2.0, 4.9),
             0.2,
-            VisibleSurface::Sidewalk,
+            VisibleSurface::CurbOrSidewalk,
         );
         let split_core = visible_coverage_ratio(
             &mesh_data,
@@ -1128,7 +1160,7 @@ mod tests {
             Vector2::new(-8.0, 4.4),
             Vector2::new(8.0, 6.0),
             0.25,
-            VisibleSurface::Sidewalk,
+            VisibleSurface::CurbOrSidewalk,
         );
 
         assert!(deck_road >= 0.95);

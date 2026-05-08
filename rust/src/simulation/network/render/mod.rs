@@ -17,7 +17,15 @@ pub struct NetworkMeshData {
     pub earthwork_uvs: Vec<Vector2>,
     /// Vertex colors for the earthwork layer.
     pub earthwork_colors: Vec<Color>,
-    /// Vertices for the sidewalk/curb layer.
+    /// Vertices for the curb / shoulder transition layer.
+    pub curb_vertices: Vec<Vector3>,
+    /// Normals for the curb / shoulder transition layer.
+    pub curb_normals: Vec<Vector3>,
+    /// UV coordinates for the curb / shoulder transition layer.
+    pub curb_uvs: Vec<Vector2>,
+    /// Vertex colors for the curb / shoulder transition layer.
+    pub curb_colors: Vec<Color>,
+    /// Vertices for the sidewalk layer.
     pub sidewalk_vertices: Vec<Vector3>,
     /// Normals for the sidewalk layer.
     pub sidewalk_normals: Vec<Vector3>,
@@ -59,6 +67,10 @@ impl NetworkMeshData {
             earthwork_normals: Vec::new(),
             earthwork_uvs: Vec::new(),
             earthwork_colors: Vec::new(),
+            curb_vertices: Vec::new(),
+            curb_normals: Vec::new(),
+            curb_uvs: Vec::new(),
+            curb_colors: Vec::new(),
             sidewalk_vertices: Vec::new(),
             sidewalk_normals: Vec::new(),
             sidewalk_uvs: Vec::new(),

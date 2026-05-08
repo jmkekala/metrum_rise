@@ -410,6 +410,7 @@ fn assert_top_mesh_centroids_inside_outer_boundary(piece: &RoadSurfaceVisualNode
     for triangle in piece
         .road_surface_polygons
         .iter()
+        .chain(piece.curb_surface_polygons.iter())
         .chain(piece.sidewalk_surface_polygons.iter())
         .flat_map(|polygon| polygon.triangles_world.iter().copied())
     {
@@ -434,7 +435,15 @@ fn assert_node_piece_uses_band_owned_regions(piece: &RoadSurfaceVisualNodePiece)
     let non_road_count = piece
         .owned_regions
         .iter()
-        .filter(|region| region.kind != RoadSurfaceBandKind::Carriageway)
+        .filter(|region| {
+            region.kind != RoadSurfaceBandKind::Carriageway
+                && region.kind != RoadSurfaceBandKind::CurbOrShoulder
+        })
+        .count();
+    let curb_count = piece
+        .owned_regions
+        .iter()
+        .filter(|region| region.kind == RoadSurfaceBandKind::CurbOrShoulder)
         .count();
     assert_eq!(
         carriageway_count,
@@ -442,9 +451,14 @@ fn assert_node_piece_uses_band_owned_regions(piece: &RoadSurfaceVisualNodePiece)
         "asphalt polygons must be derived from carriageway-owned node regions"
     );
     assert_eq!(
+        curb_count,
+        piece.curb_surface_polygons.len(),
+        "curb polygons must be derived from curb/shoulder-owned node regions"
+    );
+    assert_eq!(
         non_road_count,
         piece.sidewalk_surface_polygons.len(),
-        "non-road polygons must be derived from curb/sidewalk-owned node regions"
+        "sidewalk polygons must be derived from sidewalk-owned node regions"
     );
     assert!(
         piece
@@ -476,11 +490,13 @@ fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNod
     let top_polygons = piece
         .road_surface_polygons
         .iter()
+        .chain(piece.curb_surface_polygons.iter())
         .chain(piece.sidewalk_surface_polygons.iter())
         .collect::<Vec<_>>();
     let top_vertices = piece
         .road_surface_polygons
         .iter()
+        .chain(piece.curb_surface_polygons.iter())
         .chain(piece.sidewalk_surface_polygons.iter())
         .flat_map(|polygon| {
             polygon.points_world.iter().chain(
@@ -960,6 +976,7 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
     assert_material_triangles_do_not_overlap(bend_piece);
     assert!(!bend_piece.outer_boundary_loops.is_empty());
     assert!(!bend_piece.road_surface_polygons.is_empty());
+    assert!(!bend_piece.curb_surface_polygons.is_empty());
     assert!(!bend_piece.sidewalk_surface_polygons.is_empty());
     assert_top_mesh_centroids_inside_outer_boundary(bend_piece);
     assert_outer_boundary_vertices_match_visible_top(bend_piece);
@@ -991,12 +1008,19 @@ fn bend_and_terminal_visual_pieces_compile_explicit_band_polygons() {
     assert_material_triangles_do_not_overlap(terminal_piece);
     assert!(!terminal_piece.outer_boundary_loops.is_empty());
     assert!(!terminal_piece.road_surface_polygons.is_empty());
+    assert!(!terminal_piece.curb_surface_polygons.is_empty());
     assert!(!terminal_piece.sidewalk_surface_polygons.is_empty());
     assert_top_mesh_centroids_inside_outer_boundary(terminal_piece);
     assert_outer_boundary_vertices_match_visible_top(terminal_piece);
     assert!(
         terminal_piece
             .road_surface_polygons
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+    );
+    assert!(
+        terminal_piece
+            .curb_surface_polygons
             .iter()
             .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
     );
@@ -1253,7 +1277,7 @@ fn logged_elevated_bend_rejects_implicit_cross_owner_cdt_height_edge() {
 }
 
 #[test]
-fn angled_terminal_rejects_missing_explicit_curb_side_ownership() {
+fn angled_terminal_keeps_curb_strip_covered_on_both_sides() {
     let terrain = flat_terrain(64, 64);
     let mut graph = RegionGraph::new();
     let start = graph.add_node(Vector3::new(0.0, 0.0, 0.0), NodeType::Junction);
@@ -1270,16 +1294,56 @@ fn angled_terminal_rejects_missing_explicit_curb_side_ownership() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
-    assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&start),
-        "angled terminal must reject until rails emit legal curb/sidewalk side ownership for both sides"
-    );
-    assert!(
-        surface
-            .compiled_visual_span_pieces()
-            .contains_key(&edge_idx),
-        "terminal road should keep a visible span after node rejection"
-    );
+    let terminal_piece = surface
+        .compiled_visual_node_pieces()
+        .get(&start)
+        .expect("angled terminal should compile a terminal piece");
+    let end_terminal_piece = surface
+        .compiled_visual_node_pieces()
+        .get(&end)
+        .expect("opposite angled terminal should compile a terminal piece");
+    let span_piece = surface
+        .compiled_visual_span_pieces()
+        .get(&edge_idx)
+        .expect("terminal road should keep a visible span after terminal handoff");
+
+    let travel = Vector2::new(40.0, 5.0).normalized();
+    let lateral = RoadSurfaceSystem::left_normal_xz(travel);
+    let center = Vector2::new(0.0, 0.0);
+    for side in [-1.0, 1.0] {
+        let curb_mid = center + lateral * side * 3.575;
+        assert!(
+            point_inside_visual_polygons(&terminal_piece.curb_surface_polygons, curb_mid),
+            "angled terminal curb strip must be owned by curb surface on side {side}; point={curb_mid:?}"
+        );
+        assert!(
+            !point_inside_visual_polygons(&terminal_piece.road_surface_polygons, curb_mid),
+            "terminal curb strip must not be owned by asphalt on side {side}; point={curb_mid:?}"
+        );
+        assert!(
+            !point_inside_visual_polygons(&span_piece.curb_surface_polygons, curb_mid),
+            "terminal curb strip must not be duplicated by the span on side {side}; point={curb_mid:?}"
+        );
+    }
+
+    let end_travel = Vector2::new(-40.0, -5.0).normalized();
+    let end_lateral = RoadSurfaceSystem::left_normal_xz(end_travel);
+    let end_center = Vector2::new(40.0, 5.0);
+    for side in [-1.0, 1.0] {
+        let curb_mid = end_center + end_lateral * side * 3.575;
+        assert!(
+            point_inside_visual_polygons(&end_terminal_piece.curb_surface_polygons, curb_mid),
+            "opposite angled terminal curb strip must be owned by curb surface on side {side}; point={curb_mid:?}"
+        );
+        assert!(
+            !point_inside_visual_polygons(&end_terminal_piece.road_surface_polygons, curb_mid),
+            "opposite terminal curb strip must not be owned by asphalt on side {side}; point={curb_mid:?}"
+        );
+        assert!(
+            !point_inside_visual_polygons(&span_piece.curb_surface_polygons, curb_mid),
+            "opposite terminal curb strip must not be duplicated by the span on side {side}; point={curb_mid:?}"
+        );
+    }
 }
 
 #[test]
@@ -1315,22 +1379,22 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
     for side in [-1.0, 1.0] {
         let curb_mid = center + lateral * side * 3.575;
         assert!(
-            point_inside_visual_polygons(&terminal_piece.sidewalk_surface_polygons, curb_mid),
-            "angled terminal curb strip must be owned by sidewalk/curb surface on side {side}; point={curb_mid:?}"
+            point_inside_visual_polygons(&terminal_piece.curb_surface_polygons, curb_mid),
+            "straight terminal curb strip must be owned by curb surface on side {side}; point={curb_mid:?}"
         );
         assert!(
             !point_inside_visual_polygons(&terminal_piece.road_surface_polygons, curb_mid),
             "terminal curb strip must not be owned by asphalt on side {side}; point={curb_mid:?}"
         );
         assert!(
-            !point_inside_visual_polygons(&span_piece.sidewalk_surface_polygons, curb_mid),
+            !point_inside_visual_polygons(&span_piece.curb_surface_polygons, curb_mid),
             "terminal curb strip must not be duplicated by the span on side {side}; point={curb_mid:?}"
         );
     }
 }
 
 #[test]
-fn steep_standard_terminal_rejects_missing_legal_height_ownership() {
+fn steep_standard_terminal_compiles_legal_height_ownership() {
     let terrain = flat_terrain(64, 64);
     let mut graph = RegionGraph::new();
     let points = vec![
@@ -1362,8 +1426,12 @@ fn steep_standard_terminal_rejects_missing_legal_height_ownership() {
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
     assert!(
-        !surface.compiled_visual_node_pieces().contains_key(&start),
-        "steep terminal must reject instead of reusing old source-boundary height transfer"
+        surface.compiled_visual_node_pieces().contains_key(&start),
+        "steep terminal should compile with explicit terminal cap height ownership"
+    );
+    assert!(
+        surface.compiled_visual_node_pieces().contains_key(&end),
+        "opposite steep terminal should compile with explicit terminal cap height ownership"
     );
 }
 
@@ -1391,10 +1459,17 @@ fn span_visual_pieces_compile_explicit_band_polygons() {
         .unwrap();
     assert!(!span_piece.outer_boundary_loops.is_empty());
     assert!(!span_piece.road_surface_polygons.is_empty());
+    assert!(!span_piece.curb_surface_polygons.is_empty());
     assert!(!span_piece.sidewalk_surface_polygons.is_empty());
     assert!(
         span_piece
             .road_surface_polygons
+            .iter()
+            .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
+    );
+    assert!(
+        span_piece
+            .curb_surface_polygons
             .iter()
             .all(|polygon| RoadSurfaceSystem::polygon_has_area_xz(&polygon.points_world))
     );

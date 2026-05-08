@@ -104,6 +104,8 @@ Live behavior:
   `--debug road-geometry`
 - the road-geometry dump now includes compiled node-piece topology, mouth seam, outer-boundary,
   and earthwork-face/top-surface matching diagnostics for nodes incident to the dumped edges
+- asphalt, curb / shoulder, and sidewalk remain separate render buckets; curb transition and cap
+  polygons must not be folded into the sidewalk tile mesh
 - `Terminal`, `Bend`, and `JunctionN` visual node pieces now route through the canonical
   input -> rail -> boolean ownership -> height -> Spade triangulation path. Render triangles,
   terrain clip loops, and node earthwork roots are exported from the same boolean-owned
@@ -151,7 +153,9 @@ Remaining ROAD-01 gap:
 - elevated and flat `Bend` / `JunctionN` pieces now use the canonical runtime path, but the rail
   generation stage is still too mouth-local. The remaining work is a library-backed canonical node
   arrangement that creates explicit corner / join ownership before boolean splitting so oblique
-  junctions do not produce real curb / sidewalk residuals.
+  junctions do not produce real curb / sidewalk residuals. Hand-built miter caps, miter guards, or
+  adjacent-mouth connector patches are not the Bend / JunctionN ownership strategy; they are the
+  failure mode this rework is replacing.
 
 Accepted Geometry Backends:
 
@@ -193,6 +197,8 @@ Not accepted as the final target:
 - any shader mask, water plane, zoning overlay, or background-color coincidence that hides missing
   topology
 - paired adjacent-mouth strip candidates as the authoritative node footprint or sidewalk source
+- mitered cap / guard / connector patches as the primary ownership model for `Terminal`, `Bend`,
+  or `JunctionN`
 - additional sliver cleanup as the primary answer to malformed node candidates
 - nearest-polygon, nearest-segment, terrain, asphalt, or full-roadbed fallback as a rendered node
   sidewalk / curb / shoulder height field
@@ -369,7 +375,7 @@ For grounded `Standard` roads, asphalt, shoulder / curb, and sidewalk geometry a
 ground inside the owned footprint. Explicit road-owned earthwork geometry remains part of the
 deterministic ownership model for terrain integration, structural cases, seam tie-ins, and future
 retaining variants, but ordinary grounded roads must not render that carrier as a separate visible
-mesh layer below asphalt or sidewalk. Ordinary grounded roads must instead receive a Rust-generated
+mesh layer below asphalt, curb, or sidewalk. Ordinary grounded roads must instead receive a Rust-generated
 terrain patch mesh whose hole boundary exactly matches the road-owned footprint edge, so the road /
 terrain border has no terrain below it and no visible strip beside it.
 
@@ -1760,6 +1766,8 @@ Forbidden candidate generation:
 
 - paired adjacent-mouth side strips as the source of `node_footprint`
 - paired adjacent-mouth side strips as the source of visible sidewalk ownership
+- miter caps, miter guards, or miter connector cells as the primary source of material ownership;
+  mitered visuals may only be output after canonical ownership has already been solved
 - a global annulus between one outer loop and one inner loop
 - a global angle-sorted polygon that pretends to know final asphalt / sidewalk ownership before
   boolean cleanup

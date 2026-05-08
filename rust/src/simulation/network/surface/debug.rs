@@ -449,6 +449,9 @@ impl RoadSurfaceSystem {
         dump.push_str("      \"road_topology\": ");
         Self::append_polygon_collection_debug_literal(dump, terrain, &piece.road_surface_polygons);
         dump.push_str(",\n");
+        dump.push_str("      \"curb_topology\": ");
+        Self::append_polygon_collection_debug_literal(dump, terrain, &piece.curb_surface_polygons);
+        dump.push_str(",\n");
         dump.push_str("      \"sidewalk_topology\": ");
         Self::append_polygon_collection_debug_literal(
             dump,
@@ -684,6 +687,7 @@ impl RoadSurfaceSystem {
             piece
                 .road_surface_polygons
                 .iter()
+                .chain(piece.curb_surface_polygons.iter())
                 .chain(piece.sidewalk_surface_polygons.iter()),
         );
         let Some(mut top_shapes) = Self::overlay_union_contours(&top_contours) else {
@@ -992,6 +996,24 @@ impl RoadSurfaceSystem {
             vertices.extend(polygon.triangles_world.iter().flat_map(|triangle| {
                 triangle.iter().copied().map(|point| DebugTopVertex {
                     material: "road",
+                    point,
+                })
+            }));
+        }
+        for polygon in &piece.curb_surface_polygons {
+            vertices.extend(
+                polygon
+                    .points_world
+                    .iter()
+                    .copied()
+                    .map(|point| DebugTopVertex {
+                        material: "curb",
+                        point,
+                    }),
+            );
+            vertices.extend(polygon.triangles_world.iter().flat_map(|triangle| {
+                triangle.iter().copied().map(|point| DebugTopVertex {
+                    material: "curb",
                     point,
                 })
             }));

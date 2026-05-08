@@ -234,6 +234,7 @@ impl RoadSurfaceSystem {
             node_regions.outer_boundary_loops,
             node_regions.terrain_clip_boundary_loops,
             node_regions.road_surface_polygons,
+            node_regions.curb_surface_polygons,
             node_regions.sidewalk_surface_polygons,
             node_regions.owned_regions,
             earthwork_surface_polygons,
@@ -366,9 +367,12 @@ impl RoadSurfaceSystem {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
 
-        let (mut road_surface_polygons, mut sidewalk_surface_polygons) =
+        let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
             Self::visible_top_polygons_from_owned_regions(&owned_regions);
-        if road_surface_polygons.is_empty() && sidewalk_surface_polygons.is_empty() {
+        if road_surface_polygons.is_empty()
+            && curb_surface_polygons.is_empty()
+            && sidewalk_surface_polygons.is_empty()
+        {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
         }
 
@@ -378,6 +382,7 @@ impl RoadSurfaceSystem {
             Self::terrain_clip_boundary_loops_from_segment_loops(&canonical_loops);
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
+        Self::sort_visual_polygons(&mut curb_surface_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         Self::sort_visual_polygons(&mut outer_boundary_loops);
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
@@ -387,6 +392,7 @@ impl RoadSurfaceSystem {
             outer_boundary_loops,
             terrain_clip_boundary_loops,
             road_surface_polygons,
+            curb_surface_polygons,
             sidewalk_surface_polygons,
             owned_regions,
         })
@@ -394,17 +400,30 @@ impl RoadSurfaceSystem {
 
     fn visible_top_polygons_from_owned_regions(
         owned_regions: &[NodeOwnedRegion],
-    ) -> (Vec<RoadSurfaceVisualPolygon>, Vec<RoadSurfaceVisualPolygon>) {
+    ) -> (
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceVisualPolygon>,
+    ) {
         let mut road_surface_polygons = Vec::new();
+        let mut curb_surface_polygons = Vec::new();
         let mut sidewalk_surface_polygons = Vec::new();
         for region in owned_regions {
-            if region.kind == RoadSurfaceBandKind::Carriageway {
-                road_surface_polygons.push(region.polygon.clone());
-            } else {
-                sidewalk_surface_polygons.push(region.polygon.clone());
+            match region.kind {
+                RoadSurfaceBandKind::Carriageway => {
+                    road_surface_polygons.push(region.polygon.clone())
+                }
+                RoadSurfaceBandKind::CurbOrShoulder => {
+                    curb_surface_polygons.push(region.polygon.clone());
+                }
+                _ => sidewalk_surface_polygons.push(region.polygon.clone()),
             }
         }
-        (road_surface_polygons, sidewalk_surface_polygons)
+        (
+            road_surface_polygons,
+            curb_surface_polygons,
+            sidewalk_surface_polygons,
+        )
     }
 
     fn arrangement_outer_boundary_segments(
@@ -820,16 +839,21 @@ impl RoadSurfaceSystem {
         outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
         mut terrain_clip_boundary_loops: Vec<RoadSurfaceTerrainClipLoop>,
         mut road_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
+        mut curb_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut sidewalk_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut owned_regions: Vec<NodeOwnedRegion>,
         mut earthwork_surface_polygons: Vec<RoadSurfaceVisualPolygon>,
         mut earthwork_outer_boundary_loops: Vec<RoadSurfaceVisualPolygon>,
         mut render_earthwork_faces: Vec<RoadSurfaceEarthworkRenderFace>,
     ) -> Option<RoadSurfaceVisualNodePiece> {
-        if road_surface_polygons.is_empty() && sidewalk_surface_polygons.is_empty() {
+        if road_surface_polygons.is_empty()
+            && curb_surface_polygons.is_empty()
+            && sidewalk_surface_polygons.is_empty()
+        {
             return None;
         }
         Self::sort_visual_polygons(&mut road_surface_polygons);
+        Self::sort_visual_polygons(&mut curb_surface_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         Self::sort_node_owned_regions(&mut owned_regions);
         Self::sort_terrain_clip_loops(&mut terrain_clip_boundary_loops);
@@ -845,6 +869,7 @@ impl RoadSurfaceSystem {
             outer_boundary_loops,
             terrain_clip_boundary_loops,
             road_surface_polygons,
+            curb_surface_polygons,
             sidewalk_surface_polygons,
             owned_regions,
             earthwork_surface_polygons,

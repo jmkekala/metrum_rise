@@ -154,6 +154,7 @@ struct NodeBandHeightPatch {
     end_height_profile: Spline<f64, f64>,
     triangles: Option<Vec<NodeBandHeightTriangle>>,
     contour_edges: Option<Vec<NodeBandHeightEdge>>,
+    allow_parametric_fallback: bool,
 }
 
 struct NodeBandHeightTriangle {
@@ -345,6 +346,7 @@ impl NodeBandHeightPatch {
             ),
             triangles: None,
             contour_edges: None,
+            allow_parametric_fallback: false,
         }
     }
 
@@ -369,6 +371,8 @@ impl NodeBandHeightPatch {
             ),
             triangles: Some(terminal_end_band_height_triangles(end_band)),
             contour_edges: Some(terminal_end_band_height_edges(end_band)),
+            allow_parametric_fallback: end_band.boundary_mode
+                == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand,
         }
     }
 
@@ -393,7 +397,7 @@ impl NodeBandHeightPatch {
         {
             return Ok(NodeHeightPatchEvaluation::Inside(height_m));
         }
-        if self.triangles.is_some() {
+        if self.triangles.is_some() && !self.allow_parametric_fallback {
             return Ok(NodeHeightPatchEvaluation::Outside(
                 triangle_outside_error.unwrap_or_else(|| {
                     self.outside_field_error(id, point_xz, "terminal_contour", f64::NAN)

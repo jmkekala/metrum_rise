@@ -91,6 +91,17 @@ pub(crate) enum NodeGeometryDiagnosticKind {
         existing_height_mm: i64,
         incoming_height_mm: i64,
     },
+    HeightFieldFailure {
+        reason: &'static str,
+        mouth_order_index: Option<usize>,
+        band_index: Option<usize>,
+        kind: Option<RoadSurfaceBandKind>,
+        source_kind: Option<RoadSurfaceBandKind>,
+        point_x_mm: Option<i64>,
+        point_z_mm: Option<i64>,
+        axis: Option<&'static str>,
+        raw_parameter: Option<f64>,
+    },
     OpenBoundary {
         region_index: usize,
         vertex_index: Option<usize>,
@@ -663,22 +674,126 @@ impl NodeGeometryDiagnostic {
         error: &NodeHeightFieldError,
     ) -> Self {
         let kind = match error {
-            NodeHeightFieldError::MissingSourceBand { .. }
-            | NodeHeightFieldError::MissingRegionBandIndex { .. }
-            | NodeHeightFieldError::SourceBandKindMismatch { .. }
-            | NodeHeightFieldError::InputOwnershipMismatch { .. } => {
-                NodeGeometryDiagnosticKind::BackendFailure {
-                    reason: "invalid_height_field",
+            NodeHeightFieldError::InputOwnershipMismatch { .. } => {
+                NodeGeometryDiagnosticKind::HeightFieldFailure {
+                    reason: "input_ownership_mismatch",
+                    mouth_order_index: None,
+                    band_index: None,
+                    kind: None,
+                    source_kind: None,
+                    point_x_mm: None,
+                    point_z_mm: None,
+                    axis: None,
+                    raw_parameter: None,
                 }
             }
-            NodeHeightFieldError::DegenerateHeightField { .. }
-            | NodeHeightFieldError::VertexOutsideHeightField { .. }
-            | NodeHeightFieldError::HeightSampleFailed { .. }
-            | NodeHeightFieldError::DuplicateSourceBand { .. } => {
-                NodeGeometryDiagnosticKind::BackendFailure {
-                    reason: "height_evaluation_failed",
-                }
-            }
+            NodeHeightFieldError::DuplicateSourceBand {
+                mouth_order_index,
+                band_index,
+            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason: "duplicate_source_band",
+                mouth_order_index: Some(*mouth_order_index),
+                band_index: Some(*band_index),
+                kind: None,
+                source_kind: None,
+                point_x_mm: None,
+                point_z_mm: None,
+                axis: None,
+                raw_parameter: None,
+            },
+            NodeHeightFieldError::MissingRegionBandIndex {
+                mouth_order_index,
+                kind,
+            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason: "missing_region_band_index",
+                mouth_order_index: Some(*mouth_order_index),
+                band_index: None,
+                kind: Some(*kind),
+                source_kind: None,
+                point_x_mm: None,
+                point_z_mm: None,
+                axis: None,
+                raw_parameter: None,
+            },
+            NodeHeightFieldError::MissingSourceBand {
+                mouth_order_index,
+                band_index,
+            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason: "missing_source_band",
+                mouth_order_index: Some(*mouth_order_index),
+                band_index: Some(*band_index),
+                kind: None,
+                source_kind: None,
+                point_x_mm: None,
+                point_z_mm: None,
+                axis: None,
+                raw_parameter: None,
+            },
+            NodeHeightFieldError::SourceBandKindMismatch {
+                mouth_order_index,
+                band_index,
+                region_kind,
+                source_kind,
+            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason: "source_band_kind_mismatch",
+                mouth_order_index: Some(*mouth_order_index),
+                band_index: Some(*band_index),
+                kind: Some(*region_kind),
+                source_kind: Some(*source_kind),
+                point_x_mm: None,
+                point_z_mm: None,
+                axis: None,
+                raw_parameter: None,
+            },
+            NodeHeightFieldError::DegenerateHeightField {
+                mouth_order_index,
+                band_index,
+                axis,
+            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason: "degenerate_height_field",
+                mouth_order_index: Some(*mouth_order_index),
+                band_index: Some(*band_index),
+                kind: None,
+                source_kind: None,
+                point_x_mm: None,
+                point_z_mm: None,
+                axis: Some(*axis),
+                raw_parameter: None,
+            },
+            NodeHeightFieldError::VertexOutsideHeightField {
+                mouth_order_index,
+                band_index,
+                point_x_mm,
+                point_z_mm,
+                axis,
+                raw_parameter,
+            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason: "vertex_outside_height_field",
+                mouth_order_index: Some(*mouth_order_index),
+                band_index: Some(*band_index),
+                kind: None,
+                source_kind: None,
+                point_x_mm: Some(*point_x_mm),
+                point_z_mm: Some(*point_z_mm),
+                axis: Some(*axis),
+                raw_parameter: Some(*raw_parameter),
+            },
+            NodeHeightFieldError::HeightSampleFailed {
+                mouth_order_index,
+                band_index,
+                axis,
+                parameter,
+            } => NodeGeometryDiagnosticKind::HeightFieldFailure {
+                reason: "height_sample_failed",
+                mouth_order_index: Some(*mouth_order_index),
+                band_index: Some(*band_index),
+                kind: None,
+                source_kind: None,
+                point_x_mm: None,
+                point_z_mm: None,
+                axis: Some(*axis),
+                raw_parameter: Some(*parameter),
+            },
             NodeHeightFieldError::SourceHeightFieldConflict {
                 point_x_mm,
                 point_z_mm,
@@ -981,6 +1096,7 @@ impl NodeGeometryDiagnosticKind {
             Self::RejectedResidual { .. } => "rejected_residual",
             Self::NonExplicitBoundaryVertex { .. } => "non_explicit_boundary_vertex",
             Self::HeightConflict { .. } => "height_conflict",
+            Self::HeightFieldFailure { .. } => "height_field_failure",
             Self::OpenBoundary { .. } => "open_boundary",
             Self::DuplicateExposedEdge { .. } => "duplicate_exposed_edge",
             Self::InvalidConstraint { .. } => "invalid_constraint",

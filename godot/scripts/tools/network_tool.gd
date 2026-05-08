@@ -252,6 +252,7 @@ func _load_texture(path: String) -> Texture2D:
 	return tex
 
 static var _road_mat: ShaderMaterial = null
+static var _curb_mat: StandardMaterial3D = null
 static var _concrete_mat: ShaderMaterial = null
 static var _marking_mat: StandardMaterial3D = null
 static var _earthwork_mat: StandardMaterial3D = null
@@ -297,6 +298,13 @@ func update_main_mesh():
 		_earthwork_mat.metallic = 0.0
 		_earthwork_mat.cull_mode = BaseMaterial3D.CULL_BACK
 
+	if _curb_mat == null:
+		_curb_mat = StandardMaterial3D.new()
+		_curb_mat.vertex_color_use_as_albedo = true
+		_curb_mat.roughness = 1.0
+		_curb_mat.metallic = 0.0
+		_curb_mat.cull_mode = BaseMaterial3D.CULL_BACK
+
 	var arr_mesh = ArrayMesh.new()
 	var surface_map = [] # To keep track of which material goes to which surface
 	
@@ -311,7 +319,18 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_earthwork_mat)
 
-	# Surface 1: Sidewalk base
+	# Curb / shoulder transition faces
+	if data.has("curb_vertices") and data.curb_vertices.size() > 0:
+		var arrays = []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = data.curb_vertices
+		arrays[Mesh.ARRAY_NORMAL] = data.curb_normals
+		arrays[Mesh.ARRAY_COLOR] = data.curb_colors
+		arrays[Mesh.ARRAY_TEX_UV] = data.curb_uvs
+		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		surface_map.push_back(_curb_mat)
+
+	# Sidewalk base
 	if data.has("sidewalk_vertices") and data.sidewalk_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -322,7 +341,7 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_road_mat)
 
-	# Surface 2: Asphalt & Junctions
+	# Asphalt & Junctions
 	if data.has("road_vertices") and data.road_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -333,7 +352,7 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_road_mat)
 
-	# Surface 3: Markings (lane lines + crosswalk stripes — unlit white, semi-transparent)
+	# Markings (lane lines + crosswalk stripes — unlit white, semi-transparent)
 	if data.has("marking_vertices") and data.marking_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)
@@ -344,7 +363,7 @@ func update_main_mesh():
 		arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
 		surface_map.push_back(_marking_mat)
 
-	# Surface 4: Concrete
+	# Concrete
 	if data.has("concrete_vertices") and data.concrete_vertices.size() > 0:
 		var arrays = []
 		arrays.resize(Mesh.ARRAY_MAX)

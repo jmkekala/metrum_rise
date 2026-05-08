@@ -28,14 +28,18 @@ impl RoadSurfaceSystem {
         let sections = self.compiled_sections.get(&edge_idx)?;
         let visible_ranges =
             self.visible_section_ranges_for_edge(graph, terrain, edge_idx, sections);
-        let (mut road_surface_polygons, mut sidewalk_surface_polygons) =
+        let (mut road_surface_polygons, mut curb_surface_polygons, mut sidewalk_surface_polygons) =
             self.compile_surface_polygons_for_ranges(sections, &visible_ranges);
 
-        if road_surface_polygons.is_empty() && sidewalk_surface_polygons.is_empty() {
+        if road_surface_polygons.is_empty()
+            && curb_surface_polygons.is_empty()
+            && sidewalk_surface_polygons.is_empty()
+        {
             return None;
         }
 
         Self::sort_visual_polygons(&mut road_surface_polygons);
+        Self::sort_visual_polygons(&mut curb_surface_polygons);
         Self::sort_visual_polygons(&mut sidewalk_surface_polygons);
         let outer_boundary_loops = Self::build_span_outer_boundary_loops(sections, &visible_ranges);
         if outer_boundary_loops.is_empty() {
@@ -45,9 +49,13 @@ impl RoadSurfaceSystem {
             Self::build_span_terrain_clip_boundary_loops(sections, &visible_ranges);
 
         let earthwork_ranges = self.earthwork_section_ranges_for_edge(edge, sections, terrain);
-        let (mut clearance_road_surface_polygons, mut clearance_sidewalk_surface_polygons) =
-            self.compile_surface_polygons_for_ranges(sections, &earthwork_ranges);
+        let (
+            mut clearance_road_surface_polygons,
+            mut clearance_curb_surface_polygons,
+            mut clearance_sidewalk_surface_polygons,
+        ) = self.compile_surface_polygons_for_ranges(sections, &earthwork_ranges);
         Self::sort_visual_polygons(&mut clearance_road_surface_polygons);
+        Self::sort_visual_polygons(&mut clearance_curb_surface_polygons);
         Self::sort_visual_polygons(&mut clearance_sidewalk_surface_polygons);
         let earthwork_boundary_loops =
             Self::build_span_outer_boundary_loops(sections, &earthwork_ranges);
@@ -67,11 +75,13 @@ impl RoadSurfaceSystem {
             outer_boundary_loops,
             terrain_clip_boundary_loops,
             road_surface_polygons,
+            curb_surface_polygons,
             sidewalk_surface_polygons,
             edge_class: edge.class,
             start_mouth_profile,
             end_mouth_profile,
             clearance_road_surface_polygons,
+            clearance_curb_surface_polygons,
             clearance_sidewalk_surface_polygons,
             earthwork_surface_polygons,
             earthwork_outer_boundary_loops,
@@ -83,8 +93,13 @@ impl RoadSurfaceSystem {
         &self,
         sections: &[RoadSurfaceSection],
         ranges: &[(usize, usize)],
-    ) -> (Vec<RoadSurfaceVisualPolygon>, Vec<RoadSurfaceVisualPolygon>) {
+    ) -> (
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceVisualPolygon>,
+        Vec<RoadSurfaceVisualPolygon>,
+    ) {
         let mut road_surface_polygons = Vec::new();
+        let mut curb_surface_polygons = Vec::new();
         let mut sidewalk_surface_polygons = Vec::new();
 
         for &(start_index, end_index) in ranges {
@@ -129,18 +144,29 @@ impl RoadSurfaceSystem {
                         continue;
                     };
 
-                    if band_a.kind == RoadSurfaceBandKind::Carriageway
-                        && band_b.kind == RoadSurfaceBandKind::Carriageway
-                    {
-                        road_surface_polygons.push(polygon);
-                    } else {
-                        sidewalk_surface_polygons.push(polygon);
+                    match (band_a.kind, band_b.kind) {
+                        (RoadSurfaceBandKind::Carriageway, RoadSurfaceBandKind::Carriageway) => {
+                            road_surface_polygons.push(polygon);
+                        }
+                        (
+                            RoadSurfaceBandKind::CurbOrShoulder,
+                            RoadSurfaceBandKind::CurbOrShoulder,
+                        ) => {
+                            curb_surface_polygons.push(polygon);
+                        }
+                        _ => {
+                            sidewalk_surface_polygons.push(polygon);
+                        }
                     }
                 }
             }
         }
 
-        (road_surface_polygons, sidewalk_surface_polygons)
+        (
+            road_surface_polygons,
+            curb_surface_polygons,
+            sidewalk_surface_polygons,
+        )
     }
 
     fn build_span_outer_boundary_loops(

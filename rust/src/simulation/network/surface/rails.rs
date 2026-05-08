@@ -432,22 +432,21 @@ fn push_terminal_end_band_boundary_constraints(
     owner: NodeBandOwner,
     constraints: &mut Vec<NodeRailConstraint>,
 ) -> Result<(), NodeRailGenerationError> {
-    let inner_edge = terminal_end_band_inner_contour_edge(end_band);
+    let inner_path = terminal_end_band_inner_contour_path(end_band);
     let outer_path = terminal_end_band_outer_contour_path(end_band);
     let outer_cap_path = terminal_end_band_outer_cap_contour_path(end_band);
     match end_band.band_kind {
         RoadSurfaceBandKind::CurbOrShoulder => {
             if end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
-                && let Some((start, end)) = inner_edge
+                && let Some(points) = inner_path
             {
-                push_terminal_end_band_constraint(
+                push_terminal_end_band_path_constraint(
                     constraints,
                     NodeRailConstraintKind::AsphaltCurbContact,
                     mouth.order_index,
                     end_band.source_band_index,
                     owner,
-                    start,
-                    end,
+                    points,
                 )?;
             }
             if terminal_end_band_has_material_boundary(end_band)
@@ -482,16 +481,15 @@ fn push_terminal_end_band_boundary_constraints(
         }
         RoadSurfaceBandKind::Sidewalk => {
             if end_band.boundary_mode != NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
-                && let Some((start, end)) = inner_edge
+                && let Some(points) = inner_path
             {
-                push_terminal_end_band_constraint(
+                push_terminal_end_band_path_constraint(
                     constraints,
                     NodeRailConstraintKind::CurbSidewalkContact,
                     mouth.order_index,
                     end_band.source_band_index,
                     owner,
-                    start,
-                    end,
+                    points,
                 )?;
             }
             if terminal_end_band_has_material_boundary(end_band)
@@ -536,6 +534,7 @@ fn terminal_end_band_has_material_boundary(end_band: &NodeInputTerminalEndBand) 
     matches!(
         end_band.boundary_mode,
         NodeInputTerminalEndBandBoundaryMode::MaterialBand
+            | NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
             | NodeInputTerminalEndBandBoundaryMode::MaterialBandWithinFootprint
     )
 }
@@ -573,13 +572,28 @@ fn terminal_curb_sidewalk_side_edges(
     .collect()
 }
 
-fn terminal_end_band_inner_contour_edge(
+fn terminal_end_band_inner_contour_path(
     end_band: &NodeInputTerminalEndBand,
-) -> Option<(RoadVec2, RoadVec2)> {
+) -> Option<Vec<RoadVec2>> {
     if end_band.contour_world.len() < 3 {
         return None;
     }
-    Some((xz(end_band.contour_world[0]), xz(end_band.contour_world[1])))
+    let points = if end_band.boundary_mode
+        == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
+        && end_band.contour_world.len() > 4
+        && end_band.contour_world.len() % 2 == 0
+    {
+        end_band
+            .contour_world
+            .iter()
+            .copied()
+            .take(end_band.contour_world.len() / 2)
+            .map(xz)
+            .collect::<Vec<_>>()
+    } else {
+        vec![xz(end_band.contour_world[0]), xz(end_band.contour_world[1])]
+    };
+    clean_terminal_constraint_path(points)
 }
 
 fn terminal_end_band_outer_contour_path(
@@ -588,23 +602,30 @@ fn terminal_end_band_outer_contour_path(
     if end_band.contour_world.len() < 3 {
         return None;
     }
-    let points = end_band
-        .contour_world
-        .iter()
-        .copied()
-        .skip(2)
-        .rev()
-        .map(xz)
-        .collect::<Vec<_>>();
-    if points.len() < 2
-        || !points
-            .windows(2)
-            .any(|segment| road_point_key(segment[0]) != road_point_key(segment[1]))
+    let points = if end_band.boundary_mode
+        == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
+        && end_band.contour_world.len() > 4
+        && end_band.contour_world.len() % 2 == 0
     {
-        None
+        end_band
+            .contour_world
+            .iter()
+            .copied()
+            .skip(end_band.contour_world.len() / 2)
+            .rev()
+            .map(xz)
+            .collect::<Vec<_>>()
     } else {
-        Some(points)
-    }
+        end_band
+            .contour_world
+            .iter()
+            .copied()
+            .skip(2)
+            .rev()
+            .map(xz)
+            .collect::<Vec<_>>()
+    };
+    clean_terminal_constraint_path(points)
 }
 
 fn terminal_end_band_outer_cap_contour_path(
@@ -621,14 +642,7 @@ fn terminal_end_band_outer_cap_contour_path(
         .map(xz)
         .collect::<Vec<_>>();
     points.push(xz(end_band.contour_world[0]));
-    if points
-        .windows(2)
-        .any(|segment| road_point_key(segment[0]) != road_point_key(segment[1]))
-    {
-        Some(points)
-    } else {
-        None
-    }
+    clean_terminal_constraint_path(points)
 }
 
 fn push_terminal_end_band_constraint(
@@ -663,6 +677,9 @@ fn push_terminal_end_band_path_constraint(
     owner: NodeBandOwner,
     points: Vec<RoadVec2>,
 ) -> Result<(), NodeRailGenerationError> {
+    let Some(points) = clean_terminal_constraint_path(points) else {
+        return Ok(());
+    };
     push_constraint(
         constraints,
         kind,
@@ -673,6 +690,26 @@ fn push_terminal_end_band_path_constraint(
         None,
         points,
     )
+}
+
+fn clean_terminal_constraint_path(points: Vec<RoadVec2>) -> Option<Vec<RoadVec2>> {
+    let mut cleaned = Vec::with_capacity(points.len());
+    for point in points {
+        if cleaned
+            .last()
+            .is_none_or(|last| road_point_key(*last) != road_point_key(point))
+        {
+            cleaned.push(point);
+        }
+    }
+    if cleaned
+        .windows(2)
+        .any(|segment| road_point_key(segment[0]) != road_point_key(segment[1]))
+    {
+        Some(cleaned)
+    } else {
+        None
+    }
 }
 
 fn push_boundary_constraint(

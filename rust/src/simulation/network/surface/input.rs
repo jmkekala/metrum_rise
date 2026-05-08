@@ -93,6 +93,7 @@ pub(crate) struct NodeInputTerminalEndBand {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum NodeInputTerminalEndBandBoundaryMode {
     MaterialBand,
+    TerminalMaterialBand,
     MaterialBandWithinFootprint,
     MaterialBandWithSameOwnerOuterCap,
     SameOwnerOuterCap,
@@ -203,7 +204,11 @@ impl NodeInputMouth {
         let endpoint_rails = profile_rails(NodeInputProfileKind::Endpoint, &mouth.endpoint_profile);
         let boundary_rails = boundary_rails(mouth);
         let band_intervals = band_intervals(mouth);
-        let terminal_end_bands = terminal_end_bands(piece_kind, mouth, band_intervals.len());
+        let mut terminal_end_bands = terminal_end_bands(piece_kind, mouth, band_intervals.len());
+        for end_band in &mut terminal_end_bands {
+            quantize_terminal_end_band_xz(end_band);
+        }
+        terminal_end_bands.retain(|end_band| terminal_end_band_has_quantized_area(end_band));
 
         Ok(Self {
             order_index,
@@ -2142,6 +2147,7 @@ fn terminal_end_bands(
         first_carriageway.min(mouth.endpoint_profile.bands.len() - last_carriageway - 1);
     let mut end_bands = Vec::new();
     let mut inner_offset_m = 0.0;
+    let mut next_terminal_source_band_index = next_source_band_index;
 
     for layer_index in 0..paired_layers {
         let left_band_index = first_carriageway - 1 - layer_index;
@@ -2162,73 +2168,100 @@ fn terminal_end_bands(
                 &mut end_bands,
                 mouth,
                 outward,
-                next_source_band_index,
+                next_terminal_source_band_index,
                 left_band_index,
                 right_band_index,
                 outer_offset_m,
             );
+            next_terminal_source_band_index += 1;
             inner_offset_m = outer_offset_m;
             continue;
         }
 
-        let nested_outer_band = layer_index > 0;
-        let inner_start_boundary = if nested_outer_band {
-            left_band_index
-        } else {
-            left_band_index + 1
-        };
-        let inner_end_boundary = if nested_outer_band {
-            right_band_index + 1
-        } else {
-            right_band_index
-        };
-        let inner_band_offset_m = if nested_outer_band {
-            0.0
-        } else {
-            inner_offset_m
-        };
-
-        push_terminal_end_band(
+        push_terminal_paired_end_bands(
             &mut end_bands,
             mouth,
-            next_source_band_index,
-            left_band.kind,
-            offset_endpoint_boundary_point(
-                &mouth.endpoint_profile,
-                inner_start_boundary,
-                outward,
-                inner_band_offset_m,
-            ),
-            offset_endpoint_boundary_point(
-                &mouth.endpoint_profile,
-                inner_end_boundary,
-                outward,
-                inner_band_offset_m,
-            ),
-            offset_endpoint_boundary_point(
-                &mouth.endpoint_profile,
-                left_band_index,
-                outward,
-                outer_offset_m,
-            ),
-            offset_endpoint_boundary_point(
-                &mouth.endpoint_profile,
-                right_band_index + 1,
-                outward,
-                outer_offset_m,
-            ),
+            outward,
+            next_terminal_source_band_index,
+            left_band_index,
+            right_band_index,
+            inner_offset_m,
+            outer_offset_m,
         );
+        next_terminal_source_band_index += 1;
         inner_offset_m = outer_offset_m;
     }
 
     end_bands
 }
 
+fn push_terminal_paired_end_bands(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    mouth: &OrderedIncidentPieceMouth,
+    outward: RoadVec2,
+    center_source_band_index: usize,
+    left_band_index: usize,
+    right_band_index: usize,
+    inner_offset_m: f64,
+    outer_offset_m: f64,
+) {
+    let band_kind = mouth.endpoint_profile.bands[left_band_index].kind;
+    push_terminal_end_band(
+        end_bands,
+        center_source_band_index,
+        band_kind,
+        offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index, outward, 0.0),
+        offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index + 1, outward, 0.0),
+        offset_endpoint_boundary_point(
+            &mouth.endpoint_profile,
+            left_band_index,
+            outward,
+            outer_offset_m,
+        ),
+        offset_endpoint_boundary_point(
+            &mouth.endpoint_profile,
+            left_band_index + 1,
+            outward,
+            outer_offset_m,
+        ),
+    );
+    push_terminal_center_end_band(
+        end_bands,
+        center_source_band_index,
+        band_kind,
+        &mouth.endpoint_profile,
+        outward,
+        left_band_index + 1,
+        right_band_index,
+        inner_offset_m,
+        outer_offset_m,
+    );
+    push_terminal_end_band(
+        end_bands,
+        center_source_band_index,
+        band_kind,
+        offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index, outward, 0.0),
+        offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index + 1, outward, 0.0),
+        offset_endpoint_boundary_point(
+            &mouth.endpoint_profile,
+            right_band_index,
+            outward,
+            outer_offset_m,
+        ),
+        offset_endpoint_boundary_point(
+            &mouth.endpoint_profile,
+            right_band_index + 1,
+            outward,
+            outer_offset_m,
+        ),
+    );
+}
+
 fn push_terminal_curb_end_bands(
     end_bands: &mut Vec<NodeInputTerminalEndBand>,
     mouth: &OrderedIncidentPieceMouth,
     outward: RoadVec2,
-    next_source_band_index: usize,
+    center_source_band_index: usize,
     left_band_index: usize,
     right_band_index: usize,
     outer_offset_m: f64,
@@ -2240,8 +2273,7 @@ fn push_terminal_curb_end_bands(
     );
     push_terminal_end_band(
         end_bands,
-        mouth,
-        next_source_band_index,
+        center_source_band_index,
         RoadSurfaceBandKind::CurbOrShoulder,
         offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index, outward, 0.0),
         offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index + 1, outward, 0.0),
@@ -2259,32 +2291,22 @@ fn push_terminal_curb_end_bands(
             curb_height_m,
         ),
     );
-    push_terminal_end_band(
+    push_terminal_center_end_band_with_heights(
         end_bands,
-        mouth,
-        next_source_band_index,
+        center_source_band_index,
         RoadSurfaceBandKind::CurbOrShoulder,
-        offset_endpoint_boundary_point(&mouth.endpoint_profile, left_band_index + 1, outward, 0.0),
-        offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index, outward, 0.0),
-        offset_endpoint_boundary_point_with_height(
-            &mouth.endpoint_profile,
-            left_band_index + 1,
-            outward,
-            outer_offset_m,
-            curb_height_m,
-        ),
-        offset_endpoint_boundary_point_with_height(
-            &mouth.endpoint_profile,
-            right_band_index,
-            outward,
-            outer_offset_m,
-            curb_height_m,
-        ),
+        &mouth.endpoint_profile,
+        outward,
+        left_band_index + 1,
+        right_band_index,
+        0.0,
+        outer_offset_m,
+        None,
+        Some((curb_height_m, curb_height_m)),
     );
     push_terminal_end_band(
         end_bands,
-        mouth,
-        next_source_band_index,
+        center_source_band_index,
         RoadSurfaceBandKind::CurbOrShoulder,
         offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index, outward, 0.0),
         offset_endpoint_boundary_point(&mouth.endpoint_profile, right_band_index + 1, outward, 0.0),
@@ -2304,10 +2326,139 @@ fn push_terminal_curb_end_bands(
     );
 }
 
+fn push_terminal_center_end_band(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    source_band_index: usize,
+    band_kind: RoadSurfaceBandKind,
+    profile: &IncidentMouthProfile,
+    outward: RoadVec2,
+    start_boundary_index: usize,
+    end_boundary_index: usize,
+    inner_offset_m: f64,
+    outer_offset_m: f64,
+) {
+    push_terminal_center_end_band_with_heights(
+        end_bands,
+        source_band_index,
+        band_kind,
+        profile,
+        outward,
+        start_boundary_index,
+        end_boundary_index,
+        inner_offset_m,
+        outer_offset_m,
+        None,
+        None,
+    );
+}
+
+fn push_terminal_center_end_band_with_heights(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    source_band_index: usize,
+    band_kind: RoadSurfaceBandKind,
+    profile: &IncidentMouthProfile,
+    outward: RoadVec2,
+    start_boundary_index: usize,
+    end_boundary_index: usize,
+    inner_offset_m: f64,
+    outer_offset_m: f64,
+    inner_heights_m: Option<(f64, f64)>,
+    outer_heights_m: Option<(f64, f64)>,
+) {
+    if start_boundary_index >= end_boundary_index
+        || end_boundary_index >= profile.boundary_points_world.len()
+    {
+        return;
+    }
+
+    let inner_points = offset_endpoint_boundary_points_with_linear_height(
+        profile,
+        outward,
+        start_boundary_index,
+        end_boundary_index,
+        inner_offset_m,
+        inner_heights_m,
+    );
+    let outer_points = offset_endpoint_boundary_points_with_linear_height(
+        profile,
+        outward,
+        start_boundary_index,
+        end_boundary_index,
+        outer_offset_m,
+        outer_heights_m,
+    );
+    if inner_points.len() < 2 || outer_points.len() != inner_points.len() {
+        return;
+    }
+
+    let inner_start_world = inner_points[0];
+    let inner_end_world = *inner_points
+        .last()
+        .expect("center terminal inner edge has at least two points");
+    let outer_start_world = outer_points[0];
+    let outer_end_world = *outer_points
+        .last()
+        .expect("center terminal outer edge has at least two points");
+    let mut contour_world = inner_points;
+    contour_world.extend(outer_points.into_iter().rev());
+
+    end_bands.push(NodeInputTerminalEndBand {
+        source_band_index,
+        band_kind,
+        boundary_mode: NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand,
+        inner_start_world,
+        inner_end_world,
+        outer_start_world,
+        outer_end_world,
+        contour_world,
+    });
+}
+
+fn offset_endpoint_boundary_points_with_linear_height(
+    profile: &IncidentMouthProfile,
+    outward: RoadVec2,
+    start_boundary_index: usize,
+    end_boundary_index: usize,
+    offset_m: f64,
+    endpoint_heights_m: Option<(f64, f64)>,
+) -> Vec<RoadVec3> {
+    let start_base = xz_from_road_vec3(godot_vec3_to_road(
+        profile.boundary_points_world[start_boundary_index],
+    ));
+    let end_base = xz_from_road_vec3(godot_vec3_to_road(
+        profile.boundary_points_world[end_boundary_index],
+    ));
+    let axis = end_base - start_base;
+    let axis_len2 = axis.length_squared();
+    let start_height_m = endpoint_heights_m
+        .map(|(height_m, _)| height_m)
+        .unwrap_or_else(|| f64::from(profile.boundary_points_world[start_boundary_index].y));
+    let end_height_m = endpoint_heights_m
+        .map(|(_, height_m)| height_m)
+        .unwrap_or_else(|| f64::from(profile.boundary_points_world[end_boundary_index].y));
+
+    (start_boundary_index..=end_boundary_index)
+        .map(|boundary_index| {
+            let point = profile.boundary_points_world[boundary_index];
+            let base = godot_vec3_to_road(point);
+            let base_xz = xz_from_road_vec3(base);
+            let t = if axis_len2 > f64::EPSILON {
+                ((base_xz - start_base).dot(axis) / axis_len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            RoadVec3::new(
+                base.x + outward.x * offset_m,
+                start_height_m + (end_height_m - start_height_m) * t,
+                base.z + outward.y * offset_m,
+            )
+        })
+        .collect()
+}
+
 fn push_terminal_end_band(
     end_bands: &mut Vec<NodeInputTerminalEndBand>,
-    _mouth: &OrderedIncidentPieceMouth,
-    next_source_band_index: usize,
+    source_band_index: usize,
     band_kind: RoadSurfaceBandKind,
     inner_start_world: RoadVec3,
     inner_end_world: RoadVec3,
@@ -2315,9 +2466,9 @@ fn push_terminal_end_band(
     outer_end_world: RoadVec3,
 ) {
     end_bands.push(NodeInputTerminalEndBand {
-        source_band_index: next_source_band_index + end_bands.len(),
+        source_band_index,
         band_kind,
-        boundary_mode: NodeInputTerminalEndBandBoundaryMode::MaterialBand,
+        boundary_mode: NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand,
         inner_start_world,
         inner_end_world,
         outer_start_world,

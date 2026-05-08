@@ -219,6 +219,7 @@ impl RoadSurfaceSystem {
             for polygon in piece
                 .road_surface_polygons
                 .iter()
+                .chain(&piece.curb_surface_polygons)
                 .chain(&piece.sidewalk_surface_polygons)
             {
                 Self::visit_visual_polygon_triangles(polygon, &mut |triangle| {
@@ -528,6 +529,7 @@ impl RoadSurfaceSystem {
         for polygon in piece
             .road_surface_polygons
             .iter()
+            .chain(&piece.curb_surface_polygons)
             .chain(&piece.sidewalk_surface_polygons)
         {
             Self::visit_visual_polygon_triangles(polygon, visitor);
@@ -557,6 +559,7 @@ impl RoadSurfaceSystem {
         for polygon in piece
             .clearance_road_surface_polygons
             .iter()
+            .chain(&piece.clearance_curb_surface_polygons)
             .chain(&piece.clearance_sidewalk_surface_polygons)
         {
             Self::visit_visual_polygon_triangles(polygon, visitor);
@@ -580,6 +583,7 @@ impl RoadSurfaceSystem {
         for polygon in piece
             .road_surface_polygons
             .iter()
+            .chain(&piece.curb_surface_polygons)
             .chain(&piece.sidewalk_surface_polygons)
         {
             Self::visit_visual_polygon_triangles(polygon, visitor);

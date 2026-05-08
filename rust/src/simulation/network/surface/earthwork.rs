@@ -371,6 +371,7 @@ impl RoadSurfaceSystem {
         let height_offset_m = self.span_piece_integrated_surface_offset_m(piece);
         self.stamp_piece_top_surface_clearance_for_chunk(
             &piece.clearance_road_surface_polygons,
+            &piece.clearance_curb_surface_polygons,
             &piece.clearance_sidewalk_surface_polygons,
             chunk,
             terrain,
@@ -396,6 +397,7 @@ impl RoadSurfaceSystem {
         let height_offset_m = self.node_piece_integrated_surface_offset_m(graph, node_id, terrain);
         self.stamp_piece_top_surface_clearance_for_chunk(
             &piece.road_surface_polygons,
+            &piece.curb_surface_polygons,
             &piece.sidewalk_surface_polygons,
             chunk,
             terrain,
@@ -607,6 +609,7 @@ impl RoadSurfaceSystem {
     fn stamp_piece_top_surface_clearance_for_chunk(
         &self,
         road_surface_polygons: &[RoadSurfaceVisualPolygon],
+        curb_surface_polygons: &[RoadSurfaceVisualPolygon],
         sidewalk_surface_polygons: &[RoadSurfaceVisualPolygon],
         chunk: SurfaceChunkKey,
         terrain: &mut TerrainSystem,
@@ -614,6 +617,12 @@ impl RoadSurfaceSystem {
     ) {
         self.stamp_piece_surface_geometry_for_chunk(
             road_surface_polygons,
+            chunk,
+            terrain,
+            height_offset_m,
+        );
+        self.stamp_piece_surface_geometry_for_chunk(
+            curb_surface_polygons,
             chunk,
             terrain,
             height_offset_m,
