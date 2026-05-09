@@ -1026,6 +1026,99 @@ mod tests {
     }
 
     #[test]
+    fn test_oblique_two_carriageway_terminal_vertical_faces_are_asphalt_facing() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(256, 256);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let start_point = Vector3::new(21.162, 0.0, -160.894);
+        let end_point = Vector3::new(71.074, 0.0, -91.746);
+        let n0 = graph.add_node(start_point, NodeType::Junction);
+        let n1 = graph.add_node(end_point, NodeType::Junction);
+        graph.add_edge(create_surface_edge(
+            n0,
+            n1,
+            &[start_point, end_point],
+            14.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            2,
+            2,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 240.0);
+
+        let direction_xz =
+            Vector2::new(end_point.x - start_point.x, end_point.z - start_point.z).normalized();
+        let left_xz = Vector2::new(-direction_xz.y, direction_xz.x);
+        let length =
+            Vector2::new(end_point.x - start_point.x, end_point.z - start_point.z).length();
+        let road_half_width = 7.0;
+        let mut start_cap_triangles = 0usize;
+        let mut end_cap_triangles = 0usize;
+        let mut left_side_triangles = 0usize;
+        let mut right_side_triangles = 0usize;
+
+        for triangle in triangles_from_vertices(&mesh_data.curb_vertical_vertices) {
+            if triangle_projected_double_area(triangle).abs() >= 0.001
+                || triangle_y_delta(triangle) < 0.05
+            {
+                continue;
+            }
+            let centroid = (triangle[0] + triangle[1] + triangle[2]) / 3.0;
+            let rel = Vector2::new(centroid.x - start_point.x, centroid.z - start_point.z);
+            let along = rel.dot(direction_xz);
+            let lateral = rel.dot(left_xz);
+            let visible_direction = godot_cull_back_visible_direction(triangle);
+            let visible_xz = Vector2::new(visible_direction.x, visible_direction.z);
+
+            if along.abs() <= 0.25 && lateral.abs() <= road_half_width - 0.1 {
+                assert!(
+                    visible_xz.dot(direction_xz) > 0.0,
+                    "oblique start terminal cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                start_cap_triangles += 1;
+            } else if (along - length).abs() <= 0.25 && lateral.abs() <= road_half_width - 0.1 {
+                assert!(
+                    visible_xz.dot(direction_xz) < 0.0,
+                    "oblique end terminal cap must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                end_cap_triangles += 1;
+            } else if along > 2.0
+                && along < length - 2.0
+                && (lateral + road_half_width).abs() <= 0.25
+            {
+                assert!(
+                    visible_xz.dot(left_xz) > 0.0,
+                    "oblique negative-lateral curb face must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                left_side_triangles += 1;
+            } else if along > 2.0
+                && along < length - 2.0
+                && (lateral - road_half_width).abs() <= 0.25
+            {
+                assert!(
+                    visible_xz.dot(left_xz) < 0.0,
+                    "oblique positive-lateral curb face must be visible from asphalt under Godot cull-back convention; triangle={triangle:?} visible_direction={visible_direction:?}"
+                );
+                right_side_triangles += 1;
+            }
+        }
+
+        assert!(
+            start_cap_triangles > 0
+                && end_cap_triangles > 0
+                && left_side_triangles > 0
+                && right_side_triangles > 0,
+            "oblique two-carriageway terminal must emit asphalt-facing vertical faces on both caps and both sides; start_cap={start_cap_triangles} end_cap={end_cap_triangles} left_side={left_side_triangles} right_side={right_side_triangles}"
+        );
+    }
+
+    #[test]
     fn test_walkway_connection_keeps_road_core_owned_by_asphalt() {
         let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
         let walkway = [Vector3::new(-12.0, 0.0, -12.0), Vector3::ZERO];

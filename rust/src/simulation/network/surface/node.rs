@@ -419,6 +419,10 @@ impl RoadSurfaceSystem {
         let mut emitted = BTreeSet::new();
         let mut faces = Vec::new();
         for segment in arrangement.explicit_vertical_step_segments() {
+            let Some((lower_owner, _raised_owner)) = explicit_step_lower_and_raised_owners(segment)
+            else {
+                continue;
+            };
             let Some((lower_start, raised_start, lower_end, raised_end)) =
                 arrangement_vertical_step_points_for_segment(arrangement, segment)
             else {
@@ -430,6 +434,7 @@ impl RoadSurfaceSystem {
             }
             let asphalt_direction = arrangement_carriageway_direction_for_segment(
                 arrangement,
+                lower_owner,
                 key,
                 lower_start,
                 lower_end,
@@ -1249,77 +1254,124 @@ fn arrangement_step_point_at_key(
 
 fn arrangement_carriageway_direction_for_segment(
     arrangement: &NodeArrangement,
+    owner: NodeBandOwner,
     segment_key: (NodeArrangementKey, NodeArrangementKey),
     start: Vector3,
     end: Vector3,
 ) -> Option<Vector3> {
-    for (edge_index, edge) in arrangement.edges().iter().enumerate() {
-        if edge.owner().kind() != RoadSurfaceBandKind::Carriageway {
-            continue;
-        }
-        let Some(edge_start) =
-            RoadSurfaceSystem::arrangement_vertex_world(arrangement, edge.start())
-        else {
-            continue;
-        };
-        let Some(edge_end) = RoadSurfaceSystem::arrangement_vertex_world(arrangement, edge.end())
-        else {
-            continue;
-        };
-        if normalized_arrangement_segment_key(edge_start, edge_end) != segment_key {
-            continue;
-        }
-        if let Some(direction) =
-            arrangement_owner_direction_for_edge(arrangement, edge_index, edge.owner(), start, end)
-        {
-            return Some(direction);
-        }
-    }
-    None
+    arrangement_owner_direction_for_segment(arrangement, owner, segment_key, start, end)
 }
 
-fn arrangement_owner_direction_for_edge(
+fn arrangement_owner_direction_for_segment(
     arrangement: &NodeArrangement,
-    edge_index: usize,
     owner: NodeBandOwner,
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
     start: Vector3,
     end: Vector3,
 ) -> Option<Vector3> {
-    let centroid = arrangement_owner_centroid_for_edge(arrangement, edge_index, owner)?;
     let midpoint = (start + end) * 0.5;
-    let direction = Vector3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
-    (direction.length_squared() > SAMPLE_EPSILON_M * SAMPLE_EPSILON_M).then_some(direction)
-}
-
-fn arrangement_owner_centroid_for_edge(
-    arrangement: &NodeArrangement,
-    edge_index: usize,
-    owner: NodeBandOwner,
-) -> Option<Vector3> {
+    let mut best = None;
     for region in arrangement.regions() {
         if region.owner() != owner
-            || !region
-                .boundary_edges()
-                .iter()
-                .any(|edge_id| edge_id.index() == edge_index)
+            || !arrangement_region_boundary_overlaps_segment(arrangement, region, segment_key)
         {
             continue;
         }
-        let mut sum = Vector3::ZERO;
-        let mut count = 0usize;
-        for vertex_id in region.outer_loop() {
-            let Some(point) = RoadSurfaceSystem::arrangement_vertex_world(arrangement, *vertex_id)
-            else {
-                continue;
-            };
-            sum += Vector3::new(point.x, 0.0, point.z);
-            count += 1;
+        let Some(centroid) = arrangement_region_centroid(arrangement, region) else {
+            continue;
+        };
+        let direction = Vector3::new(centroid.x - midpoint.x, 0.0, centroid.z - midpoint.z);
+        let distance_squared = direction.length_squared();
+        if distance_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+            continue;
         }
-        if count > 0 {
-            return Some(sum / count as f32);
+        if best.is_none_or(|(best_distance_squared, _)| distance_squared > best_distance_squared) {
+            best = Some((distance_squared, direction));
         }
     }
-    None
+    best.map(|(_, direction)| direction)
+}
+
+fn arrangement_region_boundary_overlaps_segment(
+    arrangement: &NodeArrangement,
+    region: &super::arrangement::NodeOwnedRegion,
+    segment_key: (NodeArrangementKey, NodeArrangementKey),
+) -> bool {
+    region.boundary_edges().iter().any(|edge_id| {
+        let Some(edge) = arrangement.edges().get(edge_id.index()) else {
+            return false;
+        };
+        let Some(edge_start) = arrangement
+            .vertices()
+            .get(edge.start().index())
+            .map(|vertex| NodeArrangementKey::from_point(vertex.point_xz()))
+        else {
+            return false;
+        };
+        let Some(edge_end) = arrangement
+            .vertices()
+            .get(edge.end().index())
+            .map(|vertex| NodeArrangementKey::from_point(vertex.point_xz()))
+        else {
+            return false;
+        };
+        arrangement_segments_overlap_with_length(edge_start, edge_end, segment_key.0, segment_key.1)
+    })
+}
+
+fn arrangement_segments_overlap_with_length(
+    a_start: NodeArrangementKey,
+    a_end: NodeArrangementKey,
+    b_start: NodeArrangementKey,
+    b_end: NodeArrangementKey,
+) -> bool {
+    if a_start == a_end || b_start == b_end {
+        return false;
+    }
+    let a_dx = i128::from(a_end.x_key() - a_start.x_key());
+    let a_dz = i128::from(a_end.z_key() - a_start.z_key());
+    let b_dx = i128::from(b_end.x_key() - b_start.x_key());
+    let b_dz = i128::from(b_end.z_key() - b_start.z_key());
+    if a_dx * b_dz - a_dz * b_dx != 0 {
+        return false;
+    }
+    if !arrangement_key_lies_on_segment(a_start, b_start, b_end)
+        && !arrangement_key_lies_on_segment(a_end, b_start, b_end)
+        && !arrangement_key_lies_on_segment(b_start, a_start, a_end)
+        && !arrangement_key_lies_on_segment(b_end, a_start, a_end)
+    {
+        return false;
+    }
+    let use_x = (a_end.x_key() - a_start.x_key()).abs() >= (a_end.z_key() - a_start.z_key()).abs();
+    let coordinate = |key: NodeArrangementKey| {
+        if use_x { key.x_key() } else { key.z_key() }
+    };
+    let a0 = coordinate(a_start);
+    let a1 = coordinate(a_end);
+    let b0 = coordinate(b_start);
+    let b1 = coordinate(b_end);
+    let a_min = a0.min(a1);
+    let a_max = a0.max(a1);
+    let b_min = b0.min(b1);
+    let b_max = b0.max(b1);
+    a_min.max(b_min) < a_max.min(b_max)
+}
+
+fn arrangement_region_centroid(
+    arrangement: &NodeArrangement,
+    region: &super::arrangement::NodeOwnedRegion,
+) -> Option<Vector3> {
+    let mut sum = Vector3::ZERO;
+    let mut count = 0usize;
+    for vertex_id in region.outer_loop() {
+        let Some(point) = RoadSurfaceSystem::arrangement_vertex_world(arrangement, *vertex_id)
+        else {
+            continue;
+        };
+        sum += Vector3::new(point.x, 0.0, point.z);
+        count += 1;
+    }
+    (count > 0).then_some(sum / count as f32)
 }
 
 fn validate_outer_boundary_loop_height_consistency(
