@@ -1609,6 +1609,8 @@ mod tests {
         NodeRegionSeamConstraint {
             constraint_index,
             seam_source,
+            owner: None,
+            opposite_owner: None,
             constrains_shared_height,
             is_material_transition,
             start_xz: RoadVec2::new(0.0, 0.0),

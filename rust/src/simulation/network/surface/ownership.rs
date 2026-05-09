@@ -197,6 +197,11 @@ impl NodeBooleanOwnership {
             &rails.constraints,
             allow_grid_bounded_constraint_overlap,
         )?;
+        materialize_noded_region_seam_constraints(
+            &mut owned_regions,
+            &footprint_shapes,
+            &rails.constraints,
+        );
         let owned_region_arrangement = NodeOwnedRegionArrangement::from_owned_regions(
             rails.node_id,
             rails.piece_kind,
@@ -847,6 +852,8 @@ fn push_region_seam_constraint(
     seams.push(NodeRegionSeamConstraint {
         constraint_index: constraint.constraint_index,
         seam_source: seam_source_from_constraint(constraint, owner),
+        owner: constraint.owner,
+        opposite_owner: constraint.opposite_owner,
         constrains_shared_height: constraint_constrains_shared_height(constraint),
         is_material_transition: constraint_is_material_transition(constraint),
         start_xz,
@@ -940,6 +947,61 @@ fn owned_region_boundary_refs(
     }
 
     OwnedRegionBoundaryRefs { edges }
+}
+
+fn materialize_noded_region_seam_constraints(
+    regions: &mut [NodeBooleanOwnedRegion],
+    footprint_shapes: &NodeOverlayShapes,
+    rail_constraints: &[NodeRailConstraint],
+) {
+    let boundary_refs = owned_region_boundary_refs(regions, footprint_shapes);
+    let mut additions = vec![Vec::new(); regions.len()];
+    for (edge_key, refs) in boundary_refs.edges {
+        let refs = canonical_owned_region_edge_refs(&refs);
+        for edge_ref in &refs {
+            let Some(opposite_owner) = opposite_owner_for_ref(&refs, *edge_ref) else {
+                continue;
+            };
+            let Some(region) = regions.get(edge_ref.region_index) else {
+                continue;
+            };
+            if !owned_source_constraints_for_edge(
+                edge_key.start,
+                edge_key.end,
+                &region.seam_constraints,
+            )
+            .is_empty()
+            {
+                continue;
+            }
+            for constraint in rail_constraints
+                .iter()
+                .filter(|constraint| constraint_applies_to_owner(constraint, edge_ref.owner))
+                .filter(|constraint| {
+                    rail_constraint_owner_pair_matches_edge(
+                        constraint,
+                        edge_ref.owner,
+                        opposite_owner,
+                    )
+                })
+                .filter(|constraint| {
+                    owned_edge_lies_on_rail_constraint(edge_key.start, edge_key.end, constraint)
+                })
+            {
+                push_region_seam_constraint(
+                    &mut additions[edge_ref.region_index],
+                    constraint,
+                    region.owner,
+                    road_point_from_key(edge_key.start),
+                    road_point_from_key(edge_key.end),
+                );
+            }
+        }
+    }
+    for (region, mut seam_additions) in regions.iter_mut().zip(additions) {
+        region.seam_constraints.append(&mut seam_additions);
+        canonicalize_seam_constraints(&mut region.seam_constraints);
+    }
 }
 
 fn canonicalize_owned_region_rings(
@@ -1306,6 +1368,35 @@ fn opposite_owner_for_ref(
     owners.into_iter().next()
 }
 
+fn rail_constraint_owner_pair_matches_edge(
+    constraint: &NodeRailConstraint,
+    owner: NodeBandOwner,
+    opposite_owner: NodeBandOwner,
+) -> bool {
+    matches!(
+        (constraint.owner, constraint.opposite_owner),
+        (Some(left), Some(right))
+            if (left == owner && right == opposite_owner)
+                || (left == opposite_owner && right == owner)
+    )
+}
+
+fn owned_edge_lies_on_rail_constraint(
+    start: NodeOwnershipPointKey,
+    end: NodeOwnershipPointKey,
+    constraint: &NodeRailConstraint,
+) -> bool {
+    if start == end || constraint.points_xz.len() < 2 {
+        return false;
+    }
+    constraint.points_xz.windows(2).any(|segment| {
+        let constraint_start = road_point_key(segment[0]);
+        let constraint_end = road_point_key(segment[1]);
+        point_key_lies_on_segment(start, constraint_start, constraint_end)
+            && point_key_lies_on_segment(end, constraint_start, constraint_end)
+    })
+}
+
 fn owned_source_constraints_for_edge<'a>(
     start: NodeOwnershipPointKey,
     end: NodeOwnershipPointKey,
@@ -1421,11 +1512,19 @@ fn canonicalize_seam_constraints(seams: &mut Vec<NodeRegionSeamConstraint>) {
 
 fn seam_constraint_sort_key(
     constraint: &NodeRegionSeamConstraint,
-) -> (usize, NodeOwnershipPointKey, NodeOwnershipPointKey) {
+) -> (
+    usize,
+    NodeOwnershipPointKey,
+    NodeOwnershipPointKey,
+    Option<NodeBandOwner>,
+    Option<NodeBandOwner>,
+) {
     (
         constraint.constraint_index,
         road_point_key(constraint.start_xz),
         road_point_key(constraint.end_xz),
+        constraint.owner,
+        constraint.opposite_owner,
     )
 }
 
@@ -2039,6 +2138,8 @@ mod tests {
                 seam_source: NodeSeamSource::AsphaltBoundary {
                     owner_index: region.owner.owner_index(),
                 },
+                owner: None,
+                opposite_owner: None,
                 constrains_shared_height: false,
                 is_material_transition: true,
                 start_xz: RoadVec2::new(1.0, 0.0),
@@ -2089,6 +2190,86 @@ mod tests {
     }
 
     #[test]
+    fn materializes_seam_constraints_for_final_noded_owned_edges() {
+        let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 0);
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let mut regions = vec![
+            test_owned_region(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                curb,
+                vec![[0.0, 0.0], [1.0, 0.0], [1.0, 2.0], [0.0, 2.0]],
+            ),
+            test_owned_region(
+                RoadSurfaceBandKind::Sidewalk,
+                sidewalk,
+                vec![[1.0, 0.0], [2.0, 0.0], [2.0, 2.0], [1.0, 2.0]],
+            ),
+        ];
+        let footprint_shapes = vec![vec![vec![
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [1.0, 1.0],
+            [0.0, 2.0],
+        ]]];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 33,
+            kind: NodeRailConstraintKind::CurbSidewalkContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(curb),
+            opposite_owner: Some(sidewalk),
+            points_xz: vec![RoadVec2::new(1.0, 0.0), RoadVec2::new(1.0, 2.0)],
+        }];
+
+        materialize_noded_region_seam_constraints(
+            &mut regions,
+            &footprint_shapes,
+            &rail_constraints,
+        );
+
+        for region in &regions {
+            assert!(
+                region.seam_constraints.iter().any(|constraint| {
+                    road_point_key(constraint.start_xz) == road_point_key(RoadVec2::new(1.0, 0.0))
+                        && road_point_key(constraint.end_xz)
+                            == road_point_key(RoadVec2::new(1.0, 1.0))
+                        && constraint.owner == Some(curb)
+                        && constraint.opposite_owner == Some(sidewalk)
+                        && matches!(
+                            constraint.seam_source,
+                            NodeSeamSource::CurbSidewalkContact { .. }
+                        )
+                }),
+                "first final subedge must carry the original curb/sidewalk seam"
+            );
+            assert!(
+                region.seam_constraints.iter().any(|constraint| {
+                    road_point_key(constraint.start_xz) == road_point_key(RoadVec2::new(1.0, 1.0))
+                        && road_point_key(constraint.end_xz)
+                            == road_point_key(RoadVec2::new(1.0, 2.0))
+                        && constraint.owner == Some(curb)
+                        && constraint.opposite_owner == Some(sidewalk)
+                        && matches!(
+                            constraint.seam_source,
+                            NodeSeamSource::CurbSidewalkContact { .. }
+                        )
+                }),
+                "second final subedge must carry the original curb/sidewalk seam"
+            );
+        }
+        let arrangement = NodeOwnedRegionArrangement::from_owned_regions(
+            42,
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            &regions,
+            &footprint_shapes,
+        );
+
+        assert!(arrangement.diagnostics().is_empty());
+    }
+
+    #[test]
     fn explicit_shared_point_constraints_preserve_endpoint_context_without_height_continuity() {
         let carriageway = NodeBandOwner::new(RoadSurfaceBandKind::Carriageway, 0);
         let sidewalk = NodeBandOwner::new(RoadSurfaceBandKind::Sidewalk, 1);
@@ -2111,6 +2292,8 @@ mod tests {
                 seam_source: NodeSeamSource::AsphaltBoundary {
                     owner_index: region.owner.owner_index(),
                 },
+                owner: None,
+                opposite_owner: None,
                 constrains_shared_height: false,
                 is_material_transition: true,
                 start_xz: RoadVec2::new(1.0, 1.0),

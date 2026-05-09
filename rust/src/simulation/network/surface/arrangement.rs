@@ -72,6 +72,8 @@ pub(crate) enum NodeSeamSource {
 pub(crate) struct NodeRegionSeamConstraint {
     pub(crate) constraint_index: usize,
     pub(crate) seam_source: NodeSeamSource,
+    pub(crate) owner: Option<NodeBandOwner>,
+    pub(crate) opposite_owner: Option<NodeBandOwner>,
     pub(crate) constrains_shared_height: bool,
     pub(crate) is_material_transition: bool,
     pub(crate) start_xz: RoadVec2,
@@ -336,8 +338,20 @@ impl NodeArrangement {
 
     pub(crate) fn explicit_vertical_step_segments(&self) -> Vec<NodeExplicitVerticalStepSegment> {
         let mut segments = BTreeSet::new();
+        for region in &self.regions {
+            for constraint in &region.seam_constraints {
+                if let Some(segment) = explicit_vertical_step_segment_from_constraint(constraint) {
+                    segments.insert(segment);
+                }
+            }
+        }
         for edge in &self.edges {
             if !edge.is_explicit_vertical_step() {
+                continue;
+            }
+            if self.piece_kind == RoadSurfaceVisualNodePieceKind::Terminal
+                && self.edge_has_owner_pair_source_constraint(edge)
+            {
                 continue;
             }
             let Some(opposite_owner) = edge.opposite_owner else {
@@ -861,13 +875,18 @@ impl NodeArrangement {
         let mut owners_by_constraint = BTreeMap::<usize, Vec<NodeBandOwner>>::new();
         for region in &self.regions {
             for constraint in &region.seam_constraints {
-                if constraint.is_material_transition && seam_constraint_touches_key(constraint, key)
+                if !constraint.is_material_transition
+                    || !seam_constraint_touches_key(constraint, key)
                 {
+                    continue;
+                }
+                let owners = owners_for_material_seam_constraint(constraint, region.owner);
+                merge_sorted_unique(
                     owners_by_constraint
                         .entry(constraint.constraint_index)
-                        .or_default()
-                        .push(region.owner);
-                }
+                        .or_default(),
+                    owners,
+                );
             }
         }
 
@@ -896,6 +915,8 @@ impl NodeArrangement {
         self.edges.iter().any(|edge| {
             edge.is_material_transition
                 && !edge.source_constraint_indices.is_empty()
+                && (self.piece_kind != RoadSurfaceVisualNodePieceKind::Terminal
+                    || !self.edge_has_owner_pair_source_constraint(edge))
                 && self.edge_touches_key(edge, key)
                 && edge.opposite_owner.is_some_and(|opposite_owner| {
                     owner_sets_match_edge(left_owners, right_owners, edge.owner, opposite_owner)
@@ -912,6 +933,24 @@ impl NodeArrangement {
         };
         start.key == key || end.key == key
     }
+
+    fn edge_has_owner_pair_source_constraint(&self, edge: &NodeArrangementEdge) -> bool {
+        let Some(start) = self.vertices.get(edge.start.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
+            return false;
+        };
+        self.regions.iter().any(|region| {
+            region.seam_constraints.iter().any(|constraint| {
+                (constraint.owner.is_some() || constraint.opposite_owner.is_some())
+                    && edge
+                        .source_constraint_indices
+                        .contains(&constraint.constraint_index)
+                    && seam_constraint_covers_edge(constraint, start, end)
+            })
+        })
+    }
 }
 
 fn seam_constraint_touches_key(
@@ -921,6 +960,17 @@ fn seam_constraint_touches_key(
     let start = NodeArrangementKey::from_point(constraint.start_xz);
     let end = NodeArrangementKey::from_point(constraint.end_xz);
     point_key_lies_on_segment(key, start, end)
+}
+
+fn seam_constraint_covers_edge(
+    constraint: &NodeRegionSeamConstraint,
+    edge_start: NodeArrangementKey,
+    edge_end: NodeArrangementKey,
+) -> bool {
+    let constraint_start = NodeArrangementKey::from_point(constraint.start_xz);
+    let constraint_end = NodeArrangementKey::from_point(constraint.end_xz);
+    point_key_lies_on_segment(edge_start, constraint_start, constraint_end)
+        && point_key_lies_on_segment(edge_end, constraint_start, constraint_end)
 }
 
 impl NodeArrangementVertexId {
@@ -1151,6 +1201,42 @@ fn seam_constraint_priority(constraint: &NodeRegionSeamConstraint) -> (bool, boo
         !constraint.is_material_transition,
         seam_source_priority(&constraint.seam_source),
     )
+}
+
+fn explicit_vertical_step_segment_from_constraint(
+    constraint: &NodeRegionSeamConstraint,
+) -> Option<NodeExplicitVerticalStepSegment> {
+    if !constraint.is_material_transition
+        || constraint.constrains_shared_height
+        || !matches!(
+            constraint.seam_source,
+            NodeSeamSource::AsphaltCurbContact { .. }
+        )
+    {
+        return None;
+    }
+    let owner = constraint.owner?;
+    let opposite_owner = constraint.opposite_owner?;
+    if !owners_form_asphalt_curb_pair(owner, opposite_owner) {
+        return None;
+    }
+    NodeExplicitVerticalStepSegment::new(
+        NodeArrangementKey::from_point(constraint.start_xz),
+        NodeArrangementKey::from_point(constraint.end_xz),
+        owner,
+        opposite_owner,
+    )
+}
+
+fn owners_for_material_seam_constraint(
+    constraint: &NodeRegionSeamConstraint,
+    fallback_owner: NodeBandOwner,
+) -> Vec<NodeBandOwner> {
+    match (constraint.owner, constraint.opposite_owner) {
+        (Some(owner), Some(opposite_owner)) => vec![owner, opposite_owner],
+        (Some(owner), None) | (None, Some(owner)) => vec![owner],
+        (None, None) => vec![fallback_owner],
+    }
 }
 
 pub(crate) fn seam_source_priority(source: &NodeSeamSource) -> usize {
@@ -1535,6 +1621,8 @@ mod tests {
         let seam = NodeRegionSeamConstraint {
             constraint_index: 31,
             seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 0 },
+            owner: None,
+            opposite_owner: None,
             constrains_shared_height: false,
             is_material_transition: true,
             start_xz: RoadVec2::new(1.0, 0.0),
@@ -1568,6 +1656,8 @@ mod tests {
         let seam = NodeRegionSeamConstraint {
             constraint_index: 32,
             seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 0 },
+            owner: None,
+            opposite_owner: None,
             constrains_shared_height: false,
             is_material_transition: true,
             start_xz: RoadVec2::new(1.0, 1.0),
@@ -1618,6 +1708,8 @@ mod tests {
         let generic_seam = NodeRegionSeamConstraint {
             constraint_index: 2,
             seam_source: NodeSeamSource::FootprintBoundary { owner_index: 0 },
+            owner: None,
+            opposite_owner: None,
             constrains_shared_height: true,
             is_material_transition: false,
             start_xz: RoadVec2::new(1.0, 0.0),
@@ -1626,6 +1718,8 @@ mod tests {
         let shared_seam = NodeRegionSeamConstraint {
             constraint_index: 17,
             seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 0 },
+            owner: None,
+            opposite_owner: None,
             constrains_shared_height: true,
             is_material_transition: true,
             start_xz: RoadVec2::new(1.0, 0.0),
@@ -1678,6 +1772,114 @@ mod tests {
     }
 
     #[test]
+    fn explicit_vertical_step_segments_use_constraint_owner_pair() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 2);
+        let adjacent_curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let terminal_curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 6);
+        let start = RoadVec2::new(1.0, 0.0);
+        let end = RoadVec2::new(1.0, 2.0);
+        let seam = NodeRegionSeamConstraint {
+            constraint_index: 91,
+            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 6 },
+            owner: Some(carriageway),
+            opposite_owner: Some(terminal_curb),
+            constrains_shared_height: false,
+            is_material_transition: true,
+            start_xz: start,
+            end_xz: end,
+        };
+        let mut arrangement = NodeArrangement::new(11, RoadSurfaceVisualNodePieceKind::Terminal);
+
+        arrangement.push_region(
+            carriageway,
+            height_field_id(RoadSurfaceBandKind::Carriageway, 2),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            vec![seam.clone()],
+        );
+        arrangement.push_region(
+            adjacent_curb,
+            height_field_id(RoadSurfaceBandKind::CurbOrShoulder, 1),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            1.0,
+            vec![seam],
+        );
+
+        let segments = arrangement.explicit_vertical_step_segments();
+        let expected = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(start),
+            NodeArrangementKey::from_point(end),
+            carriageway,
+            terminal_curb,
+        )
+        .expect("test segment is non-degenerate");
+        let wrong = NodeExplicitVerticalStepSegment::new(
+            NodeArrangementKey::from_point(start),
+            NodeArrangementKey::from_point(end),
+            carriageway,
+            adjacent_curb,
+        )
+        .expect("test segment is non-degenerate");
+
+        assert!(segments.contains(&expected));
+        assert!(!segments.contains(&wrong));
+    }
+
+    #[test]
+    fn arrangement_rejects_mismatched_explicit_seam_owner_pair() {
+        let carriageway = owner(RoadSurfaceBandKind::Carriageway, 2);
+        let adjacent_curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let terminal_curb = owner(RoadSurfaceBandKind::CurbOrShoulder, 6);
+        let seam = NodeRegionSeamConstraint {
+            constraint_index: 92,
+            seam_source: NodeSeamSource::AsphaltCurbContact { owner_index: 6 },
+            owner: Some(carriageway),
+            opposite_owner: Some(terminal_curb),
+            constrains_shared_height: false,
+            is_material_transition: true,
+            start_xz: RoadVec2::new(1.0, 0.0),
+            end_xz: RoadVec2::new(1.0, 1.0),
+        };
+        let heights = NodeHeightSolution {
+            node_id: 11,
+            piece_kind: RoadSurfaceVisualNodePieceKind::Terminal,
+            regions: vec![
+                test_height_region_with_seams(
+                    RoadSurfaceBandKind::Carriageway,
+                    carriageway,
+                    vec![
+                        height_vertex(0.0, 0.0, 0.0),
+                        height_vertex(1.0, 0.0, 0.0),
+                        height_vertex(1.0, 1.0, 0.0),
+                        height_vertex(0.0, 1.0, 0.0),
+                    ],
+                    vec![seam.clone()],
+                ),
+                test_height_region_with_seams(
+                    RoadSurfaceBandKind::CurbOrShoulder,
+                    adjacent_curb,
+                    vec![
+                        height_vertex(1.0, 0.0, 0.12),
+                        height_vertex(2.0, 0.0, 0.12),
+                        height_vertex(2.0, 1.0, 0.12),
+                        height_vertex(1.0, 1.0, 0.12),
+                    ],
+                    vec![seam],
+                ),
+            ],
+        };
+
+        assert!(matches!(
+            NodeArrangement::from_height_solution(&heights),
+            Err(NodeArrangementError::DuplicateVertexHeightConflict { .. })
+        ));
+    }
+
+    #[test]
     fn shared_arrangement_edge_reports_missing_source_constraint() {
         let carriageway = owner(RoadSurfaceBandKind::Carriageway, 0);
         let sidewalk = owner(RoadSurfaceBandKind::Sidewalk, 1);
@@ -1704,6 +1906,8 @@ mod tests {
         let first = NodeRegionSeamConstraint {
             constraint_index: 20,
             seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 0 },
+            owner: None,
+            opposite_owner: None,
             constrains_shared_height: true,
             is_material_transition: true,
             start_xz: RoadVec2::new(1.0, 0.0),
@@ -1712,6 +1916,8 @@ mod tests {
         let second = NodeRegionSeamConstraint {
             constraint_index: 21,
             seam_source: NodeSeamSource::AsphaltBoundary { owner_index: 1 },
+            owner: None,
+            opposite_owner: None,
             constrains_shared_height: true,
             is_material_transition: true,
             start_xz: RoadVec2::new(1.0, 0.0),
