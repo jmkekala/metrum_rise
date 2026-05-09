@@ -803,6 +803,106 @@ fn assert_outer_boundary_vertices_match_visible_top(piece: &RoadSurfaceVisualNod
     }
 }
 
+fn assert_material_top_supports_point(
+    polygons: &[RoadSurfaceVisualPolygon],
+    point: Vector3,
+    label: &str,
+) {
+    assert!(
+        polygons
+            .iter()
+            .any(|polygon| polygon_supports_top_point(polygon, point)),
+        "material top surface must support anchor point; label={label} point={point:?}"
+    );
+}
+
+fn polygon_supports_top_point(polygon: &RoadSurfaceVisualPolygon, point: Vector3) -> bool {
+    polygon_vertices_support_top_point(&polygon.points_world, point)
+        || polygon_edges_support_top_point(&polygon.points_world, point)
+        || polygon.triangles_world.iter().any(|triangle| {
+            triangle
+                .iter()
+                .any(|&candidate| top_points_match(candidate, point))
+                || triangle_edges_support_top_point(*triangle, point)
+        })
+}
+
+fn polygon_vertices_support_top_point(vertices: &[Vector3], point: Vector3) -> bool {
+    vertices
+        .iter()
+        .copied()
+        .any(|candidate| top_points_match(candidate, point))
+}
+
+fn polygon_edges_support_top_point(vertices: &[Vector3], point: Vector3) -> bool {
+    if vertices.len() < 2 {
+        return false;
+    }
+    (0..vertices.len()).any(|index| {
+        segment_supports_top_point(
+            point,
+            vertices[index],
+            vertices[(index + 1) % vertices.len()],
+        )
+    })
+}
+
+fn triangle_edges_support_top_point(triangle: [Vector3; 3], point: Vector3) -> bool {
+    (0..3)
+        .any(|index| segment_supports_top_point(point, triangle[index], triangle[(index + 1) % 3]))
+}
+
+fn segment_supports_top_point(point: Vector3, start: Vector3, end: Vector3) -> bool {
+    let segment = Vector2::new(end.x - start.x, end.z - start.z);
+    let len_squared = segment.length_squared();
+    if len_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+        return false;
+    }
+    let to_point = Vector2::new(point.x - start.x, point.z - start.z);
+    let t = (to_point.dot(segment) / len_squared).clamp(0.0, 1.0);
+    let candidate = start.lerp(end, t);
+    top_points_match(candidate, point)
+}
+
+fn top_points_match(candidate: Vector3, point: Vector3) -> bool {
+    test_xz_key(candidate) == test_xz_key(point) && (candidate.y - point.y).abs() <= 0.004
+}
+
+fn assert_debug_dump_mouth_seams_are_clean(dump: &str) {
+    let json_start = dump
+        .find('{')
+        .expect("road geometry dump should contain a JSON object");
+    let json_end = dump
+        .rfind('}')
+        .expect("road geometry dump should contain a JSON object");
+    let json: serde_json::Value = serde_json::from_str(&dump[json_start..=json_end])
+        .expect("road geometry dump JSON should parse");
+    let nodes = json["nodes"]
+        .as_array()
+        .expect("road geometry dump should include nodes");
+    let mut checked = 0usize;
+    for node in nodes {
+        let node_id = node["node_id"].as_u64().unwrap_or_default();
+        let mouth_seams = node["mouth_seams"]
+            .as_array()
+            .expect("node debug dump should include mouth seams");
+        for seam in mouth_seams {
+            checked += 1;
+            let problem_count = seam["problem_count"]
+                .as_u64()
+                .expect("mouth seam debug should include a problem count");
+            assert_eq!(
+                problem_count, 0,
+                "mouth seam debug must be clean; node_id={node_id} seam={seam}"
+            );
+        }
+    }
+    assert!(
+        checked > 0,
+        "road geometry dump should include mouth seam checks"
+    );
+}
+
 #[test]
 fn overlay_numeric_area_budget_accepts_logged_sub_visual_cdt_residual() {
     let small_four_edge_region = vec![vec![[0.0, 0.0], [0.02, 0.0], [0.02, 0.02], [0.0, 0.02]]];
@@ -1908,6 +2008,8 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[edge_idx]);
+    assert_debug_dump_mouth_seams_are_clean(&dump);
     let terminal_piece = surface
         .compiled_visual_node_pieces()
         .get(&start)
@@ -1920,6 +2022,42 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
         .start_mouth_profile
         .as_ref()
         .expect("terminal span should expose a start mouth profile");
+
+    let left_curb_upper = start_mouth.bands[1].end_point_world;
+    let left_road_lower = start_mouth.bands[2].start_point_world;
+    assert_eq!(test_xz_key(left_curb_upper), test_xz_key(left_road_lower));
+    assert!(
+        (left_curb_upper.y - left_road_lower.y - CURB_STEP_HEIGHT_M).abs() <= 0.004,
+        "left asphalt-curb mouth seam should keep the explicit vertical step"
+    );
+    assert_material_top_supports_point(
+        &terminal_piece.curb_surface_polygons,
+        left_curb_upper,
+        "straight terminal left curb upper mouth seam",
+    );
+    assert_material_top_supports_point(
+        &terminal_piece.road_surface_polygons,
+        left_road_lower,
+        "straight terminal left asphalt lower mouth seam",
+    );
+
+    let right_road_lower = start_mouth.bands[3].end_point_world;
+    let right_curb_upper = start_mouth.bands[4].start_point_world;
+    assert_eq!(test_xz_key(right_road_lower), test_xz_key(right_curb_upper));
+    assert!(
+        (right_curb_upper.y - right_road_lower.y - CURB_STEP_HEIGHT_M).abs() <= 0.004,
+        "right asphalt-curb mouth seam should keep the explicit vertical step"
+    );
+    assert_material_top_supports_point(
+        &terminal_piece.road_surface_polygons,
+        right_road_lower,
+        "straight terminal right asphalt lower mouth seam",
+    );
+    assert_material_top_supports_point(
+        &terminal_piece.curb_surface_polygons,
+        right_curb_upper,
+        "straight terminal right curb upper mouth seam",
+    );
 
     let travel = Vector2::new(40.0, 0.0).normalized();
     let lateral = RoadSurfaceSystem::left_normal_xz(travel);

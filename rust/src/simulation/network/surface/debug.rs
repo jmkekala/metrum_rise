@@ -31,6 +31,15 @@ struct DebugClosestTopVertex {
     y_delta_m: f32,
 }
 
+#[derive(Clone, Copy)]
+struct DebugMouthTopAnchor {
+    point_index: usize,
+    band_index: usize,
+    role: &'static str,
+    material: &'static str,
+    point: Vector3,
+}
+
 #[derive(Default)]
 struct DebugMatchStats {
     total: usize,
@@ -804,7 +813,6 @@ impl RoadSurfaceSystem {
         node_id: u32,
         piece: &RoadSurfaceVisualNodePiece,
     ) {
-        let top_vertices = Self::debug_top_vertices(piece);
         dump.push('[');
         let incident_edges = self.debug_incident_edges_for_node(graph, node_id);
         let mut first = true;
@@ -840,11 +848,12 @@ impl RoadSurfaceSystem {
 
             let mut stats = DebugMatchStats::default();
             let mut samples = Vec::new();
-            for (point_index, &point) in mouth.boundary_points_world.iter().enumerate() {
-                if !Self::mouth_boundary_point_requires_top_match(mouth, point_index) {
-                    continue;
-                }
-                let Some(closest) = Self::closest_debug_top_vertex(point, &top_vertices) else {
+            for anchor in Self::mouth_top_match_anchors(mouth) {
+                let Some(closest) = Self::closest_debug_top_support_for_material(
+                    anchor.point,
+                    anchor.material,
+                    piece,
+                ) else {
                     continue;
                 };
                 Self::update_debug_match_stats(&mut stats, closest);
@@ -852,8 +861,12 @@ impl RoadSurfaceSystem {
                     && samples.len() < DEBUG_MAX_PROBLEM_SAMPLES
                 {
                     let mut sample = String::new();
-                    let _ = write!(sample, "{{\"point\":{},\"mouth\":", point_index);
-                    Self::append_vector3_literal(&mut sample, point);
+                    let _ = write!(
+                        sample,
+                        "{{\"point\":{},\"band\":{},\"role\":\"{}\",\"expected_material\":\"{}\",\"mouth\":",
+                        anchor.point_index, anchor.band_index, anchor.role, anchor.material
+                    );
+                    Self::append_vector3_literal(&mut sample, anchor.point);
                     sample.push_str(",\"closest_material\":\"");
                     sample.push_str(closest.material);
                     sample.push_str("\",\"closest\":");
@@ -956,12 +969,60 @@ impl RoadSurfaceSystem {
         ]
     }
 
-    fn mouth_boundary_point_requires_top_match(
-        mouth: &IncidentMouthProfile,
-        point_index: usize,
-    ) -> bool {
-        Self::mouth_boundary_point_is_outer_footprint(mouth, point_index)
-            || Self::mouth_boundary_point_is_material_seam(mouth, point_index)
+    fn mouth_top_match_anchors(mouth: &IncidentMouthProfile) -> Vec<DebugMouthTopAnchor> {
+        let mut anchors = Vec::new();
+        if mouth.bands.is_empty() || mouth.boundary_points_world.len() != mouth.bands.len() + 1 {
+            return anchors;
+        }
+
+        for point_index in 0..mouth.boundary_points_world.len() {
+            if Self::mouth_boundary_point_is_outer_footprint(mouth, point_index) {
+                let (band_index, point) = if point_index == 0 {
+                    (0, mouth.bands[0].start_point_world)
+                } else {
+                    let band_index = mouth.bands.len() - 1;
+                    (band_index, mouth.bands[band_index].end_point_world)
+                };
+                anchors.push(DebugMouthTopAnchor {
+                    point_index,
+                    band_index,
+                    role: "outer_footprint",
+                    material: Self::debug_material_for_band_kind(mouth.bands[band_index].kind),
+                    point,
+                });
+                continue;
+            }
+
+            if !Self::mouth_boundary_point_is_material_seam(mouth, point_index) {
+                continue;
+            }
+
+            let before_index = point_index - 1;
+            let after_index = point_index;
+            anchors.push(DebugMouthTopAnchor {
+                point_index,
+                band_index: before_index,
+                role: "material_seam_before",
+                material: Self::debug_material_for_band_kind(mouth.bands[before_index].kind),
+                point: mouth.bands[before_index].end_point_world,
+            });
+            anchors.push(DebugMouthTopAnchor {
+                point_index,
+                band_index: after_index,
+                role: "material_seam_after",
+                material: Self::debug_material_for_band_kind(mouth.bands[after_index].kind),
+                point: mouth.bands[after_index].start_point_world,
+            });
+        }
+        anchors
+    }
+
+    fn debug_material_for_band_kind(kind: RoadSurfaceBandKind) -> &'static str {
+        match kind {
+            RoadSurfaceBandKind::Carriageway => "road",
+            RoadSurfaceBandKind::CurbOrShoulder => "curb",
+            _ => "sidewalk",
+        }
     }
 
     fn mouth_boundary_point_is_outer_footprint(
@@ -1199,6 +1260,101 @@ impl RoadSurfaceSystem {
             })
     }
 
+    fn closest_debug_top_support_for_material(
+        point: Vector3,
+        material: &'static str,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) -> Option<DebugClosestTopVertex> {
+        let polygons = match material {
+            "road" => &piece.road_surface_polygons,
+            "curb" => &piece.curb_surface_polygons,
+            _ => &piece.sidewalk_surface_polygons,
+        };
+        let mut best = None;
+        for polygon in polygons {
+            for &candidate in &polygon.points_world {
+                Self::update_closest_debug_top_support(&mut best, point, material, candidate);
+            }
+            for index in 0..polygon.points_world.len() {
+                let start = polygon.points_world[index];
+                let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
+                Self::update_closest_debug_top_segment_support(
+                    &mut best, point, material, start, end,
+                );
+            }
+            for triangle in &polygon.triangles_world {
+                for &candidate in triangle {
+                    Self::update_closest_debug_top_support(&mut best, point, material, candidate);
+                }
+                for index in 0..3 {
+                    Self::update_closest_debug_top_segment_support(
+                        &mut best,
+                        point,
+                        material,
+                        triangle[index],
+                        triangle[(index + 1) % 3],
+                    );
+                }
+            }
+        }
+        best
+    }
+
+    fn update_closest_debug_top_support(
+        best: &mut Option<DebugClosestTopVertex>,
+        point: Vector3,
+        material: &'static str,
+        candidate: Vector3,
+    ) {
+        let xz_error_m = Vector2::new(candidate.x - point.x, candidate.z - point.z).length();
+        let candidate = DebugClosestTopVertex {
+            material,
+            point: candidate,
+            xz_error_m,
+            y_delta_m: point.y - candidate.y,
+        };
+        Self::retain_closest_debug_top_support(best, candidate);
+    }
+
+    fn update_closest_debug_top_segment_support(
+        best: &mut Option<DebugClosestTopVertex>,
+        point: Vector3,
+        material: &'static str,
+        start: Vector3,
+        end: Vector3,
+    ) {
+        let segment_xz = Vector2::new(end.x - start.x, end.z - start.z);
+        let len_squared = segment_xz.length_squared();
+        if len_squared <= SAMPLE_EPSILON_M * SAMPLE_EPSILON_M {
+            return;
+        }
+        let to_point_xz = Vector2::new(point.x - start.x, point.z - start.z);
+        let t = (to_point_xz.dot(segment_xz) / len_squared).clamp(0.0, 1.0);
+        let candidate = start.lerp(end, t);
+        Self::update_closest_debug_top_support(best, point, material, candidate);
+    }
+
+    fn retain_closest_debug_top_support(
+        best: &mut Option<DebugClosestTopVertex>,
+        candidate: DebugClosestTopVertex,
+    ) {
+        let replace = best.is_none_or(|current| {
+            candidate
+                .xz_error_m
+                .total_cmp(&current.xz_error_m)
+                .then(
+                    candidate
+                        .y_delta_m
+                        .abs()
+                        .total_cmp(&current.y_delta_m.abs()),
+                )
+                .is_lt()
+        });
+        if replace {
+            *best = Some(candidate);
+        }
+    }
+
     fn update_debug_match_stats(stats: &mut DebugMatchStats, closest: DebugClosestTopVertex) {
         stats.total += 1;
         stats.max_xz_error_m = stats.max_xz_error_m.max(closest.xz_error_m);
@@ -1307,5 +1463,112 @@ impl RoadSurfaceSystem {
         } else {
             dump.push_str("null");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::simulation::network::surface::{IncidentMouthBand, RoadSurfaceVisualNodePieceKind};
+
+    fn polygon(points_world: Vec<Vector3>) -> RoadSurfaceVisualPolygon {
+        RoadSurfaceVisualPolygon {
+            points_world,
+            triangles_world: Vec::new(),
+        }
+    }
+
+    fn empty_node_piece() -> RoadSurfaceVisualNodePiece {
+        RoadSurfaceVisualNodePiece {
+            node_id: 0,
+            kind: RoadSurfaceVisualNodePieceKind::Terminal,
+            outer_boundary_loops: Vec::new(),
+            terrain_clip_boundary_loops: Vec::new(),
+            road_surface_polygons: Vec::new(),
+            curb_surface_polygons: Vec::new(),
+            curb_vertical_face_polygons: Vec::new(),
+            sidewalk_surface_polygons: Vec::new(),
+            owned_regions: Vec::new(),
+            earthwork_surface_polygons: Vec::new(),
+            earthwork_outer_boundary_loops: Vec::new(),
+            render_earthwork_faces: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn mouth_seam_debug_matches_vertical_step_anchors_by_material() {
+        let curb_anchor = Vector3::new(0.0, 0.12, 0.0);
+        let road_anchor = Vector3::new(0.0, 0.0, 0.0);
+        let mouth = IncidentMouthProfile {
+            inward_direction_xz: Vector2::RIGHT,
+            boundary_points_world: vec![
+                Vector3::new(-1.0, 0.12, 0.0),
+                curb_anchor,
+                Vector3::new(1.0, 0.0, 0.0),
+            ],
+            bands: vec![
+                IncidentMouthBand {
+                    kind: RoadSurfaceBandKind::CurbOrShoulder,
+                    start_point_world: Vector3::new(-1.0, 0.12, 0.0),
+                    end_point_world: curb_anchor,
+                },
+                IncidentMouthBand {
+                    kind: RoadSurfaceBandKind::Carriageway,
+                    start_point_world: road_anchor,
+                    end_point_world: Vector3::new(1.0, 0.0, 0.0),
+                },
+            ],
+        };
+
+        let mut piece = empty_node_piece();
+        piece.road_surface_polygons.push(polygon(vec![
+            Vector3::new(0.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(0.0, 0.0, -1.0),
+        ]));
+        piece.curb_surface_polygons.push(polygon(vec![
+            Vector3::new(-1.0, 0.12, -1.0),
+            Vector3::new(1.0, 0.12, 1.0),
+            Vector3::new(-1.0, 0.12, 1.0),
+        ]));
+
+        let material_blind = RoadSurfaceSystem::closest_debug_top_vertex(
+            curb_anchor,
+            &RoadSurfaceSystem::debug_top_vertices(&piece),
+        )
+        .expect("test piece should expose a top vertex");
+        assert_eq!(material_blind.material, "road");
+        assert!((material_blind.y_delta_m - 0.12).abs() <= f32::EPSILON);
+
+        let anchors = RoadSurfaceSystem::mouth_top_match_anchors(&mouth);
+        let curb_seam_anchor = anchors
+            .iter()
+            .find(|anchor| anchor.role == "material_seam_before")
+            .expect("curb side of asphalt-curb mouth seam should be checked");
+        assert_eq!(curb_seam_anchor.material, "curb");
+        let curb_match = RoadSurfaceSystem::closest_debug_top_support_for_material(
+            curb_seam_anchor.point,
+            curb_seam_anchor.material,
+            &piece,
+        )
+        .expect("curb material should support its seam anchor");
+        assert_eq!(curb_match.material, "curb");
+        assert!(curb_match.xz_error_m <= f32::EPSILON);
+        assert!(curb_match.y_delta_m.abs() <= f32::EPSILON);
+
+        let road_seam_anchor = anchors
+            .iter()
+            .find(|anchor| anchor.role == "material_seam_after")
+            .expect("road side of asphalt-curb mouth seam should be checked");
+        assert_eq!(road_seam_anchor.material, "road");
+        let road_match = RoadSurfaceSystem::closest_debug_top_support_for_material(
+            road_seam_anchor.point,
+            road_seam_anchor.material,
+            &piece,
+        )
+        .expect("road material should support its seam anchor");
+        assert_eq!(road_match.material, "road");
+        assert!(road_match.xz_error_m <= f32::EPSILON);
+        assert!(road_match.y_delta_m.abs() <= f32::EPSILON);
     }
 }
