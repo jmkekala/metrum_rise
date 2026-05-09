@@ -12,17 +12,23 @@ const SURFACE_MIN_TRIANGLE_DOUBLE_AREA_M2: f32 = 1.0e-8;
 const SURFACE_MIN_TRIANGLE_ALTITUDE_M: f32 = 0.01;
 
 impl RoadSurfaceSystem {
-    pub(super) fn make_visual_polygon(
-        mut points_world: Vec<Vector3>,
-    ) -> Option<RoadSurfaceVisualPolygon> {
+    pub(super) fn canonicalize_loop_points(mut points_world: Vec<Vector3>) -> Vec<Vector3> {
         points_world
             .dedup_by(|a, b| (*a - *b).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2);
         if points_world.len() >= 2
-            && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
+            && (points_world.first().copied().unwrap() - points_world.last().copied().unwrap())
+                .length_squared()
                 <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
         {
             points_world.pop();
         }
+        points_world
+    }
+
+    pub(super) fn make_visual_polygon(
+        mut points_world: Vec<Vector3>,
+    ) -> Option<RoadSurfaceVisualPolygon> {
+        points_world = Self::canonicalize_loop_points(points_world);
         if Self::polygon_has_strict_edge_crossing_xz(&points_world) {
             return None;
         }
@@ -51,14 +57,7 @@ impl RoadSurfaceSystem {
     pub(super) fn make_boundary_loop_polygon(
         mut points_world: Vec<Vector3>,
     ) -> Option<RoadSurfaceVisualPolygon> {
-        points_world
-            .dedup_by(|a, b| (*a - *b).length_squared() <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2);
-        if points_world.len() >= 2
-            && (points_world.first().copied()? - points_world.last().copied()?).length_squared()
-                <= WORLD_POINT_DEDUP_DISTANCE_SQUARED_M2
-        {
-            points_world.pop();
-        }
+        points_world = Self::canonicalize_loop_points(points_world);
         if points_world.len() < 3 {
             return None;
         }

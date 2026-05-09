@@ -750,7 +750,11 @@ impl RoadSurfaceSystem {
             }
 
             for simple_loop in split_boundary_segment_loop_at_repeated_xz(loop_segments) {
-                let points = boundary_points_from_segment_loop(&simple_loop);
+                let points =
+                    Self::canonicalize_loop_points(boundary_points_from_segment_loop(&simple_loop));
+                if points.len() < 3 {
+                    continue;
+                }
                 let area_m2 = Self::signed_polygon_area_xz(&points).abs();
                 if area_m2 <= boundary_points_numeric_area_budget_m2(&points) {
                     continue;
@@ -769,7 +773,11 @@ impl RoadSurfaceSystem {
     ) -> Result<Vec<RoadSurfaceVisualPolygon>, NodeBoundaryExportError> {
         let mut polygons = Vec::new();
         for canonical_loop in canonical_loops {
-            let points = boundary_points_from_segment_loop(canonical_loop);
+            let points =
+                Self::canonicalize_loop_points(boundary_points_from_segment_loop(canonical_loop));
+            if points.len() < 3 {
+                continue;
+            }
             let area_m2 = Self::signed_polygon_area_xz(&points).abs();
             if area_m2 <= boundary_points_numeric_area_budget_m2(&points) {
                 continue;
