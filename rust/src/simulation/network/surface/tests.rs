@@ -553,25 +553,32 @@ fn assert_terminal_band_interval_grid_is_not_duplicated_by_span(
     }
 }
 
-fn assert_vertical_curb_face_lower_edge_exists(
+fn assert_vertical_curb_face_lower_edge_covers(
     polygons: &[RoadSurfaceVisualPolygon],
     start: Vector3,
     end: Vector3,
     label: &str,
 ) {
-    let expected = normalized_test_xz_edge_key(start, end);
+    let start_key = test_xz_key(start);
+    let end_key = test_xz_key(end);
+    let expected_length = Vector2::new(end.x - start.x, end.z - start.z).length();
+    let covered_length = polygons
+        .iter()
+        .filter_map(vertical_face_lower_edge_for_test)
+        .filter(|edge| {
+            test_xz_key_lies_on_segment(test_xz_key(edge[0]), start_key, end_key)
+                && test_xz_key_lies_on_segment(test_xz_key(edge[1]), start_key, end_key)
+        })
+        .map(|edge| Vector2::new(edge[1].x - edge[0].x, edge[1].z - edge[0].z).length())
+        .sum::<f32>();
+
     assert!(
-        polygons
-            .iter()
-            .filter_map(vertical_face_lower_edge_key_for_test)
-            .any(|edge| edge == expected),
-        "vertical curb face lower edge must exist; label={label} start={start:?} end={end:?}"
+        covered_length + 0.001 >= expected_length,
+        "vertical curb face lower edge must cover expected segment; label={label} start={start:?} end={end:?} covered={covered_length:.4} expected={expected_length:.4}"
     );
 }
 
-fn vertical_face_lower_edge_key_for_test(
-    polygon: &RoadSurfaceVisualPolygon,
-) -> Option<((i64, i64), (i64, i64))> {
+fn vertical_face_lower_edge_for_test(polygon: &RoadSurfaceVisualPolygon) -> Option<[Vector3; 2]> {
     if polygon.points_world.len() != 4 {
         return None;
     }
@@ -589,20 +596,26 @@ fn vertical_face_lower_edge_key_for_test(
     if lower_points.len() != 2 {
         return None;
     }
-    Some(normalized_test_xz_edge_key(
-        lower_points[0],
-        lower_points[1],
-    ))
+    Some([lower_points[0], lower_points[1]])
 }
 
-fn normalized_test_xz_edge_key(start: Vector3, end: Vector3) -> ((i64, i64), (i64, i64)) {
-    let start = test_xz_key(start);
-    let end = test_xz_key(end);
-    if start <= end {
-        (start, end)
-    } else {
-        (end, start)
+fn test_xz_key_lies_on_segment(point: (i64, i64), start: (i64, i64), end: (i64, i64)) -> bool {
+    if point == start || point == end {
+        return true;
     }
+    if start == end {
+        return false;
+    }
+    let dx = i128::from(end.0 - start.0);
+    let dz = i128::from(end.1 - start.1);
+    let px = i128::from(point.0 - start.0);
+    let pz = i128::from(point.1 - start.1);
+    if px * dz - pz * dx != 0 {
+        return false;
+    }
+    let dot = px * dx + pz * dz;
+    let len_squared = dx * dx + dz * dz;
+    dot >= 0 && dot <= len_squared
 }
 
 fn test_xz_key(point: Vector3) -> (i64, i64) {
@@ -1976,13 +1989,13 @@ fn logged_terminal_handoff_keeps_both_sidewalk_edges_owned() {
         6,
         "right sidewalk interval at logged terminal start",
     );
-    assert_vertical_curb_face_lower_edge_exists(
+    assert_vertical_curb_face_lower_edge_covers(
         &start_terminal.curb_vertical_face_polygons,
         start_endpoint.boundary_points_world[2],
         start_mouth.boundary_points_world[2],
         "left longitudinal curb face at logged terminal handoff",
     );
-    assert_vertical_curb_face_lower_edge_exists(
+    assert_vertical_curb_face_lower_edge_covers(
         &start_terminal.curb_vertical_face_polygons,
         start_endpoint.boundary_points_world[4],
         start_mouth.boundary_points_world[4],

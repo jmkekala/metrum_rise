@@ -9,6 +9,7 @@ use super::{
     OrderedIncidentPieceMouth, RoadSurfaceBandKind, RoadSurfaceSystem,
     RoadSurfaceVisualNodePieceKind,
 };
+use godot::prelude::Vector3;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub(crate) enum NodeInputProfileKind {
@@ -345,8 +346,14 @@ fn profile_rails(
             profile_kind,
             band_index,
             band_kind: band.kind,
-            start_world: godot_vec3_to_road(band.start_point_world),
-            end_world: godot_vec3_to_road(band.end_point_world),
+            start_world: band_endpoint_with_boundary_xz(
+                band.start_point_world,
+                profile.boundary_points_world[band_index],
+            ),
+            end_world: band_endpoint_with_boundary_xz(
+                band.end_point_world,
+                profile.boundary_points_world[band_index + 1],
+            ),
         })
         .collect()
 }
@@ -380,13 +387,33 @@ fn band_intervals(mouth: &OrderedIncidentPieceMouth) -> Vec<NodeInputBandInterva
             |(band_index, (mouth_band, endpoint_band))| NodeInputBandInterval {
                 band_index,
                 band_kind: mouth_band.kind,
-                mouth_start_world: godot_vec3_to_road(mouth_band.start_point_world),
-                mouth_end_world: godot_vec3_to_road(mouth_band.end_point_world),
-                endpoint_start_world: godot_vec3_to_road(endpoint_band.start_point_world),
-                endpoint_end_world: godot_vec3_to_road(endpoint_band.end_point_world),
+                mouth_start_world: band_endpoint_with_boundary_xz(
+                    mouth_band.start_point_world,
+                    mouth.profile.boundary_points_world[band_index],
+                ),
+                mouth_end_world: band_endpoint_with_boundary_xz(
+                    mouth_band.end_point_world,
+                    mouth.profile.boundary_points_world[band_index + 1],
+                ),
+                endpoint_start_world: band_endpoint_with_boundary_xz(
+                    endpoint_band.start_point_world,
+                    mouth.endpoint_profile.boundary_points_world[band_index],
+                ),
+                endpoint_end_world: band_endpoint_with_boundary_xz(
+                    endpoint_band.end_point_world,
+                    mouth.endpoint_profile.boundary_points_world[band_index + 1],
+                ),
             },
         )
         .collect()
+}
+
+fn band_endpoint_with_boundary_xz(
+    band_point_world: Vector3,
+    boundary_point_world: Vector3,
+) -> RoadVec3 {
+    let boundary = godot_vec3_to_road(boundary_point_world);
+    RoadVec3::new(boundary.x, f64::from(band_point_world.y), boundary.z)
 }
 
 #[derive(Clone, Copy)]
@@ -2220,18 +2247,12 @@ fn push_terminal_curb_center_end_band(
 
     let inner_points = (start_boundary_index..=end_boundary_index)
         .map(|boundary_index| {
-            let height_m =
-                if boundary_index == start_boundary_index || boundary_index == end_boundary_index {
-                    curb_height_m
-                } else {
-                    f64::from(profile.boundary_points_world[boundary_index].y)
-                };
             offset_endpoint_boundary_point_with_height(
                 profile,
                 boundary_index,
                 outward,
                 0.0,
-                height_m,
+                curb_height_m,
             )
         })
         .collect::<Vec<_>>();
@@ -2647,7 +2668,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_curb_end_bands_do_not_raise_carriageway_center_boundary() {
+    fn terminal_curb_end_bands_keep_cap_inner_boundary_raised() {
         let input = NodeArrangementInput::from_ordered_mouths(
             42,
             RoadSurfaceVisualNodePieceKind::Terminal,
@@ -2656,20 +2677,22 @@ mod tests {
         .expect("valid two-carriageway terminal should produce canonical input");
         let mouth = &input.mouths[0];
         let center_boundary = mouth.boundary_rails[3].endpoint_world;
+        let mut center_is_raised = false;
 
         for end_band in &mouth.terminal_end_bands {
             if end_band.band_kind != RoadSurfaceBandKind::CurbOrShoulder {
                 continue;
             }
-            assert!(
-                !end_band.contour_world.iter().any(|point| {
-                    (point.x - center_boundary.x).abs() <= 0.001
-                        && (point.z - center_boundary.z).abs() <= 0.001
-                        && point.y > center_boundary.y + 0.001
-                }),
-                "terminal curb end band must not claim the carriageway center boundary at raised curb height: {end_band:?}"
-            );
+            center_is_raised |= end_band.contour_world.iter().any(|point| {
+                (point.x - center_boundary.x).abs() <= 0.001
+                    && (point.z - center_boundary.z).abs() <= 0.001
+                    && point.y > center_boundary.y + 0.001
+            });
         }
+        assert!(
+            center_is_raised,
+            "terminal curb cap inner edge must stay raised over the carriageway center split"
+        );
     }
 
     #[test]

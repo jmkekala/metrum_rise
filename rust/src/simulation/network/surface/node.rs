@@ -6,12 +6,11 @@ use super::{
     RoadSurfaceEarthworkRenderFace, RoadSurfaceSystem, RoadSurfaceTerrainClipEdgeKind,
     RoadSurfaceTerrainClipLoop, RoadSurfaceTerrainClipSourceEdge, RoadSurfaceVisualNodePiece,
     RoadSurfaceVisualNodePieceKind, RoadSurfaceVisualPolygon, SAMPLE_EPSILON_M,
-    arrangement::{NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeSeamSource},
-    backend::{RoadVec2, RoadVec3},
-    input::{
-        NodeArrangementInput, NodeInputExtractionError, NodeInputTerminalEndBand,
-        NodeInputTerminalEndBandBoundaryMode,
+    arrangement::{
+        NodeArrangement, NodeArrangementKey, NodeBandOwner, NodeExplicitVerticalStepSegment,
+        NodeSeamSource,
     },
+    input::NodeInputExtractionError,
     terrain_clip_edge_kind_for_band,
     validation::NodeValidationReport,
 };
@@ -340,7 +339,7 @@ impl RoadSurfaceSystem {
             return None;
         }
 
-        match Self::node_surface_regions_from_arrangement(&arrangement, &input) {
+        match Self::node_surface_regions_from_arrangement(&arrangement) {
             Ok(regions) => Some(regions),
             Err(error) => {
                 self.log_node_boundary_export_error(&arrangement, &error);
@@ -351,7 +350,6 @@ impl RoadSurfaceSystem {
 
     fn node_surface_regions_from_arrangement(
         arrangement: &NodeArrangement,
-        input: &NodeArrangementInput,
     ) -> Result<super::NodeSurfaceRegionResult, NodeBoundaryExportError> {
         let canonical_segments = Self::arrangement_outer_boundary_segments(arrangement)?;
         let canonical_loops =
@@ -376,8 +374,6 @@ impl RoadSurfaceSystem {
         }
         let mut curb_vertical_face_polygons =
             Self::curb_vertical_face_polygons_from_arrangement(arrangement);
-        curb_vertical_face_polygons
-            .extend(Self::terminal_curb_vertical_face_polygons_from_input(input));
         dedup_curb_vertical_face_polygons(&mut curb_vertical_face_polygons);
 
         if owned_regions.is_empty() {
@@ -422,28 +418,9 @@ impl RoadSurfaceSystem {
     ) -> Vec<RoadSurfaceVisualPolygon> {
         let mut emitted = BTreeSet::new();
         let mut faces = Vec::new();
-        for (edge_index, edge) in arrangement.edges().iter().enumerate() {
-            if !matches!(
-                edge.seam_source(),
-                NodeSeamSource::AsphaltCurbContact { .. }
-            ) {
-                continue;
-            }
-            let Some(start_vertex) = arrangement.vertices().get(edge.start().index()) else {
-                continue;
-            };
-            let Some(end_vertex) = arrangement.vertices().get(edge.end().index()) else {
-                continue;
-            };
-            let start_key = NodeArrangementKey::from_point(start_vertex.point_xz());
-            let end_key = NodeArrangementKey::from_point(end_vertex.point_xz());
-            let Some((lower_start, raised_start)) =
-                arrangement_vertical_step_points_at_key(arrangement, start_key)
-            else {
-                continue;
-            };
-            let Some((lower_end, raised_end)) =
-                arrangement_vertical_step_points_at_key(arrangement, end_key)
+        for segment in arrangement.explicit_vertical_step_segments() {
+            let Some((lower_start, raised_start, lower_end, raised_end)) =
+                arrangement_vertical_step_points_for_segment(arrangement, segment)
             else {
                 continue;
             };
@@ -457,19 +434,6 @@ impl RoadSurfaceSystem {
                 lower_start,
                 lower_end,
             )
-            .or_else(|| {
-                if edge.owner().kind() == RoadSurfaceBandKind::Carriageway {
-                    arrangement_owner_direction_for_edge(
-                        arrangement,
-                        edge_index,
-                        edge.owner(),
-                        lower_start,
-                        lower_end,
-                    )
-                } else {
-                    None
-                }
-            })
             .unwrap_or_else(|| {
                 let edge_direction = lower_end - lower_start;
                 Vector3::new(-edge_direction.z, 0.0, edge_direction.x)
@@ -481,127 +445,6 @@ impl RoadSurfaceSystem {
             }
             if let Some(face) = Self::make_vertical_quad_polygon(points) {
                 faces.push(face);
-            }
-        }
-        faces
-    }
-
-    fn terminal_curb_vertical_face_polygons_from_input(
-        input: &NodeArrangementInput,
-    ) -> Vec<RoadSurfaceVisualPolygon> {
-        if input.piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
-            return Vec::new();
-        }
-
-        let mut emitted = BTreeSet::new();
-        let mut faces = Vec::new();
-        for mouth in &input.mouths {
-            for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
-                if interval.band_kind != RoadSurfaceBandKind::CurbOrShoulder {
-                    continue;
-                }
-                if let Some(previous) = band_index
-                    .checked_sub(1)
-                    .and_then(|index| mouth.band_intervals.get(index))
-                    && previous.band_kind == RoadSurfaceBandKind::Carriageway
-                {
-                    push_terminal_curb_interval_vertical_face(
-                        &mut faces,
-                        &mut emitted,
-                        mouth.order_index,
-                        interval.endpoint_start_world,
-                        interval.mouth_start_world,
-                        previous.endpoint_end_world,
-                        previous.mouth_end_world,
-                        previous.endpoint_start_world,
-                        previous.mouth_start_world,
-                    );
-                }
-                if let Some(next) = mouth.band_intervals.get(band_index + 1)
-                    && next.band_kind == RoadSurfaceBandKind::Carriageway
-                {
-                    push_terminal_curb_interval_vertical_face(
-                        &mut faces,
-                        &mut emitted,
-                        mouth.order_index,
-                        interval.endpoint_end_world,
-                        interval.mouth_end_world,
-                        next.endpoint_start_world,
-                        next.mouth_start_world,
-                        next.endpoint_end_world,
-                        next.mouth_end_world,
-                    );
-                }
-            }
-
-            let mut carriageway_lower_by_key = BTreeMap::new();
-            for interval in &mouth.band_intervals {
-                if interval.band_kind != RoadSurfaceBandKind::Carriageway {
-                    continue;
-                }
-                insert_lower_terminal_cap_point(
-                    &mut carriageway_lower_by_key,
-                    interval.endpoint_start_world,
-                );
-                insert_lower_terminal_cap_point(
-                    &mut carriageway_lower_by_key,
-                    interval.endpoint_end_world,
-                );
-            }
-
-            let asphalt_direction = Vector3::new(
-                mouth.direction_xz.x as f32,
-                0.0,
-                mouth.direction_xz.y as f32,
-            );
-            for end_band in &mouth.terminal_end_bands {
-                if end_band.band_kind != RoadSurfaceBandKind::CurbOrShoulder
-                    || end_band.boundary_mode
-                        != NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
-                {
-                    continue;
-                }
-                let raised_points = terminal_end_band_inner_world_points(end_band);
-                for segment in raised_points.windows(2) {
-                    let raised_start = segment[0];
-                    let raised_end = segment[1];
-                    let start_key = road_vec3_xz_arrangement_key(raised_start);
-                    let end_key = road_vec3_xz_arrangement_key(raised_end);
-                    let Some(lower_start) = carriageway_lower_by_key.get(&start_key).copied()
-                    else {
-                        continue;
-                    };
-                    let Some(lower_end) = carriageway_lower_by_key.get(&end_key).copied() else {
-                        continue;
-                    };
-                    let lower_start_world = road_vec3_to_vector3(lower_start);
-                    let lower_end_world = road_vec3_to_vector3(lower_end);
-                    let key =
-                        normalized_arrangement_segment_key(lower_start_world, lower_end_world);
-                    if !emitted.insert((mouth.order_index, key)) {
-                        continue;
-                    }
-                    let raised_start_world = road_vec3_to_vector3(raised_start);
-                    let raised_end_world = road_vec3_to_vector3(raised_end);
-                    if (raised_start_world.y - lower_start_world.y).abs() <= SAMPLE_EPSILON_M
-                        && (raised_end_world.y - lower_end_world.y).abs() <= SAMPLE_EPSILON_M
-                    {
-                        continue;
-                    }
-                    let mut points = [
-                        raised_start_world,
-                        lower_start_world,
-                        lower_end_world,
-                        raised_end_world,
-                    ];
-                    let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-                    if face_normal.dot(asphalt_direction) > 0.0 {
-                        points = [points[3], points[2], points[1], points[0]];
-                    }
-                    if let Some(face) = Self::make_vertical_quad_polygon(points) {
-                        faces.push(face);
-                    }
-                }
             }
         }
         faces
@@ -1310,54 +1153,6 @@ fn normalized_arrangement_segment_key(
     }
 }
 
-fn push_terminal_curb_interval_vertical_face(
-    faces: &mut Vec<RoadSurfaceVisualPolygon>,
-    emitted: &mut BTreeSet<(usize, (NodeArrangementKey, NodeArrangementKey))>,
-    mouth_order_index: usize,
-    raised_start: RoadVec3,
-    raised_end: RoadVec3,
-    lower_start: RoadVec3,
-    lower_end: RoadVec3,
-    asphalt_inner_start: RoadVec3,
-    asphalt_inner_end: RoadVec3,
-) {
-    let raised_start_world = road_vec3_to_vector3(raised_start);
-    let raised_end_world = road_vec3_to_vector3(raised_end);
-    let lower_start_world = road_vec3_to_vector3(lower_start);
-    let lower_end_world = road_vec3_to_vector3(lower_end);
-    if (raised_start_world.y - lower_start_world.y).abs() <= SAMPLE_EPSILON_M
-        && (raised_end_world.y - lower_end_world.y).abs() <= SAMPLE_EPSILON_M
-    {
-        return;
-    }
-
-    let key = normalized_arrangement_segment_key(lower_start_world, lower_end_world);
-    if !emitted.insert((mouth_order_index, key)) {
-        return;
-    }
-
-    let asphalt_inner_start = road_vec3_to_vector3(asphalt_inner_start);
-    let asphalt_inner_end = road_vec3_to_vector3(asphalt_inner_end);
-    let asphalt_direction = Vector3::new(
-        asphalt_inner_start.x - raised_start_world.x + asphalt_inner_end.x - raised_end_world.x,
-        0.0,
-        asphalt_inner_start.z - raised_start_world.z + asphalt_inner_end.z - raised_end_world.z,
-    );
-    let mut points = [
-        raised_start_world,
-        lower_start_world,
-        lower_end_world,
-        raised_end_world,
-    ];
-    let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
-    if face_normal.dot(asphalt_direction) > 0.0 {
-        points = [points[3], points[2], points[1], points[0]];
-    }
-    if let Some(face) = RoadSurfaceSystem::make_vertical_quad_polygon(points) {
-        faces.push(face);
-    }
-}
-
 fn dedup_curb_vertical_face_polygons(polygons: &mut Vec<RoadSurfaceVisualPolygon>) {
     let mut emitted = BTreeSet::new();
     polygons.retain(|polygon| {
@@ -1394,69 +1189,62 @@ fn curb_vertical_face_lower_edge_key(
     ))
 }
 
-fn terminal_end_band_inner_world_points(end_band: &NodeInputTerminalEndBand) -> Vec<RoadVec3> {
-    if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
-        && end_band.contour_world.len() > 4
-        && end_band.contour_world.len() % 2 == 0
-    {
-        return end_band
-            .contour_world
-            .iter()
-            .copied()
-            .take(end_band.contour_world.len() / 2)
-            .collect();
+fn arrangement_vertical_step_points_for_segment(
+    arrangement: &NodeArrangement,
+    segment: NodeExplicitVerticalStepSegment,
+) -> Option<(Vector3, Vector3, Vector3, Vector3)> {
+    let (lower_owner, raised_owner) = explicit_step_lower_and_raised_owners(segment)?;
+    let lower_start =
+        arrangement_step_point_at_key(arrangement, segment.start(), lower_owner, false)?;
+    let raised_start =
+        arrangement_step_point_at_key(arrangement, segment.start(), raised_owner, true)?;
+    let lower_end = arrangement_step_point_at_key(arrangement, segment.end(), lower_owner, false)?;
+    let raised_end = arrangement_step_point_at_key(arrangement, segment.end(), raised_owner, true)?;
+    ((raised_start.y - lower_start.y > SAMPLE_EPSILON_M)
+        || (raised_end.y - lower_end.y > SAMPLE_EPSILON_M))
+        .then_some((lower_start, raised_start, lower_end, raised_end))
+}
+
+fn explicit_step_lower_and_raised_owners(
+    segment: NodeExplicitVerticalStepSegment,
+) -> Option<(NodeBandOwner, NodeBandOwner)> {
+    match (segment.owner().kind(), segment.opposite_owner().kind()) {
+        (RoadSurfaceBandKind::Carriageway, RoadSurfaceBandKind::CurbOrShoulder) => {
+            Some((segment.owner(), segment.opposite_owner()))
+        }
+        (RoadSurfaceBandKind::CurbOrShoulder, RoadSurfaceBandKind::Carriageway) => {
+            Some((segment.opposite_owner(), segment.owner()))
+        }
+        _ => None,
     }
-    vec![end_band.inner_start_world, end_band.inner_end_world]
 }
 
-fn insert_lower_terminal_cap_point(
-    points_by_key: &mut BTreeMap<NodeArrangementKey, RoadVec3>,
-    point: RoadVec3,
-) {
-    points_by_key
-        .entry(road_vec3_xz_arrangement_key(point))
-        .and_modify(|existing| {
-            if point.y < existing.y {
-                *existing = point;
-            }
-        })
-        .or_insert(point);
-}
-
-fn road_vec3_xz_arrangement_key(point: RoadVec3) -> NodeArrangementKey {
-    NodeArrangementKey::from_point(RoadVec2::new(point.x, point.z))
-}
-
-fn road_vec3_to_vector3(point: RoadVec3) -> Vector3 {
-    Vector3::new(point.x as f32, point.y as f32, point.z as f32)
-}
-
-fn arrangement_vertical_step_points_at_key(
+fn arrangement_step_point_at_key(
     arrangement: &NodeArrangement,
     key: NodeArrangementKey,
-) -> Option<(Vector3, Vector3)> {
-    let mut lower = None;
-    let mut raised = None;
-    for vertex in arrangement
-        .vertices()
-        .iter()
-        .filter(|vertex| NodeArrangementKey::from_point(vertex.point_xz()) == key)
-    {
+    owner: NodeBandOwner,
+    prefer_raised: bool,
+) -> Option<Vector3> {
+    let mut selected = None;
+    for vertex in arrangement.vertices().iter().filter(|vertex| {
+        NodeArrangementKey::from_point(vertex.point_xz()) == key && vertex.owners().contains(&owner)
+    }) {
         let point = Vector3::new(
             vertex.point_xz().x as f32,
             vertex.height_m() as f32,
             vertex.point_xz().y as f32,
         );
-        if lower.is_none_or(|candidate: Vector3| point.y < candidate.y) {
-            lower = Some(point);
-        }
-        if raised.is_none_or(|candidate: Vector3| point.y > candidate.y) {
-            raised = Some(point);
+        if selected.is_none_or(|candidate: Vector3| {
+            if prefer_raised {
+                point.y > candidate.y
+            } else {
+                point.y < candidate.y
+            }
+        }) {
+            selected = Some(point);
         }
     }
-    let lower = lower?;
-    let raised = raised?;
-    (raised.y - lower.y > SAMPLE_EPSILON_M).then_some((lower, raised))
+    selected
 }
 
 fn arrangement_carriageway_direction_for_segment(
@@ -1619,22 +1407,10 @@ fn arrangement_has_explicit_asphalt_curb_step_at_key(
     arrangement: &NodeArrangement,
     key: NodeArrangementKey,
 ) -> bool {
-    arrangement.edges().iter().any(|edge| {
-        if !edge.is_explicit_vertical_step() {
-            return false;
-        }
-        let Some(start) = arrangement.vertices().get(edge.start().index()) else {
-            return false;
-        };
-        let Some(end) = arrangement.vertices().get(edge.end().index()) else {
-            return false;
-        };
-        arrangement_key_lies_on_segment(
-            key,
-            NodeArrangementKey::from_point(start.point_xz()),
-            NodeArrangementKey::from_point(end.point_xz()),
-        )
-    })
+    arrangement
+        .explicit_vertical_step_segments()
+        .iter()
+        .any(|segment| arrangement_key_lies_on_segment(key, segment.start(), segment.end()))
 }
 
 fn arrangement_key_lies_on_segment(

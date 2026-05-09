@@ -965,15 +965,6 @@ fn materialize_noded_region_seam_constraints(
             let Some(region) = regions.get(edge_ref.region_index) else {
                 continue;
             };
-            if !owned_source_constraints_for_edge(
-                edge_key.start,
-                edge_key.end,
-                &region.seam_constraints,
-            )
-            .is_empty()
-            {
-                continue;
-            }
             for constraint in rail_constraints
                 .iter()
                 .filter(|constraint| constraint_applies_to_owner(constraint, edge_ref.owner))
@@ -1129,10 +1120,54 @@ fn canonicalize_owned_region_rings_with_rail_constraints(
     if constraint_points.is_empty() {
         return;
     }
+    let canonical_point_by_projected_key =
+        canonical_rail_point_by_projected_key(&constraint_points);
 
     for region in regions {
         for contour in &mut region.shape {
+            snap_owned_region_contour_to_rail_constraint_points(
+                contour,
+                &canonical_point_by_projected_key,
+            );
             *contour = noded_owned_region_contour(contour, &constraint_points);
+        }
+    }
+}
+
+fn canonical_rail_point_by_projected_key(
+    constraint_points: &[NodeOwnershipPointKey],
+) -> BTreeMap<NodeOwnershipPointKey, Option<NodeOwnershipPointKey>> {
+    let mut canonical_by_projected_key = BTreeMap::new();
+    for point in constraint_points.iter().copied() {
+        canonical_by_projected_key
+            .entry(project_ownership_key(point))
+            .and_modify(|existing| {
+                if *existing != Some(point) {
+                    *existing = None;
+                }
+            })
+            .or_insert(Some(point));
+    }
+    canonical_by_projected_key
+}
+
+fn snap_owned_region_contour_to_rail_constraint_points(
+    contour: &mut NodeOverlayContour,
+    canonical_point_by_projected_key: &BTreeMap<
+        NodeOwnershipPointKey,
+        Option<NodeOwnershipPointKey>,
+    >,
+) {
+    for point in contour {
+        let key = overlay_point_key(*point);
+        let Some(canonical_key) = canonical_point_by_projected_key
+            .get(&project_ownership_key(key))
+            .and_then(|canonical_key| *canonical_key)
+        else {
+            continue;
+        };
+        if canonical_key != key {
+            *point = overlay_point_from_key(canonical_key);
         }
     }
 }
@@ -2267,6 +2302,47 @@ mod tests {
         );
 
         assert!(arrangement.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn canonicalizes_overlay_vertex_drift_to_unique_source_rail_key() {
+        let curb = NodeBandOwner::new(RoadSurfaceBandKind::CurbOrShoulder, 1);
+        let mut regions = vec![test_owned_region(
+            RoadSurfaceBandKind::CurbOrShoulder,
+            curb,
+            vec![[0.0, 0.0], [1.000004, 0.0], [1.000004, 2.0], [0.0, 2.0]],
+        )];
+        let rail_constraints = vec![NodeRailConstraint {
+            constraint_index: 33,
+            kind: NodeRailConstraintKind::CurbSidewalkContact,
+            source_mouth_order_index: 0,
+            source_band_index: Some(1),
+            source_boundary_index: Some(1),
+            owner: Some(curb),
+            opposite_owner: None,
+            points_xz: vec![RoadVec2::new(1.0, 0.0), RoadVec2::new(1.0, 2.0)],
+        }];
+
+        canonicalize_owned_region_rings_with_rail_constraints(&mut regions, &rail_constraints);
+
+        let contour = &regions[0].shape[0];
+        assert!(
+            contour
+                .iter()
+                .any(|point| overlay_point_key(*point) == road_point_key(RoadVec2::new(1.0, 0.0)))
+        );
+        assert!(
+            contour
+                .iter()
+                .any(|point| overlay_point_key(*point) == road_point_key(RoadVec2::new(1.0, 2.0)))
+        );
+        assert!(
+            contour.iter().all(|point| {
+                overlay_point_key(*point) != overlay_point_key([1.000004, 0.0])
+                    && overlay_point_key(*point) != overlay_point_key([1.000004, 2.0])
+            }),
+            "owned region vertices must use the canonical source rail keys, not overlay drift"
+        );
     }
 
     #[test]

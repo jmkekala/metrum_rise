@@ -338,20 +338,17 @@ impl NodeArrangement {
 
     pub(crate) fn explicit_vertical_step_segments(&self) -> Vec<NodeExplicitVerticalStepSegment> {
         let mut segments = BTreeSet::new();
+        let mut constraint_segment_keys = BTreeSet::new();
         for region in &self.regions {
             for constraint in &region.seam_constraints {
                 if let Some(segment) = explicit_vertical_step_segment_from_constraint(constraint) {
+                    constraint_segment_keys.insert((segment.start(), segment.end()));
                     segments.insert(segment);
                 }
             }
         }
         for edge in &self.edges {
             if !edge.is_explicit_vertical_step() {
-                continue;
-            }
-            if self.piece_kind == RoadSurfaceVisualNodePieceKind::Terminal
-                && self.edge_has_owner_pair_source_constraint(edge)
-            {
                 continue;
             }
             let Some(opposite_owner) = edge.opposite_owner else {
@@ -363,6 +360,16 @@ impl NodeArrangement {
             let Some(end) = self.vertices.get(edge.end.0).map(|vertex| vertex.key) else {
                 continue;
             };
+            let edge_segment_key = if start <= end {
+                (start, end)
+            } else {
+                (end, start)
+            };
+            if self.piece_kind == RoadSurfaceVisualNodePieceKind::Terminal
+                && constraint_segment_keys.contains(&edge_segment_key)
+            {
+                continue;
+            }
             if let Some(segment) =
                 NodeExplicitVerticalStepSegment::new(start, end, edge.owner, opposite_owner)
             {
@@ -996,6 +1003,10 @@ impl NodeArrangementVertex {
 
     pub(crate) fn height_field_id(&self) -> NodeBandHeightFieldId {
         self.height_field_id
+    }
+
+    pub(crate) fn owners(&self) -> &[NodeBandOwner] {
+        &self.owners
     }
 }
 

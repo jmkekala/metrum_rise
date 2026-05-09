@@ -1292,9 +1292,9 @@ mod tests {
     }
 
     #[test]
-    fn terminal_material_band_height_field_respects_inner_rail_vertices() {
+    fn terminal_material_band_height_field_keeps_curb_cap_inner_rail_raised() {
         let inner_start = RoadVec3::new(0.0, 0.12, -1.0);
-        let inner_center = RoadVec3::new(0.0, 0.0, 0.0);
+        let inner_center = RoadVec3::new(0.0, 0.12, 0.0);
         let inner_end = RoadVec3::new(0.0, 0.12, 1.0);
         let outer_start = RoadVec3::new(0.15, 0.12, -1.0);
         let outer_center = RoadVec3::new(0.15, 0.12, 0.0);
@@ -1331,8 +1331,8 @@ mod tests {
         };
 
         assert!(
-            height.abs() <= 1.0e-6,
-            "terminal material band must keep the explicit inner rail center height"
+            (height - 0.12).abs() <= 1.0e-6,
+            "terminal curb cap inner rail must stay raised across the carriageway split"
         );
     }
 

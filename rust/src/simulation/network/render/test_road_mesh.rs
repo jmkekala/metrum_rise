@@ -944,6 +944,88 @@ mod tests {
     }
 
     #[test]
+    fn test_two_carriageway_terminal_cap_upper_edge_stays_raised_and_closed() {
+        let renderer = RoadRenderer;
+        let terrain = TerrainSystem::new(128, 128);
+        let lane_system = crate::simulation::network::lanes::LaneSystem::new();
+        let mut graph = RegionGraph::new();
+
+        let n0 = graph.add_node(Vector3::new(-20.0, 0.0, 0.0), NodeType::Junction);
+        let n1 = graph.add_node(Vector3::new(20.0, 0.0, 0.0), NodeType::Junction);
+        graph.add_edge(create_surface_edge(
+            n0,
+            n1,
+            &[Vector3::new(-20.0, 0.0, 0.0), Vector3::new(20.0, 0.0, 0.0)],
+            10.0,
+            TransitType::Road,
+            EdgeClass::Standard,
+            TransitFlags::CAR | TransitFlags::FOOT,
+            1,
+            1,
+        ));
+
+        graph.rebuild_adjacency_list();
+        let mesh_data = renderer.generate_mesh_data(&graph, &lane_system, &terrain);
+        validate_mesh(&mesh_data, 60.0);
+
+        let road_boundary_edges = top_surface_boundary_edges(&mesh_data.road_vertices);
+        let curb_top_boundary_edges = top_surface_boundary_edges(&mesh_data.curb_vertices);
+        let mut start_lower_length = 0.0f32;
+        let mut start_upper_length = 0.0f32;
+        let mut end_lower_length = 0.0f32;
+        let mut end_upper_length = 0.0f32;
+
+        for edge in vertical_curb_face_horizontal_edges(&mesh_data.curb_vertical_vertices) {
+            let Some(region) = curb_face_region(edge) else {
+                continue;
+            };
+            if !matches!(
+                region,
+                CurbFaceRegion::StartTerminalCap | CurbFaceRegion::EndTerminalCap
+            ) {
+                continue;
+            }
+
+            let edge_key = RenderEdgeKey::new(edge[0], edge[1]);
+            let matches_road = road_boundary_edges.contains(&edge_key);
+            let matches_curb_top = curb_top_boundary_edges.contains(&edge_key);
+            assert!(
+                matches_road ^ matches_curb_top,
+                "terminal cap vertical edge must close against exactly one adjacent top boundary; edge={edge:?} matches_road={matches_road} matches_curb_top={matches_curb_top}"
+            );
+
+            let length = Vector2::new(edge[1].x - edge[0].x, edge[1].z - edge[0].z).length();
+            match (region, matches_road) {
+                (CurbFaceRegion::StartTerminalCap, true) => start_lower_length += length,
+                (CurbFaceRegion::StartTerminalCap, false) => {
+                    assert!(
+                        edge[0].y >= 0.119 && edge[1].y >= 0.119,
+                        "start terminal cap upper edge must stay at raised curb height; edge={edge:?}"
+                    );
+                    start_upper_length += length;
+                }
+                (CurbFaceRegion::EndTerminalCap, true) => end_lower_length += length,
+                (CurbFaceRegion::EndTerminalCap, false) => {
+                    assert!(
+                        edge[0].y >= 0.119 && edge[1].y >= 0.119,
+                        "end terminal cap upper edge must stay at raised curb height; edge={edge:?}"
+                    );
+                    end_upper_length += length;
+                }
+                _ => {}
+            }
+        }
+
+        assert!(
+            start_lower_length >= 9.9
+                && start_upper_length >= 9.9
+                && end_lower_length >= 9.9
+                && end_upper_length >= 9.9,
+            "terminal cap faces must cover the full two-carriageway mouth; start_lower={start_lower_length:.3} start_upper={start_upper_length:.3} end_lower={end_lower_length:.3} end_upper={end_upper_length:.3}"
+        );
+    }
+
+    #[test]
     fn test_walkway_connection_keeps_road_core_owned_by_asphalt() {
         let main = [Vector3::new(-30.0, 0.0, 0.0), Vector3::new(30.0, 0.0, 0.0)];
         let walkway = [Vector3::new(-12.0, 0.0, -12.0), Vector3::ZERO];
