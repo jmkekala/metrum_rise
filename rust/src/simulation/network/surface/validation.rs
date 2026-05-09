@@ -18,15 +18,13 @@ use super::{
 };
 use parry2d::math::{Pose, Vector};
 use parry2d::query::PointQuery;
-use parry2d::shape::{Segment, SegmentPointLocation};
-use parry2d::utils::{SegmentsIntersection, segments_intersection2d};
+use parry2d::shape::Segment;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 const VALIDATION_KEY_SCALE: f64 = 1000.0;
 const VALIDATION_POINT_KEY_SCALE: f64 = ROAD_OVERLAY_COORDINATE_SCALE;
 const VALIDATION_MIN_SEGMENT_LENGTH_M: f32 = 0.000001;
-const VALIDATION_PARALLEL_EPSILON_M: f32 = 0.001;
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct NodeValidationReport {
@@ -66,6 +64,7 @@ pub(crate) enum NodeGeometryBackend {
     CavalierContours,
     IOverlay,
     Splines,
+    CanonicalKeys,
     Parry2d,
     Spade,
 }
@@ -190,6 +189,7 @@ struct NodeValidationEdgeKey {
 struct BoundarySegment {
     index: usize,
     edge: [usize; 2],
+    key_edge: NodeValidationEdgeKey,
     segment: Segment,
 }
 
@@ -1162,6 +1162,7 @@ impl NodeGeometryBackend {
             Self::CavalierContours => "cavalier_contours",
             Self::IOverlay => "i_overlay",
             Self::Splines => "splines",
+            Self::CanonicalKeys => "canonical_keys",
             Self::Parry2d => "parry2d",
             Self::Spade => "spade",
         }
@@ -1214,7 +1215,7 @@ fn validate_boundary_constraints(
     diagnostics: &mut Vec<NodeGeometryDiagnostic>,
 ) -> Vec<BoundarySegment> {
     let mut seen_constraints = BTreeSet::new();
-    let mut boundary_degree = BTreeMap::<usize, usize>::new();
+    let mut boundary_degree = BTreeMap::<NodeValidationPointKey, usize>::new();
     let mut boundary_segments = Vec::with_capacity(region.boundary_constraints.len());
 
     for (constraint_index, constraint) in region.boundary_constraints.iter().copied().enumerate() {
@@ -1245,11 +1246,25 @@ fn validate_boundary_constraints(
             continue;
         }
         let normalized = normalized_constraint(constraint[0], constraint[1]);
-        if !seen_constraints.insert(normalized) {
+        let key_edge = edge_key_for_indices(region, normalized);
+        if key_edge.is_degenerate() {
             push_validation_diagnostic(
                 solution,
                 diagnostics,
-                NodeGeometryBackend::Parry2d,
+                NodeGeometryBackend::CanonicalKeys,
+                NodeGeometryDiagnosticKind::InvalidConstraint {
+                    region_index,
+                    constraint_index: Some(constraint_index),
+                    reason: NodeInvalidConstraintReason::Degenerate,
+                },
+            );
+            continue;
+        }
+        if !seen_constraints.insert(key_edge) {
+            push_validation_diagnostic(
+                solution,
+                diagnostics,
+                NodeGeometryBackend::CanonicalKeys,
                 NodeGeometryDiagnosticKind::InvalidConstraint {
                     region_index,
                     constraint_index: Some(constraint_index),
@@ -1262,24 +1277,25 @@ fn validate_boundary_constraints(
         // Constraint identity is the canonical vertex pair, not the f32 Parry segment length.
         // Overlay-grid-distinct endpoint connectors can collapse after the f32 conversion.
         let segment = parry_segment_for_edge(region, normalized);
-        *boundary_degree.entry(normalized[0]).or_default() += 1;
-        *boundary_degree.entry(normalized[1]).or_default() += 1;
+        *boundary_degree.entry(key_edge.start).or_default() += 1;
+        *boundary_degree.entry(key_edge.end).or_default() += 1;
         boundary_segments.push(BoundarySegment {
             index: constraint_index,
             edge: normalized,
+            key_edge,
             segment,
         });
     }
 
-    for (vertex_index, degree) in boundary_degree {
+    for (_point_key, degree) in boundary_degree {
         if degree != 2 {
             push_validation_diagnostic(
                 solution,
                 diagnostics,
-                NodeGeometryBackend::Parry2d,
+                NodeGeometryBackend::CanonicalKeys,
                 NodeGeometryDiagnosticKind::OpenBoundary {
                     region_index,
-                    vertex_index: Some(vertex_index),
+                    vertex_index: None,
                     degree,
                 },
             );
@@ -1301,22 +1317,14 @@ fn validate_constraint_crossings(
             if shares_endpoint(first.edge, second.edge) {
                 continue;
             }
-            if crossing_is_numeric_endpoint_connector(first, second, boundary_segments) {
+            if key_edges_share_endpoint(first.key_edge, second.key_edge) {
                 continue;
             }
-            if segments_intersection2d(
-                first.segment.a,
-                first.segment.b,
-                second.segment.a,
-                second.segment.b,
-                VALIDATION_PARALLEL_EPSILON_M,
-            )
-            .is_some_and(|intersection| strict_intersection(intersection))
-            {
+            if canonical_key_segments_strictly_intersect(first.key_edge, second.key_edge) {
                 let region = &solution.regions[region_index];
                 crate::debug_log!(
                     "road",
-                    "node_constraint_crossing node_id={} piece_kind={:?} region={} kind={:?} owner={:?} first_constraint={} second_constraint={} first=({:.6},{:.6})->({:.6},{:.6}) second=({:.6},{:.6})->({:.6},{:.6})",
+                    "node_constraint_crossing node_id={} piece_kind={:?} region={} kind={:?} owner={:?} backend=canonical_keys first_constraint={} second_constraint={} first_key=({},{})->({},{}) second_key=({},{})->({},{}) first=({:.6},{:.6})->({:.6},{:.6}) second=({:.6},{:.6})->({:.6},{:.6})",
                     solution.node_id,
                     solution.piece_kind,
                     region_index,
@@ -1324,6 +1332,14 @@ fn validate_constraint_crossings(
                     region.owner,
                     first.index,
                     second.index,
+                    first.key_edge.start.x_key,
+                    first.key_edge.start.z_key,
+                    first.key_edge.end.x_key,
+                    first.key_edge.end.z_key,
+                    second.key_edge.start.x_key,
+                    second.key_edge.start.z_key,
+                    second.key_edge.end.x_key,
+                    second.key_edge.end.z_key,
                     first.segment.a.x,
                     first.segment.a.y,
                     first.segment.b.x,
@@ -1336,7 +1352,7 @@ fn validate_constraint_crossings(
                 push_validation_diagnostic(
                     solution,
                     diagnostics,
-                    NodeGeometryBackend::Parry2d,
+                    NodeGeometryBackend::CanonicalKeys,
                     NodeGeometryDiagnosticKind::InvalidConstraint {
                         region_index,
                         constraint_index: Some(first.index.min(second.index)),
@@ -1348,36 +1364,71 @@ fn validate_constraint_crossings(
     }
 }
 
-fn crossing_is_numeric_endpoint_connector(
-    first: BoundarySegment,
-    second: BoundarySegment,
-    boundary_segments: &[BoundarySegment],
-) -> bool {
-    let connector_budget_m2 = boundary_connector_numeric_budget_m2(boundary_segments);
-    for first_endpoint in first.edge {
-        for second_endpoint in second.edge {
-            let connector_edge = normalized_constraint(first_endpoint, second_endpoint);
-            let Some(connector) = boundary_segments
-                .iter()
-                .find(|segment| segment.edge == connector_edge)
-            else {
-                continue;
-            };
-            let connector_delta = connector.segment.b - connector.segment.a;
-            if connector_delta.length_squared() <= connector_budget_m2 {
-                return true;
-            }
-        }
-    }
-    false
+fn key_edges_share_endpoint(a: NodeValidationEdgeKey, b: NodeValidationEdgeKey) -> bool {
+    a.start == b.start || a.start == b.end || a.end == b.start || a.end == b.end
 }
 
-fn boundary_connector_numeric_budget_m2(boundary_segments: &[BoundarySegment]) -> f32 {
-    let perimeter_m = boundary_segments
-        .iter()
-        .map(|segment| (segment.segment.b - segment.segment.a).length())
-        .sum::<f32>();
-    RoadSurfaceSystem::overlay_numeric_area_budget_m2(perimeter_m, boundary_segments.len())
+fn canonical_key_segments_strictly_intersect(
+    first: NodeValidationEdgeKey,
+    second: NodeValidationEdgeKey,
+) -> bool {
+    let [a, b] = first.endpoints();
+    let [c, d] = second.endpoints();
+    if key_edges_share_endpoint(first, second) {
+        return false;
+    }
+
+    let ab_c = orientation(a, b, c);
+    let ab_d = orientation(a, b, d);
+    let cd_a = orientation(c, d, a);
+    let cd_b = orientation(c, d, b);
+
+    if ab_c == 0 && ab_d == 0 && cd_a == 0 && cd_b == 0 {
+        return collinear_segments_overlap_with_positive_length(a, b, c, d);
+    }
+
+    if ab_c == 0 || ab_d == 0 || cd_a == 0 || cd_b == 0 {
+        return false;
+    }
+
+    signs_differ(ab_c, ab_d) && signs_differ(cd_a, cd_b)
+}
+
+fn orientation(
+    a: NodeValidationPointKey,
+    b: NodeValidationPointKey,
+    c: NodeValidationPointKey,
+) -> i128 {
+    let ab_x = i128::from(b.x_key) - i128::from(a.x_key);
+    let ab_z = i128::from(b.z_key) - i128::from(a.z_key);
+    let ac_x = i128::from(c.x_key) - i128::from(a.x_key);
+    let ac_z = i128::from(c.z_key) - i128::from(a.z_key);
+    ab_x * ac_z - ab_z * ac_x
+}
+
+fn signs_differ(a: i128, b: i128) -> bool {
+    (a < 0 && b > 0) || (a > 0 && b < 0)
+}
+
+fn collinear_segments_overlap_with_positive_length(
+    a: NodeValidationPointKey,
+    b: NodeValidationPointKey,
+    c: NodeValidationPointKey,
+    d: NodeValidationPointKey,
+) -> bool {
+    if a.x_key != b.x_key || c.x_key != d.x_key {
+        intervals_overlap_with_positive_length(a.x_key, b.x_key, c.x_key, d.x_key)
+    } else {
+        intervals_overlap_with_positive_length(a.z_key, b.z_key, c.z_key, d.z_key)
+    }
+}
+
+fn intervals_overlap_with_positive_length(a0: i64, a1: i64, b0: i64, b1: i64) -> bool {
+    let a_min = a0.min(a1);
+    let a_max = a0.max(a1);
+    let b_min = b0.min(b1);
+    let b_max = b0.max(b1);
+    a_min.max(b_min) < a_max.min(b_max)
 }
 
 fn validate_triangles(
@@ -1614,16 +1665,6 @@ fn point_lies_on_boundary_constraint(point: Vector, boundary_segments: &[Boundar
     })
 }
 
-fn strict_intersection(intersection: SegmentsIntersection) -> bool {
-    match intersection {
-        SegmentsIntersection::Point { loc1, loc2 } => {
-            matches!(loc1, SegmentPointLocation::OnEdge(_))
-                && matches!(loc2, SegmentPointLocation::OnEdge(_))
-        }
-        SegmentsIntersection::Segment { .. } => true,
-    }
-}
-
 fn triangle_edges(triangle: &NodeTriangulatedTriangle) -> [[usize; 2]; 3] {
     [
         normalized_constraint(triangle.vertices[0], triangle.vertices[1]),
@@ -1728,6 +1769,14 @@ impl NodeValidationEdgeKey {
         } else {
             Self { start: b, end: a }
         }
+    }
+
+    fn endpoints(self) -> [NodeValidationPointKey; 2] {
+        [self.start, self.end]
+    }
+
+    fn is_degenerate(self) -> bool {
+        self.start == self.end
     }
 }
 
@@ -1847,6 +1896,17 @@ mod tests {
         }
     }
 
+    fn key_point(x: f64, z: f64) -> NodeValidationPointKey {
+        NodeValidationPointKey {
+            x_key: quantize_point(x),
+            z_key: quantize_point(z),
+        }
+    }
+
+    fn key_edge(a: [f64; 2], b: [f64; 2]) -> NodeValidationEdgeKey {
+        NodeValidationEdgeKey::new(key_point(a[0], a[1]), key_point(b[0], b[1]))
+    }
+
     #[test]
     fn validates_clean_triangulated_solution() {
         let solution = solved_triangulation();
@@ -1923,7 +1983,7 @@ mod tests {
 
         assert!(error.report.diagnostics.iter().any(|diagnostic| {
             diagnostic.stage == NodeGeometryStage::Validation
-                && diagnostic.backend == NodeGeometryBackend::Parry2d
+                && diagnostic.backend == NodeGeometryBackend::CanonicalKeys
                 && matches!(
                     diagnostic.kind,
                     NodeGeometryDiagnosticKind::OpenBoundary { .. }
@@ -1931,7 +1991,7 @@ mod tests {
         }));
         let dump = error.report.debug_dump();
         assert!(dump.contains("\"stage\":\"validation\""));
-        assert!(dump.contains("\"backend\":\"parry2d\""));
+        assert!(dump.contains("\"backend\":\"canonical_keys\""));
         assert!(dump.contains("\"kind\":\"open_boundary\""));
     }
 
@@ -1945,18 +2005,50 @@ mod tests {
             .expect_err("crossing constraints must fail validation");
 
         assert!(error.report.diagnostics.iter().any(|diagnostic| {
-            matches!(
-                diagnostic.kind,
-                NodeGeometryDiagnosticKind::InvalidConstraint {
-                    reason: NodeInvalidConstraintReason::Crossing,
-                    ..
-                }
-            )
+            diagnostic.backend == NodeGeometryBackend::CanonicalKeys
+                && matches!(
+                    diagnostic.kind,
+                    NodeGeometryDiagnosticKind::InvalidConstraint {
+                        reason: NodeInvalidConstraintReason::Crossing,
+                        ..
+                    }
+                )
         }));
         assert!(
             !error.report.has_blocking_diagnostics(),
             "crossing constraints remain diagnostic-only when CDT output and coverage are valid"
         );
+    }
+
+    #[test]
+    fn canonical_key_crossing_rejects_logged_microscopic_connector_false_positive() {
+        let microscopic_connector = key_edge([-63.632900, -27.195601], [-63.632896, -27.195602]);
+        let boundary = key_edge([-64.056534, -30.669868], [-58.100647, -31.396107]);
+
+        assert!(
+            !canonical_key_segments_strictly_intersect(microscopic_connector, boundary),
+            "logged terminal sample is not a true canonical interior/interior crossing"
+        );
+    }
+
+    #[test]
+    fn canonical_key_crossing_reports_only_true_interior_intersections() {
+        assert!(canonical_key_segments_strictly_intersect(
+            key_edge([0.0, 0.0], [2.0, 2.0]),
+            key_edge([0.0, 2.0], [2.0, 0.0])
+        ));
+        assert!(!canonical_key_segments_strictly_intersect(
+            key_edge([0.0, 0.0], [1.0, 1.0]),
+            key_edge([1.0, 1.0], [2.0, 0.0])
+        ));
+        assert!(!canonical_key_segments_strictly_intersect(
+            key_edge([0.0, 0.0], [2.0, 0.0]),
+            key_edge([2.0, 0.0], [3.0, 0.0])
+        ));
+        assert!(canonical_key_segments_strictly_intersect(
+            key_edge([0.0, 0.0], [3.0, 0.0]),
+            key_edge([1.0, 0.0], [2.0, 0.0])
+        ));
     }
 
     #[test]

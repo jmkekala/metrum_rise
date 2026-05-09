@@ -158,6 +158,7 @@ impl RoadSurfaceSystem {
         ));
 
         let mut preview_surface = RoadSurfaceSystem::new(self.chunk_span_m);
+        preview_surface.node_validation_logging_enabled = false;
         preview_surface.compile_dirty(&graph, terrain);
 
         let compiled_sections = preview_surface

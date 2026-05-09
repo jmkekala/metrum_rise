@@ -263,23 +263,23 @@ impl RoadSurfaceSystem {
         let input = match Self::build_node_arrangement_input_from_mouths(node_id, kind, mouths) {
             Ok(input) => input,
             Err(error) => {
-                Self::log_node_input_extraction_error(node_id, kind, &error);
+                self.log_node_input_extraction_error(node_id, kind, &error);
                 return None;
             }
         };
         let rails = match Self::build_node_rail_contours_from_input(&input) {
             Ok(rails) => rails,
             Err(error) => {
-                Self::log_node_validation_report(
-                    &NodeValidationReport::from_rail_generation_error(node_id, kind, &error),
-                );
+                self.log_node_validation_report(&NodeValidationReport::from_rail_generation_error(
+                    node_id, kind, &error,
+                ));
                 return None;
             }
         };
         let ownership = match Self::build_node_boolean_ownership_from_rails(&rails) {
             Ok(ownership) => ownership,
             Err(error) => {
-                Self::log_node_validation_report(
+                self.log_node_validation_report(
                     &NodeValidationReport::from_boolean_ownership_error(node_id, kind, &error),
                 );
                 return None;
@@ -288,13 +288,13 @@ impl RoadSurfaceSystem {
         if let Some(report) = NodeValidationReport::from_owned_region_arrangement_diagnostics(
             &ownership.owned_region_arrangement,
         ) {
-            Self::log_node_validation_report(&report);
+            self.log_node_validation_report(&report);
             return None;
         }
         let heights = match Self::build_node_height_solution_from_ownership(&input, &ownership) {
             Ok(heights) => heights,
             Err(error) => {
-                Self::log_node_validation_report(&NodeValidationReport::from_height_field_error(
+                self.log_node_validation_report(&NodeValidationReport::from_height_field_error(
                     node_id, kind, &error,
                 ));
                 return None;
@@ -303,30 +303,30 @@ impl RoadSurfaceSystem {
         let mut arrangement = match NodeArrangement::from_height_solution(&heights) {
             Ok(arrangement) => arrangement,
             Err(error) => {
-                Self::log_node_validation_report(&NodeValidationReport::from_arrangement_error(
+                self.log_node_validation_report(&NodeValidationReport::from_arrangement_error(
                     node_id, kind, &error,
                 ));
                 return None;
             }
         };
         if let Some(report) = NodeValidationReport::from_arrangement_diagnostics(&arrangement) {
-            Self::log_node_validation_report(&report);
+            self.log_node_validation_report(&report);
             return None;
         }
 
         let triangulation = match Self::build_node_triangulation_from_arrangement(&arrangement) {
             Ok(triangulation) => triangulation,
             Err(error) => {
-                Self::log_node_validation_report(&NodeValidationReport::from_triangulation_error(
+                self.log_node_validation_report(&NodeValidationReport::from_triangulation_error(
                     node_id, kind, &error,
                 ));
                 return None;
             }
         };
         match Self::validate_node_triangulation_solution(&triangulation) {
-            Ok(report) => Self::log_node_validation_report(&report),
+            Ok(report) => self.log_node_validation_report(&report),
             Err(error) => {
-                Self::log_node_validation_report(&error.report);
+                self.log_node_validation_report(&error.report);
                 if error.report.has_blocking_diagnostics() {
                     return None;
                 }
@@ -334,7 +334,7 @@ impl RoadSurfaceSystem {
         }
 
         if let Err(error) = arrangement.attach_triangulation(&triangulation) {
-            Self::log_node_validation_report(&NodeValidationReport::from_arrangement_error(
+            self.log_node_validation_report(&NodeValidationReport::from_arrangement_error(
                 node_id, kind, &error,
             ));
             return None;
@@ -343,7 +343,7 @@ impl RoadSurfaceSystem {
         match Self::node_surface_regions_from_arrangement(&arrangement, &input) {
             Ok(regions) => Some(regions),
             Err(error) => {
-                Self::log_node_boundary_export_error(&arrangement, &error);
+                self.log_node_boundary_export_error(&arrangement, &error);
                 None
             }
         }
@@ -904,10 +904,14 @@ impl RoadSurfaceSystem {
     }
 
     fn log_node_input_extraction_error(
+        &self,
         node_id: u32,
         kind: RoadSurfaceVisualNodePieceKind,
         error: &NodeInputExtractionError,
     ) {
+        if !self.node_validation_logging_enabled {
+            return;
+        }
         crate::debug_log!(
             "road",
             "node_canonical_input_failed node={} piece={:?} error={:?}",
@@ -917,17 +921,21 @@ impl RoadSurfaceSystem {
         );
     }
 
-    fn log_node_validation_report(report: &NodeValidationReport) {
-        if report.diagnostics.is_empty() {
+    fn log_node_validation_report(&self, report: &NodeValidationReport) {
+        if !self.node_validation_logging_enabled || report.diagnostics.is_empty() {
             return;
         }
         crate::debug_log!("road", "node_canonical_validation {}", report.debug_dump());
     }
 
     fn log_node_boundary_export_error(
+        &self,
         arrangement: &NodeArrangement,
         error: &NodeBoundaryExportError,
     ) {
+        if !self.node_validation_logging_enabled {
+            return;
+        }
         let report = match error {
             NodeBoundaryExportError::MissingOuterBoundaryOwner { owner, start, end } => {
                 NodeValidationReport::from_missing_outer_boundary_owner(
@@ -975,7 +983,7 @@ impl RoadSurfaceSystem {
                 )
             }
         };
-        Self::log_node_validation_report(&report);
+        self.log_node_validation_report(&report);
     }
 
     fn build_ordered_piece_mouths(
