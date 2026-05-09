@@ -463,6 +463,157 @@ fn assert_material_triangles_do_not_overlap(piece: &RoadSurfaceVisualNodePiece) 
     }
 }
 
+fn assert_terminal_mouth_handoff_surface_is_owned(
+    piece: &RoadSurfaceVisualNodePiece,
+    mouth: &super::IncidentMouthProfile,
+    material: RoadSurfaceBandKind,
+    start_boundary_index: usize,
+    end_boundary_index: usize,
+    label: &str,
+) {
+    let start = mouth.boundary_points_world[start_boundary_index];
+    let end = mouth.boundary_points_world[end_boundary_index];
+    let inward = mouth.inward_direction_xz.normalized();
+    let sample = Vector2::new(
+        (start.x + end.x) * 0.5 - inward.x * 0.1,
+        (start.z + end.z) * 0.5 - inward.y * 0.1,
+    );
+    let polygons = match material {
+        RoadSurfaceBandKind::CurbOrShoulder => &piece.curb_surface_polygons,
+        RoadSurfaceBandKind::Sidewalk => &piece.sidewalk_surface_polygons,
+        RoadSurfaceBandKind::Carriageway => &piece.road_surface_polygons,
+        _ => &piece.sidewalk_surface_polygons,
+    };
+    assert!(
+        point_inside_visual_polygons(polygons, sample),
+        "terminal handoff surface must be owned by {material:?}; label={label} sample={sample:?}"
+    );
+}
+
+fn assert_terminal_band_interval_grid_is_owned(
+    piece: &RoadSurfaceVisualNodePiece,
+    endpoint: &super::IncidentMouthProfile,
+    mouth: &super::IncidentMouthProfile,
+    material: RoadSurfaceBandKind,
+    start_boundary_index: usize,
+    end_boundary_index: usize,
+    label: &str,
+) {
+    let polygons = match material {
+        RoadSurfaceBandKind::CurbOrShoulder => &piece.curb_surface_polygons,
+        RoadSurfaceBandKind::Sidewalk => &piece.sidewalk_surface_polygons,
+        RoadSurfaceBandKind::Carriageway => &piece.road_surface_polygons,
+        _ => &piece.sidewalk_surface_polygons,
+    };
+    for longitudinal_t in [0.1_f32, 0.5, 0.9, 0.98] {
+        for lateral_t in [0.05_f32, 0.5, 0.95] {
+            let endpoint_start = endpoint.boundary_points_world[start_boundary_index];
+            let endpoint_end = endpoint.boundary_points_world[end_boundary_index];
+            let mouth_start = mouth.boundary_points_world[start_boundary_index];
+            let mouth_end = mouth.boundary_points_world[end_boundary_index];
+            let endpoint_sample = endpoint_start.lerp(endpoint_end, lateral_t);
+            let mouth_sample = mouth_start.lerp(mouth_end, lateral_t);
+            let sample_world = endpoint_sample.lerp(mouth_sample, longitudinal_t);
+            let sample = Vector2::new(sample_world.x, sample_world.z);
+            assert!(
+                point_inside_visual_polygons(polygons, sample),
+                "terminal band interval must be owned by {material:?}; label={label} longitudinal_t={longitudinal_t} lateral_t={lateral_t} sample={sample:?}"
+            );
+        }
+    }
+}
+
+fn assert_terminal_band_interval_grid_is_not_duplicated_by_span(
+    span_piece: &super::RoadSurfaceVisualSpanPiece,
+    endpoint: &super::IncidentMouthProfile,
+    mouth: &super::IncidentMouthProfile,
+    start_boundary_index: usize,
+    end_boundary_index: usize,
+    label: &str,
+) {
+    for longitudinal_t in [0.1_f32, 0.5, 0.9, 0.98] {
+        for lateral_t in [0.05_f32, 0.5, 0.95] {
+            let endpoint_start = endpoint.boundary_points_world[start_boundary_index];
+            let endpoint_end = endpoint.boundary_points_world[end_boundary_index];
+            let mouth_start = mouth.boundary_points_world[start_boundary_index];
+            let mouth_end = mouth.boundary_points_world[end_boundary_index];
+            let endpoint_sample = endpoint_start.lerp(endpoint_end, lateral_t);
+            let mouth_sample = mouth_start.lerp(mouth_end, lateral_t);
+            let sample_world = endpoint_sample.lerp(mouth_sample, longitudinal_t);
+            let sample = Vector2::new(sample_world.x, sample_world.z);
+            let duplicated =
+                point_inside_visual_polygons(&span_piece.road_surface_polygons, sample)
+                    || point_inside_visual_polygons(&span_piece.curb_surface_polygons, sample)
+                    || point_inside_visual_polygons(&span_piece.sidewalk_surface_polygons, sample);
+            assert!(
+                !duplicated,
+                "terminal band interval must not be duplicated by span top surfaces; label={label} longitudinal_t={longitudinal_t} lateral_t={lateral_t} sample={sample:?}"
+            );
+        }
+    }
+}
+
+fn assert_vertical_curb_face_lower_edge_exists(
+    polygons: &[RoadSurfaceVisualPolygon],
+    start: Vector3,
+    end: Vector3,
+    label: &str,
+) {
+    let expected = normalized_test_xz_edge_key(start, end);
+    assert!(
+        polygons
+            .iter()
+            .filter_map(vertical_face_lower_edge_key_for_test)
+            .any(|edge| edge == expected),
+        "vertical curb face lower edge must exist; label={label} start={start:?} end={end:?}"
+    );
+}
+
+fn vertical_face_lower_edge_key_for_test(
+    polygon: &RoadSurfaceVisualPolygon,
+) -> Option<((i64, i64), (i64, i64))> {
+    if polygon.points_world.len() != 4 {
+        return None;
+    }
+    let lower_y = polygon
+        .points_world
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::INFINITY, f32::min);
+    let lower_points = polygon
+        .points_world
+        .iter()
+        .copied()
+        .filter(|point| (point.y - lower_y).abs() <= SAMPLE_EPSILON_M)
+        .collect::<Vec<_>>();
+    if lower_points.len() != 2 {
+        return None;
+    }
+    Some(normalized_test_xz_edge_key(
+        lower_points[0],
+        lower_points[1],
+    ))
+}
+
+fn normalized_test_xz_edge_key(start: Vector3, end: Vector3) -> ((i64, i64), (i64, i64)) {
+    let start = test_xz_key(start);
+    let end = test_xz_key(end);
+    if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    }
+}
+
+fn test_xz_key(point: Vector3) -> (i64, i64) {
+    let point =
+        super::backend::road_vec2_to_overlay_point(super::backend::godot_vec3_xz_to_road(point));
+    (
+        (point[0] * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        (point[1] * super::backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+    )
+}
+
 fn triangle_overlap_area_m2(a: [Vector3; 3], b: [Vector3; 3]) -> f32 {
     RoadSurfaceSystem::overlay_binary_shapes(
         &triangle_overlay_shapes(a),
@@ -1553,6 +1704,152 @@ fn logged_curved_terminal_top_surfaces_cover_footprint() {
 }
 
 #[test]
+fn logged_terminal_handoff_keeps_both_sidewalk_edges_owned() {
+    let terrain = flat_terrain(128, 128);
+    let points = road_points_from_json(
+        "[[-67.97,0.0,12.333],[-67.147,0.0,12.502],[-66.439,0.0,12.648],\
+        [-65.855,0.0,12.769],[-65.186,0.0,12.907],[-64.435,0.0,13.061],\
+        [-63.605,0.0,13.232],[-62.699,0.0,13.419],[-61.972,0.0,13.569],\
+        [-61.466,0.0,13.673],[-60.942,0.0,13.781],[-60.402,0.0,13.892],\
+        [-59.846,0.0,14.007],[-59.274,0.0,14.125],[-58.687,0.0,14.246],\
+        [-58.085,0.0,14.37],[-57.469,0.0,14.497],[-56.838,0.0,14.627],\
+        [-56.194,0.0,14.76],[-55.537,0.0,14.895],[-54.867,0.0,15.033],\
+        [-54.184,0.0,15.174],[-53.49,0.0,15.317],[-52.783,0.0,15.463],\
+        [-52.066,0.0,15.61],[-51.339,0.0,15.76],[-50.6,0.0,15.912],\
+        [-49.852,0.0,16.067],[-49.095,0.0,16.223],[-48.329,0.0,16.381],\
+        [-47.554,0.0,16.54],[-46.77,0.0,16.702],[-45.979,0.0,16.865],\
+        [-45.181,0.0,17.029],[-44.376,0.0,17.195],[-43.564,0.0,17.362],\
+        [-42.746,0.0,17.531],[-41.923,0.0,17.701],[-41.094,0.0,17.871],\
+        [-40.261,0.0,18.043],[-39.423,0.0,18.216],[-38.581,0.0,18.389],\
+        [-37.736,0.0,18.564],[-36.887,0.0,18.739],[-36.036,0.0,18.914],\
+        [-35.182,0.0,19.09],[-34.326,0.0,19.266],[-33.469,0.0,19.443],\
+        [-32.611,0.0,19.62],[-31.753,0.0,19.797],[-30.894,0.0,19.974],\
+        [-30.035,0.0,20.151],[-29.177,0.0,20.327],[-28.32,0.0,20.504],\
+        [-27.465,0.0,20.68],[-26.611,0.0,20.856],[-25.76,0.0,21.032],\
+        [-24.911,0.0,21.207],[-24.065,0.0,21.381],[-23.224,0.0,21.554],\
+        [-22.386,0.0,21.727],[-21.552,0.0,21.899],[-20.723,0.0,22.07],\
+        [-19.9,0.0,22.239],[-19.082,0.0,22.408],[-18.27,0.0,22.575],\
+        [-17.465,0.0,22.741],[-16.667,0.0,22.906],[-15.876,0.0,23.069],\
+        [-15.093,0.0,23.23],[-14.318,0.0,23.39],[-13.551,0.0,23.548],\
+        [-12.794,0.0,23.704],[-12.046,0.0,23.858],[-11.308,0.0,24.01],\
+        [-10.58,0.0,24.16],[-9.863,0.0,24.308],[-9.157,0.0,24.453],\
+        [-8.462,0.0,24.596],[-7.78,0.0,24.737],[-7.11,0.0,24.875],\
+        [-6.452,0.0,25.011],[-5.808,0.0,25.143],[-5.178,0.0,25.273],\
+        [-4.561,0.0,25.4],[-3.959,0.0,25.524],[-3.372,0.0,25.645],\
+        [-2.8,0.0,25.763],[-2.244,0.0,25.878],[-1.704,0.0,25.989],\
+        [-1.181,0.0,26.097],[-0.674,0.0,26.201],[0.052,0.0,26.351],\
+        [0.958,0.0,26.538],[1.788,0.0,26.709],[2.54,0.0,26.864],\
+        [3.209,0.0,27.002],[3.793,0.0,27.122],[4.5,0.0,27.268],\
+        [5.323,0.0,27.437]]",
+    );
+    let start_point = points[0];
+    let end_point = *points.last().unwrap();
+
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(start_point, NodeType::Junction);
+    let end = graph.add_node(end_point, NodeType::Junction);
+    let mut edge = test_edge(
+        start,
+        end,
+        points,
+        7.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    );
+    edge.fwd_lanes = 2;
+    edge.bkw_lanes = 0;
+    let edge_idx = graph.add_edge(edge);
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let span_piece = surface
+        .compiled_visual_span_pieces()
+        .get(&edge_idx)
+        .expect("logged terminal road should keep a visible span after terminal handoff");
+    let start_terminal = surface
+        .compiled_visual_node_pieces()
+        .get(&start)
+        .expect("logged terminal road start should compile a terminal piece");
+    let start_mouth = span_piece
+        .start_mouth_profile
+        .as_ref()
+        .expect("logged terminal span should expose a start mouth profile");
+    let start_endpoint = RoadSurfaceSystem::build_mouth_profile_from_section(
+        surface
+            .compiled_sections()
+            .get(&edge_idx)
+            .and_then(|sections| sections.first())
+            .expect("logged terminal road should compile endpoint sections"),
+        super::IncidentEdgeSide::Start,
+    )
+    .expect("logged terminal endpoint section should expose a profile");
+
+    assert_terminal_mouth_handoff_surface_is_owned(
+        start_terminal,
+        start_mouth,
+        RoadSurfaceBandKind::CurbOrShoulder,
+        4,
+        5,
+        "right curb at logged terminal handoff",
+    );
+    assert_terminal_mouth_handoff_surface_is_owned(
+        start_terminal,
+        start_mouth,
+        RoadSurfaceBandKind::Sidewalk,
+        5,
+        6,
+        "right sidewalk at logged terminal handoff",
+    );
+    assert_terminal_band_interval_grid_is_owned(
+        start_terminal,
+        &start_endpoint,
+        start_mouth,
+        RoadSurfaceBandKind::CurbOrShoulder,
+        4,
+        5,
+        "right curb interval at logged terminal start",
+    );
+    assert_terminal_band_interval_grid_is_owned(
+        start_terminal,
+        &start_endpoint,
+        start_mouth,
+        RoadSurfaceBandKind::Sidewalk,
+        5,
+        6,
+        "right sidewalk interval at logged terminal start",
+    );
+    assert_terminal_band_interval_grid_is_not_duplicated_by_span(
+        span_piece,
+        &start_endpoint,
+        start_mouth,
+        4,
+        5,
+        "right curb interval at logged terminal start",
+    );
+    assert_terminal_band_interval_grid_is_not_duplicated_by_span(
+        span_piece,
+        &start_endpoint,
+        start_mouth,
+        5,
+        6,
+        "right sidewalk interval at logged terminal start",
+    );
+    assert_vertical_curb_face_lower_edge_exists(
+        &start_terminal.curb_vertical_face_polygons,
+        start_endpoint.boundary_points_world[2],
+        start_mouth.boundary_points_world[2],
+        "left longitudinal curb face at logged terminal handoff",
+    );
+    assert_vertical_curb_face_lower_edge_exists(
+        &start_terminal.curb_vertical_face_polygons,
+        start_endpoint.boundary_points_world[4],
+        start_mouth.boundary_points_world[4],
+        "right longitudinal curb face at logged terminal handoff",
+    );
+}
+
+#[test]
 fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
     let terrain = flat_terrain(64, 64);
     let mut graph = RegionGraph::new();
@@ -1578,6 +1875,10 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
         .compiled_visual_span_pieces()
         .get(&edge_idx)
         .expect("terminal road should keep a visible span after terminal handoff");
+    let start_mouth = span_piece
+        .start_mouth_profile
+        .as_ref()
+        .expect("terminal span should expose a start mouth profile");
 
     let travel = Vector2::new(40.0, 0.0).normalized();
     let lateral = RoadSurfaceSystem::left_normal_xz(travel);
@@ -1597,6 +1898,38 @@ fn straight_terminal_keeps_curb_strip_covered_on_both_sides() {
             "terminal curb strip must not be duplicated by the span on side {side}; point={curb_mid:?}"
         );
     }
+    assert_terminal_mouth_handoff_surface_is_owned(
+        terminal_piece,
+        start_mouth,
+        RoadSurfaceBandKind::CurbOrShoulder,
+        1,
+        2,
+        "left curb at handoff",
+    );
+    assert_terminal_mouth_handoff_surface_is_owned(
+        terminal_piece,
+        start_mouth,
+        RoadSurfaceBandKind::Sidewalk,
+        0,
+        1,
+        "left sidewalk at handoff",
+    );
+    assert_terminal_mouth_handoff_surface_is_owned(
+        terminal_piece,
+        start_mouth,
+        RoadSurfaceBandKind::CurbOrShoulder,
+        4,
+        5,
+        "right curb at handoff",
+    );
+    assert_terminal_mouth_handoff_surface_is_owned(
+        terminal_piece,
+        start_mouth,
+        RoadSurfaceBandKind::Sidewalk,
+        5,
+        6,
+        "right sidewalk at handoff",
+    );
 }
 
 #[test]

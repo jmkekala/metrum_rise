@@ -376,9 +376,9 @@ impl RoadSurfaceSystem {
         }
         let mut curb_vertical_face_polygons =
             Self::curb_vertical_face_polygons_from_arrangement(arrangement);
-        curb_vertical_face_polygons.extend(
-            Self::terminal_curb_cap_vertical_face_polygons_from_input(input),
-        );
+        curb_vertical_face_polygons
+            .extend(Self::terminal_curb_vertical_face_polygons_from_input(input));
+        dedup_curb_vertical_face_polygons(&mut curb_vertical_face_polygons);
 
         if owned_regions.is_empty() {
             return Err(NodeBoundaryExportError::EmptyOuterBoundary);
@@ -486,7 +486,7 @@ impl RoadSurfaceSystem {
         faces
     }
 
-    fn terminal_curb_cap_vertical_face_polygons_from_input(
+    fn terminal_curb_vertical_face_polygons_from_input(
         input: &NodeArrangementInput,
     ) -> Vec<RoadSurfaceVisualPolygon> {
         if input.piece_kind != RoadSurfaceVisualNodePieceKind::Terminal {
@@ -496,6 +496,44 @@ impl RoadSurfaceSystem {
         let mut emitted = BTreeSet::new();
         let mut faces = Vec::new();
         for mouth in &input.mouths {
+            for (band_index, interval) in mouth.band_intervals.iter().enumerate() {
+                if interval.band_kind != RoadSurfaceBandKind::CurbOrShoulder {
+                    continue;
+                }
+                if let Some(previous) = band_index
+                    .checked_sub(1)
+                    .and_then(|index| mouth.band_intervals.get(index))
+                    && previous.band_kind == RoadSurfaceBandKind::Carriageway
+                {
+                    push_terminal_curb_interval_vertical_face(
+                        &mut faces,
+                        &mut emitted,
+                        mouth.order_index,
+                        interval.endpoint_start_world,
+                        interval.mouth_start_world,
+                        previous.endpoint_end_world,
+                        previous.mouth_end_world,
+                        previous.endpoint_start_world,
+                        previous.mouth_start_world,
+                    );
+                }
+                if let Some(next) = mouth.band_intervals.get(band_index + 1)
+                    && next.band_kind == RoadSurfaceBandKind::Carriageway
+                {
+                    push_terminal_curb_interval_vertical_face(
+                        &mut faces,
+                        &mut emitted,
+                        mouth.order_index,
+                        interval.endpoint_end_world,
+                        interval.mouth_end_world,
+                        next.endpoint_start_world,
+                        next.mouth_start_world,
+                        next.endpoint_end_world,
+                        next.mouth_end_world,
+                    );
+                }
+            }
+
             let mut carriageway_lower_by_key = BTreeMap::new();
             for interval in &mouth.band_intervals {
                 if interval.band_kind != RoadSurfaceBandKind::Carriageway {
@@ -1254,6 +1292,90 @@ fn normalized_arrangement_segment_key(
     } else {
         (end, start)
     }
+}
+
+fn push_terminal_curb_interval_vertical_face(
+    faces: &mut Vec<RoadSurfaceVisualPolygon>,
+    emitted: &mut BTreeSet<(usize, (NodeArrangementKey, NodeArrangementKey))>,
+    mouth_order_index: usize,
+    raised_start: RoadVec3,
+    raised_end: RoadVec3,
+    lower_start: RoadVec3,
+    lower_end: RoadVec3,
+    asphalt_inner_start: RoadVec3,
+    asphalt_inner_end: RoadVec3,
+) {
+    let raised_start_world = road_vec3_to_vector3(raised_start);
+    let raised_end_world = road_vec3_to_vector3(raised_end);
+    let lower_start_world = road_vec3_to_vector3(lower_start);
+    let lower_end_world = road_vec3_to_vector3(lower_end);
+    if (raised_start_world.y - lower_start_world.y).abs() <= SAMPLE_EPSILON_M
+        && (raised_end_world.y - lower_end_world.y).abs() <= SAMPLE_EPSILON_M
+    {
+        return;
+    }
+
+    let key = normalized_arrangement_segment_key(lower_start_world, lower_end_world);
+    if !emitted.insert((mouth_order_index, key)) {
+        return;
+    }
+
+    let asphalt_inner_start = road_vec3_to_vector3(asphalt_inner_start);
+    let asphalt_inner_end = road_vec3_to_vector3(asphalt_inner_end);
+    let asphalt_direction = Vector3::new(
+        asphalt_inner_start.x - raised_start_world.x + asphalt_inner_end.x - raised_end_world.x,
+        0.0,
+        asphalt_inner_start.z - raised_start_world.z + asphalt_inner_end.z - raised_end_world.z,
+    );
+    let mut points = [
+        raised_start_world,
+        lower_start_world,
+        lower_end_world,
+        raised_end_world,
+    ];
+    let face_normal = (points[1] - points[0]).cross(points[2] - points[0]);
+    if face_normal.dot(asphalt_direction) > 0.0 {
+        points = [points[3], points[2], points[1], points[0]];
+    }
+    if let Some(face) = RoadSurfaceSystem::make_vertical_quad_polygon(points) {
+        faces.push(face);
+    }
+}
+
+fn dedup_curb_vertical_face_polygons(polygons: &mut Vec<RoadSurfaceVisualPolygon>) {
+    let mut emitted = BTreeSet::new();
+    polygons.retain(|polygon| {
+        let Some(key) = curb_vertical_face_lower_edge_key(polygon) else {
+            return true;
+        };
+        emitted.insert(key)
+    });
+}
+
+fn curb_vertical_face_lower_edge_key(
+    polygon: &RoadSurfaceVisualPolygon,
+) -> Option<(NodeArrangementKey, NodeArrangementKey)> {
+    if polygon.points_world.len() != 4 {
+        return None;
+    }
+    let lower_y = polygon
+        .points_world
+        .iter()
+        .map(|point| point.y)
+        .fold(f32::INFINITY, f32::min);
+    let lower_points = polygon
+        .points_world
+        .iter()
+        .copied()
+        .filter(|point| (point.y - lower_y).abs() <= SAMPLE_EPSILON_M)
+        .collect::<Vec<_>>();
+    if lower_points.len() != 2 {
+        return None;
+    }
+    Some(normalized_arrangement_segment_key(
+        lower_points[0],
+        lower_points[1],
+    ))
 }
 
 fn terminal_end_band_inner_world_points(end_band: &NodeInputTerminalEndBand) -> Vec<RoadVec3> {
