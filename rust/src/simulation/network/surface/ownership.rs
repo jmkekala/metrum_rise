@@ -11,8 +11,8 @@ use super::rails::{
     NodeRailConstraint, NodeRailConstraintKind, NodeRailContourSet,
 };
 use super::{
-    NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape, NodeOverlayShapes, RoadSurfaceBandKind,
-    RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
+    NODE_OVERLAY_MIN_AREA_M2, NodeOverlayContour, NodeOverlayPoint, NodeOverlayShape,
+    NodeOverlayShapes, RoadSurfaceBandKind, RoadSurfaceSystem, RoadSurfaceVisualNodePieceKind,
 };
 use i_overlay::core::overlay_rule::OverlayRule;
 use std::collections::{BTreeMap, BTreeSet};
@@ -169,12 +169,15 @@ impl NodeBooleanOwnership {
             overlay_difference(&footprint_shapes, &asphalt_shapes, "non_road_difference")?;
         RoadSurfaceSystem::sort_overlay_shapes(&mut non_road_shapes);
 
+        let allow_grid_bounded_constraint_overlap =
+            rails.piece_kind == RoadSurfaceVisualNodePieceKind::Terminal;
         let mut owned_regions = Vec::new();
         let asphalt_result = owned_regions_from_domains(
             &asphalt_shapes,
             &asphalt_domains,
             &rails.constraints,
             ResidualKind::Asphalt,
+            allow_grid_bounded_constraint_overlap,
         )?;
         owned_regions.extend(asphalt_result.regions);
 
@@ -189,7 +192,11 @@ impl NodeBooleanOwnership {
 
         sort_boolean_owned_regions(&mut owned_regions);
         canonicalize_owned_region_rings(&mut owned_regions, &footprint_shapes);
-        clean_canonical_owned_region_shapes(&mut owned_regions, &rails.constraints)?;
+        clean_canonical_owned_region_shapes(
+            &mut owned_regions,
+            &rails.constraints,
+            allow_grid_bounded_constraint_overlap,
+        )?;
         let owned_region_arrangement = NodeOwnedRegionArrangement::from_owned_regions(
             rails.node_id,
             rails.piece_kind,
@@ -373,6 +380,7 @@ fn split_non_road_regions_by_band_order(
             &kind_domains,
             &rails.constraints,
             ResidualKind::Band(kind),
+            rails.piece_kind == RoadSurfaceVisualNodePieceKind::Terminal,
         )?;
         claimed_shapes =
             overlay_union_shape_sets(&claimed_shapes, &kind_result.claimed_shapes, "claim_union")?;
@@ -434,6 +442,7 @@ fn split_bend_non_road_regions_by_generated_domain(
                     shape,
                     group.owner,
                     &rails.constraints,
+                    false,
                 ),
             });
         }
@@ -477,6 +486,7 @@ fn owned_regions_from_domains(
     domains: &[&NodeGeneratedContour],
     rail_constraints: &[NodeRailConstraint],
     residual_kind: ResidualKind,
+    allow_grid_bounded_constraint_overlap: bool,
 ) -> Result<OwnedDomainResult, NodeBooleanOwnershipError> {
     if target_shapes.is_empty() {
         return Ok(OwnedDomainResult {
@@ -520,7 +530,12 @@ fn owned_regions_from_domains(
                 source_band_index: group.source_band_index,
                 shape: shape.clone(),
                 area_m2,
-                seam_constraints: seam_constraints_for_shape(shape, group.owner, rail_constraints),
+                seam_constraints: seam_constraints_for_shape(
+                    shape,
+                    group.owner,
+                    rail_constraints,
+                    allow_grid_bounded_constraint_overlap,
+                ),
             });
         }
         claimed_shapes =
@@ -765,6 +780,7 @@ fn seam_constraints_for_shape(
     shape: &NodeOverlayShape,
     owner: NodeBandOwner,
     rail_constraints: &[NodeRailConstraint],
+    allow_grid_bounded_constraint_overlap: bool,
 ) -> Vec<NodeRegionSeamConstraint> {
     let mut seams = Vec::new();
     for contour in shape {
@@ -790,9 +806,12 @@ fn seam_constraints_for_shape(
                         overlay_point_to_road(end),
                     );
                 }
-                for (overlap_start, overlap_end) in
-                    constraint_overlaps_shape_edge(start, end, constraint)
-                {
+                for (overlap_start, overlap_end) in constraint_overlaps_shape_edge(
+                    start,
+                    end,
+                    constraint,
+                    allow_grid_bounded_constraint_overlap,
+                ) {
                     push_region_seam_constraint(
                         &mut seams,
                         constraint,
@@ -839,6 +858,7 @@ fn constraint_overlaps_shape_edge(
     edge_start: NodeOverlayPoint,
     edge_end: NodeOverlayPoint,
     constraint: &NodeRailConstraint,
+    allow_grid_bounded_constraint_overlap: bool,
 ) -> Vec<(NodeOwnershipPointKey, NodeOwnershipPointKey)> {
     let edge_start = overlay_point_key(edge_start);
     let edge_end = overlay_point_key(edge_end);
@@ -849,9 +869,12 @@ fn constraint_overlaps_shape_edge(
     for segment in constraint.points_xz.windows(2) {
         let start = road_point_key(segment[0]);
         let end = road_point_key(segment[1]);
-        if start == end
-            || !point_key_collinear_with_edge(start, edge_start, edge_end)
-            || !point_key_collinear_with_edge(end, edge_start, edge_end)
+        if start == end {
+            continue;
+        }
+        if !allow_grid_bounded_constraint_overlap
+            && (!point_key_collinear_with_edge(start, edge_start, edge_end)
+                || !point_key_collinear_with_edge(end, edge_start, edge_end))
         {
             continue;
         }
@@ -934,12 +957,15 @@ fn canonicalize_owned_region_rings(
 fn clean_canonical_owned_region_shapes(
     regions: &mut Vec<NodeBooleanOwnedRegion>,
     rail_constraints: &[NodeRailConstraint],
+    allow_grid_bounded_constraint_overlap: bool,
 ) -> Result<(), NodeBooleanOwnershipError> {
     let mut cleaned_regions = Vec::with_capacity(regions.len());
     for region in regions.drain(..) {
         let mut shapes = overlay_union(&region.shape, "owned_region_ring_clean")?;
         RoadSurfaceSystem::sort_overlay_shapes(&mut shapes);
-        for shape in shapes.into_iter().flat_map(split_self_touching_owned_shape) {
+        for shape in shapes.into_iter().flat_map(|shape| {
+            split_self_touching_owned_shape(shape, allow_grid_bounded_constraint_overlap)
+        }) {
             let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&shape);
             if owned_shape_is_discardable_numeric_dust(
                 &shape,
@@ -961,14 +987,67 @@ fn clean_canonical_owned_region_shapes(
                     &shape,
                     region.owner,
                     rail_constraints,
+                    allow_grid_bounded_constraint_overlap,
                 ),
             });
         }
     }
     canonicalize_owned_region_rings_with_rail_constraints(&mut cleaned_regions, rail_constraints);
+    clean_owned_region_shapes_once(
+        &mut cleaned_regions,
+        rail_constraints,
+        allow_grid_bounded_constraint_overlap,
+    )?;
+    canonicalize_owned_region_rings_with_rail_constraints(&mut cleaned_regions, rail_constraints);
     for region in &mut cleaned_regions {
-        region.seam_constraints =
-            seam_constraints_for_shape(&region.shape, region.owner, rail_constraints);
+        region.seam_constraints = seam_constraints_for_shape(
+            &region.shape,
+            region.owner,
+            rail_constraints,
+            allow_grid_bounded_constraint_overlap,
+        );
+    }
+    *regions = cleaned_regions;
+    Ok(())
+}
+
+fn clean_owned_region_shapes_once(
+    regions: &mut Vec<NodeBooleanOwnedRegion>,
+    rail_constraints: &[NodeRailConstraint],
+    allow_grid_bounded_constraint_overlap: bool,
+) -> Result<(), NodeBooleanOwnershipError> {
+    let mut cleaned_regions = Vec::with_capacity(regions.len());
+    for region in regions.drain(..) {
+        let mut shapes = overlay_union(&region.shape, "owned_region_constraint_noded_clean")?;
+        RoadSurfaceSystem::sort_overlay_shapes(&mut shapes);
+        for shape in shapes.into_iter().flat_map(|shape| {
+            split_self_touching_owned_shape(shape, allow_grid_bounded_constraint_overlap)
+        }) {
+            let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&shape);
+            if owned_shape_is_discardable_numeric_dust(
+                &shape,
+                area_m2,
+                region.owner,
+                rail_constraints,
+            ) {
+                continue;
+            }
+            cleaned_regions.push(NodeBooleanOwnedRegion {
+                kind: region.kind,
+                owner: region.owner,
+                claim_priority: region.claim_priority,
+                source_mouth_order_index: region.source_mouth_order_index,
+                source_band_index: region.source_band_index,
+                shape: shape.clone(),
+                area_m2,
+                seam_constraints: seam_constraints_for_shape(
+                    &shape,
+                    region.owner,
+                    rail_constraints,
+                    allow_grid_bounded_constraint_overlap,
+                ),
+            });
+        }
     }
     *regions = cleaned_regions;
     Ok(())
@@ -996,7 +1075,14 @@ fn canonicalize_owned_region_rings_with_rail_constraints(
     }
 }
 
-fn split_self_touching_owned_shape(shape: NodeOverlayShape) -> Vec<NodeOverlayShape> {
+fn split_self_touching_owned_shape(
+    shape: NodeOverlayShape,
+    clean_numeric_spikes: bool,
+) -> Vec<NodeOverlayShape> {
+    let shape = cleaned_owned_shape(shape, clean_numeric_spikes);
+    if shape.is_empty() {
+        return Vec::new();
+    }
     if shape.len() != 1 {
         return vec![shape];
     }
@@ -1014,7 +1100,7 @@ fn split_self_touching_owned_shape(shape: NodeOverlayShape) -> Vec<NodeOverlaySh
         second_cycle.extend_from_slice(&contour[..first]);
 
         for cycle in [first_cycle, second_cycle] {
-            if let Some(cycle) = cleaned_self_touch_split_contour(cycle) {
+            if let Some(cycle) = cleaned_self_touch_split_contour(cycle, clean_numeric_spikes) {
                 pending.push(cycle);
             }
         }
@@ -1028,6 +1114,13 @@ fn split_self_touching_owned_shape(shape: NodeOverlayShape) -> Vec<NodeOverlaySh
             .map(|contour| vec![contour])
             .collect()
     }
+}
+
+fn cleaned_owned_shape(shape: NodeOverlayShape, clean_numeric_spikes: bool) -> NodeOverlayShape {
+    shape
+        .into_iter()
+        .filter_map(|contour| cleaned_owned_contour(contour, clean_numeric_spikes))
+        .collect()
 }
 
 fn first_repeated_owned_contour_point_pair(contour: &NodeOverlayContour) -> Option<(usize, usize)> {
@@ -1044,8 +1137,21 @@ fn first_repeated_owned_contour_point_pair(contour: &NodeOverlayContour) -> Opti
     None
 }
 
-fn cleaned_self_touch_split_contour(mut contour: NodeOverlayContour) -> Option<NodeOverlayContour> {
+fn cleaned_self_touch_split_contour(
+    contour: NodeOverlayContour,
+    clean_numeric_spikes: bool,
+) -> Option<NodeOverlayContour> {
+    cleaned_owned_contour(contour, clean_numeric_spikes)
+}
+
+fn cleaned_owned_contour(
+    mut contour: NodeOverlayContour,
+    clean_numeric_spikes: bool,
+) -> Option<NodeOverlayContour> {
     dedup_consecutive_overlay_points(&mut contour);
+    if clean_numeric_spikes {
+        remove_numeric_spike_vertices(&mut contour);
+    }
     if contour.len() >= 2
         && overlay_point_key(contour[0])
             == overlay_point_key(*contour.last().expect("split contour has last point"))
@@ -1061,6 +1167,54 @@ fn cleaned_self_touch_split_contour(mut contour: NodeOverlayContour) -> Option<N
     let shape = vec![contour.clone()];
     let area_m2 = RoadSurfaceSystem::overlay_shape_area_m2(&shape);
     (area_m2 > RoadSurfaceSystem::overlay_numeric_area_budget_for_shape(&shape)).then_some(contour)
+}
+
+fn remove_numeric_spike_vertices(contour: &mut NodeOverlayContour) {
+    loop {
+        if contour.len() < 4 {
+            return;
+        }
+        let mut removed = false;
+        for index in 0..contour.len() {
+            let previous = if index == 0 {
+                contour.len() - 1
+            } else {
+                index - 1
+            };
+            let next = if index + 1 == contour.len() {
+                0
+            } else {
+                index + 1
+            };
+            let previous_key = overlay_point_key(contour[previous]);
+            let current_key = overlay_point_key(contour[index]);
+            let next_key = overlay_point_key(contour[next]);
+            if previous_key == next_key
+                || ownership_triangle_area_m2(previous_key, current_key, next_key)
+                    <= f64::from(NODE_OVERLAY_MIN_AREA_M2)
+            {
+                contour.remove(index);
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            return;
+        }
+    }
+}
+
+fn ownership_triangle_area_m2(
+    a: NodeOwnershipPointKey,
+    b: NodeOwnershipPointKey,
+    c: NodeOwnershipPointKey,
+) -> f64 {
+    let ab_x = i128::from(b.0 - a.0);
+    let ab_z = i128::from(b.1 - a.1);
+    let ac_x = i128::from(c.0 - a.0);
+    let ac_z = i128::from(c.1 - a.1);
+    let double_area = (ab_x * ac_z - ab_z * ac_x).unsigned_abs() as f64;
+    double_area * 0.5 / ROAD_OVERLAY_COORDINATE_SCALE.powi(2)
 }
 
 fn signed_overlay_contour_area_m2(contour: &NodeOverlayContour) -> f32 {

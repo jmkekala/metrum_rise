@@ -1185,6 +1185,7 @@ fn flat_logged_curve_bend_rejects_missing_explicit_point_contact_curb_ownership(
         TransitFlags::CAR | TransitFlags::FOOT,
     ));
     graph.rebuild_intersection_clips();
+    graph.rebuild_adjacency_list();
 
     let mut surface = RoadSurfaceSystem::new(16.0);
     surface.compile_dirty(&graph, &terrain);
@@ -1473,6 +1474,81 @@ fn logged_oblique_terminal_top_surfaces_cover_footprint() {
             RoadSurfaceVisualNodePieceKind::Terminal
         );
         assert_node_top_covers_footprint(terminal_piece);
+    }
+}
+
+#[test]
+fn logged_curved_terminal_top_surfaces_cover_footprint() {
+    let terrain = flat_terrain(384, 384);
+    let points = road_points_from_json(
+        "[[-52.080,0.0,25.947],[-52.858,0.0,26.111],[-53.527,0.0,26.253],\
+        [-54.079,0.0,26.370],[-54.711,0.0,26.503],[-55.422,0.0,26.654],\
+        [-56.206,0.0,26.820],[-57.063,0.0,27.001],[-57.987,0.0,27.197],\
+        [-58.723,0.0,27.352],[-59.233,0.0,27.460],[-59.759,0.0,27.572],\
+        [-60.299,0.0,27.686],[-60.854,0.0,27.803],[-61.424,0.0,27.924],\
+        [-62.006,0.0,28.047],[-62.602,0.0,28.173],[-63.211,0.0,28.302],\
+        [-63.833,0.0,28.434],[-64.466,0.0,28.568],[-65.111,0.0,28.704],\
+        [-65.768,0.0,28.843],[-66.435,0.0,28.984],[-67.113,0.0,29.128],\
+        [-67.801,0.0,29.273],[-68.499,0.0,29.421],[-69.206,0.0,29.571],\
+        [-69.922,0.0,29.722],[-70.646,0.0,29.875],[-71.379,0.0,30.030],\
+        [-72.119,0.0,30.187],[-72.867,0.0,30.345],[-73.621,0.0,30.505],\
+        [-74.382,0.0,30.666],[-75.150,0.0,30.828],[-75.923,0.0,30.992],\
+        [-76.701,0.0,31.157],[-77.484,0.0,31.323],[-78.272,0.0,31.489],\
+        [-79.064,0.0,31.657],[-79.860,0.0,31.825],[-80.659,0.0,31.994],\
+        [-81.461,0.0,32.164],[-82.266,0.0,32.334],[-83.073,0.0,32.505],\
+        [-83.882,0.0,32.676],[-84.692,0.0,32.848],[-85.503,0.0,33.019],\
+        [-86.315,0.0,33.191],[-87.126,0.0,33.363],[-87.938,0.0,33.535],\
+        [-88.749,0.0,33.706],[-89.559,0.0,33.878],[-90.368,0.0,34.049],\
+        [-91.175,0.0,34.220],[-91.980,0.0,34.390],[-92.782,0.0,34.560],\
+        [-93.581,0.0,34.729],[-94.377,0.0,34.897],[-95.169,0.0,35.065],\
+        [-95.957,0.0,35.232],[-96.740,0.0,35.397],[-97.518,0.0,35.562],\
+        [-98.292,0.0,35.726],[-99.059,0.0,35.888],[-99.820,0.0,36.049],\
+        [-100.575,0.0,36.209],[-101.322,0.0,36.367],[-102.062,0.0,36.524],\
+        [-102.795,0.0,36.679],[-103.520,0.0,36.832],[-104.235,0.0,36.983],\
+        [-104.942,0.0,37.133],[-105.640,0.0,37.281],[-106.328,0.0,37.426],\
+        [-107.006,0.0,37.570],[-107.673,0.0,37.711],[-108.330,0.0,37.850],\
+        [-108.975,0.0,37.986],[-109.609,0.0,38.120],[-110.230,0.0,38.252],\
+        [-110.839,0.0,38.381],[-111.435,0.0,38.507],[-112.018,0.0,38.630],\
+        [-112.587,0.0,38.751],[-113.142,0.0,38.868],[-113.682,0.0,38.982],\
+        [-114.208,0.0,39.094],[-114.718,0.0,39.202],[-115.454,0.0,39.357],\
+        [-116.379,0.0,39.553],[-117.235,0.0,39.734],[-118.020,0.0,39.900],\
+        [-118.730,0.0,40.051],[-119.362,0.0,40.184],[-119.914,0.0,40.301],\
+        [-120.583,0.0,40.443],[-121.361,0.0,40.607]]",
+    );
+    let start_point = points[0];
+    let end_point = *points.last().unwrap();
+
+    let mut graph = RegionGraph::new();
+    let start = graph.add_node(start_point, NodeType::Junction);
+    let end = graph.add_node(end_point, NodeType::Junction);
+    let mut edge = test_edge(
+        start,
+        end,
+        points,
+        14.0,
+        EdgeClass::Standard,
+        TransitType::Road,
+        TransitFlags::CAR | TransitFlags::FOOT,
+    );
+    edge.fwd_lanes = 2;
+    edge.bkw_lanes = 2;
+    graph.add_edge(edge);
+    graph.rebuild_intersection_clips();
+
+    let mut surface = RoadSurfaceSystem::new(16.0);
+    surface.compile_dirty(&graph, &terrain);
+    let dump = surface.build_edge_geometry_debug_dump(&graph, &terrain, &[0]);
+    for node_id in [start, end] {
+        let terminal_piece = surface
+            .compiled_visual_node_pieces()
+            .get(&node_id)
+            .unwrap_or_else(|| panic!("logged curved road endpoint should compile a terminal piece; node_id={node_id} dump={dump}"));
+        assert_eq!(
+            terminal_piece.kind,
+            RoadSurfaceVisualNodePieceKind::Terminal
+        );
+        assert_node_top_covers_footprint(terminal_piece);
+        assert_material_triangles_do_not_overlap(terminal_piece);
     }
 }
 

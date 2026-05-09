@@ -198,10 +198,15 @@ impl NodeInputMouth {
 
         let direction_xz = normalized_direction(mouth)?;
         let conflict_handoff_distance_m = conflict_handoff_distance_m(mouth, direction_xz)?;
-        let mouth_rails = profile_rails(NodeInputProfileKind::Mouth, &mouth.profile);
-        let endpoint_rails = profile_rails(NodeInputProfileKind::Endpoint, &mouth.endpoint_profile);
-        let boundary_rails = boundary_rails(mouth);
-        let band_intervals = band_intervals(mouth);
+        let mut mouth_rails = profile_rails(NodeInputProfileKind::Mouth, &mouth.profile);
+        let mut endpoint_rails =
+            profile_rails(NodeInputProfileKind::Endpoint, &mouth.endpoint_profile);
+        let mut boundary_rails = boundary_rails(mouth);
+        let mut band_intervals = band_intervals(mouth);
+        quantize_profile_rails_xz(&mut mouth_rails);
+        quantize_profile_rails_xz(&mut endpoint_rails);
+        quantize_boundary_rails_xz(&mut boundary_rails);
+        quantize_band_intervals_xz(&mut band_intervals);
         let mut terminal_end_bands = terminal_end_bands(piece_kind, mouth, band_intervals.len());
         for end_band in &mut terminal_end_bands {
             quantize_terminal_end_band_xz(end_band);
@@ -485,6 +490,29 @@ fn quantize_terminal_end_band_xz(end_band: &mut NodeInputTerminalEndBand) {
     end_band.outer_end_world = quantize_road_vec3_xz(end_band.outer_end_world);
     for point in &mut end_band.contour_world {
         *point = quantize_road_vec3_xz(*point);
+    }
+}
+
+fn quantize_profile_rails_xz(rails: &mut [NodeInputProfileRail]) {
+    for rail in rails {
+        rail.start_world = quantize_road_vec3_xz(rail.start_world);
+        rail.end_world = quantize_road_vec3_xz(rail.end_world);
+    }
+}
+
+fn quantize_boundary_rails_xz(rails: &mut [NodeInputBoundaryRail]) {
+    for rail in rails {
+        rail.mouth_world = quantize_road_vec3_xz(rail.mouth_world);
+        rail.endpoint_world = quantize_road_vec3_xz(rail.endpoint_world);
+    }
+}
+
+fn quantize_band_intervals_xz(intervals: &mut [NodeInputBandInterval]) {
+    for interval in intervals {
+        interval.mouth_start_world = quantize_road_vec3_xz(interval.mouth_start_world);
+        interval.mouth_end_world = quantize_road_vec3_xz(interval.mouth_end_world);
+        interval.endpoint_start_world = quantize_road_vec3_xz(interval.endpoint_start_world);
+        interval.endpoint_end_world = quantize_road_vec3_xz(interval.endpoint_end_world);
     }
 }
 

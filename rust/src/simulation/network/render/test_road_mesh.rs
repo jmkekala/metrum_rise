@@ -174,11 +174,7 @@ mod tests {
 
         validate_triangles(&mesh_data.sidewalk_vertices, max_dist, "sidewalk");
         validate_triangles(&mesh_data.curb_vertices, max_dist, "curb");
-        validate_triangles(
-            &mesh_data.curb_vertical_vertices,
-            max_dist,
-            "curb_vertical",
-        );
+        validate_triangles(&mesh_data.curb_vertical_vertices, max_dist, "curb_vertical");
         validate_triangles(&mesh_data.road_vertices, max_dist, "road");
         validate_triangles(&mesh_data.marking_vertices, max_dist, "marking");
         validate_triangles(&mesh_data.concrete_vertices, max_dist, "concrete");

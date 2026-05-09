@@ -342,9 +342,9 @@ impl NodeBandHeightPatch {
                 interval.endpoint_end_world.y,
                 interval.mouth_end_world.y,
             ),
-            triangles: None,
-            contour_edges: None,
-            allow_parametric_fallback: false,
+            triangles: Some(interval_height_triangles(interval)),
+            contour_edges: Some(interval_height_edges(interval)),
+            allow_parametric_fallback: true,
         }
     }
 
@@ -812,11 +812,63 @@ fn quantize_source_height_m(value_m: f64) -> f64 {
     (value_m * HEIGHT_SOURCE_KEY_SCALE).round() / HEIGHT_SOURCE_KEY_SCALE
 }
 
+fn interval_height_triangles(interval: &NodeInputBandInterval) -> Vec<NodeBandHeightTriangle> {
+    height_triangles_from_vertices(&[
+        interval.mouth_start_world,
+        interval.mouth_end_world,
+        interval.endpoint_end_world,
+        interval.endpoint_start_world,
+    ])
+}
+
+fn interval_height_edges(interval: &NodeInputBandInterval) -> Vec<NodeBandHeightEdge> {
+    height_edges_from_vertices(&[
+        interval.mouth_start_world,
+        interval.mouth_end_world,
+        interval.endpoint_end_world,
+        interval.endpoint_start_world,
+    ])
+}
+
 fn terminal_end_band_height_triangles(
     end_band: &NodeInputTerminalEndBand,
 ) -> Vec<NodeBandHeightTriangle> {
-    let mut vertices = Vec::with_capacity(end_band.contour_world.len());
-    for point in &end_band.contour_world {
+    let mut triangles = height_triangles_from_vertices(&end_band.contour_world);
+    if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
+        && end_band.contour_world.len() >= 3
+    {
+        let a_world = end_band.contour_world[0];
+        let b_world = end_band.contour_world[1];
+        let c_world = (end_band.outer_start_world + end_band.outer_end_world) * 0.5;
+        let a_xz = quantize_road_vec2_to_overlay_grid(xz(a_world));
+        let b_xz = quantize_road_vec2_to_overlay_grid(xz(b_world));
+        let c_xz = quantize_road_vec2_to_overlay_grid(xz(c_world));
+        if height_triangle_area2(
+            height_source_point_key(a_xz),
+            height_source_point_key(b_xz),
+            height_source_point_key(c_xz),
+        ) != 0
+        {
+            triangles.push(NodeBandHeightTriangle {
+                a_xz,
+                b_xz,
+                c_xz,
+                a_height_m: quantize_source_height_m(a_world.y),
+                b_height_m: quantize_source_height_m(b_world.y),
+                c_height_m: quantize_source_height_m(c_world.y),
+            });
+        }
+    }
+    triangles
+}
+
+fn terminal_end_band_height_edges(end_band: &NodeInputTerminalEndBand) -> Vec<NodeBandHeightEdge> {
+    height_edges_from_vertices(&end_band.contour_world)
+}
+
+fn height_triangles_from_vertices(points: &[RoadVec3]) -> Vec<NodeBandHeightTriangle> {
+    let mut vertices = Vec::with_capacity(points.len());
+    for point in points {
         let point_xz = quantize_road_vec2_to_overlay_grid(xz(*point));
         let key = height_source_point_key(point_xz);
         if vertices
@@ -859,37 +911,12 @@ fn terminal_end_band_height_triangles(
             c_height_m,
         });
     }
-    if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
-        && end_band.contour_world.len() >= 3
-    {
-        let a_world = end_band.contour_world[0];
-        let b_world = end_band.contour_world[1];
-        let c_world = (end_band.outer_start_world + end_band.outer_end_world) * 0.5;
-        let a_xz = quantize_road_vec2_to_overlay_grid(xz(a_world));
-        let b_xz = quantize_road_vec2_to_overlay_grid(xz(b_world));
-        let c_xz = quantize_road_vec2_to_overlay_grid(xz(c_world));
-        if height_triangle_area2(
-            height_source_point_key(a_xz),
-            height_source_point_key(b_xz),
-            height_source_point_key(c_xz),
-        ) != 0
-        {
-            triangles.push(NodeBandHeightTriangle {
-                a_xz,
-                b_xz,
-                c_xz,
-                a_height_m: quantize_source_height_m(a_world.y),
-                b_height_m: quantize_source_height_m(b_world.y),
-                c_height_m: quantize_source_height_m(c_world.y),
-            });
-        }
-    }
     triangles
 }
 
-fn terminal_end_band_height_edges(end_band: &NodeInputTerminalEndBand) -> Vec<NodeBandHeightEdge> {
-    let mut vertices = Vec::with_capacity(end_band.contour_world.len());
-    for point in &end_band.contour_world {
+fn height_edges_from_vertices(points: &[RoadVec3]) -> Vec<NodeBandHeightEdge> {
+    let mut vertices = Vec::with_capacity(points.len());
+    for point in points {
         let point_xz = quantize_road_vec2_to_overlay_grid(xz(*point));
         let key = height_source_point_key(point_xz);
         if vertices
