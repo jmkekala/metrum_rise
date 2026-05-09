@@ -2158,18 +2158,15 @@ fn push_terminal_curb_end_bands(
             curb_height_m,
         ),
     );
-    push_terminal_center_end_band_with_heights(
+    push_terminal_curb_center_end_band(
         end_bands,
         center_source_band_index,
-        RoadSurfaceBandKind::CurbOrShoulder,
         &mouth.endpoint_profile,
         outward,
         left_band_index + 1,
         right_band_index,
-        0.0,
         outer_offset_m,
-        Some((curb_height_m, curb_height_m)),
-        Some((curb_height_m, curb_height_m)),
+        curb_height_m,
     );
     push_terminal_end_band(
         end_bands,
@@ -2203,6 +2200,77 @@ fn push_terminal_curb_end_bands(
             outer_offset_m,
         ),
     );
+}
+
+fn push_terminal_curb_center_end_band(
+    end_bands: &mut Vec<NodeInputTerminalEndBand>,
+    source_band_index: usize,
+    profile: &IncidentMouthProfile,
+    outward: RoadVec2,
+    start_boundary_index: usize,
+    end_boundary_index: usize,
+    outer_offset_m: f64,
+    curb_height_m: f64,
+) {
+    if start_boundary_index >= end_boundary_index
+        || end_boundary_index >= profile.boundary_points_world.len()
+    {
+        return;
+    }
+
+    let inner_points = (start_boundary_index..=end_boundary_index)
+        .map(|boundary_index| {
+            let height_m =
+                if boundary_index == start_boundary_index || boundary_index == end_boundary_index {
+                    curb_height_m
+                } else {
+                    f64::from(profile.boundary_points_world[boundary_index].y)
+                };
+            offset_endpoint_boundary_point_with_height(
+                profile,
+                boundary_index,
+                outward,
+                0.0,
+                height_m,
+            )
+        })
+        .collect::<Vec<_>>();
+    let outer_points = (start_boundary_index..=end_boundary_index)
+        .map(|boundary_index| {
+            offset_endpoint_boundary_point_with_height(
+                profile,
+                boundary_index,
+                outward,
+                outer_offset_m,
+                curb_height_m,
+            )
+        })
+        .collect::<Vec<_>>();
+    if inner_points.len() < 2 || outer_points.len() != inner_points.len() {
+        return;
+    }
+
+    let inner_start_world = inner_points[0];
+    let inner_end_world = *inner_points
+        .last()
+        .expect("curb terminal inner edge has at least two points");
+    let outer_start_world = outer_points[0];
+    let outer_end_world = *outer_points
+        .last()
+        .expect("curb terminal outer edge has at least two points");
+    let mut contour_world = inner_points;
+    contour_world.extend(outer_points.into_iter().rev());
+
+    end_bands.push(NodeInputTerminalEndBand {
+        source_band_index,
+        band_kind: RoadSurfaceBandKind::CurbOrShoulder,
+        boundary_mode: NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand,
+        inner_start_world,
+        inner_end_world,
+        outer_start_world,
+        outer_end_world,
+        contour_world,
+    });
 }
 
 fn push_terminal_center_end_band(
@@ -2481,6 +2549,66 @@ mod tests {
         }
     }
 
+    fn two_carriageway_profile(x: f32, direction: Vector2) -> IncidentMouthProfile {
+        let boundary_points_world = vec![
+            Vector3::new(x, 4.12, -5.0),
+            Vector3::new(x, 4.12, -3.65),
+            Vector3::new(x, 4.12, -3.5),
+            Vector3::new(x, 4.0, 0.0),
+            Vector3::new(x, 4.0, 3.5),
+            Vector3::new(x, 4.12, 3.65),
+            Vector3::new(x, 4.12, 5.0),
+        ];
+        let bands = vec![
+            test_band(
+                RoadSurfaceBandKind::Sidewalk,
+                boundary_points_world[0],
+                boundary_points_world[1],
+            ),
+            test_band(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                boundary_points_world[1],
+                boundary_points_world[2],
+            ),
+            test_band(
+                RoadSurfaceBandKind::Carriageway,
+                boundary_points_world[2],
+                boundary_points_world[3],
+            ),
+            test_band(
+                RoadSurfaceBandKind::Carriageway,
+                boundary_points_world[3],
+                boundary_points_world[4],
+            ),
+            test_band(
+                RoadSurfaceBandKind::CurbOrShoulder,
+                boundary_points_world[4],
+                boundary_points_world[5],
+            ),
+            test_band(
+                RoadSurfaceBandKind::Sidewalk,
+                boundary_points_world[5],
+                boundary_points_world[6],
+            ),
+        ];
+        IncidentMouthProfile {
+            inward_direction_xz: direction,
+            boundary_points_world,
+            bands,
+        }
+    }
+
+    fn two_carriageway_terminal_mouth() -> OrderedIncidentPieceMouth {
+        OrderedIncidentPieceMouth {
+            profile: two_carriageway_profile(10.0, Vector2::RIGHT),
+            endpoint_profile: two_carriageway_profile(0.0, Vector2::RIGHT),
+            direction_angle_ccw: 0.0,
+            direction_xz: Vector2::RIGHT,
+            edge_idx: 8,
+            side: IncidentEdgeSide::Start,
+        }
+    }
+
     #[test]
     fn extracts_profile_rails_intervals_and_handoff() {
         let input = NodeArrangementInput::from_ordered_mouths(
@@ -2516,6 +2644,32 @@ mod tests {
                 right_kind: RoadSurfaceBandKind::Carriageway,
             }
         );
+    }
+
+    #[test]
+    fn terminal_curb_end_bands_do_not_raise_carriageway_center_boundary() {
+        let input = NodeArrangementInput::from_ordered_mouths(
+            42,
+            RoadSurfaceVisualNodePieceKind::Terminal,
+            &[two_carriageway_terminal_mouth()],
+        )
+        .expect("valid two-carriageway terminal should produce canonical input");
+        let mouth = &input.mouths[0];
+        let center_boundary = mouth.boundary_rails[3].endpoint_world;
+
+        for end_band in &mouth.terminal_end_bands {
+            if end_band.band_kind != RoadSurfaceBandKind::CurbOrShoulder {
+                continue;
+            }
+            assert!(
+                !end_band.contour_world.iter().any(|point| {
+                    (point.x - center_boundary.x).abs() <= 0.001
+                        && (point.z - center_boundary.z).abs() <= 0.001
+                        && point.y > center_boundary.y + 0.001
+                }),
+                "terminal curb end band must not claim the carriageway center boundary at raised curb height: {end_band:?}"
+            );
+        }
     }
 
     #[test]

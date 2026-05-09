@@ -833,6 +833,12 @@ fn interval_height_edges(interval: &NodeInputBandInterval) -> Vec<NodeBandHeight
 fn terminal_end_band_height_triangles(
     end_band: &NodeInputTerminalEndBand,
 ) -> Vec<NodeBandHeightTriangle> {
+    if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand
+        && let Some(triangles) = terminal_material_band_height_triangles(&end_band.contour_world)
+    {
+        return triangles;
+    }
+
     let mut triangles = height_triangles_from_vertices(&end_band.contour_world);
     if end_band.boundary_mode == NodeInputTerminalEndBandBoundaryMode::SameOwnerOuterCap
         && end_band.contour_world.len() >= 3
@@ -860,6 +866,54 @@ fn terminal_end_band_height_triangles(
         }
     }
     triangles
+}
+
+fn terminal_material_band_height_triangles(
+    points: &[RoadVec3],
+) -> Option<Vec<NodeBandHeightTriangle>> {
+    if points.len() < 4 || points.len() % 2 != 0 {
+        return None;
+    }
+
+    let rail_point_count = points.len() / 2;
+    let mut triangles = Vec::with_capacity((rail_point_count - 1) * 2);
+    for index in 0..rail_point_count - 1 {
+        let inner_start = points[index];
+        let inner_end = points[index + 1];
+        let outer_end = points[points.len() - 2 - index];
+        let outer_start = points[points.len() - 1 - index];
+        push_height_triangle(&mut triangles, inner_start, inner_end, outer_end);
+        push_height_triangle(&mut triangles, inner_start, outer_end, outer_start);
+    }
+
+    Some(triangles)
+}
+
+fn push_height_triangle(
+    triangles: &mut Vec<NodeBandHeightTriangle>,
+    a_world: RoadVec3,
+    b_world: RoadVec3,
+    c_world: RoadVec3,
+) {
+    let a_xz = quantize_road_vec2_to_overlay_grid(xz(a_world));
+    let b_xz = quantize_road_vec2_to_overlay_grid(xz(b_world));
+    let c_xz = quantize_road_vec2_to_overlay_grid(xz(c_world));
+    if height_triangle_area2(
+        height_source_point_key(a_xz),
+        height_source_point_key(b_xz),
+        height_source_point_key(c_xz),
+    ) == 0
+    {
+        return;
+    }
+    triangles.push(NodeBandHeightTriangle {
+        a_xz,
+        b_xz,
+        c_xz,
+        a_height_m: quantize_source_height_m(a_world.y),
+        b_height_m: quantize_source_height_m(b_world.y),
+        c_height_m: quantize_source_height_m(c_world.y),
+    });
 }
 
 fn terminal_end_band_height_edges(end_band: &NodeInputTerminalEndBand) -> Vec<NodeBandHeightEdge> {
@@ -1234,6 +1288,51 @@ mod tests {
                 mouth_order_index: 0,
                 band_index: 99,
             })
+        );
+    }
+
+    #[test]
+    fn terminal_material_band_height_field_respects_inner_rail_vertices() {
+        let inner_start = RoadVec3::new(0.0, 0.12, -1.0);
+        let inner_center = RoadVec3::new(0.0, 0.0, 0.0);
+        let inner_end = RoadVec3::new(0.0, 0.12, 1.0);
+        let outer_start = RoadVec3::new(0.15, 0.12, -1.0);
+        let outer_center = RoadVec3::new(0.15, 0.12, 0.0);
+        let outer_end = RoadVec3::new(0.15, 0.12, 1.0);
+        let end_band = NodeInputTerminalEndBand {
+            source_band_index: 0,
+            band_kind: RoadSurfaceBandKind::CurbOrShoulder,
+            boundary_mode: NodeInputTerminalEndBandBoundaryMode::TerminalMaterialBand,
+            inner_start_world: inner_start,
+            inner_end_world: inner_end,
+            outer_start_world: outer_start,
+            outer_end_world: outer_end,
+            contour_world: vec![
+                inner_start,
+                inner_center,
+                inner_end,
+                outer_end,
+                outer_center,
+                outer_start,
+            ],
+        };
+        let patch = NodeBandHeightPatch::from_terminal_end_band(&end_band);
+        let height = match patch
+            .evaluate_surface_height(
+                NodeBandHeightFieldId::new(0, 0, RoadSurfaceBandKind::CurbOrShoulder),
+                RoadVec2::new(0.0, 0.0),
+            )
+            .expect("center vertex should be evaluable")
+        {
+            NodeHeightPatchEvaluation::Inside(height) => height,
+            NodeHeightPatchEvaluation::Outside(error) => {
+                panic!("center vertex should be inside terminal material band: {error:?}")
+            }
+        };
+
+        assert!(
+            height.abs() <= 1.0e-6,
+            "terminal material band must keep the explicit inner rail center height"
         );
     }
 
