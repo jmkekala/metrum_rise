@@ -11,6 +11,7 @@ use crate::simulation::network::graph::{Edge, RegionGraph};
 use crate::simulation::terrain::TerrainSystem;
 use godot::prelude::{Vector2, Vector3};
 use i_overlay::core::overlay_rule::OverlayRule;
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 const DEBUG_MAX_PROBLEM_SAMPLES: usize = 12;
@@ -40,6 +41,62 @@ struct DebugMouthTopAnchor {
     point: Vector3,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct DebugRenderVertexKey {
+    x_key: i64,
+    y_mm: i64,
+    z_key: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct DebugRenderXzVertexKey {
+    x_key: i64,
+    z_key: i64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct DebugRenderEdgeKey {
+    start: DebugRenderVertexKey,
+    end: DebugRenderVertexKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+struct DebugRenderXzEdgeKey {
+    start: DebugRenderXzVertexKey,
+    end: DebugRenderXzVertexKey,
+}
+
+#[derive(Clone, Copy)]
+struct DebugBoundaryOwner {
+    region_index: usize,
+    kind: RoadSurfaceBandKind,
+    owner_index: usize,
+}
+
+#[derive(Clone, Copy)]
+struct DebugTopBoundaryEdge {
+    owner: DebugBoundaryOwner,
+    start: Vector3,
+    end: Vector3,
+    key: DebugRenderEdgeKey,
+    xz_key: DebugRenderXzEdgeKey,
+    avg_y_m: f32,
+}
+
+#[derive(Clone, Copy)]
+struct DebugVerticalFaceSpanEdges {
+    lower_start: Vector3,
+    lower_end: Vector3,
+    upper_start: Vector3,
+    upper_end: Vector3,
+}
+
+#[derive(Clone, Copy)]
+struct DebugExpectedVerticalStep {
+    lower: DebugTopBoundaryEdge,
+    upper: DebugTopBoundaryEdge,
+}
+
 #[derive(Default)]
 struct DebugMatchStats {
     total: usize,
@@ -57,6 +114,58 @@ struct DebugCoverageStats {
     area_budget_m2: f32,
     missing_shape_count: usize,
     extra_shape_count: usize,
+}
+
+impl DebugRenderVertexKey {
+    fn from_point(point: Vector3) -> Self {
+        Self {
+            x_key: (f64::from(point.x) * backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+            y_mm: (f64::from(point.y) * 1000.0).round() as i64,
+            z_key: (f64::from(point.z) * backend::ROAD_OVERLAY_COORDINATE_SCALE).round() as i64,
+        }
+    }
+
+    fn xz(self) -> DebugRenderXzVertexKey {
+        DebugRenderXzVertexKey {
+            x_key: self.x_key,
+            z_key: self.z_key,
+        }
+    }
+}
+
+impl DebugRenderEdgeKey {
+    fn normalized(start: Vector3, end: Vector3) -> Option<Self> {
+        let start = DebugRenderVertexKey::from_point(start);
+        let end = DebugRenderVertexKey::from_point(end);
+        if start == end {
+            return None;
+        }
+        Some(if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        })
+    }
+
+    fn xz(self) -> DebugRenderXzEdgeKey {
+        DebugRenderXzEdgeKey::normalized(self.start.xz(), self.end.xz())
+    }
+}
+
+impl DebugRenderXzEdgeKey {
+    fn normalized(start: DebugRenderXzVertexKey, end: DebugRenderXzVertexKey) -> Self {
+        if start <= end {
+            Self { start, end }
+        } else {
+            Self {
+                start: end,
+                end: start,
+            }
+        }
+    }
 }
 
 impl RoadSurfaceSystem {
@@ -468,6 +577,9 @@ impl RoadSurfaceSystem {
             &piece.curb_vertical_face_polygons,
         );
         dump.push_str(",\n");
+        dump.push_str("      \"curb_vertical_face_details\": ");
+        Self::append_curb_vertical_face_details_debug_literal(dump, piece);
+        dump.push_str(",\n");
         dump.push_str("      \"sidewalk_topology\": ");
         Self::append_polygon_collection_debug_literal(
             dump,
@@ -685,6 +797,498 @@ impl RoadSurfaceSystem {
             max_triangle_y_delta_m, max_triangle_slope_ratio
         );
         dump.push('}');
+    }
+
+    fn append_curb_vertical_face_details_debug_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+    ) {
+        let top_edges = Self::debug_owned_top_boundary_edges(piece);
+        let mut top_edges_by_key: BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>> =
+            BTreeMap::new();
+        for edge in &top_edges {
+            top_edges_by_key.entry(edge.key).or_default().push(*edge);
+        }
+        let expected_steps = Self::debug_expected_asphalt_curb_steps(&top_edges);
+
+        let face_span_edges: Vec<Option<DebugVerticalFaceSpanEdges>> = piece
+            .curb_vertical_face_polygons
+            .iter()
+            .map(Self::debug_vertical_face_span_edges)
+            .collect();
+        let mut face_expected_matches = vec![Vec::new(); face_span_edges.len()];
+        let mut expected_face_matches = vec![Vec::new(); expected_steps.len()];
+
+        for (face_index, span_edges) in face_span_edges.iter().enumerate() {
+            let Some(span_edges) = span_edges else {
+                continue;
+            };
+            let Some(lower_key) =
+                DebugRenderEdgeKey::normalized(span_edges.lower_start, span_edges.lower_end)
+            else {
+                continue;
+            };
+            let Some(upper_key) =
+                DebugRenderEdgeKey::normalized(span_edges.upper_start, span_edges.upper_end)
+            else {
+                continue;
+            };
+            for (step_index, step) in expected_steps.iter().enumerate() {
+                if step.lower.key == lower_key && step.upper.key == upper_key {
+                    face_expected_matches[face_index].push(step_index);
+                    expected_face_matches[step_index].push(face_index);
+                }
+            }
+        }
+
+        let mut problem_count = 0usize;
+        for (face_index, span_edges) in face_span_edges.iter().enumerate() {
+            let Some(span_edges) = span_edges else {
+                problem_count += 1;
+                continue;
+            };
+            let lower_key =
+                DebugRenderEdgeKey::normalized(span_edges.lower_start, span_edges.lower_end);
+            let upper_key =
+                DebugRenderEdgeKey::normalized(span_edges.upper_start, span_edges.upper_end);
+            let lower_matches_carriageway = lower_key
+                .and_then(|key| top_edges_by_key.get(&key))
+                .is_some_and(|edges| {
+                    edges
+                        .iter()
+                        .any(|edge| edge.owner.kind == RoadSurfaceBandKind::Carriageway)
+                });
+            let upper_matches_curb = upper_key
+                .and_then(|key| top_edges_by_key.get(&key))
+                .is_some_and(|edges| {
+                    edges
+                        .iter()
+                        .any(|edge| edge.owner.kind == RoadSurfaceBandKind::CurbOrShoulder)
+                });
+            let face_problem = !lower_matches_carriageway
+                || !upper_matches_curb
+                || face_expected_matches[face_index].is_empty();
+            if face_problem {
+                problem_count += 1;
+            }
+        }
+        problem_count += expected_face_matches
+            .iter()
+            .filter(|matches| matches.is_empty())
+            .count();
+
+        dump.push('{');
+        let _ = write!(
+            dump,
+            "\"face_count\":{},\"top_boundary_edge_count\":{},\"expected_asphalt_curb_step_count\":{},\"problem_count\":{}",
+            piece.curb_vertical_face_polygons.len(),
+            top_edges.len(),
+            expected_steps.len(),
+            problem_count
+        );
+        dump.push_str(",\"faces\":[");
+        for (face_index, polygon) in piece.curb_vertical_face_polygons.iter().enumerate() {
+            if face_index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_curb_vertical_face_detail_literal(
+                dump,
+                piece,
+                face_index,
+                polygon,
+                face_span_edges[face_index],
+                &top_edges_by_key,
+                &face_expected_matches[face_index],
+            );
+        }
+        dump.push_str("],\"expected_asphalt_curb_steps\":[");
+        for (step_index, step) in expected_steps.iter().enumerate() {
+            if step_index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_expected_vertical_step_literal(
+                dump,
+                step_index,
+                *step,
+                &expected_face_matches[step_index],
+            );
+        }
+        dump.push_str("]}");
+    }
+
+    fn append_curb_vertical_face_detail_literal(
+        dump: &mut String,
+        piece: &RoadSurfaceVisualNodePiece,
+        face_index: usize,
+        polygon: &RoadSurfaceVisualPolygon,
+        span_edges: Option<DebugVerticalFaceSpanEdges>,
+        top_edges_by_key: &BTreeMap<DebugRenderEdgeKey, Vec<DebugTopBoundaryEdge>>,
+        expected_step_matches: &[usize],
+    ) {
+        let normal = Self::debug_polygon_winding_normal(&polygon.points_world);
+        let visible_direction = normal.map(|normal| -normal);
+
+        dump.push('{');
+        let _ = write!(
+            dump,
+            "\"face\":{},\"polygon_vertex_count\":{},\"triangle_count\":{}",
+            face_index,
+            polygon.points_world.len(),
+            polygon.triangles_world.len()
+        );
+        dump.push_str(",\"points_world\":");
+        Self::append_vector3_precise_list_literal(dump, &polygon.points_world);
+        dump.push_str(",\"winding_normal\":");
+        Self::append_optional_vector3_precise_literal(dump, normal);
+        dump.push_str(",\"godot_cull_back_visible_direction\":");
+        Self::append_optional_vector3_precise_literal(dump, visible_direction);
+
+        let Some(span_edges) = span_edges else {
+            dump.push_str(",\"status\":\"non_vertical_quad_span\"}");
+            return;
+        };
+
+        let lower_key =
+            DebugRenderEdgeKey::normalized(span_edges.lower_start, span_edges.lower_end);
+        let upper_key =
+            DebugRenderEdgeKey::normalized(span_edges.upper_start, span_edges.upper_end);
+        dump.push_str(",\"lower_edge_world\":");
+        Self::append_vector3_pair_precise_literal(
+            dump,
+            span_edges.lower_start,
+            span_edges.lower_end,
+        );
+        dump.push_str(",\"upper_edge_world\":");
+        Self::append_vector3_pair_precise_literal(
+            dump,
+            span_edges.upper_start,
+            span_edges.upper_end,
+        );
+        dump.push_str(",\"lower_edge_key\":");
+        Self::append_optional_debug_render_edge_key_literal(dump, lower_key);
+        dump.push_str(",\"upper_edge_key\":");
+        Self::append_optional_debug_render_edge_key_literal(dump, upper_key);
+
+        let lower_matches = lower_key.and_then(|key| top_edges_by_key.get(&key));
+        let upper_matches = upper_key.and_then(|key| top_edges_by_key.get(&key));
+        dump.push_str(",\"lower_top_matches\":");
+        Self::append_debug_top_boundary_edge_list_literal(
+            dump,
+            lower_matches.map(Vec::as_slice).unwrap_or(&[]),
+        );
+        dump.push_str(",\"upper_top_matches\":");
+        Self::append_debug_top_boundary_edge_list_literal(
+            dump,
+            upper_matches.map(Vec::as_slice).unwrap_or(&[]),
+        );
+        dump.push_str(",\"matching_expected_step_indices\":");
+        Self::append_usize_list_literal(dump, expected_step_matches);
+
+        let lower_midpoint = (span_edges.lower_start + span_edges.lower_end) * 0.5;
+        let visible_dot = visible_direction.and_then(|direction| {
+            Self::debug_visible_dot_to_lower_carriageway_owner(
+                piece,
+                lower_midpoint,
+                direction,
+                lower_matches.map(Vec::as_slice).unwrap_or(&[]),
+            )
+        });
+        dump.push_str(",\"visible_dot_lower_carriageway_owner\":");
+        Self::append_optional_f32_precise_literal(dump, visible_dot);
+        dump.push_str(",\"visible_from_lower_carriageway_owner\":");
+        if let Some(dot) = visible_dot {
+            let _ = write!(dump, "{}", dot > 0.0);
+        } else {
+            dump.push_str("null");
+        }
+
+        let lower_matches_carriageway = lower_matches.is_some_and(|edges| {
+            edges
+                .iter()
+                .any(|edge| edge.owner.kind == RoadSurfaceBandKind::Carriageway)
+        });
+        let upper_matches_curb = upper_matches.is_some_and(|edges| {
+            edges
+                .iter()
+                .any(|edge| edge.owner.kind == RoadSurfaceBandKind::CurbOrShoulder)
+        });
+        let face_problem =
+            !lower_matches_carriageway || !upper_matches_curb || expected_step_matches.is_empty();
+        let _ = write!(
+            dump,
+            ",\"lower_matches_carriageway\":{},\"upper_matches_curb\":{},\"problem\":{}",
+            lower_matches_carriageway, upper_matches_curb, face_problem
+        );
+        dump.push('}');
+    }
+
+    fn append_expected_vertical_step_literal(
+        dump: &mut String,
+        step_index: usize,
+        step: DebugExpectedVerticalStep,
+        face_matches: &[usize],
+    ) {
+        dump.push('{');
+        let _ = write!(dump, "\"step\":{},\"lower\":", step_index);
+        Self::append_debug_top_boundary_edge_literal(dump, step.lower);
+        dump.push_str(",\"upper\":");
+        Self::append_debug_top_boundary_edge_literal(dump, step.upper);
+        dump.push_str(",\"matching_face_indices\":");
+        Self::append_usize_list_literal(dump, face_matches);
+        let _ = write!(dump, ",\"problem\":{}", face_matches.is_empty());
+        dump.push('}');
+    }
+
+    fn append_debug_top_boundary_edge_list_literal(
+        dump: &mut String,
+        edges: &[DebugTopBoundaryEdge],
+    ) {
+        dump.push('[');
+        for (index, edge) in edges.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_debug_top_boundary_edge_literal(dump, *edge);
+        }
+        dump.push(']');
+    }
+
+    fn append_debug_top_boundary_edge_literal(dump: &mut String, edge: DebugTopBoundaryEdge) {
+        dump.push('{');
+        dump.push_str("\"owner\":");
+        Self::append_debug_boundary_owner_literal(dump, edge.owner);
+        dump.push_str(",\"edge_world\":");
+        Self::append_vector3_pair_precise_literal(dump, edge.start, edge.end);
+        dump.push_str(",\"edge_key\":");
+        Self::append_debug_render_edge_key_literal(dump, edge.key);
+        dump.push_str(",\"xz_key\":");
+        Self::append_debug_render_xz_edge_key_literal(dump, edge.xz_key);
+        let _ = write!(dump, ",\"avg_y_m\":{:.6}", edge.avg_y_m);
+        dump.push('}');
+    }
+
+    fn append_debug_boundary_owner_literal(dump: &mut String, owner: DebugBoundaryOwner) {
+        let _ = write!(
+            dump,
+            "{{\"region\":{},\"kind\":\"{:?}\",\"owner_index\":{}}}",
+            owner.region_index, owner.kind, owner.owner_index
+        );
+    }
+
+    fn debug_owned_top_boundary_edges(
+        piece: &RoadSurfaceVisualNodePiece,
+    ) -> Vec<DebugTopBoundaryEdge> {
+        let mut boundary_edges = Vec::new();
+        for (region_index, region) in piece.owned_regions.iter().enumerate() {
+            let owner = DebugBoundaryOwner {
+                region_index,
+                kind: region.kind,
+                owner_index: region.owner_index,
+            };
+            let mut edge_counts: BTreeMap<DebugRenderEdgeKey, (usize, Vector3, Vector3)> =
+                BTreeMap::new();
+            if region.polygon.triangles_world.is_empty() {
+                let points = &region.polygon.points_world;
+                if points.len() >= 2 {
+                    for index in 0..points.len() {
+                        Self::record_debug_top_boundary_edge_count(
+                            &mut edge_counts,
+                            points[index],
+                            points[(index + 1) % points.len()],
+                        );
+                    }
+                }
+            } else {
+                for triangle in &region.polygon.triangles_world {
+                    for edge_index in 0..3 {
+                        Self::record_debug_top_boundary_edge_count(
+                            &mut edge_counts,
+                            triangle[edge_index],
+                            triangle[(edge_index + 1) % 3],
+                        );
+                    }
+                }
+            }
+            for (key, (count, start, end)) in edge_counts {
+                if count != 1 {
+                    continue;
+                }
+                boundary_edges.push(DebugTopBoundaryEdge {
+                    owner,
+                    start,
+                    end,
+                    key,
+                    xz_key: key.xz(),
+                    avg_y_m: (start.y + end.y) * 0.5,
+                });
+            }
+        }
+        boundary_edges.sort_by(|a, b| {
+            a.key
+                .cmp(&b.key)
+                .then(a.owner.region_index.cmp(&b.owner.region_index))
+                .then(a.owner.kind.cmp(&b.owner.kind))
+                .then(a.owner.owner_index.cmp(&b.owner.owner_index))
+        });
+        boundary_edges
+    }
+
+    fn record_debug_top_boundary_edge_count(
+        edge_counts: &mut BTreeMap<DebugRenderEdgeKey, (usize, Vector3, Vector3)>,
+        start: Vector3,
+        end: Vector3,
+    ) {
+        let Some(key) = DebugRenderEdgeKey::normalized(start, end) else {
+            return;
+        };
+        edge_counts
+            .entry(key)
+            .and_modify(|entry| entry.0 += 1)
+            .or_insert((1, start, end));
+    }
+
+    fn debug_expected_asphalt_curb_steps(
+        top_edges: &[DebugTopBoundaryEdge],
+    ) -> Vec<DebugExpectedVerticalStep> {
+        let mut edges_by_xz: BTreeMap<DebugRenderXzEdgeKey, Vec<DebugTopBoundaryEdge>> =
+            BTreeMap::new();
+        for edge in top_edges {
+            edges_by_xz.entry(edge.xz_key).or_default().push(*edge);
+        }
+
+        let mut steps = Vec::new();
+        for edges in edges_by_xz.values() {
+            for road_edge in edges
+                .iter()
+                .filter(|edge| edge.owner.kind == RoadSurfaceBandKind::Carriageway)
+            {
+                for curb_edge in edges
+                    .iter()
+                    .filter(|edge| edge.owner.kind == RoadSurfaceBandKind::CurbOrShoulder)
+                {
+                    if road_edge.key == curb_edge.key {
+                        continue;
+                    }
+                    let (lower, upper) = if road_edge.avg_y_m <= curb_edge.avg_y_m {
+                        (*road_edge, *curb_edge)
+                    } else {
+                        (*curb_edge, *road_edge)
+                    };
+                    steps.push(DebugExpectedVerticalStep { lower, upper });
+                }
+            }
+        }
+
+        steps.sort_by(|a, b| {
+            a.lower
+                .key
+                .cmp(&b.lower.key)
+                .then(a.upper.key.cmp(&b.upper.key))
+                .then(a.lower.owner.region_index.cmp(&b.lower.owner.region_index))
+                .then(a.upper.owner.region_index.cmp(&b.upper.owner.region_index))
+        });
+        steps
+    }
+
+    fn debug_vertical_face_span_edges(
+        polygon: &RoadSurfaceVisualPolygon,
+    ) -> Option<DebugVerticalFaceSpanEdges> {
+        if polygon.points_world.len() < 4 {
+            return None;
+        }
+        let mut span_edges = Vec::new();
+        for index in 0..polygon.points_world.len() {
+            let start = polygon.points_world[index];
+            let end = polygon.points_world[(index + 1) % polygon.points_world.len()];
+            let start_key = DebugRenderVertexKey::from_point(start).xz();
+            let end_key = DebugRenderVertexKey::from_point(end).xz();
+            if start_key != end_key {
+                span_edges.push((start, end, (start.y + end.y) * 0.5));
+            }
+        }
+        if span_edges.len() != 2 {
+            return None;
+        }
+        span_edges.sort_by(|a, b| a.2.total_cmp(&b.2));
+        Some(DebugVerticalFaceSpanEdges {
+            lower_start: span_edges[0].0,
+            lower_end: span_edges[0].1,
+            upper_start: span_edges[1].0,
+            upper_end: span_edges[1].1,
+        })
+    }
+
+    fn debug_polygon_winding_normal(points: &[Vector3]) -> Option<Vector3> {
+        if points.len() < 3 {
+            return None;
+        }
+        for index in 1..points.len().saturating_sub(1) {
+            let normal = (points[index] - points[0]).cross(points[index + 1] - points[0]);
+            if normal.length_squared() > 1e-8 {
+                return Some(normal.normalized());
+            }
+        }
+        None
+    }
+
+    fn debug_visible_dot_to_lower_carriageway_owner(
+        piece: &RoadSurfaceVisualNodePiece,
+        face_midpoint: Vector3,
+        visible_direction: Vector3,
+        lower_matches: &[DebugTopBoundaryEdge],
+    ) -> Option<f32> {
+        let visible_xz = Vector3::new(visible_direction.x, 0.0, visible_direction.z);
+        if visible_xz.length_squared() <= 1e-8 {
+            return None;
+        }
+        let visible_xz = visible_xz.normalized();
+        let mut best: Option<f32> = None;
+        for edge in lower_matches
+            .iter()
+            .filter(|edge| edge.owner.kind == RoadSurfaceBandKind::Carriageway)
+        {
+            let Some(centroid) = Self::debug_owned_region_centroid(piece, edge.owner.region_index)
+            else {
+                continue;
+            };
+            let owner_direction = Vector3::new(
+                centroid.x - face_midpoint.x,
+                0.0,
+                centroid.z - face_midpoint.z,
+            );
+            if owner_direction.length_squared() <= 1e-8 {
+                continue;
+            }
+            let dot = visible_xz.dot(owner_direction.normalized());
+            best = Some(best.map_or(dot, |current| current.max(dot)));
+        }
+        best
+    }
+
+    fn debug_owned_region_centroid(
+        piece: &RoadSurfaceVisualNodePiece,
+        region_index: usize,
+    ) -> Option<Vector3> {
+        let region = piece.owned_regions.get(region_index)?;
+        let mut sum = Vector3::ZERO;
+        let mut count = 0usize;
+        if region.polygon.points_world.is_empty() {
+            for point in region
+                .polygon
+                .triangles_world
+                .iter()
+                .flat_map(|triangle| triangle.iter().copied())
+            {
+                sum += point;
+                count += 1;
+            }
+        } else {
+            for point in &region.polygon.points_world {
+                sum += *point;
+                count += 1;
+            }
+        }
+        (count > 0).then_some(sum * (1.0 / count as f32))
     }
 
     fn append_material_footprint_coverage_debug_literal(
@@ -1427,6 +2031,25 @@ impl RoadSurfaceSystem {
         dump.push(']');
     }
 
+    fn append_vector3_precise_list_literal(dump: &mut String, points: &[Vector3]) {
+        dump.push('[');
+        for (index, point) in points.iter().enumerate() {
+            if index > 0 {
+                dump.push_str(", ");
+            }
+            Self::append_vector3_precise_literal(dump, *point);
+        }
+        dump.push(']');
+    }
+
+    fn append_vector3_pair_precise_literal(dump: &mut String, start: Vector3, end: Vector3) {
+        dump.push('[');
+        Self::append_vector3_precise_literal(dump, start);
+        dump.push_str(", ");
+        Self::append_vector3_precise_literal(dump, end);
+        dump.push(']');
+    }
+
     fn append_usize_list_literal(dump: &mut String, values: &[usize]) {
         dump.push('[');
         for (index, value) in values.iter().enumerate() {
@@ -1436,6 +2059,47 @@ impl RoadSurfaceSystem {
             let _ = write!(dump, "{value}");
         }
         dump.push(']');
+    }
+
+    fn append_debug_render_edge_key_literal(dump: &mut String, key: DebugRenderEdgeKey) {
+        dump.push('{');
+        dump.push_str("\"start\":");
+        Self::append_debug_render_vertex_key_literal(dump, key.start);
+        dump.push_str(",\"end\":");
+        Self::append_debug_render_vertex_key_literal(dump, key.end);
+        dump.push('}');
+    }
+
+    fn append_optional_debug_render_edge_key_literal(
+        dump: &mut String,
+        key: Option<DebugRenderEdgeKey>,
+    ) {
+        if let Some(key) = key {
+            Self::append_debug_render_edge_key_literal(dump, key);
+        } else {
+            dump.push_str("null");
+        }
+    }
+
+    fn append_debug_render_vertex_key_literal(dump: &mut String, key: DebugRenderVertexKey) {
+        let _ = write!(
+            dump,
+            "{{\"x_key\":{},\"y_mm\":{},\"z_key\":{}}}",
+            key.x_key, key.y_mm, key.z_key
+        );
+    }
+
+    fn append_debug_render_xz_edge_key_literal(dump: &mut String, key: DebugRenderXzEdgeKey) {
+        dump.push('{');
+        dump.push_str("\"start\":");
+        Self::append_debug_render_xz_vertex_key_literal(dump, key.start);
+        dump.push_str(",\"end\":");
+        Self::append_debug_render_xz_vertex_key_literal(dump, key.end);
+        dump.push('}');
+    }
+
+    fn append_debug_render_xz_vertex_key_literal(dump: &mut String, key: DebugRenderXzVertexKey) {
+        let _ = write!(dump, "{{\"x_key\":{},\"z_key\":{}}}", key.x_key, key.z_key);
     }
 
     fn append_chunk_key_list_literal(dump: &mut String, chunks: &[SurfaceChunkKey]) {
@@ -1453,6 +2117,18 @@ impl RoadSurfaceSystem {
         let _ = write!(dump, "[{:.3}, {:.3}, {:.3}]", point.x, point.y, point.z);
     }
 
+    fn append_vector3_precise_literal(dump: &mut String, point: Vector3) {
+        let _ = write!(dump, "[{:.6}, {:.6}, {:.6}]", point.x, point.y, point.z);
+    }
+
+    fn append_optional_vector3_precise_literal(dump: &mut String, point: Option<Vector3>) {
+        if let Some(point) = point {
+            Self::append_vector3_precise_literal(dump, point);
+        } else {
+            dump.push_str("null");
+        }
+    }
+
     fn append_vector2_literal(dump: &mut String, point: Vector2) {
         let _ = write!(dump, "[{:.3}, {:.3}]", point.x, point.y);
     }
@@ -1464,12 +2140,22 @@ impl RoadSurfaceSystem {
             dump.push_str("null");
         }
     }
+
+    fn append_optional_f32_precise_literal(dump: &mut String, value: Option<f32>) {
+        if let Some(value) = value {
+            let _ = write!(dump, "{value:.6}");
+        } else {
+            dump.push_str("null");
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::simulation::network::surface::{IncidentMouthBand, RoadSurfaceVisualNodePieceKind};
+    use crate::simulation::network::surface::{
+        IncidentMouthBand, NodeOwnedRegion, RoadSurfaceVisualNodePieceKind,
+    };
 
     fn polygon(points_world: Vec<Vector3>) -> RoadSurfaceVisualPolygon {
         RoadSurfaceVisualPolygon {
@@ -1570,5 +2256,46 @@ mod tests {
         assert_eq!(road_match.material, "road");
         assert!(road_match.xz_error_m <= f32::EPSILON);
         assert!(road_match.y_delta_m.abs() <= f32::EPSILON);
+    }
+
+    #[test]
+    fn curb_vertical_face_debug_reports_exact_top_edge_closure() {
+        let mut piece = empty_node_piece();
+        piece.owned_regions.push(NodeOwnedRegion {
+            kind: RoadSurfaceBandKind::Carriageway,
+            owner_index: 7,
+            polygon: polygon(vec![
+                Vector3::new(-1.0, 0.0, -1.0),
+                Vector3::new(1.0, 0.0, -1.0),
+                Vector3::new(1.0, 0.0, 0.0),
+                Vector3::new(-1.0, 0.0, 0.0),
+            ]),
+        });
+        piece.owned_regions.push(NodeOwnedRegion {
+            kind: RoadSurfaceBandKind::CurbOrShoulder,
+            owner_index: 11,
+            polygon: polygon(vec![
+                Vector3::new(-1.0, 0.12, 0.0),
+                Vector3::new(1.0, 0.12, 0.0),
+                Vector3::new(1.0, 0.12, 1.0),
+                Vector3::new(-1.0, 0.12, 1.0),
+            ]),
+        });
+        piece.curb_vertical_face_polygons.push(polygon(vec![
+            Vector3::new(-1.0, 0.12, 0.0),
+            Vector3::new(-1.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.0, 0.0),
+            Vector3::new(1.0, 0.12, 0.0),
+        ]));
+
+        let mut dump = String::new();
+        RoadSurfaceSystem::append_curb_vertical_face_details_debug_literal(&mut dump, &piece);
+
+        assert!(dump.contains("\"face_count\":1"));
+        assert!(dump.contains("\"expected_asphalt_curb_step_count\":1"));
+        assert!(dump.contains("\"problem_count\":0"));
+        assert!(dump.contains("\"lower_matches_carriageway\":true"));
+        assert!(dump.contains("\"upper_matches_curb\":true"));
+        assert!(dump.contains("\"visible_from_lower_carriageway_owner\":true"));
     }
 }

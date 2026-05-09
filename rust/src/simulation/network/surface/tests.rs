@@ -5115,6 +5115,8 @@ fn debug_geometry_dump_exposes_edge_sections_and_terrain_samples() {
     assert!(dump.contains("\"nodes\""));
     assert!(dump.contains("\"road_topology\""));
     assert!(dump.contains("\"sidewalk_topology\""));
+    assert!(dump.contains("\"curb_vertical_face_details\""));
+    assert!(dump.contains("\"expected_asphalt_curb_steps\""));
     assert!(dump.contains("\"band_ownership\""));
     assert!(dump.contains("\"height_owner\""));
     assert!(dump.contains("\"seam_constraints\""));
